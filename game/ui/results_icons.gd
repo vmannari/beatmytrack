@@ -23,6 +23,9 @@ static func texture(kind: String, color: Color = Color("a5c8df")) -> Texture2D:
 				for x: int in range(4):
 					if (x+y)%2 == 0: drawing += '<path d="M%s %sh4l-1 5h-4z" fill="currentColor" stroke="none"/>' % [11+x*4-y,4+y*5]
 
+		"podium":
+			# Flat, single-colour podium: wider side stands and a lower centre.
+			drawing = '<g fill="currentColor" stroke="none"><path d="M3 15h7v13H3a1 1 0 0 1-1-1V16a1 1 0 0 1 1-1Z"/><path fill-rule="evenodd" d="M12 10h8a1 1 0 0 1 1 1v17H11V11a1 1 0 0 1 1-1Zm2.5 4v2H16v7h2v-9Z"/><path d="M22 18h7a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-7Z"/></g>'
 		"Sectors", "bars":
 			drawing = '<path d="M5 27V18h4v9zm9 0V11h4v16zm9 0V4h4v23z" fill="currentColor" stroke="none"/>'
 		"Time diff":
@@ -47,7 +50,8 @@ static func texture(kind: String, color: Color = Color("a5c8df")) -> Texture2D:
 	var svg: String = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 32 32"><g fill="none" stroke="#%s" color="#%s" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">%s</g></svg>' % [color.to_html(false),color.to_html(false),drawing]
 	if kind == "laurel": svg = svg.replace('width="64" height="64" viewBox="0 0 32 32"','width="44" height="64" viewBox="4 0 22 32"')
 	var image := Image.new()
-	image.load_svg_from_string(svg)
+	image.load_svg_from_string(svg,4.0 if kind == "podium" else 1.0)
+	if kind == "podium": image.generate_mipmaps()
 	return ImageTexture.create_from_image(image)
 
 static func view(kind: String, width: float, color: Color = Color("a5c8df")) -> TextureRect:

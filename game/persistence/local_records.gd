@@ -147,8 +147,14 @@ static func _normalize(data: Variant) -> Dictionary:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "selected_car":
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+		elif field == "vehicle_conditions":
+			if not VehicleCondition.valid_collection(preferences[field]): return {}
+		elif field == "vehicle_liveries":
+			if not VehicleLivery.valid_collection(preferences[field]): return {}
 		elif field == "camera_mode":
 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
+		elif field == "camera_speed_zoom_strength":
+			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > CameraProfile.MAX_SPEED_ZOOM_STRENGTH: return {}
 		elif field == "ghost_mode":
 			if not preferences[field] is String or preferences[field] not in PersonalGhostRun.MODES: return {}
 		elif field == "track_ratings":
@@ -168,7 +174,7 @@ static func _normalize(data: Variant) -> Dictionary:
 		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads"]:
 			if not preferences[field] is bool:
 				return {}
-		elif field == "steering_haptics":
+		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:
 			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > 1.0:
 				return {}
 		elif field == "touch_scale":

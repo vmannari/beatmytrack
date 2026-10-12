@@ -5,6 +5,7 @@ func _initialize() -> void: call_deferred("run")
 
 func run() -> void:
 	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/camera-options-2026-10-03/speed-zoom")
+	if not OS.get_environment("BMT_CAMERA_EVIDENCE").is_empty(): output = OS.get_environment("BMT_CAMERA_EVIDENCE")
 	DirAccess.make_dir_recursive_absolute(output)
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
 	var game: Node = load("res://core/game.tscn").instantiate()
@@ -56,14 +57,16 @@ func run() -> void:
 		for mode: String in CameraProfile.MODES:
 			if dimensions.x == 960 and mode != "look_ahead": continue
 			game.sim.state.velocity = game.sim.state.forward() * 55.0
-			for enabled: bool in [false, true]:
-				game.set_camera_speed_zoom(enabled)
+			for amount: float in [0.0, 0.12, 0.30, 0.50]:
+				game.set_camera_speed_zoom(true)
+				game.set_camera_speed_zoom_strength(amount)
 				game.set_camera_mode(mode)
 				for frame: int in range(45): game._process(1.0 / 60.0)
-				await capture(output.path_join("%s-fast-%s-%dx%d.png" % [mode, "on" if enabled else "off", dimensions.x, dimensions.y]))
+				await capture(output.path_join("%s-fast-%02d-percent-%dx%d.png" % [mode, roundi(amount * 100.0), dimensions.x, dimensions.y]))
 	root.size = Vector2i(1280, 720)
 	root.content_scale_size = Vector2i(1280, 720)
 	game.set_camera_speed_zoom(false)
+	game.set_camera_speed_zoom_strength(CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH)
 	game.set_camera_mode("look_ahead")
 	game.set_camera_speed_zoom(true)
 	for frame: int in range(121):
@@ -71,7 +74,7 @@ func run() -> void:
 		if frame in [0, 29, 119]: await capture(output.path_join("zoom-ease-%03d.png" % (frame + 1)))
 	game.queue_free()
 	await process_frame
-	print("CAMERA_CAPTURE: %d captures saved, including same-pose speed-zoom pairs and easing frames" % captures)
+	print("CAMERA_CAPTURE: %d captures saved, including same-pose 0/12/30/50 percent zoom comparisons and easing frames" % captures)
 	quit()
 
 func capture(path: String) -> void:

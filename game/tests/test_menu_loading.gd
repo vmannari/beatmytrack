@@ -72,6 +72,7 @@ func run() -> void:
 	browser._select(a)
 	check(not browser.selecting and browser.selected_track.identity == "creator_"+str(first.id),"cached choice is immediate during unrelated active compilation")
 	check(browser.race_button.disabled,"race cannot begin with superseded menu work still active")
+	check(browser.race_button.text == "Loading track...","disabled Race explains the outstanding track preparation")
 	while browser._resolve_thread != null: await process_frame
 	check(browser.selected_track.identity == "creator_"+str(first.id),"superseded worker cannot replace cached choice")
 	check(not browser.race_button.disabled,"race unlocks after superseded worker is drained")
@@ -96,14 +97,18 @@ func run() -> void:
 	cloud_entry.id = "cloud_delayed_fixture"
 	cloud_entry.source = "cloud"
 	cloud_entry.name = "Cloud preview"
-	var retained_title: String = (browser.hero.find_child("HeroTrackTitle",true,false) as Label).text
 	browser._select(cloud_entry)
-	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == retained_title and delayed.calls == 0,"cloud download keeps prior complete section visible")
+	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "CLOUD PREVIEW" and delayed.calls == 0,"cloud metadata hero appears before download starts")
+	check(not browser.detail.visible and browser.pending_records.visible,"new metadata hero never displays the previous track's records")
+	check(browser.pending_records.text.is_empty() and browser.race_button.text == "Loading track...","disabled Race explains preparation without a redundant records caption")
 	while delayed.calls == 0: await process_frame
 	check(browser.race_button.disabled,"pending download cannot race the previous selection")
+	await capture_start_feedback("track-loading")
 	delayed.finished.emit()
 	await process_frame
 	check(browser.race_button.disabled and browser.pending_records.text.contains("unavailable"),"failed download keeps its own preview and never enables stale racing")
+	check(browser.race_button.text == "Select track again to retry","disabled Race gives the download recovery action")
+	await capture_start_feedback("track-download-failed")
 	var board := DelayedBoard.new()
 	root.add_child(board)
 	browser.cloud = board
@@ -165,6 +170,14 @@ func run() -> void:
 	print("MENU_LOADING: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures else 0)
 
+func capture_start_feedback(name: String) -> void:
+	if DisplayServer.get_name() == "headless": return
+	await process_frame
+	await RenderingServer.frame_post_draw
+	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/race-start-feedback-2026-10-11")
+	DirAccess.make_dir_recursive_absolute(folder)
+	root.get_texture().get_image().save_png(folder.path_join(name+".png"))
+
 func _geometry(node: Node) -> Array:
 	var result: Array = [node.get_class()]
 	if node is MeshInstance3D:
@@ -202,6 +215,9 @@ class DelayedBoard extends Node:
 	signal finished
 	var client: Node = self
 	var calls: int = 0
+	func signed_in() -> bool: return false
+	func paged_discovery_available() -> bool: return false
+	func test_drivers_available() -> bool: return false
 	func cancel_public_reads(_owner: int) -> void: pass
 	func request_public(_path: String, _owner: int) -> Dictionary:
 		calls += 1

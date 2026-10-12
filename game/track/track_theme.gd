@@ -5,7 +5,7 @@ extends RefCounted
 
 const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
 const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
-const DESERT: Array[Color] = [Color("9b815d"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT: Array[Color] = [Color("9d896a"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 
 
 static func normalized(theme: String) -> String:
@@ -48,24 +48,49 @@ static func stone(theme: String) -> Color:
 
 
 static func apply_lighting(theme: String, environment: Environment, light: DirectionalLight3D) -> void:
+	environment.fog_enabled = false
 	environment.background_mode = Environment.BG_COLOR
 	environment.reflected_light_source = Environment.REFLECTION_SOURCE_BG
 	if theme != "storm": environment.sky = null
 	light.rotation_degrees = Vector3(-58,-35,0)
+	light.shadow_opacity = 1.0
 	var night: bool = normalized(theme) == "night_city"
 	environment.ambient_light_color = Color("7288b0") if night else Color("bac8ce")
 	environment.ambient_light_energy = 0.045 if night else 0.35
 	light.light_color = Color("8299cc") if night else Color("e7f2ff") if theme == "winter" else Color("fff1d8")
 	light.light_energy = 0.025 if night else 0.50 if theme == "storm" else 1.0
+	if theme == "winter":
+		light.rotation_degrees = Vector3(-34,-55,0)
+		light.shadow_opacity = 0.68
+		light.light_color = Color("ffe3be")
+		light.light_energy = 1.12
+		environment.ambient_light_color = Color("879ec2")
+		environment.ambient_light_energy = 0.48
+		var sky := Sky.new()
+		var material := ProceduralSkyMaterial.new()
+		material.sky_top_color = Color("7199bd")
+		material.sky_horizon_color = Color("d8e0e6")
+		material.ground_bottom_color = Color("758396")
+		material.ground_horizon_color = Color("d8e0e6")
+		material.sky_energy_multiplier = 0.45
+		material.ground_energy_multiplier = 0.35
+		sky.sky_material = material
+		sky.radiance_size = Sky.RADIANCE_SIZE_128
+		environment.sky = sky
+		environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+		environment.fog_enabled = true
+		environment.fog_density = 0.0011
+		environment.fog_light_color = Color("bacbdf")
+		environment.fog_light_energy = 0.45
+		environment.fog_sun_scatter = 0.05
 	# Grass: warm sunlight against the broad, deeper cloud projections.
-	if theme == "pine":
+	if theme in ["pine", "desert"]:
 		light.light_energy = 1.32
 		light.light_color = Color("ffedce")
 	if theme == "desert":
 		# Sun-baked daylight, with warm open shade rather than a sunset/haze pass.
 		environment.ambient_light_color = Color("c5b9a4")
 		environment.ambient_light_energy = 0.38
-		light.light_energy = 1.06
 	if theme == "storm":
 		environment.sky = preload("res://track/storm_sky.tres")
 		environment.background_mode = Environment.BG_SKY

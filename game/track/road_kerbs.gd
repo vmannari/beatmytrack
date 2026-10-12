@@ -82,43 +82,57 @@ func _native_vertex_height(node: Vector2i, selected: PackedByteArray) -> float:
 
 
 
-static func creator_segments(document: Dictionary) -> Array[Dictionary]:
+static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if document.get("surface","asphalt") == "dirt": return result
 	var pieces: Array = document.get("pieces",[])
+	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
-		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index)
-		var bounds := Rect2(polygon[0],Vector2.ZERO)
-		for point: Vector2 in polygon: bounds = bounds.expand(point)
-		outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
+		var polygons: Array[PackedVector2Array] = []
+		if pieces[index].kind == "spline":
+			polygons = RoadEdges.section_contours(pieces,index,0.0,topology)
+		else:
+			polygons.append(RoadPieces.section_outline(pieces,index,0.0,topology))
+		for polygon: PackedVector2Array in polygons:
+			var bounds := Rect2(polygon[0],Vector2.ZERO)
+			for point: Vector2 in polygon: bounds = bounds.expand(point)
+			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
+		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
-		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index)
-		var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,-0.20),cuts)
-		var distance: float = 0.0
-		for edge: int in range(polygon.size()):
-			var a: Vector2 = polygon[edge]
-			var b: Vector2 = polygon[(edge+1)%polygon.size()]
-			if RoadEdges._on_join_cut(a,b,cuts): continue
-			var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts)
-			var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
-			var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
-			for step: int in range(steps):
-				var p: Vector2 = a.lerp(b,float(step)/steps)
-				var q: Vector2 = a.lerp(b,float(step+1)/steps)
-				var np: Vector2 = na.lerp(nb,float(step)/steps)
-				var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
-				var start: float = distance
-				distance += (p+np*0.375).distance_to(q+nq*0.375)
-				var midpoint: Vector2 = (p+q)*0.5
-				var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
-				if Geometry2D.is_point_in_polygon(midpoint+outward,polygon): outward = -outward
-				if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces): continue
-				if not RoadEdges._on_join_plane(a,b,cuts) and RoadEdges._inner_bend_distance(midpoint,points) >= 0.0:
-					result.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+		var border_contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if presentation else RoadEdges.section_contours(pieces,index,-0.20,topology)
+		for polygon: PackedVector2Array in border_contours:
+			var hole: bool = pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
+			var distance: float = 0.0
+			for edge: int in range(polygon.size()):
+				var a: Vector2 = polygon[edge]
+				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+				if RoadEdges._on_join_cut(a,b,cuts) or (presentation and RoadEdges._on_join_cap(a,b,cuts)): continue
+				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,presentation)
+				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,presentation)
+				if hole: na = -na; nb = -nb
+				if pieces[index].kind == "spline":
+					na = SplineBorders.kerb_normal(polygon,edge,na)
+					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
+				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+				for step: int in range(steps):
+					var p: Vector2 = a.lerp(b,float(step)/steps)
+					var q: Vector2 = a.lerp(b,float(step+1)/steps)
+					var np: Vector2 = na.lerp(nb,float(step)/steps)
+					var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
+					var start: float = distance
+					distance += (p+np*0.375).distance_to(q+nq*0.375)
+					var midpoint: Vector2 = (p+q)*0.5
+					var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
+					if Geometry2D.is_point_in_polygon(midpoint+outward,polygon) != hole: outward = -outward
+					if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces,topology): continue
+					var curved: bool = SplineBorders.curved_edge(polygon,edge,points) if pieces[index].kind == "spline" else RoadEdges._inner_bend_distance(midpoint,points) >= 0.0
+					if not RoadEdges._on_join_plane(a,b,cuts) and curved:
+						result.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
 	return result
 
 

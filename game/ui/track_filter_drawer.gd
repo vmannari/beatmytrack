@@ -3,7 +3,7 @@ extends CanvasLayer
 signal applied(filters: Dictionary)
 signal closed
 
-const DEFAULTS: Dictionary = {"section":"all","theme":"all","race_count":"any","minimum_rating":0.0,"age_days":0,"race_history":"any","sort":"recommended"}
+const DEFAULTS: Dictionary = {"section":"all","feed":"recommended","theme":"all","race_count":"any","minimum_rating":0.0,"age_days":0,"race_history":"any","sort":"recommended"}
 var catalog: TrackCatalog
 var discovery: TrackDiscoveryProvider
 var records: LocalRecords
@@ -19,6 +19,7 @@ var rating_slider: HSlider
 var rating_value: Label
 var return_focus: Control
 var motion: Tween
+var server_feeds: bool = false
 var rating_pointer: int = -1
 
 func _ready() -> void:
@@ -28,7 +29,7 @@ func _ready() -> void:
 	MenuStyle.fill(overlay)
 	add_child(overlay)
 	var dim := ColorRect.new()
-	dim.color = Color(0.01,0.025,0.035,0.65)
+	dim.color = MenuStyle.POPUP_DIM
 	MenuStyle.fill(dim)
 	overlay.add_child(dim)
 	dim.gui_input.connect(func(event: InputEvent) -> void:
@@ -40,6 +41,7 @@ func _ready() -> void:
 	style.border_width_left = 1
 	panel.add_theme_stylebox_override("panel",style)
 	overlay.add_child(panel)
+	preload("res://ui/popup_style.gd").decorate_panel(panel)
 	var layout := VBoxContainer.new()
 	layout.add_theme_constant_override("separation",8)
 	panel.add_child(layout)
@@ -52,7 +54,7 @@ func _ready() -> void:
 	exit_button.name = "CloseFilters"
 	exit_button.icon = MenuIcon.texture("close")
 	exit_button.tooltip_text = "Close filters without applying"
-	exit_button.custom_minimum_size = Vector2(48,48)
+	exit_button.custom_minimum_size = Vector2(52,52)
 	exit_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
 	header.add_child(exit_button)
 	var accent := ColorRect.new()
@@ -71,9 +73,10 @@ func _ready() -> void:
 	groups.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	groups.add_theme_constant_override("separation",8)
 	scroll.add_child(groups)
-	_group(groups,"SHOW","compass","section",3,[["all","Recommended","compass"],["favorites","Favorites","star"],["saved","My tracks","person"]])
+	_group(groups,"SHOW","compass","section",3,[["all","All tracks","compass"],["favorites","Favorites","star"],["saved","My tracks","person"]])
+	_group(groups,"DISCOVER","compass","feed",2,[["recommended","Recommended","compass"],["new","New","clock"],["popular","Popular","friends"],["rated","Top rated","star"]])
 	_group(groups,"BIOMES","biomes","theme",3,[["all","All","biomes"],["pine","Grass","leaf"],["desert","Desert","cactus"],["winter","Winter","snowflake"],["night_city","Night","night"],["storm","Storm","storm"]])
-	_group(groups,"RACE COUNT","friends","race_count",4,[["any","Any",""],["low","Low",""],["medium","Medium",""],["high","High",""]])
+	_group(groups,"VERIFIED DRIVERS","friends","race_count",4,[["any","Any",""],["low","Low",""],["medium","Medium",""],["high","High",""]])
 	count_hint = MenuStyle.label("Race counts aren't available yet",12,true)
 	groups.add_child(count_hint)
 	var rating_group := VBoxContainer.new()
@@ -118,8 +121,8 @@ func _ready() -> void:
 	sorting.name = "FilterSort"
 	sorting.custom_minimum_size.y = 48
 	sorting.add_theme_font_size_override("font_size",17)
-	for caption: String in ["Recommended","Name A–Z","Highest rated","Most raced"]: sorting.add_item(caption)
-	sorting.tooltip_text = "Recommended uses the default name order. Ratings match the values shown on the cards."
+	for caption: String in ["Feed order","Name A–Z","Top rated","Most drivers"]: sorting.add_item(caption)
+	sorting.tooltip_text = "Top rated accounts for the number of ratings. Cards show the actual average."
 	sorting.item_selected.connect(func(index: int) -> void: _choose("sort",["recommended","name","score","plays"][index]))
 	sort_group.add_child(sorting)
 	layout.add_child(HSeparator.new())
@@ -196,7 +199,6 @@ func open_for(state: Dictionary, focus_owner: Control) -> void:
 	draft = state.duplicate(true)
 	for key: String in DEFAULTS:
 		if not draft.has(key): draft[key] = DEFAULTS[key]
-	draft.feed = "recommended"
 	return_focus = focus_owner
 	show()
 	set_process_input(true)
@@ -234,6 +236,7 @@ func refresh_choices() -> void:
 			var button: Button = choice.button
 			var selected: bool = draft.get(key,DEFAULTS[key]) == choice.value
 			button.disabled = key == "race_count" and choice.value != "any" and not counts_available
+			if key == "feed" and choice.value != "recommended" and not server_feeds: button.disabled = true
 			var style := MenuStyle.box(MenuStyle.ACCENT if selected else Color("10232f"),10)
 			style.border_color = MenuStyle.ACCENT if selected else MenuStyle.BORDER
 			style.set_border_width_all(1)
@@ -246,13 +249,14 @@ func refresh_choices() -> void:
 				var biome_color: Color = preload("res://ui/biome_badge.gd").color(str(choice.value))
 				for color_key: String in ["font_color","font_focus_color","icon_normal_color","icon_focus_color"]:
 					button.add_theme_color_override(color_key,biome_color)
-			button.tooltip_text = "Race counts aren't available yet" if button.disabled else ("Low: 0–9 · Medium: 10–49 · High: 50+ completed races" if key == "race_count" else str(button.text))
+			button.tooltip_text = "Verified driver counts aren't available yet" if button.disabled else ("Low: 0–9 · Medium: 10–49 · High: 50+ distinct verified drivers" if key == "race_count" else str(button.text))
 	rating_slider.set_value_no_signal(float(draft.get("minimum_rating",0.0)))
 	rating_value.text = "Any" if rating_slider.value == 0.0 else "%.1f+" % rating_slider.value
 	rating_slider.tooltip_text = "Minimum rating: "+rating_value.text+" (0.1 steps)"
 	sorting.selected = maxi(0,["recommended","name","score","plays"].find(draft.sort))
 	var found: int = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[])).size()
 	apply_button.text = "SHOW %d TRACK%s" % [found,"" if found == 1 else "S"]
+	if catalog.server_ordered: apply_button.text = "SHOW TRACKS"
 	active_label.text = "%d filter%s active" % [active_count(draft),"" if active_count(draft) == 1 else "s"]
 	active_label.add_theme_color_override("font_color",MenuStyle.ACCENT if active_count(draft) > 0 else MenuStyle.TEXT)
 
@@ -269,7 +273,6 @@ func reset_choices() -> void:
 func _apply() -> void:
 	var result: Dictionary = {}
 	for key: String in DEFAULTS: result[key] = draft[key]
-	result.feed = "recommended"
 	applied.emit(result)
 	close()
 

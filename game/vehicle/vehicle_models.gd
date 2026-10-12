@@ -11,13 +11,16 @@ static func build(car: CarVisual, id: String) -> void:
 	VisualGeometry.ink(paint)
 	var cream: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
 	VisualGeometry.ink(cream)
+	var accent: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
+	VisualGeometry.ink(accent)
+	car.paint_materials = {"body":paint, "accent":accent}
 	var trim: StandardMaterial3D = VisualGeometry.material(Color("182126"))
 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
 	match id:
-		"pickup": _pickup(car,paint,cream,trim,glass)
-		"classic": _classic(car,paint,cream,trim,glass)
-		"formula": _formula(car,paint,cream,trim,glass)
-		"kart": _kart(car,paint,cream,trim,glass)
+		"pickup": _pickup(car,paint,cream,trim,glass,accent)
+		"classic": _classic(car,paint,cream,trim,glass,accent)
+		"formula": _formula(car,paint,cream,trim,glass,accent)
+		"kart": _kart(car,paint,cream,trim,glass,accent)
 	var config: HandlingConfig = VehicleCatalog.config(id)
 	var half_axle: float = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
 	var half_track: float = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
@@ -62,23 +65,23 @@ static func _cabin(car: CarVisual, width: float, base: float, roof: float, front
 		car._panel([Vector3(side*(lerpf(width,top,0.13)+0.009),lerpf(base,roof,0.13),lerpf(front,roof_front,0.13)+0.08),Vector3(side*(lerpf(width,top,0.13)+0.009),lerpf(base,roof,0.13),lerpf(back,roof_back,0.13)-0.08),Vector3(side*(lerpf(width,top,0.88)+0.009),lerpf(base,roof,0.88),lerpf(back,roof_back,0.88)-0.07),Vector3(side*(lerpf(width,top,0.88)+0.009),lerpf(base,roof,0.88),lerpf(front,roof_front,0.88)+0.07)],Vector3(side,0.3,0),glass)
 		_box(car,Vector3(0.17,0.12,0.23),Vector3(side*(width+0.10),base+0.08,front+0.22),trim)
 
-static func _pickup(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
+static func _pickup(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
 	car._shell(car.body,[Vector3(0.97,0.46,2.66),Vector3(1.01,0.83,2.63)],paint)
 	# Open cargo bed: floor, separate side rails and tailgate, no solid top lid.
 	_box(car,Vector3(1.68,0.08,2.13),Vector3(0,0.87,1.47),trim)
 	for side: float in [-1.0,1.0]:
 		_box(car,Vector3(0.18,0.49,2.21),Vector3(side*0.92,1.06,1.43),paint)
-		_box(car,Vector3(0.20,0.10,2.22),Vector3(side*0.92,1.32,1.43),cream)
+		_box(car,Vector3(0.20,0.10,2.22),Vector3(side*0.92,1.32,1.43),accent)
 		_box(car,Vector3(0.07,0.22,0.14),Vector3(side*0.91,1.05,2.58),car.brake_material)
 		_box(car,Vector3(0.035,0.05,0.20),Vector3(side*1.02,1.13,-0.02),trim)
 		car._seam(car.body,Vector3(side*1.015,0.80,0.29),Vector3(side*1.015,1.30,0.29),0.017,trim)
 	for rib: int in range(7):
 		_box(car,Vector3(0.025,0.025,1.98),Vector3(-0.68+rib*0.226,0.923,1.45),paint)
 	_box(car,Vector3(1.98,0.46,0.14),Vector3(0,1.08,2.55),paint)
-	_box(car,Vector3(1.97,0.12,0.16),Vector3(0,1.33,2.55),cream)
+	_box(car,Vector3(1.97,0.12,0.16),Vector3(0,1.33,2.55),accent)
 	_box(car,Vector3(1.98,0.42,2.88),Vector3(0,1.04,-1.14),paint)
-	_box(car,Vector3(1.92,0.12,1.4),Vector3(0,1.30,-1.86),cream)
-	_cabin(car,0.94,1.30,1.95,-1.12,0.35,-0.70,0.23,cream,glass,trim)
+	_box(car,Vector3(1.92,0.12,1.4),Vector3(0,1.30,-1.86),accent)
+	_cabin(car,0.94,1.30,1.95,-1.12,0.35,-0.70,0.23,accent,glass,trim)
 	_box(car,Vector3(1.85,0.37,0.06),Vector3(0,1.10,-2.61),trim)
 	for side: float in [-1.0,1.0]:
 		_box(car,Vector3(0.43,0.23,0.08),Vector3(side*0.66,1.12,-2.66),cream)
@@ -88,7 +91,7 @@ static func _pickup(car: CarVisual, paint: Material, cream: Material, trim: Mate
 	for end: float in [-1.0,1.0]:
 		_box(car,Vector3(2.08,0.16,0.15),Vector3(0,0.69,end*2.67),trim)
 
-static func _classic(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
+static func _classic(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
 	car._shell(car.body,[Vector3(0.83,0.32,2.03),Vector3(0.91,0.57,2.08),Vector3(0.83,0.81,1.92)],paint)
 	_cabin(car,0.75,0.82,1.34,-0.76,1.60,-0.23,0.52,paint,glass,trim)
 	# Rounded wings, front lamps and the rear engine grille define the silhouette.
@@ -102,14 +105,14 @@ static func _classic(car: CarVisual, paint: Material, cream: Material, trim: Mat
 		_box(car,Vector3(0.40,0.12,0.05),Vector3(side*0.61,0.65,2.07),car.brake_material)
 		car._seam(car.body,Vector3(side*0.903,0.53,0.40),Vector3(side*0.85,0.80,0.40),0.018,trim)
 		_box(car,Vector3(0.035,0.045,0.18),Vector3(side*0.865,0.78,0.18),trim)
-	_box(car,Vector3(0.18,0.02,1.08),Vector3(0,0.826,-1.34),cream)
-	_box(car,Vector3(0.18,0.02,0.74),Vector3(0,1.352,0.14),cream)
+	_box(car,Vector3(0.18,0.02,1.08),Vector3(0,0.826,-1.34),accent)
+	_box(car,Vector3(0.18,0.02,0.74),Vector3(0,1.352,0.14),accent)
 	for vent: int in range(7):
 		_box(car,Vector3(0.83,0.026,0.033),Vector3(0,0.837,1.63+vent*0.036),trim)
 	for end: float in [-1.0,1.0]:
 		_box(car,Vector3(1.68,0.13,0.085),Vector3(0,0.47,end*2.09),trim)
 
-static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
+static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
 	# Open-wheel single seater with tapered nose, cockpit, suspension and wings.
 	car._shell(car.body,[Vector3(0.42,0.19,2.13),Vector3(0.39,0.40,2.03),Vector3(0.28,0.52,1.82)],paint)
 	_box(car,Vector3(0.48,0.026,0.66),Vector3(0,0.541,-0.05),trim)
@@ -128,15 +131,15 @@ static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Mat
 				car._seam(car.body,Vector3(side*0.32,0.30,axle+offset),Vector3(side*0.94,0.34,axle),0.042,trim)
 		_box(car,Vector3(0.04,0.25,0.44),Vector3(side*0.90,0.30,-2.06),paint)
 		_box(car,Vector3(0.045,0.32,0.55),Vector3(side*0.75,0.74,1.99),paint)
-	_box(car,Vector3(1.83,0.065,0.45),Vector3(0,0.25,-2.06),cream)
-	_box(car,Vector3(1.52,0.075,0.55),Vector3(0,0.81,1.99),cream)
+	_box(car,Vector3(1.83,0.065,0.45),Vector3(0,0.25,-2.06),accent)
+	_box(car,Vector3(1.52,0.075,0.55),Vector3(0,0.81,1.99),accent)
 	_box(car,Vector3(0.11,0.36,0.15),Vector3(0,0.58,1.99),trim)
-	_box(car,Vector3(0.13,0.018,1.29),Vector3(0,0.535,-1.13),cream)
+	_box(car,Vector3(0.13,0.018,1.29),Vector3(0,0.535,-1.13),accent)
 	for vent: int in range(5):
 		_box(car,Vector3(0.39,0.02,0.025),Vector3(0,0.536,0.81+vent*0.12),trim)
 	_box(car,Vector3(0.13,0.08,0.045),Vector3(0,0.34,2.15),car.brake_material)
 
-static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material) -> void:
+static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
 	# Low tubular chassis and an exposed seated driver distinguish it from Formula.
 	var steel: StandardMaterial3D = VisualGeometry.material(Color("536674"))
 	var suit: StandardMaterial3D = VisualGeometry.material(Color("263e53"))
@@ -146,7 +149,7 @@ static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Materi
 		car._seam(car.body,Vector3(side*0.47,0.16,-1.12),Vector3(side*0.47,0.16,1.07),0.065,steel)
 		car._seam(car.body,Vector3(side*0.66,0.22,-0.88),Vector3(side*0.40,0.21,-0.50),0.038,steel)
 		_box(car,Vector3(0.29,0.23,1.04),Vector3(side*0.52,0.29,0.01),paint)
-		_box(car,Vector3(0.30,0.035,0.75),Vector3(side*0.52,0.417,-0.02),cream)
+		_box(car,Vector3(0.30,0.035,0.75),Vector3(side*0.52,0.417,-0.02),accent)
 		car._seam(car.body,Vector3(side*0.76,0.15,1.08),Vector3(side*0.76,0.15,1.25),0.065,trim)
 	for end: float in [-1.0,1.0]:
 		car._seam(car.body,Vector3(-0.76,0.16,end*1.13),Vector3(0.76,0.16,end*1.13),0.065,steel)
@@ -157,7 +160,7 @@ static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Materi
 	car.body.add_child(nose)
 	nose.position.z = -1.07
 	car._shell(nose,[Vector3(0.74,0.13,0.30),Vector3(0.76,0.30,0.28),Vector3(0.60,0.40,0.24)],paint)
-	VisualGeometry.box(nose,Vector3(0.18,0.008,0.48),Vector3(0,0.405,0),cream)
+	VisualGeometry.box(nose,Vector3(0.18,0.008,0.48),Vector3(0,0.405,0),accent)
 	# Centered fairing meets the nose top; its stripe shares the same center and width.
 	car._panel([Vector3(-0.18,0.40,-0.83),Vector3(0.18,0.40,-0.83),Vector3(0.20,0.60,-0.37),Vector3(-0.20,0.60,-0.37)],Vector3(0,0.92,-0.40),paint)
 	car._panel([Vector3(-0.09,0.409,-0.83),Vector3(0.09,0.409,-0.83),Vector3(0.09,0.609,-0.37),Vector3(-0.09,0.609,-0.37)],Vector3(0,0.92,-0.40),cream)

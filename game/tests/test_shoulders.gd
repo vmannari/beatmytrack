@@ -36,7 +36,7 @@ func _initialize() -> void:
 	if absf(area-30.0) > 0.001: failures += 1
 	print("SHOULDER_TESTS: union area=%f, triangles=%d, failures=%d; nearest-road shading and no overlapping interiors" % [area,polygons.size(),failures])
 	failures += _test_joins()
-	failures += _test_internal_contours()
+	failures += await _test_internal_contours()
 	quit(0 if failures == 0 else 1)
 
 func _test_joins() -> int:
@@ -105,7 +105,7 @@ func _test_internal_contours() -> int:
 	var track: NativeTrack = TrackCompiler.compile(document)
 	var contacts: Array[Dictionary] = track.kerbs.triangles.duplicate(true)
 	var cells: PackedInt32Array = track.cells.duplicate()
-	var rendered: Array[Dictionary] = helper.kerb_triangles(document)
+	var rendered: Array[Dictionary] = await helper.kerb_triangles(document)
 	checks += 3
 	if rendered.is_empty():
 		failures += 1

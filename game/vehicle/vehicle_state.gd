@@ -24,6 +24,11 @@ var launch_delay_until: int = 0
 var launch_gain: float = 0.0
 var tick: int = 0
 var collision_count: int = 0
+# Per-step observer outputs; never read by driving physics or competitive snapshot.
+var collision_impulse := Vector2.ZERO
+var scrape_strength: float = 0.0
+var scrape_normal := Vector2.ZERO
+var scrape_speed: float = 0.0
 var route_index: int = -1
 var track_elevated: bool = false
 var tire_oil: float = 0.0

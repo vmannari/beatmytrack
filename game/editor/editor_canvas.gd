@@ -5,6 +5,7 @@ extends Control
 signal edit_started
 signal document_changed
 signal edit_finished
+signal edit_cancelled
 signal hint_changed(text: String)
 signal selection_changed
 signal native_changed(track: NativeTrack)
@@ -24,6 +25,9 @@ var geometry_drag: String = ""
 var geometry_origin: float = 0.0
 var road_approval_pending: bool = false
 var endpoint_drag: int = -1
+var spline_point: int = 2
+var spline_point_drag: int = -1
+var _spline_preview_cache: Array[Dictionary] = []
 var piece_before_drag: Dictionary = {}
 var desktop_pan: bool = false
 var pending_road_tap: bool = false
@@ -66,8 +70,12 @@ var panning: bool = false
 var previous_pointer := Vector2.ZERO
 var preview: TrackMap
 var fitted: bool = false
+var fit_pending_native: bool = false
 var native_preview: NativeTrack
 var visual_preview: NativeTrack
+var _gesture_document: Dictionary = {}
+var _gesture_ghost: Dictionary = {}
+var _run_edge_hint: bool = false
 
 func _ready() -> void:
 	clip_contents = true
@@ -92,6 +100,7 @@ func to_world(point: Vector2) -> Vector2:
 
 func fit() -> void:
 	if size.x < 10 or size.y < 10: return
+	fit_pending_native = native_preview == null and document.get("base_track","") != ""
 	fitted = true
 	zoom = 1.0
 	pan = Vector2.ZERO
@@ -116,6 +125,7 @@ func fit() -> void:
 	queue_redraw()
 
 func zoom_by(factor: float, anchor: Vector2 = Vector2.INF) -> void:
+	fit_pending_native = false
 	if anchor == Vector2.INF: anchor = size*0.5
 	var before: Vector2 = to_world(anchor)
 	zoom = clampf(zoom * factor, 0.25, 16.0)
@@ -127,6 +137,9 @@ func refresh() -> void:
 
 func show_native(track: NativeTrack) -> void:
 	native_preview = track
+	if fit_pending_native:
+		fit_pending_native = false
+		fit()
 	# The 3D editor never draws this legacy CPU-rasterized map texture.
 	if not world_backdrop: preview.show_track(track)
 	native_changed.emit(track)
@@ -183,6 +196,7 @@ func _gui_input(event: InputEvent) -> void:
 			touches[event.index] = event.position
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
+				_rollback_navigation_edit()
 				pending_road_tap = false
 				pending_piece_accept = false
 				pending_start_flip = false
@@ -195,7 +209,6 @@ func _gui_input(event: InputEvent) -> void:
 				if paint_mode == "free": paint_points.clear()
 				elif mode == "paint": paint_points = paint_before_gesture.duplicate(true)
 				pending_stamp = false
-				if dragging and changed_in_gesture: edit_finished.emit()
 				dragging = false
 		else:
 			var was_pinching: bool = touches.size() >= 2
@@ -238,12 +251,27 @@ func _gui_input(event: InputEvent) -> void:
 			if active_pointer == event.index: _move(event.position)
 	accept_event()
 
+func _rollback_navigation_edit() -> void:
+	if not changed_in_gesture: return
+	if not _gesture_document.is_empty() and document != _gesture_document:
+		document.clear()
+		document.merge(_gesture_document.duplicate(true),true)
+		document_changed.emit()
+		edit_cancelled.emit()
+	ghost = _gesture_ghost.duplicate(true)
+	changed_in_gesture = false
+	selection_changed.emit()
+
 func _begin(point: Vector2, pointer: int) -> void:
+	fit_pending_native = false
 	active_pointer = pointer
 	previous_pointer = point
 	press_position = point
 	pointer_origin = to_world(point)
 	changed_in_gesture = false
+	_gesture_document = document.duplicate(true)
+	_gesture_ghost = ghost.duplicate(true)
+	_run_edge_hint = false
 	if mode=="place":
 		for object: Dictionary in document.objects:
 			if CreatorObjects.contains(object,to_world(point)):
@@ -251,7 +279,7 @@ func _begin(point: Vector2, pointer: int) -> void:
 				break
 	start_drag = false
 	pending_start_flip = false
-	if mode == "road" and ghost.is_empty() and document.has("start_line"):
+	if mode == "road" and ghost.is_empty() and document.has("start_line") and not editing_spline():
 		var controls: Dictionary = start_controls()
 		if Vector2(controls.flip).distance_to(point) <= 28:
 			pending_start_flip = true
@@ -504,7 +532,7 @@ func _end(pointer: int) -> void:
 	if pending_stamp: _place(press_position)
 	if dragging and changed_in_gesture:
 		edit_finished.emit()
-		if geometry_drag != "": selection_changed.emit()
+		if geometry_drag != "" or spline_point_drag >= 0: selection_changed.emit()
 	pending_stamp = false
 	dragging = false
 	panning = false
@@ -541,7 +569,7 @@ func _draw() -> void:
 			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
 	var sampled: Dictionary = TrackDocument.route_data(document)
 	var route: PackedVector2Array = sampled.points
-	if native_preview == null:
+	if native_preview == null and not world_backdrop:
 		for i: int in range(route.size()):
 			var a: Vector2 = to_screen(route[i])
 			var b: Vector2 = to_screen(route[(i+1)%route.size()])
@@ -618,7 +646,7 @@ func _draw() -> void:
 		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
 		draw_circle(start,14,Color("16c2cf"),false,3,true)
 		draw_string(ThemeDB.fallback_font,start+Vector2(20,5),"Practice start",HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color.WHITE)
-	if document.has("start_line") and mode in ["road","start_line"]: _draw_start_line()
+	if document.has("start_line") and mode in ["road","start_line"] and not editing_spline(): _draw_start_line()
 	if run_start != Vector2.INF: draw_circle(to_screen(run_start),10,Color("16c2cf"),false,3,true)
 	for object: Dictionary in run_preview:
 		var outline := PackedVector2Array()
@@ -650,7 +678,8 @@ func choose_piece(kind: String) -> void:
 	ghost = RoadPieces.create(kind,to_world(size*0.5)-Vector2(14,0))
 	if not document.pieces.is_empty():
 		var end: Dictionary = RoadPieces.end_pose(document.pieces[-1])
-		ghost = RoadPieces.create(kind,end.position,end.heading,document.pieces[-1].width)
+		ghost = RoadPieces.create(kind,end.position,end.heading,RoadPieces.endpoint_width(document.pieces[-1],1))
+	spline_point = 2
 	_snap_ghost()
 	selection_changed.emit()
 	queue_redraw()
@@ -687,9 +716,11 @@ func confirm_piece() -> void:
 func _begin_road(point: Vector2) -> void:
 	geometry_drag = ""
 	endpoint_drag = -1
+	spline_point_drag = -1
 	pending_road_tap = false
 	pending_piece_accept = false
 	var current: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
+	if not current.is_empty() and current.kind == "spline" and _begin_spline(current,point): return
 	if not current.is_empty():
 		for key: String in geometry_keys(current):
 			if to_screen(_geometry_handle(current,key)).distance_to(point) <= 24:
@@ -699,7 +730,7 @@ func _begin_road(point: Vector2) -> void:
 				dragging = true
 				queue_redraw()
 				return
-		for end: int in range(2):
+		for end: int in range(0 if current.kind == "spline" else 2):
 			var handle: Vector2 = Vector2(current.position[0],current.position[1]) if end == 0 else RoadPieces.end_pose(current).position
 			if to_screen(handle).distance_to(point) <= 26:
 				endpoint_drag = end
@@ -735,8 +766,9 @@ func _begin_road(point: Vector2) -> void:
 			if selected_piece >= 0: break
 		if selected_piece >= 0:
 			var piece: Dictionary = document.pieces[selected_piece]
+			if piece.kind == "spline" and _begin_spline(piece,point): return
 			piece_before_drag = piece.duplicate(true)
-			for end: int in range(2):
+			for end: int in range(0 if piece.kind == "spline" else 2):
 				var handle: Vector2 = Vector2(piece.position[0],piece.position[1]) if end == 0 else RoadPieces.end_pose(piece).position
 				if to_screen(handle).distance_to(point) <= 26: endpoint_drag = end
 			drag_origin = Vector2(piece.position[0],piece.position[1])
@@ -748,6 +780,73 @@ func _begin_road(point: Vector2) -> void:
 func _attached_end(piece: Dictionary) -> int:
 	return RoadPieces.attached_end(piece,document.pieces,selected_piece if ghost.is_empty() else -1)
 
+func editing_spline() -> bool:
+	if mode != "road": return false
+	var piece: Dictionary = ghost if not ghost.is_empty() else document.pieces[selected_piece] if selected_piece >= 0 else {}
+	return piece.get("kind","") == "spline"
+
+func spline_width_handle(piece: Dictionary) -> Vector2:
+	var nodes: PackedVector2Array = SplineRoad.points(piece)
+	var normal: Vector2 = SplineRoad.tangent(nodes,spline_point).normalized().orthogonal()
+	var reach: float = maxf(float(piece.point_widths[spline_point])*0.5+2.0,48.0/scale_factor())
+	return to_screen(nodes[spline_point]+normal*reach)
+
+func _begin_spline(piece: Dictionary, point: Vector2) -> bool:
+	var nodes: PackedVector2Array = SplineRoad.points(piece)
+	var closest: int = -1
+	var distance: float = 26.0
+	for i: int in range(nodes.size()):
+		var candidate: float = to_screen(nodes[i]).distance_to(point)
+		if candidate < distance: closest = i; distance = candidate
+	if closest >= 0:
+		spline_point = closest
+		spline_point_drag = closest
+	elif spline_width_handle(piece).distance_to(point) <= 24:
+		geometry_drag = "point_width"
+		geometry_origin = float(piece.point_widths[spline_point])
+	else: return false
+	piece_before_drag = piece.duplicate(true)
+	dragging = true
+	selection_changed.emit()
+	queue_redraw()
+	return true
+
+func _move_spline(point: Vector2) -> void:
+	var trial: Dictionary
+	var nodes: PackedVector2Array = SplineRoad.points(piece_before_drag)
+	if spline_point_drag >= 0:
+		var target: Vector2 = nodes[spline_point_drag]+to_world(point)-pointer_origin
+		if snap_enabled and spline_point_drag in [0,4]: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece if ghost.is_empty() else -1)
+		trial = SplineRoad.move_point(piece_before_drag,spline_point_drag,target)
+	else:
+		var normal: Vector2 = SplineRoad.tangent(nodes,spline_point).normalized().orthogonal()
+		var delta: float = (to_world(point)-pointer_origin).dot(normal)*2.0
+		trial = SplineRoad.with_width(piece_before_drag,spline_point,snappedf(geometry_origin+delta,0.5))
+	if trial.is_empty() or not RoadPieces.validate(trial).is_empty():
+		hint_changed.emit("Keep spline points inside the map and at least 2 m apart.")
+		return
+	if not _valid_bridge_edit(trial,selected_piece): return
+	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+	changed_in_gesture = true
+	if ghost.is_empty():
+		document.pieces[selected_piece] = trial
+		document_changed.emit()
+	else: ghost = trial
+	snap_matched = false
+	queue_redraw()
+
+func _draw_spline_controls(piece: Dictionary) -> void:
+	var nodes: PackedVector2Array = SplineRoad.points(piece)
+	for i: int in range(nodes.size()):
+		var at: Vector2 = to_screen(nodes[i])
+		draw_circle(at,15,Color("ffdd80") if i == spline_point else Color("f2f6f7"))
+		draw_circle(at,15,Color("163541"),false,2,true)
+		draw_string(ThemeDB.fallback_font,at+Vector2(-5,6),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color("163541"))
+	var handle: Vector2 = spline_width_handle(piece)
+	var normal: Vector2 = SplineRoad.tangent(nodes,spline_point).normalized().orthogonal()
+	draw_line(to_screen(nodes[spline_point]),handle,Color("b9faff"),1.5,true)
+	_draw_geometry_glyph(handle,"width",(to_screen(nodes[spline_point]+normal)-to_screen(nodes[spline_point])).normalized(),geometry_drag == "point_width" and dragging)
+
 func anchored_change(before: Dictionary, changed: Dictionary, key: String) -> Dictionary:
 	return RoadPieces.keep_attachment(before,changed,_attached_end(before),key != "heading")
 
@@ -757,6 +856,9 @@ func _move_road(point: Vector2) -> void:
 		if press_position.distance_to(point) <= 8: return
 		pending_piece_accept = false
 	if press_position.distance_to(point) < 3 and not changed_in_gesture: return
+	if piece.kind == "spline" and (spline_point_drag >= 0 or geometry_drag == "point_width"):
+		_move_spline(point)
+		return
 	if endpoint_drag >= 0:
 		var target: Vector2 = to_world(point)
 		var moving_end: int = endpoint_drag
@@ -834,12 +936,22 @@ func _move_road(point: Vector2) -> void:
 
 func pending_road_pieces() -> Array:
 	var pending: Array = []
-	if not world_backdrop or native_preview == null: return pending
+	if not world_backdrop: return pending
+	if native_preview == null: return document.pieces
 	var displayed: NativeTrack = visual_preview if visual_preview != null else native_preview
 	var compiled: Array = displayed.metadata.get("creator_document",{}).get("pieces",[])
 	for index: int in range(document.pieces.size()):
 		if index >= compiled.size() or document.pieces[index] != compiled[index]: pending.append(document.pieces[index])
 	return pending
+
+func _spline_preview(piece: Dictionary) -> Dictionary:
+	for entry: Dictionary in _spline_preview_cache:
+		if entry.piece == piece: return entry
+	var contours: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
+	var entry: Dictionary = {"piece":piece.duplicate(true),"contours":contours,"surface":SplineBorders.surface(contours)}
+	if _spline_preview_cache.size() >= 4: _spline_preview_cache.pop_front()
+	_spline_preview_cache.append(entry)
+	return entry
 
 func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
 	var geometry: Dictionary = RoadPieces.section_geometry([piece],0)
@@ -858,11 +970,23 @@ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> vo
 	# Individual triangles also handle a deliberately tight bend whose inner
 	# edge folds over itself; a single outline is not a simple polygon there.
 	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("61533e") if document.surface == "dirt" else Color("45494c")
-	for i: int in range(left.size()-1):
-		draw_primitive(PackedVector2Array([left[i],right[i],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
-		draw_primitive(PackedVector2Array([right[i],right[i+1],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
-	draw_polyline(left,Color("b9faff") if controls else Color("dce1dc"),2,true)
-	draw_polyline(right,Color("b9faff") if controls else Color("dce1dc"),2,true)
+	if piece.kind == "spline":
+		var border: Dictionary = _spline_preview(piece)
+		for patch: PackedVector2Array in border.surface:
+			var screen_patch := PackedVector2Array()
+			for vertex: Vector2 in patch: screen_patch.append(to_screen(vertex))
+			if not Geometry2D.triangulate_polygon(screen_patch).is_empty(): draw_colored_polygon(screen_patch,tint)
+		for contour: PackedVector2Array in border.contours:
+			var screen_contour := PackedVector2Array()
+			for vertex: Vector2 in contour: screen_contour.append(to_screen(vertex))
+			screen_contour.append(screen_contour[0])
+			draw_polyline(screen_contour,Color("b9faff") if controls else Color("dce1dc"),2,true)
+	else:
+		for i: int in range(left.size()-1):
+			draw_primitive(PackedVector2Array([left[i],right[i],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
+			draw_primitive(PackedVector2Array([right[i],right[i+1],left[i+1]]),PackedColorArray([tint]),PackedVector2Array())
+		draw_polyline(left,Color("b9faff") if controls else Color("dce1dc"),2,true)
+		draw_polyline(right,Color("b9faff") if controls else Color("dce1dc"),2,true)
 	if not controls: return
 	if dragging and geometry_drag != "":
 		if geometry_drag == "width":
@@ -871,7 +995,7 @@ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> vo
 		else:
 			draw_polyline(line,Color("f6bf69"),3,true)
 
-	for endpoint: int in [0,points.size()-1]:
+	for endpoint: int in ([] if piece.kind == "spline" else [0,points.size()-1]):
 		draw_line(left[endpoint],right[endpoint],Color.WHITE,2,true)
 		draw_circle(line[endpoint],13,Color("f2f6f7"))
 		draw_circle(line[endpoint],13,Color("163541"),false,2,true)
@@ -881,6 +1005,7 @@ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> vo
 		else:
 			for axis: Vector2 in [Vector2.RIGHT,Vector2.DOWN]:
 				_draw_handle_arrow(line[endpoint],axis,7,Color("163541"))
+	if piece.kind == "spline": _draw_spline_controls(piece)
 	for key: String in geometry_keys(piece):
 		var handle: Vector2 = to_screen(_geometry_handle(piece,key))
 		if piece.kind == "bridge": draw_line(to_screen(_geometry_anchor(piece,key)),handle,Color("b9faff"),1.5,true)
@@ -957,9 +1082,14 @@ func _draw_handle_arrow(center: Vector2, axis: Vector2, reach: float, color: Col
 
 func piece_accept_rect(piece: Dictionary) -> Rect2:
 	var points: PackedVector2Array = RoadPieces.samples(piece)
+	if piece.kind == "spline":
+		var nodes: PackedVector2Array = SplineRoad.points(piece)
+		var tangent: Vector2 = SplineRoad.tangent(nodes,2).normalized()
+		return Rect2(to_screen(nodes[2]-tangent.orthogonal()*(float(piece.width)*0.5+6.0))-Vector2(28,28),Vector2(56,56))
 	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
 
 func geometry_keys(piece: Dictionary) -> Array[String]:
+	if piece.kind == "spline": return []
 	if piece.kind == "straight": return ["width"]
 	if piece.kind == "taper": return ["width","narrow_width","length"]
 	if piece.kind == "curve": return ["width","curvature","angle"]
@@ -1095,29 +1225,17 @@ func _paint_position(point: Vector2) -> Array:
 	return [p.x,p.y]
 
 func _object_run(start: Vector2, finish: Vector2) -> Array:
-	if not free_run: return RoadPieces.barrier_run(document,start,finish,stamp_kind)
+	if not free_run:
+		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale)
+		if result.is_empty() and not _run_edge_hint:
+			_run_edge_hint = true
+			hint_changed.emit("Object limit reached. Remove an object to continue." if document.objects.size() >= 96 else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")
+		return result
 	return _path_run(PackedVector2Array([start,finish]))
 
 func _path_run(path: PackedVector2Array) -> Array:
-	var result: Array = []
-	if path.size()<2: return result
-	var length: float = 0
-	for i: int in range(path.size()-1): length+=path[i].distance_to(path[i+1])
-	var spacing: float = CreatorObjects.dimensions(stamp_kind).x
-	if stamp_kind=="cone": spacing=2.0
-	var desired: int = maxi(1,ceili(length/spacing))
-	var count: int = mini(96-document.objects.size(),desired)
-	var segment: int = 0
-	var traversed: float = 0
-	for i: int in range(count):
-		var distance: float = length*(i+0.5)/desired
-		while segment<path.size()-2 and traversed+path[segment].distance_to(path[segment+1])<distance:
-			traversed+=path[segment].distance_to(path[segment+1]); segment+=1
-		var tangent: Vector2 = path[segment+1]-path[segment]
-		var p: Vector2 = path[segment].lerp(path[segment+1],clampf((distance-traversed)/maxf(0.001,tangent.length()),0,1))
-		p=p.clamp(Vector2(-110,-110),Vector2(110,110))
-		result.append({"kind":stamp_kind,"position":[p.x,p.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360)})
-	return result
+	var fitted: PackedVector2Array = ObjectRuns.smooth(path) if run_shape == "curve" else path
+	return ObjectRuns.build(fitted,stamp_kind,stamp_scale,96-document.objects.size())
 
 
 func connect_nearby() -> void:

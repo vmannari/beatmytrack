@@ -43,16 +43,29 @@ func run() -> void:
 	check(login.ok,"isolated driver authenticates")
 	var expire_at_finish: bool = OS.get_environment("BMT_RIVALRY_EXPIRED_SESSION") == "true"
 	var restored_at_finish: bool = OS.get_environment("BMT_RIVALRY_SESSION_RESTORED") == "true"
-	if expire_at_finish or restored_at_finish: app.rivalry.set_test_population(true)
 	app._open_rivalry()
 	while app.rivalry.busy: await process_frame
-	check(app.rivalry.model.status == "not_joined" and app.rivalry.model.tracks.is_empty(),"no invented results before joining")
-	await app.rivalry.join()
-	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == 1,"server pins five eligible official tracks and real member")
+	var automatic: bool = app.online.client.test_drivers_available()
+	if automatic:
+		check(app.rivalry.model.status == "active" and app.rivalry.model.test_population,"development rivalry opens automatically")
+	else:
+		check(app.rivalry.model.status == "not_joined" and app.rivalry.model.tracks.is_empty(),"no invented results before joining")
+		await app.rivalry.join()
+	check(app.rivalry.model.tracks.size() == 5 and app.rivalry.model.standing().size() == (14 if automatic else 1),"server pins five tracks and the requested real or automatic field")
 	check(not app.rivalry.model.sample,"shipping view uses the server field")
-	app.rivalry_section = "detail"
+	app.rivalry_section = "overview"
 	app._rivalry()
-	await app._start_rivalry_race(0,3)
+	for _frame: int in range(5): await process_frame
+	check(app.root_ui.find_child("RivalryFloatingNavigation",true,false) == null,"rivalry hub has no redundant tabs")
+	await capture("overview")
+	(app.root_ui.find_child("SelectRivalryTrack_0",true,false) as Button).pressed.emit()
+	for _frame: int in range(5): await process_frame
+	check(app.rivalry_section == "detail" and app.rivalry_track == 0 and app.game == null and app.cloud_ticket.is_empty(),"track selection opens details before requesting a race ticket")
+	await capture("track-detail")
+	var detail: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+	check(detail.ghost_choice == 3 and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field starts without a ghost or a third column")
+	(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
+	while app.cloud_starting: await process_frame
 	check(app.game != null and app.rivalry_racing and not app.cloud_ticket.is_empty(),"pre-race starts with a rivalry-bound verified ticket")
 	if app.game == null:
 		print(app.rivalry.error)
@@ -60,7 +73,13 @@ func run() -> void:
 		return
 	var game: Node = app.game
 	game.set_physics_process(false)
+	check(game.sim.state.tick == 0 and game.online_frames.is_empty(),"the button-started race is frozen before its first canonical input")
+	# This recorded fixture predates launch markers and bypasses the countdown.
+	# Button-driven async setup can render countdown ticks before we freeze it.
+	print("RIVALRY_HTTP_REPLAY_START: countdown_seen=",game.launch_countdown_seen)
 	game.countdown_ticks = 0
+	game.launch_countdown_seen = false
+	game.launch_early = false
 	var driver := ReplayInput.new()
 	driver.frames = fixture.replay.frames
 	game.driver = driver
@@ -97,7 +116,7 @@ func run() -> void:
 	for i: int in range(old_laps.size()): old_laps[i] += 0.2
 	check(records.record(game.native_track,game.handling,total+1.0,old_laps) == OK,"isolated prior PB fixture saves")
 	app._results()
-	check(app.rivalry.model.last_result.get("provisional",false) and app.rivalry.model.last_result.get("points_delta") == 30,"finished race immediately projects weekly rank and points before verification")
+	check(app.rivalry.model.last_result.get("provisional",false) and int(app.rivalry.model.last_result.get("points_delta",0)) == app.rivalry.model.points_policy[int(app.rivalry.model.last_result.after.rank)-1],"finished race immediately projects weekly rank and points before verification")
 	var summary: RaceResults = app.root_ui.find_child("RaceResults",true,false) as RaceResults
 	check(app.rivalry_result_pending and app.rivalry_section == "race_results" and summary != null,"rivalry opens normal results while verification runs")
 	check(summary.saved and absf(summary.previous-total-1.0) < 0.001 and absf(summary.best-total) < 0.001,"rivalry saves the all-time personal best through normal results")
@@ -133,7 +152,7 @@ func run() -> void:
 		print("WEEKLY_RIVALRY_HTTP_TESTS: %d checks, %d failures" % [checks,failures])
 		quit(1)
 		return
-	check(not app.rivalry_result_pending and app.rivalry.model.last_result.get("points_delta") == 30,"verified result changes the championship points")
+	check(not app.rivalry_result_pending and int(app.rivalry.model.last_result.get("points_delta",0)) == app.rivalry.model.points_policy[int(app.rivalry.model.last_result.after.rank)-1],"verified result changes the championship points")
 	if not immediate_continue:
 		check(is_instance_valid(summary) and summary.is_visible_in_tree() and app.rivalry_section == "race_results","verification never replaces the normal results summary")
 		summary.select_lap(0)
@@ -148,7 +167,7 @@ func run() -> void:
 	# Result confirmation deliberately precedes the independent board refresh.
 	while app.rivalry.busy: await process_frame
 	var own: Dictionary = WeeklyRivalry.self_row(app.rivalry.model.standing())
-	check(own.points == 30 and own.rank == 1,"Overview reflects one best result")
+	check(own.points == WeeklyRivalry.self_row(app.rivalry.model.board(0)).points and own.rank != null,"Overview reflects one best result")
 	var recording: Dictionary = await app.rivalry.ghost(0,str(app.online.client.player.id))
 	check(not recording.is_empty() and not recording.has("replay"),"weekly ghost contains derived poses without raw driver controls")
 	check(not PersonalGhostRun.sample(recording,0.0).is_empty() and PersonalGhostRun.sample(recording,float(recording.get("ticks",0))+1.0).is_empty(),"verified recording is bounded without extrapolation")

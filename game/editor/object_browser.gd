@@ -4,6 +4,7 @@ signal asset_chosen(kind: String)
 signal mode_chosen(mode: String)
 signal size_chosen(scale: float)
 signal select_requested
+signal populate_requested
 var category: String = "All"
 var biome: String = "pine"
 var current: String = "tree"
@@ -18,6 +19,9 @@ var page: int = 0
 var previous: Button
 var next: Button
 var page_size: int = 6
+var _tile_key: Array = []
+var _detail_key: Array = []
+var _styled_category: String = ""
 
 func _ready() -> void:
 	name = "ObjectBrowser"
@@ -33,6 +37,10 @@ func _ready() -> void:
 			category = value; page = 0; _tiles())
 		button.name = "Category_"+value
 		categories.add_child(button)
+	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
+	populate.name = "PopulateObjects"
+	populate.custom_minimum_size = Vector2(100,44)
+	top.add_child(populate)
 	var paging := HBoxContainer.new()
 	column.add_child(paging)
 	previous=EditorButton.make("","back",func() -> void: page-=1; _tiles())
@@ -51,10 +59,13 @@ func _ready() -> void:
 	resized.connect(func() -> void:
 		var count: int=maxi(1,int((size.x-120)/110))
 		if count!=page_size: page_size=count; page=0; _tiles())
+	visibility_changed.connect(func() -> void:
+		if is_visible_in_tree(): _tiles())
 	options=PopupPanel.new()
 	options.name="ObjectOptionsPopup"
 	options.add_theme_stylebox_override("panel",EditorStyle.panel())
 	add_child(options)
+	preload("res://ui/popup_style.gd").watch(options)
 	details=VBoxContainer.new()
 	details.add_theme_constant_override("separation",8)
 	options.add_child(details)
@@ -87,14 +98,27 @@ func choose(kind: String) -> void:
 	refresh()
 
 func _tiles() -> void:
-	if tiles == null: return
-	_clear(tiles)
-	for button: Button in categories.get_children():
-		EditorStyle.apply(button,button.text==category)
+	if tiles == null or not is_visible_in_tree(): return
+	if _styled_category != category:
+		_styled_category = category
+		for button: Button in categories.get_children(): EditorStyle.apply(button,button.text==category)
 	var entries: Array = CreatorCatalog.filtered(category,"",recent,biome)
 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
 	previous.visible=page>0
 	next.visible=(page+1)*page_size<entries.size()
+	var key: Array = [biome,category if entries.is_empty() else ""]
+	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
+	if key == _tile_key:
+		for tile: Node in tiles.get_children():
+			if not tile is Button: continue
+			var family: Array = CreatorCatalog.family(tile.name.trim_prefix("Asset_"))
+			var chosen: bool = not family.is_empty() and current in family[3]
+			if tile.button_pressed == chosen: continue
+			tile.set_pressed_no_signal(chosen)
+			EditorStyle.card(tile,chosen)
+		return
+	_tile_key = key
+	_clear(tiles)
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
 		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome))
@@ -103,6 +127,9 @@ func _tiles() -> void:
 func refresh() -> void:
 	if details == null: return
 	_tiles()
+	var key: Array = [current,placement,stamp_scale,biome]
+	if key == _detail_key: return
+	_detail_key = key
 	_clear(details)
 	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
 	behavior.name = "ObjectBehavior"

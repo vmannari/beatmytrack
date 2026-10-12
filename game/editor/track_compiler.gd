@@ -2,7 +2,7 @@ class_name TrackCompiler
 extends RefCounted
 ## Pure bounded compiler; native surface cells drive both simulation and art.
 
-const VERSION: String = "creator-compiler-20"
+const VERSION: String = "creator-compiler-23"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
 
@@ -41,9 +41,10 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 	var road_widths: PackedFloat32Array = road_samples.widths
 	var sections: Array[Dictionary] = []
 	var bridges: Array = []
+	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
 	for piece_index: int in range(document.pieces.size()):
 		var piece: Dictionary = document.pieces[piece_index]
-		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index)
+		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
 		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
 		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
 	var radius: float = widths[0] * 0.5

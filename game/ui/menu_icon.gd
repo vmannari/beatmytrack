@@ -4,19 +4,25 @@ extends RefCounted
 
 static var cache: Dictionary = {}
 
-static func texture(kind: String) -> Texture2D:
-	if cache.has(kind): return cache[kind]
+static func texture(kind: String, large: bool = false) -> Texture2D:
+	var cache_key: String = kind+"/large" if large else kind
+	if cache.has(cache_key): return cache[cache_key]
 	var biome_svg: String = _biome_svg(kind)
 	if not biome_svg.is_empty():
 		var biome_image := Image.new()
 		if biome_image.load_svg_from_string(biome_svg,4.0) != OK: return null
 		biome_image.generate_mipmaps()
 		var biome_texture := ImageTexture.create_from_image(biome_image)
-		cache[kind] = biome_texture
+		cache[cache_key] = biome_texture
 		return biome_texture
 	var paths: Dictionary = {
+		"warning":"<path fill='white' stroke='none' d='M10.3 3.1Q12 .3 13.7 3.1L23 19.2Q24.5 22 21.4 22H2.6Q-.5 22 1 19.2Z'/><path stroke='#080f16' stroke-width='2.8' d='M12 8v6'/><circle cx='12' cy='18' r='1.4' fill='#080f16' stroke='none'/>",
+		"care":"<path d='M12 2C10 6 5 11 5 15a7 7 0 0 0 14 0c0-4-5-9-7-13Z'/><path d='M9 15c0 2 1 3 3 3'/>",
+		"car":"<path d='m4 11 2-6h12l2 6M3 11h18v7H3Zm2 7v3m14-3v3M6 14h2m8 0h2'/>",
+		"share":"<circle cx='18' cy='4' r='3'/><circle cx='5' cy='12' r='3'/><circle cx='18' cy='20' r='3'/><path d='m8 10 7-4m-7 8 7 4'/>",
 		"controller":"<path d='M7 7h10c3 0 5 12 3 13-2 1-4-4-5-4H9c-1 0-3 5-5 4C2 19 4 7 7 7Z'/><path d='M8 10v5m-2.5-2.5h5M16 11h.1M18 14h.1'/>",
 		"phone":"<rect x='6' y='2' width='12' height='20' rx='2'/><path d='M10 5h4M11 19h2'/>",
+		"headphones":"<path d='M4 13V11a8 8 0 0 1 16 0v2'/><rect x='3' y='12' width='4' height='9' rx='2'/><rect x='17' y='12' width='4' height='9' rx='2'/>",
 		"check":"<path d='m4 12 5 5L20 6'/>",
 		"resume":"<path d='M4 9a8 8 0 1 1 0 7M4 3v6h6'/>",
 		"restart":"<path d='M16 5a8 8 0 1 0 4 8M16 1v5h-5'/>",
@@ -56,10 +62,10 @@ static func texture(kind: String) -> Texture2D:
 	}
 	var svg: String = "<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 24 24'><g fill='none' stroke='white' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>%s</g></svg>" % paths.get(kind,paths.home)
 	var raster := Image.new()
-	if raster.load_svg_from_string(svg,4.0 if kind == "delete" else 1.0) != OK: return null
-	if kind == "delete": raster.generate_mipmaps()
+	if raster.load_svg_from_string(svg,8.0 if large or kind == "warning" else 4.0 if kind == "delete" else 1.0) != OK: return null
+	if large or kind in ["delete","warning"]: raster.generate_mipmaps()
 	var result := ImageTexture.create_from_image(raster)
-	cache[kind] = result
+	cache[cache_key] = result
 	return result
 
 static func _biome_svg(kind: String) -> String:

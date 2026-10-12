@@ -60,6 +60,9 @@ func run() -> void:
 
 
 func _show_document(doc: Dictionary) -> void:
+	app.canvas = null # Fresh fixtures are not navigation within the old document.
+	app.editor_pending_tools.clear() # Each scenario installs a fresh document.
+	app.editor_issue_cursor = -1
 	doc.id = "workflow_track"
 	app.set("document",doc)
 	app.set("editor_view",{})
@@ -68,6 +71,10 @@ func _show_document(doc: Dictionary) -> void:
 	app.call("_show_screen","create")
 	await process_frame
 	await process_frame
+	await _wait_preview()
+	var scene_deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_world._building and Time.get_ticks_msec()<scene_deadline: await process_frame
+	check(not app.editor_world._building,"opened editor scenery completes within deadline")
 
 
 func _blank_and_connect() -> void:
@@ -319,7 +326,7 @@ func _practice_spawn_checks() -> void:
 	doc.pieces = [curve]
 	await _show_document(doc)
 	(app.get("test_button") as Button).pressed.emit()
-	await process_frame
+	await _wait_practice()
 	var game: Node = app.get("game")
 	check(game != null,"zero-lead-in tight bend can enter untimed practice")
 	if game != null:
@@ -433,7 +440,7 @@ func _objects_and_issues() -> void:
 	var before_practice: Dictionary = doc.duplicate(true)
 	var compiled_before: NativeTrack = TrackCompiler.compile(doc)
 	(app.get("test_button") as Button).pressed.emit()
-	await process_frame
+	await _wait_practice()
 	var game: Node = app.get("game")
 	check(game != null and bool(game.get("editor_test")), "a closed section circuit launches actual editor practice")
 	if game != null:
@@ -604,12 +611,20 @@ func _all_preview_handles() -> void:
 			if key == "curvature":
 				check(RoadPieces.end_pose(canvas.ghost) == RoadPieces.end_pose(before),"curvature keeps end position and heading for joined roads")
 				await _capture("curve-curvature")
+		if kind == "spline":
+			var nodes: PackedVector2Array = SplineRoad.points(canvas.ghost)
+			var point_handle: Vector2 = canvas.to_screen(nodes[2])
+			_touch(canvas,81,point_handle,true)
+			check(canvas.spline_point_drag == 2,"spline preview exposes its third interpolation point")
+			_drag(canvas,81,point_handle+Vector2(0,-20))
+			_touch(canvas,81,point_handle+Vector2(0,-20),false)
+			check(not SplineRoad.points(canvas.ghost)[2].is_equal_approx(nodes[2]),"spline preview point directly reshapes the fitted road")
 		canvas.confirm_piece()
 		canvas.selected_piece = 0
 		app.call("_build_editor_tools")
-		var start: Vector2 = canvas.to_screen(canvas._geometry_handle(canvas.document.pieces[0],"width"))
+		var start: Vector2 = canvas.spline_width_handle(canvas.document.pieces[0]) if kind == "spline" else canvas.to_screen(canvas._geometry_handle(canvas.document.pieces[0],"width"))
 		_touch(canvas,82,start,true)
-		check(canvas.geometry_drag == "width",kind+" committed section exposes the same direct controls")
+		check(canvas.geometry_drag == ("point_width" if kind == "spline" else "width"),kind+" committed section exposes the same direct controls")
 		_touch(canvas,82,start,false)
 		if kind == "curve":
 			var original: Dictionary = canvas.document.pieces[0].duplicate(true)
@@ -675,3 +690,9 @@ func _wait_preview() -> void:
 	var deadline: int = Time.get_ticks_msec()+15000
 	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.get("editor_preview_thread") == null,"background collision validation finishes within deadline")
+
+func _wait_practice() -> void:
+	var deadline: int = Time.get_ticks_msec()+15000
+	while app.game == null and Time.get_ticks_msec()<deadline: await process_frame
+	while is_instance_valid(app.race_loading) and Time.get_ticks_msec()<deadline: await process_frame
+	check(app.game != null and not is_instance_valid(app.race_loading),"editor practice preparation completes within deadline")

@@ -67,6 +67,9 @@ func _ready() -> void:
 	star.icon = MenuIcon.texture("star_filled" if favorite else "star")
 	star.tooltip_text = "Remove favorite" if favorite else "Save favorite"
 	star.custom_minimum_size = Vector2(48,48)
+	star.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	star.expand_icon = true
+	star.add_theme_constant_override("icon_max_width",24)
 	star.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	star.offset_left = -52
 	star.offset_right = -4

@@ -3,10 +3,18 @@ extends Control
 ## Presentation only: no access to simulation state, inputs or race clocks.
 const DROP_COUNT: int = 6
 const FLASH_DURATION: float = 2.2 # Upper bound; each strike ends at its last knot.
-const MIN_INTERVAL: float = 9.0
-const MAX_INTERVAL: float = 16.0
+const FLASH_PEAK_MAX: float = 0.90
+const FLASH_LIGHT_ENERGY: float = 20.0
+const FLASH_OVERLAY_ALPHA: float = 0.55
+const MIN_INTERVAL: float = 13.5
+const MAX_INTERVAL: float = 24.0
+const RAIN_LEVEL: float = 0.28
+const THUNDER_LEVEL: float = 1.0
+const RUMBLE_LEVEL: float = 0.30
+const THUNDER_REPLACE_FADE_SECONDS: float = 0.18
+const RAIN_FADE_SECONDS: float = 0.75
 var elapsed: float = 0.0
-var until_lightning: float = 6.0
+var until_lightning: float = 9.0
 var until_thunder: float = -1.0
 var flash_age: float = FLASH_DURATION
 var flash_profile := PackedVector2Array()
@@ -16,7 +24,13 @@ var light: DirectionalLight3D
 var base_light_energy: float = 0.5
 var rng := RandomNumberGenerator.new()
 var rain_audio: AudioStreamPlayer
+var rain_gain: float = 0.0
+var rumble_audio: AudioStreamPlayer
+var weather_paused: bool = false
+var suspended: bool = false
 var thunder_audio: AudioStreamPlayer
+var thunder_tail_audio: AudioStreamPlayer
+var thunder_tail_gain: float = 0.0
 var lens_drops: Array[ColorRect] = []
 var wet_glass_material: ShaderMaterial
 const TRAIL_STEP: float = 0.02
@@ -54,29 +68,58 @@ func _ready() -> void:
 	_update_lens()
 	rng.randomize()
 	rain_audio = AudioStreamPlayer.new()
-	rain_audio.stream = preload("res://assets/audio/storm_rain.wav")
-	rain_audio.volume_db = -24.0
+	rain_audio.name = "BackgroundRain"
+	rain_audio.bus = "Vehicle"
+	rain_audio.volume_linear = 0.0
+	var rain_stream: AudioStreamWAV = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/storm_rain_recorded.wav"))
+	rain_audio.stream = rain_stream
 	add_child(rain_audio)
-	rain_audio.finished.connect(rain_audio.play)
-	rain_audio.play()
+	rumble_audio = AudioStreamPlayer.new()
+	rumble_audio.name = "DistantThunder"
+	rumble_audio.bus = "Vehicle"
+	rumble_audio.volume_linear = 0.0
+	rumble_audio.stream = PcmAudioLoop.prepare(preload("res://assets/audio/storm_rumble.wav"))
+	add_child(rumble_audio)
 	thunder_audio = AudioStreamPlayer.new()
+	thunder_audio.name = "Thunder"
+	thunder_audio.bus = "Vehicle"
 	thunder_audio.stream = preload("res://assets/audio/storm_thunder.wav")
-	thunder_audio.volume_db = -12.0
+	thunder_audio.volume_linear = THUNDER_LEVEL
 	add_child(thunder_audio)
+	thunder_tail_audio = AudioStreamPlayer.new()
+	thunder_tail_audio.name = "ThunderTail"
+	thunder_tail_audio.bus = "Vehicle"
+	thunder_tail_audio.stream = thunder_audio.stream
+	thunder_tail_audio.volume_linear = 0.0
+	add_child(thunder_tail_audio)
 	if light != null: base_light_energy = light.light_energy
 
-func advance(delta: float, paused: bool) -> void:
-	rain_audio.stream_paused = paused
-	thunder_audio.stream_paused = paused
-	if paused: return
+func advance(delta: float, paused: bool, finished: bool = false) -> void:
+	weather_paused = paused
+	rain_audio.stream_paused = paused or suspended
+	rumble_audio.stream_paused = paused or suspended
+	thunder_audio.stream_paused = paused or suspended
+	thunder_tail_audio.stream_paused = paused or suspended
+	if paused or suspended: return
+	if thunder_tail_gain>0.0:
+		thunder_tail_gain = move_toward(thunder_tail_gain,0.0,THUNDER_LEVEL*delta/THUNDER_REPLACE_FADE_SECONDS)
+		thunder_tail_audio.volume_linear = thunder_tail_gain
+		if thunder_tail_gain<=0.0: thunder_tail_audio.stop()
+	rain_gain = move_toward(rain_gain,0.0 if finished else RAIN_LEVEL,RAIN_LEVEL*delta/RAIN_FADE_SECONDS)
+	rain_audio.volume_linear = rain_gain
+	if rain_gain<=0.0: rain_audio.stop()
+	elif not rain_audio.playing and DisplayServer.get_name()!="headless": rain_audio.play()
+	# Follow the existing weather fade without consuming the strike RNG or voices.
+	rumble_audio.volume_linear = RUMBLE_LEVEL*rain_gain/RAIN_LEVEL
+	if rain_gain<=0.0: rumble_audio.stop()
+	elif not rumble_audio.playing and DisplayServer.get_name()!="headless": rumble_audio.play()
 	elapsed = fmod(elapsed+delta,3600.0)
 	RenderingServer.global_shader_parameter_set("storm_ripple_time",elapsed)
 	flash_age += delta
 	if until_thunder >= 0.0:
 		until_thunder -= delta
 		if until_thunder < 0.0:
-			thunder_audio.pitch_scale = rng.randf_range(0.90,1.04)
-			thunder_audio.play()
+			_start_thunder()
 			thunder_count += 1
 	until_lightning -= delta
 	if until_lightning <= 0.0:
@@ -85,9 +128,24 @@ func advance(delta: float, paused: bool) -> void:
 		strikes += 1
 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
 		until_thunder = rng.randf_range(1.2,2.8)
-	if light != null: light.light_energy = base_light_energy+flash_strength()*13.0
+	if light != null: light.light_energy = base_light_energy+flash_strength()*FLASH_LIGHT_ENERGY
 	_update_lens()
 	queue_redraw()
+
+func _start_thunder() -> void:
+	# Fresh playback from the clap for every cue; fade the previous one out.
+	# Two reusable voices bound even rapid replacements without stacking tails.
+	var previous: AudioStreamPlayer = thunder_audio
+	var fresh: AudioStreamPlayer = thunder_tail_audio
+	fresh.stop()
+	fresh.stream_paused = false
+	fresh.volume_linear = THUNDER_LEVEL
+	fresh.pitch_scale = rng.randf_range(0.90,1.04)
+	fresh.play(0.0)
+	thunder_audio = fresh
+	thunder_tail_audio = previous
+	thunder_tail_gain = THUNDER_LEVEL if previous.playing else 0.0
+	previous.volume_linear = thunder_tail_gain
 
 func flash_strength() -> float:
 	if flash_profile.is_empty() or flash_age >= flash_profile[-1].x: return 0.0
@@ -99,14 +157,14 @@ func flash_strength() -> float:
 	return 0.0
 
 func _build_flash_profile() -> void:
-	# Sample once per strike. Broad, shallow swells share one thunder event
+	# Sample once per strike. Strong, broad swells share one thunder event
 	# and the paused presentation clock, without rapid bright/dark flicker.
 	flash_profile = PackedVector2Array([Vector2.ZERO])
 	var cursor: float = rng.randf_range(0.16,0.24)
 	var pulses: int = rng.randi_range(2,3)
-	var peak: float = rng.randf_range(0.24,0.32)
+	var peak: float = rng.randf_range(0.72,FLASH_PEAK_MAX)
 	for pulse: int in range(pulses):
-		if pulse > 0: peak = clampf(peak*rng.randf_range(0.88,1.10),0.18,0.32)
+		if pulse > 0: peak = clampf(peak*rng.randf_range(0.88,1.10),0.60,FLASH_PEAK_MAX)
 		flash_profile.append(Vector2(cursor,peak))
 		cursor += rng.randf_range(0.18,0.28)
 		flash_profile.append(Vector2(cursor,peak*rng.randf_range(0.65,0.82)))
@@ -124,7 +182,7 @@ func _draw() -> void:
 		draw_line(Vector2(x,y),Vector2(x-length*0.35,y+length),Color(0.72,0.83,0.90,0.27),1.0,true)
 	_draw_lens_trails()
 	var flash: float = flash_strength()
-	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*0.40))
+	if flash > 0.0: draw_rect(Rect2(Vector2.ZERO,size),Color(0.78,0.87,1.0,flash*FLASH_OVERLAY_ALPHA))
 
 # Analytic presentation paths keep stops, growth and trails independent of frame rate.
 func _lens_hash(value: float) -> float:
@@ -226,5 +284,18 @@ func _draw_lens_trails() -> void:
 
 func _exit_tree() -> void:
 	if is_instance_valid(rain_audio): rain_audio.stop()
+	if is_instance_valid(rumble_audio): rumble_audio.stop()
 	if is_instance_valid(thunder_audio): thunder_audio.stop()
+	if is_instance_valid(thunder_tail_audio): thunder_tail_audio.stop()
 	if is_instance_valid(light): light.light_energy = base_light_energy
+
+func _notification(what: int) -> void:
+	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:
+		suspended = true
+	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
+		suspended = false
+	else: return
+	if is_instance_valid(rain_audio): rain_audio.stream_paused = weather_paused or suspended
+	if is_instance_valid(rumble_audio): rumble_audio.stream_paused = weather_paused or suspended
+	if is_instance_valid(thunder_audio): thunder_audio.stream_paused = weather_paused or suspended
+	if is_instance_valid(thunder_tail_audio): thunder_tail_audio.stream_paused = weather_paused or suspended

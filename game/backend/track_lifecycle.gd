@@ -32,7 +32,7 @@ func _archived(id: String, directory: String = "") -> bool:
 func archive_draft(id: String) -> bool:
 	if not TrackDocument.valid_id(id): return false
 	var path: String = _archive_path(id)
-	if not FileAccess.file_exists(path) and not cloud._write(path,{"id":id,"scope":scope(),"key":cloud.client.new_idempotency_key(),"synced":false}):
+	if not FileAccess.file_exists(path) and not cloud._write(path,{"id":id,"scope":scope(),"key":cloud.client.new_operation_key(),"synced":false}):
 		last_error = "Deletion could not be saved. Free storage and retry; the draft is preserved."
 		return false
 	_pending.erase(id)
@@ -93,7 +93,7 @@ func defer_sync(document: Dictionary) -> void:
 	if document.is_empty() or _archived(str(document.id)): return
 	_pending[str(document.id)] = {"document":document.duplicate(true),"scope":scope(),"library":library}
 
-func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact", source: TrackLibrary = null, owner_scope: String = "") -> Dictionary:
+func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact", source: TrackLibrary = null, owner_scope: String = "", race_proof: Dictionary = {}) -> Dictionary:
 	if not TrackDocument.validate(document,false).is_empty():
 		last_error = "This draft could not be saved for synchronization."
 		return {}
@@ -127,15 +127,17 @@ func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact"
 		job = {"schema":"track-lifecycle-1","scope":operation_scope,"library_directory":storage.directory,
 			"document":document.duplicate(true),"fingerprint":TrackLibrary.draft_fingerprint(document),
 			"sequence":sequence,"expected_head":str(heads.get(str(document.id),"new")),
-			"upload_key":cloud.client.new_idempotency_key(),"publish_key":cloud.client.new_idempotency_key(),
-			"ticket_key":cloud.client.new_idempotency_key(),"state":"saved","created_at":int(Time.get_unix_time_from_system())}
+			"upload_key":cloud.client.new_operation_key(),"publish_key":cloud.client.new_operation_key(),
+			"ticket_key":cloud.client.new_operation_key(),"state":"saved","created_at":int(Time.get_unix_time_from_system())}
 		job.authoring_id = str(document.id)
 		job.predecessor = predecessor
 	if not frames.is_empty() and job.get("state") not in ["ready","publishing","finishing","published"]:
 		var contract: Dictionary = _contract(document,vehicle)
 		var keep_ticket: bool = job.has("ticket") and job.get("contract") == contract and job.get("vehicle") == vehicle
-		var proof_name: String = job.fingerprint+"."+JSON.stringify(frames).sha256_text()+".proof.json"
-		if not cloud._write(path.get_base_dir().path_join(proof_name),{"frames":frames}):
+		var recording: Dictionary = {"frames":frames}
+		if not race_proof.is_empty(): recording.race_proof = race_proof
+		var proof_name: String = job.fingerprint+"."+JSON.stringify(recording).sha256_text()+".proof.json"
+		if not cloud._write(path.get_base_dir().path_join(proof_name),recording):
 			last_error = "The completed test could not be saved. Free storage, then retry saving it."
 			return {}
 		job.proof_file = proof_name
@@ -143,7 +145,7 @@ func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact"
 		job.contract = contract
 		if not keep_ticket: job.erase("ticket")
 		job.erase("failure")
-		if not keep_ticket: job.ticket_key = cloud.client.new_idempotency_key()
+		if not keep_ticket: job.ticket_key = cloud.client.new_operation_key()
 		job.state = "saved"
 	if not _save(path,job,not frames.is_empty()): return {}
 	if not frames.is_empty() and not cloud._write(path+".bak",job):
@@ -192,6 +194,7 @@ func ready_to_publish(document: Dictionary) -> bool:
 
 func can_retry(document: Dictionary) -> bool:
 	var job: Dictionary = status_for(document)
+	if job.get("publication_error") == "NO_PUBLISHING_SLOTS": return true
 	if not _own_predecessor(job).is_empty(): return true
 	var remote: Dictionary = job.get("remote",{})
 	if job.has("ticket"):
@@ -334,7 +337,8 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 			job.ticket = issued.data
 			if not _save(path,job): return
 		var replay: Dictionary = cloud._read(path.get_base_dir().path_join(str(job.proof_file)))
-		if not replay.get("frames") is Array or not cloud.queue_run(job.ticket,replay.frames):
+		if replay.has("race_proof"): job.ticket["_race_proof"] = replay.race_proof
+		if not replay.get("frames") is Array or not await cloud.queue_run_async(job.ticket,replay.frames):
 			last_error = "The completed test is saved but could not be queued. Retry after freeing storage."
 			return
 		await cloud.flush_outbox()
@@ -343,7 +347,7 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		if upload.has("failure"):
 			if not upload.has("run_id") and int(upload.get("rejection_status",0)) == 410:
 				job.erase("ticket")
-				job.ticket_key = cloud.client.new_idempotency_key()
+				job.ticket_key = cloud.client.new_operation_key()
 			else: job.failure = "Test verification needs attention: "+str(upload.failure)
 	else:
 		job.state = "draft"
@@ -353,7 +357,15 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		if not _save(path,job): return
 		var published: Dictionary = await cloud.client.request_api("/track-versions/"+str(job.version_id)+"/publish",
 			HTTPClient.METHOD_POST,{},str(job.publish_key),true)
-		if scope() != owner_scope or not published.ok: return
+		if scope() != owner_scope: return
+		if not published.ok:
+			if published.get("error") == "NO_PUBLISHING_SLOTS":
+				job.state = "ready"
+				job.publication_error = "NO_PUBLISHING_SLOTS"
+				job.failure = "No publishing slots left. Add slots, then Retry. Your verified draft is saved."
+				last_error = job.failure
+				_save(path,job)
+			return
 		job.receipt = published.data
 		job.state = "finishing"
 		if _save(path,job): await _finalize(path,job,owner_scope)
@@ -423,7 +435,10 @@ func retry(document: Dictionary) -> void:
 	var owner_scope: String = scope()
 	var retried: bool = false
 	var predecessor: Dictionary = _own_predecessor(job)
-	if not predecessor.is_empty():
+	if job.get("publication_error") == "NO_PUBLISHING_SLOTS":
+		job.erase("publication_error")
+		retried = true
+	elif not predecessor.is_empty():
 		var head: Dictionary = await cloud.client.request_api("/me/drafts/"+str(document.id).uri_encode()+"/head?upload_key="+str(predecessor.upload_key).uri_encode(),HTTPClient.METHOD_GET,{},"",true)
 		if scope() != owner_scope: return
 		if not head.ok or str(head.data.version_id) != str(predecessor.version_id) or str(head.data.get("acknowledged_upload_version_id","")) != str(predecessor.version_id):
@@ -432,11 +447,11 @@ func retry(document: Dictionary) -> void:
 			changed.emit()
 			return
 		job.expected_head = str(predecessor.version_id)
-		job.upload_key = cloud.client.new_idempotency_key() # A changed request must have a fresh operation identity.
+		job.upload_key = cloud.client.new_operation_key() # A changed request must have a fresh operation identity.
 		job.upload_attempted = true
 		retried = true
 	elif job.has("version_id") and job.get("remote",{}).get("validation",{}).get("retryable",false):
-		var response: Dictionary = await cloud.client.request_api("/me/track-versions/"+str(job.version_id)+"/retry-validation",HTTPClient.METHOD_POST,{},cloud.client.new_idempotency_key(),true)
+		var response: Dictionary = await cloud.client.request_api("/me/track-versions/"+str(job.version_id)+"/retry-validation",HTTPClient.METHOD_POST,{},cloud.client.new_operation_key(),true)
 		retried = response.ok
 	elif job.has("ticket"):
 		retried = await cloud.retry_upload(str(job.ticket.ticket_id))

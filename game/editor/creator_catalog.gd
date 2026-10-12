@@ -37,6 +37,7 @@ const ASSETS: Array = [
  ["barrel","Barrel","Props",["barrel"]],
  ["pallet","Pallet","Props",["pallet"]],
  ["parked_car","Parked vehicle","Props",["parked_car","van"]],
+ ["car_wreck","Car wreck","Props",["car_wreck"]],
  ["container","Container","Props",["container"]],
  ["shed","Garage","Buildings",["shed"]],
  ["hut","Marshal hut","Buildings",["hut"]],

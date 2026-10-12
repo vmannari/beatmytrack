@@ -6,8 +6,40 @@ signal changed
 var available: bool = false
 var track_stats: Dictionary = {}
 var records_by_rules_key: Dictionary = {}
+var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+var comparisons = preload("res://backend/comparison_preloader.gd").new()
+
+func configure_cache(path: String, scope: String) -> void:
+	if not snapshot_cache.scope.is_empty() and snapshot_cache.scope != scope: records_by_rules_key.clear()
+	snapshot_cache.configure(path,scope)
+	if is_instance_valid(comparisons.client): comparisons.configure(comparisons.client,path+".comparisons.json" if not path.is_empty() else "",scope)
+
+func prime_comparisons(client: Node, entries: Array, vehicle: String) -> void:
+	comparisons.configure(client,snapshot_cache.path+".comparisons.json" if not snapshot_cache.path.is_empty() else "",snapshot_cache.scope)
+	comparisons.prime(entries,vehicle)
+
+func remember_record(rules_key: String, snapshot: Dictionary) -> void:
+	records_by_rules_key[rules_key] = snapshot
+	if snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS:
+		var saved: Dictionary = snapshot.duplicate(true)
+		for metric: String in ["race","lap"]:
+			for marker: Dictionary in saved.get(metric+"_distribution",{}).get("markers",[]): marker.erase("color")
+		snapshot_cache.remember(rules_key,saved)
 
 func record_snapshot(rules_key: String) -> Dictionary:
+	if not records_by_rules_key.has(rules_key):
+		var cached: Dictionary = snapshot_cache.read(rules_key)
+		if not cached.is_empty():
+			# JSON numbers lose the typed GDScript array contract at rest.
+			for metric: String in ["race","lap"]:
+				var distribution: Dictionary = cached.get(metric+"_distribution",{})
+				var counts: Array[int] = []
+				for count: Variant in distribution.get("bins",[]): counts.append(int(count))
+				distribution.bins = counts
+				var edges: Array[float] = []
+				for edge: Variant in distribution.get("edges_ms",[]): edges.append(float(edge))
+				distribution.edges_ms = edges
+			records_by_rules_key[rules_key] = cached
 	return records_by_rules_key.get(rules_key,{}).duplicate(true)
 
 static func is_rival(value: Dictionary) -> bool:
@@ -17,6 +49,10 @@ static func is_rival(value: Dictionary) -> bool:
 	return previous >= 0 and current >= 0 and ceili(current/10.0) > ceili(previous/10.0)
 
 func query(catalog: TrackCatalog, state: Dictionary, favorites: Array, ratings: Dictionary = {}, raced_tracks: Array = [], now_seconds: int = -1) -> Array[Dictionary]:
+	if catalog.server_ordered:
+		var ordered: Array[Dictionary] = catalog.entries.filter(func(entry: Dictionary) -> bool: return entry.has("discovery_index"))
+		ordered.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.discovery_index) < int(b.discovery_index))
+		return ordered
 	var now: int = int(Time.get_unix_time_from_system()) if now_seconds < 0 else now_seconds
 	var local_state: Dictionary = state.duplicate(true)
 	local_state.sort = "name"

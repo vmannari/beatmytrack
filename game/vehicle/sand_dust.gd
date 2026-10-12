@@ -2,7 +2,7 @@ class_name SandDust
 extends Node3D
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-10"
+const PRESENTATION_VERSION: String = "desert-dust-21"
 const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
@@ -15,7 +15,7 @@ const MODE_MUD: int = 3
 const MODE_SMOKE: int = 4
 const MODE_WATER: int = 5
 
-const WINTER_PRESENTATION_VERSION: String = "winter-spray-3"
+const WINTER_PRESENTATION_VERSION: String = "winter-spray-4"
 var snow_chips: Array[GPUParticles3D] = []
 var snow_powder: Array[GPUParticles3D] = []
 var snow_impacts: Array[GPUParticles3D] = []
@@ -32,6 +32,27 @@ var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
 var track_width: float = 1.52 * HandlingConfig.BODY_SCALE
 var dust_emitters: Array[GPUParticles3D] = []
 var tyre_emitters: Array[GPUParticles3D] = []
+var deck_dust_emitters: Array[GPUParticles3D] = []
+var deck_tyre_emitters: Array[GPUParticles3D] = []
+var _deck_cloud_sources: Dictionary = {}
+var _bridge_count: int = 0
+var _bridge_theme: String = ""
+var _bridge_track: NativeTrack
+var _bridge_axes := PackedVector4Array()
+var _bridge_sizes := PackedVector4Array()
+var _bridge_roof := Vector4(CreatorBridges.UNDERPASS_CLEARANCE,0.42,0.65,0.0)
+# Explicit diagnostic comparison only; ordinary races retain bridge clipping.
+var bridge_clipping_enabled: bool = true:
+	set(value):
+		bridge_clipping_enabled = value
+		for emitter: GPUParticles3D in cloud_emitters(): _bind_cloud_bridge_material(emitter)
+# Compare physical puff height with the nearest opaque surface. Private A/B
+# control only; no car outline, radius, delayed opacity or altered geometry.
+var height_occlusion_enabled: bool = true:
+	set(value):
+		height_occlusion_enabled = value
+		for emitter: GPUParticles3D in cloud_emitters():
+			(emitter.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("dust_height_occlusion",value)
 var spray_emitters: Array[GPUParticles3D] = []
 var clipping_emitters: Array[GPUParticles3D] = []
 var mud_emitters: Array[GPUParticles3D] = []
@@ -85,31 +106,37 @@ func _set_desert_profile(enabled: bool) -> void:
 		grit.spread = 58.0 if enabled else 42.0
 		grit.scale_min = 0.40 if enabled else 0.72
 		grit.scale_max = 1.15 if enabled else 1.28
-	for emitter: GPUParticles3D in dust_emitters:
-		emitter.lifetime = 9.0 if enabled else 5.2
-		emitter.amount = 64 if enabled else 360
-		var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
-		if enabled:
-			emitter.draw_pass_1 = _cloud_mesh(Vector2(4.0,4.0),cloud_material)
-		else:
-			var quad := QuadMesh.new()
-			quad.size = Vector2(2.05,2.05)
-			quad.material = cloud_material
-			emitter.draw_pass_1 = quad
-		var material: ParticleProcessMaterial = emitter.process_material
-		material.color = Color("d3c19f") if enabled else Color(0.82,0.70,0.50)
-		material.color_ramp = _desert_alpha() if enabled else _alpha_ramp(0.48,MODE_DUST)
-		material.scale_curve = _scale_curve(MODE_DUST)
-		material.spread = 110.0 if enabled else 72.0
-		material.initial_velocity_max = 2.2 if enabled else 1.65
-		material.damping_min = 0.30 if enabled else 0.75
-		material.damping_max = 0.65 if enabled else 1.25
-		material.gravity = Vector3(0,0.24 if enabled else 0.06,0)
-		cloud_material.set_shader_parameter("billowing",enabled)
-		if enabled:
-			material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
-			(material.scale_curve as CurveTexture).curve.set_point_offset(1,0.025)
-		material.angular_velocity_curve = _rotation_from_growth(material.scale_curve) if enabled else null
+	for emitter: GPUParticles3D in dust_emitters+deck_dust_emitters:
+		_apply_desert_cloud(emitter,enabled)
+	for emitter: GPUParticles3D in deck_tyre_emitters: _sync_deck_cloud_process(emitter)
+
+
+func _apply_desert_cloud(emitter: GPUParticles3D, enabled: bool) -> void:
+	emitter.lifetime = 9.0 if enabled else 5.2
+	emitter.amount = 64 if enabled else 360
+	var cloud_material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
+	if enabled:
+		emitter.draw_pass_1 = _cloud_mesh(Vector2(4.0,4.0),cloud_material)
+	else:
+		var quad := QuadMesh.new()
+		quad.size = Vector2(2.05,2.05)
+		quad.material = cloud_material
+		emitter.draw_pass_1 = quad
+	var material: ParticleProcessMaterial = _deck_cloud_sources.get(emitter,emitter.process_material)
+	material.color = Color("d3c19f") if enabled else Color(0.82,0.70,0.50)
+	material.color_ramp = _desert_alpha() if enabled else _alpha_ramp(0.48,MODE_DUST)
+	material.scale_curve = _scale_curve(MODE_DUST)
+	material.spread = 110.0 if enabled else 72.0
+	material.initial_velocity_max = 2.2 if enabled else 1.65
+	material.damping_min = 0.30 if enabled else 0.75
+	material.damping_max = 0.65 if enabled else 1.25
+	material.gravity = Vector3(0,0.24 if enabled else 0.06,0)
+	cloud_material.set_shader_parameter("billowing",enabled)
+	if enabled:
+		material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
+		(material.scale_curve as CurveTexture).curve.set_point_offset(1,0.025)
+	material.angular_velocity_curve = _rotation_from_growth(material.scale_curve) if enabled else null
+	if _deck_cloud_sources.has(emitter): _sync_deck_cloud_process(emitter)
 
 
 func _bounded_growth(values: Array[float]) -> CurveTexture:
@@ -155,13 +182,14 @@ func clear() -> void:
 	snow_last_burst = -1000
 	snow_burst_count = 0
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_drops:
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + deck_dust_emitters + deck_tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_drops:
 		emitter.restart()
 		emitter.emitting = false
 
 
 func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
 	if track != null:
+		_bind_bridges(track)
 		_set_desert_profile(str(track.metadata.get("theme","pine")) == "desert")
 	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 0.8:
 		_stop()
@@ -188,6 +216,7 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 		var kind: int = SkidTrails.surface_at(track,world_position,state.track_elevated)
 		var side: float = -1.0 if wheel % 2 == 0 else 1.0
 		var on_sand: bool = kind == SAND_SURFACE
+		if on_sand and state.track_elevated: _ensure_deck_clouds()
 		var strengths: Vector2 = emission_strengths(state,frame,side,axle_values[wheel]) if on_sand else Vector2(-1.0,-1.0)
 		if on_sand and desert_profile:
 			strengths.x = maxf(strengths.x,lerpf(0.28,1.0,smoothstep(0.8,12.0,state.velocity.length())))
@@ -205,8 +234,11 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 				if not process.direction.is_equal_approx(local_fan): process.direction = local_fan
 		if winter:
 			_sample_snow(wheel,contacts[wheel],world_position,wheel_velocity,kind,state,frame,track)
-		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x)
-		_configure(tyre_emitters[wheel],world_position,wheel_velocity,strengths.x if desert_profile else -1.0)
+		_configure(dust_emitters[wheel],world_position,wheel_velocity,strengths.x if not state.track_elevated else -1.0)
+		_configure(tyre_emitters[wheel],world_position,wheel_velocity,strengths.x if desert_profile and not state.track_elevated else -1.0)
+		if not deck_dust_emitters.is_empty():
+			_configure(deck_dust_emitters[wheel],world_position,wheel_velocity,strengths.x if state.track_elevated else -1.0)
+			_configure(deck_tyre_emitters[wheel],world_position,wheel_velocity,strengths.x if desert_profile and state.track_elevated else -1.0)
 		if wheel < 2:
 			_configure(spray_emitters[wheel],world_position+Vector3(0,0.035,0),wheel_velocity,strengths.y)
 		var grass_strengths: Vector2 = grass_emission_strengths(state,frame,side,axle_values[wheel]) if kind == 1 else Vector2(-1.0,-1.0)
@@ -259,7 +291,7 @@ func _stop() -> void:
 	snow_previous_valid = false
 	snow_in_bank = false
 	last_strengths.fill(0.0)
-	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_drops:
+	for emitter: GPUParticles3D in dust_emitters + tyre_emitters + deck_dust_emitters + deck_tyre_emitters + spray_emitters + clipping_emitters + mud_emitters + smoke_emitters + snow_chips + snow_powder + snow_impacts + water_drops:
 		emitter.emitting = false
 		emitter.amount_ratio = 0.0
 
@@ -449,12 +481,18 @@ void fragment() {
 		shader.code = """
 shader_type spatial;
 render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
+#include "res://vehicle/dust_bridge_clip.gdshaderinc"
 uniform sampler2D dust_texture : source_color, filter_linear_mipmap;
 uniform float alpha_softness = 0.42;
 uniform bool billowing = false;
 uniform float intersection_fade = 0.45;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
+uniform bool dust_birth_height_available = false;
+uniform bool dust_height_occlusion = true;
+varying highp float dust_density_height;
 varying vec2 cloud_uv;
+varying highp vec3 dust_world;
+varying highp float dust_center_height;
 void vertex() {
 	// Each particle gets a stable engine-random speed magnitude at spawn.
 	// Separate direction from magnitude so none receive near-zero spin.
@@ -470,6 +508,9 @@ void vertex() {
 	}
 	vec3 particle_scale = vec3(length(MODEL_MATRIX[0].xyz),length(MODEL_MATRIX[1].xyz),length(MODEL_MATRIX[2].xyz));
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
+	dust_world = (INV_VIEW_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX,1.0)).xyz;
+	dust_center_height = dust_birth_height_available ? INSTANCE_CUSTOM.z : MODEL_MATRIX[3].y;
+	dust_density_height = MODEL_MATRIX[3].y;
 }
 void fragment() {
 	vec4 puff = texture(dust_texture,clamp(cloud_uv,vec2(0.0),vec2(1.0)));
@@ -491,7 +532,19 @@ void fragment() {
 #endif
 		vec4 scene = INV_PROJECTION_MATRIX * vec4(ndc,1.0);
 		alpha *= smoothstep(0.0,intersection_fade,VERTEX.z-scene.z/scene.w);
+		// A low-ramp upper puff can also project across a higher bridge roof.
+		vec4 opaque_world = INV_VIEW_MATRIX * scene;
+		// The billboard is a drawing proxy. Its upper corners must not place
+		// low tyre dust above taller solid surfaces. Use the actual particle
+		// trajectory height without shrinking or postponing the original cloud.
+		if (dust_height_occlusion) {
+			alpha *= 1.0-smoothstep(dust_density_height,dust_density_height+0.06,opaque_world.y/opaque_world.w);
+		}
+		alpha *= dust_bridge_surface_visibility(opaque_world.xyz/opaque_world.w,dust_center_height);
 	}
+	alpha *= dust_bridge_visibility_at_height(dust_world,dust_center_height);
+	vec3 camera_ray = PROJECTION_MATRIX[3].w>0.5 ? INV_VIEW_MATRIX[2].xyz : normalize(INV_VIEW_MATRIX[3].xyz-dust_world);
+	alpha *= dust_bridge_projected_visibility(dust_world,camera_ray,dust_center_height);
 	ALPHA = COLOR.a * alpha;
 }
 """
@@ -581,7 +634,7 @@ func _sample_snow(wheel: int, contact: Vector2, at: Vector3, velocity: Vector2, 
 	var moving: float = smoothstep(0.8,13.0,speed)
 	var drifting: float = smoothstep(0.07,0.35,absf(state.slip_angle()))
 	var chips: float = moving*(0.35+scrub*0.65) if loose else moving*(0.35+scrub*0.65)*drifting if kind == 8 else 0.0
-	var powder: float = chips*0.62 if loose else 0.0
+	var powder: float = chips*0.62 if loose else moving*(0.045+drifting*0.12) if kind == 8 else 0.0
 	var bank_height: float = 0.0 if state.track_elevated else track.snow_banks.height_at(contact)
 	var origin: Vector3 = at+Vector3.UP*(bank_height+0.04)
 	_configure(snow_chips[wheel],origin,velocity,chips)
@@ -636,3 +689,72 @@ func _sample_bank_impact(state: VehicleState, track: NativeTrack) -> void:
 	snow_in_bank = touching
 	snow_previous = state.position
 	snow_previous_valid = true
+
+func cloud_emitters() -> Array[GPUParticles3D]:
+	return dust_emitters+tyre_emitters+deck_dust_emitters+deck_tyre_emitters
+
+func _bind_bridges(track: NativeTrack) -> void:
+	var theme: String = str(track.metadata.get("theme",""))
+	if _bridge_track==track and _bridge_theme==theme: return
+	assert(track.creator_bridges.size()<=16,"Bridge dust requires the validated sixteen-span contract")
+	_bridge_track = track
+	_bridge_theme = theme
+	_bridge_count = track.creator_bridges.size()
+	_bridge_axes.resize(16)
+	_bridge_sizes.resize(16)
+	for index: int in range(_bridge_count):
+		var span: Dictionary = track.creator_bridges[index]
+		var angle: float = deg_to_rad(float(span.heading))
+		_bridge_axes[index] = Vector4(float(span.position[0]),-float(span.position[1]),cos(angle),-sin(angle))
+		_bridge_sizes[index] = Vector4(float(span.length),float(span.width)*0.5+CreatorBridges.RAIL,CreatorBridges.HEIGHT,CreatorBridges.RAMP)
+	_bridge_roof.w = 1.0 if theme=="desert" else 0.0
+	for emitter: GPUParticles3D in cloud_emitters(): _bind_cloud_bridge_material(emitter)
+
+func _bind_cloud_bridge_material(emitter: GPUParticles3D) -> void:
+	(emitter.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("dust_height_occlusion",height_occlusion_enabled)
+	var material: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
+	material.set_shader_parameter("dust_bridge_count",_bridge_count if bridge_clipping_enabled else 0)
+	if not _bridge_axes.is_empty():
+		material.set_shader_parameter("dust_bridge_axes",_bridge_axes)
+		material.set_shader_parameter("dust_bridge_sizes",_bridge_sizes)
+	material.set_shader_parameter("dust_bridge_roof",_bridge_roof)
+
+func _ensure_deck_clouds() -> void:
+	if not deck_dust_emitters.is_empty(): return
+	for wheel: int in range(4):
+		for bank: int in range(2):
+			var source: GPUParticles3D = dust_emitters[wheel] if bank==0 else tyre_emitters[wheel]
+			var emitter: GPUParticles3D = source.duplicate()
+			emitter.name = "Deck"+str(source.name)
+			emitter.process_material = source.process_material.duplicate()
+			_deck_cloud_sources[emitter] = emitter.process_material
+			emitter.draw_pass_1 = source.draw_pass_1.duplicate()
+			var material: ShaderMaterial = source.draw_pass_1.surface_get_material(0).duplicate()
+			material.set_shader_parameter("dust_upper_layer",true)
+			emitter.draw_pass_1.surface_set_material(0,material)
+			emitter.emitting = false
+			emitter.amount_ratio = 0.0
+			add_child(emitter)
+			_bind_cloud_bridge_material(emitter)
+			_sync_deck_cloud_process(emitter)
+			if bank==0: deck_dust_emitters.append(emitter)
+			else: deck_tyre_emitters.append(emitter)
+
+func _sync_deck_cloud_process(emitter: GPUParticles3D) -> void:
+	var source: ParticleProcessMaterial = _deck_cloud_sources[emitter]
+	var draw: ShaderMaterial = emitter.draw_pass_1.surface_get_material(0)
+	draw.set_shader_parameter("dust_birth_height_available",desert_profile)
+	if not desert_profile:
+		emitter.process_material = source
+		return
+	var process := ShaderMaterial.new()
+	process.shader = preload("res://vehicle/dust_birth_process.gdshader")
+	for uniform: Dictionary in process.shader.get_shader_uniform_list():
+		var key: String = str(uniform.name)
+		var value: Variant = RenderingServer.material_get_param(source.get_rid(),key)
+		if key=="color_ramp": value = source.color_ramp
+		elif key=="scale_curve": value = source.scale_curve
+		elif key=="angular_velocity_texture": value = source.angular_velocity_curve
+		elif key=="angular_curve_enabled": value = source.angular_velocity_curve!=null
+		if value!=null: process.set_shader_parameter(key,value)
+	emitter.process_material = process

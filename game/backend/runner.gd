@@ -2,19 +2,30 @@ extends SceneTree
 ## Data-only process boundary around unchanged game simulation and compiler.
 const MAX_FRAMES: int = 216000
 const REPLAY_SCHEMA: String = "bmt-replay-v1"
+const VerificationTrack = preload("res://backend/verification_track.gd")
 var output_path: String = ""
+var service_dir: String = ""
+var job_token: String = ""
+var _track_cache: Dictionary = {}
+var _track_lru: Array[String] = []
 
 func _initialize() -> void:
 	call_deferred("run")
 
 func respond(result: Dictionary, error: String = "") -> void:
-	var file := FileAccess.open(output_path, FileAccess.WRITE)
+	var target: String = output_path+".pending" if not service_dir.is_empty() else output_path
+	var file := FileAccess.open(target, FileAccess.WRITE)
 	if file == null:
 		quit(3)
 		return
-	file.store_string(JSON.stringify({"ok":error.is_empty(),"result":result} if error.is_empty() else {"ok":false,"error":error}))
+	var response: Dictionary = {"ok":error.is_empty(),"result":result} if error.is_empty() else {"ok":false,"error":error}
+	if not service_dir.is_empty():
+		response.job_token = job_token
+		response.engine_pid = OS.get_process_id()
+	file.store_string(JSON.stringify(response))
 	file.close()
-	quit(0 if error.is_empty() else 2)
+	if service_dir.is_empty(): quit(0 if error.is_empty() else 2)
+	elif DirAccess.rename_absolute(target,output_path) != OK: quit(3)
 
 func manifest() -> Dictionary:
 	var vehicles: Dictionary = {}
@@ -31,6 +42,30 @@ func manifest() -> Dictionary:
 		"physics_version":VehicleSimulation.PHYSICS_VERSION,"compiler_version":TrackCompiler.VERSION,
 		"track_schema":TrackDocument.SCHEMA,"replay_schema":REPLAY_SCHEMA,"tick_rate":VehicleSimulation.TICK_RATE,
 		"laps":RaceRules.LAPS,"max_frames":MAX_FRAMES,"vehicles":vehicles,"verifier_version":"canonical-verifier-1"}
+
+func race_geometry(track: NativeTrack, doc: Dictionary, info: Dictionary) -> Dictionary:
+	# Static track geometry only. Race verification never executes the simulation.
+	var session := TrackSession.new()
+	session._configure(track)
+	var gates: Array = []
+	for index: int in range(session._centers.size()):
+		gates.append(_gate(session._centers[index],session._directions[index],session._widths[index],int(session._layers[index])))
+	gates.append(_gate(track.finish_center,track.finish_forward,Vector2.ONE*(track.finish_half_width+1.5),int(session._finish_elevated)))
+	var start: Vector2 = track.spawn-track.finish_forward*maxf(0.0,(track.spawn-track.finish_center).dot(track.finish_forward)+3.0)
+	var creator := Vector2(doc.start_line.position[0],doc.start_line.position[1])
+	var layer: bool = track.elevated_at(start,track.nearest_route(start))
+	var creator_layer: bool = track.elevated_at(creator,track.nearest_route(creator))
+	if not track.creator_bridges.is_empty():
+		layer = CreatorBridges.initial_layer(track.creator_bridges,start,track.spawn_heading)
+		creator_layer = CreatorBridges.initial_layer(track.creator_bridges,creator,PI*0.5-deg_to_rad(float(doc.start_line.heading)))
+	var speeds: Dictionary = {}
+	for id: String in VehicleCatalog.IDS: speeds[id] = VehicleCatalog.config(id).maximum_speed
+	return {"gates":gates,"start":[start.x,start.y,int(layer)],"creator_start":[creator.x,creator.y,int(creator_layer)],
+		"maximum_speed":speeds,"extent":[track.half_extent.x,track.half_extent.y],"manifest":info}
+
+func _gate(center: Vector2, direction: Vector2, widths: Vector2, layer: int) -> Array:
+	var side: Vector2 = direction.orthogonal()
+	return [direction.x,direction.y,-center.dot(direction),side.x,side.y,-center.dot(side),-widths.x,widths.y,layer]
 
 func number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
@@ -78,6 +113,19 @@ func safe_shape(doc: Variant) -> bool:
 	return true
 
 func compile_track(doc: Dictionary) -> Dictionary:
+	var key: String = JSON.stringify(doc,"",true).sha256_text()
+	if _track_cache.has(key):
+		_track_lru.erase(key)
+		_track_lru.append(key)
+		return _track_cache[key]
+	var result: Dictionary = _compile_track_uncached(doc)
+	if not result.has("error") and not service_dir.is_empty():
+		_track_cache[key] = result
+		_track_lru.append(key)
+		while _track_lru.size() > 8: _track_cache.erase(_track_lru.pop_front())
+	return result
+
+func _compile_track_uncached(doc: Dictionary) -> Dictionary:
 	if not safe_shape(doc): return {"error":"Malformed creator document structure"}
 	if JSON.stringify(doc).to_utf8_buffer().size() > TrackDocument.MAX_BYTES: return {"error":"Creator document exceeds 512 KiB"}
 	var errors: Array[String] = TrackDocument.validate(doc)
@@ -104,6 +152,7 @@ func compile_track(doc: Dictionary) -> Dictionary:
 	# trig results changes JSON identity across operating systems (even tiny zeros).
 	var track: NativeTrack = TrackCompiler.compile(doc)
 	if track == null: return {"error":"Track compilation failed"}
+	track = VerificationTrack.frozen(track)
 	var info: Dictionary = manifest()
 	info.track_content_hash = track.content_hash
 	info.route_length = track.route_length
@@ -152,7 +201,7 @@ func initial_simulation(track: NativeTrack, vehicle: String) -> VehicleSimulatio
 		sim.state.track_elevated = CreatorBridges.initial_layer(track.creator_bridges,sim.state.position,sim.state.heading)
 	return sim
 
-func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dictionary, creator_test: bool = false, document: Dictionary = {}) -> void:
+func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dictionary, creator_test: bool = false, document: Dictionary = {}, capture_ghost: bool = true) -> void:
 	if creator_test and not replay.get("rewinds",[]).is_empty():
 		respond({},"Creator practice cannot contain rewinds"); return
 	var sim: VehicleSimulation = initial_simulation(track,vehicle)
@@ -167,7 +216,7 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 	if not creator_test: session._configure(track)
 	var ghost := PersonalGhostRun.new()
 	var bridge := BridgeElevation.new(track)
-	ghost.capture(sim.state,session,track,bridge,sim.config,true)
+	if capture_ghost: ghost.capture(sim.state,session,track,bridge,sim.config,true)
 	var lap_ticks: Array[int] = []
 	var last_lap_tick: int = 0
 	var events: Array = replay.get("rewinds",[])
@@ -176,6 +225,7 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 	var saved: Dictionary = {}
 	var next_event: int = 0
 	var offset: int = 0
+	var frame := DriveFrame.new()
 	for values: Array in replay.frames:
 		if offset == 0 and values.size() == 5: LaunchStart.initialize(sim.state,int(values[4]))
 		if sim.state.tick in targets:
@@ -187,7 +237,7 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 			var checkpoint: Dictionary = saved[int(event.to_tick)]
 			RewindHistory.restore(sim.state,checkpoint.state)
 			RewindHistory.restore(session,checkpoint.session)
-			ghost.branch(sim.state.tick)
+			if capture_ghost: ghost.branch(sim.state.tick)
 			lap_ticks.assign(checkpoint.laps)
 			last_lap_tick = int(checkpoint.last_lap)
 			for key: int in saved.keys():
@@ -197,7 +247,6 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 		if session.finished:
 			respond({},"Replay contains frames after the race finished")
 			return
-		var frame := DriveFrame.new()
 		frame.steer = int(values[0]); frame.throttle = int(values[1]); frame.brake = int(values[2])
 		frame.handbrake = int(values[3]) if values.size() >= 4 else 0
 		frame.launch_start = int(values[4]) if values.size() == 5 else 0
@@ -205,21 +254,42 @@ func verify(track: NativeTrack, replay: Dictionary, vehicle: String, info: Dicti
 		var previous_layer: int = int(sim.state.track_elevated)
 		sim.step(frame,track)
 		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
-		ghost.capture(sim.state,session,track,bridge,sim.config,session.finished)
+		if capture_ghost: ghost.capture(sim.state,session,track,bridge,sim.config,session.finished)
 		if session.completed_laps > lap_ticks.size():
 			lap_ticks.append(session.elapsed_ticks-last_lap_tick)
 			last_lap_tick = session.elapsed_ticks
 	if not session.finished or session.completed_laps != target_laps or lap_ticks.size() != target_laps:
 		respond({},"Replay does not complete the required laps and ordered road gates")
 		return
-	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if not creator_test else {}})
+	respond({"time_ticks":session.elapsed_ticks,"time_ms":roundi(session.race_time_seconds()*1000.0),"lap_ticks":lap_ticks,"manifest":info,"ghost":ghost.recording("race") if not creator_test and capture_ghost else {}})
 
 func run() -> void:
 	var input_path: String = ""
 	for arg: String in OS.get_cmdline_user_args():
 		if arg.begins_with("--input="): input_path = arg.trim_prefix("--input=")
 		elif arg.begins_with("--output="): output_path = arg.trim_prefix("--output=")
+		elif arg.begins_with("--service="): service_dir = arg.trim_prefix("--service=")
+	if not service_dir.is_empty():
+		await service_loop()
+		return
 	if input_path.is_empty() or output_path.is_empty(): quit(3); return
+	process_request(input_path)
+
+func service_loop() -> void:
+	output_path = service_dir.path_join("output.json")
+	var ready_path: String = service_dir.path_join("ready")
+	while true:
+		if FileAccess.file_exists(service_dir.path_join("stop")): quit(0); return
+		if FileAccess.file_exists(ready_path):
+			var ready := FileAccess.open(ready_path,FileAccess.READ)
+			if ready == null or ready.get_length() > 64: quit(3); return
+			job_token = ready.get_as_text()
+			ready.close()
+			DirAccess.remove_absolute(ready_path)
+			process_request(service_dir.path_join("input.json"))
+		await create_timer(0.01).timeout
+
+func process_request(input_path: String) -> void:
 	var file := FileAccess.open(input_path,FileAccess.READ)
 	if file == null or file.get_length() > 8388608: respond({},"Invalid request file"); return
 	var request: Variant = JSON.parse_string(file.get_as_text())
@@ -234,9 +304,9 @@ func run() -> void:
 		var prepared: Dictionary = compile_track(automatic.document)
 		if prepared.has("error"): respond({},prepared.error); return
 		respond({"document":automatic.document,"manifest":prepared.manifest}); return
-	if request.get("operation") not in ["track","run","creator_test"] or not request.get("document") is Dictionary:
+	if request.get("operation") not in ["track","race_geometry","diagnostic_replay","diagnostic_creator_test"] or not request.get("document") is Dictionary:
 		respond({},"Unsupported verification operation"); return
-	if request.operation in ["run","creator_test"]:
+	if request.operation in ["diagnostic_replay","diagnostic_creator_test"]:
 		var error: String = replay_error(request.get("replay"))
 		if not error.is_empty(): respond({},error); return
 		if not request.get("vehicle_id") is String or request.vehicle_id not in VehicleCatalog.IDS:
@@ -244,4 +314,5 @@ func run() -> void:
 	var compiled: Dictionary = compile_track(request.document)
 	if compiled.has("error"): respond({},compiled.error); return
 	if request.operation == "track": respond(compiled.manifest); return
-	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest,request.operation == "creator_test",request.document)
+	if request.operation == "race_geometry": respond(race_geometry(compiled.track,request.document,compiled.manifest)); return
+	verify(compiled.track,request.replay,request.vehicle_id,compiled.manifest,request.operation == "diagnostic_creator_test",request.document,bool(request.get("capture_ghost",true)))

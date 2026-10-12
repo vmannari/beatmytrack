@@ -60,7 +60,9 @@ func build(parent: Node3D) -> void:
 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 				asphalt.set_shader_parameter("road_color", palette[0])
 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
-				asphalt.set_shader_parameter("ice_albedo", preload("res://assets/textures/winter_ice_v1.png"))
+				asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
+				asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
+				if track.metadata.get("theme","pine") == "winter": asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
 				asphalt.set_shader_parameter("packed_sand",track.metadata.get("theme","pine") == "desert")
 				mesh.material_override = asphalt

@@ -9,6 +9,8 @@ const MUTED := Color("a4bac7")
 const ACCENT := Color("ffd348")
 const BORDER := Color("344e5d")
 const POSITIVE := Color("66dfbb")
+const POPUP_BORDER := Color("5c7d8a")
+const POPUP_DIM := Color(0,0.015,0.025,0.58)
 const DISPLAY: Font = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
 const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
 static var _theme: Theme
@@ -48,10 +50,16 @@ static func theme() -> Theme:
 	value.set_color("font_color", "LineEdit", TEXT)
 	value.set_color("font_placeholder_color", "LineEdit", MUTED)
 	value.set_stylebox("panel", "PanelContainer", card())
-	value.set_stylebox("panel", "PopupMenu", card())
+	value.set_stylebox("panel", "PopupMenu", popup_panel(12))
+	value.set_stylebox("panel", "PopupPanel", popup_panel(16))
+	value.set_stylebox("panel", "TooltipPanel", popup_panel(10))
+	value.set_color("font_color","TooltipLabel",TEXT)
+	value.set_font_size("font_size","TooltipLabel",16)
 	value.set_stylebox("panel", "AcceptDialog", card())
 	value.set_color("font_color", "PopupMenu", TEXT)
-	value.set_stylebox("hover", "PopupMenu", box(PANEL.lightened(0.12)))
+	value.set_stylebox("hover", "PopupMenu", box(ACCENT,8))
+	value.set_color("font_hover_color","PopupMenu",INK)
+	value.set_constant("v_separation","PopupMenu",30)
 	var line := StyleBoxLine.new()
 	line.color = BORDER
 	line.thickness = 1
@@ -72,6 +80,15 @@ static func card(padding: int = 20) -> StyleBoxFlat:
 	style.shadow_offset = Vector2(0,4)
 	return style
 
+static func popup_panel(padding: int = 20) -> StyleBoxFlat:
+	var style := box(Color("071720"),padding)
+	style.set_corner_radius_all(12)
+	style.border_color = POPUP_BORDER
+	style.set_border_width_all(1)
+	style.shadow_color = Color(0,0,0,0.3)
+	style.shadow_size = 8
+	return style
+
 static func label(text: String, font_size: int = 18, muted: bool = false) -> Label:
 	var node := Label.new()
 	node.text = text
@@ -87,6 +104,7 @@ static func button(text: String, action: Callable, primary: bool = false) -> But
 	node.custom_minimum_size.y = 54
 	node.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	node.pressed.connect(action)
+	node.set_meta("audio_cue", "confirm" if primary else "select")
 	if primary:
 		node.add_theme_stylebox_override("normal", box(ACCENT))
 		node.add_theme_stylebox_override("hover", box(Color("ffe499")))

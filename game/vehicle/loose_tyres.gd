@@ -90,6 +90,7 @@ static func step(state: VehicleState, origins: PackedVector2Array, contact_test:
 			if approach > 0:
 				var impulse: float = approach/(1.0/config.mass+1.0/MASS)
 				state.velocity -= normal*impulse/config.mass
+				state.collision_impulse -= normal*impulse/config.mass
 				velocities[index] += normal*impulse/MASS
 				if iteration == 0: state.collision_count += 1
 		for pair_index: int in range(pairs.size()):

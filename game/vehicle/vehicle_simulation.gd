@@ -4,7 +4,7 @@ extends RefCounted
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.50"
+const PHYSICS_VERSION: String = "arcade-planar-0.53"
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -28,6 +28,10 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	state.collision_impulse = Vector2.ZERO
+	state.scrape_strength = 0.0
+	state.scrape_normal = Vector2.ZERO
+	state.scrape_speed = 0.0
 	LaunchStart.advance(state, frame)
 	# Brake pressure is only input driven; no automatic drift latch.
 	var requested_handbrake: float = frame.handbrake / 255.0

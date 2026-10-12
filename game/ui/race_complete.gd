@@ -15,6 +15,16 @@ var global_status: Label
 var standings_busy: bool = false
 var race_chart: TrackDistribution
 var race_context: Label
+var lap_chart: TrackDistribution
+var lap_context: Label
+var lap_population: Label
+var race_best_caption: Label
+var lap_best_caption: Label
+var race_time_caption: Label
+var lap_time_caption: Label
+var comparison_scope: String = "all"
+var last_comparison: Dictionary = {}
+const COMPARISON_BINS: int = 16
 var vehicle_id: String = "compact"
 var facts: Dictionary
 var recommendations: Array[Dictionary] = []
@@ -141,7 +151,21 @@ func _standings(parent: Control) -> void:
 	var body: VBoxContainer = _section(parent,16)
 	body.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation",8)
-	body.add_child(MenuStyle.label("W H E R E  Y O U  S T A N D",23))
+	var heading := HBoxContainer.new()
+	var title := MenuStyle.label("W H E R E  Y O U  S T A N D",23)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.clip_text = true
+	heading.add_child(title)
+	var legend := Control.new()
+	legend.custom_minimum_size = Vector2(116,28)
+	legend.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	legend.draw.connect(func() -> void:
+		legend.draw_colored_polygon(PackedVector2Array([Vector2(2,9),Vector2(10,9),Vector2(6,16)]),MenuStyle.ACCENT)
+		legend.draw_string(MenuStyle.BODY,Vector2(17,18),"RACE",HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.ACCENT)
+		legend.draw_circle(Vector2(78,13),3.5,Color("b8e3f4"))
+		legend.draw_string(MenuStyle.BODY,Vector2(88,18),"PB",HORIZONTAL_ALIGNMENT_LEFT,-1,12,Color("b8e3f4")))
+	heading.add_child(legend)
+	body.add_child(heading)
 	body.add_child(HSeparator.new())
 	var columns := HBoxContainer.new()
 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -153,10 +177,26 @@ func _standings(parent: Control) -> void:
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card.add_theme_constant_override("separation",2)
 		columns.add_child(card)
-		card.add_child(MenuStyle.label(kind,22,true))
+		var card_heading := HBoxContainer.new()
+		var caption := MenuStyle.label(kind,22,true)
+		caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card_heading.add_child(caption)
+		var position_label := MenuStyle.label("",16)
+		position_label.custom_minimum_size = Vector2(94,28)
+		position_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		position_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+		card_heading.add_child(position_label)
+		card.add_child(card_heading)
 		var value: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
-		card.add_child(MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34))
-		var prior: float = results.previous if kind == "RACE TIME" else float(facts.get("previous_lap",0))
+		var times := HBoxContainer.new()
+		var current_time := MenuStyle.label(MenuStyle.time_text(value) if value > 0 else "\u2014",34)
+		current_time.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		times.add_child(current_time)
+		var best_caption := MenuStyle.label("",13,true)
+		best_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		best_caption.add_theme_color_override("font_color",Color("b8e3f4"))
+		times.add_child(best_caption)
+		card.add_child(times)
 		var context := MenuStyle.label("",14,true)
 		context.clip_text = true
 		card.add_child(context)
@@ -164,32 +204,26 @@ func _standings(parent: Control) -> void:
 		var chart := TrackDistribution.new()
 		chart.custom_minimum_size = Vector2(180,130)
 		chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		var values: Array[float] = []
 		if kind == "RACE TIME":
 			race_chart = chart
 			race_context = context
-			if results.total > 0: values.append(results.total)
-			if prior > 0: values.append(prior)
-			context.text = "This race + previous PB" if prior > 0 else "First recorded race"
+			global_rank = position_label
+			race_best_caption = best_caption
+			race_time_caption = current_time
 		else:
-			for index: int in range(1,results.laps.size()):
-				if results.result.laps[index].valid: values.append(results.laps[index])
-			context.text = "This race / %d flying laps" % values.size()
-		chart.snapshot = _local_distribution(values,value)
-		chart.snapshot.marker_label = "THIS RACE" if kind == "RACE TIME" else "BEST LAP"
-		chart.snapshot.empty_text = "No completed race time" if kind == "RACE TIME" else "No valid flying laps"
-		chart.snapshot.empty_detail = "Finish a timed race to compare"
+			lap_chart = chart
+			lap_context = context
+			lap_population = position_label
+			lap_best_caption = best_caption
+			lap_time_caption = current_time
+		chart.snapshot = {}
+		chart.snapshot.markers = _comparison_markers(kind)
+		chart.snapshot.empty_text = "Loading comparison" if not cloud_version.is_empty() and cloud_client != null else "No comparison records"
+		chart.snapshot.empty_detail = "Other drivers' best times"
+		_update_best_caption(best_caption,chart.snapshot.markers)
 		chart.tooltip_text = context.text
 		card.add_child(chart)
-		if kind == "RACE TIME":
-			global_rank = MenuStyle.label("Your race times",13,true)
-			global_status = MenuStyle.label("Your times on this track",12,true)
-			global_status.clip_text = true
-			card.add_child(global_rank)
-			card.add_child(global_status)
-			global_status.hide()
-		else:
-			card.add_child(MenuStyle.label("Your flying laps / %d samples" % values.size(),13,true))
+	global_status = race_context
 	body.add_child(HSeparator.new())
 	if rating_records != null and not results.editor:
 		var rating := TrackRating.new()
@@ -200,8 +234,9 @@ func _standings(parent: Control) -> void:
 		rating.cloud_sync = cloud_sync
 		body.add_child(rating)
 	if not cloud_version.is_empty():
+		# Load this results view once. Upload polling and verification completion
+		# must never refresh an already displayed histogram.
 		call_deferred("_refresh_rank")
-		if cloud_sync != null: cloud_sync.changed.connect(_refresh_rank)
 
 static func _local_distribution(values: Array[float], marker: float) -> Dictionary:
 	if values.is_empty(): return {}
@@ -211,11 +246,95 @@ static func _local_distribution(values: Array[float], marker: float) -> Dictiona
 	var low: float = rounded.min()
 	var high: float = rounded.max()
 	var bins: Array[int] = []
-	bins.resize(12)
+	bins.resize(mini(COMPARISON_BINS,maxi(1,ceili(sqrt(rounded.size())))))
 	bins.fill(0)
 	var span: float = maxf(high-low,0.001)
-	for value: float in rounded: bins[clampi(int((value-low)/span*11),0,11)] += 1
-	return {"bins":bins,"min_ms":low*1000.0,"max_ms":high*1000.0,"player_bin":clampi(int((marker-low)/span*11),0,11)}
+	for value: float in rounded: bins[clampi(int((value-low)/span*bins.size()),0,bins.size()-1)] += 1
+	var edges: Array[float] = []
+	for index: int in range(bins.size()+1): edges.append((low+span*index/bins.size())*1000.0)
+	return {"bins":bins,"min_ms":low*1000.0,"max_ms":high*1000.0,"edges_ms":edges,"player_bin":clampi(int((marker-low)/span*bins.size()),0,bins.size()-1)}
+
+func _comparison_markers(kind: String) -> Array[Dictionary]:
+	var current: float = results.total if kind == "RACE TIME" else float(facts.get("flying",0))
+	var best: float = results.best if kind == "RACE TIME" else float(facts.get("previous_lap",0))
+	if kind == "RACE TIME" and best <= 0: best = results.previous
+	if results.clean and not results.editor and current > 0:
+		best = minf(best,current) if best > 0 else current
+	var markers: Array[Dictionary] = []
+	if current > 0: markers.append({"value_ms":roundi(current*1000.0),"label":"THIS RACE","color":MenuStyle.ACCENT})
+	if best > 0: markers.append({"value_ms":roundi(best*1000.0),"label":"YOUR BEST","color":Color("b8e3f4")})
+	return markers
+
+func _show_distribution(chart: TrackDistribution, data: Dictionary, context: Label, own_ticks: int = -1) -> void:
+	var value: float = results.total if chart == race_chart else float(facts.get("flying",0))
+	(race_time_caption if chart == race_chart else lap_time_caption).text = MenuStyle.time_text(value) if value > 0 else "\u2014"
+	var counts: Array[int] = []
+	var edges: Array[float] = []
+	var own_bin: int = -1
+	for index: int in range(data.bins.size()):
+		var bin: Dictionary = data.bins[index]
+		counts.append(int(bin.count))
+		edges.append(float(bin.from_ticks)*1000.0/VehicleSimulation.TICK_RATE)
+		if own_ticks >= int(bin.from_ticks) and own_ticks < int(bin.to_ticks_exclusive): own_bin = index
+	if not data.bins.is_empty(): edges.append(float(data.bins[-1].to_ticks_exclusive)*1000.0/VehicleSimulation.TICK_RATE)
+	var markers: Array = _comparison_markers("RACE TIME" if chart == race_chart else "BEST LAP")
+	own_ticks = int(data.own_best_ticks) if data.get("own_best_ticks") != null else own_ticks
+	if own_ticks > 0:
+		var verified_ms: float = own_ticks*1000.0/VehicleSimulation.TICK_RATE
+		var found: bool = false
+		for marker: Dictionary in markers:
+			if marker.label == "YOUR BEST":
+				marker.value_ms = mini(int(marker.value_ms),roundi(verified_ms))
+				found = true
+		if not found: markers.append({"value_ms":roundi(verified_ms),"label":"YOUR BEST","color":Color("b8e3f4")})
+	if int(data.get("opponent_count",1)) == 0: counts.clear()
+	var minimum: float = float(data.minimum_ticks) if data.get("minimum_ticks") != null else 0.0
+	var maximum: float = float(data.maximum_ticks) if data.get("maximum_ticks") != null else 0.0
+	chart.snapshot = {"bins":counts,"min_ms":minimum*1000.0/VehicleSimulation.TICK_RATE,"max_ms":maximum*1000.0/VehicleSimulation.TICK_RATE,"player_bin":own_bin,"edges_ms":edges,"markers":markers,"empty_text":"No comparison records","empty_detail":"Other drivers' best times"}
+	chart.queue_redraw()
+	context.text = ""
+	chart.tooltip_text = ""
+	var position_label: Label = global_rank if chart == race_chart else lap_population
+	position_label.text = _position_text(data.get("comparison"))
+	position_label.tooltip_text = ""
+	_update_best_caption(race_best_caption if chart == race_chart else lap_best_caption,markers)
+
+static func _position_text(comparison: Variant) -> String:
+	if not comparison is Dictionary or int(comparison.get("population",0)) < 2: return ""
+	var position: int = int(comparison.get("position",0))
+	if position <= 0: return ""
+	return "POSITION %d" % position if position <= 10 else "TOP %d%%" % clampi(int(comparison.get("top_percent",100)),1,100)
+
+func _update_best_caption(caption: Label, markers: Array) -> void:
+	caption.text = ""
+	for marker: Dictionary in markers:
+		if marker.label == "YOUR BEST": caption.text = "PB "+MenuStyle.time_text(float(marker.value_ms)/1000.0)
+
+func _apply_comparison(data: Dictionary) -> bool:
+	if data.get("population_scope","") != comparison_scope or not data.get("race") is Dictionary or not data.get("best_lap") is Dictionary: return false
+	if not _valid_distribution(data.race,"race",str(data.get("board_id",""))) or not _valid_distribution(data.best_lap,"best_lap",str(data.get("board_id",""))): return false
+	if data == last_comparison: return true
+	# Both charts are committed in this synchronous callback. No intermediate
+	# local/public/test frame can be drawn while the network request is pending.
+	_show_distribution(race_chart,data.race,race_context)
+	_show_distribution(lap_chart,data.best_lap,lap_context)
+	last_comparison = data.duplicate(true)
+	return true
+
+static func _valid_distribution(data: Dictionary, metric: String, board: String) -> bool:
+	if board.is_empty() or data.get("metric","") != metric or str(data.get("board_id","")) != board or not data.get("bins") is Array: return false
+	var bins: Array = data.bins
+	if bins.size() > COMPARISON_BINS: return false
+	var count: int = 0
+	var previous_edge: int = -1
+	for bin: Variant in bins:
+		if not bin is Dictionary: return false
+		var low: int = int(bin.get("from_ticks",0))
+		var high: int = int(bin.get("to_ticks_exclusive",0))
+		if low <= 0 or high <= low or int(bin.get("count",-1)) < 0 or (previous_edge >= 0 and previous_edge != low): return false
+		count += int(bin.count)
+		previous_edge = high
+	return count == int(data.get("population",-1)) and (bins.is_empty() or (data.get("minimum_ticks") != null and data.get("maximum_ticks") != null))
 
 static func _section(parent: Control, padding: int) -> VBoxContainer:
 	var body: VBoxContainer = RaceResults._card(parent,padding)
@@ -223,49 +342,37 @@ static func _section(parent: Control, padding: int) -> VBoxContainer:
 	return body
 
 func _refresh_rank() -> void:
-	if standings_busy or not is_instance_valid(global_rank) or cloud_client == null: return
+	if not is_instance_valid(global_rank) or cloud_client == null: return
+	if standings_busy: return
 	if not cloud_client.signed_in():
-		global_rank.text = "OFFLINE RESULT"
-		global_status.text = "Sign in before racing to enter the leaderboard."
+		_comparison_unavailable("Sign in to compare")
 		return
 	standings_busy = true
-	var response: Dictionary = await cloud_client.request_api("/track-versions/"+cloud_version+"/leaderboard?vehicle_id="+vehicle_id.uri_encode())
+	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d" % COMPARISON_BINS
+	if results.total > 0: path += "&race_ticks=%d" % roundi(results.total*VehicleSimulation.TICK_RATE)
+	var flying: float = float(facts.get("flying",0))
+	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
+	path += _frame_query(last_comparison.get("race",{}),"race")
+	path += _frame_query(last_comparison.get("best_lap",{}),"lap")
+	var response: Dictionary = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
 	if not is_inside_tree(): return
-	if response.ok and int(response.data.population) > 0:
-		var board: String = str(response.data.board_id)
-		var histogram: Dictionary = await cloud_client.request_api("/boards/"+board+"/histogram?bins=24")
-		if not is_inside_tree(): return
-		response = await cloud_client.request_api("/boards/"+board+"/around-me",HTTPClient.METHOD_GET,{},"",true)
-		if not is_inside_tree(): return
-		if histogram.ok and not histogram.data.bins.is_empty():
-			var counts: Array[int] = []
-			var edges: Array[float] = []
-			var own_bin: int = -1
-			for index: int in range(histogram.data.bins.size()):
-				var bin: Dictionary = histogram.data.bins[index]
-				counts.append(int(bin.count))
-				edges.append(float(bin.from_ticks)*1000.0/120.0)
-				if response.ok and response.data.player != null:
-					var ticks: int = int(response.data.player.time_ticks)
-					if ticks >= int(bin.from_ticks) and ticks < int(bin.to_ticks_exclusive): own_bin = index
-			edges.append(float(histogram.data.bins[-1].to_ticks_exclusive)*1000.0/120.0)
-			race_chart.snapshot = {"bins":counts,"min_ms":float(histogram.data.minimum_ticks)*1000.0/120.0,"max_ms":float(histogram.data.maximum_ticks)*1000.0/120.0,"player_bin":own_bin,"edges_ms":edges}
-			race_chart.queue_redraw()
-			race_context.text = "%d verified players / personal bests" % int(histogram.data.population)
-			race_chart.tooltip_text = race_context.text
-		if response.ok and response.data.player != null:
-			global_rank.text = "RANK %d OF %d" % [int(response.data.player.rank),int(response.data.population)]
-			global_rank.add_theme_color_override("font_color",MenuStyle.ACCENT)
-			global_status.text = "Your verified PB"
-			if response.data.get("faster_than_percent") != null:
-				global_status.text += " / faster than %.1f%%" % float(response.data.faster_than_percent)
-		else:
-			global_rank.text = "AWAITING VERIFIED SCORE"
-			global_status.text = "Uploads retry while signed in."
-	else:
-		global_rank.text = "UNRANKED"
-		global_status.text = "Publication or verified score pending." if response.ok or int(response.status) == 404 else "Leaderboard unavailable · retrying automatically."
+	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
 	standings_busy = false
+
+static func _frame_query(histogram: Dictionary, metric: String) -> String:
+	var bins: Array = histogram.get("bins",[])
+	if bins.is_empty(): return ""
+	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,int(bins[0].from_ticks),metric,int(bins[-1].to_ticks_exclusive)]
+
+func _comparison_unavailable(message: String) -> void:
+	# A transient error keeps the last complete, correctly scoped comparison.
+	if not last_comparison.is_empty(): return
+	for chart: TrackDistribution in [race_chart,lap_chart]:
+		chart.snapshot.empty_text = message
+		chart.snapshot.empty_detail = "Other drivers' best times"
+		chart.queue_redraw()
+	global_rank.text = ""
+	lap_population.text = ""
 
 func _recommendations() -> void:
 	var panel: VBoxContainer = RaceResults._card(self,0)

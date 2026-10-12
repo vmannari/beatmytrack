@@ -1,5 +1,96 @@
 # Local music studio
 
+## Current complete recompose (2026-10-08)
+
+The active [performed phrase score](../../docs/PERFORMED_FLOW_SOUNDTRACK.md)
+replaces the rejected sports-rock riffs. Original eight-bar writing is rendered
+with the existing local MRT2 MIDI controls, measured/retimed to a160 BPM race
+clock, and split into complementary components of ONE performance. They are
+not isolated instrument stems. The gentler112 BPM menu uses uncompressed PCM
+and a cyclic endpoint guard. [Listen](../../docs/evidence/flow-recompose-2026-10-08/audition.html).
+
+Composition/preparation: `compose_flow_performance.py`,
+`render_flow_performance.py`, `repair_flow_loops.py`. Masters and failed versions
+remain preserved; use a new directory for another revision. Verify using
+`verify_locked_in.py --evidence-dir docs/evidence/flow-recompose-2026-10-08`.
+Godot checks/captures use the existing `BMT_MUSIC_EVIDENCE` override; the new
+`capture_menu_continuity.gd -Graphical` records two wraps through actual menus.
+Details/source drift/failed repairs/provenance/owner and device acceptance are
+recorded in the delivery document. Previous sections retain historical work.
+
+## Current sports-rock rewrite (2026-10-08)
+
+The owner rejected the clean band as too mellow. The new original composition
+uses muted/overdriven electric-guitar riffs, chorus guitar, firmer acoustic drums
+and quiet string/analog-style atmosphere. Race144/menu112 BPM and the existing
+confidence controller stay intact. [Listen and compare at equal loudness](../../docs/evidence/sports-rock-2026-10-08/audition.html).
+Requirements, evidence and acceptance: [SPORTS_ROCK_SOUNDTRACK.md](../../docs/SPORTS_ROCK_SOUNDTRACK.md).
+
+```powershell
+# This renderer refuses to overwrite archived masters. Use a fresh round for another rewrite.
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/render_sports_rock.py
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/verify_locked_in.py --evidence-dir docs/evidence/sports-rock-2026-10-08
+$env:BMT_MUSIC_EVIDENCE='res://../docs/evidence/sports-rock-2026-10-08'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_soundtrack.gd -Graphical
+# Capture each bounded segment with BMT_SCORE_CAPTURE_SEGMENT=story/palettes/events/menu.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/capture_locked_in.gd -Graphical -CommandTimeoutSeconds 140
+```
+
+Sources/masters/exports are under `build/music/sports-rock-2026-10-08/`; the
+installed bank retains its stable `locked_in_v1` resource paths. Previous band
+masters/evidence and the task-start bank remain preserved. The optional evidence
+environment variable changes test output destinations only. Owner and phone
+listening remain pending.
+
+## Current band/flow score
+
+The current direction is [The music locks in with you](../../docs/LOCKED_IN_SOUNDTRACK.md): recorded band, one four-note motif, confidence progression and five palettes. Race144/menu112 BPM. [Listen](../../docs/evidence/locked-in-score-2026-10-07/audition.html).
+
+```powershell
+python tools/music_generator/fetch_band_sources.py
+wsl -d Ubuntu -- bash tools/music_generator/scripts/render_locked_in.sh --inspect
+# Preserve existing mixes; use a fresh revision for another render.
+wsl -d Ubuntu -- bash tools/music_generator/scripts/render_locked_in.sh --mix-revision 5
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/verify_locked_in.py
+```
+
+Current renderer source/output and the targeted beat-synchronous Desert repair are traceable in the installed manifest. Earlier paragraphs below retain historical music studies. Runtime checks use `test_soundtrack.gd` and `test_score_flow.gd`; real capture uses `capture_locked_in.gd -Graphical`, optionally with `BMT_SCORE_CAPTURE_SEGMENT=menu/story/palettes/events` for bounded runs. Musical approval remains pending.
+
+The new race tempo is144 BPM, menu112 BPM. Race loops are32 bars/53.333333s;
+two-bar fades and two-beat breaths follow that clock. The highest layer remains
+confidence/clean-sector gated and arrives around60s on exceptional runs. Source
+and rendered versions1-4 plus the targeted tremolo repair remain preserved.
+
+
+## Original game soundtrack (2026-10-07)
+
+Current revision: [upbeat mix 3](../../docs/UPBEAT_SOUNDTRACK.md), following the
+owner's rejection of the melancholic opening/world. Hover and keyboard focus are
+silent; selection/confirm/back cues remain. [Listen to the new revision](../../docs/evidence/upbeat-score-2026-10-07/audition.html).
+
+The game uses the original recorded-instrument score in
+[ADAPTIVE_SOUNDTRACK.md](../../docs/ADAPTIVE_SOUNDTRACK.md). The retired native
+synthesizer and unapproved RT2 studies below remain historical. Listen to the
+current [menu/race review](../../docs/evidence/adaptive-score-2026-10-07/audition.html).
+
+Free CC0 source setup/rendering, with existing local WSL tools:
+
+```powershell
+python tools/music_generator/fetch_score_sources.py
+wsl -d Ubuntu -- bash tools/music_generator/scripts/render_score_v1.sh --inspect
+# Prior mixes are preserved. Use a fresh revision/evidence directory for another render.
+wsl -d Ubuntu -- bash tools/music_generator/scripts/render_score_v1.sh --upbeat --revision 4 --evidence-dir docs/evidence/score-round4
+# Validate the current installed revision and its actual captures.
+wsl -d Ubuntu -- bash tools/music_generator/scripts/run_from_windows_repo.sh python tools/music_generator/verify_score_v1.py --evidence-dir docs/evidence/upbeat-score-2026-10-07
+```
+
+New renders go into `build/music/score-v1/masters-vN` and `exports-vN`. Promote a
+reviewed export into `game/assets/audio/score_v1`, retaining provenance/prior
+masters. The validator reads installed assets and actual capture files. Runtime
+test/capture use `scripts/dev.ps1 TestScript` with `res://tests/test_soundtrack.gd`
+or `res://tests/capture_soundtrack.gd`; the latter needs
+`-Graphical -CommandTimeoutSeconds 360`. Artistic approval remains pending.
+
 Run from the Windows repository root:
 
 ```powershell
@@ -33,9 +124,9 @@ prompt and expose retry information. See [implementation and actual checks](../.
 
 ## Soundtrack packages and states
 
-Use **Soundtracks → New soundtrack** to create one compatible subset. Choose
-**Layer stack** or **Switch tracks**, define 1–12 named states, and fill each
-state's pool with saved recordings. Save, then **Try in Mix lab → New drive**.
+Use **Soundtracks â†’ New soundtrack** to create one compatible subset. Choose
+**Layer stack** or **Switch tracks**, define 1â€“12 named states, and fill each
+state's pool with saved recordings. Save, then **Try in Mix lab â†’ New drive**.
 The workbench selects a package first (specific or random), then one recording
 per pool. Those choices stay fixed as states change. **Free mix** unlocks manual
 experimentation. Packages persist locally and may be renamed, duplicated or deleted.
@@ -52,7 +143,7 @@ See [package contracts, tests and screenshots](../../docs/MUSIC_PACKAGES.md).
 Open **Mix lab** for the existing driving-arc and arrangement tools. Expand
 **Earlier arrangement studies** to access the previous banks and endpoint pair.
 
-**Reference arc R2:** use **R2 · All A**, **R2 · All B**, or **R2 · New drive**.
+**Reference arc R2:** use **R2 Â· All A**, **R2 Â· All B**, or **R2 Â· New drive**.
 These load one of two options at each of six stages. New drive draws a new
 combination, preventing an identical consecutive lineup; selections stay fixed
 through stage changes, collision recovery and restart. Use Save setup to retain

@@ -6,6 +6,7 @@ render_mode diffuse_toon, specular_disabled;
 uniform vec4 glass_tint : source_color = vec4(0.075, 0.125, 0.145, 1.0);
 uniform vec4 sky_tint : source_color = vec4(0.40, 0.55, 0.63, 1.0);
 uniform vec4 cloud_tint : source_color = vec4(0.79, 0.81, 0.76, 1.0);
+uniform bool studio_mode = false;
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
@@ -32,4 +33,12 @@ void fragment() {
 	float side_pane = 1.0 - smoothstep(0.35, 0.7, abs(world_normal.y));
 	EMISSION = environment * strength * mix(0.09, 0.4, side_pane);
 	ROUGHNESS = 0.65;
+	if (studio_mode) {
+		float softbox = pow(max(0.0,dot(direction,normalize(vec3(-0.6,0.9,-0.4)))),24.0);
+		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),14.0);
+		vec3 studio = vec3(0.10,0.15,0.20) + vec3(0.75,0.79,0.83)*softbox + vec3(0.19,0.27,0.38)*fill;
+		ALBEDO = mix(vec3(0.055,0.085,0.105),studio,0.35+fresnel*0.55);
+		EMISSION = studio*(0.06+0.18*fresnel);
+		ROUGHNESS = 0.2;
+	}
 }

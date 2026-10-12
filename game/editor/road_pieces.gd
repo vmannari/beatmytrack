@@ -3,7 +3,7 @@ extends RefCounted
 ## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
 ## Road pieces are geometry; race routing is an explicit, separate operation.
 
-const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge"]
+const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge", "spline"]
 const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
 const S_END_LENGTH: float = 2.0
 const MAX_PIECES: int = 96
@@ -19,12 +19,20 @@ static func create(kind: String, position: Vector2, heading: float = 0.0, width:
 	if kind == "taper":
 		piece.length = 28.0
 		piece.narrow_width = minf(6.0,float(piece.width))
+	if kind == "spline":
+		piece.length = 0.0
+		piece.spline_points = [[0.0,0.0],[12.0,0.0],[24.0,8.0],[36.0,0.0],[48.0,0.0]]
+		piece.point_widths = [piece.width,piece.width,piece.width,piece.width,piece.width]
 	return piece
 
 
 static func validate(piece: Variant) -> Array[String]:
-	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) or not piece.has_all(KEYS):
+	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) + (1 if piece.has("spline_points") else 0) + (1 if piece.has("point_widths") else 0) or not piece.has_all(KEYS):
 		return ["Invalid road section."]
+	if piece.kind == "spline":
+		var spline_errors: Array[String] = SplineRoad.validate(piece)
+		if not spline_errors.is_empty(): return spline_errors
+	elif piece.has("spline_points") or piece.has("point_widths"): return ["Only spline sections can have interpolation points."]
 	if piece.kind == "taper" and (not piece.has("narrow_width") or not _number(piece.narrow_width) or float(piece.narrow_width) < 6.0 or float(piece.narrow_width) > float(piece.width)): return ["Taper narrow width must be 6 metres or more and no wider than its wide end."]
 	if piece.has("narrow_width") and piece.kind != "taper": return ["Only taper sections can have a narrow width."]
 	if piece.has("curvature") and (piece.kind != "curve" or not _number(piece.curvature) or absf(float(piece.curvature)) > 0.3): return ["Curve curvature must be between -0.3 and 0.3."]
@@ -49,6 +57,7 @@ static func validate(piece: Variant) -> Array[String]:
 
 
 static func samples(piece: Dictionary) -> PackedVector2Array:
+	if piece.kind == "spline": return SplineRoad.geometry(piece).points
 	var local := PackedVector2Array([Vector2.ZERO])
 	var length: float = 0.0 if piece.kind == "curve" else S_END_LENGTH if piece.kind == "s_bend" else float(piece.length)
 	var count: int = maxi(1,ceili(length/0.75))
@@ -104,6 +113,9 @@ static func _arc(points: PackedVector2Array, radius: float, angle: float, headin
 
 
 static func end_pose(piece: Dictionary) -> Dictionary:
+	if piece.kind == "spline":
+		var nodes: PackedVector2Array = SplineRoad.points(piece)
+		return {"position":nodes[-1],"heading":fposmod(rad_to_deg(SplineRoad.tangent(nodes,4).angle()),360.0)}
 	var turn: float = float(piece.get("angle",90.0)) if piece.kind == "curve" else (180.0 if piece.kind == "hairpin" else 0.0)
 	var radius: float = float(piece.radius)
 	var side: float = -1.0 if piece.flip else 1.0
@@ -120,18 +132,23 @@ static func _pose(piece: Dictionary, endpoint: int) -> Dictionary:
 	if endpoint == 1:
 		var end: Dictionary = end_pose(piece)
 		return {"position":end.position,"heading":fposmod(float(end.heading)+180.0,360.0)}
+	if piece.kind == "spline":
+		var nodes: PackedVector2Array = SplineRoad.points(piece)
+		return {"position":nodes[0],"heading":fposmod(rad_to_deg(SplineRoad.tangent(nodes,0).angle()),360.0)}
 	return {"position":Vector2(piece.position[0],piece.position[1]),"heading":float(piece.heading)}
 
 
 static func snap(piece: Dictionary, pieces: Array, exclude: int = -1) -> Dictionary:
 	var result: Dictionary = {"piece":piece.duplicate(true),"matched":false,"target_index":-1,"endpoint":-1,"distance":SNAP_DISTANCE}
+	var topology: Dictionary = prepare_endpoints(pieces)
+	var poses: Array = [_pose(piece,0),_pose(piece,1)]
 	for index: int in range(pieces.size()):
 		if index == exclude: continue
 		for target_end: int in range(2):
-			var target: Dictionary = _pose(pieces[index],target_end)
-			if _partner(pieces,index,target_end,exclude).size() > 0: continue
+			var target: Dictionary = topology.poses[index*2+target_end]
+			if not _matches(topology,index,target_end,exclude).is_empty(): continue
 			for endpoint: int in range(2):
-				var pose: Dictionary = _pose(piece,endpoint)
+				var pose: Dictionary = poses[endpoint]
 				var distance: float = Vector2(pose.position).distance_to(target.position)
 				if distance >= float(result.distance): continue
 				var fitted: Dictionary = piece.duplicate(true)
@@ -145,27 +162,54 @@ static func snap(piece: Dictionary, pieces: Array, exclude: int = -1) -> Diction
 	return result
 
 
+## Local immutable preparation: no shared cache or thread-dependent state.
+## Keep the old piece/endpoint ordering and exact distance test at bucket edges.
+static func prepare_endpoints(pieces: Array) -> Dictionary:
+	var poses: Array[Dictionary] = []
+	var buckets: Dictionary = {}
+	for index: int in range(pieces.size()):
+		for endpoint: int in range(2):
+			var pose: Dictionary = _pose(pieces[index],endpoint)
+			var bucket := Vector2i(floori(pose.position.x/JOIN_DISTANCE),floori(pose.position.y/JOIN_DISTANCE))
+			if not buckets.has(bucket): buckets[bucket] = []
+			buckets[bucket].append(poses.size())
+			poses.append(pose)
+	var partners: Array = []
+	for id: int in range(poses.size()):
+		var position: Vector2 = poses[id].position
+		var bucket := Vector2i(floori(position.x/JOIN_DISTANCE),floori(position.y/JOIN_DISTANCE))
+		var candidates: Array = []
+		for x: int in range(-1,2):
+			for y: int in range(-1,2): candidates.append_array(buckets.get(bucket+Vector2i(x,y),[]))
+		candidates.sort()
+		var matches: Array = []
+		for other: int in candidates:
+			if other/2 == id/2: continue
+			if position.distance_to(poses[other].position) <= JOIN_DISTANCE: matches.append([other/2,other%2])
+		partners.append(matches)
+	return {"poses":poses,"partners":partners}
+
+static func _matches(topology: Dictionary, index: int, endpoint: int, exclude: int = -1) -> Array:
+	var matches: Array = topology.partners[index*2+endpoint]
+	if exclude < 0: return matches
+	var filtered: Array = []
+	for match: Array in matches:
+		if int(match[0]) != exclude: filtered.append(match)
+	return filtered
+
 static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1) -> Array:
-	var pose: Dictionary = _pose(pieces[index],endpoint)
-	var matches: Array = []
-	for other: int in range(pieces.size()):
-		if other == index or other == exclude: continue
-		for other_end: int in range(2):
-			var candidate: Dictionary = _pose(pieces[other],other_end)
-			if Vector2(pose.position).distance_to(candidate.position) > JOIN_DISTANCE: continue
-			# Touching endpoints connect even at a sharp angle or width change.
-			matches.append([other,other_end])
-	return matches
+	return _matches(prepare_endpoints(pieces),index,endpoint,exclude)
 
 
 static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1) -> int:
 	var attached: Array[bool] = [false,false]
+	var topology: Dictionary = prepare_endpoints(pieces)
 	for endpoint: int in [0,1]:
 		var position: Vector2 = _pose(piece,endpoint).position
 		for index: int in range(pieces.size()):
 			if index == exclude: continue
 			for other_end: int in [0,1]:
-				if position.distance_to(_pose(pieces[index],other_end).position) <= JOIN_DISTANCE:
+				if position.distance_to(topology.poses[index*2+other_end].position) <= JOIN_DISTANCE:
 					attached[endpoint] = true
 	return -1 if attached[0] == attached[1] else 0 if attached[0] else 1
 
@@ -182,6 +226,7 @@ static func keep_attachment(before: Dictionary, changed: Dictionary, endpoint: i
 
 
 static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> Dictionary:
+	if piece.kind == "spline": return SplineRoad.move_point(piece,0 if endpoint == 0 else 4,target)
 	var result: Dictionary = piece.duplicate(true)
 	var start := Vector2(piece.position[0],piece.position[1])
 	var end: Vector2 = end_pose(piece).position
@@ -225,11 +270,12 @@ static func move_endpoint(piece: Dictionary, endpoint: int, target: Vector2) -> 
 static func snap_endpoint(target: Vector2, pieces: Array, exclude: int) -> Vector2:
 	var best: float = SNAP_DISTANCE
 	var result: Vector2 = target
+	var topology: Dictionary = prepare_endpoints(pieces)
 	for i: int in range(pieces.size()):
 		if i == exclude: continue
 		for endpoint: int in range(2):
-			if not _partner(pieces,i,endpoint,exclude).is_empty(): continue
-			var position: Vector2 = _pose(pieces[i],endpoint).position
+			if not _matches(topology,i,endpoint,exclude).is_empty(): continue
+			var position: Vector2 = topology.poses[i*2+endpoint].position
 			var distance: float = target.distance_to(position)
 			if distance < best:
 				best = distance
@@ -237,20 +283,22 @@ static func snap_endpoint(target: Vector2, pieces: Array, exclude: int) -> Vecto
 	return result
 
 
-static func joins(pieces: Array) -> Array[Dictionary]:
+static func joins(pieces: Array, topology: Dictionary = {}) -> Array[Dictionary]:
+	if topology.is_empty(): topology = prepare_endpoints(pieces)
 	var issues: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
 		for endpoint: int in range(2):
-			var matches: Array = _partner(pieces,index,endpoint)
+			var matches: Array = _matches(topology,index,endpoint)
 			if matches.size() == 1: continue
-			issues.append({"index":index,"endpoint":endpoint,"position":_pose(pieces[index],endpoint).position,
+			issues.append({"index":index,"endpoint":endpoint,"position":topology.poses[index*2+endpoint].position,
 				"message":"Open road end" if matches.is_empty() else "More than two sections meet here"})
 	return issues
 
 
 static func connected_route(pieces: Array) -> Dictionary:
 	var fail: Dictionary = {"ok":false,"points":PackedVector2Array(),"widths":PackedFloat32Array(),"errors":["Connect the road ends to make one closed lap."]}
-	if pieces.size() < 2 or not joins(pieces).is_empty(): return fail
+	var topology: Dictionary = prepare_endpoints(pieces)
+	if pieces.size() < 2 or not joins(pieces,topology).is_empty(): return fail
 	var points := PackedVector2Array()
 	var widths := PackedFloat32Array()
 	var visited: Array[int] = []
@@ -258,7 +306,7 @@ static func connected_route(pieces: Array) -> Dictionary:
 	var endpoint: int = 0
 	while index not in visited:
 		visited.append(index)
-		var geometry: Dictionary = section_geometry(pieces,index)
+		var geometry: Dictionary = section_geometry(pieces,index,topology)
 		var section: PackedVector2Array = geometry.points
 		var section_widths: PackedFloat32Array = geometry.widths
 		if endpoint == 1:
@@ -267,7 +315,7 @@ static func connected_route(pieces: Array) -> Dictionary:
 		for i: int in range(section.size()-1):
 			points.append(section[i])
 			widths.append(section_widths[i])
-		var partner: Array = _partner(pieces,index,1-endpoint)[0]
+		var partner: Array = _matches(topology,index,1-endpoint)[0]
 		index = int(partner[0])
 		endpoint = int(partner[1])
 	if index != 0 or endpoint != 0 or visited.size() != pieces.size(): return fail
@@ -309,7 +357,7 @@ static func _number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
 
 
-static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier") -> Array:
+static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0) -> Array:
 	var result: Array = []
 	if kind not in CreatorObjects.KINDS: return result
 	var capacity: int = maxi(0,96-document.objects.size())
@@ -318,9 +366,13 @@ static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, k
 	if not document.layout.is_empty():
 		var layout: Dictionary = TrackDocument.route_data(document.layout)
 		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
-	if candidates.is_empty():
-		var guide: Dictionary = TrackDocument.route_data(document)
-		candidates.append({"points":guide.points,"widths":guide.widths,"closed":true})
+	for stroke: Dictionary in document.paint:
+		if int(stroke.surface) not in [0,2] or stroke.get("mode","free") == "area" or stroke.points.size() < 2: continue
+		var path: PackedVector2Array = SurfacePaint.contour(stroke.points,str(stroke.get("mode","free")))
+		var widths := PackedFloat32Array()
+		widths.resize(path.size()); widths.fill(float(stroke.width))
+		candidates.append({"points":path,"widths":widths,"closed":false})
+	if candidates.is_empty(): return result
 	var best: Dictionary = {}
 	var score: float = INF
 	for path: Dictionary in candidates:
@@ -339,35 +391,50 @@ static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, k
 	var tangent: Vector2 = anchor.tangent
 	var side: float = 1.0 if tangent.cross(start-Vector2(anchor.point)) >= 0.0 else -1.0
 	var dimensions: Vector2 = CreatorObjects.dimensions(kind)
+	if kind in ["tyre_stack","tyre_wall"]: scale = 1.0
+	dimensions *= scale
+	if path.get("spline",false) and kind in ObjectRuns.CONTINUOUS:
+		return ObjectRuns.build(RoadsideBoundary.run(path,begin,delta,side,dimensions.y*0.5+0.8,dimensions.x),kind,scale,capacity)
 	if absf(delta) < 0.01:
 		var center: Vector2 = Vector2(anchor.point)+Vector2(-tangent.y,tangent.x)*side*(float(anchor.width)*0.5+dimensions.y*0.5+0.8)
 		if center.abs().x <= 110.0 and center.abs().y <= 110.0:
-			result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)})
+			var object: Dictionary = {"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)}
+			if scale != 1.0: object["scale"] = scale
+			result.append(object)
 		return result
 	var offset_points := PackedVector2Array()
+	var edge_points: PackedVector2Array = _offset_edge(path,side,dimensions.y*0.5+0.8)
 	var count: int = maxi(1,ceili(absf(delta)/0.75))
 	for i: int in range(count+1):
 		var sample: Dictionary = _at(path,begin+delta*float(i)/count)
-		var normal := Vector2(-sample.tangent.y,sample.tangent.x)
-		offset_points.append(Vector2(sample.point)+normal*side*(float(sample.width)*0.5+dimensions.y*0.5+0.8))
-	var offset_widths := PackedFloat32Array()
-	offset_widths.resize(offset_points.size())
-	offset_widths.fill(1.0)
-	var offset_path: Dictionary = {"points":offset_points,"widths":offset_widths,"closed":false}
-	var run_length: float = _path_length(offset_path)
-	var step: float = dimensions.x+0.2
-	var stamps: int = mini(capacity,maxi(1,floori(run_length/step)+1))
-	for i: int in range(stamps):
-		var sample: Dictionary = _at(offset_path,minf(float(i)*step,run_length))
-		var center: Vector2 = sample.point
-		if center.abs().x > 110.0 or center.abs().y > 110.0: continue
-		result.append({"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(Vector2(sample.tangent).angle()),360.0)})
+		var index: int = sample.index
+		offset_points.append(edge_points[index].lerp(edge_points[(index+1)%edge_points.size()],float(sample.blend)))
+	return ObjectRuns.build(offset_points,kind,scale,capacity)
+
+
+static func _offset_edge(path: Dictionary, side: float, clearance: float) -> PackedVector2Array:
+	var points: PackedVector2Array = path.points
+	var result := PackedVector2Array()
+	for i: int in range(points.size()):
+		var previous: int = (i-1+points.size())%points.size()
+		var next: int = (i+1)%points.size()
+		var incoming: Vector2 = (points[i]-points[previous]).normalized()
+		var outgoing: Vector2 = (points[next]-points[i]).normalized()
+		if not path.closed and i == 0: incoming = outgoing
+		if not path.closed and i == points.size()-1: outgoing = incoming
+		var first := Vector2(-incoming.y,incoming.x)
+		var second := Vector2(-outgoing.y,outgoing.x)
+		var normal: Vector2 = (first+second).normalized()
+		if normal.is_zero_approx(): normal = first
+		var reach: float = (float(path.widths[i])*0.5+clearance)/maxf(0.5,normal.dot(first))
+		result.append(points[i]+normal*side*reach)
 	return result
 
 
 static func _paths(pieces: Array) -> Array[Dictionary]:
 	var paths: Array[Dictionary] = []
 	var visited: Array[int] = []
+	var topology: Dictionary = prepare_endpoints(pieces)
 	# Open chains first, then remaining closed chains. Intersections in the
 	# surface do not silently switch the selected road at a crossing.
 	for open_only: bool in [true,false]:
@@ -375,28 +442,36 @@ static func _paths(pieces: Array) -> Array[Dictionary]:
 			if seed in visited: continue
 			var start_end: int = 0
 			if open_only:
-				if _partner(pieces,seed,0).is_empty(): start_end = 0
-				elif _partner(pieces,seed,1).is_empty(): start_end = 1
+				if _matches(topology,seed,0).is_empty(): start_end = 0
+				elif _matches(topology,seed,1).is_empty(): start_end = 1
 				else: continue
 			var points := PackedVector2Array()
 			var widths := PackedFloat32Array()
+			var nodes: Array[int] = []
 			var index: int = seed
 			var endpoint: int = start_end
 			var closed: bool = false
+			var has_spline: bool = false
 			while index not in visited:
 				visited.append(index)
-				var geometry: Dictionary = section_geometry(pieces,index)
+				has_spline = has_spline or pieces[index].kind == "spline"
+				var geometry: Dictionary = section_geometry(pieces,index,topology)
 				var section: PackedVector2Array = geometry.points
 				var section_widths: PackedFloat32Array = geometry.widths
+				var section_nodes: Array = geometry.get("node_indices",[0,section.size()-1])
 				if endpoint == 1:
 					section.reverse()
 					section_widths.reverse()
+					var reversed_nodes: Array[int] = []
+					for node: int in section_nodes: reversed_nodes.append(section.size()-1-node)
+					section_nodes = reversed_nodes
 				for section_index: int in range(section.size()):
 					var point: Vector2 = section[section_index]
 					if not points.is_empty() and points[-1].distance_to(point) < 0.01: continue
 					points.append(point)
 					widths.append(section_widths[section_index])
-				var matches: Array = _partner(pieces,index,1-endpoint)
+					if section_index in section_nodes: nodes.append(points.size()-1)
+				var matches: Array = _matches(topology,index,1-endpoint)
 				if matches.size() != 1: break
 				index = int(matches[0][0])
 				endpoint = int(matches[0][1])
@@ -404,7 +479,7 @@ static func _paths(pieces: Array) -> Array[Dictionary]:
 			if closed and points[0].distance_to(points[-1]) < 0.01:
 				points.resize(points.size()-1)
 				widths.resize(widths.size()-1)
-			paths.append({"points":points,"widths":widths,"closed":closed})
+			paths.append({"points":points,"widths":widths,"closed":closed,"spline":has_spline,"node_indices":nodes})
 	return paths
 
 
@@ -442,55 +517,72 @@ static func _at(path: Dictionary, along: float) -> Dictionary:
 		var span: float = points[i].distance_to(points[next])
 		if traveled+span >= target or i == segments-1:
 			var blend: float = clampf((target-traveled)/maxf(span,0.0001),0.0,1.0)
-			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend)}
+			return {"point":points[i].lerp(points[next],blend),"tangent":(points[next]-points[i]).normalized(),"width":lerpf(widths[i],widths[next],blend),"index":i,"blend":blend}
 		traveled += span
-	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0]}
+	return {"point":points[0],"tangent":Vector2.RIGHT,"width":widths[0],"index":0,"blend":0.0}
 
 
 ## Shared width samples for surface compilation and presentation.
-static func section_geometry(pieces: Array, index: int) -> Dictionary:
+static func endpoint_width(piece: Dictionary, endpoint: int) -> float:
+	if piece.kind == "spline": return float(piece.point_widths[0 if endpoint == 0 else 4])
+	return float(piece.width) if endpoint == 0 else float(piece.get("narrow_width",piece.width))
+
+static func section_geometry(pieces: Array, index: int, topology: Dictionary = {}) -> Dictionary:
+	if topology.is_empty(): topology = prepare_endpoints(pieces)
 	var piece: Dictionary = pieces[index]
-	var points: PackedVector2Array = samples(piece)
+	var spline: Dictionary = SplineRoad.geometry(piece) if piece.kind == "spline" else {}
+	var points: PackedVector2Array = spline.points if not spline.is_empty() else samples(piece)
 	var widths := PackedFloat32Array()
 	var distances := PackedFloat32Array([0.0])
 	for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
 	var total: float = distances[-1]
-	var authored_ends: Array[float] = [float(piece.width),float(piece.get("narrow_width",piece.width))]
+	var authored_ends: Array[float] = [endpoint_width(piece,0),endpoint_width(piece,1)]
 	var ends: Array[float] = authored_ends.duplicate()
 	for endpoint: int in range(2):
-		var matches: Array = _partner(pieces,index,endpoint)
+		var matches: Array = _matches(topology,index,endpoint)
 		if matches.size() == 1:
 			var other: Dictionary = pieces[int(matches[0][0])]
-			var other_width: float = float(other.get("narrow_width",other.width)) if int(matches[0][1]) == 1 else float(other.width)
+			var other_width: float = endpoint_width(other,int(matches[0][1]))
 			ends[endpoint] = (authored_ends[endpoint]+other_width)*0.5
 	var reach: float = minf(total*0.5,maxf(8.0,absf(ends[1]-ends[0])*4.0))
-	for distance: float in distances:
+	for sample_index: int in range(distances.size()):
+		var distance: float = distances[sample_index]
 		var fraction: float = distance/maxf(total,0.0001)
-		var width: float = lerpf(authored_ends[0],authored_ends[1],fraction)
-		width += (ends[0]-authored_ends[0])*(1.0-smoothstep(0.0,reach,distance))
-		width += (ends[1]-authored_ends[1])*(1.0-smoothstep(0.0,reach,total-distance))
+		var width: float = float(spline.widths[sample_index]) if not spline.is_empty() else lerpf(authored_ends[0],authored_ends[1],fraction)
+		if not spline.is_empty():
+			# Match joined mouths without changing the three internal point widths.
+			var entry_reach: float = minf(reach,distances[spline.node_indices[1]])
+			var exit_reach: float = minf(reach,total-distances[spline.node_indices[3]])
+			if ends[0] != authored_ends[0]: width = lerpf(ends[0],width,smoothstep(0.0,entry_reach,distance))
+			if ends[1] != authored_ends[1]: width = lerpf(ends[1],width,smoothstep(0.0,exit_reach,total-distance))
+		else:
+			width += (ends[0]-authored_ends[0])*(1.0-smoothstep(0.0,reach,distance))
+			width += (ends[1]-authored_ends[1])*(1.0-smoothstep(0.0,reach,total-distance))
 		widths.append(width)
-	return {"points":points,"widths":widths}
+	var result: Dictionary = {"points":points,"widths":widths}
+	if not spline.is_empty(): result["node_indices"] = spline.node_indices
+	return result
 
 
 ## Both sides of a join use the same cross-section, even for reversed pieces.
-static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> PackedVector2Array:
-	var geometry: Dictionary = section_geometry(pieces,index)
+static func section_outline(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> PackedVector2Array:
+	if topology.is_empty(): topology = prepare_endpoints(pieces)
+	var geometry: Dictionary = section_geometry(pieces,index,topology)
 	var points: PackedVector2Array = geometry.points
 	var left := PackedVector2Array()
 	var right := PackedVector2Array()
 	for i: int in range(points.size()):
 		var tangent: Vector2 = (points[mini(i+1,points.size()-1)]-points[maxi(0,i-1)]).normalized()
 		if pieces[index].kind == "taper": tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
-		if i == 0: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(pieces[index].heading)))
+		if i == 0: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(_pose(pieces[index],0).heading)))
 		if i == points.size()-1: tangent = Vector2.RIGHT.rotated(deg_to_rad(float(end_pose(pieces[index]).heading)))
 		var normal := Vector2(-tangent.y,tangent.x)
 		var center: Vector2 = points[i]
 		if i == 0 or i == points.size()-1:
 			var endpoint: int = 0 if i == 0 else 1
-			var matches: Array = _partner(pieces,index,endpoint)
+			var matches: Array = _matches(topology,index,endpoint)
 			if matches.size() == 1:
-				var pose: Dictionary = _pose(pieces[int(matches[0][0])],int(matches[0][1]))
+				var pose: Dictionary = topology.poses[int(matches[0][0])*2+int(matches[0][1])]
 				var other: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(pose.heading))) * (-1.0 if endpoint == 0 else 1.0)
 				var shared: Vector2 = (normal+Vector2(-other.y,other.x)).normalized()
 				normal = shared/maxf(0.25,shared.dot(normal))
@@ -505,8 +597,9 @@ static func section_outline(pieces: Array, index: int, margin: float = 0.0) -> P
 static func road_frame(pieces: Array, point: Vector2, forward: Vector2) -> Dictionary:
 	var best: Dictionary = {}
 	var distance: float = INF
+	var topology: Dictionary = prepare_endpoints(pieces)
 	for index: int in range(pieces.size()):
-		var geometry: Dictionary = section_geometry(pieces,index)
+		var geometry: Dictionary = section_geometry(pieces,index,topology)
 		var path: Dictionary = {"points":geometry.points,"widths":geometry.widths,"closed":false}
 		var nearest: Dictionary = _nearest(path,point)
 		if float(nearest.distance) >= distance: continue

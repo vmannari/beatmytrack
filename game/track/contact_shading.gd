@@ -3,7 +3,7 @@ extends RefCounted
 ## Cosmetic depth projections. No collision, timing or canonical-state writes.
 const VERSION: String = "contact-lighting-12"
 const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2)}
-const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","container","shed","hut","grandstand"]
+const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","car_wreck","container","shed","hut","grandstand"]
 
 static func material() -> ShaderMaterial:
 	var result := ShaderMaterial.new()
@@ -43,7 +43,8 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 	var spread: float = 1.0+minf(air,2.0)*0.10
 	shadow.scale = Vector3(dimensions.x*spread,0.55,dimensions.y*spread)
 	shadow.visible = track == null or track.water_depth(point) <= 0.0
-	(shadow.material_override as ShaderMaterial).set_shader_parameter("strength",0.34/(1.0+air*1.8))
+	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
+	(shadow.material_override as ShaderMaterial).set_shader_parameter("strength",(0.43 if winter else 0.34)/(1.0+air*1.8))
 
 static func build_props(parent: Node3D, track: NativeTrack) -> void:
 	# Spatial batches bound draw calls and let the renderer cull distant groups.

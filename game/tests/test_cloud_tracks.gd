@@ -49,6 +49,7 @@ func run() -> void:
 	var client := Client.new()
 	root.add_child(client)
 	client.configure(OS.get_environment("BMT_API_URL"))
+	await client.request_api("/bootstrap")
 	var cloud := Cloud.new()
 	cloud.client = client
 	cloud.root_override = "user://cloud_tests_"+TrackLibrary.unique_id()
@@ -66,6 +67,8 @@ func run() -> void:
 	var repeated: Dictionary = await cloud.upload_draft(fixture.document)
 	check(repeated.ok and repeated.data.version_id == version,"repeat upload uses durable idempotency key")
 	var ticket: Dictionary = await client.race_ticket(version,"compact",Client.new_idempotency_key())
+	ticket.data["_race_proof"] = fixture.race_proof
+	ticket.data["_race_ghost"] = fixture.ghost
 	check(ticket.ok,"creator gets server contract")
 	check(cloud.queue_run(ticket.data,fixture.replay.frames,version),"publication replay durably queued")
 	await settle(cloud)
@@ -88,6 +91,8 @@ func run() -> void:
 	var track: NativeTrack = catalog.resolve(entry)
 	check(track != null and track.identity == entry.id,"immutable cloud identity survives compilation")
 	check(track.content_hash == ticket.data.manifest.track_content_hash,"downloaded document matches pinned race hash")
+	# These assertions exercise local name/creator/biome filtering.
+	catalog.server_ordered = false
 	check(discovery.query(catalog,{"search":"cloud creator","search_kind":2},[]).size() == 1,"creator search uses server-stamped author")
 	check(discovery.query(catalog,{"search":"cloud creator","search_kind":1},[]).is_empty(),"name-only search excludes creator matches")
 	check(discovery.query(catalog,{"theme":"winter"},[]).is_empty(),"biome filter")
@@ -148,6 +153,8 @@ func run() -> void:
 		game._physics_process(1.0/120.0)
 	check(game.track_session.finished and game.track_session.elapsed_ticks == 12757,"actual game race matches canonical verifier timing")
 	check(game.online_frames.size() == fixture.replay.frames.size()+1200,"audit includes original and resumed input segments")
+	race["_race_proof"] = game.race_proof.recording(game.track_session)
+	race["_race_ghost"] = game.ghost_run.recording("race")
 	check(cloud.queue_run(race,game.online_frames,"",game.online_rewinds),"actual game replay persisted")
 	game.restart()
 	check(game.online_frames.is_empty(),"retry resets captured inputs")
@@ -225,6 +232,8 @@ func run() -> void:
 	app.library = TrackLibrary.new(cloud.root_override.path_join("app/tracks"))
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	var capabilities: Dictionary = await app.online.client.request_api("/bootstrap")
+	check(capabilities.ok and bool(capabilities.data.get("lightweight_race_proofs",false)),"native client negotiates lightweight movement evidence")
 	await app.online.client.development_login("cloud-racer","Cloud Racer",OS.get_environment("BMT_DEV_AUTH_KEY"))
 	app._account_changed()
 	app.cloud.root_override = cloud.root_override
@@ -243,6 +252,7 @@ func run() -> void:
 	check(integrated.race_button.get_global_rect().end.y <= root.get_visible_rect().end.y+1,"Race action fits compact viewport: button="+str(integrated.race_button.get_global_rect())+" viewport="+str(root.get_visible_rect()))
 	await capture("cloud-menu-960")
 	await app._start_race(track,false)
+	check(not app.cloud_ticket.is_empty(),"actual app race owns a server ticket before fixture driving")
 	game = app.game
 	game.set_physics_process(false)
 	input = ReplayInput.new()
@@ -251,15 +261,18 @@ func run() -> void:
 	game.countdown_ticks = 0
 	game.launch_countdown_seen = false
 	for tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+	check(not game.race_proof.recording(game.track_session).is_empty(),"actual game captures the completed sparse movement proof")
+	var completed_ticket: String = str(app.cloud_ticket.ticket_id)
 	app._results()
+	while app.cloud.result_saves.jobs.has(completed_ticket): await process_frame
 	await settle(app.cloud)
-	check(app.cloud.upload_jobs()[-1].get("done",false),"actual app results queues and verifies completed race")
+	check(app.cloud.upload_job(completed_ticket).get("done",false),"actual app results queues and verifies that exact completed race")
 	var results: RaceResults = app.root_ui.find_child("RaceResults",true,false)
 	app._results_continue(results,results.get_parent())
 	await process_frame
 	var completion: RaceComplete = app.root_ui.find_child("RaceComplete",true,false)
 	while completion.standings_busy or app.online.client._busy: await process_frame
-	check(completion.global_rank.text.begins_with("RANK"),"results continuation displays server rank")
+	check(completion.global_rank.text.begins_with("POSITION ") or completion.global_rank.text.begins_with("TOP "),"results continuation displays the actual server comparison position")
 	await capture("cloud-results-960")
 	app.queue_free()
 	await process_frame

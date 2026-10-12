@@ -54,6 +54,13 @@ func _draw() -> void:
 		var image_size: Vector2 = illustration.get_size()
 		var fitted_size: Vector2 = image_size * minf(bounds.x/image_size.x,bounds.y/image_size.y)
 		draw_texture_rect(illustration,Rect2(center-fitted_size*0.5,fitted_size),false,Color(1,1,1,0.35 if disabled else 1.0))
+	elif glyph == "spline":
+		var curve := PackedVector2Array()
+		for i: int in range(25):
+			var t: float = float(i)/24.0
+			curve.append(center+Vector2(lerpf(-20,20,t),-sin(t*TAU)*10))
+		draw_polyline(curve,ink,2.5,true)
+		for i: int in [0,6,12,18,24]: draw_circle(curve[i],3,CYAN)
 	elif glyph == "taper":
 		var road := PackedVector2Array([center+Vector2(-18,-15),center+Vector2(18,-7),center+Vector2(18,7),center+Vector2(-18,15)])
 		draw_colored_polygon(road,Color("59656a"))
@@ -85,6 +92,10 @@ func _draw() -> void:
 			for x: int in [-12,0,12]: draw_line(center+Vector2(x-3,0),center+Vector2(x+3,0),ink,2,true)
 	elif glyph=="play":
 		draw_colored_polygon(PackedVector2Array([center+Vector2(-7,-10),center+Vector2(10,0),center+Vector2(-7,10)]),ink)
+	elif glyph == "publish":
+		draw_polyline(PackedVector2Array([center+Vector2(-13,3),center+Vector2(-13,12),center+Vector2(13,12),center+Vector2(13,3)]),ink,2.5,true)
+		draw_line(center+Vector2(0,5),center+Vector2(0,-12),ink,2.5,true)
+		draw_polyline(PackedVector2Array([center+Vector2(-7,-5),center+Vector2(0,-12),center+Vector2(7,-5)]),ink,2.5,true)
 	elif glyph=="close":
 		draw_line(center-Vector2(8,8),center+Vector2(8,8),ink,2.5,true)
 		draw_line(center+Vector2(-8,8),center+Vector2(8,-8),ink,2.5,true)

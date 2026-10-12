@@ -60,6 +60,11 @@ func apply_snapshot(value: Dictionary) -> void:
 func _map_row(row: Dictionary) -> Dictionary:
 	var mapped: Dictionary = row.duplicate(true)
 	mapped.driver_id = str(row.get("id",""))
+	mapped.points = int(row.get("points",0))
+	if row.has("completed"): mapped.completed = int(row.completed)
+	if row.get("rank") != null: mapped.rank = int(row.rank)
+	if bool(mapped.get("is_test_driver",false)) and str(mapped.get("name","")).contains(" #"):
+		mapped.name = str(mapped.name).get_slice(" #",0)
 	if mapped.driver_id == source_self:
 		mapped.id = SELF
 		mapped.name = "You"
@@ -72,6 +77,34 @@ func apply_outcome(value: Dictionary, index: int) -> void:
 	for key: String in ["before","after","overall_before","overall_after"]: last_result[key] = _map_row(value[key])
 	last_result.beaten = []
 	for row: Dictionary in value.get("beaten",[]): last_result.beaten.append(_map_row(row))
+
+func result_board(index: int) -> Array[Dictionary]:
+	# Project the confirmed/provisional PB over the latest board while its refresh
+	# is in flight. This never writes the verified entries or weekly standings.
+	var rows: Array[Dictionary] = board(index)
+	if int(last_result.get("index",-1)) != index or not last_result.get("after") is Dictionary: return rows
+	var after: Dictionary = last_result.after
+	if after.get("ms") == null: return rows
+	for row: Dictionary in rows:
+		if row.id == SELF and (row.get("ms") == null or int(after.ms) < int(row.ms)):
+			row.merge(after,true)
+	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
+		if a.get("ms") == null: return false
+		if b.get("ms") == null: return true
+		return _result_order(a) < _result_order(b))
+	var rank: int = 0
+	var previous: int = -1
+	for position: int in range(rows.size()):
+		var row: Dictionary = rows[position]
+		if row.get("ms") == null: continue
+		var order: int = _result_order(row)
+		if order != previous: rank = position+1
+		previous = order
+		row.rank = rank
+	return rows
+
+static func _result_order(row: Dictionary) -> int:
+	return int(row.ticks)*1000 if row.get("ticks") != null else int(row.ms)*120
 
 func preview_result(index: int, ticks: int, seconds: float) -> Dictionary:
 	# Presentation only: the verified boards/PBs remain untouched. Use canonical
@@ -203,7 +236,7 @@ func standing() -> Array[Dictionary]:
 	var totals: Dictionary = {}
 	for index: int in range(tracks.size()):
 		for row: Dictionary in board(index):
-			if not totals.has(row.id): totals[row.id] = {"id":row.id,"name":row.name,"points":0}
+			if not totals.has(row.id): totals[row.id] = {"id":row.id,"name":row.name,"country_code":str(row.get("country_code","")),"points":0}
 			totals[row.id].points += int(row.points)
 	var rows: Array[Dictionary] = []
 	for row: Dictionary in totals.values(): rows.append(row.duplicate())
@@ -240,6 +273,28 @@ func overall_gaps() -> Dictionary:
 		if int(row.points) > int(own.points): ahead = row
 		elif int(row.points) < int(own.points) and behind.is_empty(): behind = row
 	return {"own":own,"ahead":ahead,"behind":behind}
+
+func ghost_target(index: int, choice: int) -> Dictionary:
+	var gap: Dictionary = gaps(index)
+	if choice == 0:
+		# Chase the next faster rival, or defend against the closest challenger.
+		if not gap.ahead.is_empty(): return gap.ahead
+		var challenger: Dictionary = closest_challenger(index)
+		if not challenger.is_empty(): return challenger
+		for driver: Dictionary in board(index):
+			if driver.id != SELF and driver.get("ms") != null: return driver
+		return {}
+	if choice == 1: return gap.leader
+	if choice == 2: return gap.own if gap.own.get("ms") != null else {}
+	return {}
+
+func closest_challenger(index: int) -> Dictionary:
+	var rows: Array[Dictionary] = board(index)
+	var own: Dictionary = self_row(rows)
+	if own.get("ms") == null: return {}
+	for driver: Dictionary in rows:
+		if driver.id != SELF and driver.get("ms") != null and int(driver.ms) >= int(own.ms): return driver
+	return {}
 
 func opportunity() -> int:
 	var selected: int = 0

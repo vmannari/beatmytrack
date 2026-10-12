@@ -65,7 +65,7 @@ func run() -> void:
 	var automatic := TrackSession.new(120,1)
 	drive(automatic,sparse,loop)
 	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
-	check(RaceRules.KEY == "standing-5-road-gates-v18","checkpoint records use a new rules key")
+	check(RaceRules.KEY == "standing-5-road-gates-v20","road-edge checkpoint spans use a new rules key")
 	# Real creator hairpins: a cut must block the eventual finish, even when
 	# the car rejoins and follows the rest of the route correctly.
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))

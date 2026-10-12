@@ -5,6 +5,7 @@ uniform sampler2D depth_map : hint_depth_texture, repeat_disable, filter_nearest
 uniform float elapsed = 0.0;
 uniform float strength = 0.43;
 uniform float sunlight_strength = 0.305;
+uniform float cloud_coverage = 1.0;
 float cloud_hash(vec2 p) {
 	p = fract(p * vec2(0.1031, 0.1030));
 	p += dot(p, p.yx + 33.33);
@@ -25,7 +26,7 @@ void fragment() {
 	// Smaller cloud footprints leave more full sunlight between soft penumbrae.
 	// Sparse patches with a visible, continuous 1.2 m/s world-space drift.
 	vec2 p = (world.xz + vec2(13.0, 27.0) - vec2(1.12, 0.42)*elapsed) / 26.0;
-	float mask = smoothstep(0.62, 0.80, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
+	float mask = cloud_coverage * smoothstep(0.62, 0.80, cloud_noise(p)*0.85 + cloud_noise(p*2.03+7.1)*0.15);
 	// Project the existing (-58, -35 degree) sun into the current camera.
 	// A bounded warm veil shares this pass, depth read and cloud mask.
 	vec3 sun_view = mat3(VIEW_MATRIX) * vec3(-0.304, 0.848, 0.434);

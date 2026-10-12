@@ -237,7 +237,7 @@ func _check_creator_proof() -> void:
 	game.call("_physics_process",1.0/120.0)
 	check(game.get("online_frames").size() == frames.size(),"proof freezes at completion while practice continues")
 	var output := FileAccess.open("res://../build/creator-practice-proof.json",FileAccess.WRITE)
-	output.store_string(JSON.stringify({"document":document,"replay":{"schema":"bmt-replay-v1","frames":frames}}))
+	output.store_string(JSON.stringify({"document":document,"replay":{"schema":"bmt-replay-v1","frames":frames,"race_proof":game.race_proof.recording(game.practice_validation)}}))
 	output.close()
 	game.call("restart")
 	check(game.get("online_frames").is_empty(),"restart discards previous proof inputs")

@@ -1,20 +1,28 @@
 class_name VisualRoadJoin
 extends RefCounted
-## Small cosmetic fillets only; canonical outlines and contact geometry stay intact.
+## Cosmetic exposed boundaries and joined mouths; canonical geometry stays intact.
 
-static func build(pieces: Array, index: int, margin: float = 0.0) -> Dictionary:
-	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index)
-	var polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin),cuts)
-	polygon = fair_contour(polygon,cuts)
+static func build(pieces: Array, index: int, margin: float = 0.0, topology: Dictionary = {}) -> Dictionary:
+	if topology.is_empty(): topology = RoadPieces.prepare_endpoints(pieces)
+	var shape: Dictionary = _base_shape(pieces,index,margin,topology)
+	var cuts: Array[Dictionary] = shape.cuts
+	var polygon: PackedVector2Array = shape.polygon
 	var replacements: Dictionary = {}
 	var source_cuts: Array[Dictionary] = cuts.duplicate(true)
 	for cut: Dictionary in cuts:
-		var partner: Array = RoadPieces._partner(pieces,index,int(cut.endpoint))[0]
+		var cut_replacements: Dictionary = {}
+		var partner: Array = RoadPieces._matches(topology,index,int(cut.endpoint))[0]
 		var other: int = int(partner[0])
 		if pieces[other].kind == "bridge": continue
-		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other)
-		var other_polygon: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,other,margin),other_cuts)
-		other_polygon = fair_contour(other_polygon,other_cuts)
+		var other_cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,other,topology)
+		var other_polygon := PackedVector2Array()
+		if pieces[other].kind == "spline":
+			for contour: PackedVector2Array in RoadEdges.presentation_contours(pieces,other,margin,topology):
+				if Geometry2D.is_polygon_clockwise(contour): continue
+				other_polygon = contour
+				if Geometry2D.is_point_in_polygon(cut.point,contour): break
+		else:
+			other_polygon = _base_shape(pieces,other,margin,topology).polygon
 		var ends: Array[Vector2] = []
 		for i: int in range(polygon.size()):
 			var corner: Vector2 = polygon[i]
@@ -39,16 +47,19 @@ static func build(pieces: Array, index: int, margin: float = 0.0) -> Dictionary:
 				var shared_corner: Vector2 = (corner+other_polygon[j])*0.5
 				var a: Vector2 = away.point
 				var b: Vector2 = own.point
-				for skipped: int in own.skipped: replacements[skipped] = PackedVector2Array()
+				for skipped: int in own.skipped: cut_replacements[skipped] = PackedVector2Array()
 				var curve := PackedVector2Array()
 				for sample: int in range(5):
 					var t: float = 0.5+float(sample)/8.0
 					curve.append(a*(1.0-t)*(1.0-t)+shared_corner*2.0*t*(1.0-t)+b*t*t)
 				ends.append(curve[0])
 				if cut_after: curve.reverse()
-				replacements[i] = curve
+				cut_replacements[i] = curve
 				break
 		if ends.size() == 2:
+			# A truncated inner corner can leave only one shared tip. Applying
+			# half a fillet would tilt the cap off its plane and paint the seam.
+			replacements.merge(cut_replacements,true)
 			var normal: Vector2 = (ends[1]-ends[0]).normalized().orthogonal()
 			if normal.dot(cut.normal) < 0: normal = -normal
 			cut.point = (ends[0]+ends[1])*0.5
@@ -58,7 +69,111 @@ static func build(pieces: Array, index: int, margin: float = 0.0) -> Dictionary:
 	for i: int in range(polygon.size()):
 		if replacements.has(i): rounded.append_array(replacements[i])
 		else: rounded.append(polygon[i])
-	return {"polygon":rounded,"cuts":cuts}
+	shape.polygon = rounded
+	shape.contours[0] = rounded
+	return shape
+
+static func _base_shape(pieces: Array, index: int, margin: float, topology: Dictionary) -> Dictionary:
+	var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+	if not topology.has("visual_folded"): topology.visual_folded = {}
+	if not topology.visual_folded.has(index):
+		var outline: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,0.0,topology),cuts)
+		topology.visual_folded[index] = _crosses(outline)
+	var swept: bool = topology.visual_folded[index]
+	var contours: Array[PackedVector2Array] = []
+	if swept:
+		# Offset sides can run backwards when the inner radius is narrower than
+		# half the road. Draw only the exposed sweep, never those internal folds.
+		# This cache is local to the presentation build; canonical kerbs stay pinned.
+		if not topology.has("visual_sweeps"): topology.visual_sweeps = {}
+		if not topology.visual_sweeps.has(index):
+			topology.visual_sweeps[index] = SplineBorders.contours(RoadPieces.section_geometry(pieces,index,topology),cuts)
+		contours = _inset_sweep(topology.visual_sweeps[index],cuts,margin)
+		_align_mouths(contours,cuts,RoadPieces.section_outline(pieces,index,margin,topology))
+	else:
+		var outline: PackedVector2Array = RoadEdges._trim_join_outline(RoadPieces.section_outline(pieces,index,margin,topology),cuts)
+		contours.append(fair_contour(outline,cuts))
+	return {"polygon":contours[0],"contours":contours,"cuts":cuts,"swept":swept}
+
+static func _inset_sweep(source: Array[PackedVector2Array], cuts: Array[Dictionary], margin: float) -> Array[PackedVector2Array]:
+	var result: Array[PackedVector2Array] = SplineBorders.offset(source,margin).duplicate()
+	if margin >= 0.0: return result
+	for contour: int in range(result.size()):
+		var polygon: PackedVector2Array = result[contour]
+		var bindings: Dictionary = {}
+		# Collect all cap constraints before moving a shared corner. Sequential
+		# projection of two adjacent mouths would move their common tip twice.
+		for cut: Dictionary in cuts:
+			var normal: Vector2 = cut.normal
+			for i: int in range(polygon.size()):
+				var next: int = (i+1)%polygon.size()
+				var a: Vector2 = polygon[i]-Vector2(cut.point)
+				var b: Vector2 = polygon[next]-Vector2(cut.point)
+				if absf(a.dot(normal)+margin) > 0.002 or absf(b.dot(normal)+margin) > 0.002 or absf(((a+b)*0.5).dot(normal.orthogonal())) > float(cut.span)*0.5+1.0+absf(margin): continue
+				for vertex: int in [i,next]:
+					if not bindings.has(vertex): bindings[vertex] = []
+					bindings[vertex].append(cut)
+		for vertex: int in bindings:
+			var planes: Array = bindings[vertex]
+			var first: Dictionary = planes[0]
+			var normal: Vector2 = first.normal
+			polygon[vertex] -= normal*(polygon[vertex]-Vector2(first.point)).dot(normal)
+			if planes.size() < 2: continue
+			var second: Dictionary = planes[-1]
+			var other: Vector2 = second.normal
+			var determinant: float = normal.cross(other)
+			if absf(determinant) < 0.0001: continue
+			var da: float = normal.dot(first.point)
+			var db: float = other.dot(second.point)
+			polygon[vertex] = Vector2(da*other.y-db*normal.y,normal.x*db-other.x*da)/determinant
+		result[contour] = polygon
+	return result
+
+static func _shared_cap_corner(point: Vector2, cuts: Array[Dictionary]) -> bool:
+	var count: int = 0
+	for cut: Dictionary in cuts:
+		var delta: Vector2 = point-Vector2(cut.point)
+		if absf(delta.dot(cut.normal)) < 0.002 and absf(delta.dot(Vector2(cut.normal).orthogonal())) <= float(cut.span)*0.5+1.2: count += 1
+	return count > 1
+
+static func _align_mouths(contours: Array[PackedVector2Array], cuts: Array[Dictionary], outline: PackedVector2Array) -> void:
+	# The sampled sweep's round cap can be a few centimetres narrower than
+	# the exact shared cross-section. Both pieces must meet at identical tips.
+	var count: int = outline.size()/2
+	for cut: Dictionary in cuts:
+		var across: Vector2 = Vector2(cut.normal).orthogonal()
+		var a: Vector2 = outline[0 if cut.endpoint == 0 else count-1]
+		var b: Vector2 = outline[-1 if cut.endpoint == 0 else count]
+		if (a-b).dot(across) > 0.0:
+			var swap: Vector2 = a; a = b; b = swap
+		for contour: int in range(contours.size()):
+			var polygon: PackedVector2Array = contours[contour]
+			var left: int = -1
+			var right: int = -1
+			for i: int in range(polygon.size()):
+				var delta: Vector2 = polygon[i]-Vector2(cut.point)
+				if absf(delta.dot(cut.normal)) > 0.002 or absf(delta.dot(across)) > float(cut.span)*0.5+1.0: continue
+				if left < 0 or polygon[i].dot(across) < polygon[left].dot(across): left = i
+				if right < 0 or polygon[i].dot(across) > polygon[right].dot(across): right = i
+			if left >= 0 and right >= 0 and left != right:
+				# Closely spaced mouths can truncate each other's inner tip. That
+				# shared intersection must remain on both planes, not grow a fold.
+				if not _shared_cap_corner(polygon[left],cuts): polygon[left] = a
+				if not _shared_cap_corner(polygon[right],cuts): polygon[right] = b
+				contours[contour] = polygon
+
+static func _crosses(polygon: PackedVector2Array) -> bool:
+	for i: int in range(polygon.size()):
+		var a: Vector2 = polygon[i]
+		var b: Vector2 = polygon[(i+1)%polygon.size()]
+		for j: int in range(i+2,polygon.size()):
+			if i == 0 and j == polygon.size()-1: continue
+			var c: Vector2 = polygon[j]
+			var d: Vector2 = polygon[(j+1)%polygon.size()]
+			if a.min(b).x > c.max(d).x or c.min(d).x > a.max(b).x or a.min(b).y > c.max(d).y or c.min(d).y > a.max(b).y: continue
+			var hit: Variant = Geometry2D.segment_intersects_segment(a,b,c,d)
+			if hit is Vector2 and minf(minf(hit.distance_to(a),hit.distance_to(b)),minf(hit.distance_to(c),hit.distance_to(d))) > 0.001: return true
+	return false
 
 static func _walk(polygon: PackedVector2Array, start: int, step: int, cuts: Array[Dictionary], limit: float) -> Dictionary:
 	var distance: float = 0.0
@@ -100,46 +215,71 @@ static func fair_contour(source: PackedVector2Array, cuts: Array[Dictionary]) ->
 		result[i] += displacement.limit_length(0.25)*weight
 	return result
 
-static func kerb_triangles(document: Dictionary) -> Array[Dictionary]:
+static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callable()) -> Array[Dictionary]:
 	var pieces: Array = document.get("pieces",[])
+	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
+		if yield_budget.is_valid() and not await yield_budget.call(): return []
 		if pieces[index].kind == "bridge": continue
-		var polygon: PackedVector2Array = RoadPieces.section_outline(pieces,index)
-		var bounds := Rect2(polygon[0],Vector2.ZERO)
-		for point: Vector2 in polygon: bounds = bounds.expand(point)
-		outlines.append({"index":index,"polygon":polygon,"bounds":bounds})
+		var contours: Array[PackedVector2Array] = []
+		if pieces[index].kind == "spline": contours = RoadEdges.section_contours(pieces,index,0.0,topology)
+		else:
+			var shape: Dictionary = _base_shape(pieces,index,0.0,topology)
+			if shape.swept: contours = shape.contours
+			else: contours.append(RoadPieces.section_outline(pieces,index,0.0,topology))
+		for polygon: PackedVector2Array in contours:
+			var bounds := Rect2(polygon[0],Vector2.ZERO)
+			for point: Vector2 in polygon: bounds = bounds.expand(point)
+			var swept: bool = pieces[index].kind == "spline" or topology.get("visual_folded",{}).get(index,false)
+			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
 	var segments: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
-		if pieces[index].kind == "bridge": continue
-		var shape: Dictionary = build(pieces,index,-0.2)
-		var polygon: PackedVector2Array = shape.polygon
+		if yield_budget.is_valid() and not await yield_budget.call(): return []
+		if pieces[index].kind in ["bridge","spline"]: continue
+		var shape: Dictionary = build(pieces,index,-0.2,topology)
 		var cuts: Array[Dictionary] = shape.cuts
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
-		var distance: float = 0
-		for edge: int in range(polygon.size()):
-			var a: Vector2 = polygon[edge]
-			var b: Vector2 = polygon[(edge+1)%polygon.size()]
-			if RoadEdges._on_join_cut(a,b,cuts): continue
-			var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts)
-			var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
-			var steps: int = maxi(1,ceili(a.distance_to(b)/0.2))
-			for step: int in range(steps):
-				var p: Vector2 = a.lerp(b,float(step)/steps)
-				var q: Vector2 = a.lerp(b,float(step+1)/steps)
-				var np: Vector2 = na.lerp(nb,float(step)/steps)
-				var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
-				var start: float = distance
-				distance += (p+np*0.375).distance_to(q+nq*0.375)
-				var middle: Vector2 = (p+q)*0.5
-				var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
-				if Geometry2D.is_point_in_polygon(middle+outward,polygon): outward = -outward
-				if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces): continue
-				if RoadEdges._on_join_plane(a,b,cuts) or RoadEdges._inner_bend_distance(middle,points) < 0: continue
-				segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+		for polygon: PackedVector2Array in shape.contours:
+			var hole: bool = shape.swept and Geometry2D.is_polygon_clockwise(polygon)
+			var distance: float = 0
+			for edge: int in range(polygon.size()):
+				if yield_budget.is_valid() and not await yield_budget.call(): return []
+				var a: Vector2 = polygon[edge]
+				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+				if RoadEdges._on_join_cut(a,b,cuts) or (shape.swept and RoadEdges._on_join_cap(a,b,cuts)): continue
+				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,shape.swept)
+				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,shape.swept)
+				if hole: na = -na; nb = -nb
+				if shape.swept:
+					na = SplineBorders.kerb_normal(polygon,edge,na)
+					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
+				var steps: int = maxi(1,ceili(a.distance_to(b)/0.2))
+				for step: int in range(steps):
+					var p: Vector2 = a.lerp(b,float(step)/steps)
+					var q: Vector2 = a.lerp(b,float(step+1)/steps)
+					var np: Vector2 = na.lerp(nb,float(step)/steps)
+					var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
+					var start: float = distance
+					distance += (p+np*0.375).distance_to(q+nq*0.375)
+					var middle: Vector2 = (p+q)*0.5
+					var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
+					if Geometry2D.is_point_in_polygon(middle+outward,polygon) != hole: outward = -outward
+					if not RoadEdges._road_edge_exposed(middle+outward,index,outlines,pieces,topology): continue
+					var curved: bool = RoadEdges._inner_bend_distance(middle,points) >= 0
+					if RoadEdges._on_join_plane(a,b,cuts) or not curved: continue
+					segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+	# Splines keep exactly the same swept contours, curvature classification
+	# and bounded kerb offsets used by their solitary/canonical renderer.
+	var has_spline: bool = false
+	for piece: Dictionary in pieces: has_spline = has_spline or piece.kind == "spline"
+	if has_spline:
+		if yield_budget.is_valid() and not await yield_budget.call(): return []
+		segments.append_array(RoadKerbs.creator_segments(document,"spline",true))
 	var visual := RoadKerbs.new()
 	var first: int = 0
 	while first < segments.size():
+		if yield_budget.is_valid() and not await yield_budget.call(): return []
 		var last: int = first
 		while last+1 < segments.size():
 			var a: Dictionary = segments[last]
@@ -148,7 +288,7 @@ static func kerb_triangles(document: Dictionary) -> Array[Dictionary]:
 			last += 1
 		var origin: float = segments[first].start
 		var length: float = segments[last].end-origin
-		if length < 2.0:
+		if length < 2.0 and pieces[int(segments[first].piece)].kind != "spline":
 			first = last+1
 			continue # Omit isolated decorative kerb slivers at offset inflections.
 		for i: int in range(first,last+1):

@@ -9,7 +9,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation",12)
 	for item: Array in [["trophy","Weekly Rivalry","rivalry"],["flag","Free race","free"],["target","Challenges","challenges"],["friends","Friends","friends"]]:
 		var active: bool = item[2] == selected
-		var available: bool = item[2] in ["rivalry","free"]
+		var available: bool = item[2] in ["rivalry","free","challenges"]
 		var button := MenuStyle.button("",func() -> void: mode_requested.emit(item[2]),active)
 		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
 		button.expand_icon = true

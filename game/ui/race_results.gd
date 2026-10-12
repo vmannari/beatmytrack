@@ -4,6 +4,7 @@ extends VBoxContainer
 signal retry_requested
 signal return_requested
 signal continue_requested
+signal challenge_requested
 
 var vehicle_name: String = ""
 var circuit: String
@@ -14,6 +15,7 @@ var laps: Array[float]
 var clean: bool
 var saved: bool
 var editor: bool
+var challenge_available: bool = false
 var result: RaceResultData
 var selected_lap: int = 0
 var map: LapRouteView
@@ -261,6 +263,12 @@ func _actions() -> void:
 	retry.name = "RetryRace"
 	retry.add_theme_stylebox_override("normal",_panel_style(8))
 	row.add_child(retry)
+	if challenge_available:
+		var challenge := MenuStyle.button("CREATE CHALLENGE",func() -> void: challenge_requested.emit())
+		challenge.name = "CreateResultChallenge"
+		challenge.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		challenge.custom_minimum_size.y = 70
+		row.add_child(challenge)
 	next_button = MenuStyle.button("CONTINUE   \u2192",func() -> void: continue_requested.emit(),true)
 	next_button.name = "ContinueResults"
 	row.add_child(next_button)

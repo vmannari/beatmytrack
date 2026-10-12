@@ -33,6 +33,9 @@ func run() -> void:
 	app.set("document",doc)
 	app.call("_show_screen","create")
 	await process_frame
+	var initial_deadline: int = Time.get_ticks_msec()+15000
+	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<initial_deadline: await process_frame
+	check(app.editor_preview_thread == null and not app.editor_world._building,"initial editor preview completes before approval measurements")
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.snap_enabled = false
 	var approval_started: int = Time.get_ticks_usec()
@@ -83,7 +86,7 @@ func run() -> void:
 	check(app.get("canvas") == canvas,"redo retains the canvas and viewport")
 	check(app.get("document").pieces.size() == 8,"redo restores the approved road")
 	app.call("_save_track_explicit")
-	check(app.get("editor_preview_thread") == null,"explicit save drains pending preview work")
+	check(app.library.load_document(app.document.id) == JSON.parse_string(JSON.stringify(app.document)),"explicit save commits the exact document independently of pending preview work")
 	# Reproduce the old synchronous undo path on the same fixture for comparison.
 	var before: int = Time.get_ticks_usec()
 	app.redo_history.append(app.document.duplicate(true))
@@ -93,6 +96,9 @@ func run() -> void:
 	print("EDITOR_HISTORY legacy_undo_ms=",(Time.get_ticks_usec()-before)/1000.0)
 	canvas = app.get("canvas")
 	var world: EditorWorld = app.get("editor_world")
+	deadline = Time.get_ticks_msec()+15000
+	while (app.editor_preview_thread != null or world._building) and Time.get_ticks_msec()<deadline: await process_frame
+	check(app.editor_preview_thread == null and not world._building,"reopened scenery completes before cache-reuse assertions")
 	var initial_visual: NativeTrackVisual = world.visual
 	app.call("_redo")
 	deadline = Time.get_ticks_msec()+15000

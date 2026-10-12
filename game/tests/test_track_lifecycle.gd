@@ -3,6 +3,7 @@ const Client = preload("res://backend/backend_client.gd")
 const Cloud = preload("res://backend/cloud_tracks.gd")
 var checks: int = 0
 var failures: int = 0
+var latest_trajectory: Dictionary = {}
 
 class LostResponseClient extends Client:
 	var lose_publication: bool = false
@@ -47,6 +48,8 @@ func proof(document: Dictionary) -> Array:
 	var simulation := VehicleSimulation.new(VehicleCatalog.config("compact"))
 	simulation.reset(track.spawn,track.spawn_heading)
 	var session := TrackSession.new(120,1)
+	var trajectory = preload("res://backend/race_proof.gd").new()
+	trajectory.capture(simulation.state,session,true)
 	var driver := RouteDriver.new()
 	var frames: Array = []
 	for tick: int in range(24000):
@@ -55,8 +58,10 @@ func proof(document: Dictionary) -> Array:
 		var before: Vector2 = simulation.state.position
 		simulation.step(input,track)
 		session.advance(track,before,simulation.state.position,simulation.state.route_index,simulation.state.track_elevated)
+		trajectory.capture(simulation.state,session)
 		if session.finished: break
 	check(session.finished,"canonical input proof completes one ordered lap")
+	latest_trajectory = trajectory.recording(session)
 	return frames
 
 func until_ready(flow: TrackLifecycle, document: Dictionary) -> void:
@@ -87,8 +92,12 @@ func run() -> void:
 	var client := LostResponseClient.new()
 	root.add_child(client)
 	client.configure(OS.get_environment("BMT_API_URL"))
+	var bootstrap: Dictionary = await client.request_api("/bootstrap")
+	check(bootstrap.ok and int(bootstrap.data.get("discovery_paging_version",0)) == 2,"publication integration negotiates stable discovery pages")
 	var login: Dictionary = await client.development_login("lifecycle-creator","Lifecycle Creator",OS.get_environment("BMT_DEV_AUTH_KEY"))
 	check(login.ok,"creator signs in")
+	var initial_slots: Dictionary = await client.request_api("/me/entitlements",HTTPClient.METHOD_GET,{},"",true)
+	check(initial_slots.ok and int(initial_slots.data.publishing_slots) == 1,"creator receives exactly one initial publishing slot")
 	var cloud := FailingCacheCloud.new()
 	cloud.client = client
 	cloud.root_override = "user://lifecycle_tests_"+TrackLibrary.unique_id()
@@ -106,20 +115,19 @@ func run() -> void:
 	if exact.is_empty(): print(flow.last_error); quit(1); return
 	doc = exact
 	var frames: Array = proof(doc)
-	var staged: Dictionary = flow.stage(doc,frames)
+	var staged: Dictionary = flow.stage(doc,frames,"compact",null,"",latest_trajectory)
 	check(not staged.is_empty() and FileAccess.file_exists(str(staged.path).get_base_dir().path_join(staged.job.proof_file)),"completed proof saved before ticket or network upload")
 	check(not flow.ready_to_publish(doc),"local completed test does not unlock Publish")
 	var guest_library := TrackLibrary.new(cloud.root_override.path_join("guest-drafts"))
 	var guest_doc: Dictionary = doc.duplicate(true)
 	guest_doc.id = "guest_pending"
 	guest_doc.creator = "Guest"
-	check(guest_library.save_wip(guest_doc) == OK,"guest authoring remains recoverable before adoption")
+	check(guest_library.save_wip(guest_doc) == OK,"guest authoring remains recoverable in Guest storage")
 	var adoption := preload("res://ui/draft_browser.gd").new()
 	adoption.library = library
-	adoption.guest_library = guest_library
 	adoption.lifecycle = flow
 	root.add_child(adoption)
-	check(adoption.entries.size() == 2 and adoption.entries[-1].get("guest",false),"signed-in creator can explicitly adopt saved Guest work")
+	check(adoption.entries.size() == 1 and adoption.entries[0].document.id == doc.id,"signed-in draft browser contains only that player's work")
 	adoption.queue_free()
 	await process_frame
 	check(cloud._write(str(staged.path),{"interrupted":true}),"inject interrupted journal primary")
@@ -191,9 +199,16 @@ func run() -> void:
 	var revised: Dictionary = await flow.prepare_test(changed)
 	check(not revised.is_empty(),"edited revision retrieves its own canonical contract")
 	if revised.is_empty(): print(flow.last_error); quit(1); return
-	var revised_stage: Dictionary = flow.stage(revised,proof(revised))
+	var revised_frames: Array = proof(revised)
+	var revised_stage: Dictionary = flow.stage(revised,revised_frames,"compact",null,"",latest_trajectory)
 	check(not revised_stage.is_empty(),"new revision retains its own completed proof")
 	await until_ready(flow,revised)
+	var purchase_adapter := preload("res://platform/purchase_simulator.gd").new()
+	purchase_adapter.client = client
+	root.add_child(purchase_adapter)
+	var extra_slot: Dictionary = await purchase_adapter.purchase("creator_slot_1","approved")
+	check(extra_slot.ok and int(extra_slot.data.entitlements.publishing_slots) == 1,"simulated purchase provides capacity for the second immutable publication")
+	purchase_adapter.queue_free()
 	var original_player: Dictionary = client.player.duplicate(true)
 	client.switch_after_publication = true
 	check(await flow.request_publish(revised),"verified new revision publishes under the original logical track")

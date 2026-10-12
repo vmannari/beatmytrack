@@ -528,6 +528,8 @@ func _attachment_pivots() -> void:
 			check(RoadPieces.attached_end(piece,[piece,neighbor],0) == endpoint,kind+" detects either connected end")
 			var trial: Dictionary = piece.duplicate(true)
 			if kind in ["straight","taper","bridge"]: trial.length += 8.0
+			elif kind == "spline":
+				for point: Array in trial.spline_points: point[0] = float(point[0])*1.2
 			else: trial.radius += 5.0
 			trial = RoadPieces.keep_attachment(piece,trial,endpoint)
 			var after: Dictionary = RoadPieces._pose(trial,endpoint)

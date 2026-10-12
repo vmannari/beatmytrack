@@ -1,7 +1,7 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0) -> bool:
 	var wood := Color("887354")
 	var metal := Color("858b87")
 	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.08)
@@ -45,24 +45,37 @@ static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, 
 				for side: float in [-1.0,1.0]:
 					_face(tool,kit,center,scale,turn,[Vector3(side*2.005,0.42,0),p+Vector3.RIGHT*side*2.005,q+Vector3.RIGHT*side*2.005],Color("bda079"))
 		"barrier":
+			var span: float = section_length/scale if section_length >= 0.0 else 6.0
 			# Original solid block and three red bands; graphic shadow foot and bevel.
-			box.call(Vector3(0,0.43,0),Vector3(6,0.86,1),Color("a8aaa0"))
-			box.call(Vector3(0,0.10,0),Vector3(6.005,0.20,1.005),Color("505d59"))
-			box.call(Vector3(0,0.885,0),Vector3(5.94,0.07,0.88),Color("d9d7c4"))
+			box.call(Vector3(0,0.43,0),Vector3(span,0.86,1),Color("a8aaa0"))
+			box.call(Vector3(0,0.10,0),Vector3(span+0.005,0.20,1.005),Color("505d59"))
+			box.call(Vector3(0,0.885,0),Vector3(maxf(0.01,span-0.06),0.07,0.88),Color("d9d7c4"))
 			for side: float in [-1.0,1.0]:
-				_face(tool,kit,center,scale,turn,[Vector3(-3,0.85,side*0.5),Vector3(3,0.85,side*0.5),Vector3(2.97,0.92,side*0.44),Vector3(-2.97,0.92,side*0.44)],Color("c8c9b9"))
+				_face(tool,kit,center,scale,turn,[Vector3(-span*0.5,0.85,side*0.5),Vector3(span*0.5,0.85,side*0.5),Vector3(maxf(0.005,span*0.5-0.03),0.92,side*0.44),Vector3(-maxf(0.005,span*0.5-0.03),0.92,side*0.44)],Color("c8c9b9"))
 			for x: int in [-2,0,2]:
-				box.call(Vector3(x,0.775,0),Vector3(0.9,0.30,1.018),Color("9d392c"))
-				box.call(Vector3(x,0.935,0),Vector3(0.9,0.025,1.018),Color("cf6045"))
+				box.call(Vector3(x*span/6.0,0.775,0),Vector3(span*0.15,0.30,1.018),Color("9d392c"))
+				box.call(Vector3(x*span/6.0,0.935,0),Vector3(span*0.15,0.025,1.018),Color("cf6045"))
+		"fence":
+			var span: float = section_length/scale if section_length >= 0.0 else 6.0
+			# Endpoint posts hide angled rail joints; dimensions stay uniform.
+			var posts: int = maxi(1,ceili(span/3.0))
+			for i: int in range(posts+1):
+				var reach: float = span*0.5 if section_length >= 0.0 else 2.8
+				box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.64,0),Vector3(0.20,1.28,0.20),Color("706b5b"))
+			for height: float in [0.42,1.02]: box.call(Vector3(0,height,0),Vector3(span,0.16,0.16),Color("898373"))
 		"guardrail", "wire_fence":
-			for x: float in [-2.9,0,2.9]: box.call(Vector3(x,0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
+			var span: float = section_length/scale if section_length >= 0.0 else 6.0
+			var reach: float = span*0.5 if section_length >= 0.0 else 2.9
+			var posts: int = maxi(1,ceili(span/3.0))
+			for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
 			if kind == "guardrail":
-				box.call(Vector3(0,0.8,0),Vector3(6,0.42,0.10),metal.darkened(0.15))
-				for h: float in [0.66,0.94]: box.call(Vector3(0,h,0.015),Vector3(6,0.10,0.17),metal.lightened(0.1))
-				for x: float in [-2.9,0,2.9]: box.call(Vector3(x,0.8,0.072),Vector3(0.07,0.07,0.035),Color("d1cfbd"))
+				box.call(Vector3(0,0.8,0),Vector3(span,0.42,0.10),metal.darkened(0.15))
+				for h: float in [0.66,0.94]: box.call(Vector3(0,h,0.015),Vector3(span,0.10,0.17),metal.lightened(0.1))
+				for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.8,0.072),Vector3(0.07,0.07,0.035),Color("d1cfbd"))
 			else:
-				for h: float in [0.3,0.6,0.9,1.2]: box.call(Vector3(0,h,0),Vector3(6,0.025,0.025),metal)
-				for x: int in range(-5,6): box.call(Vector3(x*0.5,0.75,0),Vector3(0.02,0.9,0.02),metal)
+				for h: float in [0.3,0.6,0.9,1.2]: box.call(Vector3(0,h,0),Vector3(span,0.025,0.025),metal)
+				var wires: int = maxi(1,ceili(span/0.5))
+				for i: int in range(1,wires): box.call(Vector3(lerpf(-span*0.5,span*0.5,float(i)/wires),0.75,0),Vector3(0.02,0.9,0.02),metal)
 		"cone":
 			box.call(Vector3(0,0.06,0),Vector3(0.7,0.12,0.7),Color("303837"))
 			_lathe(tool,kit,center,scale,turn,[Vector2(0.29,0.12),Vector2(0.22,0.38),Vector2(0.16,0.57),Vector2(0.045,0.88),Vector2(0,0.88)],[Color("cc6b32"),Color("e9e7d7"),Color("cc6b32"),Color("cc6b32")])
@@ -99,6 +112,23 @@ static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, 
 		"pallet":
 			for z: float in [-0.52,0.52]: box.call(Vector3(0,0.06,z),Vector3(1.9,0.12,0.16),wood.darkened(0.15))
 			for x: int in range(5): box.call(Vector3(-0.8+x*0.4,0.14,0),Vector3(0.3,0.16,1.4),wood)
+		"car_wreck":
+			# Original stripped fictional compact: collapsed roof, exposed cabin,
+			# rusted panels and missing front wheel. Static opaque batched geometry.
+			var rust := Color("79513d")
+			box.call(Vector3(0,0.32,0),Vector3(4.2,0.42,1.8),rust.darkened(0.12))
+			box.call(Vector3(-1.55,0.60,0),Vector3(1.0,0.20,1.7),Color("8c6950"))
+			box.call(Vector3(1.50,0.49,0.05),Vector3(1.1,0.13,1.5),rust)
+			box.call(Vector3(-0.15,0.57,0),Vector3(1.8,0.08,1.45),Color("293334"))
+			for side: float in [-1.0,1.0]:
+				box.call(Vector3(-0.2,0.69,side*0.78),Vector3(2.1,0.25,0.10),rust)
+				_face(tool,kit,center,scale,turn,[Vector3(-1.1,0.8,side*0.75),Vector3(-0.85,1.15,side*0.62),Vector3(0.30,1.04,side*0.65),Vector3(0.75,0.77,side*0.75)],Color("65564a"))
+			_face(tool,kit,center,scale,turn,[Vector3(-0.85,1.15,-0.62),Vector3(0.30,1.04,-0.65),Vector3(0.1,0.89,0.64),Vector3(-0.85,1.15,0.62)],rust.lightened(0.08))
+			for axle: float in [-1.3,1.3]:
+				for side: float in [-1.0,1.0]:
+					if axle > 0.0 and side > 0.0: continue
+					mound.call(Vector3(axle,0.24,side*0.78),Vector3(0.3,0.24,0.17),Color("252c2b"))
+			box.call(Vector3(2.03,0.24,0),Vector3(0.13,0.15,1.55),metal.darkened(0.35))
 		"parked_car", "van":
 			var length: float = 4.2 if kind == "parked_car" else 5.0
 			box.call(Vector3(0,0.55,0),Vector3(length,0.65,1.8),Color("8e9f9a"))

@@ -33,6 +33,8 @@ func check(condition: bool, text: String) -> void:
 
 func settle() -> void:
 	for _frame: int in range(5): await process_frame
+	# Bounds/focus assertions inspect the destination after its menu transition.
+	while app != null and app.menu_page_motion != null: await process_frame
 
 func capture(id: String, dimensions: Vector2i) -> void:
 	if DisplayServer.get_name() == "headless": return
@@ -40,8 +42,6 @@ func capture(id: String, dimensions: Vector2i) -> void:
 	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id+" screenshot")
 
 func inspect(node: Node, bounds: Rect2) -> void:
-	if node is Control and node.name == "RivalryDataNotice":
-		check(app.menu_body_slot.get_global_rect().grow(1).encloses(node.get_global_rect()),"rivalry status notice stays inside the clipped page")
 	if node is Button and node.is_visible_in_tree():
 		var rectangle: Rect2 = node.get_global_rect()
 		check(bounds.grow(1).encloses(rectangle),str(node.name)+" stays inside the viewport")
@@ -52,7 +52,7 @@ func run() -> void:
 	OS.set_environment("BMT_API_URL","")
 	folder = "user://weekly_rivalry_test_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/weekly-rivalry-2026-10-04")
+	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-two-column-2026-10-09/hub")
 	if DisplayServer.get_name() != "headless": DirAccess.make_dir_recursive_absolute(evidence)
 	check(WeeklyRivalry.new().tracks.is_empty(),"shipping rivalry never seeds sample players")
 	var fixture := WeeklyRivalry.new(true)
@@ -96,24 +96,95 @@ func run() -> void:
 		app._rivalry()
 		await settle()
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+		var winner: Control = app.root_ui.find_child("RivalryPodium_1",true,false)
+		var runner: Control = app.root_ui.find_child("RivalryPodium_2",true,false)
+		check(winner.size.y > runner.size.y and winner.position.y < runner.position.y,"centre winner has a taller podium card")
+		check(winner.size.y <= 128,"the podium remains compact enough to prioritize standings")
+		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) == null,"podium omits car pictures")
+		var left_panel: Control = app.root_ui.find_child("RivalryDriversPanel",true,false)
+		var right_panel: Control = app.root_ui.find_child("RivalryTracksPanel",true,false)
+		check(absf(left_panel.get_global_rect().end.y-right_panel.get_global_rect().end.y) < 1.0,"main panel bottom edges align")
+		var player_points: Label = app.root_ui.find_child("RivalryPlayerPoints_you",true,false)
+		check(player_points.text == str(int(WeeklyRivalry.self_row(app.rivalry.model.standing()).points)),"highlighted player row shows the model points")
+		var player_row: Control = app.root_ui.find_child("Driver_you",true,false)
+		var table_scroll: Control = app.root_ui.find_child("RivalryStandingsScroll",true,false)
+		check(table_scroll.size.y >= winner.size.y*1.65,"standings have substantially more vertical room than the podium")
+		print("RIVALRY_HUB_LAYOUT: ",dimensions," podium=",winner.size.y," standings=",table_scroll.size.y)
+		check(table_scroll.get_global_rect().grow(1).encloses(player_row.get_global_rect()),"the highlighted player row is visible within the standings viewport")
+		var gap_header: Control = app.root_ui.find_child("RivalryColumn_GAP",true,false)
+		var player_gap: Control = app.root_ui.find_child("RivalryPlayerGap_you",true,false)
+		var bar: VScrollBar = (table_scroll as ScrollContainer).get_v_scroll_bar()
+		check(player_gap.get_global_rect().end.x <= bar.get_global_rect().position.x-12.0,"gap values leave clear space before the scrollbar")
+		check(gap_header.get_global_rect().end.x <= bar.get_global_rect().position.x-12.0,"gap heading stays clear of the scrollbar")
+		check(absf(gap_header.get_global_rect().end.x-player_gap.get_global_rect().end.x) <= 1.0,"gap heading and values share their right edge")
+		check(app.root_ui.find_child("RivalryDataNotice",true,false) == null,"no debug footer remains")
+		check(app.root_ui.find_child("RivalryFloatingNavigation",true,false) == null,"overview needs no redundant section tabs")
+		check(app.root_ui.find_child("RivalryStartRace",true,false) == null and app.root_ui.find_child("RivalryRaceSelected",true,false) == null,"race starts only from track details")
 		await capture("overview",dimensions)
-		(app.root_ui.find_child("RivalryContinue",true,false) as Button).pressed.emit()
+		for slot: int in range(5):
+			var choose: Button = app.root_ui.find_child("SelectRivalryTrack_"+str(slot),true,false)
+			check(choose != null and app.root_ui.find_child("OpenRivalryTrack_"+str(slot),true,false) == null,"each track has one clickable row and no separate arrow")
+			check(absf(choose.get_global_rect().size.x-(choose.get_parent() as Control).get_global_rect().size.x) < 1.0,"the track row fills the available width")
+			check(app.menu_body_slot.get_global_rect().encloses(choose.get_global_rect()),"all five circuits are visible immediately")
+			var overview: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+			var early_launch: Array[int] = []
+			overview.race_requested.connect(func(index: int, _ghost: int) -> void: early_launch.append(index))
+			choose.grab_focus()
+			await settle()
+			check(app.rivalry_section == "overview" and app.rivalry_track == slot,"keyboard focus remembers the track without opening it")
+			choose.pressed.emit()
+			await settle()
+			check(app.rivalry_section == "detail" and app.rivalry_track == slot and early_launch.is_empty(),"selecting a track opens its details without starting a race")
+			var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+			check(page.selected == slot and app.root_ui.find_child("RivalryFloatingNavigation",true,false) == null,"track detail keeps the chosen circuit without redundant tabs")
+			check(app.root_ui.find_child("RivalryGhostSelector",true,false) == null,"track detail has no third-column ghost selector")
+			var expected_ghost: int = page.ghost_choice
+			var launch: Array[int] = []
+			page.race_requested.connect(func(index: int, ghost: int) -> void: launch.append_array([index,ghost]))
+			(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
+			check(launch == [slot,expected_ghost],"detail starts the chosen track with its retained ghost target")
+			inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+			if slot == 2: await capture("track-detail",dimensions)
+			(app.root_ui.find_child("RivalryBackToOverview",true,false) as Button).pressed.emit()
+			await settle()
+			check(app.rivalry_section == "overview" and app.rivalry_track == slot,"Back to Rivalry returns to the overview and remembers the track")
+		(app.root_ui.find_child("SelectRivalryTrack_0",true,false) as Button).pressed.emit()
 		await settle()
-		check(app.rivalry_section == "detail" and app.rivalry_track == app.rivalry.model.opportunity(),"Continue targets the closest opportunity")
-		app.rivalry_track = 2
+		app._rivalry_changed()
+		await settle()
+		check(app.rivalry_section == "detail","background refresh preserves an open track detail")
+		app._open_rivalry()
+		await settle()
+		check(app.rivalry_section == "overview" and app.root_ui.find_child("RivalryTracksPanel",true,false) != null,"opening Rivalry again always returns to its overview")
+		(app.root_ui.find_child("SelectRivalryTrack_1",true,false) as Button).pressed.emit()
+		await settle()
+		app._navigate_menu_page("garage")
+		await settle()
+		app._navigate_menu_page("rivalry")
+		await settle()
+		check(app.rivalry_section == "overview" and app.root_ui.find_child("RivalryDriversPanel",true,false) != null,"returning from a primary menu opens tracks and standings")
+		var suspended_race := Node.new()
+		app.add_child(suspended_race)
+		app.game = suspended_race
+		app.rivalry_racing = true
+		app.rivalry_section = "result"
+		app._open_rivalry()
+		await settle()
+		check(app.rivalry_section == "overview" and app.game == null and not is_instance_valid(suspended_race),"explicit Rivalry entry releases a suspended result race and opens the hub")
+		app.rivalry.model.tracks[2].available = false
 		app._rivalry()
 		await settle()
-		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
-		await capture("track-detail",dimensions)
-		(app.root_ui.find_child("RivalryBackToTracks",true,false) as Button).pressed.emit()
+		var unavailable: Button = app.root_ui.find_child("SelectRivalryTrack_2",true,false)
+		check(not unavailable.disabled,"an unavailable track remains open for inspection")
+		unavailable.pressed.emit()
 		await settle()
-		check(app.rivalry_section == "tracks","drill-down returns directly to Tracks")
-		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
-		await capture("tracks",dimensions)
-		(app.root_ui.find_child("RivalryTab_standings",true,false) as Button).pressed.emit()
+		check((app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"track details retain the unavailable-race gate")
+		app.rivalry.model.tracks[2].available = true
+		app.rivalry.busy = true
+		app._rivalry()
 		await settle()
-		check(app.rivalry_section == "standings","persistent navigation opens Standings")
-		await capture("standings",dimensions)
+		check((app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"busy track details cannot issue another race")
+		app.rivalry.busy = false
 		app.rivalry.model.submit(2,84.100)
 		app.rivalry_section = "result"
 		app._rivalry()
@@ -132,6 +203,11 @@ func run() -> void:
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
 		await capture("weekly-finale",dimensions)
 		check(app.root_ui.find_child("RivalryPodium",true,false) != null,"weekly finale is an Overview state")
+		(app.root_ui.find_child("SelectRivalryTrack_2",true,false) as Button).pressed.emit()
+		await settle()
+		check(app.rivalry_section == "detail" and (app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"completed-week rows open details but cannot start another race")
+		(app.root_ui.find_child("RivalryBackToOverview",true,false) as Button).pressed.emit()
+		await settle()
 		(app.root_ui.find_child("Mode_flag",true,false) as Button).pressed.emit()
 		await settle()
 		check(app.screen == "tracks" and app.race_area_mode == "free","mode rail returns to Free Race")
@@ -147,10 +223,10 @@ func run() -> void:
 		app._rivalry()
 		await settle()
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
-		var selector: OptionButton = app.root_ui.find_child("RivalryGhostSelector",true,false)
-		check(selector.selected == 3 and selector.is_item_disabled(0),"missing recordings start with No ghost")
+		var empty_page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+		check(empty_page.ghost_choice == 3,"missing recordings start without a ghost")
 		app.rivalry.model.apply_snapshot(unranked)
-		app.rivalry_section = "standings"
+		app.rivalry_section = "overview"
 		app._rivalry()
 		await settle()
 		check(app.root_ui.find_child("RivalryStandingsScroll",true,false) != null,"20 real entrants remain accessible in scrolling standings")

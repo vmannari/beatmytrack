@@ -5,11 +5,9 @@ signal test_requested(load_id: String)
 signal publish_requested(load_id: String)
 signal delete_requested(id: String, title: String)
 signal back_requested
-signal adopt_requested(document: Dictionary)
 signal fork_requested(document: Dictionary)
 
 var library: TrackLibrary
-var guest_library: TrackLibrary
 var lifecycle: TrackLifecycle
 var entries: Array[Dictionary] = []
 var query: String = ""
@@ -155,10 +153,6 @@ func _show_detail() -> void:
 	info.add_child(MenuStyle.label(TrackTheme.title(str(doc.theme))+" biome",15,true))
 	info.add_child(MenuStyle.label("Last saved "+_stamp(item),14,true))
 	info.add_child(MenuStyle.label(_counts(doc),14,true))
-	if item.get("guest",false):
-		info.add_child(MenuStyle.label("Saved as Guest on this device",14,true))
-		actions.add_child(_action("Use in my drafts","edit",func() -> void: adopt_requested.emit(doc.duplicate(true)),true))
-		return
 	if lifecycle != null:
 		var progress := MenuStyle.label(lifecycle.caption(doc),14,true)
 		progress.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -221,16 +215,8 @@ func _status_changed() -> void:
 
 func _load_entries() -> void:
 	entries = library.editable_entries()
-	var owned_ids: Array[String] = []
 	for item: Dictionary in entries:
 		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
-		owned_ids.append(str(item.document.id))
-	if guest_library != null and guest_library.directory != library.directory:
-		for item: Dictionary in guest_library.editable_entries():
-			if str(item.document.id) in owned_ids: continue
-			item.guest = true
-			item.tested = false
-			entries.append(item)
 
 static func _counts(doc: Dictionary) -> String:
 	return "%d road pieces  ·  %d objects" % [doc.pieces.size(),doc.objects.size()]

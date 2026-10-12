@@ -1,6 +1,8 @@
 class_name VisualGeometry
 extends RefCounted
 ## Original procedural stand-ins. Geometry never supplies simulation collisions.
+static var optimize_model_geometry: bool = true
+static var cylinder_meshes: Dictionary = {}
 
 static func material(color: Color) -> StandardMaterial3D:
 	var result := StandardMaterial3D.new()
@@ -38,6 +40,7 @@ static func batch_static_parts(parent: Node3D) -> void:
 		var tool := SurfaceTool.new()
 		for part: MeshInstance3D in parts:
 			tool.append_from(part.mesh,0,part.transform)
+		if optimize_model_geometry:tool.index()
 		var combined := MeshInstance3D.new()
 		combined.name = "BatchedParts"
 		combined.mesh = tool.commit()
@@ -66,13 +69,17 @@ static func box(parent: Node3D, dimensions: Vector3, center: Vector3, surface: M
 	return node
 
 
-static func cylinder(parent: Node3D, radius: float, height: float, center: Vector3, surface: Material) -> MeshInstance3D:
+static func cylinder(parent: Node3D, radius: float, height: float, center: Vector3, surface: Material, shared_model_mesh: bool = false) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = radius
-	mesh.bottom_radius = radius
-	mesh.height = height
-	mesh.radial_segments = 24
+	var key:=Vector2(radius,height)
+	var mesh: CylinderMesh=cylinder_meshes.get(key) if shared_model_mesh and optimize_model_geometry else null
+	if mesh==null:
+		mesh=CylinderMesh.new()
+		mesh.top_radius=radius
+		mesh.bottom_radius=radius
+		mesh.height=height
+		mesh.radial_segments=24
+		if shared_model_mesh and optimize_model_geometry:cylinder_meshes[key]=mesh
 	node.mesh = mesh
 	node.material_override = surface
 	node.position = center

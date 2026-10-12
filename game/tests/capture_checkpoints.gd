@@ -14,8 +14,11 @@ func run() -> void:
 	var bridge_entry: bool = "--screen=bridge-entry" in OS.get_cmdline_user_args()
 	var late_notice: bool = "--screen=late-notice" in OS.get_cmdline_user_args()
 	var bridge_exit: bool = "--screen=bridge-exit" in OS.get_cmdline_user_args()
+	var return_recovery: bool = "--screen=return-recovery" in OS.get_cmdline_user_args()
 	var document: Dictionary
-	if dust_cloud:
+	if return_recovery:
+		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
+	elif dust_cloud:
 		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json"))
 	elif bridge_entry or late_notice or bridge_exit:
 		document = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
@@ -43,6 +46,7 @@ func run() -> void:
 	# Pick a bend with a wide recovery extension for visual evidence.
 	for index: int in range(session.checkpoint_count()):
 		session.next_checkpoint = index
+		if return_recovery: break
 		if bridge_entry or late_notice:
 			if index == (15 if late_notice else 13): break
 			continue
@@ -110,7 +114,7 @@ func run() -> void:
 		check(is_equal_approx(game.checkpoint_marker.position.y,0.12),"underpass marker is drawn at ground height")
 	await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png("res://../build/checkpoint-late-notice-missed.png" if late_notice else "res://../build/checkpoint-bridge-entry-missed.png" if bridge_entry else "res://../build/checkpoint-missed.png")
-	if not dust_cloud and not sharp_join and not bridge_entry and not late_notice:
+	if not dust_cloud and not sharp_join and not bridge_entry and not late_notice and not return_recovery:
 		await bearing_cases(game,road_center)
 		# Restore the actual driving view before accepting the missed gate.
 		game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0.0,true)
@@ -132,6 +136,14 @@ func run() -> void:
 		game.race_cues.hide()
 		check(game.sim.state.track_elevated,"actual fast recovery enters the upper ramp in this tick")
 		check(session.next_checkpoint == 14,"runtime accepts the gate crossed before ramp entry")
+	elif return_recovery:
+		var ahead: Vector2 = track._race_route_point(session._start_progress+session._progress[selected_gate+3])
+		var stale_hint: int = track.nearest_route(ahead)
+		session._update_display_progress(track,ahead,stale_hint)
+		session.advance(track,road_center-direction*0.05,road_center+direction*0.05,stale_hint,session.checkpoint_elevated())
+		check(session.next_checkpoint == selected_gate+1 and session.missed_checkpoint == -1,"return recovery clears the miss despite a distant collision route hint")
+		game.sim.state.position = road_center+direction*0.05
+		game.previous_position = game.sim.state.position
 	else:
 		session.advance(track,recovery_point-direction*2,recovery_point+direction*2,0)
 	if dust_cloud:
@@ -146,6 +158,9 @@ func run() -> void:
 		await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png("res://../build/checkpoint-late-notice-cleared.png")
 	check(not notice.visible,"recovery also clears the direction hint")
+	if return_recovery:
+		await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png("res://../build/checkpoint-return-recovery-cleared.png")
 	if dust_cloud:
 		check(session.next_checkpoint == 9,"ground-level driving accepts the reported gate")
 		await RenderingServer.frame_post_draw

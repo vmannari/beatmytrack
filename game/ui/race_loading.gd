@@ -10,6 +10,20 @@ var status_label: Label
 var route_view: Control
 var route: PackedVector2Array = []
 var activity: ProgressBar
+var _profile: bool = OS.is_debug_build() and (OS.get_environment("BMT_RACE_LOAD_PROFILE") == "1" or "--profile-race-load" in OS.get_cmdline_user_args())
+var _profile_start: int = Time.get_ticks_usec()
+var _stage_start: int = _profile_start
+var _stage_name: String = "Opening"
+
+func _profile_stage(next: String) -> void:
+	if _profile:
+		var now: int = Time.get_ticks_usec()
+		print("RACE_LOAD_STAGE ",JSON.stringify({"load":get_instance_id(),"stage":_stage_name,"stage_ms":(now-_stage_start)/1000.0,"total_ms":(now-_profile_start)/1000.0,"next":next}))
+	_stage_start = Time.get_ticks_usec()
+	_stage_name = next
+
+func _exit_tree() -> void:
+	_profile_stage("Closed")
 
 func _ready() -> void:
 	layer = 80
@@ -85,6 +99,7 @@ func configure(title: String, theme_id: String, points: PackedVector2Array, prac
 	route_view.queue_redraw()
 
 func stage(text: String) -> void:
+	_profile_stage(text)
 	status_label.text = text
 
 func _layout() -> void:

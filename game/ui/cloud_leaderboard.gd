@@ -19,6 +19,7 @@ var around: Button
 var busy: bool = false
 
 func _ready() -> void:
+	preload("res://ui/popup_style.gd").watch(self)
 	title = "Verified high scores · "+VehicleCatalog.title(vehicle)
 	size = Vector2i(620,540)
 	body = VBoxContainer.new()
@@ -62,10 +63,12 @@ func load_page(nearby: bool = false) -> void:
 			response = await client.request_api("/boards/"+board_id+"/around-me",HTTPClient.METHOD_GET,{},"",true)
 	if not is_inside_tree(): return
 	if response.ok:
-		rows.text = "%d verified racers\n\n" % int(response.data.population)
+		rows.clear()
+		rows.add_text("%d verified racers\n\n" % int(response.data.population))
 		for item: Dictionary in response.data.items:
-			rows.text += "%d.  %s    %s\n" % [int(item.rank),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/120.0)]
-		if response.data.items.is_empty(): rows.text += "Complete a verified race to appear here." if nearby else "No verified times yet."
+			rows.add_image(PlayerCountry.texture(str(item.get("country_code",""))),28,21)
+			rows.add_text("  %d.  %s    %s\n" % [int(item.rank),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/120.0)])
+		if response.data.items.is_empty(): rows.add_text("Complete a verified race to appear here." if nearby else "No verified times yet.")
 		if not nearby:
 			next_offset = response.data.get("next_offset")
 			next_cursor = str(response.data.next_cursor) if response.data.get("next_cursor") != null else ""

@@ -20,6 +20,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 		for side: float in [-1.0,1.0]: rails[side] = CreatorBridges.rail_runs(span,bridges,0,float(span.length),side)
 		var count: int = ceili(float(span.length)/0.5)
 		var half: float = float(span.width)*0.5
+		if theme == "winter": deck.set_uv2(Vector2(half,0.0))
 		for i: int in range(count):
 			var a: float = float(span.length)*i/count
 			var b: float = float(span.length)*(i+1)/count
@@ -94,7 +95,11 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
-	asphalt.set_shader_parameter("ice_albedo", preload("res://assets/textures/winter_ice_v1.png"))
+	asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
+	asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
+	if theme == "winter":
+		asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
+		asphalt.set_shader_parameter("winter_bridge_width_data",true)
 	asphalt.set_shader_parameter("wet_road",theme == "storm")
 	asphalt.set_shader_parameter("packed_sand",theme == "desert")
 	road.material_override = asphalt

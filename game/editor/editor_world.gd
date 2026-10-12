@@ -92,8 +92,17 @@ func show_track(data: NativeTrack) -> void:
 	track = data
 	if is_node_ready() and not _building:
 		if reuse:
-			visual.refresh_editor_objects(track)
-			_visual_track = track
+			if _visual_track.metadata.get("creator_document",{}).get("objects",[]) != track.metadata.get("creator_document",{}).get("objects",[]) or _visual_track.metadata.get("scenery_objects",[]) != track.metadata.get("scenery_objects",[]):
+				var target: NativeTrack = track
+				_building = true
+				await visual.refresh_editor_objects(target,true,true)
+				if not is_inside_tree(): return
+				_building = false
+				_visual_track = target
+				if track != target:
+					show_track(track)
+					return
+			else: _visual_track = track
 			_mark_presented()
 			viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 		else:
@@ -120,6 +129,7 @@ func _same_ground(before: NativeTrack, after: NativeTrack) -> bool:
 	# generated trees on clear grass; those footprints already render as grass.
 	# Keep all terrain/solid props in the comparison so they rebuild correctly.
 	for document: Dictionary in [old_document,new_document]:
+		for key: String in ["id","name","creator"]: document.erase(key)
 		var fixed_objects: Array = []
 		for object: Dictionary in document.objects:
 			if object.kind not in ["tyre_stack","tyre_wall"]: fixed_objects.append(object)
@@ -144,7 +154,7 @@ func _build_track() -> void:
 		world.add_child(candidate)
 		_building = true
 		# Keep the existing scene while the replacement is built in short slices.
-		await candidate.build(target,BridgePresentation.new(target),visual != null)
+		await candidate.build(target,BridgePresentation.new(target),true)
 		if not is_inside_tree(): return
 		while is_instance_valid(canvas) and canvas.active_pointer != -99:
 			await get_tree().process_frame

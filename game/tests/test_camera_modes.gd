@@ -68,6 +68,7 @@ func run() -> void:
 	var store := LocalRecords.new(directory.path_join("records.json"))
 	store.settings.favorites = ["starter_circuit"]
 	store.settings.camera_speed_zoom = false
+	store.settings.camera_speed_zoom_strength = 0.41
 	for mode: String in CameraProfile.MODES:
 		store.settings.camera_mode = mode
 		check(store.save_records() == OK, "camera preference commits " + mode)
@@ -75,10 +76,14 @@ func run() -> void:
 		reload.load_records()
 		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["starter_circuit"], "reload preserves camera and unrelated preferences " + mode)
 		check(reload.settings.camera_speed_zoom == false, "reload preserves disabled speed zoom " + mode)
+		check(is_equal_approx(float(reload.settings.camera_speed_zoom_strength), 0.41), "reload preserves zoom strength independently of mode and toggle " + mode)
 	store.settings.camera_mode = "unknown"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_mode == "look_ahead", "invalid camera preference rejected without losing committed settings")
 	store.settings.camera_speed_zoom = "yes"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.camera_speed_zoom == false, "speed zoom rejects non-boolean preferences without losing saved settings")
+	for invalid: Variant in [-0.01, 0.51, "strong", true, NAN, INF]:
+		store.settings.camera_speed_zoom_strength = invalid
+		check(store.save_records() == ERR_INVALID_DATA and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.41), "invalid zoom strength rejects without losing saved settings: " + str(invalid))
 	var valid_path: String = store.path
 	store.path = directory.path_join("missing/records.json")
 	store.settings.camera_mode = "follow_car"
@@ -94,6 +99,7 @@ func run() -> void:
 	game.set_process(false)
 	check(game.rating_records == null and game.camera.mode == "look_ahead", "race loads preferences independently of local rating records")
 	check(not game.camera.speed_zoom_enabled, "race loads saved speed zoom independently of ratings")
+	check(is_equal_approx(game.camera.speed_zoom_strength, 0.41), "race loads saved zoom strength independently of ratings")
 	var state: Array = game.sim.state.snapshot()
 	var rules: Dictionary = RewindHistory.properties(game.track_session, true)
 	var key: String = store.key_for(game.native_track, game.handling)
@@ -106,6 +112,22 @@ func run() -> void:
 	var zoom_reload := LocalRecords.new(store.path)
 	zoom_reload.load_records()
 	check(zoom_reload.settings.camera_speed_zoom == true, "pause zoom preference persists for next race")
+	var strength: HSlider = game.hud.pause_menu.find_child("RaceSpeedZoomStrength", true, false)
+	check(strength.editable, "enabling speed zoom enables pause strength adjustment")
+	strength.value = 47.0
+	check(game.paused and is_equal_approx(game.camera.speed_zoom_strength, 0.47), "pause strength adjustment applies immediately without unpausing")
+	zoom_reload.load_records()
+	check(is_equal_approx(float(zoom_reload.settings.camera_speed_zoom_strength), 0.47), "pause strength persists for next race")
+	strength.drag_started.emit()
+	strength.value = 39.0
+	check(is_equal_approx(game.camera.speed_zoom_strength, 0.39) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47), "pause drag previews without writing on every movement")
+	strength.drag_ended.emit(true)
+	zoom_reload.load_records()
+	check(is_equal_approx(float(zoom_reload.settings.camera_speed_zoom_strength), 0.39), "pause drag commits on release")
+	strength.value = 47.0
+	game.set_camera_speed_zoom_strength(0.36, false)
+	check(is_equal_approx(game.camera.speed_zoom_strength, 0.36) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47), "drag preview applies without writing preferences")
+	game.set_camera_speed_zoom_strength(0.47)
 	var picker: OptionButton = game.hud.pause_menu.find_child("RaceCameraMode", true, false)
 	picker.select(1)
 	picker.item_selected.emit(1)
@@ -121,6 +143,11 @@ func run() -> void:
 	zoom_choice.set_pressed_no_signal(false)
 	zoom_choice.toggled.emit(false)
 	check(not game.camera.speed_zoom_enabled and store.settings.camera_speed_zoom == true and game.hud.pause_menu.status.text.contains("Could not save"), "failed zoom save retains previous preference and permits session testing")
+	check(not strength.editable and is_equal_approx(game.camera.speed_zoom_strength, 0.47), "disabling zoom retains strength and disables slider")
+	zoom_choice.set_pressed_no_signal(true)
+	zoom_choice.toggled.emit(true)
+	strength.value = 24.0
+	check(is_equal_approx(game.camera.speed_zoom_strength, 0.24) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), 0.47) and game.hud.pause_menu.status.text.contains("Could not save"), "failed strength save retains prior preference and permits session testing")
 	store.path = valid_path
 	game.set_camera_mode("follow_car")
 	game.toggle_pause()
@@ -131,6 +158,7 @@ func run() -> void:
 	check(game.camera.mode == "look_ahead", "C cycles the race camera")
 	game.restart()
 	check(game.camera.mode == "look_ahead", "retry keeps chosen camera")
+	check(is_equal_approx(game.camera.speed_zoom_strength, 0.24), "mode changes and retry keep session zoom strength")
 	check(game.sim.state.snapshot() == state and RewindHistory.properties(game.track_session, true) == rules, "camera switching leaves canonical state and race gates unchanged")
 	check(store.key_for(game.native_track, game.handling) == key, "camera choice leaves record partition unchanged")
 	game.queue_free()
@@ -204,38 +232,51 @@ func _check_look_ahead_delay(camera: FollowCamera) -> void:
 
 func _check_speed_zoom(camera: FollowCamera) -> void:
 	var base_size: float = camera.profile.baseline_extent / camera.profile.magnification
+	check(is_equal_approx(camera.speed_zoom_strength, 0.30), "new and existing profiles without a strength use the stronger 30 percent default")
 	for mode: String in CameraProfile.MODES:
 		camera.set_mode(mode)
 		camera.speed_zoom_enabled = true
-		var previous_size: float = base_size
-		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
-		var slow_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
-		for speed: float in [0.0, 5.0, 30.0 / 3.6, 20.0, 30.0, 160.0 / 3.6, 90.0]:
-			camera.follow(Vector2.ZERO, Vector2(0, speed), 0.0, 0.0, true)
-			check(camera.size >= previous_size - 0.00001 and camera.size <= base_size * 1.12 + 0.00001, "speed zoom grows monotonically with a slight bounded pullback " + mode)
-			if speed <= 30.0 / 3.6: check(is_equal_approx(camera.size, base_size), "standing/slow driving preserves calibrated extent " + mode)
-			previous_size = camera.size
-		var fast_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
-		check(is_equal_approx(camera.size, base_size * 1.12) and fast_width / slow_width > 0.89, "maximum speed still preserves car readability " + mode)
+		for amount: float in [0.0, 0.12, 0.30, 0.50]:
+			camera.speed_zoom_strength = amount
+			var previous_size: float = base_size
+			camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
+			var slow_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
+			for speed: float in [0.0, 5.0, 30.0 / 3.6, 20.0, 30.0, 160.0 / 3.6, 90.0]:
+				camera.follow(Vector2.ZERO, Vector2(0, speed), 0.0, 0.0, true)
+				check(camera.size >= previous_size - 0.00001 and camera.size <= base_size * (1.0 + amount) + 0.00001, "speed zoom grows monotonically within selected strength " + mode)
+				if speed <= 30.0 / 3.6: check(is_equal_approx(camera.size, base_size), "standing/slow driving preserves calibrated extent " + mode)
+				previous_size = camera.size
+			var fast_width: float = camera.unproject_position(Vector3(2, 0, 0)).distance_to(camera.unproject_position(Vector3(-2, 0, 0)))
+			check(is_equal_approx(camera.size, base_size * (1.0 + amount)) and is_equal_approx(fast_width / slow_width, 1.0 / (1.0 + amount)) and fast_width / slow_width > 0.66, "selected strength scales the entire world with bounded car projection " + mode)
+			if amount == 0.30:
+				check(camera.size - base_size > (base_size * 0.12) * 2.0, "default pullback is more than twice the old effect " + mode)
+		# The strongest option must keep the car visible on bridges in every heading.
+		for heading: float in [0.0, PI * 0.5, PI, PI * 1.5]:
+			camera.follow(Vector2.ZERO, Vector2(sin(heading), cos(heading)) * 90.0, heading, 0.0, true)
+			for height: float in [0.0, 4.0]:
+				var car_pixel: Vector2 = camera.unproject_position(Vector3(0, height, 0))
+				check(Rect2(40, 70, root.size.x - 80, root.size.y - 140).has_point(car_pixel) and not camera.is_position_behind(Vector3(0, height, 0)), "maximum strength keeps car clear of edges on ground and bridge " + mode)
+			check(camera.global_basis.z.y > 0.7, "stronger zoom retains overhead pitch and no horizon " + mode)
 		var forward_size: float = camera.size
 		camera.follow(Vector2.ZERO, Vector2(0, -90), 0.0, 0.0, true)
 		check(is_equal_approx(camera.size, forward_size), "speed zoom also handles reverse travel " + mode)
 		camera.speed_zoom_enabled = false
 		camera.follow(Vector2.ZERO, Vector2(0, 90), 0.0, 0.0, true)
 		check(is_equal_approx(camera.size, base_size), "speed zoom off retains fixed framing at full speed " + mode)
+	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 	var results: Array[float] = []
 	for fps: int in [30, 60, 120]:
 		camera.speed_zoom_enabled = true
 		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0, true)
 		camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / fps)
-		check(camera.zoom_multiplier > 1.0 and camera.zoom_multiplier < 1.01, "acceleration starts a gentle zoom at %d fps" % fps)
+		check(camera.zoom_multiplier > 1.0 and camera.zoom_multiplier < 1.015, "acceleration starts a gentle zoom at %d fps" % fps)
 		for frame: int in range(fps - 1): camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / fps)
 		results.append(camera.zoom_multiplier)
-		check(camera.zoom_multiplier > 1.08 and camera.zoom_multiplier < 1.11, "zoom eases gradually toward full extent at %d fps" % fps)
+		check(camera.zoom_multiplier > 1.225 and camera.zoom_multiplier < 1.24, "zoom eases gradually toward full extent at %d fps" % fps)
 		var high: float = camera.zoom_multiplier
 		camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
-		check(camera.zoom_multiplier < high and camera.zoom_multiplier > 1.08, "braking returns toward the car gently at %d fps" % fps)
-		for frame: int in range(fps * 4): camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
+		check(camera.zoom_multiplier < high and camera.zoom_multiplier > 1.22, "braking returns toward the car gently at %d fps" % fps)
+		for frame: int in range(fps * 5): camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 1.0 / fps)
 		check(absf(camera.zoom_multiplier - 1.0) < 0.0005, "zoom settles back to baseline after stopping")
 	check(absf(results[0] - results[1]) < 0.000001 and absf(results[1] - results[2]) < 0.000001, "zoom easing is independent of display rate")
 	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 0.0, true)
@@ -243,8 +284,21 @@ func _check_speed_zoom(camera: FollowCamera) -> void:
 	camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, 0.0)
 	camera.follow(Vector2.ZERO, Vector2.ZERO, 0.0, -0.1)
 	check(camera.zoom_multiplier == previous_zoom, "zero/negative elapsed time cannot change zoom")
+	camera.speed_zoom_strength = 0.12
+	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / 60.0)
+	check(camera.zoom_multiplier < previous_zoom and camera.zoom_multiplier > 1.29, "changing strength eases from the existing view")
+	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 	camera.speed_zoom_enabled = false
 	camera.follow(Vector2.ZERO, Vector2(0, 60), 0.0, 1.0 / 60.0)
-	check(camera.zoom_multiplier > 1.1 and camera.zoom_multiplier < previous_zoom, "disabling zoom while driving eases back smoothly")
+	check(camera.zoom_multiplier > 1.28 and camera.zoom_multiplier < previous_zoom, "disabling zoom while driving eases back smoothly")
 	camera.follow(Vector2(40, -20), Vector2.ZERO, 0.0, 0.0, true)
 	check(camera.zoom_multiplier == 1.0 and is_equal_approx(camera.size, base_size), "restart/rewind snap restores appropriate zoom without stale state")
+	for value: float in [-1.0, 3.0, NAN, INF]:
+		camera.speed_zoom_strength = value
+		var expected: float = clampf(value, 0.0, 0.5) if is_finite(value) else 0.30
+		check(is_equal_approx(camera.speed_zoom_strength, expected), "invalid runtime strength is clamped or restored to default")
+		camera.speed_zoom_enabled = true
+		camera.follow(Vector2.ZERO, Vector2(0, 90), 0.0, 0.0, true)
+		check(is_finite(camera.size) and camera.size >= base_size - 0.00001 and camera.size <= base_size * 1.5 + 0.00001, "runtime invalid strength cannot escape finite camera bounds")
+	camera.speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+	camera.speed_zoom_enabled = false

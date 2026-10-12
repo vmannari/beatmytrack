@@ -5,7 +5,8 @@ extends RefCounted
 static func place(document: Dictionary, target: Vector2, native: NativeTrack) -> Dictionary:
 	var paths: Array[Dictionary] = []
 	for piece: Dictionary in document.pieces:
-		paths.append({"points":RoadPieces.samples(piece),"width":float(piece.width),"closed":false})
+		var geometry: Dictionary = SplineRoad.geometry(piece) if piece.kind == "spline" else {}
+		paths.append({"points":geometry.points if not geometry.is_empty() else RoadPieces.samples(piece),"width":float(piece.width),"widths":geometry.get("widths",PackedFloat32Array()),"closed":false})
 	if paths.is_empty() and native != null:
 		paths.append({"points":native.route,"width":float(document.width),"closed":true})
 	var best: float = INF
@@ -17,7 +18,10 @@ static func place(document: Dictionary, target: Vector2, native: NativeTrack) ->
 			var b: Vector2 = points[(i+1)%points.size()]
 			var projected: Vector2 = Geometry2D.get_closest_point_to_segment(target,a,b)
 			var distance: float = target.distance_to(projected)
-			if distance >= best or distance > float(path.width)*0.5+3.0: continue
+			var width: float = float(path.width)
+			if not path.get("widths",PackedFloat32Array()).is_empty():
+				width = lerpf(float(path.widths[i]),float(path.widths[i+1]),a.distance_to(projected)/maxf(a.distance_to(b),0.0001))
+			if distance >= best or distance > width*0.5+3.0: continue
 			best = distance
 			var heading: float = fposmod(rad_to_deg((b-a).angle()),360.0)
 			if document.has("start_line"):

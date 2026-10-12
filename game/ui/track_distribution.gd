@@ -14,6 +14,9 @@ func _draw() -> void:
 		draw_string(MenuStyle.BODY,Vector2(4,size.y*0.5),str(snapshot.get("empty_text","No comparison data")),HORIZONTAL_ALIGNMENT_LEFT,size.x-8,13,MenuStyle.MUTED)
 		draw_string(MenuStyle.BODY,Vector2(4,size.y*0.5+22),str(snapshot.get("empty_detail","Online records required")),HORIZONTAL_ALIGNMENT_LEFT,size.x-8,12,MenuStyle.MUTED)
 		return
+	if snapshot.has("markers"):
+		_draw_comparison(bins)
+		return
 	var window: Vector2i = display_window(bins)
 	var first: int = window.x
 	var last: int = window.y
@@ -52,6 +55,85 @@ func _draw() -> void:
 		draw_string(MenuStyle.BODY,Vector2(8,size.y-3),left_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
 		var label_width: float = MenuStyle.BODY.get_string_size(right_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
 		draw_string(MenuStyle.BODY,Vector2(size.x-label_width-8,size.y-3),right_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
+
+func _draw_comparison(bins: Array) -> void:
+	var geometry: Dictionary = comparison_geometry(snapshot,size.x)
+	var window: Vector2i = geometry.window
+	var edges: Array = geometry.edges
+	var markers: Array = snapshot.get("markers",[])
+	var baseline: float = size.y-24
+	var top: float = 10
+	var maximum: float = 1.0
+	for index: int in range(window.x,window.y+1): maximum = maxf(maximum,float(bins[index]))
+	for fraction: float in [0.25,0.5,0.75,1.0]:
+		var y: float = baseline-(baseline-top)*fraction
+		draw_line(Vector2(8,y),Vector2(size.x-8,y),Color(MenuStyle.BORDER,0.25),1)
+	var current: float = float(markers[0].value_ms) if not markers.is_empty() else -1.0
+	for index: int in range(window.x,window.y+1):
+		var left: float = _time_x(float(edges[index]),geometry.low,geometry.high,size.x)
+		var right: float = _time_x(float(edges[index+1]),geometry.low,geometry.high,size.x)
+		var height: float = maxf(0,float(bins[index]))/maximum*maxf(1,baseline-top)
+		var color: Color = Color("6c92a7") if current >= float(edges[index]) and current < float(edges[index+1]) else Color("41667b")
+		var gap: float = minf(5,(right-left)*0.08)
+		if height > 0:
+			var style := StyleBoxFlat.new()
+			style.bg_color = color
+			style.corner_radius_top_left = 3
+			style.corner_radius_top_right = 3
+			draw_style_box(style,Rect2(left+gap*0.5,baseline-height,maxf(1,right-left-gap),height))
+	draw_line(Vector2(8,baseline),Vector2(size.x-8,baseline),MenuStyle.BORDER)
+	var close: bool = markers.size() == 2 and absf(float(geometry.marker_x[0])-float(geometry.marker_x[1])) < 8
+	for index: int in range(markers.size()):
+		var marker: Dictionary = markers[index]
+		var x: float = float(geometry.marker_x[index])
+		var color: Color = marker.get("color",MenuStyle.ACCENT)
+		if index == 0:
+			draw_line(Vector2(x,top+4),Vector2(x,baseline),color,2,true)
+			draw_colored_polygon(PackedVector2Array([Vector2(x-5,top-5),Vector2(x+5,top-5),Vector2(x,top+3)]),color)
+		else:
+			draw_dashed_line(Vector2(x,top+4),Vector2(x,baseline),Color(color,0.85),1.5,5,true)
+			draw_circle(Vector2(x,baseline if close else top-1),4,color,true,-1,true)
+		if int(geometry.outside[index]) != 0:
+			var direction: float = float(geometry.outside[index])
+			var y: float = baseline-8 if close and index == 1 else top+12
+			draw_polyline(PackedVector2Array([Vector2(x-direction*4,y-4),Vector2(x+direction*1,y),Vector2(x-direction*4,y+4)]),color,1.5,true)
+	var low_text: String = ("< " if window.x > 0 else "")+MenuStyle.time_text(float(geometry.low)/1000.0)
+	var high_text: String = MenuStyle.time_text(float(geometry.high)/1000.0)+(" >" if window.y < bins.size()-1 else "")
+	draw_string(MenuStyle.BODY,Vector2(8,size.y-3),low_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
+	var high_width: float = MenuStyle.BODY.get_string_size(high_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12).x
+	draw_string(MenuStyle.BODY,Vector2(size.x-high_width-8,size.y-3),high_text,HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.MUTED)
+
+static func comparison_geometry(data: Dictionary, width: float) -> Dictionary:
+	var bins: Array = data.get("bins",[])
+	# Unified comparisons include every bin, including sparse human/outlier times.
+	var window := Vector2i(0,maxi(0,bins.size()-1))
+	var edges: Array = data.get("edges_ms",[]).duplicate()
+	if edges.size() != bins.size()+1:
+		edges.clear()
+		for index: int in range(bins.size()+1):
+			edges.append(lerpf(float(data.get("min_ms",0)),float(data.get("max_ms",0)),float(index)/maxi(1,bins.size())))
+	var markers: Array = data.get("markers",[])
+	var low: float = float(edges[window.x])
+	var high: float = float(edges[window.y+1])
+	# Frame the comparison field, keeping a distant personal time from reducing
+	# all population bars to a narrow cluster. Edge chevrons identify outside times.
+	if high-low < 1000:
+		var center: float = (low+high)*0.5
+		low = maxf(0,center-500)
+		high = center+500
+	var padding: float = (high-low)*0.025
+	low = maxf(0,low-padding)
+	high += padding
+	var marker_x: Array[float] = []
+	var outside: Array[int] = []
+	for marker: Dictionary in markers:
+		var value: float = float(marker.value_ms)
+		outside.append(-1 if value < low else (1 if value > high else 0))
+		marker_x.append(clampf(_time_x(value,low,high,width),13,width-13))
+	return {"window":window,"low":low,"high":high,"edges":edges,"marker_x":marker_x,"outside":outside}
+
+static func _time_x(value: float, low: float, high: float, width: float) -> float:
+	return 8+(width-16)*clampf((value-low)/maxf(1,high-low),0,1)
 
 static func display_window(bins: Array) -> Vector2i:
 	# Crop only the view. Counts, population and rank remain untouched.

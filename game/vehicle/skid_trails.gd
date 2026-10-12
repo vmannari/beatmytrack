@@ -23,6 +23,15 @@ var previous_front_left_strength: float = 0.0
 var previous_front_right_strength: float = 0.0
 var active: bool = false
 var desert_sand: bool = false
+var _bridge_track: NativeTrack
+var _bridge_material: ShaderMaterial
+var _previous_elevated: bool = false
+# Private device comparison; normal play always retains bridge protection.
+var bridge_clipping_enabled: bool = true:
+	set(value):
+		bridge_clipping_enabled = value
+		if _bridge_material != null:
+			_bridge_material.set_shader_parameter("dust_bridge_count",_bridge_track.creator_bridges.size() if value and _bridge_track != null else 0)
 
 
 func _ready() -> void:
@@ -30,6 +39,7 @@ func _ready() -> void:
 	mark_custom.resize(CAPACITY)
 	mark_transforms.resize(CAPACITY)
 	var surface: ShaderMaterial = _trail_material()
+	_bridge_material = surface
 	var mesh: ArrayMesh = _trail_mesh(surface)
 	instances = MultiMesh.new()
 	instances.transform_format = MultiMesh.TRANSFORM_3D
@@ -49,10 +59,12 @@ func _trail_material() -> ShaderMaterial:
 	shader.code = """
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled;
+#include "res://vehicle/dust_bridge_clip.gdshaderinc"
 
 varying float loose_surface;
 varying float mark_strength;
 varying float pattern_phase;
+varying highp vec3 trail_world;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
@@ -64,6 +76,7 @@ void vertex() {
 	loose_surface = INSTANCE_CUSTOM.b;
 	mark_strength = INSTANCE_CUSTOM.g;
 	pattern_phase = INSTANCE_CUSTOM.a;
+	trail_world = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
 }
 
 void fragment() {
@@ -83,7 +96,9 @@ void fragment() {
 	float feather = 1.0 - smoothstep(0.72, 1.0, across);
 	ALBEDO = COLOR.rgb * tone;
 	ROUGHNESS = 1.0;
-	ALPHA = COLOR.a * chipped_edge * feather;
+	vec3 camera_ray = PROJECTION_MATRIX[3].w>0.5 ? INV_VIEW_MATRIX[2].xyz : normalize(INV_VIEW_MATRIX[3].xyz-trail_world);
+	float bridge_visibility = dust_bridge_projected_visibility(trail_world,camera_ray,trail_world.y);
+	ALPHA = COLOR.a * chipped_edge * feather * bridge_visibility;
 }
 """
 	var material := ShaderMaterial.new()
@@ -123,10 +138,14 @@ func clear() -> void:
 
 
 func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null, track: NativeTrack = null) -> void:
+	_bind_bridges(track)
 	desert_sand = track != null and track.metadata.get("theme","pine") == "desert"
 	if state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 1.0:
 		active = false
 		return
+	# A mark cannot connect independent ground/deck layers at an underpass.
+	if active and state.track_elevated != _previous_elevated: active = false
+	_previous_elevated = state.track_elevated
 	var rear_axle: Vector2 = state.position - state.forward() * (wheelbase * 0.5)
 	var front_axle: Vector2 = state.position + state.forward() * (wheelbase * 0.5)
 	var left: Vector3 = VisualGeometry.world(rear_axle - state.right() * (track_width * 0.5)) + Vector3(0, 0.028, 0)
@@ -193,6 +212,27 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	active = maxf(strongest,maxf(maxf(left_strength,right_strength),maxf(front_left_strength,front_right_strength))) >= 0.012
 
 
+func _bind_bridges(track: NativeTrack) -> void:
+	if _bridge_material == null or _bridge_track == track: return
+	_bridge_track = track
+	var count: int = 0 if track == null else track.creator_bridges.size()
+	assert(count <= 16,"Bridge trails require the validated sixteen-span contract")
+	var axes := PackedVector4Array()
+	var sizes := PackedVector4Array()
+	axes.resize(16)
+	sizes.resize(16)
+	for index: int in range(count):
+		var span: Dictionary = track.creator_bridges[index]
+		var angle: float = deg_to_rad(float(span.heading))
+		axes[index] = Vector4(float(span.position[0]),-float(span.position[1]),cos(angle),-sin(angle))
+		sizes[index] = Vector4(float(span.length),float(span.width)*0.5+CreatorBridges.RAIL,CreatorBridges.HEIGHT,CreatorBridges.RAMP)
+	_bridge_material.set_shader_parameter("dust_bridge_count",count if bridge_clipping_enabled else 0)
+	_bridge_material.set_shader_parameter("dust_bridge_axes",axes)
+	_bridge_material.set_shader_parameter("dust_bridge_sizes",sizes)
+	# Each fragment's actual mark height selects its layer; deck marks remain.
+	_bridge_material.set_shader_parameter("dust_upper_layer",true)
+
+
 static func surface_at(track: NativeTrack, point: Vector3, elevated: bool) -> int:
 	if track == null: return -1
 	var kind: int = track.cell_at(Vector2(point.x, -point.z), elevated)
@@ -221,6 +261,7 @@ static func physics_intensity(state: VehicleState, frame: DriveFrame, surface_ki
 	var rotation: float = smoothstep(0.15, 1.8, absf(state.yaw_rate)) * smoothstep(3.0, 16.0, speed) * 0.55
 	var rolling_surface: float = 0.0
 	if surface_kind in [1, 2, 7, 10]: rolling_surface = smoothstep(1.0, 16.0, speed) * 0.34
+	elif surface_kind == 8: rolling_surface = smoothstep(2.0,18.0,speed)*0.18
 	elif surface_kind in [3, 6, 9, 11]: rolling_surface = smoothstep(2.0, 18.0, speed) * 0.20
 	var contamination: float = state.tire_dirt * smoothstep(1.0, 12.0, speed) * 0.82
 	var dynamic: float
@@ -266,7 +307,7 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool 
 		3, 6: result = Vector4(0.12, 0.18, 0.19, 0.42) # Thin wet wake.
 		5: result = Vector4(0.16, 0.17, 0.16, 0.50) # Rubber on painted kerb.
 		7: result = Vector4(0.43, 0.56, 0.67, 0.66) # Disturbed snowbank.
-		8: result = Vector4(0.53, 0.64, 0.72, 0.30) # Scuffed frosty/icy road.
+		8: result = Vector4(0.18, 0.26, 0.35, 0.42) # Dark polished tracks through frosty ice.
 		10: result = Vector4(0.57,0.65,0.69,0.42) # Compressed snow on packed terrain.
 		11: result = Vector4(0.38,0.51,0.59,0.32) # Wet slush wake.
 		9: result = Vector4(0.07, 0.10, 0.105, 0.48) # Damp rubber on storm asphalt.
@@ -275,7 +316,7 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool 
 		_:
 			result = Vector4(0.49, 0.34, 0.18, 0.78) if dirt > 0.025 else Vector4(0.10, 0.11, 0.105, 0.70)
 	if kind == 2 and desert:
-		result = Vector4(0.61,0.48,0.30,0.50) # Soft dusty-brown pressed sand.
+		result = Vector4(0.66,0.55,0.39,0.28) # Restrained pressed-sand grooves.
 	if kind in [0,5,8,9]: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
 	else: result.w *= lerpf(0.12, 1.0, clampf(strength, 0.0, 1.0))
 	return result

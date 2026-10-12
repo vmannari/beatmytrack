@@ -9,6 +9,8 @@ var reference: Dictionary = {}
 var boundaries := PackedFloat32Array([0.0,1.0/3.0,2.0/3.0,1.0])
 var mode: String = "Speed"
 var miniature: bool = false
+var show_race_markers: bool = false
+var race_route := PackedVector2Array()
 var selected_point: int = -1
 var fitted := PackedVector2Array()
 var bounds := Rect2()
@@ -73,6 +75,7 @@ func _draw() -> void:
 	if fitted.size() < 2: return
 	if miniature:
 		draw_polyline(fitted,Color("8baabd"),2.5,true)
+		if show_race_markers: _draw_race_markers()
 		return
 	draw_polyline(fitted,Color(0.32,0.43,0.47,0.24),22,true)
 	draw_polyline(fitted,Color("08141e"),17,true)
@@ -113,6 +116,47 @@ func _draw() -> void:
 	if selected_point >= 0: _draw_tooltip()
 	elif lap.get("samples",[]).is_empty():
 		draw_string(MenuStyle.BODY,Vector2(12,20),"Telemetry unavailable for this lap",HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
+
+func _draw_race_markers() -> void:
+	var start: Vector2 = fitted[0]
+	var segment: int = 0
+	var reverse: bool = false
+	if race_route.size() > 1:
+		var target: Vector2 = _screen(race_route[0])
+		var forward: Vector2 = _screen(race_route[1])-target
+		var nearest: float = INF
+		# Keep the existing outline. Place the actual start on its corresponding
+		# preview segment, which may be downsampled discovery geometry.
+		for index: int in range(fitted.size()-1):
+			var point: Vector2 = Geometry2D.get_closest_point_to_segment(target,fitted[index],fitted[index+1])
+			if point.distance_squared_to(target) >= nearest: continue
+			nearest = point.distance_squared_to(target)
+			start = point
+			segment = index
+			reverse = forward.dot(fitted[index+1]-fitted[index]) < 0
+	var direction: Vector2 = (fitted[segment+1]-fitted[segment]).normalized()*(-1 if reverse else 1)
+	if direction.is_zero_approx(): return
+	var normal := Vector2(-direction.y,direction.x)
+	# Transverse chequered start line, followed by a forward arrow on the route.
+	for x: int in range(4):
+		for y: int in range(2):
+			var corner: Vector2 = start+normal*(x*4.0-8.0)+direction*(y*4.0-4.0)
+			draw_colored_polygon(PackedVector2Array([corner,corner+normal*4,corner+normal*4+direction*4,corner+direction*4]),Color.WHITE if (x+y)%2 == 0 else Color("111e27"))
+	var center: Vector2 = start
+	var remaining: float = 28.0
+	var from: Vector2 = start
+	for offset: int in range(fitted.size()):
+		var next: int = posmod(segment-offset if reverse else segment+1+offset,fitted.size()-1)
+		var to: Vector2 = fitted[next]
+		var distance: float = from.distance_to(to)
+		if distance <= 0.001: continue
+		direction = (to-from)/distance
+		center = from.lerp(to,minf(1.0,remaining/distance))
+		if remaining <= distance: break
+		remaining -= distance
+		from = to
+	normal = Vector2(-direction.y,direction.x)
+	draw_colored_polygon(PackedVector2Array([center+direction*7,center-direction*6+normal*5,center-direction*6-normal*5]),Color("c7e1ee"))
 
 func _draw_sector_ends() -> void:
 	# A transverse line keeps boundaries visible when adjacent sectors share a colour.

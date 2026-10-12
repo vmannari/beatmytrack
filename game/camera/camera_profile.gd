@@ -2,6 +2,8 @@ class_name CameraProfile
 extends Resource
 
 const MODES: Array[String] = ["overhead", "follow_car", "look_ahead"]
+const DEFAULT_SPEED_ZOOM_STRENGTH: float = 0.30
+const MAX_SPEED_ZOOM_STRENGTH: float = 0.50
 const TITLES: Array[String] = ["Overhead", "Follow car", "Look ahead"]
 const DESCRIPTIONS: Array[String] = [
 	"The original fixed-angle overhead view.",
@@ -26,7 +28,6 @@ const DESCRIPTIONS: Array[String] = [
 @export_range(5.0, 180.0, 1.0) var maximum_yaw_speed_degrees: float = 60.0
 @export var speed_zoom_start_kmh: float = 30.0
 @export var speed_zoom_full_kmh: float = 160.0
-@export_range(0.0, 0.2, 0.01) var maximum_speed_zoom: float = 0.12
 @export var speed_zoom_smoothing: float = 1.5 # response/s; gentle acceleration/braking changes
 
 

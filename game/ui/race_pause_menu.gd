@@ -20,7 +20,7 @@ func _ready() -> void:
 	frozen.material = material
 	add_child(frozen)
 	var dim := ColorRect.new()
-	dim.color = Color(0.015,0.025,0.04,0.18)
+	dim.color = MenuStyle.POPUP_DIM
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(dim)
@@ -38,13 +38,18 @@ func _ready() -> void:
 	panel.content_margin_bottom = 22
 	drawer.add_theme_stylebox_override("panel",panel)
 	add_child(drawer)
+	preload("res://ui/popup_style.gd").decorate_panel(drawer)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	drawer.add_child(scroll)
+	var content := MarginContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("margin_right",16)
+	scroll.add_child(content)
 	column = VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation",12)
-	scroll.add_child(column)
+	content.add_child(column)
 	resized.connect(_resize)
 	_resize()
 	show_main()
@@ -66,7 +71,7 @@ func _clear(title: String) -> void:
 	close.name = "ClosePauseMenu"
 	close.icon = MenuIcon.texture("close")
 	close.expand_icon = true
-	close.custom_minimum_size = Vector2(48,48)
+	close.custom_minimum_size = Vector2(52,52)
 	close.flat = true
 	close.pressed.connect(func() -> void: hud.pause_requested.emit())
 	header.add_child(close)
@@ -74,8 +79,8 @@ func _clear(title: String) -> void:
 	column.add_child(line)
 
 func show_main() -> void:
-	_clear("BEAT\nMY TRACK.")
-	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), BLUE)
+	_clear("PAUSED")
+	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
 	_row("Restart","Start this race again","restart",func() -> void: hud.restart_requested.emit())
 	_row("Settings","Camera, sound and controls","gear",_settings)
 	var report := _row("Report track","Reporting is not available yet","flag",func() -> void: pass)
@@ -92,7 +97,7 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 	for state: String in ["normal","hover","pressed","focus","disabled"]:
 		var style := StyleBoxFlat.new()
 		style.bg_color = Color("0d202e") if state == "normal" else Color("18394f")
-		if title == "Resume": style.bg_color = Color("0d304d")
+		if title == "Resume": style.bg_color = MenuStyle.ACCENT.lightened(0.06) if state == "hover" else MenuStyle.ACCENT
 		if state == "disabled": style.bg_color = Color("0b1924")
 		if title == "Quit": style.bg_color = Color("2b1923")
 		style.set_corner_radius_all(10)
@@ -114,7 +119,7 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 	glyph.custom_minimum_size = Vector2(30,30)
 	glyph.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	glyph.modulate = accent if title in ["Resume","Quit"] else Color.WHITE
+	glyph.modulate = MenuStyle.INK if title == "Resume" else accent if title == "Quit" else Color.WHITE
 	glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(glyph)
 	var words := VBoxContainer.new()
@@ -123,12 +128,15 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 	words.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(words)
 	var heading := MenuStyle.label(title,24)
+	if title == "Resume": heading.add_theme_color_override("font_color",MenuStyle.INK)
 	heading.add_theme_font_override("font",MenuStyle.DISPLAY)
 	words.add_child(heading)
 	var description := MenuStyle.label(subtitle,14,true)
+	if title == "Resume": description.add_theme_color_override("font_color",MenuStyle.INK)
 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	words.add_child(description)
 	var arrow := MenuStyle.label("›",28)
+	if title == "Resume": arrow.add_theme_color_override("font_color",MenuStyle.INK)
 	arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(arrow)
 	for label: Control in [heading,description,arrow]: label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -175,6 +183,38 @@ func _settings() -> void:
 		status.text = "Speed zoom changed" if error == OK else "Zoom changed for this race. Could not save preference."
 	)
 	column.add_child(speed_zoom)
+	var strength_row := HBoxContainer.new()
+	column.add_child(strength_row)
+	var strength_value: Label = MenuStyle.label("Zoom strength", 18)
+	strength_value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	strength_row.add_child(strength_value)
+	var strength_amount: Label = MenuStyle.label("%d%%" % roundi(game.camera.speed_zoom_strength * 100.0), 18, true)
+	strength_amount.name = "RaceSpeedZoomStrengthValue"
+	strength_row.add_child(strength_amount)
+	var strength := HSlider.new()
+	strength.name = "RaceSpeedZoomStrength"
+	strength.max_value = CameraProfile.MAX_SPEED_ZOOM_STRENGTH * 100.0
+	strength.step = 1.0
+	strength.value = game.camera.speed_zoom_strength * 100.0
+	strength.custom_minimum_size.y = 52
+	strength.editable = game.camera.speed_zoom_enabled
+	strength.modulate.a = 1.0 if game.camera.speed_zoom_enabled else 0.45
+	strength.drag_started.connect(func() -> void: strength.set_meta("dragging", true))
+	strength.value_changed.connect(func(amount: float) -> void:
+		strength_amount.text = "%d%%" % roundi(amount)
+		var error: Error = game.set_camera_speed_zoom_strength(amount / 100.0, not bool(strength.get_meta("dragging", false)))
+		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
+	)
+	strength.drag_ended.connect(func(changed: bool) -> void:
+		strength.set_meta("dragging", false)
+		if not changed: return
+		var error: Error = game.set_camera_speed_zoom_strength(strength.value / 100.0)
+		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
+	)
+	speed_zoom.toggled.connect(func(on: bool) -> void:
+		strength.editable = on
+		strength.modulate.a = 1.0 if on else 0.45)
+	column.add_child(strength)
 	if game.personal_ghost != null:
 		column.add_child(MenuStyle.label("Ghost",22))
 		var ghost_choice := OptionButton.new()

@@ -27,6 +27,7 @@ var _centers := PackedVector2Array()
 var _directions := PackedVector2Array()
 var _progress := PackedFloat32Array()
 var _notice_reach := PackedFloat32Array()
+var _route_hints := PackedInt32Array()
 var _start_progress: float = 0.0
 var _layers: Array[bool] = []
 var _finish_elevated: bool = false
@@ -98,12 +99,18 @@ func _configure(track: NativeTrack) -> void:
 		var road_widths := Vector2(half,half)
 		var allowed: Array = [0,2,5] if dirt else [0,5]
 		if track.grid_width > 0 and track.cell_at(center,elevated) in allowed:
+			# Spline sweeps can extend past the authored chord's miter span.
+			# Measure the connected road/kerb cross-section, stopping at the
+			# first gap so a nearby returning branch cannot widen this gate.
+			var scan_limit: float = half+1.5 if junction.is_empty() else maxf(half+1.5,half*1.5)
 			for side: int in range(2):
 				var span: float = 0.0
 				var sign_value: float = -1.0 if side == 0 else 1.0
-				while span < half+0.75 and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
-				widths[side] = minf(half+0.75,span+0.5)
-				road_widths[side] = minf(half,span)
+				while span < scan_limit and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
+				road_widths[side] = maxf(0.0,span-0.125)
+				# Permit a shallow wheel-off-road recovery at sharp bends too.
+				# Grass shortcuts still have to cross every bounded gate.
+				widths[side] = road_widths[side]+1.0
 		# A shallow excursion already loses grip/time. Allow extra inside
 		# recovery space, fading it out before a tight hairpin can be cut.
 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
@@ -116,6 +123,7 @@ func _configure(track: NativeTrack) -> void:
 			# Running wide costs distance; keep inside shortcut limits separate.
 			widths[1-inside] += 6.0*smoothstep(0.01,0.08,turn)
 		_centers.append(center)
+		_route_hints.append(low)
 		_directions.append(direction)
 		_progress.append(distance)
 		_widths.append(widths)
@@ -166,6 +174,32 @@ func _road_corners(track: NativeTrack) -> Array[Dictionary]:
 		# a legal inside line crosses those planes in the opposite order.
 		var reach: float = maxf(3.0,(half+0.75)*sqrt(maxf(0.0,1.0-cosine*cosine))/cosine+2.0)
 		result.append({"distance":distance,"center":points[i],"direction":direction,"half_span":half_span,"reach":reach})
+	# A fitted spline changes tangent smoothly, even when its authored points
+	# form a very tight reversal. Dense straight gates at that apex can demand
+	# an artificial loop on a perfectly legal inside line. Treat the actual
+	# interpolation knots like road corners, using their approach bisector.
+	for piece: Dictionary in pieces:
+		if piece.kind != "spline": continue
+		var nodes: PackedVector2Array = SplineRoad.points(piece)
+		for i: int in range(1,nodes.size()-1):
+			var incoming: Vector2 = (nodes[i]-nodes[i-1]).normalized()
+			var outgoing: Vector2 = (nodes[i+1]-nodes[i]).normalized()
+			if incoming.dot(outgoing) >= 0.707: continue
+			var direction: Vector2 = (incoming+outgoing).normalized()
+			if direction.length_squared() < 0.5: continue
+			var progress: float = track.route_progress(nodes[i])
+			var distance: float = fposmod(progress-_start_progress,track.route_length)
+			if distance <= 0.25 or distance >= track.route_length-0.25: continue
+			var absolute: float = _start_progress+distance
+			var forward: Vector2 = track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)
+			if direction.dot(forward) < 0.0: direction = -direction
+			var cosine: float = maxf(0.25,absf(direction.dot(incoming)))
+			var half: float = float(piece.point_widths[i])*0.5
+			var reach: float = maxf(3.0,(half+0.75)*sqrt(maxf(0.0,1.0-cosine*cosine))/cosine+2.0)
+			var duplicate: bool = false
+			for corner: Dictionary in result:
+				if Vector2(corner.center).distance_to(nodes[i]) < 0.1: duplicate = true; break
+			if not duplicate: result.append({"distance":distance,"center":nodes[i],"direction":direction,"half_span":half/cosine,"reach":reach})
 	return result
 
 func _bridge_gate_direction(track: NativeTrack, center: Vector2, direction: Vector2, half_span: float) -> Vector2:
@@ -298,14 +332,23 @@ func _route_progress_near(track: NativeTrack, point: Vector2, hint: int) -> floa
 	# nearest-vertex search can jump to a future bridge at the same position.
 	var best: float = INF
 	var progress: float = last_progress
-	for offset: int in range(-1,2):
-		var i: int = posmod(hint+offset,track.route.size())
-		var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
-		var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
-		var distance: float = point.distance_squared_to(track.route[i]+edge*t)
-		if distance < best:
-			best = distance
-			progress = track.route_cumulative[i]+edge.length()*t
+	var hints: Array[int] = [hint]
+	# A shortcut return can reach the required gate while the collision hint
+	# still follows a distant branch. The last accepted gate anchors the
+	# notice read model to the recovered road when it is physically closer.
+	# Keep the simulation branch on ties at overlapping roads; never change
+	# the collision resolver or use historical maximum progress for notices.
+	if next_checkpoint > 0 and next_checkpoint-1 < _route_hints.size():
+		hints.append(_route_hints[next_checkpoint-1])
+	for candidate: int in hints:
+		for offset: int in range(-1,2):
+			var i: int = posmod(candidate+offset,track.route.size())
+			var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
+			var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
+			var distance: float = point.distance_squared_to(track.route[i]+edge*t)
+			if distance < best-0.000001:
+				best = distance
+				progress = track.route_cumulative[i]+edge.length()*t
 	return progress
 
 func _update_display_progress(track: NativeTrack, point: Vector2, hint: int) -> void:

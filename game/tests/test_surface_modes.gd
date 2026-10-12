@@ -16,14 +16,17 @@ func shot(label: String) -> void:
 func run() -> void:
 	capture = "--capture" in OS.get_cmdline_user_args()
 	root.size = Vector2i(1280,720)
-	var app: Node = load("res://core/app.gd").new()
-	root.add_child(app)
-	await process_frame
 	var folder: String = "user://surface_test_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var library := TrackLibrary.new(folder)
 	library.owner_name = "Surface test"
-	app.set("library",library)
+	var app: Node = load("res://core/app.gd").new()
+	app.library = library
+	app.records = LocalRecords.new(folder+"/records.json")
+	app.cloud_root_override = folder+"/cloud"
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	app.online.client.configure("")
 	var doc: Dictionary = TrackDocument.create_default()
 	app.set("document",doc)
 	app.set("editor_view",{})
@@ -38,7 +41,8 @@ func run() -> void:
 	var palette: Node = app.get("editor_context")
 	for child: Node in palette.get_children():
 		if child is Button: check(not child.text in ["Road","Oil","Line","Bounded area","Free painting"],"material palette excludes roads oil and placement modes")
-	check(toolbar.position.y <= 16,"paint modes share the top control band")
+	var header: Control = app.root_ui.find_child("EditorIdentityAndHistory",true,false)
+	check(toolbar.get_global_rect().position.y >= header.get_global_rect().end.y and not toolbar.get_global_rect().intersects(header.get_global_rect()),"paint modes occupy their own row without covering identity or history")
 	for choice: String in ["free","area","line"]:
 		var mode_button: Button = app.get("root_ui").find_child("PaintMode_"+choice,true,false)
 		check(mode_button != null,"segmented mode exists: "+choice)
@@ -191,6 +195,7 @@ func run() -> void:
 	check(clipped_unpainted == 0,"unpainted road skirt and shoulder are never clipped by surface type")
 	visual.free()
 	app.set("document",verge_doc)
+	app.canvas = null; app.editor_pending_tools.clear()
 	app.set("editor_view",{})
 	app.call("_show_screen","create")
 	await process_frame
@@ -202,6 +207,7 @@ func run() -> void:
 		canvas.zoom_by(3.0,canvas.to_screen(Vector2(9,21)))
 		await shot("sand-detail")
 	app.set("document",unpainted_doc)
+	app.canvas = null; app.editor_pending_tools.clear()
 	app.set("editor_view",{})
 	app.call("_show_screen","create")
 	await process_frame

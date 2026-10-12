@@ -54,9 +54,17 @@ func run() -> void:
 	check(game.hud.rewind_button.banked == 3 and not game.hud.rewind_button.use_ad,"race HUD shows the available banked rewind count")
 	game.hud.rewind_button.show_resource({"balance":0,"ad_preview_available":true},0)
 	check(game.hud.rewind_button.use_ad,"race HUD substitutes the ad icon when no banked rewinds remain")
+	for entitlement: String in ["ad_free","free_rewinds"]:
+		game.hud.rewind_button.show_resource({"balance":3,entitlement:true},0)
+		check(game.hud.rewind_button.free_rewinds and not game.hud.rewind_button.use_ad,"ad-free HUD suppresses resource badge via "+entitlement)
 	game.online_rewinds = [{},{},{}]
 	game.call("_process",0.1)
 	check(game.hud.rewind_button.disabled,"race HUD disables rewind after all three race uses")
+	if not capture_path.is_empty():
+		game.hud.rewind_button.show_resource({"balance":0,"ad_preview_available":true},3)
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-disabled.png") == OK,"disabled race-HUD rewind screenshot saved")
 	game.online_rewinds.clear()
 	game.call("_process",0.1)
 	if not capture_path.is_empty():
@@ -68,12 +76,20 @@ func run() -> void:
 		await process_frame
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-ad.png") == OK,"ad race-HUD rewind screenshot saved")
+		game.hud.rewind_button.show_resource({"balance":3,"ad_free":true},0)
+		await process_frame
+		await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(capture_path.get_basename()+"-hud-ad-free.png") == OK,"ad-free race-HUD rewind screenshot saved")
 	var original: Array = game.sim.state.snapshot()
 	var original_session: Dictionary = RewindHistory.properties(game.track_session,true)
 	var original_damage: Vector4 = game.impact_cracks.side_damage
 	check(original_damage.x > 0.0 and original_damage.y > 0.0,"fixture contains old left and recent right collision cracks")
 	await game.open_rewind()
 	check(game.paused and not game.hud.touch.enabled,"rewind freezes simulation and releases controls")
+	game.rewind_panel.show_balance({"balance":3,"ad_free":true},0)
+	check(game.rewind_panel.confirm.ad_free and not game.rewind_panel.confirm.use_ad,"ad-free toolbar suppresses resource badge even with banked resumes")
+	game.rewind_panel.show_balance({"balance":3},0)
+	check(not game.rewind_panel.confirm.ad_free and game.rewind_panel.confirm.count == 3 and not game.rewind_panel.confirm.use_ad,"toolbar restores banked badge after ad-free state")
 	check(game.rewind_panel.slider.min_value == -10.0 and game.rewind_panel.slider.max_value == 0.0,"timeline keeps a fixed ten-second scale")
 	game.rewind_panel.slider.value = -5.0
 	check(absi(game.sim.state.tick-3400) <= RewindHistory.STRIDE,"time slider selects the nearest recorded five-second snapshot")
@@ -83,6 +99,7 @@ func run() -> void:
 	check(game.rewind_choices[0].tick >= 2800,"timeline never goes beyond ten seconds")
 	check(game.sim.state.snapshot() == original,"rewind opens at the exact current position")
 	if not capture_path.is_empty():
+		game.rewind_panel.show_balance({"free":0,"balance":0,"ad_preview_available":true},0)
 		await process_frame
 		await process_frame
 		await RenderingServer.frame_post_draw

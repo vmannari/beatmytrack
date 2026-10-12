@@ -2,7 +2,7 @@ extends "res://tests/test_checkpoint_bridge_layers.gd"
 ## Drive every vehicle through the affected Over and under exits on ordinary lanes.
 
 func run() -> void:
-	check(RaceRules.KEY == "standing-5-road-gates-v18","ramp gate geometry has its own pinned rules key")
+	check(RaceRules.KEY == "standing-5-road-gates-v20","current ordered gate geometry has its own pinned rules key")
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
 	var track: NativeTrack = TrackCompiler.compile(document)
 	_check_layers(track)

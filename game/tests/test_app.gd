@@ -445,13 +445,24 @@ func _check_clean_result() -> void:
 	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ContinueResults",true,false) != null, "a clean normal race result persists its local PB and exposes Continue")
 	check(((app.get("root_ui") as Node).find_child("RaceAchievement",true,false) as Label).text in ["FIRST FINISH","CLEAN RACE"],"a first normal finish is presented as the player's benchmark")
 	await _capture("normal-race-debrief")
+	var first_record: Dictionary = records.records.duplicate(true)
+	var first_panel: Node = app.root_ui.find_child("ContinueResults",true,false)
+	app.call("_results")
+	check(records.records == first_record and app.root_ui.find_child("ContinueResults",true,false) == first_panel,"duplicate finish keeps one result and one saved attempt")
 	# Controlled result fixtures exercise improvement feedback; they are not
 	# additional claims of AI-driven lap times.
+	await app.call("_retry_race")
+	check(app.game == game and app._result_game_id == 0,"Retry starts a new result lifecycle on the same Game node")
+	game.set("track_session",completed)
+	game.set("paused",true)
 	completed.lap_times[4] = 20.816
 	completed.lap_start_time = 108.816
 	app.call("_results")
 	check(((app.get("root_ui") as Node).find_child("ResultDelta",true,false) as Label).text == "-0.184 s vs personal best","the integrated PB screen uses the previous saved target")
 	await _capture("improved-race-debrief")
+	await app.call("_retry_race")
+	game.set("track_session",completed)
+	game.set("paused",true)
 	completed.lap_times[4] = 21.0
 	completed.lap_start_time = 109.0
 	app.call("_results")

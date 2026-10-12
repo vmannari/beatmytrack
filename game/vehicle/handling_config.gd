@@ -50,7 +50,7 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export_range(5.0, 80.0, 1.0) var tire_pickup_distance: float = 10.0 # Metres of loose dirt to fully coat tires.
 @export_range(10.0, 150.0, 1.0) var tire_clean_distance: float = 140.0 # Clean-road metres to remove a full coating.
 @export_range(0.0, 1.0, 0.01) var collision_turn_strength: float = 0.45 # Angular impulse per impact speed, weighted by angle.
-@export_range(0.5, 4.0, 0.1) var wall_slide_speed: float = 2.0 # Inward m/s blending rubbing into impact.
+@export_range(0.5, 4.0, 0.1) var wall_slide_speed: float = 2.0 # Inward m/s where the hard-impact blend begins (full at 4x).
 @export_range(0.0, 4.0, 0.1) var wall_alignment_rate: float = 2.4 # Gradual chassis alignment during rubbing.
 @export_range(1.0, 2.5, 0.05) var collision_radius: float = 1.55 * BODY_SCALE # planar circle approximation
 

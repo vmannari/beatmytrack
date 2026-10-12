@@ -4,6 +4,8 @@ extends PlaygroundData
 
 const STORM_ROAD_GRIP: float = 0.85
 const WINTER_ROAD_GRIP: float = 0.60
+const CONTACT_SKIN: float = 0.001
+const MAX_SLIDE_CONTACTS: int = 12
 
 var cell_size: float
 var grid_width: int
@@ -31,6 +33,8 @@ var creator_bridges: Array = []
 var hazard_objects: Array = []
 var kerbs := RoadKerbs.new()
 var snow_banks := SnowBanks.new()
+var editor_overlay_mask: Image
+var editor_road_mask: Image
 
 
 static func read(path: String) -> NativeTrack:
@@ -441,41 +445,120 @@ func resolve(state: VehicleState, from: Vector2, config: HandlingConfig) -> void
 					blocking_normal = blocker
 			if not escaping:
 				state.position = accepted
-				_bounce(state, blocking_normal, config)
-				# Consume the remaining tangential displacement instead of discarding
-				# the whole step. Sweep it too, so sliding cannot tunnel past corners.
-				var remaining: Vector2 = from + movement - accepted
-				var slide: Vector2 = remaining - blocking_normal * remaining.dot(blocking_normal)
-				var slide_steps: int = maxi(1, ceili(slide.length() / (cell_size * 0.45)))
-				var slide_from: Vector2 = accepted
-				for i: int in range(1, slide_steps + 1):
-					var candidate: Vector2 = slide_from + slide * (float(i) / slide_steps)
-					var candidate_route: int = nearest_route(candidate, state.route_index)
-					var candidate_layer: bool = collision_elevated_at(candidate, candidate_route, config.collision_radius,1 if state.track_elevated else 0)
-					if _contact(candidate, config.collision_radius, candidate_layer).z > 0.0:
-						# Shallow flat-wall overlap can rub along its face. Do not
-						# project an embedded corner contact around a rail tip.
-						var flat_face: bool = absf(blocking_normal.x) > 0.99999 or absf(blocking_normal.y) > 0.99999
-						if not flat_face or _contact(state.position, config.collision_radius, candidate_layer).z <= 0.0 or _escape_blocker(state.position, candidate, config.collision_radius, candidate_layer) != Vector2.ZERO:
-							# A second obstacle can block the tangent. Do not bank
-							# the rejected speed and release it after alignment.
-							var tangent: Vector2 = slide.normalized()
-							var completed: float = clampf(state.position.distance_to(slide_from) / maxf(slide.length(), 0.000001), 0.0, 1.0)
-							state.velocity -= tangent * state.velocity.dot(tangent) * (1.0 - completed)
-							var probe: Vector2 = state.position + state.velocity * VehicleSimulation.STEP
-							var probe_layer: bool = collision_elevated_at(probe, nearest_route(probe, state.route_index), config.collision_radius,1 if state.track_elevated else 0)
-							if _contact(probe, config.collision_radius, probe_layer).z > 0.0 and (_contact(state.position, config.collision_radius, probe_layer).z <= 0.0 or _escape_blocker(state.position, probe, config.collision_radius, probe_layer) != Vector2.ZERO):
-								state.velocity = Vector2.ZERO
-							break
-					state.position = candidate
-					state.route_index = candidate_route
-					state.track_elevated = candidate_layer
+				if previous_contact.z > 0.0:
+					# Existing embedded rail/corner states must retreat through their
+					# original opening, never be pushed across a layer or obstacle.
+					var support: Vector3 = _support_plane(accepted,config.collision_radius,next_elevated)
+					var support_normal := Vector2(support.x,support.y)
+					var depth: float = config.collision_radius-(accepted.dot(support_normal)-support.z)
+					var shallow_flat: bool = (absf(support_normal.x)>0.99999 or absf(support_normal.y)>0.99999) and support_normal.dot(blocking_normal)>0.99999 and depth <= cell_size*0.1
+					if not shallow_flat:
+						_bounce(state,blocking_normal,config)
+						return
+				_resolve_slide(state,from+movement,point,blocking_normal,next_elevated,config)
 				return
 		accepted = point
 		contact = next_contact
 		state.route_index = next_route
 		state.track_elevated = next_elevated
 	state.position = accepted
+
+
+func _resolve_slide(state: VehicleState, target: Vector2, blocked: Vector2, normal: Vector2, layer: bool, config: HandlingConfig) -> void:
+	# Every remaining segment is swept against the exact occupied cells. A
+	# continuing face changes the path, not the whole tangential velocity.
+	var constraints: Array[Vector2] = []
+	for iteration: int in range(MAX_SLIDE_CONTACTS):
+		var support: Vector3 = _support_plane(blocked,config.collision_radius,layer)
+		var geometric := Vector2(support.x,support.y)
+		if geometric == Vector2.ZERO or geometric.dot(normal) < 0.8: geometric = normal
+		var response: Vector2 = _coherent_normal(blocked,config.collision_radius,layer,geometric)
+		_bounce(state,response,config)
+		constraints.append(response)
+		# Refine to the first contact instead of dropping a whole sampling step.
+		if _contact(state.position,config.collision_radius,layer).z == 0.0:
+			var clear: Vector2 = state.position
+			var hit: Vector2 = blocked
+			for refinement: int in range(10):
+				var midpoint: Vector2 = clear.lerp(hit,0.5)
+				if _contact(midpoint,config.collision_radius,layer).z > 0.0: hit = midpoint
+				else: clear = midpoint
+			state.position = clear
+		var remaining: Vector2 = target-state.position
+		remaining -= geometric*minf(0.0,remaining.dot(geometric))
+		# A tiny outward skin prevents a neighbouring cell's rounding error
+		# from turning this same contact into an immediate second blocker.
+		var separation: float = CONTACT_SKIN
+		if support != Vector3.ZERO and geometric.dot(Vector2(support.x,support.y)) > 0.999:
+			separation = maxf(separation,config.collision_radius-(state.position.dot(geometric)-support.z)+CONTACT_SKIN)
+		var separated: Vector2 = state.position+geometric*separation
+		if _contact(separated,config.collision_radius,layer).z == 0.0:
+			state.position = separated
+		if remaining.length_squared() < 0.00000001: return
+		var slide_from: Vector2 = state.position
+		target = slide_from+remaining
+		var steps: int = maxi(1,ceili(remaining.length()/(cell_size*0.45)))
+		var hit_again: bool = false
+		for step_index: int in range(1,steps+1):
+			var candidate: Vector2 = slide_from+remaining*(float(step_index)/steps)
+			var candidate_route: int = nearest_route(candidate,state.route_index)
+			var candidate_layer: bool = collision_elevated_at(candidate,candidate_route,config.collision_radius,1 if state.track_elevated else 0)
+			var contact: Vector3 = _contact(candidate,config.collision_radius,candidate_layer)
+			if contact.z > 0.0 and (_contact(state.position,config.collision_radius,candidate_layer).z == 0.0 or _escape_blocker(state.position,candidate,config.collision_radius,candidate_layer) != Vector2.ZERO):
+				blocked = candidate
+				normal = Vector2(contact.x,contact.y)
+				layer = candidate_layer
+				hit_again = true
+				break
+			state.position = candidate
+			state.route_index = candidate_route
+			state.track_elevated = candidate_layer
+		if not hit_again: return
+	# A real closed corner can exhaust the bounded solver. Remove only inward
+	# components against its contact planes; never bank rejected wall speed.
+	for constraint: Vector2 in constraints:
+		state.velocity -= constraint*minf(0.0,state.velocity.dot(constraint))
+
+
+func _coherent_normal(point: Vector2, radius: float, elevated: bool, raw: Vector2) -> Vector2:
+	# Fit only long, locally straight exposed faces. Exact cell geometry still
+	# governs all swept movement. Curved props, corners and rail ends retain
+	# their geometric normal, rather than averaging across separate blockers.
+	if raw == Vector2.ZERO or (elevated and not creator_bridges.is_empty()): return raw
+	var surface: Vector2 = point-raw*radius
+	var spread: float = maxf(radius*1.5,cell_size*4.0)
+	var reach: int = ceili(spread/cell_size)+1
+	var cx: int = floori((surface.x+half_extent.x)/cell_size)
+	var cy: int = floori((half_extent.y-surface.y)/cell_size)
+	var samples: Array[Vector2] = []
+	for y: int in range(cy-reach,cy+reach+1):
+		for x: int in range(cx-reach,cx+reach+1):
+			var center := Vector2((x+0.5)*cell_size-half_extent.x,half_extent.y-(y+0.5)*cell_size)
+			if cell_at(center,elevated) != 4: continue
+			for direction: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN]:
+				if direction.dot(raw) < -0.001 or cell_at(center+direction*cell_size,elevated) == 4: continue
+				var edge: Vector2 = center+direction*cell_size*0.5
+				if edge.distance_squared_to(surface) <= spread*spread: samples.append(edge-surface)
+	if samples.size() < 6: return raw
+	var mean := Vector2.ZERO
+	for sample: Vector2 in samples: mean += sample
+	mean /= samples.size()
+	var xx: float = 0.0
+	var yy: float = 0.0
+	var xy: float = 0.0
+	for sample: Vector2 in samples:
+		var delta: Vector2 = sample-mean
+		xx += delta.x*delta.x
+		yy += delta.y*delta.y
+		xy += delta.x*delta.y
+	var discriminant: float = sqrt((xx-yy)*(xx-yy)+4.0*xy*xy)
+	var major: float = (xx+yy+discriminant)*0.5
+	var minor: float = (xx+yy-discriminant)*0.5
+	if major < cell_size*cell_size*samples.size() or minor > major*0.04: return raw
+	var angle: float = 0.5*atan2(2.0*xy,xx-yy)
+	var fitted := Vector2(-sin(angle),cos(angle))
+	if fitted.dot(raw) < 0.0: fitted = -fitted
+	return fitted if fitted.dot(raw) > 0.8 else raw
 
 
 func collision_normal(point: Vector2, radius: float, elevated: bool) -> Vector2:

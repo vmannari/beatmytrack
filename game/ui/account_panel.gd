@@ -3,6 +3,10 @@ extends PanelContainer
 signal continue_requested
 var account: Node
 var username: LineEdit
+var country_picker: Button
+var country_save: Button
+var country_group: VBoxContainer
+var country_player_id: String = ""
 var title: Label
 var subtitle: Label
 var status_label: Label
@@ -67,6 +71,16 @@ func _ready() -> void:
 	username.custom_minimum_size.y = 54
 	username.text_submitted.connect(func(_value: String) -> void: _save_name())
 	column.add_child(username)
+	country_group = VBoxContainer.new()
+	country_group.add_theme_constant_override("separation",8)
+	column.add_child(country_group)
+	country_group.add_child(centered_label("Your flag appears beside you in standings.",16,true))
+	country_picker = preload("res://ui/country_picker.gd").new()
+	country_picker.country_selected.connect(func(_code: String) -> void: _country_changed())
+	country_group.add_child(country_picker)
+	country_save = MenuStyle.button("Save country",_save_country,true)
+	country_save.name = "SavePlayerCountry"
+	country_group.add_child(country_save)
 	save_button = MenuStyle.button("Save name & continue", _save_name, true)
 	save_button.name = "SavePlayerName"
 	column.add_child(save_button)
@@ -104,9 +118,19 @@ func _ready() -> void:
 	_update()
 
 func _save_name() -> void:
-	await account.save_username(username.text)
+	if country_picker.country_code.is_empty():
+		account.message = "Choose your country before continuing."
+		account.changed.emit()
+		return
+	await account.save_username(username.text,country_picker.country_code)
 	if account.client.signed_in() and not account.needs_username():
 		continue_requested.emit()
+
+func _country_changed() -> void:
+	country_save.disabled = account.busy or country_picker.country_code == str(account.client.player.get("country_code",""))
+
+func _save_country() -> void:
+	await account.save_country(country_picker.country_code)
 
 func _update() -> void:
 	var signed_in: bool = account.client.signed_in()
@@ -118,6 +142,16 @@ func _update() -> void:
 	username.editable = not account.busy
 	save_button.visible = onboarding
 	save_button.disabled = account.busy
+	country_group.visible = signed_in
+	country_picker.disabled = account.busy
+	var player_id: String = str(account.client.player.get("id",""))
+	if player_id != country_player_id:
+		country_player_id = player_id
+		country_picker.set_country(str(account.client.player.get("country_code","")))
+	if country_picker.country_code.is_empty(): country_picker.set_country(str(account.client.player.get("country_code","")))
+	if account.message == "Country saved.": country_picker.set_country(str(account.client.player.get("country_code","")))
+	country_save.visible = signed_in and not onboarding
+	_country_changed()
 	google_button.visible = not signed_in and not waiting
 	google_button.disabled = account.busy or not account.configured
 	google_status.visible = not signed_in and not waiting and not account.capabilities.is_empty() and not account.google_available()

@@ -1,5 +1,6 @@
 extends SceneTree
 ## Actual retained compact inputs; no account, ticket or server identifiers.
+const LEGACY_CONTACTS = preload("res://tests/fixtures/legacy_contact_physics.gd")
 var failures: int = 0
 var checks: int = 0
 
@@ -15,8 +16,9 @@ func check(ok: bool, message: String) -> void:
 		failures += 1
 		print("FAIL: ",message)
 
-func simulate(track: NativeTrack, inputs: Array, session: TrackSession) -> Array[int]:
-	var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
+func simulate(track: NativeTrack, inputs: Array, session: TrackSession, historical: bool = true) -> Array[int]:
+	if historical: track = LEGACY_CONTACTS.copy_track(track)
+	var sim: VehicleSimulation = LEGACY_CONTACTS.Simulation.new(VehicleCatalog.config("compact")) if historical else VehicleSimulation.new(VehicleCatalog.config("compact"))
 	sim.reset(track.spawn,track.spawn_heading)
 	var distance: float = (sim.state.position-track.finish_center).dot(track.finish_forward)
 	sim.state.position -= track.finish_forward*maxf(0.0,distance+3.0)
@@ -60,13 +62,16 @@ func run() -> void:
 	check(fixed.finished and fixed.completed_laps == 5,"corrected ramp gates accept all five laps")
 	check(fixed_laps == [1627,1412,1426,1553,1768],"actual recording keeps exact lap ticks")
 	check(fixed.elapsed_ticks == 7786,"actual recording keeps exact finish tick")
+	var current := TrackSession.new()
+	simulate(track,replay.frames,current,false)
+	check(not current.finished,"changed contact physics cannot relabel an unfinished historical recording")
 	await rejection_upload()
 	print("REJECTED_REPLAY_TESTS: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)
 
 class RejectionClient extends "res://backend/backend_client.gd":
 	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
-		return {"ok":true,"status":200,"data":{"status":"rejected","failure_code":"invalid_replay","retryable":false}}
+		return {"ok":true,"status":200,"data":{"run_id":"rejected-fixture-run","status":"rejected","failure_code":"invalid_replay","retryable":false}}
 
 func rejection_upload() -> void:
 	var client := RejectionClient.new()

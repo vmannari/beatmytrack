@@ -196,7 +196,7 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	check(save_error==OK,"publication fixture saved: "+library.last_error)
 	check(library.publish_document(doc)==ERR_UNAUTHORIZED,"untested publishing rejected at persistence boundary")
 	app.call("_show_screen","drafts")
-	app.call("_test_saved_draft","wip:publication_test")
+	await app.call("_test_saved_draft","wip:publication_test")
 	await process_frame
 	var game: Node = app.get("game")
 	check(game!=null and bool(game.get("editor_test")),"Test drive starts untimed editor practice")
@@ -206,7 +206,7 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	app.call("_leave_race")
 	await process_frame
 	check(app.get("screen")=="drafts" and not library.is_tested(doc),"aborting returns to drafts without tested status")
-	app.call("_test_saved_draft","wip:publication_test")
+	await app.call("_test_saved_draft","wip:publication_test")
 	await process_frame
 	game = app.get("game")
 	game.set_physics_process(false)

@@ -7,9 +7,24 @@ var app: Node
 
 class StandingsClient extends Node:
 	var own: Variant = {"rank":2,"time_ticks":120}
+	var tests_available: bool = false
+	var paths: Array[String] = []
+	var hold: bool = false
+	var fail: bool = false
+	var position: int = 2
 	func signed_in() -> bool: return true
+	func test_drivers_available() -> bool: return tests_available
 	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
+		paths.append(path)
+		while hold: await get_tree().process_frame
+		if fail: return {"ok":false,"status":503,"data":{}}
+		if path.contains("/results-comparison"):
+			var race: Dictionary = {"board_id":"test-board","metric":"race","population":100,"minimum_ticks":100,"maximum_ticks":140,"own_best_ticks":120 if own != null else null,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":25},{"from_ticks":120,"to_ticks_exclusive":140,"count":45},{"from_ticks":140,"to_ticks_exclusive":160,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
+			var lap: Dictionary = {"board_id":"test-board","metric":"best_lap","population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}],"comparison":{"position":position,"population":101,"top_percent":20}}
+			return {"ok":true,"data":{"board_id":"test-board","population_scope":"all","race":race,"best_lap":lap}}
 		if path.contains("/histogram"):
+			if path.contains("metric=best_lap"):
+				return {"ok":true,"data":{"metric":"best_lap","test_population":path.contains("/dev/"),"population":100,"minimum_ticks":1800,"maximum_ticks":2160,"bins":[{"from_ticks":1800,"to_ticks_exclusive":1921,"count":25},{"from_ticks":1921,"to_ticks_exclusive":2042,"count":45},{"from_ticks":2042,"to_ticks_exclusive":2163,"count":30}]}}
 			return {"ok":true,"data":{"population":3,"minimum_ticks":100,"maximum_ticks":140,"bins":[{"from_ticks":100,"to_ticks_exclusive":120,"count":1},{"from_ticks":120,"to_ticks_exclusive":140,"count":1},{"from_ticks":140,"to_ticks_exclusive":160,"count":1}]}}
 		if path.ends_with("/around-me"):
 			return {"ok":true,"data":{"population":3,"player":own,"faster_than_percent":50.0 if own != null else null}}
@@ -163,25 +178,26 @@ func run() -> void:
 	ui.hide()
 	(game.get("hud") as PlaygroundHUD).show()
 	game.set("paused",false)
+	# This fixture begins another attempt on the same Game, as a real retry does.
+	app.set("_result_game_id",0)
 	game.call("_begin_finish")
 	for tick: int in range(90): game.call("_physics_process",1.0/120.0)
 	check(cues.rating_panel.visible,"skipped track can be offered again")
 	(cues.rating_panel.find_child("Rate4",true,false) as Button).pressed.emit()
 	await settle()
-	check(not ui.visible and cues.rating_confirming,"rating remains visible for confirmation")
+	check(ui.visible and not cues.rating_panel.visible,"rating immediately continues to normal results")
 	var confirmed: TrackRating = cues.rating_panel.find_child("TrackRating",true,false)
 	for i: int in range(5):
-		check(confirmed.stars[i].icon == MenuIcon.texture("star_filled" if i < 4 else "star"),"confirmation fills exactly the selected stars")
+		check(confirmed.stars[i].icon == MenuIcon.texture("star_filled" if i < 4 else "star"),"saved local rating fills exactly the selected stars")
 		check(confirmed.stars[i].icon_alignment == HORIZONTAL_ALIGNMENT_CENTER and confirmed.stars[i].vertical_icon_alignment == VERTICAL_ALIGNMENT_CENTER,"rating icon is centered on both axes")
 	confirmed.choose(1)
-	check(confirmed.value() == 4,"confirmation prevents another selection")
+	# The hidden completed prompt no longer accepts a second rating selection.
+	check(confirmed.value() == 4,"completed rating prevents another selection")
 	var confirmation_tap := InputEventScreenTouch.new()
 	confirmation_tap.pressed = true
 	game.call("_unhandled_input",confirmation_tap)
-	check(not ui.visible,"tap cannot bypass rating confirmation")
-	await screenshot("track-rating-confirmed")
-	await create_timer(1.2).timeout
-	check(ui.visible and not cues.rating_confirming,"confirmed rating fades then continues to results")
+	check(ui.visible,"normal results remain available after rating")
+	await screenshot("track-rating-immediate-results")
 	var restored := LocalRecords.new(store.path)
 	restored.load_records()
 	check(int(restored.settings.track_ratings.get(track.identity,0)) == 4,"track rating survives reload")
@@ -423,13 +439,65 @@ func test_completion_distributions() -> void:
 	root.add_child(page)
 	page.cloud_version = "test-version"
 	await page._refresh_rank()
-	check(page.race_chart.snapshot.bins == [1,1,1], "verified histogram uses exact server counts")
-	check(page.race_chart.snapshot.player_bin == 1, "verified player on bin boundary uses exclusive upper edge")
+	check(page.race_chart.snapshot.bins == [25,45,30], "verified histogram uses exact server counts")
 	check(is_equal_approx(page.race_chart.snapshot.min_ms,100000.0/120.0), "histogram converts canonical ticks to milliseconds")
-	check(page.global_rank.text == "RANK 2 OF 3" and page.race_context.text.contains("3 verified players"), "rank and histogram context identify the real population")
+	check(page.global_rank.text == "POSITION 2" and page.race_context.text.is_empty(), "position uses the comparison field without diagnostic labels")
+	check(page.lap_chart.snapshot.bins == [25,45,30] and page.lap_population.text == "POSITION 2", "best-lap chart loads every driver's PB rather than this race's flying laps")
+	check(client.paths.any(func(path: String) -> bool: return path.contains("bins=16")), "results requests finer sixteen-bin comparisons")
+	check(page.race_chart.snapshot.markers.size() == 2 and page.race_chart.snapshot.markers[0].value_ms == 55000, "server comparison retains this race and the local personal-best markers")
+	check(page.race_chart.snapshot.markers[1].value_ms == 1000, "verified personal best from another device updates the best marker")
+	var geometry: Dictionary = TrackDistribution.comparison_geometry(page.race_chart.snapshot,400)
+	check(geometry.outside[0] == 1 and geometry.marker_x[0] > 8 and geometry.marker_x[0] < 392, "current race outside the field has a visible edge marker")
 	client.own = null
 	await page._refresh_rank()
-	check(page.race_chart.snapshot.player_bin == -1 and page.global_rank.text == "AWAITING VERIFIED SCORE", "pending upload shows distribution without inventing player placement")
+	check(page.race_chart.snapshot.bins == [25,45,30] and page.global_rank.text == "POSITION 2", "pending upload compares the current result with the same field")
+	check(client.paths[-1].contains("race_from_ticks=100") and client.paths[-1].contains("race_to_ticks=160") and client.paths[-1].contains("lap_from_ticks=1800") and client.paths[-1].contains("lap_to_ticks=2163"),"results pins both displayed bin domains on refresh")
+	client.tests_available = true
+	page.comparison_scope = "all"
+	await page._refresh_rank()
+	check(page.race_chart.snapshot.markers.size() == 2, "test population replacement retains both personal markers")
+	check(page.lap_context.text.is_empty() and page.lap_chart.snapshot.bins == [25,45,30], "combined comparison retains lap counts without diagnostic captions")
+	check(page.lap_chart.snapshot.edges_ms.size() == 4, "test lap histogram retains the exact server bin edges")
+	page.results.previous = 52.0
+	page.results.best = 52.0
+	var separate: Array[Dictionary] = page._comparison_markers("RACE TIME")
+	check(separate[0].value_ms == 55000 and separate[1].value_ms == 52000, "slower current race and faster personal best have independent markers")
+	var tail_snapshot: Dictionary = {"bins":[10,20,30,25,15],"min_ms":97000.0,"max_ms":110000.0,"markers":separate}
+	geometry = TrackDistribution.comparison_geometry(tail_snapshot,400)
+	check(geometry.outside == [-1,-1] and geometry.low > 90000, "faster personal markers do not squeeze the comparison bars")
+	check(tail_snapshot.bins == [10,20,30,25,15], "markers never add samples to the driver population")
+	var race_before: Dictionary = page.race_chart.snapshot.duplicate(true)
+	var lap_before: Dictionary = page.lap_chart.snapshot.duplicate(true)
+	client.hold = true
+	page.call_deferred("_refresh_rank")
+	await settle()
+	check(page.standings_busy and page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"pending network refresh never switches to a local or public chart")
+	client.hold = false
+	await settle()
+	check(page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"identical refresh leaves both chart domains and counts stable")
+	client.fail = true
+	await page._refresh_rank()
+	check(page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"transient failure preserves the complete last comparison")
+	client.fail = false
+	client.position = 20
+	await page._refresh_rank()
+	check(page.global_rank.text == "TOP 20%" and page.lap_population.text == "TOP 20%","outside the top ten shows percentile for each metric")
+	check(client.paths.all(func(path: String) -> bool: return path.contains("/results-comparison")),"all result refreshes use one atomic endpoint")
+	check(client.paths.all(func(path: String) -> bool: return not path.contains("test_population")),"result requests never offer separate driver-source modes")
+	var invalid: Dictionary = page.last_comparison.duplicate(true)
+	invalid.best_lap.board_id = "unrelated-board"
+	race_before = page.race_chart.snapshot.duplicate(true)
+	lap_before = page.lap_chart.snapshot.duplicate(true)
+	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before and page.lap_chart.snapshot == lap_before,"mixed-board packet is rejected before either chart changes")
+	invalid = page.last_comparison.duplicate(true)
+	invalid.population_scope = "public"
+	check(not page._apply_comparison(invalid),"refresh cannot substitute a split population for the unified field")
+	invalid = page.last_comparison.duplicate(true)
+	invalid.best_lap.bins[0].count = 999
+	check(not page._apply_comparison(invalid) and page.race_chart.snapshot == race_before,"incomplete or contradictory lap counts cannot partially replace the race chart")
+	check(RaceComplete._position_text({"position":10,"population":100,"top_percent":10}) == "POSITION 10","top-ten boundary displays position")
+	check(RaceComplete._position_text({"position":11,"population":10000,"top_percent":1}) == "TOP 1%","top-one-percent remains possible outside the top ten")
+	check(RaceComplete._position_text({"position":1,"population":1,"top_percent":100}).is_empty(),"solo population never displays rank one of one")
 	page.free()
 	client.free()
 	source.free()

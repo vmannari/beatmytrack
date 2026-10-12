@@ -14,6 +14,7 @@ class ResultClient extends Node:
 	var requests: int = 0
 	func base_url() -> String: return "http://fixture"
 	func signed_in() -> bool: return true
+	func recent_run(_ticket: String) -> Dictionary: return {}
 	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _auth: bool) -> Dictionary:
 		requests += 1
 		var board: bool = not path.ends_with("/result")
@@ -114,7 +115,7 @@ func run() -> void:
 	adapter.result_ticket = "new"
 	await create_timer(0.15).timeout
 	check(model.last_result.get("provisional",false) and not adapter.result_polling,"a replaced race fences stale verification without stranding polling")
-	client.response = {"ok":false,"retry_after":10}
+	client.response = {"ok":false,"retry_after":10,"data":{}}
 	adapter.result_ticket = "offline"
 	await adapter.poll_result()
 	var requests: int = client.requests
@@ -156,7 +157,7 @@ func visuals(model: WeeklyRivalry) -> void:
 		app._rivalry()
 		for _frame: int in range(5): await process_frame
 		var page: Control = app.root_ui.find_child("WeeklyRivalryPage",true,false)
-		check(has_text(page,"EXPECTED TRACK POSITION") and not has_text(page,"Checking your race…"),"pending screen displays the projected result immediately")
+		check(has_text(page,"TRACK STANDINGS") and page.find_child("RivalryResultProvisional",true,false) != null,"pending screen displays standings and a compact provisional status immediately")
 		var race: Button = page.find_child("RivalryRaceAgain",true,false)
 		check(race != null and not race.disabled and root.get_visible_rect().encloses(race.get_global_rect()),"Race Again remains available inside the compact screen")
 		await RenderingServer.frame_post_draw

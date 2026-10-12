@@ -121,6 +121,9 @@ func run() -> void:
 	root.add_child(app); await process_frame
 	app.set("document",scenery_doc); app.call("_show_screen","create")
 	await process_frame; await process_frame
+	var preview_deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
+	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"scenery selection waits for actual collision/scenery preparation")
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.mode="objects"; canvas._begin(canvas.to_screen(point),-1); canvas._end(-1)
 	check(canvas.selected_object>=0 and scenery_doc.hidden_scenery.has(CreatorScenery.key(tree)),"scenery tree can be selected and adopted into document")

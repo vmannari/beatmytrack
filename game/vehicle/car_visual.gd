@@ -4,6 +4,21 @@ extends Node3D
 
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
+var livery: Dictionary = {}
+var paint_materials: Dictionary = {}
+var paint_variants: Array[Dictionary] = []
+var accent_roof: StandardMaterial3D
+
+func apply_livery(value: Dictionary) -> void:
+	livery = value.duplicate(true) if VehicleLivery.valid(value) else VehicleLivery.defaults(vehicle_id)
+	for slot: String in VehicleLivery.SLOTS:
+		if paint_materials.has(slot):
+			(paint_materials[slot] as StandardMaterial3D).albedo_color = Color(str(livery.colors[slot]))
+	if accent_roof != null:
+		accent_roof.albedo_color = Color(str(livery.colors.accent)).darkened(0.12)
+	for variant: Dictionary in paint_variants:
+		var color: Color = Color(str(livery.colors[variant.slot]))
+		(variant.material as StandardMaterial3D).albedo_color = color.darkened(float(variant.get("darken",0.0)))
 var headlights: Node3D
 var road_headlight: SpotLight3D
 var night_lights_enabled: bool = false
@@ -116,6 +131,15 @@ func add_collision_impact(state: VehicleState, resolved_velocity_change: Vector2
 	suspension_speed = suspension_speed.limit_length(MAX_COLLISION_SUSPENSION_SPEED)
 
 
+func add_scrape(state: VehicleState) -> void:
+	# Sustained, quiet body loading; no crash spring kick or camera trauma.
+	var strength: float = clampf(state.scrape_strength,0.0,1.0)
+	suspension_speed.x -= strength*0.06*VehicleSimulation.STEP
+	suspension_speed.y += state.scrape_normal.dot(state.forward())*strength*0.10*VehicleSimulation.STEP
+	suspension_speed.z += state.scrape_normal.dot(state.right())*strength*0.28*VehicleSimulation.STEP
+	suspension_speed = suspension_speed.limit_length(MAX_COLLISION_SUSPENSION_SPEED)
+
+
 func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
 	# Small visual unloading at crests, followed by gravity and a damped
 	# landing. This never grants canonical airtime or collision immunity.
@@ -165,30 +189,29 @@ func _ready() -> void:
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	if vehicle_id != "compact":
 		VehicleModels.build(self, vehicle_id)
+		if not livery.is_empty(): apply_livery(livery)
 		_update_rear_lights()
 		if batch_parts: VisualGeometry.batch_static_parts(self)
 		return
-	var paint := VisualGeometry.material(Color("e0d5b5"))
-	var blue := VisualGeometry.material(Color("30627d"))
-	var trim := VisualGeometry.material(Color("171e21"))
+	var paint := CompactFinish.paint(Color("e0d5b5"))
+	var blue := CompactFinish.paint(Color("30627d"))
+	paint_materials = {"body":blue, "accent":paint}
+	var trim := CompactFinish.rubber(Color("171e21"))
 	var glass := VisualGeometry.material(Color("1e3036"))
-	var rim := VisualGeometry.material(Color("657177"))
-	var lamps := VisualGeometry.material(Color("e4dfc5"))
+	var rim := CompactFinish.alloy(Color("657177"))
 	brake_material = VisualGeometry.material(Color("802d2b"))
 	body = Node3D.new()
 	add_child(body)
-	_shell(body, [Vector3(0.82,0.32,2.00),Vector3(0.90,0.40,2.125),Vector3(0.88,0.52,2.08)], blue)
-	_shell(body, [Vector3(0.86, 0.5, 2.03), Vector3(0.88, 0.86, 1.98), Vector3(0.76, 1.02, 1.8)], blue)
+	CompactCoachwork.build_body(self,blue)
 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
 	_hatchback(paint, glass, trim, blue)
 	for side: float in [-1.0, 1.0]:
-		VisualGeometry.box(body,Vector3(0.055,0.22,0.035),Vector3(side*0.806,0.798,-2.005),VisualGeometry.material(Color("b77929")))
 		for axle: float in [-1.28, 1.28]:
 			var pivot := Node3D.new()
 			pivot.position = Vector3(side * 0.83, 0.37, axle)
 			add_child(pivot)
 			CompactDetail.tire(pivot, trim)
-			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.16, Vector3.ZERO, trim)
+			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.16, Vector3.ZERO, trim,true)
 			hub.rotation.z = PI * 0.5
 			for spoke: int in range(8):
 				var a: float = spoke*TAU/8.0
@@ -196,8 +219,8 @@ func _ready() -> void:
 			if axle < 0:
 				front_wheels.append(pivot)
 			register_rolling_wheel(pivot, 0.37)
-	VisualGeometry.box(body, Vector3(0.4, 0.13, 0.045), Vector3(0, 0.64, 2.15), lamps)
 	CompactDetail.build(self, blue, paint, trim, rim)
+	if not livery.is_empty(): apply_livery(livery)
 	_update_rear_lights()
 	if batch_parts: VisualGeometry.batch_static_parts(self)
 
@@ -334,8 +357,8 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.
 const ROLL_OUTLINE: Array[Vector2] = [Vector2(-0.975,0.0), Vector2(0.975,0.0),
-	Vector2(-0.975,0.76), Vector2(0.975,0.76), Vector2(-1.02,1.09), Vector2(1.02,1.09),
-	Vector2(-0.63,1.49), Vector2(0.63,1.49)]
+	Vector2(-0.975,0.76), Vector2(0.975,0.76), Vector2(-1.04,1.15), Vector2(1.04,1.15),
+	Vector2(-0.63,1.515), Vector2(0.63,1.515)]
 
 func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 	if state.roll_ticks <= 0: return
@@ -445,45 +468,33 @@ func _seam(parent: Node3D, start: Vector3, end: Vector3, width: float, surface: 
 
 func _hatchback(paint: Material, glass: Material, trim: Material, blue: Material) -> void:
 	# Broad roof, long side glazing and a sloping rear hatch; +Z is the tail.
-	var lf := Vector3(-0.76,1.01,-1.00)
-	var rf := Vector3(0.76,1.01,-1.00)
-	var lr := Vector3(-0.76,1.01,1.91)
-	var rr := Vector3(0.76,1.01,1.91)
-	var tlf := Vector3(-0.63,1.48,-0.40)
-	var trf := Vector3(0.63,1.48,-0.40)
-	var tlr := Vector3(-0.63,1.48,1.18)
-	var trr := Vector3(0.63,1.48,1.18)
-	_panel([lf,rf,trf,tlf],Vector3(0,0.79,-0.61),paint)
-	_panel([lr,rr,trr,tlr],Vector3(0,0.84,0.54),paint)
-	var roof_paint := VisualGeometry.material(Color("c5baa0"))
-	_panel([tlf,trf,trr,tlr],Vector3.UP,roof_paint)
-	var roof := Node3D.new()
-	body.add_child(roof)
-	roof.position.z = 0.39
-	_shell(roof,[Vector3(0.63,1.474,0.79),Vector3(0.60,1.49,0.77)],roof_paint)
-	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.68,1.065,-0.95),Vector3(0.68,1.065,-0.95),Vector3(0.57,1.445,-0.46),Vector3(-0.57,1.445,-0.46)],Vector3(0,0.79,-0.61),trim,0.10)
-	preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(-0.67,1.075,1.83),Vector3(0.67,1.075,1.83),Vector3(0.57,1.435,1.27),Vector3(-0.57,1.435,1.27)],Vector3(0,0.84,0.54),trim,0.07)
-	var quarter_surround := VisualGeometry.material(Color("a6b1aa"))
+	CompactCoachwork.build_cabin(self,paint,blue)
+	var roof_paint := CompactFinish.paint(Color("c5baa0"))
+	accent_roof = roof_paint
+	CompactCoachwork.build_roof(self,roof_paint)
+	preload("res://vehicle/compact_glazing.gd").sheet(self,true,trim)
+	preload("res://vehicle/compact_glazing.gd").sheet(self,false,trim)
 	for side: float in [-1.0,1.0]:
-		_panel([Vector3(side*0.76,1.01,-1.0),Vector3(side*0.76,1.01,1.91),Vector3(side*0.63,1.48,1.18),Vector3(side*0.63,1.48,-0.4)],Vector3(side,0.277,0),blue)
-		# Window corners lie on the sloped cabin side, just outside its paint.
-		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.748,1.07,-0.85),Vector3(side*0.748,1.07,0.42),Vector3(side*0.651,1.425,0.42),Vector3(side*0.651,1.425,-0.35)],Vector3(side,0.277,0),trim,0.0)
-		preload("res://vehicle/compact_glazing.gd").window(self,[Vector3(side*0.747,1.075,0.50),Vector3(side*0.733,1.125,1.53),Vector3(side*0.656,1.405,1.12),Vector3(side*0.651,1.425,0.50)],Vector3(side,0.277,0),trim,0.0,[0.035,0.15,0.095,0.035],quarter_surround)
+		var suffix: String="Left" if side<0 else "Right"
+		# Both openings share their sill, roof rail, pillar and dark gasket.
+		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,true),Vector3(side,0.277,0),trim,0.0,[0.035,0.025,0.025,0.055],null,"DoorWindow"+suffix)
+		preload("res://vehicle/compact_glazing.gd").window(self,CompactCoachwork.side_window_corners(side,false),Vector3(side,0.277,0),trim,0.0,[0.025,0.070,0.045,0.025],null,"QuarterWindow"+suffix)
 		_seam(body,Vector3(side*0.70,1.02,-0.92),Vector3(side*0.12,1.04,-0.93),0.022,trim)
-	# Hatch seam and rear wiper make the short tail readable from overhead.
-	_seam(body,Vector3(-0.68,1.05,1.87),Vector3(0.68,1.05,1.87),0.018,trim)
-	_seam(body,Vector3(0,1.10,1.80),Vector3(0.36,1.17,1.69),0.020,trim)
 	# A fine inset perimeter crease defines the pressed roof's rolled edge.
-	var roof_line := VisualGeometry.material(Color("b3aa95"))
-	var roof_highlight := VisualGeometry.material(Color("dcd1b6"))
+	var roof_line := CompactFinish.paint(Color("b3aa95"))
+	var roof_highlight := CompactFinish.paint(Color("dcd1b6"))
+	paint_variants.append({"material":roof_line,"slot":"accent","darken":0.14})
+	paint_variants.append({"material":roof_highlight,"slot":"accent","darken":0.02})
 	var perimeter: Array[Vector2] = [Vector2(-0.44,-0.38),Vector2(0.44,-0.38),Vector2(0.60,-0.16),Vector2(0.60,0.94),Vector2(0.44,1.16),Vector2(-0.44,1.16),Vector2(-0.60,0.94),Vector2(-0.60,-0.16)]
 	for i: int in range(perimeter.size()):
 		var a: Vector2 = perimeter[i]
 		var b: Vector2 = perimeter[(i+1)%perimeter.size()]
-		_seam(body,Vector3(a.x,1.493,a.y),Vector3(b.x,1.493,b.y),0.008,roof_line)
+		var pa: Vector3 = CompactCoachwork.roof_point(a.x/0.63,(a.y+0.4)/1.58)
+		var pb: Vector3 = CompactCoachwork.roof_point(b.x/0.63,(b.y+0.4)/1.58)
+		_seam(body,pa+Vector3.UP*0.001,pb+Vector3.UP*0.001,0.004,roof_line)
 		var inset_a: Vector2 = Vector2(0,0.39).lerp(a,0.986)
 		var inset_b: Vector2 = Vector2(0,0.39).lerp(b,0.986)
-		_seam(body,Vector3(inset_a.x,1.493,inset_a.y),Vector3(inset_b.x,1.493,inset_b.y),0.008,roof_highlight)
+		_seam(body,CompactCoachwork.roof_point(inset_a.x/0.63,(inset_a.y+0.4)/1.58)+Vector3.UP*0.001,CompactCoachwork.roof_point(inset_b.x/0.63,(inset_b.y+0.4)/1.58)+Vector3.UP*0.001,0.003,roof_highlight)
 
 
 func _panel(points: Array[Vector3], normal: Vector3, surface: Material) -> void:

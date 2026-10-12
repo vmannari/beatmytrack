@@ -1,6 +1,27 @@
 class_name ObjectThumbnail
 extends Button
 ## Small one-shot renders use exactly the placed-object mesh builder.
+const CACHE_LIMIT: int = 48
+static var _images: Dictionary = {}
+var _viewport: SubViewport
+var _image: TextureRect
+var _cache_key: String
+
+func _ready() -> void:
+	if _viewport != null and DisplayServer.get_name() != "headless": _bake_preview()
+
+func _bake_preview() -> void:
+	await RenderingServer.frame_post_draw
+	if not is_inside_tree() or not is_instance_valid(_viewport): return
+	var pixels: Image = _viewport.get_texture().get_image()
+	if pixels == null or pixels.is_empty(): return
+	var baked: ImageTexture = ImageTexture.create_from_image(pixels)
+	if _images.size() >= CACHE_LIMIT: _images.erase(_images.keys()[0])
+	_images[_cache_key] = baked
+	_image.texture = baked
+	_viewport.queue_free()
+	_viewport = null
+
 static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine") -> Button:
 	var button := ObjectThumbnail.new()
 	button.name = "Asset_"+kind
@@ -10,6 +31,32 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	button.button_pressed = chosen
 	button.pressed.connect(action)
 	EditorStyle.card(button,chosen)
+	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION
+	var cached: Texture2D = _images.get(button._cache_key)
+	var viewport: SubViewport
+	if cached == null:
+		viewport = _render_preview(button,kind,biome)
+		button._viewport = viewport
+	var image := TextureRect.new()
+	image.texture = cached if cached != null else viewport.get_texture()
+	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
+	image.position = Vector2(4,1)
+	image.size = Vector2(96,58)
+	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(image)
+	button._image = image
+	var label := Label.new()
+	label.text = title
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size",14)
+	label.add_theme_font_override("font",EditorStyle.FONT)
+	label.position = Vector2(0,59)
+	label.size = Vector2(104,20)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(label)
+	return button
+
+static func _render_preview(button: Button, kind: String, biome: String) -> SubViewport:
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(208,128)
 	viewport.msaa_3d=Viewport.MSAA_4X
@@ -55,23 +102,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	camera.size=maxf(0.1,maxf(extent.y,extent.x/(208.0/128.0))*1.08)
 	camera.look_at_from_position(center+Vector3(7,6,-10),center)
 	camera.current = true
-	var image := TextureRect.new()
-	image.texture = viewport.get_texture()
-	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
-	image.position = Vector2(4,1)
-	image.size = Vector2(96,58)
-	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	button.add_child(image)
-	var label := Label.new()
-	label.text = title
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size",14)
-	label.add_theme_font_override("font",EditorStyle.FONT)
-	label.position = Vector2(0,59)
-	label.size = Vector2(104,20)
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	button.add_child(label)
-	return button
+	return viewport
 
 
 static func _mesh_bounds(node: Node, parent: Transform3D = Transform3D.IDENTITY) -> AABB:

@@ -2,6 +2,10 @@ class_name PlaygroundData
 extends Resource
 ## Visual and collision builders consume the same authored geometry.
 
+const SCRAPE_FRICTION: float = 1.0 # Tangent impulse per normal velocity change; strong owner-requested scrub.
+const CONTACT_YAW_RESPONSE: float = 24.0 # Per second, not a render-frame blend.
+const CONTACT_STEP: float = 1.0/120.0 # Pinned 120 Hz; avoid a base-resource dependency on VehicleSimulation.
+
 @export var identity: String = "handling-yard-v1"
 @export var half_extent: Vector2 = Vector2(48.0, 60.0)
 @export var spawn: Vector2 = Vector2(0.0, -35.0)
@@ -66,15 +70,27 @@ func _bounce(state: VehicleState, normal: Vector2, config: HandlingConfig) -> vo
 	# leverage from the body axes: oblique hits turn it, centred hits do not.
 	var turn: float = -normal.dot(state.forward()) * normal.dot(state.right()) * -inward_speed * config.collision_turn_strength
 	var tangent: Vector2 = state.velocity - normal * inward_speed
-	# Small inward speeds are sustained rubbing, not a fresh crash. Preserve
-	# tangential travel and gently steer the chassis parallel to the barrier.
-	var impact: float = smoothstep(0.0, config.wall_slide_speed, -inward_speed)
-	state.velocity = tangent * sqrt(1.0 - config.collision_energy_loss * impact) - normal * inward_speed * config.restitution * impact
+	var before: Vector2 = state.velocity
+	# A fast shallow brush is still a scrape. Both normal speed and incidence
+	# must rise before applying the authored hard-impact energy loss/recoil.
+	var incidence: float = -inward_speed / maxf(state.velocity.length(),0.001)
+	var impact: float = smoothstep(config.wall_slide_speed,config.wall_slide_speed*4.0,-inward_speed) * smoothstep(0.08,0.30,incidence)
+	var normal_change: float = -inward_speed * (1.0+config.restitution*impact)
+	var scrape_loss: float = minf(tangent.length(),SCRAPE_FRICTION*normal_change)
+	var hard_loss: float = tangent.length() * (1.0-sqrt(1.0-config.collision_energy_loss))
+	var tangent_loss: float = lerpf(scrape_loss,hard_loss,impact)
+	state.velocity = tangent.move_toward(Vector2.ZERO,tangent_loss) - normal * inward_speed * config.restitution * impact
 	var alignment_yaw: float = -normal.dot(state.forward()) * normal.dot(state.right()) * config.wall_alignment_rate
-	var contact_yaw: float = lerpf(state.yaw_rate, alignment_yaw, 0.25)
+	var contact_yaw: float = lerpf(state.yaw_rate, alignment_yaw, 1.0-exp(-CONTACT_YAW_RESPONSE*CONTACT_STEP))
 	var rotation_budget: float = maxf(0.0, energy - config.mass * state.velocity.length_squared())
 	var yaw_limit: float = minf(config.maximum_yaw_rate, sqrt(rotation_budget / config.rotational_inertia))
 	state.yaw_rate = clampf(lerpf(contact_yaw, state.yaw_rate * (1.0 - config.collision_energy_loss) + turn, impact), -yaw_limit, yaw_limit)
+	state.collision_impulse += (state.velocity-before)*impact
+	var rubbing: float = (1.0-impact)*smoothstep(0.5,20.0,tangent.length())*clampf(-inward_speed/config.wall_slide_speed,0.08,1.0)
+	if rubbing > state.scrape_strength:
+		state.scrape_strength = rubbing
+		state.scrape_normal = normal
+		state.scrape_speed = tangent.length()
 	state.collision_count += 1
 
 

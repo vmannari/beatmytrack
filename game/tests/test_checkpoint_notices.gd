@@ -13,8 +13,37 @@ func run() -> void:
 	_unrelated_bridge_crossing()
 	_lateral_notices()
 	_finish_notices()
+	_return_to_missed_gate()
 	print("CHECKPOINT_NOTICE_TESTS: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)
+
+func _return_to_missed_gate() -> void:
+	for name: String in ["silmukka","dust_cloud","over_and_under"]:
+		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+name+".json"))
+		var track: NativeTrack = TrackCompiler.compile(document)
+		var configured := TrackSession.new(120,1)
+		configured._configure(track)
+		for gate: int in range(configured.checkpoint_count()-3):
+			var session := TrackSession.new(120,1)
+			session._configure(track)
+			session.next_checkpoint = gate
+			session.missed_checkpoint = gate
+			var ahead: Vector2 = track._race_route_point(session._start_progress+session._progress[gate+3])
+			session._update_display_progress(track,ahead,track.nearest_route(ahead))
+			var center: Vector2 = session._centers[gate]
+			var direction: Vector2 = session._directions[gate]
+			var hint: int = track.nearest_route(center)
+			session.advance(track,center-direction*0.05,center+direction*0.05,hint,session._layers[gate])
+			check(session.next_checkpoint == gate+1 and session.missed_checkpoint == -1,"return from three gates ahead clears only the recovered miss %s/%d" % [name,gate])
+			var stale := TrackSession.new(120,1)
+			stale._configure(track)
+			stale.next_checkpoint = gate
+			stale.missed_checkpoint = gate
+			var stale_hint: int = track.nearest_route(ahead)
+			stale.advance(track,center-direction*0.05,center+direction*0.05,stale_hint,stale._layers[gate])
+			check(stale.next_checkpoint == gate+1 and stale.missed_checkpoint == -1,"shortcut return with a distant route hint does not mark the upcoming gate missed %s/%d" % [name,gate])
+			stale.advance(track,center+direction*0.05,center+direction*0.1,stale_hint,stale._layers[gate])
+			check(stale.next_checkpoint == gate+1 and stale.missed_checkpoint == -1,"following tick stays clear while the route hint catches up %s/%d" % [name,gate])
 
 func _wrong_layer_notices() -> void:
 	for name: String in ["dust_cloud","over_and_under"]:

@@ -101,6 +101,7 @@ func _ui(doc: Dictionary) -> void:
 	app.call("_show_screen","create")
 	await process_frame
 	await process_frame
+	await _wait_preview(app)
 	var canvas: EditorCanvas = app.get("canvas")
 	check(canvas.mode == "road","creator opens with the compact road palette")
 	app.call("_editor_category","paint")
@@ -190,6 +191,7 @@ func _ui(doc: Dictionary) -> void:
 	await process_frame
 	await process_frame
 	canvas = app.get("canvas")
+	await _wait_preview(app)
 	check(canvas != null and canvas.document.id == remix.id,"Load track opens the saved starter remix")
 	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/starter_circuit.json").cells,"starter editing preserves native map geometry")
 	# The preview dialog is owned by root app; close it before remix evidence.
@@ -209,3 +211,8 @@ func _capture(name: String) -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(capture_directory.path_join(name+".png")) == OK,"screenshot "+name)
+
+func _wait_preview(app: Node) -> void:
+	var deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_preview_thread != null and Time.get_ticks_msec()<deadline: await process_frame
+	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"opened track collision preparation completes before native-grid editing assertions")

@@ -156,6 +156,9 @@ func _ui(doc: Dictionary) -> void:
 	await _capture("editor-v2-objects")
 	# The current editor saves explicitly; its old preview dialog was removed.
 	app.call("_save_track_explicit")
+	var preview_deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
+	check(app.editor_preview_thread == null,"explicit save preview completes before immutable identity comparisons")
 	await _capture("editor-v2-saved")
 	var saved: Dictionary = (app.get("library") as TrackLibrary).load_document(doc.id)
 	check(JSON.stringify(saved,"",true) == JSON.stringify(JSON.parse_string(JSON.stringify(app.get("document"))),"",true),"widths, corners, objects and transforms persist together")

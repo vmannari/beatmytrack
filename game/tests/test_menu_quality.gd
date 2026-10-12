@@ -24,6 +24,7 @@ func run() -> void:
 	var document: Dictionary = TrackDocument.create_default()
 	for index: int in range(40):
 		app.cloud.entries.append({"track_id":"quality-%02d" % index,"version_id":"version-%02d" % index,"content_hash":"hash-%02d" % index,"name":"Quality %02d" % index,"creator":"Fixture","creator_id":"fixture","points":document.points,"theme":"pine","rating_count":0,"rating_average":null})
+	app.race_area_mode = "free"
 	app._show_screen("tracks")
 	await create_timer(0.7).timeout
 	var browser: TrackBrowser = app.menu_body.find_child("TrackBrowser", true, false)
@@ -48,7 +49,7 @@ func run() -> void:
 	app.cloud.changed.emit()
 	check(browser.matches.any(func(entry: Dictionary) -> bool: return entry.name == "Updated quality title"), "changed cloud metadata reaches the carousel")
 	var warm_garage: Control = app.menu_neighbors[2].body
-	var selector: OptionButton = warm_garage.find_child("VehicleSelector",true,false)
+	var selector: Button = warm_garage.find_child("GarageCar_compact",true,false)
 	check(selector.get_mouse_filter_with_override() == Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() == Control.FOCUS_NONE, "warmed page descendants reject mouse and keyboard focus")
 	var next_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	next_track.identity = "quality_new_selection"
@@ -56,11 +57,12 @@ func run() -> void:
 	app.selected_track = next_track
 	app._commit_menu_neighbor(2)
 	await create_timer(0.4).timeout
-	var garage_race: Button = _race_button(warm_garage)
+	var garage_select: Button = warm_garage.find_child("GarageSelectCar",true,false)
 	check(selector.get_mouse_filter_with_override() != Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() != Control.FOCUS_NONE, "promotion restores descendant input preferences")
-	garage_race.pressed.emit()
-	check(app.raced_track == next_track, "cached Garage races the current selected track")
-	check(_contains_text(warm_garage, "NEW SELECTED CIRCUIT"), "cached Garage displays the current selected circuit")
+	garage_select.pressed.emit()
+	var garage: GaragePage = warm_garage.find_child("GaragePage",true,false)
+	check(garage.section == "customise" and app.selected_track == next_track and app.raced_track == null, "cached Garage confirms its car while retaining current track without starting a race")
+	check(garage.find_child("GarageCare",true,false) != null and garage.find_child("GarageTuning",true,false) != null, "cached Garage exposes the left-side tool modes")
 	var shell: Control = app.root_ui
 	var warmed_race: Control = app.menu_neighbors[-2].body
 	app._open_race_area()

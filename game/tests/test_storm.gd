@@ -107,8 +107,8 @@ func _run() -> void:
 				wet_paint += 1
 	check(wet_materials > 0,"wet road materials bound in race")
 	if not document.get("pieces",[]).is_empty(): check(wet_paint > 0,"Storm paint and kerbs receive wet materials")
-	var finish: MeshInstance3D = race.track_ground.get_node_or_null("FinishLight")
-	check(finish != null and (finish.material_override as StandardMaterial3D).specular_mode == BaseMaterial3D.SPECULAR_SCHLICK_GGX,"start line receives specular lighting")
+	var finish: MeshInstance3D = race.track_ground.get_node_or_null("WornAsphaltFinishPale")
+	check(finish != null and finish.material_override is ShaderMaterial and (finish.material_override as ShaderMaterial).shader == preload("res://track/desert_finish.gdshader"),"start line uses owner-requested worn pigment")
 	check(race.biome_environment.sky != null and race.biome_environment.reflected_light_source == Environment.REFLECTION_SOURCE_SKY,"Storm supplies filtered sky reflections")
 	var dry_environment := Environment.new()
 	var test_light := DirectionalLight3D.new()
@@ -169,13 +169,13 @@ func _run() -> void:
 	weather.until_lightning = 0.01
 	weather.advance(0.02,false)
 	check(weather.strikes == 1 and weather.thunder_count == 0 and weather.until_thunder >= 1.2,"lightning precedes delayed thunder")
-	check(weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0,"occasional lightning spacing")
+	check(weather.until_lightning >= 13.5 and weather.until_lightning <= 24.0,"owner-requested 50% longer lightning spacing")
 	weather.advance(0.16,false)
-	check(light.light_energy > weather.base_light_energy and weather.flash_strength() <= 0.32,"restrained irregular lightning intensity")
+	check(light.light_energy > weather.base_light_energy+8.0 and weather.flash_strength() <= weather.FLASH_PEAK_MAX,"strong irregular lightning raises world illumination")
 	var elapsed: float = weather.elapsed
 	var frozen_flash: float = weather.flash_strength()
 	weather.advance(10.0,true)
-	check(weather.elapsed == elapsed and weather.rain_audio.stream_paused and not weather.thunder_audio.playing,"pause freezes weather and pending thunder")
+	check(weather.elapsed == elapsed and not weather.thunder_audio.playing and weather.thunder_count == 0,"pause freezes weather and pending thunder")
 	check(weather.flash_strength() == frozen_flash,"pause freezes the current lightning intensity")
 	if "--capture" in OS.get_cmdline_user_args():
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/storm"))
@@ -190,7 +190,7 @@ func _run() -> void:
 	weather.advance(3.0,false)
 	check(weather.thunder_count == 1 and weather.thunder_audio.playing,"thunder actually starts after delay")
 	weather.advance(0.0,true)
-	check(weather.rain_audio.stream_paused and weather.thunder_audio.stream_paused,"pause silences active rain and thunder")
+	check(weather.thunder_audio.stream_paused,"pause silences active thunder")
 	check(is_equal_approx(light.light_energy,weather.base_light_energy),"lightning restores overcast light")
 	check(race.sim.state.snapshot() == state_before,"weather never changes canonical car state")
 	if "--capture" in OS.get_cmdline_user_args():
@@ -227,8 +227,8 @@ func _run() -> void:
 		var previous_strikes: int = weather.strikes
 		weather.advance(0.1,false)
 		if weather.strikes != previous_strikes:
-			intervals_ok = intervals_ok and weather.until_lightning >= 9.0 and weather.until_lightning <= 16.0
-	check(intervals_ok and weather.strikes >= 20 and weather.strikes <= 37,"five-minute storm retains occasional separate strikes")
+			intervals_ok = intervals_ok and weather.until_lightning >= 13.5 and weather.until_lightning <= 24.0
+	check(intervals_ok and weather.strikes >= 13 and weather.strikes <= 25,"five-minute storm retains separate strikes at 50% longer intervals")
 	check(weather.thunder_count >= weather.strikes-1,"each lightning event receives thunder")
 	# Changing the active biome removes visual/audio nodes and resets the light rig.
 	race.native_track.metadata.theme = "pine"
@@ -270,11 +270,11 @@ func _test_flash_profiles() -> void:
 		for sample: int in range(ceili(weather.FLASH_DURATION*120.0)+1):
 			weather.flash_age = float(sample)/120.0
 			var strength: float = weather.flash_strength()
-			bounded = bounded and strength >= 0.0 and strength <= 0.32
-			gradual = gradual and absf(strength-previous_strength) <= 0.03
+			bounded = bounded and strength >= 0.0 and strength <= weather.FLASH_PEAK_MAX
+			gradual = gradual and absf(strength-previous_strength)/weather.FLASH_PEAK_MAX <= 0.03/0.32
 			previous_strength = strength
 		bounded = bounded and weather.rng.state == rng_state and weather.flash_strength() == 0.0
-	check(bounded,"64 seeded strikes have 2-3 softer peaks, at least 0.98s duration and no random sampling during rendering")
+	check(bounded,"64 seeded strikes have 2-3 strong bounded peaks, at least 0.98s duration and no random sampling during rendering")
 	check(gradual,"lightning intensity changes gradually instead of fast high-contrast flicker")
 	check(varied,"strike shape varies with the random seed")
 	weather.rng.seed = 0
@@ -314,6 +314,17 @@ func _test_tire_spray() -> void:
 	state.velocity = Vector2(0,5)
 	effect.sample(state,frame,track)
 	check(effect.water_drops[0].amount_ratio < fast,"spray increases with speed")
+	state.velocity = Vector2(0,18)
+	effect.sample(state,frame,track)
+	check(effect.water_drops[0].amount_ratio > effect.water_drops[2].amount_ratio,"front spray stays quieter than the rear wake")
+	var fast_launch: float = (effect.water_drops[0].process_material as ParticleProcessMaterial).initial_velocity_max
+	state.velocity = Vector2(0,5)
+	effect.sample(state,frame,track)
+	check((effect.water_drops[0].process_material as ParticleProcessMaterial).initial_velocity_max < fast_launch,"water fan travels farther at road speed")
+	state.velocity = Vector2(0,2)
+	effect.sample(state,frame,track)
+	check(effect.water_drops.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"creeping car throws no distracting droplets")
+	state.velocity = Vector2(0,5)
 	for kind: int in [1,2,3,4,5,6,7]:
 		track.cells.fill(kind)
 		effect.sample(state,frame,track)

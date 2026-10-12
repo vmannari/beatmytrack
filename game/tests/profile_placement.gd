@@ -45,6 +45,10 @@ func run() -> void:
 	app.set("document",doc)
 	app.call("_show_screen","create")
 	await process_frame
+	await settled(app)
+	var initial_deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_world._building and Time.get_ticks_msec()<initial_deadline: await process_frame
+	check(not app.editor_world._building,"initial editor scenery completes before placement measurements")
 	var canvas: EditorCanvas = app.get("canvas")
 	app.call("_choose_object","tyre_stack")
 	var baseline: bool = "--baseline" in OS.get_cmdline_user_args()
@@ -62,6 +66,7 @@ func run() -> void:
 	begin = Time.get_ticks_usec()
 	canvas.show_native(track)
 	print("PLACEMENT visual_ms=",(Time.get_ticks_usec()-begin)/1000.0)
+	while app.editor_world._building and Time.get_ticks_msec()<initial_deadline: await process_frame
 	var initial_visual: NativeTrackVisual = app.get("editor_world").visual
 	for i: int in range(3):
 		var point: Vector2 = canvas.to_screen(Vector2(-10+i*4,0))

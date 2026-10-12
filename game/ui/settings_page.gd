@@ -7,18 +7,22 @@ signal account_requested
 var records: LocalRecords
 var signed_in: bool = false
 var player_name: String = "Guest"
+var country_code: String = ""
 var section: String = "controls"
 var draft_layout: Dictionary
 var draft_haptics: float = 0.2
 var draft_camera: String = "overhead"
 var draft_speed_zoom: bool = true
+var draft_speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 var draft_labels: bool = true
 var draft_ghost: String = "lap"
 var draft_show_ads: bool = false
+var draft_audio: Dictionary = {}
 var development_available: bool = OS.is_debug_build()
 var ad_test_busy: bool = false
 var ad_test_button: Button
 var ad_adapter: Node
+var purchase_client: Node
 var body: VBoxContainer
 var heading: Label
 var subtitle: Label
@@ -30,9 +34,10 @@ const TITLES: Dictionary = {
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
 	"camera": ["Camera", "Choose the view you prefer while driving."],
 	"ghosts": ["Ghosts", "Race against your own locally saved best."],
+	"audio": ["Audio", "Balance the soundtrack, car sounds and menu feedback."],
 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
 	"account": ["Account", "Manage the profile you race with."],
-	"development": ["Development", "Choose how ads behave while testing."],
+	"development": ["Development", "Test ads and simulate purchases without payment."],
 }
 
 func _ready() -> void:
@@ -44,9 +49,11 @@ func _ready() -> void:
 	draft_haptics = float(records.settings.get("steering_haptics", 0.2))
 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
+	draft_speed_zoom_strength = float(records.settings.get("camera_speed_zoom_strength", CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH))
 	draft_labels = bool(records.settings.get("control_labels", true))
 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
+	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
 	add_child(ad_adapter)
 	_build_sidebar()
@@ -84,6 +91,7 @@ func _build_sidebar() -> void:
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
 		["ghosts", "Ghosts", "Your personal best", "garage"],
+		["audio", "Audio", "Music and sound", "headphones"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
 		["account", "Account", "Profile and sign-in", "person"],
 		["development", "Development", "Ads and testing", "gear"],
@@ -169,6 +177,7 @@ func _build_panel() -> void:
 func _show_section(id: String) -> void:
 	if id == "development" and not development_available: return
 	section = id
+	status.text = "Ad settings use Apply. Simulated purchases take effect immediately." if id == "development" else "Changes are saved when you apply them."
 	heading.text = TITLES[id][0]
 	subtitle.text = TITLES[id][1]
 	for key: String in categories:
@@ -181,7 +190,7 @@ func _show_section(id: String) -> void:
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
 	reset_button.visible = id != "account"
-	reset_button.text = "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
+	reset_button.text = "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
@@ -189,6 +198,7 @@ func _show_section(id: String) -> void:
 		"controls": _controls()
 		"camera": _camera()
 		"ghosts": _ghosts()
+		"audio": _audio()
 		"haptics": _haptics()
 		"account": _account()
 		"development": _development()
@@ -227,6 +237,15 @@ func _development() -> void:
 	body.add_child(_label("Google test ads only. Banked and daily free resumes are used first. These options are available in development builds.", 16, true))
 	if not preload("res://platform/admob_test_ads.gd").supported():
 		body.add_child(_label("Ad previews are available on Android with the AdMob development build.", 16, true))
+	var purchases := preload("res://ui/purchase_simulator_panel.gd").new()
+	purchases.client = purchase_client
+	body.add_child(purchases)
+	var console: Button = MenuStyle.button("Open backend console",func() -> void:
+		if is_instance_valid(purchase_client): OS.shell_open(purchase_client.base_url()+"/admin"))
+	console.name = "OpenBackendConsole"
+	console.disabled = not is_instance_valid(purchase_client) or purchase_client.base_url().is_empty()
+	body.add_child(console)
+	body.add_child(_label("The backend console uses a separate administrator credential.",16,true))
 
 func _test_rewarded_ad() -> void:
 	if ad_test_busy or not draft_show_ads or not _apply(): return
@@ -324,7 +343,7 @@ func _camera() -> void:
 		choice.custom_minimum_size.x = 150
 		row.add_child(choice)
 	var zoom_row: HBoxContainer = _row("SpeedZoomSettings", 14)
-	zoom_row.add_child(_copy("Speed zoom", "Pull back slightly as speed increases."))
+	zoom_row.add_child(_copy("Speed zoom", "Show more road as speed increases."))
 	var zoom := CheckButton.new()
 	zoom.name = "CameraSpeedZoom"
 	zoom.text = "On" if draft_speed_zoom else "Off"
@@ -336,6 +355,32 @@ func _camera() -> void:
 		zoom.text = "On" if on else "Off"
 		_changed())
 	zoom_row.add_child(zoom)
+	var strength_row: HBoxContainer = _row("SpeedZoomStrengthSettings", 14)
+	strength_row.add_child(_copy("Zoom strength", "Maximum extra view at high speed."))
+	var strength_column := VBoxContainer.new()
+	strength_column.custom_minimum_size.x = 220
+	strength_column.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	strength_row.add_child(strength_column)
+	var value: Label = _label("%d%%" % roundi(draft_speed_zoom_strength * 100.0), 18)
+	value.name = "CameraSpeedZoomStrengthValue"
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	strength_column.add_child(value)
+	var strength := HSlider.new()
+	strength.name = "CameraSpeedZoomStrength"
+	strength.max_value = CameraProfile.MAX_SPEED_ZOOM_STRENGTH * 100.0
+	strength.step = 1.0
+	strength.value = draft_speed_zoom_strength * 100.0
+	strength.custom_minimum_size = Vector2(220, 52)
+	strength.editable = draft_speed_zoom
+	strength.modulate.a = 1.0 if draft_speed_zoom else 0.45
+	strength.value_changed.connect(func(amount: float) -> void:
+		draft_speed_zoom_strength = amount / 100.0
+		value.text = "%d%%" % roundi(amount)
+		_changed())
+	zoom.toggled.connect(func(on: bool) -> void:
+		strength.editable = on
+		strength.modulate.a = 1.0 if on else 0.45)
+	strength_column.add_child(strength)
 	body.add_child(_label("You can also change the view in Pause > Settings, or press C while driving.", 16, true))
 
 func _ghosts() -> void:
@@ -352,6 +397,37 @@ func _ghosts() -> void:
 		choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(choice)
 	body.add_child(_label("Ghosts are saved after completed races, separately for each track, car and handling setup. Existing times need a matching or better run to create a ghost. You can change this in Pause > Settings.", 16, true))
+
+func _audio() -> void:
+	for item: Array in [
+		["music_volume", "Music", "Menus and results."],
+		["vehicle_volume", "Vehicle", "Engines, tyres, road and collisions."],
+		["interface_volume", "Interface", "Menu selections and confirmations."],
+	]:
+		var key: String = item[0]
+		var row: HBoxContainer = _row("AudioRow_" + key, 18)
+		row.add_child(_copy(item[1], item[2]))
+		var column := VBoxContainer.new()
+		column.custom_minimum_size.x = 250
+		column.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(column)
+		var value: Label = _label("%d%%" % roundi(float(draft_audio[key]) * 100.0), 18)
+		value.name = "AudioValue_" + key
+		value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		column.add_child(value)
+		var slider := HSlider.new()
+		slider.name = "AudioVolume_" + key
+		slider.min_value = 0.0
+		slider.max_value = 100.0
+		slider.step = 1.0
+		slider.value = float(draft_audio[key]) * 100.0
+		slider.custom_minimum_size = Vector2(250, 52)
+		slider.value_changed.connect(func(amount: float) -> void:
+			draft_audio[key] = amount / 100.0
+			value.text = "%d%%" % roundi(amount)
+			_changed())
+		column.add_child(slider)
+
 
 func _haptics() -> void:
 	var row: HBoxContainer = _row("HapticSettings", 18)
@@ -380,6 +456,7 @@ func _haptics() -> void:
 func _account() -> void:
 	var row: HBoxContainer = _row("AccountSettings", 18)
 	row.add_child(_icon("person", 36))
+	if signed_in: row.add_child(PlayerCountry.flag(country_code,32))
 	row.add_child(_copy(player_name, "Signed in" if signed_in else "Race locally or sign in to share tracks and submit verified times."))
 	var manage: Button = MenuStyle.button("Manage account" if signed_in else "Sign in", func() -> void: account_requested.emit())
 	manage.name = "SettingsAccount"
@@ -392,7 +469,9 @@ func _changed() -> void:
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
 
 func _reset() -> void:
-	if section == "development":
+	if section == "audio":
+		draft_audio = GameSoundtrack.DEFAULTS.duplicate()
+	elif section == "development":
 		draft_show_ads = false
 		ad_adapter.cancel()
 	elif section == "ghosts":
@@ -400,6 +479,7 @@ func _reset() -> void:
 	elif section == "camera":
 		draft_camera = "overhead"
 		draft_speed_zoom = true
+		draft_speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 	else:
 		draft_layout = ControlLayout.preset()
 		draft_haptics = 0.2
@@ -412,12 +492,15 @@ func _apply() -> bool:
 	records.settings.steering_haptics = draft_haptics
 	records.settings.camera_mode = draft_camera
 	records.settings.camera_speed_zoom = draft_speed_zoom
+	records.settings.camera_speed_zoom_strength = draft_speed_zoom_strength
 	records.settings.control_labels = draft_labels
 	records.settings.ghost_mode = draft_ghost
+	for key: String in draft_audio: records.settings[key] = draft_audio[key]
 	if development_available: records.settings.development_show_ads = draft_show_ads
 	var error: Error = records.save_records()
 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
+	if error == OK: GameSoundtrack.instance().apply_settings(records.settings)
 	if error == OK: TouchControls.SteeringHaptics.press(draft_haptics)
 	return error == OK
 

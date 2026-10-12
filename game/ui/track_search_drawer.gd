@@ -21,6 +21,9 @@ var scopes: Array[Button] = []
 var return_focus: Control
 var motion: Tween
 var shown: int = 4
+var cloud: Node
+var server_pages: Node
+var search_delay: Timer
 var keyboard_height: float = 0.0
 var layout: VBoxContainer
 var header: HBoxContainer
@@ -31,13 +34,18 @@ var clear_button: Button
 var keyboard_done: Button
 
 func _ready() -> void:
+	search_delay = Timer.new()
+	search_delay.one_shot = true
+	search_delay.wait_time = 0.25
+	search_delay.timeout.connect(_search_global)
+	add_child(search_delay)
 	layer = 40
 	overlay = Control.new()
 	overlay.theme = MenuStyle.theme()
 	MenuStyle.fill(overlay)
 	add_child(overlay)
 	var dim := ColorRect.new()
-	dim.color = Color(0.01,0.025,0.035,0.65)
+	dim.color = MenuStyle.POPUP_DIM
 	MenuStyle.fill(dim)
 	overlay.add_child(dim)
 	dim.gui_input.connect(func(event: InputEvent) -> void:
@@ -49,6 +57,7 @@ func _ready() -> void:
 	style.border_width_left = 1
 	panel.add_theme_stylebox_override("panel",style)
 	overlay.add_child(panel)
+	preload("res://ui/popup_style.gd").decorate_panel(panel)
 	layout = VBoxContainer.new()
 	layout.add_theme_constant_override("separation",6)
 	panel.add_child(layout)
@@ -63,7 +72,7 @@ func _ready() -> void:
 	exit_button.name = "CloseSearch"
 	exit_button.icon = MenuIcon.texture("close")
 	exit_button.tooltip_text = "Close search without applying"
-	exit_button.custom_minimum_size = Vector2(48,48)
+	exit_button.custom_minimum_size = Vector2(52,52)
 	exit_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
 	header.add_child(exit_button)
 	subtitle = MenuStyle.label("Find tracks by name or creator",18,true)
@@ -104,7 +113,8 @@ func _ready() -> void:
 		draft.search = value
 		shown = 4
 		scroll.scroll_vertical = 0
-		refresh_results())
+		refresh_results()
+		_queue_search())
 	edit.text_submitted.connect(func(_value: String) -> void:
 		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): _dismiss_keyboard()
 		else: _apply())
@@ -127,6 +137,7 @@ func _ready() -> void:
 	results.add_theme_constant_override("separation",8)
 	scroll.add_child(results)
 	more_button = MenuStyle.button("",func() -> void:
+		if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size(): _apply(); return
 		shown += 20
 		refresh_results())
 	more_button.name = "MoreSearchResults"
@@ -211,6 +222,7 @@ func open_for(state: Dictionary, focus_owner: Control) -> void:
 	shown = 4
 	scroll.scroll_vertical = 0
 	show()
+	_queue_search()
 	set_process_input(true)
 	_layout()
 	refresh_results()
@@ -227,6 +239,7 @@ func _scope(index: int) -> void:
 	shown = 4
 	scroll.scroll_vertical = 0
 	refresh_results()
+	_queue_search()
 
 func clear_search() -> void:
 	edit.text = ""
@@ -234,10 +247,14 @@ func clear_search() -> void:
 	shown = 4
 	scroll.scroll_vertical = 0
 	refresh_results()
+	_queue_search()
 	edit.grab_focus()
 
 func refresh_results() -> void:
 	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
+	if is_instance_valid(server_pages) and server_pages.total >= 0 and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_pages.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
+		matches.clear()
+		for metadata: Dictionary in server_pages.entries(): matches.append(cloud.entry_from_metadata(metadata))
 	for index: int in range(scopes.size()):
 		var active: bool = index == int(draft.get("search_kind",0))
 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10232f"),10)
@@ -247,6 +264,10 @@ func refresh_results() -> void:
 		scopes[index].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.TEXT)
 		scopes[index].add_theme_color_override("font_focus_color",MenuStyle.INK if active else MenuStyle.TEXT)
 	count_label.text = "%d track%s found" % [matches.size(),"" if matches.size() == 1 else "s"]
+	if is_instance_valid(server_pages) and server_pages.total >= 0:
+		count_label.text = "%d track%s found" % [int(server_pages.total),"" if int(server_pages.total) == 1 else "s"]
+		if server_pages.loading: count_label.text = "Searching…"
+		if not server_pages.error.is_empty(): count_label.text = server_pages.error
 	apply_button.text = "SHOW %d TRACK%s" % [matches.size(),"" if matches.size() == 1 else "S"]
 	for child: Node in results.get_children():
 		results.remove_child(child)
@@ -258,6 +279,9 @@ func refresh_results() -> void:
 		results.add_child(empty)
 	more_button.visible = keyboard_height <= 0.0 and matches.size() > shown
 	more_button.text = "+ %d more tracks" % maxi(0,matches.size()-shown)
+	if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size():
+		more_button.visible = keyboard_height <= 0.0
+		more_button.text = "BROWSE ALL %d MATCHES" % int(server_pages.total)
 	_trap_focus()
 
 func _result(entry: Dictionary) -> void:
@@ -343,12 +367,30 @@ func _apply() -> void:
 	close()
 
 func close() -> void:
+	search_delay.stop()
+	if is_instance_valid(server_pages):
+		server_pages.generation += 1
+		server_pages.loading = false
+		cloud.client.cancel_public_reads(server_pages.get_instance_id())
 	if motion != null: motion.kill()
 	edit.release_focus()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
 	hide()
 	set_process_input(false)
 	closed.emit()
+
+func _queue_search() -> void:
+	if cloud != null and cloud.paged_discovery_available() and visible: search_delay.start()
+
+func _search_global() -> void:
+	if cloud == null or not visible or not cloud.paged_discovery_available(): return
+	if not is_instance_valid(server_pages):
+		server_pages = preload("res://backend/discovery_pages.gd").new()
+		server_pages.client = cloud.client
+		add_child(server_pages)
+		server_pages.changed.connect(func() -> void:
+			if visible: refresh_results())
+	await server_pages.begin(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
 	if is_instance_valid(return_focus): return_focus.release_focus()
 
 func _input(event: InputEvent) -> void:

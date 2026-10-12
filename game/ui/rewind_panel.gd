@@ -57,17 +57,18 @@ class ResumeButton extends Button:
 	const AD_ICON: Texture2D = preload("res://ui/icons/rewarded_ad.svg")
 	var count: int = 0
 	var use_ad: bool = true
+	var ad_free: bool = false
 	func _init() -> void:
 		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	func _draw() -> void:
 		var c: Vector2 = size*0.5
-		var ink := Color("ffd15c")
-		if disabled: ink.a = 0.3
+		var ink := Color("788186") if disabled else Color("ffd15c")
 		draw_arc(c,30,0,TAU,64,ink,3,true)
 		draw_colored_polygon(PackedVector2Array([c+Vector2(-6,-11),c+Vector2(11,0),c+Vector2(-6,11)]),ink)
+		if disabled or ad_free: return
 		var badge_center: Vector2 = c+Vector2(22,23)
 		if use_ad:
-			draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false,Color(1,1,1,0.35 if disabled else 1.0))
+			draw_texture_rect(AD_ICON,Rect2(badge_center-Vector2(18,15),Vector2(36,30)),false)
 		else:
 			var caption: String = str(count)
 			var width: float = RaceHUDStyle.DISPLAY.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,20).x
@@ -180,7 +181,7 @@ func _ready() -> void:
 	confirm.custom_minimum_size = Vector2(116,64)
 	confirm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	confirm.tooltip_text = "Resume from selected position"
-	for state: String in ["normal","hover","pressed"]: confirm.add_theme_stylebox_override(state,StyleBoxEmpty.new())
+	for state: String in ["normal","hover","pressed","disabled","focus"]: confirm.add_theme_stylebox_override(state,StyleBoxEmpty.new())
 	confirm.pressed.connect(func() -> void: confirmed.emit())
 	confirm.disabled = true
 	timeline_row.add_child(confirm)
@@ -253,10 +254,12 @@ func show_balance(wallet: Dictionary, used: int) -> void:
 	var daily: int = int(wallet.get("free",0))
 	var preview: bool = bool(wallet.get("ad_preview_available",false))
 	confirm.count = banked
-	confirm.use_ad = banked == 0
+	var free_rewinds: bool = bool(wallet.get("free_rewinds",false)) or bool(wallet.get("ad_free",false))
+	confirm.ad_free = free_rewinds
+	confirm.use_ad = banked == 0 and not free_rewinds
 	race_uses.remaining = maxi(0,3-used)
 	race_uses.queue_redraw()
-	funded = used < 3 and (banked+daily > 0 or preview)
+	funded = used < 3 and (free_rewinds or banked+daily > 0 or preview)
 	confirm.disabled = busy or not funded or slider.value >= slider.max_value
 	if not funded: status.text = "Three resumes used this race." if used >= 3 else "No resumes available."
 

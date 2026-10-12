@@ -8,6 +8,9 @@ var mode: String = CameraProfile.MODES[0]
 var smoothed_yaw: float = 0.0
 var look_ahead_offset: Vector2 = Vector2.ZERO
 var speed_zoom_enabled: bool = true
+var speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH:
+	set(value):
+		speed_zoom_strength = clampf(value, 0.0, CameraProfile.MAX_SPEED_ZOOM_STRENGTH) if is_finite(value) else CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 var zoom_multiplier: float = 1.0
 var trauma: float = 0.0
 var impact_offset: Vector2 = Vector2.ZERO
@@ -83,7 +86,7 @@ func follow(point: Vector2, velocity: Vector2, heading: float, delta: float, sna
 	var desired_zoom: float = 1.0
 	if speed_zoom_enabled:
 		var amount: float = smoothstep(profile.speed_zoom_start_kmh, profile.speed_zoom_full_kmh, velocity.length() * 3.6)
-		desired_zoom += profile.maximum_speed_zoom * amount
+		desired_zoom += speed_zoom_strength * amount
 	zoom_multiplier = desired_zoom if snap or not initialized else lerpf(zoom_multiplier, desired_zoom, 1.0 - exp(-profile.speed_zoom_smoothing * step))
 	projection = PROJECTION_ORTHOGONAL if profile.orthographic else PROJECTION_PERSPECTIVE
 	keep_aspect = KEEP_HEIGHT

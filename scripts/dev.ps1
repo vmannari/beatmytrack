@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+    [ValidateSet('TestWindowsAudioExport', 'BuildWindowsAudio', 'BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -15,6 +15,12 @@ param(
     [switch]$Overview,
     [switch]$QuickValidation,
     [switch]$Graphical,
+    [switch]$EngineVerbose,
+    [ValidateSet('', 'gl_compatibility', 'mobile', 'forward_plus')][string]$RenderingMethod = '',
+    [ValidateSet('', 'vulkan', 'opengl3')][string]$RenderingDriver = '',
+    [ValidateRange(0, 100)]
+    [int]$AudioLatencyMs = 0,
+    [string[]]$TestArgument = @(),
     [switch]$AI,
     [switch]$TestDrivers,
     [switch]$InstantDrivers,
@@ -59,6 +65,11 @@ function Find-Godot {
 }
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogName) {
+    if ($EngineVerbose -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) { $Arguments += '--verbose' }
+    if ([System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($RenderingMethod) { $Arguments = @('--rendering-method', $RenderingMethod) + $Arguments }
+        if ($RenderingDriver) { $Arguments = @('--rendering-driver', $RenderingDriver) + $Arguments }
+    }
     # Stream both pipes while bounding noninteractive child execution.
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Executable
@@ -142,11 +153,14 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_handling.gd') 'handling-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_launch_start.gd') 'launch-start-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_spline_laps.gd') 'star-spline-lap-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_gate_tolerance.gd') 'star-gate-tolerance-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_bridge_layers.gd') 'bridge-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_entry_checkpoints.gd') 'bridge-entry-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_exit_checkpoints.gd') 'bridge-exit-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_notices.gd') 'checkpoint-notice-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shallow_collisions.gd') 'shallow-collision-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_retirement.gd') 'editor-retirement.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/profile_placement.gd') 'placement-tests.log'
@@ -156,8 +170,16 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_v2.gd') 'editor-v2-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_free_editor.gd') 'free-editor-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_pieces.gd') 'road-pieces-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_road.gd') 'spline-road-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_borders.gd') 'spline-border-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tree_road_bends.gd') 'tree-road-bend-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_ajorata_seam.gd') 'ajorata-seam-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_composition.gd') 'spline-composition-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_spline_joins.gd') 'spline-join-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_practice.gd') 'editor-practice-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_workflow.gd') 'editor-workflow-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/profile_editor_performance.gd') 'editor-performance-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_editor_review_fixes.gd') 'editor-review-fixes.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_contacts.gd') 'bridge-contacts-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_hud.gd') 'bridge-hud-tests.log'
@@ -289,6 +311,14 @@ function Prepare-AndroidGradle {
     $gradleText = Get-Content -LiteralPath $gradleFile -Raw
     if (-not $gradleText.Contains($hook)) {
         [System.IO.File]::AppendAllText($gradleFile, "`n" + $hook + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $challengeHook = "apply from: '../../../native/challenges/android.gradle'"
+    if (-not $gradleText.Contains($challengeHook)) {
+        [System.IO.File]::AppendAllText($gradleFile, "`n" + $challengeHook + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $signInHook = "apply from: '../../../native/google_sign_in/android.gradle'"
+    if (-not $gradleText.Contains($signInHook)) {
+        [System.IO.File]::AppendAllText($gradleFile, "`n" + $signInHook + "`n", (New-Object System.Text.UTF8Encoding($false)))
     }
     # A persistent Gradle daemon inherits the Godot console wrapper's pipe.
     # Finish this build's own Gradle process so command completion is reliable.
@@ -542,16 +572,15 @@ try {
         'CaptureCheckpoints' { Invoke-Checked $script:godot (@('--path', $projectRoot, '--script', 'res://tests/capture_checkpoints.gd', '--') + $trackArguments) 'checkpoint-capture.log' }
         'TestHeadlights' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_headlights.gd') 'headlights-tests.log' }
         'CaptureHeadlights' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_headlights.gd', '--', '--capture') 'headlights-capture.log' }
-        'CaptureMusicDrive' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_music.gd', '--', '--capture-drive') 'music-drive.log' }
-        'BuildMusic' { & (Join-Path $PSScriptRoot 'build_music.ps1') }
-        'TestMusicExit' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_music.gd', '--', '--stress-exit') 'music-exit.log' }
-        'TestMusic' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_music.gd') 'music-tests.log' }
-        'MusicLab' { Invoke-Checked $script:godot @('--path', $projectRoot, 'res://music/music_test.tscn') 'music-lab.log' }
-        'CaptureMusic' { Invoke-Checked $script:godot @('--path', $projectRoot, 'res://music/music_test.tscn', '--', '--music-capture') 'music-capture.log' }
+        { $_ -in @('CaptureMusicDrive','BuildMusic','TestMusicExit','TestMusic','MusicLab','CaptureMusic') } {
+            throw 'The owner retired this soundtrack. Source is in archive/retired-soundtrack-2026-10-06; use TestScript -ScriptPath res://tests/test_vehicle_audio.gd for the replacement.'
+        }
         'TestRoadCache' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_cache.gd') 'road-cache-tests.log' }
         'TestRoadBuild' { Invoke-Checked $script:godot (@('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_build.gd', '--') + $trackArguments) 'road-build-tests.log' }
         'TestShoulders' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shoulders.gd') 'shoulder-tests.log' }
         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
+        'BuildWindowsAudio' { & (Join-Path $PSScriptRoot 'build_windows_audio.ps1'); if ($LASTEXITCODE) { throw 'Windows audio build failed.' } }
+        'TestWindowsAudioExport' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-pack', 'Android Debug', (Join-Path $buildRoot 'windows_audio/android-content.zip')) 'android-content.log' }
         'TestScript' {
             if (-not $ScriptPath.StartsWith('res://tests/')) { throw 'TestScript requires a res://tests/ GDScript path.' }
             $testRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'tests')) + [System.IO.Path]::DirectorySeparatorChar
@@ -559,8 +588,10 @@ try {
             if (-not $testPath.StartsWith($testRoot, [System.StringComparison]::OrdinalIgnoreCase) -or [System.IO.Path]::GetExtension($testPath) -ne '.gd' -or -not (Test-Path -LiteralPath $testPath -PathType Leaf)) {
                 throw 'TestScript must resolve to an existing GDScript inside game/tests.'
             }
-            $testArguments = @('--path', $projectRoot, '--script', $testPath)
+            $testArguments = @('--path', $projectRoot, '--script', $ScriptPath)
+            if ($AudioLatencyMs -gt 0) { $testArguments += @('--audio-output-latency', $AudioLatencyMs.ToString()) }
             if (-not $Graphical) { $testArguments = @('--headless') + $testArguments }
+            if ($TestArgument.Count -gt 0) { $testArguments += @('--') + $TestArgument }
             Invoke-Checked $script:godot $testArguments 'test-script.log'
         }
         'Import' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log' }

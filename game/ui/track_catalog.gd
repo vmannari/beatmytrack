@@ -6,6 +6,7 @@ var entries: Array[Dictionary] = []
 var library: TrackLibrary
 var shared_directories: Array[String] = []
 var indexed_revision: int = -1
+var server_ordered: bool = false
 var source_metadata: Dictionary = {}
 var _resolved: Dictionary = {}
 var _resolved_revision: int = -1

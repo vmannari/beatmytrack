@@ -121,6 +121,9 @@ func sign_in_developer() -> void:
 
 func sign_in_google() -> void:
 	if busy: return
+	if OS.get_name() == "Android":
+		await _sign_in_google_native()
+		return
 	busy = true
 	_cancelled = false
 	message = "Opening Google sign-in…"
@@ -175,7 +178,50 @@ func sign_in_google() -> void:
 	busy = false
 	changed.emit()
 
-func save_username(username: String) -> void:
+func _google_native_plugin() -> Object:
+	return Engine.get_singleton("BmtGoogleSignIn") if Engine.has_singleton("BmtGoogleSignIn") else null
+
+func _sign_in_google_native() -> void:
+	busy = true
+	_cancelled = false
+	message = "Connecting to Google…"
+	changed.emit()
+	var result: Dictionary = await _check_service()
+	if result.ok and not _cancelled: result = await client.google_challenge()
+	var native: Object = _google_native_plugin()
+	if result.ok and not _cancelled and (native == null or str(result.data.get("client_id", "")).is_empty()):
+		result = {"ok":false,"error":"GOOGLE_SIGN_IN_NOT_CONFIGURED"}
+	if result.ok and not _cancelled:
+		var challenge_id: String = str(result.data.challenge_id)
+		native.startSignIn(str(result.data.client_id), str(result.data.nonce))
+		waiting_for_google = true
+		message = "Choose your Google account."
+		changed.emit()
+		var deadline: int = Time.get_ticks_msec() + 300000
+		var credential: String = ""
+		while not _cancelled and Time.get_ticks_msec() < deadline:
+			credential = str(native.takeResult())
+			if not credential.is_empty(): break
+			await get_tree().create_timer(0.1).timeout
+		if not _cancelled and credential.begins_with("token:"):
+			message = "Signing in…"
+			changed.emit()
+			result = await client.google_login(credential.trim_prefix("token:"), challenge_id, "")
+			if _cancelled and client.signed_in(): await client.logout()
+			message = _signed_in_message() if result.ok else _error_text(result)
+		elif credential == "error:cancelled":
+			_cancelled = true
+		else:
+			message = "Google sign-in could not complete. Please try again."
+		native.cancelSignIn()
+	else:
+		message = _error_text(result)
+	if _cancelled: message = "Sign-in cancelled."
+	waiting_for_google = false
+	busy = false
+	changed.emit()
+
+func save_username(username: String, country_code: String = "") -> void:
 	if busy or not needs_username(): return
 	username = username.strip_edges()
 	if username.is_empty() or username.length() > 40:
@@ -185,19 +231,40 @@ func save_username(username: String) -> void:
 	busy = true
 	message = "Saving your name…"
 	changed.emit()
-	var result: Dictionary = await client.request_api("/me", HTTPClient.METHOD_PATCH, {"display_name":username}, "", true)
+	var payload: Dictionary = {"display_name":username}
+	if not country_code.is_empty(): payload.country_code = country_code
+	var result: Dictionary = await client.request_api("/me", HTTPClient.METHOD_PATCH, payload, "", true)
 	if result.ok: client.player = result.data
 	message = _signed_in_message() if result.ok else _error_text(result)
 	busy = false
 	changed.emit()
 
+func save_country(country_code: String) -> void:
+	if busy or not client.signed_in() or needs_username(): return
+	if PlayerCountry.valid_code(country_code).is_empty():
+		message = "Choose your country from the list."
+		changed.emit()
+		return
+	busy = true
+	message = "Saving your country…"
+	changed.emit()
+	var result: Dictionary = await client.request_api("/me",HTTPClient.METHOD_PATCH,{"country_code":country_code},"",true)
+	if result.ok: client.player = result.data
+	message = "Country saved." if result.ok else "Could not save your country. Check your connection and try again."
+	busy = false
+	changed.emit()
+
 func cancel_google() -> void:
 	_cancelled = true
+	if Engine.has_singleton("BmtGoogleSignIn"):
+		Engine.get_singleton("BmtGoogleSignIn").cancelSignIn()
 	message = "Cancelling sign-in…"
 	changed.emit()
 
 func sign_out() -> void:
 	if busy: return
+	if Engine.has_singleton("BmtGoogleSignIn"):
+		Engine.get_singleton("BmtGoogleSignIn").clearSignIn()
 	busy = true
 	_signing_out = true
 	changed.emit()
@@ -220,5 +287,5 @@ func _error_text(result: Dictionary) -> String:
 		"ACCOUNT_DISABLED": return "This account is disabled."
 		"NOT_CONFIGURED": return "Online sign-in is not configured yet."
 		"WRONG_SERVICE", "INVALID_RESPONSE": return "The sign-in address points to another service. Check the PC backend setup."
-		"NETWORK_ERROR", "REQUEST_START_FAILED": return "The game backend is not running or cannot be reached. Start the PC backend and retry."
+		"NETWORK_ERROR", "REQUEST_START_FAILED": return "The game service could not be reached. Reconnect and retry, or continue as Guest."
 		_: return "Could not sign in. Check your connection and try again."

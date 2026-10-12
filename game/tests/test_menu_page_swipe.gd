@@ -24,6 +24,7 @@ func run() -> void:
 	app.cloud_root_override = directory.path_join("cloud")
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	app.race_area_mode = "free"
 	# Supply metadata only: page and carousel gestures require no service/race writes.
 	var doc: Dictionary = TrackDocument.create_default()
 	for i: int in range(12):
@@ -31,7 +32,7 @@ func run() -> void:
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
 		root.size = dimensions
 		await show("tracks")
-		check(app.menu_neighbors.size() == 2, "both other primary pages are warm before navigating")
+		check(app.menu_neighbors.size() == 3, "all other primary pages are warm before navigating")
 		var header_rect: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
 		var tab_rect: Rect2 = app.root_ui.find_child("Tab_create",true,false).get_global_rect()
 		app._show_screen("biome")
@@ -92,10 +93,17 @@ func run() -> void:
 		await swipe(point, Vector2(-150, 0))
 		check(app.screen == "garage", "left swipe Create to Garage")
 		await capture("garage", dimensions)
+		# The actual car owns its rotation gesture; menu swipes use the title area.
+		await swipe(garage_page_point(), Vector2(-150, 0))
+		check(app.screen == "store", "left swipe Garage to Store")
+		check(app.menu_body.find_child("StorePage",true,false) != null, "swipe displays the actual Store page")
+		await capture("store", dimensions)
 		await swipe(point, Vector2(-150, 0))
-		check(app.screen == "garage", "last tab has no wrap")
-		await check_edge("garage", point, -1, dimensions)
+		check(app.screen == "store", "Store is the final tab without wrapping")
+		await check_edge("store", point, -1, dimensions)
 		await swipe(point, Vector2(150, 0))
+		check(app.screen == "garage", "right swipe Store to Garage")
+		await swipe(garage_page_point(), Vector2(150, 0))
 		check(app.screen == "biome" and app.document == retained, "return to Create preserves draft")
 		await swipe(point, Vector2(150, 0))
 		check(app.screen == "tracks", "right swipe Create to Race")
@@ -408,14 +416,14 @@ func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
 	touch(point,true)
 	drag(point + Vector2(-page_width * 0.45,12))
 	var garage: Control = app.menu_neighbors[1].body
-	check(garage.visible and garage.find_child("VehicleSelector",true,false) != null, "Garage content is visible during a held Create swipe")
+	check(garage.visible and garage.find_child("CarCarousel",true,false) != null, "Garage content is visible during a held Create swipe")
 	check(is_equal_approx(garage.position.x - (app.menu_body.position.x + page_width),64.0), "held pages have the full empty gutter between their content edges")
 	await capture("live-create-garage", dimensions)
 	touch(point + Vector2(-page_width * 0.45,12),false)
 	await settle()
 	check(app.screen == "garage" and app.menu_body == garage, "prepared Garage becomes interactive after completion")
-	check(app.menu_body.find_child("VehicleSelector",true,false).mouse_filter != Control.MOUSE_FILTER_IGNORE, "promoted controls recover their original mouse input")
-	await swipe(point, Vector2(75,0))
+	check(app.menu_body.find_child("GarageCar_compact",true,false).mouse_filter != Control.MOUSE_FILTER_IGNORE, "promoted controls recover their original mouse input")
+	await swipe(garage_page_point(), Vector2(75,0))
 	await swipe(point, Vector2(75,0))
 	check(app.screen == "tracks", "prepared reverse neighbors return through Create to Race")
 	app._show_screen("biome")
@@ -504,9 +512,13 @@ func swipe(point: Vector2, distance: Vector2, canceled: bool = false) -> void:
 	touch(point + distance, false, canceled)
 	await settle()
 
+func garage_page_point() -> Vector2:
+	var garage: GaragePage = app.menu_body.find_child("GaragePage",true,false)
+	return garage.heading.get_global_rect().get_center()
+
 func capture(title: String, dimensions: Vector2i) -> void:
 	if DisplayServer.get_name() == "headless": return
 	await RenderingServer.frame_post_draw
-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/exclusive-menu-swipes-2026-10-04")
+	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/garage-store-swipes-2026-10-09")
 	DirAccess.make_dir_recursive_absolute(output)
 	check(root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [title,dimensions.x,dimensions.y])) == OK, "gesture screenshot saved")

@@ -15,8 +15,6 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 func reset() -> void:
-	rating_confirming = false
-	if rating_confirmation != null: rating_confirmation.kill()
 	if rating_reveal != null: rating_reveal.kill()
 	if is_instance_valid(rating_panel):
 		remove_child(rating_panel)
@@ -93,11 +91,8 @@ func _text(value: String, baseline: Vector2, font_size: int, color: Color) -> vo
 
 var rating_panel: PanelContainer
 var rating_reveal: Tween
-var rating_confirmation: Tween
-var rating_confirming: bool = false
 
-func prepare_rating(store: LocalRecords, id: String, proceed: Callable) -> void:
-	rating_confirming = false
+func prepare_rating(store: LocalRecords, id: String, proceed: Callable, vote: Node = null) -> void:
 	if is_instance_valid(rating_panel):
 		remove_child(rating_panel)
 		rating_panel.queue_free()
@@ -116,17 +111,18 @@ func prepare_rating(store: LocalRecords, id: String, proceed: Callable) -> void:
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation",10)
 	rating_panel.add_child(body)
-	var title := MenuStyle.label("RATE THIS TRACK",26)
+	var title := MenuStyle.label("Rate the track",26)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_color",Color("f4e7c6"))
 	body.add_child(title)
 	var row := TrackRating.new()
 	row.records = store
 	row.track_id = id
+	row.finish_vote = vote
+	row.instant_finish = true
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	body.add_child(row)
 	row.caption.hide()
-	row.save_failed.connect(func() -> void: title.text = "COULDN'T SAVE — TRY AGAIN")
 	for star: Button in row.stars:
 		star.custom_minimum_size = Vector2(64,56)
 		star.add_theme_constant_override("icon_max_width",36)
@@ -140,24 +136,7 @@ func prepare_rating(store: LocalRecords, id: String, proceed: Callable) -> void:
 	skip.add_theme_stylebox_override("normal",StyleBoxEmpty.new())
 	_finish_button_style(skip)
 	body.add_child(skip)
-	row.rated.connect(func() -> void:
-		if rating_confirming: return
-		rating_confirming = true
-		row.locked = true
-		if rating_reveal != null: rating_reveal.kill()
-		rating_panel.modulate.a = 1.0
-		title.text = "YOU RATED THIS TRACK %d / 5" % row.value()
-		for star: Button in row.stars:
-			star.disabled = true
-			star.add_theme_stylebox_override("disabled",StyleBoxEmpty.new())
-		skip.disabled = true
-		skip.modulate.a = 0.0
-		rating_confirmation = create_tween()
-		rating_confirmation.tween_interval(0.7)
-		rating_confirmation.tween_property(self,"modulate:a",0.0,0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		rating_confirmation.tween_callback(func() -> void:
-			rating_confirming = false
-			proceed.call()))
+	row.selected.connect(proceed)
 	rating_panel.hide()
 	_layout_rating()
 	if not resized.is_connected(_layout_rating): resized.connect(_layout_rating)

@@ -11,16 +11,20 @@ func collect(root: Node) -> void:
 	for mesh: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):
 		var material: Material = mesh.material_override
 		if material is not ShaderMaterial: continue
-		var path: String = material.shader.resource_path
+		var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
+		var path: String = dynamic.shader.resource_path
 		if path not in ["res://track/creator_road.gdshader", "res://track/terrain.gdshader", "res://track/ground.gdshader", "res://track/storm_creator_road.gdshader", "res://track/storm_terrain.gdshader"]: continue
-		entries.append({"mesh":mesh,"original":material,"path":path,"variants":{}})
+		entries.append({"mesh":mesh,"original":material,"dynamic":dynamic,"path":path,"variants":{}})
 
 func apply(mode: String) -> void:
 	changed_count = 0
 	for grass: GrassTufts in grass_roots:
 		grass.visible = mode not in ["grass_original","grass_material"]
 	for entry: Dictionary in entries:
-		var material: ShaderMaterial = entry.original
+		var material: ShaderMaterial = entry.dynamic
+		if mode == "terrain_dynamic":
+			entry.mesh.material_override = material if not entry.path.ends_with("creator_road.gdshader") else entry.original
+			continue
 		if mode in ["grass_original","desert_original"]:
 			if not entry.variants.has(mode):
 				var legacy: ShaderMaterial = material.duplicate()
@@ -33,7 +37,7 @@ func apply(mode: String) -> void:
 		var road: bool = creator and (material.get_shader_parameter("asphalt_surface") == true or material.get_shader_parameter("road_marking") == true or material.get_shader_parameter("edge_fringe") == true)
 		var selected: bool = mode in ["asphalt_previous","directional_off"] or (mode == "road_flat" and road) or (mode == "terrain_flat" and not road)
 		if not selected:
-			entry.mesh.material_override = material
+			entry.mesh.material_override = entry.original
 			continue
 		if not entry.variants.has(mode):
 			var shader := Shader.new()

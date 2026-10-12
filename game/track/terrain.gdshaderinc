@@ -63,9 +63,16 @@ void fragment() {
 	}
 	ALBEDO = blended;
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
+	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
 	ROUGHNESS = 1.0;
  SPECULAR = 0.0;
+ if (icy_road && low.r > 0.0) {
+  vec4 finish = texture(ice_finish,world_position.xz/6.0);
+  ROUGHNESS = mix(1.0,max(0.18,finish.a*0.65),low.r);
+  SPECULAR = mix(0.55,0.25,finish.b*0.6)*low.r;
+  NORMAL = winter_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,low.r);
+ }
  if (wet_road && low.r > 0.0) {
   ROUGHNESS = mix(1.0,wet_road_roughness(world_position.xz),low.r);
   SPECULAR = wet_road_specular(world_position.xz)*low.r;

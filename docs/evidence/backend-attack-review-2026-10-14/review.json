@@ -1,0 +1,191 @@
+{
+  "date": "2026-10-14",
+  "task": "Analyse the backend against malicious attack attempts",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "Q01"
+  ],
+  "mode": "Offline local security review and bounded disposable tests; findings are open, application source unchanged by this task.",
+  "summary": {
+    "confirmed_findings": 4,
+    "high": 3,
+    "medium": 1,
+    "confirmed_authentication_bypass": false,
+    "confirmed_remote_code_execution": false,
+    "designed_cheating_exposure": true
+  },
+  "scope": [
+    "Request admission, per-IP and per-player budgets, proxy trust, methods, gzip/JSON limits and slow bodies",
+    "Google identity signatures/audience/nonce, browser handoff, bearer revocation, refresh replay and development isolation",
+    "Owner checks for private tracks, runs and publications; administrative access and write-role restrictions",
+    "Publication queue/storage lifecycle, retention and discovery snapshot amplification",
+    "Trajectory acceptance, optional ghosts, resume receipts, purchase/ad provider authority and idempotency",
+    "SQL construction, file/object paths, subprocess arguments, HTML escaping, credential logging and deployment isolation"
+  ],
+  "findings": [
+    {
+      "id": "BA01",
+      "severity": "high",
+      "status": "open",
+      "title": "Unauthenticated slow uploads can monopolize the legitimate upload slots",
+      "attacker": "Remote caller with no account or a garbage bearer token; one source IP suffices per API instance.",
+      "locations": [
+        "backend/bmt_backend/middleware.py:268",
+        "backend/bmt_backend/middleware.py:291",
+        "backend/bmt_backend/middleware.py:319",
+        "backend/bmt_backend/middleware.py:336"
+      ],
+      "cause": "Absent authorization is deferred to endpoint dependencies. Invalid supplied credentials fall through as anonymous admission. The global two-slot upload semaphore is acquired before body delivery and later endpoint authentication.",
+      "proof": "Two POST /v1/runs requests paused before delivering their two-byte JSON body. A valid player submission received 503 REQUEST_VALIDATION_BUSY. Releasing the two bodies made both attackers receive 401; the valid request then reached the handler (404 for a deliberately nonexistent ticket). Both missing-token and invalid-token cases passed.",
+      "impact": "A few slow connections deny race/publication uploads on that instance. The 30-second body timeout releases the slots, but the default 90 anonymous writes/minute permits repeating the attack. No production saturation was performed.",
+      "mitigation": "Authenticate mandatory-auth upload routes before admitting or reading large bodies. Return 401 immediately for invalid credentials on those routes. Give public discovery a separate bounded pool and retain a short delivery deadline plus the shared player and edge budgets.",
+      "tests": [
+        "test_unauthenticated_slow_uploads_block_authenticated_submissions"
+      ]
+    },
+    {
+      "id": "BA02",
+      "severity": "high",
+      "status": "open",
+      "title": "Unsupported request methods bypass the JSON concurrency bound",
+      "attacker": "Remote anonymous caller, no credential required.",
+      "locations": [
+        "backend/bmt_backend/middleware.py:309",
+        "backend/bmt_backend/middleware.py:313",
+        "backend/bmt_backend/middleware.py:366"
+      ],
+      "cause": "Body allowance comes from the path, but parser admission is limited only for POST/PUT/PATCH. JSON parsing still occurs for GET/HEAD/DELETE/OPTIONS, before routing returns 405.",
+      "proof": "On the actual application, a diagnostic barrier inside the real JSON parser let four simultaneous 50 KiB bodies enter parsing for each of GET, HEAD, DELETE and OPTIONS /v1/publications, despite upload_concurrency=2. All returned 405 after the barrier released. The barrier changes timing only; parsing and dispatch remain real.",
+      "impact": "The configured two-tree memory/CPU bound can be bypassed. Those paths permit up to 8 MiB decoded JSON per request. Gzip makes attacker wire cost small. Uvicorn concurrency, byte/node limits and container memory provide outer ceilings, but do not enforce the intended parser limit. Actual production OOM was not attempted.",
+      "mitigation": "Reject bodies for methods/routes that cannot consume them before buffering/decompression. Apply a bounded parser lease to every request that can create a large JSON tree, independent of method. Keep that lease through schema validation/handler/response as already intended.",
+      "tests": [
+        "test_unsupported_methods_bypass_global_parser_concurrency"
+      ]
+    },
+    {
+      "id": "BA03",
+      "severity": "high",
+      "status": "open",
+      "title": "Rejected publication evidence accumulates indefinitely without a storage quota",
+      "attacker": "An authenticated ordinary player; publication slots are not a prerequisite to storing an intent.",
+      "locations": [
+        "backend/bmt_backend/publications.py:121",
+        "backend/bmt_backend/publications.py:125",
+        "backend/bmt_backend/publication_models.py:13",
+        "backend/bmt_backend/maintenance.py:90"
+      ],
+      "cause": "New operations store a document/replay and durable intent before verification. Queue limits bound pending jobs, not total stored bytes or historical rejected intents. Retention keeps every intent content/replay reference regardless of status/age; cleanup never prunes those intents.",
+      "proof": "Three unique intentionally invalid publications were accepted, rejected by the offline verification adapter, and left six distinct objects. Their records and file timestamps were aged to 120 days. Applying isolated 90-day offline retention kept all six objects and all three failed intents; the owner still had its initial publication slot and the queue count returned to zero.",
+      "impact": "Repeated unique rejected content can exhaust local disk or create object/DB storage costs. The 512 KiB document and 2 MiB trajectory caps, write rate and eight-pending-owner cap limit instantaneous throughput, but not cumulative permanent storage. Proof uses small payloads and a deterministic verification rejection, not a full-scale storage fill.",
+      "mitigation": "Reserve/enforce per-player stored-byte and rejected-intent budgets before storage. Expire nonretryable rejected evidence after a defined recovery window while retaining a small permanent operation-key/request-hash tombstone. Preserve valid published content, retryable infrastructure failures and durable replay safety.",
+      "tests": [
+        "test_rejected_publication_blobs_survive_retention_and_do_not_consume_slots"
+      ]
+    },
+    {
+      "id": "BA04",
+      "severity": "medium",
+      "status": "open",
+      "title": "Anonymous fresh discovery requests duplicate whole-catalogue database snapshots",
+      "attacker": "Remote anonymous caller; impact grows with the published catalogue.",
+      "locations": [
+        "backend/bmt_backend/discovery.py:138",
+        "backend/bmt_backend/discovery.py:168",
+        "backend/bmt_backend/discovery.py:192"
+      ],
+      "cause": "fresh=true creates a new UUID for every request, bypassing the deterministic snapshot identity. Every snapshot materializes the complete matching catalogue into a JSON column for 30 minutes. RAM cache eviction does not bound DB snapshot bytes or the uncapped SQL result.",
+      "proof": "With twelve published routes, three identical anonymous fresh=true requests produced three different persisted snapshot rows, each containing the same twelve version IDs. No player header was used.",
+      "impact": "Small requests force repeated catalogue reads and durable copies. A large catalogue and many fresh requests can grow DB CPU, memory and storage sharply. IP rate limits and expiry mitigate throughput/lifetime but do not cap aggregate snapshot bytes; no production-size benchmark was run.",
+      "mitigation": "Coalesce identical recent queries despite fresh requests, or use a server-controlled bounded generation. Limit fresh-snapshot creation separately, enforce a global snapshot byte budget and move large catalogues to bounded server-side pagination while retaining stable cursors.",
+      "tests": [
+        "test_anonymous_fresh_discovery_persists_duplicate_catalogue_snapshots"
+      ]
+    }
+  ],
+  "accepted_design_risks": [
+    {
+      "id": "BA-D01",
+      "severity": "competitive integrity exposure",
+      "status": "owner-approved trajectory-only policy",
+      "title": "A fabricated but plausible trajectory can pass without an actual driven run",
+      "locations": [
+        "AGENTS.md:112",
+        "backend/bmt_backend/trajectory_verifier.py:62",
+        "backend/bmt_backend/verifier.py:369"
+      ],
+      "proof": "A path manufactured by interpolation around synthetic trusted square geometry completed every ordered gate/five laps and passed the actual Python checker: 1200 ticks, five 240-tick laps. No controls or simulation generated the path.",
+      "limit": "This proves the trajectory trust boundary, not a real published-track leaderboard exploit. Real track preparation, contracts, tickets, receipt ownership and upload authentication still apply.",
+      "assessment": "Sign-in and a pinned server ticket do not establish truthful client positions. Speed/gate/timeline bounds reject impossible paths but cannot prove gameplay provenance. This is the explicit 2026-10-09 product tradeoff, not a reason to restore full simulation against owner instructions.",
+      "options": "Keep this limitation explicit and consider ranking anomaly review/quarantine if desired. A materially stronger anti-cheat requirement needs a separate product decision."
+    }
+  ],
+  "verified_defenses": [
+    "All 26 administrative GET routes in the application snapshot denied ordinary player bearer credentials with 401.",
+    "Another player private run, publication and draft-document IDs returned 404, including the public draft-document endpoint.",
+    "Production development login and simulated-purchase access were denied; game credentials confer no administrative authority.",
+    "Duplicate JSON keys, exponent overflow, lone surrogate strings, NaN and nesting above 32 were rejected as safe correlated 400 errors without echoing input.",
+    "Existing signed-key Google tests passed for tampered signatures, wrong issuer/audience/expiry/presenter, alongside one-use nonce and browser handoff boundaries.",
+    "Existing refresh replay/revocation, expiry/disabled accounts, profile authority, provider-bound purchase/ad proof, resume receipts, publication slot/idempotency, trusted proxy and shared-budget tests passed.",
+    "Source inspection found parameterized SQL/allowlisted selections, fixed hash object paths/admin assets, escaped challenge/Studio text and argument-array subprocesses; no confirmed SQL injection, remote code execution, arbitrary file read or attacker-specified outbound fetch emerged from this scoped review."
+  ],
+  "validation": {
+    "attack_probes": {
+      "passed": 17,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 16.624
+    },
+    "security_controls": {
+      "passed": 240,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 8,
+      "seconds": 90.787
+    },
+    "admin_get_routes_checked": 26,
+    "commands": [
+      "$env:PYTHONPATH = 'C:\\Codes\\Godot\\Beat my track\\backend;C:\\Codes\\Godot\\Beat my track\\backend\\tests'; .tools/backend-secure-venv/Scripts/python.exe -m pytest docs/evidence/backend-attack-review-2026-10-14/test_attack_probes.py -q -x --junitxml=.tools/backend-attack-review-20261014/attack-probes.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_auth.py backend/tests/test_google_crypto.py backend/tests/test_browser_auth.py backend/tests/test_admin.py backend/tests/test_admin_support.py backend/tests/test_commerce.py backend/tests/test_provider_proofs.py backend/tests/test_resumes.py backend/tests/test_communication_boundary.py backend/tests/test_publication_intents.py backend/tests/test_challenges.py backend/tests/test_track_lifecycle.py backend/tests/test_robustness_second_pass.py -q -x -k 'not postgres and not canonical_three_rewinds_keep_original_verified_time' --junitxml=.tools/backend-attack-review-20261014/security-controls.xml",
+      ".tools/backend-secure-venv/Scripts/python.exe -m pip check",
+      ".tools/backend-secure-venv/Scripts/python.exe -m ruff check docs/evidence/backend-attack-review-2026-10-14/test_attack_probes.py",
+      "git diff --check -- DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md"
+    ],
+    "initial_full_selection": {
+      "passed": 116,
+      "failed": 1,
+      "skipped": 3,
+      "deselected": 105,
+      "failure": "backend/tests/test_resumes.py::test_canonical_three_rewinds_keep_original_verified_time",
+      "reason": "The older full-replay fixture supplies no race_proof. Current trajectory-only verify_run correctly rejects it with Race trajectory is required; update the client.",
+      "handling": "No existing test/assertion or application behavior changed. The final security selection excludes this unchanged stale fixture; PostgreSQL cases were also excluded. This is a coverage defect requiring separate fixture modernization, not a passing canonical replay regression."
+    },
+    "probe_scaffolding_corrections": "New diagnostic-only assumptions were corrected to the actual digest.json object filename, orphaned_objects result key, 403 PURCHASE_SIMULATION_DISABLED response and 26 present admin GET routes. All attack and authority assertions remain in the final evidence.",
+    "environment": "Both existing local environments run FastAPI 0.141.1, Starlette 1.7.0 and cryptography 50.0.2. backend-venv pip check reports stale installed project metadata requiring cryptography<47; current pyproject requires >=50.0.2,<51. backend-secure-venv pip check is clean, and final attack probes/Ruff use it. No dependency or environment was installed/changed.",
+    "warnings": [
+      "Starlette TestClient reports its httpx deprecation; tests still execute."
+    ],
+    "skips": "Eight existing SQLite cases require PostgreSQL row-lock concurrency. 105 PostgreSQL selections and the one stale full-replay case were deselected in the final run."
+  },
+  "limitations": [
+    "No live service attack, production write, deployment, infrastructure change, load saturation, bandwidth flood, actual OOM/disk fill or provider request.",
+    "Tests use disposable file-backed SQLite, offline identity verification substitutes and a fake game verifier for lifecycle checks. Google cryptographic unit tests use offline signed-key fixtures.",
+    "No new PostgreSQL replica concurrency run, full native verifier/physics replay regression, APK export/install or physical-device test.",
+    "HTTP frontend TLS/WAF/network ACLs, live credentials/permissions, distributed/botnet DDoS capacity and deployed configuration require separate deployment acceptance.",
+    "No fresh external dependency-advisory or OS/container vulnerability scan was performed; dependency pins and offline consistency do not establish absence of CVEs.",
+    "A scoped successful control suite does not establish that the entire backend is vulnerability-free."
+  ],
+  "changed_files": [
+    "docs/evidence/backend-attack-review-2026-10-14/test_attack_probes.py",
+    "docs/evidence/backend-attack-review-2026-10-14/review.json",
+    "docs/evidence/backend-attack-review-2026-10-14/attack-probes.xml",
+    "docs/evidence/backend-attack-review-2026-10-14/security-controls.xml",
+    "docs/evidence/backend-attack-review-2026-10-14/source-sha256.json",
+    "docs/evidence/backend-attack-review-2026-10-14/task-only.patch",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md"
+  ],
+  "checkpoint": "Evidence and task-only.patch; no broad commit in the shared dirty workspace."
+}

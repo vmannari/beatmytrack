@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bounded race statistics, legacy v2 and rendering-context v3",
+  "$comment": "Server validation additionally enforces reconciled sample counts, unique cell/segment keys, published-only spatial context, actor/ticket ownership, a 16 KiB package, and one immutable event ID per race.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "race_id", "outcome", "elapsed_ms", "device_class", "device_model", "os_version", "frame_buckets", "cells", "segments", "position_samples", "dropped_samples"],
+  "properties": {
+    "schema_version": {"type": "integer", "enum": [2, 3]},
+    "race_id": {"$ref": "#/$defs/uuid"},
+    "track_version_id": {"$ref": "#/$defs/uuid"},
+    "ticket_id": {"$ref": "#/$defs/uuid"},
+    "outcome": {"enum": ["finished", "abandoned", "restarted"]},
+    "elapsed_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
+    "device_class": {"enum": ["android_arm64", "android_other", "desktop", "other"]},
+    "device_model": {"$ref": "#/$defs/contextText"},
+    "os_version": {"$ref": "#/$defs/contextText"},
+    "frame_buckets": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"type": "integer", "minimum": 0, "maximum": 1000000}},
+    "cells": {"type": "array", "maxItems": 128, "items": {"type": "array", "minItems": 4, "maxItems": 4, "prefixItems": [{"type": "integer", "minimum": -5000, "maximum": 5000}, {"type": "integer", "minimum": -5000, "maximum": 5000}, {"type": "integer", "minimum": 1, "maximum": 3600}, {"type": "integer", "minimum": 0, "maximum": 3600}]}},
+    "segments": {"type": "array", "maxItems": 32, "items": {"type": "array", "minItems": 3, "maxItems": 3, "prefixItems": [{"type": "integer", "minimum": 0, "maximum": 31}, {"type": "integer", "minimum": 1, "maximum": 3600}, {"type": "integer", "minimum": 0, "maximum": 3600}]}},
+    "position_samples": {"type": "integer", "minimum": 0, "maximum": 3600},
+    "dropped_samples": {"type": "integer", "minimum": 0, "maximum": 3600},
+    "render_context_changed": {"type": "boolean"},
+    "render_context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "renderer", "car_detail", "viewport_width", "viewport_height", "scale_percent", "frame_limit", "vsync", "refresh_hz"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "renderer": {"enum": ["gl_compatibility", "mobile", "forward_plus", "unknown"]},
+        "car_detail": {"enum": ["full", "simple", "unknown"]},
+        "viewport_width": {"type": "integer", "minimum": 0, "maximum": 16384},
+        "viewport_height": {"type": "integer", "minimum": 0, "maximum": 16384},
+        "scale_percent": {"type": "integer", "minimum": 1, "maximum": 400},
+        "frame_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "description": "Explicit Engine.max_fps cap; zero means uncapped, not a guessed display target."},
+        "vsync": {"enum": ["disabled", "enabled", "adaptive", "mailbox", "unknown"]},
+        "refresh_hz": {"type": "integer", "minimum": 0, "maximum": 1000, "description": "Reported display refresh rounded to hertz; zero means unavailable."}
+      }
+    }
+  },
+  "oneOf": [
+    {"properties": {"schema_version": {"const": 2}}, "not": {"anyOf": [{"required": ["render_context"]}, {"required": ["render_context_changed"]}]}},
+    {"properties": {"schema_version": {"const": 3}}, "required": ["render_context", "render_context_changed"]}
+  ],
+  "$defs": {
+    "uuid": {"type": "string", "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$"},
+    "contextText": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"}
+  }
+}

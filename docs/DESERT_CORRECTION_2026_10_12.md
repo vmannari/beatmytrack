@@ -1,0 +1,33 @@
+# Desert border, patchiness and crossing correction
+
+2026-10-12 owner rejection of the first desert refinement. DS08: remove the visible artificial surround border; DS09: reduce patchy road shading; DS10: remove crossing flicker. Preserve DS01–DS07 (low banks, tire-mark colour and localized dust), V02/V04/V05/G01/R01/Q01. The earlier refinement's screenshots and acceptance notes are retained as rejected evidence; its numerical tests did not establish visual acceptance.
+
+The surround/skirt used continuous diffuse lighting while the main terrain still used toon bands. Matching all desert layers to continuous diffuse removes this material discontinuity. Pile faces no longer receive a separate pigment multiplier. The stronger road-axis UV fields introduced patchy bands and phase changes between road pieces; the ground road now uses restrained world-space mineral grain, mildly filtered along its double-angle road direction. The historical `packed_wear` adapter is quieter too. Tire-trail colour/code, low-bank height/spacing, dust, camera, lighting direction, handling, canonical surfaces and scoring are unchanged in this correction.
+
+Previously every road piece emitted its whole polygon at the same height. At crossings, distinct road UVs therefore competed on coplanar triangles. `desert_road_union.gd` clips later source triangles against earlier ones through the existing spatially binned convex subtraction helper. The output covers the union once, retains hole-safe convex fragments and emits road UVs from the owning piece. This is decorative ground-road geometry only; canonical road cells and track hashes do not change. No per-frame sorting, depth bias, new collider, render batch or runtime dependency is introduced. Presentation kit increments 152 → 153, invalidating stale road caches.
+
+Files: `game/track/native_track_visual.gd`, new `desert_road_union.gd` (+UID), `surface_detail.gdshaderinc`, `creator_road.gdshaderinc`, `surface_shader_variants.gd`; new `game/tests/test_desert_crossings.gd` (+UID), and `capture_desert_refinement.gd` (optional evidence destination). Documentation: this report, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
+
+Actual commands, pinned Godot `4.7.2.stable.official.ed1daf0bf`, through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+| Command suffix | Outcome |
+| --- | --- |
+| `-Action TestScript -ScriptPath res://tests/test_desert_crossings.gd -Graphical` | Final 59 checks, zero failures. Rounded-end polygon-union oracle area 799.442558 m²; 25 interior points have exactly one road face; six material checks; 48 rendered camera poses with maximum tracked-pixel RGB delta 0.0 after warmup. |
+| Same with `-RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--folder=res://../docs/evidence/desert-correction-2026-10-12/mobile-crossing/'` | Final 59 checks, zero failures; identical area and zero tracked-pixel delta. Desktop Vulkan, not an Android-device result. |
+| `-Action TestScript -ScriptPath res://tests/capture_desert_refinement.gd -Graphical -TestArgument '--evidence-root=res://../docs/evidence/desert-correction-2026-10-12'` | Six fresh Compatibility driving-height/detail/dust views; 57,060 low-bank vertices checked; cells/hash preserved. |
+| Same with `-RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--evidence-root=res://../docs/evidence/desert-correction-2026-10-12/mobile'` | Six fresh desktop Mobile/Vulkan views and the same geometry/canonical checks. |
+| `-Action TestDesert` | 88 checks, zero failures; five-car deterministic replay and packed/loose-sand behavior retained. |
+| `-Action TestShoulders` | Union test plus 71 visual-join and 18 internal-contour checks, zero failures. |
+| `-Action TestRoadCache` | 66 checks, zero failures. |
+| `-Action Import` | Pass. |
+| `-Action Doctor` | Matching engine/templates; no attached Android devices. |
+
+Fixture corrections: bridge constructor requires the track; a new JSON key must be a String (dot assignment initially inserted a StringName); non-road shader parameters can be null; and the independent expected area must include actual rounded/bevelled end caps rather than a guessed rectangle. These fixture mistakes were corrected, not accepted as passing runs. Mobile initially measured its cold renderer lighting before convergence; twelve warmup draws fix this without changing the pixel-delta threshold. A combined `TestArgument` string was parsed as one stage name; the corrected single evidence-root argument produces the intended final folder. All passing outcomes above are actual reruns. The inherited five biome-editor New/unsaved-draft failures from the preceding task were not rerun or modified, and no full-suite pass is claimed.
+
+Inspected evidence: [rejected bend](evidence/desert-refinement-2026-10-12/after/route-35.png), [corrected bend](evidence/desert-correction-2026-10-12/after/route-35.png), [detail](evidence/desert-correction-2026-10-12/after/bank-detail.png), [Mobile bend](evidence/desert-correction-2026-10-12/mobile/after/route-35.png), [crossing](evidence/desert-correction-2026-10-12/crossing/frame-00.png), [crossing camera-pose animation](evidence/desert-correction-2026-10-12/crossing/camera-motion.png). Twenty-four lossless captured frames are encoded as an APNG with 100 ms playback per frame; this is a diagnostic camera-pose sequence, not timed gameplay/performance footage. Encoding uses Python standard-library PNG chunks, with no image resampling. An initial Pillow attempt was unavailable and made no animation; the standard-library encoder succeeded.
+
+The crossing test verifies actual mesh coverage and a fixed interior pixel under camera motion; it does not prove that every possible player track is artifact-free. The saved race fixture is not the exact owner track. Dead-end terrain/cap transitions in the diagnostic fixture remain a visual review item. More complex splines/painted junctions/bridge joins, owner review of road grain and bank appearance, and sustained phone performance remain. No phone test, Android export/install, full Validate/physics merge, backend operation or deployment was performed.
+
+Task-only baseline/fix commits and a binary-capable patch are saved in `build/desert_correction/checkpoint-repo` and `docs/evidence/desert-correction-2026-10-12`. Main Git branch/index and concurrent work are preserved.
+
+A concurrent visual task later increments the live kit to 154. Its later-function changes and version increment remain in the workspace; the desert-only checkpoint retains this correction's kit 153 and excludes that unrelated work.

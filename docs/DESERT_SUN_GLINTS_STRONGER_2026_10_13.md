@@ -1,0 +1,22 @@
+# Stronger sun-catching sand and pebbles
+
+2026-10-13 DS25/DS23/DS24/V02/V04/V05/G01/R01/Q01. The owner could not see the initial mineral finish and requests a stronger effect. Increase resolved grain coverage, reflection energy and angular spread at the unchanged gameplay camera scale. Retain original pigments/textures, actual sunlight/shadow response, distance filtering, matte scrub, nonreflective compacted road, geometry/particle budgets and canonical driving/scoring.
+
+Only runtime changes are `game/track/desert_sun_finish.gdshaderinc` and `game/track/native_track_visual.gd` (kit185→186 cache invalidation). Mineral thresholds widen from R0.56–0.61/B0.42–0.50 to R0.52–0.59/B0.34–0.45; specular ceiling rises 0.38→0.70. Reflecting facets use roughness0.34 instead of0.28 for broader sun-catching lobes. Distance filtering remains, with its fade shifted to0.10–0.28 m pixel footprint so normal gameplay retains more visible grains. No emission, animation clock, new sampler, texture, mesh or draw. Shared pebble finish increases with the sand. Documentation/agent/status/plan record this follow-up; no contract or schema changes.
+
+Both renderer captures are inspected at 1600×900 with the existing camera. In the matched 35% route view, visible contribution pixels rise from 2,050→21,750 in Compatibility and 1,686→17,432 in Mobile, approximately 10.6×/10.3× coverage. This counts pixels differing by more than1/255 in a578,100-pixel inspection region, not a claim of tenfold photometric brightness. Broad surfaces retain their original pigment; the bright mineral patches are now clearly visible on lit banks and dune faces.
+
+Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned `4.7.2.stable.official.ed1daf0bf`:
+
+| Action / suffix | Actual outcome |
+| --- | --- |
+| `TestScript -ScriptPath res://tests/test_desert_sun_glints.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-sun-glints-stronger-2026-10-13/'` | Compatibility13 checks, zero failures. Contribution25,808/21,750 pixels in two views; off-state restoration exact; disabled versus archived original materials exact. Motion mean delta0.001510, below unchanged0.01 bound; canonical state/cells/hash preserved. |
+| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | Mobile13 checks, zero failures. Contribution17,831/17,432 pixels; off-state restoration exact; disabled versus original max1/255, below unchanged2/255 tolerance. Motion mean delta0.001047; same canonical checks. |
+| `TestDesert` | 87 checks, zero failures, including original dense dust and exact five-car packed/loose replay. |
+| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No phone test performed. |
+
+The existing diagnostic also runs identical frozen-scene original/stronger/original/stronger material stages, one-second warmup/two seconds measured per stage, on RTX3090 at1600×900. Compatibility original medians0.858/0.862 ms versus stronger0.803/0.877 ms show timing variation; no performance gain is claimed. Mobile original0.466/0.467 ms versus stronger0.490/0.493 ms gives approximately+0.025 ms for the complete finish versus no finish, similar to the preceding sample. These are short desktop GPU samples, not a paired old-strength/new-strength benchmark or phone FPS/thermal result. All stages retain130 draws and429,372 reported primitives. Full reports, four paired views and six motion frames per renderer are in the evidence folders.
+
+Final [Compatibility preview](evidence/desert-sun-glints-stronger-2026-10-13/gl_compatibility/after-35.png) and [Mobile preview](evidence/desert-sun-glints-stronger-2026-10-13/mobile/after-35.png), compared with the [previous subtle finish](evidence/desert-sun-glints-2026-10-13/final/gl_compatibility/after-35.png). Same saved local review track; not the owner's exact pictured document. Previous sampler/cache and archived-material proof methodology are documented in `DESERT_SUN_GLINTS_2026_10_13.md`; no new binding or shader branch is added by this intensity follow-up.
+
+Task-only baseline/fix checkpoint: `build/desert_sun_glints_stronger/checkpoint-repo`; patch/ledger under `docs/evidence/desert-sun-glints-stronger-2026-10-13/`. Main branch/index and unrelated work preserved. No phone/APK export-install, backend/deployment, full regression or physics merge. Owner strength/style acceptance and physical-device visibility, movement and performance remain open.

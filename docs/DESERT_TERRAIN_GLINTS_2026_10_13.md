@@ -1,0 +1,30 @@
+# Sun-catching grains on the terrain texture
+
+2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01. The owner sees reflections on the banks but not the surrounding terrain. Keep the approved bank/pebble finish and give the terrain texture visible sun-catching grain faces, with unchanged artwork, camera, geometry, dust, tire marks, canonical driving/scoring and performance optimizations.
+
+The original finish used macro normals. Bank slopes could face the sun/view reflection direction, but relatively flat terrain rarely did. Selected resolved terrain grains now receive small, differently oriented shading normals from the same packed mineral sample. A bounded, sparse selection and a sun-facing guard avoid turning the original dunes into dark noisy grit. Original albedo and macro dune relief remain; the new normals are cosmetic only. Terrain, backdrop and flat road skirts share the treatment. Bank geometry and pebble finish retain the preceding roughness/specular behavior; the compacted road remains nonreflective.
+
+The shader reuses the finish's existing texture read, with no new sampler, draw, geometry or particle system. Grain orientation is world-textured and has no clock/random animation. The unchanged desert light rotation is centralized as `TrackTheme.DESERT_SUN_ROTATION` and supplies the shader's sun-facing guard, rather than relying on a separate approximate direction. Both shader specular lighting and shadows still come from the actual scene light. Cache kit186→188; kit187 was the rejected dense-grain intermediate.
+
+Runtime files: `game/track/desert_sun_finish.gdshaderinc`, `terrain.gdshaderinc`, `ground.gdshader`, `creator_road.gdshaderinc`, `native_track_visual.gd`, `track_theme.gd`. Existing `game/tests/test_desert_sun_glints.gd` gains a terrain-only proof and frozen presentation controls. This report, agent override, status and phase plan record the follow-up. No image asset, canonical contract or schema change.
+
+Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned `4.7.2.stable.official.ed1daf0bf`:
+
+| Action / suffix | Actual outcome |
+| --- | --- |
+| `TestScript -ScriptPath res://tests/test_desert_sun_glints.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-terrain-glints-2026-10-13/final/'` | Compatibility14 checks, zero failures. Terrain alone contributes11,774 pixels/peak0.541 in the578,100-pixel inspection region while bank/pebble finishes are disabled. Off-state restoration and disabled versus archived original materials are exact. Motion mean delta0.001952 is below unchanged0.01 bound. Canonical state/cells/hash preserved. |
+| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | Mobile14 checks, zero failures. Terrain-only14,410 pixels/peak0.482; restored off-state exact; disabled versus original max1/255, below unchanged2/255 tolerance. Motion delta0.001532; same canonical checks. |
+| `TestDesert` | 87 checks, zero failures, original dust and exact five-car packed/loose replay behavior. |
+| `TestRoadCache` | 70 checks, zero failures, including the bound material data. |
+| `TestScript -ScriptPath res://tests/test_terrain_sampler_budget.gd` | 60 checks, zero failures across five biomes. |
+| `Import -CommandTimeoutSeconds 90` | Exit zero; registered concurrently introduced livery classes without editing that work. |
+| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed for this slice. |
+| `git diff --check -- <the six runtime files and diagnostic>` | Exit zero; existing CRLF normalization warnings only. |
+
+The final material diagnostic hides HUD/pause layers, depth-based haze, dust and trails and freezes child presentation updates. These exclusions isolate texture lighting; no corresponding runtime behavior is changed. A dedicated test enables only terrain/backdrop/skirt finishes so the previously visible banks cannot satisfy the new requirement. Inspect [Compatibility terrain-only](evidence/desert-terrain-glints-2026-10-13/final/gl_compatibility/terrain-only.png) and [Mobile terrain-only](evidence/desert-terrain-glints-2026-10-13/final/mobile/terrain-only.png), plus the after views and six saved camera-motion frames per renderer. Existing camera extent is retained; the saved track differs from the owner's original pictured document.
+
+The frozen paired diagnostic retains18 draws/421,818 reported primitives in every original/new stage after HUD/haze exclusion. Compatibility GPU medians are0.532/0.535ms original and0.524/0.524ms new, within shared-host variation; no speed gain is claimed. Mobile later stages repeat an identical GPU query with fewer samples, so no reliable incremental-cost claim is made from that run. Reports retain all samples/medians/p95. These are neither phone FPS nor sustained driving/thermal acceptance. The preceding finish cost reports are not presented as measurements of these new grain-normal operations.
+
+Initial captures showed excessive dense grain normals/dark specks and were refined to sparse sun-catching faces. Diagnostics encountered concurrent livery registration, a transient build fingerprint hash error and a native-audio library load race; supported Import/retries resolved the runs without foreign-file rollback. A Mobile exact-restoration check initially differed by2/255 in54 pixels; the final material-only proof excludes changing presentation/postprocess layers and retains the strict zero-restoration assertion. No invariant threshold is weakened. Intermediate evidence and dev logs are retained.
+
+Task-only baseline/fix checkpoint: `build/desert_terrain_glints/checkpoint-repo`; patch/ledger under `docs/evidence/desert-terrain-glints-2026-10-13/`. Main branch/index and unrelated edits preserved. This slice does not edit dust/trail sources, physics, player track documents or backend code. No export/install/device run, backend operation/deployment, full regression or physics merge. Remaining acceptance: owner terrain-grain strength/style review and physical-phone visibility, motion and performance in normal gameplay with haze/dust present.

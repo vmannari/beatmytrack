@@ -1,0 +1,39 @@
+# Garage roof cutaway, shelf clearance and car light sweep
+
+Owner corrections, 2026-10-12. GC25: roof transparent from above; GC26: rear shelf/toolbox clearance; GC27: one turntable size for every car; GC28: a more stylish car disappearance/appearance. Preserve GC06–GC24/CW13/CW15/CW16/V06/G01/R01/Q01.
+
+Ceiling panels, girders, trusses and suspended luminaire geometry now form a separately batched `GarageRoof` group inside the prepared architecture cache. The camera hides that group above 4.95m, clearing the view before crossing the lowest roof fixtures, and restores it below that height. Orbit, zoom and trophy-camera interpolation all update the cutaway. This makes the roof fully invisible from above rather than adding translucent geometry over the car. Garage lighting, walls, furnishings, trophy display and car remain active. Each showroom owns its roof visibility; the prepared cache is not modified by a live view.
+
+Removed the oversized raised cabinet box that intersected the rear shelves. A properly sized handled toolbox sits on the drawer cabinet's worktop; shelf levels are now 2.45/3.20/3.95m. The counter box and handle top are 2.125m, with clearance below the lowest shelf's 2.4075m underside and its support brackets. Rear supplies and cabinet remain in their established back-wall locations.
+
+Every main showroom and carousel car now uses a 3.65m-radius turntable, retaining the 0.22m deck height, markings, trim and rim light. All five platform mesh buffers are byte-identical; only car/contact geometry differs. Main showroom cameras share one default distance across all cars, including after Reset; carousel cameras also share one fitting distance across cards. Preview selection still retains the actual main camera position/zoom/tilt/yaw. The fixed stage accommodates the pickup; smaller cars no longer shrink the platform.
+
+The prior whole-car pixel fade is replaced by an original warm vertical light sweep. The outgoing car clears from roof to wheels in 0.26s with cubic easing in; the incoming car reveals from wheels to roof in 0.38s with cubic easing out. A restrained gold emissive edge travels along the car's actual geometry. Temporary shader copies use measured world-space mesh height bounds; a narrow 5cm edge feather uses opaque ordered coverage while the rest of the surface stays solid. This keeps body/glass depth ordering intact. Car contact shadows fade with progress while the platform's floor shadow remains solid. Original paint/glass/dirt material references are restored on completion or cancellation. Rapid selections, confirmation, painting, washing, trophy navigation and page hiding retain their existing cancellation behavior. No model transform, handling, collision, replay, PB, scoring or backend contract is changed.
+
+Changed runtime: `game/ui/car_showroom.gd`, `garage_environment.gd`, `garage_workshop.gd`, `garage_car_reveal.gd`. Updated `game/tests/test_garage_car_transition.gd` uses the revised duration constants and adds a single combined motion/output argument; all original phase, zoom, condition, shared-material and cancellation assertions remain. Added `game/tests/test_garage_final_polish.gd` (+UID). Documentation: this file, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
+
+Actual commands on pinned `4.7.2.stable.official.ed1daf0bf`, isolated local records:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_final_polish.gd -Graphical
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_final_polish.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/garage-final-polish-2026-10-12/mobile/layout'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_car_transition.gd -Graphical -TestArgument '--capture-motion-output=res://../docs/evidence/garage-final-polish-2026-10-12'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_car_transition.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/garage-final-polish-2026-10-12/mobile/transition'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -TestArgument '--evidence-root=res://../docs/evidence/garage-final-polish-2026-10-12/carousel'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_studio.gd -Graphical
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
+python build/encode_garage_final_polish.py
+python build/checkpoint_garage_final_polish.py
+python build/complete_garage_final_checkpoint.py
+```
+
+Results: polish **38 Compatibility + 38 desktop Mobile/Vulkan** checks; light sweep **143 Compatibility including 120 actual motion captures + 23 Mobile**; carousel/selection/cosmetics/trophy view **175**, washing **1,402**, view controls **59**, exact native car/glazing/render regression **80**; all zero failures. Import passes. Polish checks compare all five main/carousel platform mesh buffers, preserve actual camera transforms and common Reset framing, check cabinet/shelf clearance, test roof visibility below/above/return, and verify an actual rendered difference against a forced opaque-roof diagnostic. The blocked capture is deliberately forced by the fixture and is not shipping behavior. Car regression retains 64 meshes/104,558 triangles/68,996 UV vertices and exact baked/source car/glazing bytes. Desktop RTX 3090 Compatibility diagnostic: 447.759ms cold page build, CPU median/p95 0.864/1.273ms, GPU median/p95 1.537/2.189ms. These are desktop samples, not phone evidence or a speedup claim.
+
+Inspected [roof cutaway](evidence/garage-final-polish-2026-10-12/layout/roof-cutaway.png), [rear clearance](evidence/garage-final-polish-2026-10-12/layout/workshop-clearance.png), all-five-car fixed-platform captures, [outgoing sweep](evidence/garage-final-polish-2026-10-12/disappearing.png), [incoming sweep](evidence/garage-final-polish-2026-10-12/appearing.png) and matching Mobile views. [Actual transition motion](evidence/garage-final-polish-2026-10-12/car-transition-motion.png) is a lossless 120-frame 960x540 APNG, approximately 41MB, assembled directly from Godot renders with Python stdlib/PNG CRC checks. Production tween stepping at 1/30s gives deterministic four-second review playback, not a performance measurement. Raw frames are in `build/garage-car-motion-2026-10-12`.
+
+Task-only two-commit checkpoint: `build/garage_final_polish/checkpoint-repo`. Baseline sources, scoped patch, hashes, captures and actual logs: `docs/evidence/garage-final-polish-2026-10-12`. Main branch/index and concurrent unrelated work are preserved. World-height reconstruction was checked against Godot's official [spatial shader built-ins](https://docs.godotengine.org/en/stable/tutorials/shaders/shader_reference/spatial_shader.html) and the actual pinned-renderer runs above.
+
+Doctor found no attached Android device. No phone test, APK export/install, full Validate, physics merge/regression, backend operation or deployment was performed. Owner light-sweep/style acceptance and physical-device input/frame pacing/brightness remain open; AAA remains a quality target. The existing future-award display remains unpopulated.

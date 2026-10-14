@@ -1,0 +1,27 @@
+# Desert tire marks fitted to warm sand
+
+2026-10-13 DS22/V02/V04/V05/G01/R01/Q01. The owner now rejects dark, mismatched tire marks left by the car. This explicitly supersedes the earlier tire-mark colour approval. Desert marks use quieter warm compaction while original dust, camera, canonical driving/scoring, five laps and local per-car condition remain intact.
+
+The old narrow rut's steep faces produced excessive directional shade, while the tread had strong dark ribs. Desert now shades the mark with its actual ground/bridge contact normal, uses restrained tread variation and binds a source-colour pigment derived from the current warm desert road (`TrackTheme.DESERT[0] × 0.92`). Binding it as `source_color` matches the road's renderer colour handling; raw instance RGB made an initial Mobile iteration too pale. Maximum opacity decreases from 0.28 to 0.24. Ordinary rolling stays faint; existing high brake/slip strength adds bounded compaction above 0.45, preserving readable strong marks. Existing feathered edges and world-space grain remain.
+
+There is no new texture, draw, mesh, contact or canonical rule. Trail ring capacity, mesh/profile, width, relief, sampling, intensity, placement, bridge clipping and ground/deck separation are unchanged. Other biomes retain their exact style cases and intensity scaling. `preserved-contracts.json` contains unchanged function hashes and exact dust-file preservation. The shader's new pigment, flag and pressure varying affect desert loose-surface marks only.
+
+Changed files: `game/vehicle/skid_trails.gd`; new diagnostic `game/tests/capture_desert_tire_marks.gd`/UID; an optional output-folder argument in existing `game/tests/test_bridge_trails.gd`; this report, `AGENTS.md`, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. No asset generation or schema/version contract change.
+
+Commands use pinned `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
+
+| Action / suffix | Actual result |
+| --- | --- |
+| `TestScript -ScriptPath res://tests/capture_desert_tire_marks.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-tire-marks-2026-10-13/before/'` | Six baseline images: ordinary rolling, sustained braking and loose sand, each with a matching surface-only view. Each marked view has 396 per-wheel segments. Canonical snapshot/cells/hash preserved. |
+| Same with folder `final` | Six final Compatibility images; same counts and preservation checks. First rolling/braking alpha 0.0647/0.1045 versus baseline 0.0755/0.1219. |
+| Same with `-RenderingMethod mobile -RenderingDriver vulkan` and folder `mobile-final` | Six final desktop Mobile/Vulkan images; same counts and checks; source-colour binding keeps warm sand pigment. |
+| `TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-tire-marks-2026-10-13/bridge-final/'` | Eight checks, zero failures. 43,502 roof pixels: 9,727 contaminated in deliberately unprotected control, zero with normal protection. Existing deck-mark visibility, independent layers and canonical snapshot checks pass. |
+| Same with Mobile/Vulkan and folder `mobile-bridge-final` | Eight checks, zero failures; 9,519 unprotected/zero protected roof pixels. Original deck-visibility threshold remains unchanged. |
+| `TestDesert` | Final 87 checks, zero failures: original dense dust and exact five-car packed/loose-sand replay behavior. |
+| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed. |
+
+The diagnostic uses a detached scripted presentation state with a frozen race; it is not a completed/verified race or real player telemetry. The original simulation snapshot, cells and content hash remain exact. Dust is not sampled in these images to expose the marks clearly; its runtime file and generation remain byte-for-byte unchanged. Inspect final [rolling](evidence/desert-tire-marks-2026-10-13/final/rolling.png), [braking](evidence/desert-tire-marks-2026-10-13/final/braking.png), [loose sand](evidence/desert-tire-marks-2026-10-13/final/loose-sand.png) and [Mobile braking](evidence/desert-tire-marks-2026-10-13/mobile-final/braking.png), compared with [baseline braking](evidence/desert-tire-marks-2026-10-13/before/braking.png).
+
+Initial failures are retained in logs: the capture initially called a nonexistent state-restore method and now uses a separate presentation state; raw instance tint appeared pale on Mobile and is replaced by source-colour binding; the first colour-corrected opacity made strong deck marks too faint for the unchanged visibility test, addressed with bounded high-strength compaction. A Python pixel-analysis attempt lacked PIL and installed nothing; no numerical contrast-reduction claim is made. Mobile exits also print `OpVectorExtractDynamic is not supported yet.` messages; the final rendered visibility/clipping assertions pass, but no warning-free engine claim is made.
+
+Task-only baseline/fix Git checkpoint: `build/desert_tire_marks/checkpoint-repo`; review patch/ledger under `docs/evidence/desert-tire-marks-2026-10-13/`. Main branch/index and unrelated work are preserved. No export/install/device run, backend operation, live account write, production deployment, full regression or performance benchmark. Owner appearance acceptance, dense repeated-lap accumulation and physical-phone visibility/performance remain open.

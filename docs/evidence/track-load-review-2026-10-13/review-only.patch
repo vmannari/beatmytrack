@@ -1,0 +1,396 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
++
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser664 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
+ 
+ 2026-10-13 RH08-RH10/Q01/V05/G01/R01: phone desert hitch investigated, cause/fix still unconfirmed. Original791ms display/809ms game has788ms render-signal wall/1.84ms callbacks, zero measured condition/recovery/cloud IO; all64 preceding finish-installed flags true (1.056s), distinct from parallel PC first-bind event. Exact phone track hash compiled/route160-170 outside bridge; resources428 stable/draw187->188, first-visible lead only. Scoped offline Perfetto25/traceprocessor58.2 prepared; first SELinux config refusal fixed via stdin, two traces lack race readiness after phone reboot/relock, no driving/root-cause pass. Three record restorations hash-exact/cache untouched/markers removed. Final locked-phone guard/readiness-first/native stacks/cold-primed cache comparison prepared but unexecuted pending owner physical unlock. No runtime/tire/canonical/fullValidate/APK/backend/deploy change. Commands/evidence/scoped checkpoint/limits: docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
++
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser664 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
+ 
+ 2026-10-13 RH08-RH10/Q01/V05/G01/R01: phone desert hitch investigated, cause/fix still unconfirmed. Original791ms display/809ms game has788ms render-signal wall/1.84ms callbacks, zero measured condition/recovery/cloud IO; all64 preceding finish-installed flags true (1.056s), distinct from parallel PC first-bind event. Exact phone track hash compiled/route160-170 outside bridge; resources428 stable/draw187->188, first-visible lead only. Scoped offline Perfetto25/traceprocessor58.2 prepared; first SELinux config refusal fixed via stdin, two traces lack race readiness after phone reboot/relock, no driving/root-cause pass. Three record restorations hash-exact/cache untouched/markers removed. Final locked-phone guard/readiness-first/native stacks/cold-primed cache comparison prepared but unexecuted pending owner physical unlock. No runtime/tire/canonical/fullValidate/APK/backend/deploy change. Commands/evidence/scoped checkpoint/limits: docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md.
+--- /dev/null
++++ b/game/tests/review_track_loading_2026_10_13.gd
+@@ -0,0 +1,232 @@
++extends SceneTree
++## Review-only attribution. Transient script copies; shipping sources unchanged.
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const Tracks = preload("res://backend/prepared_track_cache.gd")
++const Worlds = preload("res://track/prepared_world_cache.gd")
++var folder: String
++var report: Dictionary = {"samples": [], "cache": [], "components": []}
++var game_script: GDScript
++var visual_script: GDScript
++
++func _initialize() -> void: run.call_deferred()
++
++func source(path: String) -> String:
++	return FileAccess.get_file_as_string(path).replace("\r\n", "\n")
++
++func script_copy(code: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = code
++	assert(script.reload() == OK, "review script compiles")
++	return script
++
++func instrument() -> void:
++	var code: String = source("res://track/native_track_visual.gd").replace("class_name NativeTrackVisual\n", "")
++	code += "\nvar review_marks: Dictionary = {}\nvar review_begin_us: int = 0\nfunc review_mark(label: String) -> void:\n\treview_marks[label] = Time.get_ticks_usec() - review_begin_us\n"
++	var begin: int = code.find("func build(")
++	var end: int = code.find("\nfunc ", begin + 1)
++	var body: String = code.substr(begin, end - begin)
++	body = body.replace("\t_menu_slices = menu_slices", "\treview_begin_us = Time.get_ticks_usec()\n\t_menu_slices = menu_slices")
++	body = body.replace("\tif reuse_world and PREPARED_WORLDS.restore(world_key,self): return", "\tif reuse_world and PREPARED_WORLDS.restore(world_key,self):\n\t\treview_mark(\"world_restore\")\n\t\treturn")
++	body = body.replace("\t\tworld_built = true\n\t\treturn", "\t\treview_mark(\"world_restore\")\n\t\tworld_built = true\n\t\treturn")
++	for marker: Array in [["\tawait _build_terrain(track)", "terrain"], ["\tawait _build_creator_roads(track)", "roads"], ["\tawait _build_barriers(track)", "barriers"], ["\t\tawait _build_low_cover(track)", "cover"], ["\t\tawait _build_placed_objects(track)", "objects"], ["\tbridge.build(self)", "bridges"], ["\t_build_finish(track)", "finish"], ["\t_build_snow_banks(track)", "snow"], ["\tif reuse_world: PREPARED_WORLDS.remember(world_key,self,track)", "world_admission"]]:
++		assert(body.count(marker[0]) == 1, "visual marker unique: " + marker[1])
++		var indent: String = "\t\t" if marker[1] in ["cover", "objects"] else "\t"
++		body = body.replace(marker[0], marker[0] + "\n" + indent + "review_mark(\"" + marker[1] + "\")")
++	# Retain the NativeTrackVisual type required by the shared sand/road emitters.
++	visual_script = script_copy("extends NativeTrackVisual\n" + body + "\nvar review_marks: Dictionary = {}\nvar review_begin_us: int = 0\nfunc review_mark(label: String) -> void:\n\treview_marks[label] = Time.get_ticks_usec() - review_begin_us\n")
++	var geometry_argument: bool = code.contains("track: NativeTrack, geometry_key: String")
++	var extra_parameter: String = ', geometry_key: String = ""' if geometry_argument else ""
++	var extra_argument: String = ",geometry_key" if geometry_argument else ""
++	visual_script.source_code += "\nvar review_road_bytes: int = 0\nfunc _remember_road_meshes(key: Array, first_child: int, data: NativeTrack" + extra_parameter + ") -> void:\n\treview_road_bytes = data.grid_width * data.grid_height * 16\n\tfor index: int in range(first_child,get_child_count()):\n\t\tvar node: MeshInstance3D = get_child(index) as MeshInstance3D\n\t\tif node == null or not node.mesh is ArrayMesh: continue\n\t\tfor surface: int in range(node.mesh.get_surface_count()):\n\t\t\treview_road_bytes += node.mesh.surface_get_array_len(surface)*96 + node.mesh.surface_get_array_index_len(surface)*4\n\tsuper._remember_road_meshes(key,first_child,data" + extra_argument + ")\n"
++	assert(visual_script.reload() == OK)
++	code = source("res://core/game.gd")
++	code += "\nvar review_marks: Dictionary = {}\nvar review_begin_us: int = 0\nvar review_visual_script: GDScript\nfunc review_mark(label: String) -> void:\n\treview_marks[label] = Time.get_ticks_usec() - review_begin_us\n"
++	begin = code.find("func _ready()")
++	end = code.find("\nfunc ", begin + 1)
++	body = code.substr(begin, end - begin)
++	body = body.replace("func _ready() -> void:", "func _ready() -> void:\n\treview_begin_us = Time.get_ticks_usec()")
++	for marker: Array in [["\t_build_ground(world)", "ground"], ["\t_update_weather()", "weather"], ["\tworld.add_child(car)", "car"], ["\tcontact_shadow = ContactShading.car_shadow(world)", "ghost_and_shadow"], ["\tcar_weathering.restore(VehicleCondition.read(preference_records, vehicle_id))", "weathering"], ["\tworld.add_child(trails)", "trails"], ["\t\tsand_dust.configure_snow_surface(track_ground)", "snow_surface"], ["\tworld.add_child(sand_dust)", "particles"], ["\tadd_child(vehicle_audio)", "audio_ready"], ["\tvehicle_audio.configure(vehicle_id,handling,car)", "audio_configure"], ["\tworld.add_child(camera)", "camera"], ["\tadd_child(hud)", "hud"], ["\trestart()", "restart"]]:
++		assert(body.count(marker[0]) == 1, "game marker unique: " + marker[1])
++		var indent: String = "\t\t" if marker[1] == "snow_surface" else "\t"
++		body = body.replace(marker[0], marker[0] + "\n" + indent + "review_mark(\"" + marker[1] + "\")")
++	code = code.substr(0, begin) + body + code.substr(end)
++	code = code.replace("var visual := NativeTrackVisual.new()", "var visual = review_visual_script.new()")
++	game_script = script_copy(code)
++
++func deltas(marks: Dictionary) -> Dictionary:
++	var result: Dictionary = {}
++	var previous: int = 0
++	for label: String in marks:
++		result[label] = (int(marks[label]) - previous) / 1000.0
++		previous = int(marks[label])
++	return result
++
++func race(track: NativeTrack, label: String, preferences: bool) -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.set_script(game_script)
++	game.review_visual_script = visual_script
++	game.initial_track = track
++	game.production_mode = true
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	if preferences:
++		var records := LocalRecords.new(folder.path_join("records.json"))
++		records.settings.ghost_mode = "off"
++		game.preference_records = records
++	var started: int = Time.get_ticks_usec()
++	root.add_child(game)
++	var ready_us: int = Time.get_ticks_usec() - started
++	game.hitch_diagnostics.persist_enabled = false
++	game._process(0.0)
++	var finish: VehicleWeathering = game.car_weathering
++	var warm: bool = finish.begin_render_warmup()
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	finish.end_render_warmup()
++	if warm and DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	assert(game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5)
++	var row: Dictionary = {"label": label, "prefs": preferences, "ready_ms": ready_us / 1000.0, "to_prepared_draw_ms": (Time.get_ticks_usec() - started) / 1000.0, "game_ms": deltas(game.review_marks), "world_ms": deltas(game.track_ground.review_marks), "ghost_mesh_built": game.personal_ghost != null, "ghost_mode": game.ghost_mode, "ghost_recordings": game.ghost_bests.size()}
++	report.samples.append(row)
++	row.road_admission_bytes = game.track_ground.review_road_bytes
++	row.road_cache = []
++	for cached: Dictionary in NativeTrackVisual._road_mesh_cache: row.road_cache.append({"theme": cached.key[2], "bytes": cached.bytes})
++	print("LOAD_REVIEW_SAMPLE ", JSON.stringify(row))
++	if preferences:
++		var begin: int = Time.get_ticks_usec()
++		var mesh: ArrayMesh = PersonalGhost.mesh_for(game.car)
++		report.components.append({"label": label, "ghost_mesh_ms": (Time.get_ticks_usec() - begin) / 1000.0, "vertices": mesh.surface_get_array_len(0)})
++	game.free()
++	await process_frame
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../build/track-load-review-2026-10-13")
++	DirAccess.make_dir_recursive_absolute(folder)
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = folder.path_join("roads")
++	Tracks.clear(); Worlds.entries.clear()
++	instrument()
++	if "--components-only" in OS.get_cmdline_user_args():
++		await components_only()
++		write_report("components.json")
++		quit()
++		return
++	if "--artifact-only" in OS.get_cmdline_user_args():
++		await artifact_only()
++		write_report("artifact.json")
++		quit()
++		return
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var body: String = JSON.stringify(document)
++	var path: String = folder.path_join("document.json")
++	var file := FileAccess.open(path, FileAccess.WRITE)
++	file.store_string(body); file.close()
++	var entry: Dictionary = {"cache_path": path, "content_hash": body.sha256_text(), "id": "fixture", "name": "Fixture", "version_id": "fixture-version", "track_id": "fixture-track", "creator": "Fixture"}
++	for index: int in range(4):
++		var began: int = Time.get_ticks_usec()
++		var track: NativeTrack = Cloud.compile_entry(entry)
++		assert(track != null)
++		var compile_us: int = Time.get_ticks_usec() - began
++		began = Time.get_ticks_usec()
++		assert(not Cloud.cached_document(entry).is_empty())
++		var validate_us: int = Time.get_ticks_usec() - began
++		began = Time.get_ticks_usec()
++		assert(Tracks.restore([path, entry.content_hash, TrackCompiler.VERSION]) != null)
++		var restore_us: int = Time.get_ticks_usec() - began
++		report.cache.append({"pass": index, "compile_ms": compile_us / 1000.0, "document_validation_ms": validate_us / 1000.0, "snapshot_restore_ms": restore_us / 1000.0})
++		await race(track, "star-%d" % index, index > 0)
++	for theme: String in ["desert", "winter", "storm", "night_city"]:
++		document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		assert(track != null)
++		await race(track, theme + "-cold", true)
++		await race(track, theme + "-repeat", true)
++		var bytes: int = 0
++		for cached: Dictionary in Worlds.entries: bytes += int(cached.bytes)
++		report.cache.append({"theme": theme, "world_entries": Worlds.entries.size(), "world_bytes": bytes})
++	report.engine = Engine.get_version_info().string
++	report.renderer = RenderingServer.get_current_rendering_method()
++	report.adapter = RenderingServer.get_video_adapter_name()
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
++	DirAccess.make_dir_recursive_absolute(output)
++	write_report("review-admission.json")
++	print("LOAD_REVIEW_COMPLETE samples=", report.samples.size(), " zero_tick_countdown_checks=", report.samples.size())
++	quit()
++
++func write_report(filename: String) -> void:
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
++	DirAccess.make_dir_recursive_absolute(output)
++	var file := FileAccess.open(output.path_join(filename), FileAccess.WRITE)
++	file.store_string(JSON.stringify(report, "\t")); file.close()
++
++func components_only() -> void:
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	await race(track, "components-prefs", true)
++	var material := ShaderMaterial.new()
++	material.shader = preload("res://track/creator_road.gdshader")
++	material.set_shader_parameter("hybrid_grass", true)
++	material.set_shader_parameter("asphalt_surface", true)
++	var values: Array[float] = []
++	for index: int in range(30):
++		var sample: ShaderMaterial = material.duplicate()
++		var started: int = Time.get_ticks_usec()
++		SurfaceShaderVariants.specialize(sample)
++		values.append((Time.get_ticks_usec() - started) / 1000.0)
++	values.sort()
++	report.components.append({"shader_specialize_warm_median_ms": values[15], "shader_specialize_max_ms": values[-1], "calls": values.size()})
++	for loop: String in ["compact_0_load", "compact_1_load", "compact_2_load", "road"]:
++		var extension: String = ".ogg" if loop == "road" else ".wav"
++		var original: AudioStream = load(VehicleAudio.BANK + loop + extension)
++		values.clear()
++		for index: int in range(8):
++			var started: int = Time.get_ticks_usec()
++			var prepared: AudioStream = AudioLoop.prepare(original)
++			values.append((Time.get_ticks_usec() - started) / 1000.0)
++			assert(prepared != original)
++		values.sort()
++		report.components.append({"audio_loop": loop, "prepare_median_ms": values[4], "prepare_max_ms": values[-1]})
++	print("LOAD_REVIEW_COMPONENTS ", JSON.stringify(report.components))
++
++func artifact_only() -> void:
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	document.theme = "desert"
++	var track: NativeTrack = TrackCompiler.compile(document)
++	var visual: NativeTrackVisual = visual_script.new()
++	visual.theme_id = "desert"
++	visual.colors = TrackTheme.palette("desert")
++	visual.persist_road_meshes = false
++	root.add_child(visual)
++	var started: int = Time.get_ticks_usec()
++	await visual._build_creator_roads(track)
++	var generated_us: int = Time.get_ticks_usec() - started
++	var meshes: Array[Dictionary] = []
++	for node: Node in visual.get_children():
++		if node is MeshInstance3D and node.mesh is ArrayMesh:
++			meshes.append({"mesh":node.mesh,"material":node.material_override,"transform":node.transform,"layers":node.layers,"shadow":node.cast_shadow})
++	var artifact = NativeTrackVisual.ROAD_DISK_CACHE.ARTIFACT.new()
++	artifact.cache_id = "review-generated-only"
++	artifact.meshes = meshes
++	artifact.estimated_bytes = visual.review_road_bytes
++	var path: String = folder.path_join("large-road-review.res")
++	started = Time.get_ticks_usec()
++	assert(ResourceSaver.save(artifact,path,ResourceSaver.FLAG_COMPRESS) == OK)
++	var save_us: int = Time.get_ticks_usec() - started
++	var file := FileAccess.open(path,FileAccess.READ)
++	var size: int = file.get_length()
++	file.close()
++	started = Time.get_ticks_usec()
++	var loaded: Resource = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE)
++	var load_us: int = Time.get_ticks_usec() - started
++	assert(loaded != null and loaded.meshes.size() == meshes.size())
++	for index: int in range(meshes.size()):
++		var expected: Dictionary = meshes[index]
++		var actual: Dictionary = loaded.meshes[index]
++		assert(expected.transform == actual.transform and expected.layers == actual.layers and expected.shadow == actual.shadow)
++		assert(expected.mesh.get_surface_count() == actual.mesh.get_surface_count())
++		for surface: int in range(expected.mesh.get_surface_count()): assert(expected.mesh.surface_get_arrays(surface) == actual.mesh.surface_get_arrays(surface))
++		assert(expected.material.shader.code == actual.material.shader.code)
++		for uniform: Dictionary in expected.material.shader.get_shader_uniform_list():
++			var a: Variant = expected.material.get_shader_parameter(uniform.name)
++			var b: Variant = actual.material.get_shader_parameter(uniform.name)
++			if a is Texture2D:
++				assert(b is Texture2D and a.get_image().get_data() == b.get_image().get_data())
++			else: assert(a == b)
++	report.artifact = {"theme":"desert","build_ms":generated_us/1000.0,"admission_estimate_bytes":visual.review_road_bytes,"road_cache_budget":NativeTrackVisual.ROAD_CACHE_BUDGET,"compressed_file_bytes":size,"save_ms":save_us/1000.0,"load_ms":load_us/1000.0,"meshes":meshes.size(),"roundtrip_exact_arrays_shaders_uniforms_textures":true}
++	print("LOAD_REVIEW_ARTIFACT ",JSON.stringify(report.artifact))
++	visual.free()
+--- /dev/null
++++ b/game/tests/review_track_loading_2026_10_13.gd.uid
+@@ -0,0 +1 @@
++uid://bjyw2f1p1qal3
+--- /dev/null
++++ b/docs/TRACK_LOADING_REVIEW_2026_10_13.md
+@@ -0,0 +1,138 @@
++# Track loading review, 2026-10-13
++
++Requirements TLR01–TLR05 / Q01 / V04 / V05 / R01 / B07: review actual loading paths, measure cold/repeated costs, identify redundant work/cache opportunities, preserve the recent material preparation fix and canonical contracts, and record reproducible evidence. **Review and diagnostic work only. No production optimization was implemented by this pass.**
++
++The largest opportunities are separating road disk admission from the memory budget, avoiding unused ghost construction, and caching immutable car/particle/audio resources. Prepared scenery restoration itself is already fast. Immediate Race Again already reuses the existing Game node; rebuilding costs below apply to creating/reopening a race scene, not every retry.
++
++## Ranked findings
++
++### 1. Large roads are excluded from disk caching by the memory-admission limit
++
++`game/track/native_track_visual.gd::_remember_road_meshes` estimates resident cost and returns above 32 MiB **before** calling `ROAD_DISK_CACHE.write_entry`. The disk reader/writer also reject `estimated_bytes` above 32 MiB, independently of the compressed file's real size.
++
++On the same Star spline fixture, desert roads estimate **42,442,816 B / 40.5 MiB**, winter **37,675,924 B / 35.9 MiB**. Neither appears in the road memory-cache entries. The same-process full-world cache hides this rejection on an immediate revisit, but process restart or world eviction requires generation again.
++
++A diagnostic generated and saved the identical desert road outside the production cache policy:
++
++| Operation | Observed |
++| --- | ---: |
++| Generate road | 12,879.084 ms |
++| Estimated resident bytes | 42,442,816 |
++| Compressed artifact bytes | 3,750,943 (3.6 MiB) |
++| Save compressed artifact | 90.527 ms |
++| Load artifact | 85.217 ms |
++
++All four meshes round-trip with **exact arrays, transforms, layers, shadow flags, shader source, uniform values and texture bytes**. This is an opportunity demonstrated by a disposable artifact, **not an implemented end-to-end speedup**. First GPU upload/compilation, terrain/scenery and UI/network costs remain additional work.
++
++Recommendation: separate actual serialized-file limits from idle resident-cache admission. Permit bounded, verified, locally generated disk artifacts for roads that are already permitted in an active race, while declining to retain them in the 32 MiB memory LRU. Keep the 96 MiB total disk budget, integrity checks and precise engine/art/content invalidation. Do not simply raise Android RAM budgets. A format/version change and cold/restart corruption/pixel/device checks would be necessary.
++
++### 2. A full ghost mesh is built with Ghost off and zero compatible recordings
++
++`game/core/game.gd::_ready` calls `PersonalGhost.configure(car)` whenever ordinary-race preferences are present. Only later, in `restart`, does it read `ghost_mode` and available local recordings. The measured cases explicitly set **Ghost off** and had **zero recordings**, yet each built a **313,674-vertex** ghost.
++
++The ghost/shadow stage cost **140–162 ms** in the first pine repeat series. Independent `PersonalGhost.mesh_for` calls cost **141–158 ms**, confirming the mesh assembly rather than contact-shadow setup dominates. Other-theme samples were about 123–166 ms.
++
++Recommendation: decide whether a drawable compatible personal ghost exists before constructing its mesh; keep pose capture and PB recording independent. Cache the immutable combined ghost mesh by exact car model/detail/fitted-kit version and configuration. Paint is not geometry. Keep fresh ghost nodes/material state and retain future rewind/rival presentation requirements. This is a clear redundant allocation for the measured Ghost-off/no-recording cases.
++
++### 3. Warm track loading still reconstructs most of the car, particles and audio
++
++On the first three pine repeats, median measured Game setup components were:
++
++| Component | Median |
++| --- | ---: |
++| Car construction/batching | 226.604 ms |
++| Ghost and contact shadow | 154.498 ms |
++| Particle/effect creation | 100.090 ms |
++| Audio players/source preparation | 47.858 ms |
++| Selected-car audio setup | 63.564 ms |
++| HUD creation | 18.256 ms |
++| Restart/setup | 16.239 ms |
++| Trail storage/setup | 8.014 ms |
++| Ground setup | 1.953 ms |
++
++Thus a world-cache hit does not make the whole race setup a cache hit. These repeat scenes took **612–678 ms ready / 694–758 ms through the two preparation draws**, with preferences present. The smaller historical profiler omits preferences and the personal ghost, so its values should not be treated as complete production loading costs.
++
++Recommendations:
++
++- **Car:** cache immutable assembled mesh data or bounded rest-pose templates for the selected/recent car and fitted configuration. `CarVisual._ready` rebuilds stock coachwork, wheels/detail and static batches on every new scene. Keep paint/livery/washing materials, wheel articulation, impacts and live nodes independently owned. Cache pieces or use a small LRU; do not cache all 256 kit combinations without a byte budget.
++- **Particles:** share immutable draw meshes, shader programs, gradients/curves or bounded prepared templates. `SandDust._ready` constructs several effect families each time, including dormant biome effects. Keep particle simulation/emission, bridge bindings, pause/reset and the approved per-biome budgets fresh. Shared mutable process materials must not leak desert settings into another biome.
++- **Audio:** retain prepared immutable stream resources instead of releasing and reloading/duplicating the bank every race. `VehicleAudio.streams` is per-instance and cleared on exit. Six selected-car loops are reopened/prepared during configure. The isolated PCM wrapper itself took only **1.15–1.26 ms** per sampled loop, Ogg **0.030 ms**, so avoid attributing all ~100 ms audio setup to that wrapper alone. File/resource loading, player setup and the Windows adapter also contribute. Reusing the native device adapter is an additional lifecycle-sensitive option; stop voices and honor bus/device/focus settings before changing ownership.
++
++### 4. Cold road generation and first render remain expensive and mostly synchronous
++
++First diagnostic process, identical Star geometry in each biome:
++
++| Biome | Road stage | World/ground setup | Ready through prepared draws |
++| --- | ---: | ---: | ---: |
++| Pine | 2,175.997 ms | 2,686.227 ms | 4,224.190 ms |
++| Desert | 17,023.434 ms | 17,336.434 ms | 18,585.716 ms |
++| Winter | 12,727.714 ms | 14,352.585 ms | 16,068.518 ms |
++| Storm | 1,670.396 ms | 1,855.646 ms | 9,958.351 ms |
++| Night | 1,837.749 ms | 2,046.362 ms | 15,376.374 ms |
++
++The second process could reuse pine/storm/night disk roads (about **90–121 ms** road stages). Desert/winter still generated roads (**13,436 / 12,998 ms**) because admission rejected them. Winter low cover also took **1,303–1,416 ms** on a cold world build. Storm/night's first draw exceeded scene construction by several seconds in the first run; this includes first-use rendering/driver work, not a GPU-execution-time measurement.
++
++Current normal race setup calls the builder with slicing disabled. The visual builder can yield for menu work, and recent concurrent editor work introduces CPU road-preparation jobs, but its prepared-packet path is guarded by `editor_preview`; it does not automatically make ordinary race construction a worker job.
++
++Recommendation: use cancellable background CPU geometry preparation or cooperative installation under the existing loading cover, keeping scene/GPU work on the proper thread. Slicing improves responsiveness rather than total work. Reuse existing outline/UV/topology and **already implemented Winter row caches**; do not recommend adding duplicates of them. Desert endpoint profiles still repeat across adjacent sections, and polygon subdivision/coordinate caches deserve finer per-piece attribution before changing algorithms. Preserve exact joins, masks, winding and the settled-bank artwork; lowering detail is not the proposed optimization.
++
++Keep the recent weathering preparation draw. Removing it can put compilation back into driving. A context-aware completion registry may avoid repeated known-safe warm-up work, but its context must include the actual renderer/MSAA/shader/mesh/light requirements and cancellation must not falsely mark completion. It is a lower priority than the hundreds of milliseconds of entity reconstruction.
++
++### 5. Shader-variant caching misses its own preprocessing cost
++
++`SurfaceShaderVariants.specialize` duplicates a dynamic material, expands include text, creates/compiles regular expressions, rewrites fixed flags/samplers and hashes the result **before** looking up its 64-entry shader cache. The shader object is cached, but that preprocessing repeats for another material with the same fixed role.
++
++Thirty identical warm role preparations measured **3.711 ms median / 16.884 ms maximum per call**, and the latest default-source rerun measured **4.276 / 17.101 ms**. This can accumulate across many road/terrain/light partitions. The total number of production calls in each build was not separately counted, so multiplying it into a claimed whole-load saving would be speculative.
++
++Recommendation: look up a bounded prepared variant early using source/include revision, all fixed flags, packed terrain slots and relevant branch choices; precompile reusable regexes. Continue creating independent material parameters and preserving the public inspection metadata. Keep Winter's explicitly preserved snow-bank branch and the phone sampler fallback.
++
++### 6. Smaller duplicated work and remaining blocking paths
++
++- `CloudTracks.download` checks/parses/validates a cached document; `compile_entry` does so again; a cold `TrackCompiler.compile` validates again. The warm Star document check cost **4.369–8.027 ms**; cached compilation **20.343–25.979 ms**. Separate snapshot restores measured **23.480–31.477 ms** and are independent calls, not additive stages. Consolidate work within one pinned preparation request while retaining actual file/hash/corruption checks. Do not replace content verification with timestamps alone.
++- `_prepare_metadata_race` creates/draws/closes one loading overlay and `_start_race` creates another. A clean metadata start has five bounded presentation-helper calls versus four for direct hydrated start. Reuse one overlay/continuation and coalesce only genuinely redundant stages; initial overlay visibility and material warm/restore draws serve real purposes. Its exact end-to-end UI/network saving was not benchmarked here.
++- Hydration updates the selected object and persists compiled metadata, but does not populate `TrackCatalog.remember_track`'s resolved-track LRU. Selecting that cloud tile later can create another metadata-only object and reenter validation/hydration. Keep the completed compiled selection in the bounded catalog cache with the existing version/source fences.
++- `_next_result_race` calls `track_catalog.resolve` directly on the main thread before `_start_race` draws its cover. A cold compile can therefore block the results UI. Route it through the existing asynchronous/pinned preparation path.
++- `_retain_metadata` rewrites retained and alias files even when unchanged; cached download plus remember-compiled may do this twice. `_start_race` also rewrites `last_track` records on every new scene, including unchanged selection. Deduplicate confirmed identical writes while preserving actual updates, atomic failure behavior and account/origin scope.
++- `Game._ready` applies lighting, then `_update_weather` applies it again. Winter can create/replace sky resources twice before first render. This is a small source-confirmed redundancy, without separate measured cost.
++- `PreparedWorldCache._resource_bytes` fetches whole mesh arrays to count their lengths. Use the cheap length/count APIs where exact accounting is equivalent. `_isolate_instances` also reads the copied MultiMesh buffer twice; save one fetched buffer locally. World restoration is already sub-few-millisecond in these samples, so these are secondary targets.
++
++## Cache coverage and interpretation
++
++Already present: five compiled snapshots / 32 MiB, up to five full worlds / 64 MiB, roads in memory / 32 MiB and on disk / 96 MiB, a four-track catalog LRU, and cached shader objects. Compiled-cache returns are independent; full-world restores create fresh mutable instance buffers. Preserve these isolation rules and fresh server tickets.
++
++The world limit is bytes as well as entry count. This fixture retained only **one** world after desert (55,362,344 B) and winter (40,669,196 B), and **two** after later themes. Nominal five entries does not mean five large Rivalry tracks stay cached. Road/world accounting can also count shared immutable resources separately; inspect real process/GPU residency before altering budgets.
++
++Immediate `_retry_race` already calls `game.restart()` on the existing scene and obtains a fresh verified ticket when required. It avoids the car/world/ghost mesh creation above. Its remaining ghost-file read/reset/save/network costs are separate; the measured new-scene timings are not claims about every Race Again.
++
++`TrackShowroom` has an eight-image preview cache but no current construction call was found in the searched ordinary Race UI. Treat legacy preview optimizations as low priority until an active caller is demonstrated.
++
++Threading guidance: [Godot's active-tree/GPU limitations](https://docs.godotengine.org/en/stable/tutorials/performance/thread_safe_apis.html) apply to proposed workers. The [MultiMesh buffer API](https://docs.godotengine.org/en/stable/classes/class_multimesh.html) returns copied data; it is not an immutable zero-copy view. These facts do not by themselves prove an observed GPU readback stall in this review.
++
++## Concurrent source changes and new regression
++
++Measurements completed before concurrent native-kit-190/editor changes added prepared editor road packets, uniform terrain regions and static spatial mesh partitioning. Reviewed-source snapshots and command-specific build identities are retained. The memory/disk gate still exists in the latest source, and the new prepared-road job path remains editor-only. Earlier timers must not be presented as a completed benchmark of the new default flags.
++
++A default component run during that concurrent change failed with `Condition "p_name.is_empty()" is true` in `set_name`: `SpatialMeshChunks.add` assigned an empty `source.name` to its first chunk. The failure and then-current source are retained. Concurrent work subsequently added a non-empty fallback; a fresh default-source component rerun completed successfully at build **0.3.0-creator.a394cc9ff52f3ca8e93d6092de3c9f5d**. The rerun still built the unused ghost (111.987 ms independently), spent 234.155 ms constructing the car and 66.752 ms on particles. This review did not patch production code or suppress the error. No full twelve-scene post-change benchmark is claimed.
++
++That new chunk builder also duplicates each full source attribute array for every chunk before resizing/filling the subset. Fresh correctly typed per-chunk arrays avoid that repeated full-buffer copy. Its separate cost was not isolated in the successful component rerun. The probe was adapted to the optional geometry-key argument and block-style world-cache return, preserving the new paths rather than overwriting them.
++
++## Actual work, commands and limits
++
++Changed by this review: `game/tests/review_track_loading_2026_10_13.gd` (+ UID), this report, status/plan entries and `docs/evidence/track-load-review-2026-10-13/`. Instrumented methods are transient script copies/subclasses. Disposable document/road/records paths stay in `build`; no player source document, PB, account, live game or backend state was altered. The normal launcher regenerated its usual build identity. No shipping feature edit, export/install or deployment occurred.
++
++All engine commands used pinned Godot **4.7.2.stable.official.ed1daf0bf** via `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_repeat_race_load.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_track_loading_2026_10_13.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_track_loading_2026_10_13.gd -Graphical -TestArgument '--components-only'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_track_loading_2026_10_13.gd -Graphical -TestArgument '--artifact-only'
++scripts/dev.ps1 -Action CheckScript -ScriptPath res://tests/review_track_loading_2026_10_13.gd
++scripts/dev.ps1 -Action Doctor
++```
++
++Completed: existing profiler **nine** scenes; detailed probes **12 + 12** scenes with zero-tick/full-360-countdown/five-lap assertions; component measurements and latest-default rerun; artifact save/load and exact resource assertions; final diagnostic compiler check. Initial whole-file visual instrumentation failed typed `emit` self checks and was corrected to inherit NativeTrackVisual. The naming failure is retained alongside the successful rerun after the concurrent fix. No failing shipping invariant was weakened.
++
++Windows/Compatibility/RTX 3090, 1280×720, shared host. Raw stage JSON, logs, command build identities, inspected-source snapshots and a scoped review patch/hash manifest accompany this report. The artifact experiment does not include HTTP, whole-world setup, new-scene entity creation or GPU first-use completion; no implementation speedup is claimed. A phone **was attached**, but no phone loading/memory/thermal test was performed. No full replay/regression suite was needed for a review-only diagnostic; no full Validate or Android export was run. No visible shipping UI change required screenshots.
++
++Recommended implementation sequence: retain and validate the concurrent chunk-name correction; split disk/resident admission; skip/cache ghost geometry; bounded immutable car/particle/audio preparation; early shader-variant lookup; then consolidate hydration/metadata/overlay work and refine cold CPU geometry using existing caches/jobs. Each implementation should have its own measured before/after checkpoint, exact resource/pixel/state isolation checks and physical-device acceptance.

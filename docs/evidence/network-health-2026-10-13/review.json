@@ -1,0 +1,126 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "COMM-03",
+    "B05",
+    "B07",
+    "Q01"
+  ],
+  "objective": "Implement client network-health telemetry and selected server request-ID correlation from communication review finding3.",
+  "behavior": [
+    "Signed-in, capability-negotiated first-party observations; network_schema_version1. Existing/disabled servers are not probed and queued diagnostics are deferred unchanged.",
+    "Fixed categories, method/status/error counts, success/cancellation/retry/throttling, total/client-queue/preparation/HTTP/decode timing and latency buckets. HTTP429 counts remain visible even when the body is invalid.",
+    "Request sizes are encoded attempted body sizes; response sizes are returned decoded body sizes. Headers, TLS, radio cost, SDK traffic and telemetry transport itself are excluded.",
+    "New race jobs retain a server-time queue anchor; known upload age is sampled without inferring old/malformed/unanchored records. File/replay preparation is measured outside canonical simulation.",
+    "Safe UUIDv4 request IDs survive headers or bounded JSON metadata and are returned to callers; latest selected failure kinds retain correlation hints without URLs, bodies, credentials, raw operation keys or arbitrary error text.",
+    "RAM counters are separated by account/origin, bounded to4 scopes,16 categories,128 operation entries and8 selected failure kinds per scope. Unsnapshotted state expires after24h and can be lost on process termination or scope eviction.",
+    "Menu-time snapshots are due every5minutes. No diagnostic snapshot/disk worker/upload begins during driving. Existing1000-event/2MiB/50-event/64KiB/24h outbox and minimum60s/five-minute passive cadence remain.",
+    "Strict server arithmetic/type/enum/size validation, existing committed ACK/deduplication and the independent product worker produce prepared daily network facts. Migration0032 adds bounded facts and an indexed selected-failure lookup.",
+    "Studio Network tab reads one prepared GET, filters category/platform/build/device/OS and shows separate timing, observed failures, retries, throttling, transfer bodies, upload-age coverage and received request IDs. Samples are unverified client hints and never game or uptime authority."
+  ],
+  "tests": [
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_network_health.py backend/tests/test_client_quality.py backend/tests/test_product_analytics.py -k \"not postgres\" -q --tb=short --show-capture=no --basetemp build/network-health-20261013/pytest-sqlite",
+      "result": "58 passed,1 deselected; earlier focused pass before final histogram checks"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_network_health.py backend/tests/test_race_statistics.py backend/tests/test_communication_boundary.py -k \"not postgres\" -q --tb=short --show-capture=no --basetemp build/network-health-20261013/pytest-final-boundaries",
+      "result": "82 passed,2 deselected"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_network_health_postgres.py",
+      "result": "60 passed; new owned PostgreSQL17 created and label-verified cleanup completed; concurrent dedupe/projection and selected-failure index verified"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_network_health_http.py -q --tb=short --show-capture=no --basetemp build/network-health-20261013/pytest-native-http-final",
+      "result": "1 passed; actual pinned native client12checks/0failures, request IDs exactly matched fixture backend IDs,5transmissions/1retry/1HTTP429/2anchored uploads, no Run created, actual committed ACK; local fictional data"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_network_health.gd",
+      "result": "Final28checks/0failures; includes passive-only batching, restart IDs, race gate, capability deferral, strict privacy/array bounds and measured mutation wait"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/<file>",
+      "result": {
+        "test_product_telemetry.gd": 55,
+        "test_client_quality.gd": 57,
+        "test_session_rotation.gd": 17,
+        "test_backend_exception_recovery.gd": 28,
+        "test_mission_outbox.gd": 11,
+        "test_refreshed_ticket_priority.gd": 26,
+        "test_resume_recovery_budget.gd": 260
+      },
+      "failures": 0,
+      "profile": "build/network-health-20261013/native-profile"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_studio_monitor_console.py --network-sample docs/evidence/network-health-2026-10-13/native-http-packet.json --output docs/evidence/network-health-2026-10-13/browser-final",
+      "result": "29checks passed; actual local ingress/projection and native fixture metrics, selected IDs, category filters, single network query, desktop table and1440/960/390 containment; no remote application requests"
+    },
+    {
+      "command": ".tools/backend-venv/Lib/site-packages/playwright/driver/node.exe scripts/test_network_health_view.js",
+      "result": "Scoped single GET, empty coverage, escaped unknown selectors and exact percentile bucket labels passed"
+    },
+    {
+      "command": "Python Ruff for changed backend/models/migration/tests/scripts; bundled Node --check for network.js/monitor.js; git diff --check for changed tracked runtime/backend files",
+      "result": "Passed"
+    },
+    {
+      "command": "git apply --check --reverse docs/evidence/network-health-2026-10-13/task-only.patch",
+      "result": "Passed; task-only checkpoint preserves worktree line endings and excludes concurrent work."
+    }
+  ],
+  "fixture_measurements": {
+    "network_events": 6,
+    "native_full_packet_json_bytes": 4698,
+    "max_network_event_bytes": 819,
+    "native_mock_two_event_packet_bytes": 1847,
+    "note": "Incremental desktop fixture JSON only; not phone/TLS/radio measurements."
+  },
+  "initial_test_diagnostics": [
+    "Initial mocked timing assertion used frame timers that advanced faster than monotonic wall time in headless fixtures. Switched the fixture waits to the measured monotonic clock; timing assertion retained and passed.",
+    "Initial actual HTTP fixture had no durable queue path, so it could not qualify records for upload. Added a task-owned queue path; assertions retained and actual ingress/ACK then passed.",
+    "Initial desktop table required horizontal scrolling; scoped table wrapping now shows all timing columns and the browser checks it."
+  ],
+  "remaining_acceptance": [
+    "Authorized backend migration/deployment of0032 and a fresh app build/install remain. No production deployment, live backend writes, APK export/install or physical-device test occurred.",
+    "Only observed signed-in API transmissions are measured. Startup guest sign-in, other SDK traffic, telemetry transport, DNS/TLS subphase timings, verified service uptime and complete delivery are unavailable.",
+    "RAM data is best effort. Repeated-operation counts are observed within the recent process-local key cache, not a lifetime retry total. Late menu snapshots report their collection day and may span earlier request times.",
+    "Selected failure reports read at most201 indexed candidates and return at most50 scoped samples. Limits and truncation are explicit; request IDs must be corroborated with backend logs.",
+    "Canonical handling/scoring and existing session/recovery work are preserved. No full game regression or physical network/radio/thermal benchmark is claimed."
+  ],
+  "changed_files": [
+    "backend/bmt_backend/admin.py",
+    "backend/bmt_backend/admin_ui/index.html",
+    "backend/bmt_backend/admin_ui/monitor.css",
+    "backend/bmt_backend/admin_ui/monitor.js",
+    "backend/bmt_backend/admin_ui/network.js",
+    "backend/bmt_backend/app.py",
+    "backend/bmt_backend/migrations/env.py",
+    "backend/bmt_backend/migrations/versions/0032_network_health.py",
+    "backend/bmt_backend/network_health.py",
+    "backend/bmt_backend/network_models.py",
+    "backend/bmt_backend/product_analytics.py",
+    "backend/bmt_backend/telemetry.py",
+    "backend/bmt_backend/telemetry_models.py",
+    "backend/tests/test_network_health.py",
+    "backend/tests/test_network_health_http.py",
+    "backend/tests/test_network_health_postgres.py",
+    "docs/PRODUCT_TELEMETRY_2026_10_11.md",
+    "docs/schemas/network-health-v1.schema.json",
+    "game/backend/backend_client.gd",
+    "game/backend/cloud_tracks.gd",
+    "game/backend/network_health.gd",
+    "game/backend/network_health.gd.uid",
+    "game/backend/product_telemetry.gd",
+    "game/tests/test_network_health.gd",
+    "game/tests/test_network_health.gd.uid",
+    "game/tests/test_network_health_http.gd",
+    "game/tests/test_network_health_http.gd.uid",
+    "scripts/test_network_health_postgres.py",
+    "scripts/test_network_health_view.js",
+    "scripts/test_studio_monitor_console.py"
+  ],
+  "checkpoint": "task-only.patch; excludes concurrent game and source-identity stamp changes",
+  "checkpoint_sha256": "7fa5c3dafb54d8025c9dcad562bf7b6863e6974c3254433dfa124287df4d3c3a"
+}

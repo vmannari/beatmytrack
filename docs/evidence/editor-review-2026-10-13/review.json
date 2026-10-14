@@ -1,0 +1,152 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "R01",
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "V03",
+    "V05",
+    "Q01"
+  ],
+  "scope": "Track editor performance review. Runtime, canonical contracts, physics, saved format and artwork were not changed.",
+  "changed_files": [
+    "game/tests/review_editor_performance_2026_10_13.gd",
+    "docs/evidence/editor-review-2026-10-13/review.json",
+    "docs/evidence/editor-review-2026-10-13/observations.json",
+    "docs/evidence/editor-review-2026-10-13/editor.png",
+    "docs/evidence/editor-review-2026-10-13/final-profile.log",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md"
+  ],
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "renderer": "Compatibility/OpenGL",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "window": "1280x720",
+    "fixture": "96 connected road pieces; 24 containers for actual placement/save paths; 1/24/95 homogeneous objects for construction probes"
+  },
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_editor_performance_2026_10_13.gd -Graphical -CommandTimeoutSeconds 240",
+  "outcome": "Final isolated run exited 0, EDITOR_REVIEW_COMPLETED failures=0. Saved documents match the exact serialized numeric representation; list counts and preparation deadlines passed. No full regression or physical-device test.",
+  "diagnostic_history": [
+    "Default sandbox attempt could not open the normal Godot user log. Repeated with approved local execution access.",
+    "First exploratory run had 23 probe failures: maximum-point pretty JSON exceeded the writer's byte limit, and listing fixtures were contaminated by existing files. Isolated subsequent runs in unique workspace directories.",
+    "Second isolated run had one probe failure from comparing fingerprints before versus after JSON numeric normalization. Final assertion compares loaded values with the exact serialized representation; runtime checks were not changed."
+  ],
+  "findings": [
+    {
+      "priority": 1,
+      "area": "Object placement and unchanged Save",
+      "source": "game/track/native_track_visual.gd:127",
+      "related_sources": [
+        "game/editor/editor_world.gd:112",
+        "game/core/app.gd:2574",
+        "game/core/app.gd:3459"
+      ],
+      "observation": "preview_objects calls refresh_editor_objects with sliced=false. It reconstructs all authored geometry and contact shadows. _save_draft always invokes it for an objects-only comparison, including an unchanged document.",
+      "measurements": "24 containers: 364.069/402.297/408.910 ms to reconstruct. Adding a tyre with those containers present: 495.360 ms handler, despite unchanged cells/deck/extent and retained terrain. Two unchanged explicit Saves: 447.975/452.176 ms.",
+      "recommendation": "Compare authored objects before refreshing; skip unchanged preview and persistence work. Retain immutable indexed unit meshes, and update only changed transforms, affected groups and contact shadows. Keep dynamic/breakable props individually addressable; preserve per-container colours and original appearance."
+    },
+    {
+      "priority": 2,
+      "area": "Loading and draft list",
+      "source": "game/persistence/track_library.gd:201",
+      "related_sources": [
+        "game/persistence/track_library.gd:19",
+        "game/ui/draft_browser.gd:216",
+        "game/ui/draft_browser.gd:207"
+      ],
+      "observation": "editable_entries loads and validates both saved and WIP documents, then rereads files to obtain timestamps. DraftBrowser also checks tested/publication state for every entry; _status_changed repeats that check after _load_entries.",
+      "measurements": "Median list construction: 201.235 ms for 16, 902.353 ms for 64, 1940.258 ms for 128 drafts, each with saved and WIP versions. This excludes UI construction and tested/publication checks.",
+      "recommendation": "Retain a recoverable draft metadata index and cache unchanged parsed files using file identity/mtime/size. Load full data lazily and build/search the index off the input thread. Explicitly invalidate on successful WIP/original writes, delete/discard/import, publication and profile switches; parent library revision alone does not track child WIP saves. Preserve primary/backup/temp recovery."
+    },
+    {
+      "priority": 3,
+      "area": "Road geometry generation and invalidation",
+      "source": "game/track/native_track_visual.gd:314",
+      "related_sources": [
+        "game/editor/editor_world.gd:122",
+        "game/track/native_track_visual.gd:786",
+        "game/track/road_edges.gd:5"
+      ],
+      "observation": "Background preview compilation does not include 3D road geometry. The main-thread sliced builder reconstructs roads, bank geometry, triangulation and mesh streams. Its mesh cache uses the complete content_hash. Editor ground reuse excludes only tyre changes; other object/paint changes can recreate all roads.",
+      "measurements": "Sliced road-stage elapsed time on 96 pieces: Pine 2540.781 ms, Desert 9295.343 ms, Winter 3402.425 ms. Includes cooperative frame yields. Tree placement replaced the whole visual and took 4007.103 ms to settle.",
+      "recommendation": "Separate road geometry identity from authoring metadata, object collision footprints and material masks. Prepare immutable numeric vertex/index data on a worker; publish GPU resources on the main thread. Reuse road meshes and update changed mask textures independently. Cache section geometry and invalidate affected joins plus intersecting/overlapping pieces; preserve Desert union/UV phase, Winter bank form, bridge rules and exact pigments."
+    },
+    {
+      "priority": 4,
+      "area": "Saving and document serialization",
+      "source": "game/persistence/track_library.gd:116",
+      "related_sources": [
+        "game/persistence/track_library.gd:40",
+        "game/persistence/track_library.gd:171",
+        "game/core/app.gd:2064",
+        "game/core/app.gd:2574"
+      ],
+      "observation": "Saves revalidate, serialize, reread the temporary and previous primary, and repeat state fingerprints. WIP plus explicit Save repeat related work. Atomic verification and backup recovery remain necessary.",
+      "measurements": "8192-point painted map: median original write 74.675 ms, WIP write 69.540 ms, load 12.167 ms. A 16384-point fingerprint alone costs 32.696 ms. Permitted 16384-point fixture is 620819 bytes as pretty JSON and fails to save; the same data is 252155 bytes as compact JSON.",
+      "recommendation": "Serialize once per immutable edit revision, retain validation/fingerprint results and skip unchanged durable versions. Use compact JSON for persistence, preserving numeric round trips and the byte bound. Move coalesced WIP writes to an ordered writer, with explicit Save/exit awaiting the required durable revision and reporting real failures. Retain verified temporary writes and the recoverable previous primary."
+    },
+    {
+      "priority": 5,
+      "area": "Repeated compiler preparation",
+      "source": "game/editor/track_compiler.gd:11",
+      "related_sources": [
+        "game/track/native_track.gd:52",
+        "game/track/road_kerbs.gd:85",
+        "game/track/snow_banks.gd:15",
+        "game/editor/creator_preview_masks.gd:5"
+      ],
+      "observation": "Raster cache reuse still resamples roads, regenerates scenery/deck data, creates RLE rows, expands them back into cells, rebuilds kerb/bank/contact structures and later rebuilds editor masks. Full-document compiled cache keys also miss for metadata edits.",
+      "measurements": "Metadata-only compiles with road raster reuse still take Pine 313.317-371.905 ms, Desert 300.268-305.399 ms, Winter 577.633-586.116 ms.",
+      "recommendation": "Cache immutable road topology, section samples, physical kerb/bank preparation, deck data and masks by their precise dependencies. Build native tracks directly from prepared grid data for editor use while retaining equivalent canonical metadata/hashes and serialized output. Keep stored metadata separate from shared prepared data so name changes cannot mutate cached snapshots."
+    },
+    {
+      "priority": 6,
+      "area": "Drawing and navigation",
+      "source": "game/editor/editor_canvas.gd:578",
+      "related_sources": [
+        "game/editor/editor_canvas.gd:990",
+        "game/editor/editor_canvas.gd:370",
+        "game/editor/road_pieces.gd:360",
+        "game/track/native_track_visual.gd:1209"
+      ],
+      "observation": "Every canvas redraw resamples the route unconditionally; road-mode draws recompute joins. Road-edge runs reconstruct all paths during pointer movement. Static authored trees/containers are combined into broad meshes, whereas contact shadows already use spatial groups.",
+      "measurements": "96-piece route sampling median 2.064 ms, joins median 1.295 ms. 95 containers contribute 812060 mesh triangles. Actual panning 3D viewport median CPU render 0.739 ms / GPU 1.924 ms on RTX3090, excluding the 2D canvas and main viewport.",
+      "recommendation": "Retain route/join/path/control geometry until its source revision changes; resample routes only in modes that need them. Reuse road-edge preparation during runs and suppress unchanged snapped drag events. Use bounded spatial groups for static props so zoomed views cull distant geometry; measure draw-call/CPU tradeoffs on the phone. Keep the existing update-on-demand editor viewport."
+    },
+    {
+      "priority": 7,
+      "area": "Cancellation and frame budgeting",
+      "source": "game/editor/editor_world.gd:140",
+      "related_sources": [
+        "game/editor/object_population_panel.gd:148",
+        "game/track/native_track_visual.gd:1595",
+        "game/track/native_track_visual.gd:1209"
+      ],
+      "observation": "Obsolete scene candidates finish construction before _build_track discards them. Populate teardown joins the worker. Six-millisecond yielding does not bound large individual object construction, normal/index generation or commit tails.",
+      "recommendation": "Check a document/build revision at stage and loop boundaries and retire obsolete output promptly. Give CPU workers cancellation checks and a lifecycle that does not block ordinary panel close; safely join at final application teardown. Publish bounded chunks rather than committing an entire authored population in one input handler. Measure maximum frame intervals as well as preparation time."
+    },
+    {
+      "priority": 8,
+      "area": "Cache memory and thumbnail cold work",
+      "source": "game/editor/object_thumbnail.gd:4",
+      "related_sources": [
+        "game/editor/editor_world.gd:140",
+        "game/core/app.gd:3783",
+        "game/track/creator_prop_visual.gd:5"
+      ],
+      "observation": "Several caches are bounded by entry count, despite widely varying mesh/population size. Thumbnail images are now 384x232 plus mipmaps; 48 full images occupy roughly 22.8 MB of uncompressed RGBA pixels, before GPU/engine overhead. Cold thumbnails still create a viewport and synchronously build a prop, then read back the rendered image.",
+      "recommendation": "Keep the current retained-card and one-shot-render cache benefits. Add byte accounting to editor visual/compiled/prop caches, schedule only visible cold thumbnails, avoid duplicate concurrent bakes, and use reuse-based eviction. Keep existing shared road/prepared-world byte budgets; do not enlarge them to mask rebuild costs."
+    }
+  ],
+  "limitations": [
+    "Desktop elapsed handler, persistence and construction observations from a shared Windows host with other Godot processes present. No speedup or physical-phone FPS claim.",
+    "Sliced generation times include frames yielded to the UI and are not exclusive CPU profiler attribution.",
+    "The actual UI fixture is a 96-piece circuit with 24 containers; 95-container batches are supported-limit stress cases, not a representative average map.",
+    "The GPU measurement covers only the editor 3D subviewport while panning, with warm resources.",
+    "No runtime optimization implemented, no contract/schema/golden regeneration, no backend interaction intended, no deployment, no full regression and no phone test."
+  ],
+  "acceptance_for_implementation": "Prioritize 1-4. Pair old/new pixel and triangle-attribute checks on Compatibility and Mobile; compare exact compiled grids, route/deck/contact metadata and canonical hashes; retain undo/redo/supersession/atomic-recovery tests. Then measure real placement, navigation, save/exit and cold load on the physical phone. Preserve tire-ribbon/visibility work and canonical driving/scoring."
+}

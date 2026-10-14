@@ -1,0 +1,253 @@
+{
+  "date": "2026-10-13",
+  "task": "Review backend robustness, input validation, database exceptions, restart and disaster recovery",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "R01",
+    "Q01"
+  ],
+  "scope": "Current shared working tree. Source review and isolated fault tests; no runtime fixes or deployment.",
+  "findings": [
+    {
+      "id": "BR01",
+      "priority": "high",
+      "title": "Numeric overflow escapes validation and lets optional ghosts block valid race acceptance",
+      "files": [
+        {
+          "path": "backend/bmt_backend/verifier.py",
+          "line": 436
+        },
+        {
+          "path": "backend/bmt_backend/verifier.py",
+          "line": 458
+        },
+        {
+          "path": "backend/bmt_backend/worker.py",
+          "line": 177
+        }
+      ],
+      "trigger": "A finite JSON integer such as 10**400 in a movement sample or optional ghost pose.",
+      "observed": "Legacy proof upload returns plain HTTP 500 without X-Request-ID. A trajectory accepted by the actual Python checker fails three worker attempts as verifier_unavailable when the optional ghost contains that integer; identical trajectory without the ghost verifies.",
+      "impact": "Malformed application data is misclassified as infrastructure failure. Optional presentation can prevent a valid competitive result, contrary to the trajectory-only invariant.",
+      "fix": "Validate integer magnitude before conversion-dependent finite checks, normalize validation exceptions, and isolate all invalid optional ghost data from score acceptance.",
+      "evidence": [
+        "test_large_integer_movement_proof_returns_unstructured_500",
+        "test_optional_ghost_integer_overflow_blocks_valid_verified_result"
+      ],
+      "limits": "Actual Python checker and HTTP/worker paths; synthetic prepared geometry and fixture manifest. No canonical Godot process was executed."
+    },
+    {
+      "id": "BR02",
+      "priority": "high",
+      "title": "Run retry and successful finalization use opposite row-lock orders",
+      "files": [
+        {
+          "path": "backend/bmt_backend/runs.py",
+          "line": 308
+        },
+        {
+          "path": "backend/bmt_backend/worker.py",
+          "line": 242
+        },
+        {
+          "path": "backend/bmt_backend/worker.py",
+          "line": 260
+        }
+      ],
+      "trigger": "Retry acquires Player then waits for Run while successful finalization holds Run then requests Player.",
+      "observed": "A barrier-controlled interleaving on the real disposable PostgreSQL database produced SQLSTATE 40P01 and an HTTP 503 retry response.",
+      "impact": "A retry racing with result completion can abort either transaction and delay a verified result. Existing durable evidence and cached finalization reduce data-loss risk, but do not remove the deadlock.",
+      "fix": "Use one consistent Player/Run lock order across API and worker writers; keep finalization fencing and atomic scoring.",
+      "evidence": [
+        "test_retry_and_finalize_have_opposite_postgres_lock_order"
+      ],
+      "limits": "The scheduling barrier deliberately makes the supported interleaving deterministic; normal incidence was not measured."
+    },
+    {
+      "id": "BR03",
+      "priority": "medium",
+      "title": "Publication retry does not persist or return idempotency receipts",
+      "files": [
+        {
+          "path": "backend/bmt_backend/publications.py",
+          "line": 149
+        }
+      ],
+      "trigger": "Repeat the same publication retry key after its first retried verification has failed.",
+      "observed": "Both requests requeue the intent and reset attempts to zero. No IdempotencyRecord is saved for the retry key; the replay_response return value is ignored.",
+      "impact": "Lost replies and reconnect/reboot retries can repeat work and reset the retry budget. Reusing a key for another publication is not bound to the original target.",
+      "fix": "Persist the retry response atomically, return an existing receipt, and bind its scope/body to publication_id.",
+      "evidence": [
+        "test_publication_retry_does_not_save_identity_and_reexecutes"
+      ]
+    },
+    {
+      "id": "BR04",
+      "priority": "medium",
+      "title": "Local object archives and restores do not validate content-addressed integrity",
+      "files": [
+        {
+          "path": "backend/deploy/object_archive.py",
+          "line": 37
+        },
+        {
+          "path": "backend/deploy/object_archive.py",
+          "line": 85
+        }
+      ],
+      "trigger": "An existing local blob has corrupted bytes under its original SHA256 filename.",
+      "observed": "Both archive and restore subprocesses exit zero. The restored object fails LocalBlobStore.get_json integrity checks. Provider archives do call verified get_json; the local branch does not.",
+      "impact": "The backup wrapper can mark an internally corrupt archive complete. Archive checksums protect transfer of those bytes, not their agreement with the database's content hashes.",
+      "fix": "Verify bounded decompressed JSON and SHA256 identity during local archive/restore, fail before completion, and validate referenced objects during restore drills.",
+      "evidence": [
+        "test_local_archive_and_restore_accept_corrupt_content"
+      ],
+      "limits": "Actual local archive/restore subprocesses. No production backup or restore was run."
+    },
+    {
+      "id": "BR05",
+      "priority": "medium",
+      "title": "Interrupted local uploads leave temporary files that startup and retention never reclaim",
+      "files": [
+        {
+          "path": "backend/bmt_backend/storage.py",
+          "line": 47
+        },
+        {
+          "path": "backend/bmt_backend/storage.py",
+          "line": 65
+        },
+        {
+          "path": "backend/bmt_backend/storage.py",
+          "line": 105
+        }
+      ],
+      "trigger": "Abrupt process exit after temporary blob bytes have been flushed, before final-name publication.",
+      "observed": "A real subprocess exited at that point. Its .pending-* file survived a new store initialization and online retention even after its timestamp was moved back 100 days.",
+      "impact": "Repeated crashes/reboots can accumulate disk usage outside reference-aware object GC and eventually make otherwise valid writes fail for lack of space.",
+      "fix": "Add bounded conservative cleanup for abandoned temporary files while preserving active uploads and final immutable objects.",
+      "evidence": [
+        "test_interrupted_local_publication_temporary_survives_restart_and_retention"
+      ],
+      "limits": "Abrupt process exit and initialization were tested; an OS reboot or physical power-loss durability drill was not."
+    },
+    {
+      "id": "BR06",
+      "priority": "medium",
+      "title": "S3 streaming errors bypass storage-failure normalization",
+      "files": [
+        {
+          "path": "backend/bmt_backend/s3_storage.py",
+          "line": 61
+        },
+        {
+          "path": "backend/bmt_backend/s3_storage.py",
+          "line": 67
+        },
+        {
+          "path": "backend/bmt_backend/app.py",
+          "line": 120
+        }
+      ],
+      "trigger": "response.raw.read raises an urllib3 stream timeout or connection/protocol error after response headers.",
+      "observed": "Injected urllib3 ReadTimeoutError escapes S3BlobStore instead of becoming OSError. The API's STORAGE_UNAVAILABLE/503 handler therefore does not handle this path. GCS already catches urllib3 HTTPError.",
+      "impact": "An ordinary S3 transport failure becomes an unstructured 500 and misses the storage-specific readiness invalidation and retry contract.",
+      "fix": "Normalize raw stream exceptions consistently with the GCS adapter and preserve credential-safe errors.",
+      "evidence": [
+        "test_s3_stream_timeout_bypasses_storage_exception_mapping"
+      ],
+      "limits": "Injected transport failure; no S3 provider was contacted."
+    }
+  ],
+  "strengths": [
+    "Ingress bounds wire and decompressed bytes, rejects duplicate JSON keys/nonfinite float values and invalid Unicode, limits JSON nesting, and holds upload slots through handler lifetime.",
+    "Sessions close failed transactions; PostgreSQL pools use pre-ping and bounded connection, pool, statement, lock and idle-transaction timeouts.",
+    "Acknowledgements follow commits; run submission, refresh recovery and wallet operations retain durable identity and retry protection.",
+    "Worker claims use durable leases and fencing. Real PostgreSQL tests passed SQL finalization recovery, interrupted verification/rivalry recovery, concurrent refresh recovery, and mutually exclusive submit/abandon.",
+    "Readiness and process liveness are separate and dependency waits coalesce with bounded HTTP deadlines.",
+    "Current explicit publication, real worker process kill, replacement worker and exactly one personal best succeeded on SQLite and PostgreSQL with intentionally accelerated lease expiry."
+  ],
+  "additional_observations": [
+    "The SQLAlchemyError handler safely hides database details but does not log the exception class/SQLSTATE. Add redacted cause diagnostics linked to request_id; never log SQL parameters or credentials.",
+    "Backup guards intentionally require manual recovery after a crash. Full host reboot, physical power loss, NAS storage guarantees, live managed-database failover and production restore acceptance remain untested."
+  ],
+  "tests": {
+    "existing_unique_results": {
+      "passed": 176,
+      "failed": 2,
+      "skipped": 11
+    },
+    "diagnostic_results": {
+      "passed": 13,
+      "skipped": 1
+    },
+    "diagnostic_meaning": "Eleven passing diagnostics assert reproduction of the six current defects; two additional passing process tests assert successful killed-worker recovery. Passing defect probes do not mean the defects were fixed.",
+    "existing_failures": [
+      {
+        "test": "test_retention_bounds_referenced_inspections_and_batches_queries[sqlite]",
+        "location": "backend/tests/test_review_followups.py:165",
+        "actual": "4 reference queries",
+        "expected": "at most 2",
+        "assessment": "Assertion predates the two new publication-reference queries. The implementation remains bounded; this is stale coverage, not proof of unbounded retention."
+      },
+      {
+        "test": "test_same_submission_retries_across_replicas_create_one_run[sqlite]",
+        "location": "backend/tests/test_replica_failures.py:153",
+        "actual": "HTTP 410 LOCAL_DRAFTS_ONLY on legacy POST /tracks",
+        "expected": "HTTP 201",
+        "assessment": "The process fixture still bootstraps through retired remote-draft authoring. Other legacy-bootstrap replica and POSIX worker tests need a current publication setup before those recovery paths are covered reliably. No original assertion was changed."
+      }
+    ],
+    "notes": [
+      "The first targeted invocation referenced a misspelled test filename and collected no tests; it was corrected.",
+      "The initial broad invocation ran before the disposable PostgreSQL fixture was available and was interrupted; its partial errors are excluded from completed-test counts.",
+      "WSL access required sandbox escalation. Auto-review approved inspecting/starting/stopping only the documented disposable bmt-backend-test fixture.",
+      "Starlette emits an installed test-client deprecation warning.",
+      "PostgreSQL replica fixtures without an explicit environment URL skipped in one existing-suite invocation. The independent current-workflow process diagnostics explicitly use the documented disposable fixture."
+    ],
+    "commands": [
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_exception_recovery.py backend/tests/test_communication_boundary.py backend/tests/test_resume_recovery_wire.py backend/tests/test_worker_lifecycle.py backend/tests/test_readiness.py backend/tests/test_review_reliability.py backend/tests/test_review_followups.py backend/tests/test_publication_intents.py backend/tests/test_mission_reliability.py backend/tests/test_maintenance.py backend/tests/test_storage.py -q -x -m 'not postgres and not godot' -k 'not postgres' --junitxml=.tools/review/backend-robustness-20261013.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_intents.py backend/tests/test_mission_reliability.py backend/tests/test_maintenance.py backend/tests/test_storage.py backend/tests/test_replica_failures.py -q -x -k 'not postgres' --junitxml=.tools/review/backend-robustness-remaining-20261013.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_intents.py backend/tests/test_mission_reliability.py backend/tests/test_maintenance.py backend/tests/test_storage.py -q -k 'not postgres' --junitxml=.tools/review/backend-robustness-remaining-final-20261013.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_exception_recovery.py backend/tests/test_worker_lifecycle.py backend/tests/test_replica_failures.py::test_authentication_rotation_logout_and_api_restart_cross_processes backend/tests/test_replica_failures.py::test_browser_handoff_and_consumption_work_across_processes -q -x -k 'postgres and (computed_result or interrupted or concurrent or submit_and_abandon or authentication_rotation or browser_handoff)' --junitxml=.tools/review/backend-robustness-postgres-20261013.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_review_followups.py -q -k 'not postgres and not retention_bounds_referenced_inspections_and_batches_queries' --junitxml=.tools/review/backend-robustness-followups-20261013.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest .tools/review/test_backend_robustness_probes_20261013.py -q --junitxml=.tools/review/backend-robustness-probes-final.xml -o junit_logging=all",
+      ".tools/backend-venv/Scripts/python.exe -m pytest .tools/review/test_backend_robustness_probes_20261013.py -q -x -k 'actual_worker_kill' --junitxml=.tools/review/backend-robustness-kill-recovery-20261013.xml -o junit_logging=all"
+    ]
+  },
+  "changes": [
+    "Review report, reproducible diagnostic script, test-result artifacts, and status/plan documentation only."
+  ],
+  "remaining_acceptance": [
+    "Repair BR01-BR06 and add assertions for corrected behavior.",
+    "Modernize legacy process recovery fixture setup without weakening its invariants.",
+    "Rehearse real host reboot, long database outage/failover, and reference-integrity restore on the deployment host."
+  ],
+  "deployment": "No production API/database writes, migrations, deployment, application export or phone/device tests.",
+  "artifact_validation": {
+    "command": ".tools/backend-venv/Scripts/python.exe -m pytest docs/evidence/backend-robustness-review-2026-10-13/test_probes.py -q --junitxml=docs/evidence/backend-robustness-review-2026-10-13/probes.xml -o junit_logging=all",
+    "outcome": "13 passed, 1 skipped in 124.54 seconds",
+    "lint": ".tools/backend-venv/Scripts/python.exe -m ruff check docs/evidence/backend-robustness-review-2026-10-13/test_probes.py: passed",
+    "whitespace": "git diff --check -- DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md: passed; Git emitted existing CRLF conversion notices",
+    "fixture_cleanup": "wsl -d Ubuntu -- docker stop bmt-backend-test: exited 0; documented disposable fixture returned to its original stopped state",
+    "script": "test_probes.py",
+    "result": "probes.xml"
+  },
+  "source_sha256": {
+    "backend/bmt_backend/app.py": "b06eff05d58c79bc891602cc03798845514913c2f25d831b2d6db632fda8e194",
+    "backend/bmt_backend/db.py": "d22a976b9859865f1b3582411385b56a259586a38ff1646223ce04eb054bdd85",
+    "backend/bmt_backend/middleware.py": "57846ec3e92e54da7af2666be7d762fd93bceef53a13f512d0c0baa5755c33c7",
+    "backend/bmt_backend/runs.py": "bd5715994803fbeb78fdce205136e758916397426c564feb0b496d797a6d7f60",
+    "backend/bmt_backend/worker.py": "f0507275c4823110b2fbfd14a45589331f0660a6e26dd1776c1736bce159c108",
+    "backend/bmt_backend/publications.py": "76d1f8f10083eef644077f5c586b1442c2ac4ced2b961c2ad74714428daa6c31",
+    "backend/bmt_backend/verifier.py": "456e73b4394f4173b3e0d1208bc0d9ecd761706e1cb7c8b8aaf09d51b783f000",
+    "backend/bmt_backend/storage.py": "36dd59784c0e2d9f9ea0c3d0fc8ed2f97faf0e6fc2e11ee62f3d58bee4e55405",
+    "backend/bmt_backend/s3_storage.py": "4469908fd7f596d3324f102d50793085ec38093acaa7a1cbef43e24c50881052",
+    "backend/deploy/object_archive.py": "432e21cfdb2c8a9ee26c3012e68751564abaed51bda6855942dffbd7f60bd6c6",
+    "backend/deploy/backup.sh": "2826b218290e807da96ede5848e40116f4403f0b143317ba05cb77cb83cab03f",
+    "backend/deploy/restore.sh": "e9d5b0dc7dddd9a7f1de2f9e61f514139c58acc4bc0f0e3adbac8c7c9d36d675",
+    "backend/deploy/compose.yaml": "49da2ad3041d98ad4aa5d2d71f8f030fa1066dfebf8d64651d8a317d1a1d4b80"
+  }
+}

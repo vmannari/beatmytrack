@@ -1,0 +1,266 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index d124329..8bfca34 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Desert terrain-texture reflection override (2026-10-13)
++The owner sees bank glints but not the terrain texture. Add sparse, filtered, differently oriented sun-catching grain shading normals to terrain/backdrop/flat skirts, with a shared unchanged desert sun direction and no added texture reads. Keep original albedo/macro dunes, approved bank/pebble finish, camera, geometry, dust/trails and canonical behavior. See `docs/DESERT_TERRAIN_GLINTS_2026_10_13.md` for terrain-only pixel/motion proofs, actual commands, scoped checkpoint and owner/device acceptance.
++
+ ## Stronger desert sun-reflection override (2026-10-13)
+ The owner cannot see the initial sand/pebble glints and requests greater strength. Increase resolved grain coverage, reflection energy and lobe width at the existing gameplay camera scale. Keep filtering, real sunlight/shadows, original pigments/artwork, matte scrub, firm-road finish, geometry/budgets and canonical behavior. See `docs/DESERT_SUN_GLINTS_STRONGER_2026_10_13.md` for actual paired captures/motion/cost, checkpoint and owner/device acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 716ca0a..9440926 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01: owner sees banks only; sparse filtered grain normals let terrain texture catch real sunlight, sun-facing guard avoids dark grit; shared unchanged sun rotation, same mineral read/bank finish; kit186->188. Native14/Mobile14 terrain-only11774/14410 pixels with banks/pebbles disabled, exact restored pixels/disabled-original0/max1of255/motion pass; Desert87/cache70/sampler60/Import pass. Frozen18draws/421818primitives; shared-host/stale-query limits prevent clean cost/FPS claim. DN2103 attached, no device test/APK/full regression/backend/deploy. Actual commands/initial diagnostics/checkpoint/owner acceptance: docs/DESERT_TERRAIN_GLINTS_2026_10_13.md.
++
+ 2026-10-13 H1-H4/B01/B05/B07/R01/Q01: owner fixes communication high findings. Atomic PID/process/instance race leases and nonce tombstones, shared recovery lock/versioned persisted waits, dead-owner-only abandon and storage refusal; original evidence/keys/callback counters retained. Publication8MiB/shared full-lifetime slots/gzip bounds/terminal413 preserves proof. Cold-credential600/edge gates before authSQL, bounded rate-denial cache/no auth grant; separate cold valid NAT clients preserved after baseline assertion caught initial design. Trusted proxy chain suffix/IPv4-v6/spoof bounds/no wildcard/Compose legacy fallback/CloudRun explicit template. Native shared21/recovery253/exception28/publication31/session17/outbox11/ticket26/rewind61/hitch36=484pass; SQLite+ownedPG192pass/6skips, final focused26pass/2deselected incl2late isolation-window checks; Ruff/diff/actualCompose pass. Initial storage engine error and WSL env interpolation corrected; assertions retained. Doctor DN2103 attached, no device race/APK/fullValidate/physics merge/backend livewrites/deploy. Task-only patch/commands/proxy rollout and all-instance restart acceptance: docs/COMMUNICATION_H1_H4_2026_10_13.md.
+ 
+ 2026-10-13 BPERF01-BPERF08/TR01-TR04/WSP04-WSP06/DS23-DS25/V04/V05/G01/R01/Q01: owner physical-phone test. Fresh pinned Android export/import/APP_READY/Driving72/Catalog21/Menus48 pass; install-r Success on DN2103/Mali-G77 GLES. Frozen APK SHA256 0C586B9FEE603ED948DE56D92ED8FADF5E808D8BD627CABE9FBD2D90C8E9AFB8, kit186/spray8/merged ribbons. Benchmark blocked before readiness by Android lock screen; no phone FPS/visual/thermal pass claimed. Original local records/cosmetics hash-exact restored, diagnostic markers removed, normal app relaunched. Scoped runner prepared; owner physical unlock required. Actual commands/evidence/remaining acceptance: docs/BIOME_PHONE_TEST_2026_10_13.md.
+diff --git a/docs/DESERT_TERRAIN_GLINTS_2026_10_13.md b/docs/DESERT_TERRAIN_GLINTS_2026_10_13.md
+new file mode 100644
+index 0000000..d5f1bb2
+--- /dev/null
++++ b/docs/DESERT_TERRAIN_GLINTS_2026_10_13.md
+@@ -0,0 +1,30 @@
++# Sun-catching grains on the terrain texture
++
++2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01. The owner sees reflections on the banks but not the surrounding terrain. Keep the approved bank/pebble finish and give the terrain texture visible sun-catching grain faces, with unchanged artwork, camera, geometry, dust, tire marks, canonical driving/scoring and performance optimizations.
++
++The original finish used macro normals. Bank slopes could face the sun/view reflection direction, but relatively flat terrain rarely did. Selected resolved terrain grains now receive small, differently oriented shading normals from the same packed mineral sample. A bounded, sparse selection and a sun-facing guard avoid turning the original dunes into dark noisy grit. Original albedo and macro dune relief remain; the new normals are cosmetic only. Terrain, backdrop and flat road skirts share the treatment. Bank geometry and pebble finish retain the preceding roughness/specular behavior; the compacted road remains nonreflective.
++
++The shader reuses the finish's existing texture read, with no new sampler, draw, geometry or particle system. Grain orientation is world-textured and has no clock/random animation. The unchanged desert light rotation is centralized as `TrackTheme.DESERT_SUN_ROTATION` and supplies the shader's sun-facing guard, rather than relying on a separate approximate direction. Both shader specular lighting and shadows still come from the actual scene light. Cache kit186→188; kit187 was the rejected dense-grain intermediate.
++
++Runtime files: `game/track/desert_sun_finish.gdshaderinc`, `terrain.gdshaderinc`, `ground.gdshader`, `creator_road.gdshaderinc`, `native_track_visual.gd`, `track_theme.gd`. Existing `game/tests/test_desert_sun_glints.gd` gains a terrain-only proof and frozen presentation controls. This report, agent override, status and phase plan record the follow-up. No image asset, canonical contract or schema change.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned `4.7.2.stable.official.ed1daf0bf`:
++
++| Action / suffix | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_desert_sun_glints.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-terrain-glints-2026-10-13/final/'` | Compatibility14 checks, zero failures. Terrain alone contributes11,774 pixels/peak0.541 in the578,100-pixel inspection region while bank/pebble finishes are disabled. Off-state restoration and disabled versus archived original materials are exact. Motion mean delta0.001952 is below unchanged0.01 bound. Canonical state/cells/hash preserved. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | Mobile14 checks, zero failures. Terrain-only14,410 pixels/peak0.482; restored off-state exact; disabled versus original max1/255, below unchanged2/255 tolerance. Motion delta0.001532; same canonical checks. |
++| `TestDesert` | 87 checks, zero failures, original dust and exact five-car packed/loose replay behavior. |
++| `TestRoadCache` | 70 checks, zero failures, including the bound material data. |
++| `TestScript -ScriptPath res://tests/test_terrain_sampler_budget.gd` | 60 checks, zero failures across five biomes. |
++| `Import -CommandTimeoutSeconds 90` | Exit zero; registered concurrently introduced livery classes without editing that work. |
++| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed for this slice. |
++| `git diff --check -- <the six runtime files and diagnostic>` | Exit zero; existing CRLF normalization warnings only. |
++
++The final material diagnostic hides HUD/pause layers, depth-based haze, dust and trails and freezes child presentation updates. These exclusions isolate texture lighting; no corresponding runtime behavior is changed. A dedicated test enables only terrain/backdrop/skirt finishes so the previously visible banks cannot satisfy the new requirement. Inspect [Compatibility terrain-only](evidence/desert-terrain-glints-2026-10-13/final/gl_compatibility/terrain-only.png) and [Mobile terrain-only](evidence/desert-terrain-glints-2026-10-13/final/mobile/terrain-only.png), plus the after views and six saved camera-motion frames per renderer. Existing camera extent is retained; the saved track differs from the owner's original pictured document.
++
++The frozen paired diagnostic retains18 draws/421,818 reported primitives in every original/new stage after HUD/haze exclusion. Compatibility GPU medians are0.532/0.535ms original and0.524/0.524ms new, within shared-host variation; no speed gain is claimed. Mobile later stages repeat an identical GPU query with fewer samples, so no reliable incremental-cost claim is made from that run. Reports retain all samples/medians/p95. These are neither phone FPS nor sustained driving/thermal acceptance. The preceding finish cost reports are not presented as measurements of these new grain-normal operations.
++
++Initial captures showed excessive dense grain normals/dark specks and were refined to sparse sun-catching faces. Diagnostics encountered concurrent livery registration, a transient build fingerprint hash error and a native-audio library load race; supported Import/retries resolved the runs without foreign-file rollback. A Mobile exact-restoration check initially differed by2/255 in54 pixels; the final material-only proof excludes changing presentation/postprocess layers and retains the strict zero-restoration assertion. No invariant threshold is weakened. Intermediate evidence and dev logs are retained.
++
++Task-only baseline/fix checkpoint: `build/desert_terrain_glints/checkpoint-repo`; patch/ledger under `docs/evidence/desert-terrain-glints-2026-10-13/`. Main branch/index and unrelated edits preserved. This slice does not edit dust/trail sources, physics, player track documents or backend code. No export/install/device run, backend operation/deployment, full regression or physics merge. Remaining acceptance: owner terrain-grain strength/style review and physical-phone visibility, motion and performance in normal gameplay with haze/dust present.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index bfb9c8a..2f69bcc 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01: owner sees banks only; sparse filtered grain normals let terrain texture catch real sunlight, sun-facing guard avoids dark grit; shared unchanged sun rotation, same mineral read/bank finish; kit186->188. Native14/Mobile14 terrain-only11774/14410 pixels with banks/pebbles disabled, exact restored pixels/disabled-original0/max1of255/motion pass; Desert87/cache70/sampler60/Import pass. Frozen18draws/421818primitives; shared-host/stale-query limits prevent clean cost/FPS claim. DN2103 attached, no device test/APK/full regression/backend/deploy. Actual commands/initial diagnostics/checkpoint/owner acceptance: docs/DESERT_TERRAIN_GLINTS_2026_10_13.md.
++
+ 2026-10-13 H1-H4/B01/B05/B07/R01/Q01: owner fixes communication high findings. Atomic PID/process/instance race leases and nonce tombstones, shared recovery lock/versioned persisted waits, dead-owner-only abandon and storage refusal; original evidence/keys/callback counters retained. Publication8MiB/shared full-lifetime slots/gzip bounds/terminal413 preserves proof. Cold-credential600/edge gates before authSQL, bounded rate-denial cache/no auth grant; separate cold valid NAT clients preserved after baseline assertion caught initial design. Trusted proxy chain suffix/IPv4-v6/spoof bounds/no wildcard/Compose legacy fallback/CloudRun explicit template. Native shared21/recovery253/exception28/publication31/session17/outbox11/ticket26/rewind61/hitch36=484pass; SQLite+ownedPG192pass/6skips, final focused26pass/2deselected incl2late isolation-window checks; Ruff/diff/actualCompose pass. Initial storage engine error and WSL env interpolation corrected; assertions retained. Doctor DN2103 attached, no device race/APK/fullValidate/physics merge/backend livewrites/deploy. Task-only patch/commands/proxy rollout and all-instance restart acceptance: docs/COMMUNICATION_H1_H4_2026_10_13.md.
+ 
+ 2026-10-13 BPERF01-BPERF08/TR01-TR04/WSP04-WSP06/DS23-DS25/V04/V05/G01/R01/Q01: owner physical-phone test. Fresh pinned Android export/import/APP_READY/Driving72/Catalog21/Menus48 pass; install-r Success on DN2103/Mali-G77 GLES. Frozen APK SHA256 0C586B9FEE603ED948DE56D92ED8FADF5E808D8BD627CABE9FBD2D90C8E9AFB8, kit186/spray8/merged ribbons. Benchmark blocked before readiness by Android lock screen; no phone FPS/visual/thermal pass claimed. Original local records/cosmetics hash-exact restored, diagnostic markers removed, normal app relaunched. Scoped runner prepared; owner physical unlock required. Actual commands/evidence/remaining acceptance: docs/BIOME_PHONE_TEST_2026_10_13.md.
+diff --git a/game/tests/test_desert_sun_glints.gd b/game/tests/test_desert_sun_glints.gd
+index ca78904..1270c6f 100644
+--- a/game/tests/test_desert_sun_glints.gd
++++ b/game/tests/test_desert_sun_glints.gd
+@@ -5,9 +5,11 @@ var materials: Array[ShaderMaterial] = []
+ var game: Node
+ func freeze_capture() -> void:
+ 	game.paused = false
++	game.hud.visible = false
+ 	game.hud.pause_menu.hide()
+ 	game.set_process(false)
+ 	game.set_physics_process(false)
++	game.process_mode = Node.PROCESS_MODE_DISABLED
+ const BEFORE: String = "res://../docs/evidence/desert-sun-glints-2026-10-13/before-source/game/track/"
+ func expand_shader(source: String) -> String:
+ 	var include := RegEx.new()
+@@ -63,6 +65,7 @@ func run() -> void:
+ 	root.add_child(game)
+ 	game.set_process(false); game.set_physics_process(false)
+ 	game.race_cues.hide(); game.sand_dust.hide(); game.trails.hide()
++	if game.cloud_shadow != null: game.cloud_shadow.hide()
+ 	game.hud.message_label.hide()
+ 	game.countdown_ticks = 0
+ 	var pairs: Array[Dictionary] = []
+@@ -117,11 +120,27 @@ func run() -> void:
+ 		finish(0.0); var restored: Image = await shot()
+ 		var delta: Dictionary = difference(before,after)
+ 		var stability: Dictionary = difference(before,restored)
++		if stability.peak > 0.0:
++			print("RESTORATION_DIAGNOSTIC: ",fraction," ",JSON.stringify(stability))
++			before.save_png(folder+"unstable-before.png")
++			restored.save_png(folder+"unstable-restored.png")
+ 		report.views.append({"fraction":fraction,"contribution":delta,"restored":stability})
+ 		check(stability.peak == 0.0,"on/off comparison preserves base pigment and scene")
+ 		check(delta.pixels > 100 and delta.peak > 0.01,"real sun produces visible mineral highlights")
+ 		for entry: Array in [["before",before],["after",after]]:
+ 			check(entry[1].save_png(folder+str(entry[0])+"-%02d.png"%int(fraction*100)) == OK,"sun-finish capture saved")
++	# Isolate actual terrain: disable bank/pebble finishes so their visible
++	# highlights cannot satisfy the owner's flat-sand requirement.
++	finish(0.0)
++	var terrain_before: Image = await shot()
++	for material: ShaderMaterial in materials:
++		if material.get_shader_parameter("color_0") != null or material.get_shader_parameter("ground_color") != null or material.get_shader_parameter("grass") == true:
++			material.set_shader_parameter("desert_glint_strength",1.0)
++	var terrain_only: Image = await shot()
++	var terrain_delta: Dictionary = difference(terrain_before,terrain_only)
++	report["terrain_only"] = terrain_delta
++	check(terrain_delta.pixels > 1000 and terrain_delta.peak > 0.03,"terrain texture reflects sunlight with banks and pebbles disabled")
++	terrain_only.save_png(folder+"terrain-only.png")
+ 	finish(1.0)
+ 	var origin: Vector3 = camera.position
+ 	var baseline: Image = await shot()
+diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index 2b38d8f..95e50c6 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -125,11 +125,6 @@ void fragment() {
+ 	}
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
+- if (desert_dunes && (grass || gravel)) {
+-  vec2 finish = desert_sand_finish(world_position.xz,1.0);
+-  ROUGHNESS = finish.x;
+-  SPECULAR = finish.y;
+- }
+  if (icy_road && asphalt_surface && !edge_fringe) {
+   vec2 road_uv = winter_road_uv(UV);
+   vec4 finish = texture(ice_finish,road_uv);
+@@ -154,5 +149,13 @@ void fragment() {
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
+ 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
++ if (desert_dunes && (grass || gravel)) {
++  vec3 mineral = texture(surface_factors,world_position.xz/24.0,0.65).rgb;
++  float footprint = length(fwidth(world_position.xz));
++  vec2 finish = mineral_sun_finish(mineral,footprint,1.0);
++  ROUGHNESS = finish.x;
++  SPECULAR = finish.y;
++  if (grass) NORMAL = mineral_terrain_normal(mineral,footprint,1.0,NORMAL,VIEW_MATRIX);
++ }
+  if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,wet_coverage);
+ }
+diff --git a/game/track/desert_sun_finish.gdshaderinc b/game/track/desert_sun_finish.gdshaderinc
+index 6038e6e..fd05f2e 100644
+--- a/game/track/desert_sun_finish.gdshaderinc
++++ b/game/track/desert_sun_finish.gdshaderinc
+@@ -1,6 +1,8 @@
+ // Sparse dielectric minerals; the normal lighting pass supplies real sun,
+ // shadow and view response. No emission, animation clock or extra texture.
+ uniform float desert_glint_strength : hint_range(0.0,1.0) = 1.0;
++// Direction toward the approved desert sun (-46, -48 degrees).
++uniform vec3 desert_sun_direction = vec3(-0.5162,0.71934,0.46484);
+ vec2 mineral_sun_finish(vec3 mineral, float footprint, float weight) {
+ 	float grains = smoothstep(0.52,0.59,mineral.r)*smoothstep(0.34,0.45,mineral.b);
+ 	float resolved = 1.0-smoothstep(0.10,0.28,footprint);
+@@ -8,3 +10,22 @@ vec2 mineral_sun_finish(vec3 mineral, float footprint, float weight) {
+ 	float facets = smoothstep(0.04,0.14,glint);
+ 	return vec2(mix(1.0,0.34,facets),glint*0.70);
+ }
++
++// Fine, differently oriented grain faces let flat terrain catch the same
++// real sun as sloped banks. Only resolved reflecting grains perturb shading;
++// albedo, macro dune shape, geometry and inactive finish remain unchanged.
++vec3 mineral_terrain_normal(vec3 mineral, float footprint, float weight, vec3 original, mat4 view) {
++	float grains = smoothstep(0.52,0.59,mineral.r)*smoothstep(0.34,0.45,mineral.b);
++	float resolved = 1.0-smoothstep(0.10,0.28,footprint);
++	float glint = clamp(grains*resolved*weight*desert_glint_strength,0.0,1.0);
++	float facets = smoothstep(0.35,0.65,glint)*0.65;
++	if (facets <= 0.001) return original;
++	vec2 tilt = vec2(sin(mineral.g*6.28318530718),sin(mineral.r*23.0+mineral.b*7.0-2.0))*0.95;
++	vec3 grain_tilt = (view*vec4(tilt.x,0.0,tilt.y,0.0)).xyz;
++	vec3 facet_normal = normalize(original+grain_tilt*facets);
++	vec3 sun = (view*vec4(desert_sun_direction,0.0)).xyz;
++	// Restrict the added finish to sun-catching faces instead of introducing
++	// dark granular holes into the approved dune artwork.
++	if (dot(facet_normal,sun) <= dot(original,sun)+0.02) return original;
++	return facet_normal;
++}
+diff --git a/game/track/ground.gdshader b/game/track/ground.gdshader
+index 89ae653..2771853 100644
+--- a/game/track/ground.gdshader
++++ b/game/track/ground.gdshader
+@@ -11,8 +11,11 @@ void fragment() {
+ 	ROUGHNESS = 1.0;
+ 	SPECULAR = 0.0;
+ 	if (desert_dunes) {
+-		vec2 finish = desert_sand_finish(world_position.xz,1.0);
++		vec3 mineral = texture(surface_factors,world_position.xz/24.0,0.65).rgb;
++		float footprint = length(fwidth(world_position.xz));
++		vec2 finish = mineral_sun_finish(mineral,footprint,1.0);
+ 		ROUGHNESS = finish.x;
+ 		SPECULAR = finish.y;
++		NORMAL = mineral_terrain_normal(mineral,footprint,1.0,NORMAL,VIEW_MATRIX);
+ 	}
+ }
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index 03e2817..4cb1cb4 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@ class_name NativeTrackVisual
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-186"
++const VERSION: String = "track-kit-188"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -71,6 +71,9 @@ func _bind_grass(material: ShaderMaterial) -> void:
+ 	material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
+ 	material.set_shader_parameter("ice_finish",WINTER_ICE_FINISH)
+ 	material.set_shader_parameter("desert_dunes",theme_id == "desert")
++	if theme_id == "desert":
++		var sun_rotation: Vector3 = TrackTheme.DESERT_SUN_ROTATION
++		material.set_shader_parameter("desert_sun_direction",Basis.from_euler(Vector3(deg_to_rad(sun_rotation.x),deg_to_rad(sun_rotation.y),deg_to_rad(sun_rotation.z))).z)
+ 	material.set_shader_parameter("dune_factors",DUNE_FACTORS)
+ 	material.set_shader_parameter("desert_apron",DESERT_APRON)
+ 	material.set_shader_parameter("dune_albedo",DUNE_ALBEDO)
+diff --git a/game/track/terrain.gdshaderinc b/game/track/terrain.gdshaderinc
+index c74677a..ce89966 100644
+--- a/game/track/terrain.gdshaderinc
++++ b/game/track/terrain.gdshaderinc
+@@ -94,9 +94,12 @@ void fragment() {
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
+  if (desert_dunes && low.g+low.b > 0.0) {
+-  vec2 finish = desert_sand_finish(world_position.xz,low.g+low.b);
++  vec3 mineral = texture(surface_factors,world_position.xz/24.0,0.65).rgb;
++  float footprint = length(fwidth(world_position.xz));
++  vec2 finish = mineral_sun_finish(mineral,footprint,low.g+low.b);
+   ROUGHNESS = finish.x;
+   SPECULAR = finish.y;
++  NORMAL = mineral_terrain_normal(mineral,footprint,low.g+low.b,NORMAL,VIEW_MATRIX);
+  }
+  if (icy_road && low.r > 0.0) {
+   vec4 finish = texture(ice_finish,world_position.xz/6.0);
+diff --git a/game/track/track_theme.gd b/game/track/track_theme.gd
+index 0636378..f234a94 100644
+--- a/game/track/track_theme.gd
++++ b/game/track/track_theme.gd
+@@ -7,6 +7,7 @@ const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
+ const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
+ const DESERT: Array[Color] = [Color("9f8052"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+ const DESERT_SHOULDER: Color = Color("ad8957")
++const DESERT_SUN_ROTATION: Vector3 = Vector3(-46,-48,0)
+ 
+ 
+ static func normalized(theme: String) -> String:
+@@ -86,7 +87,7 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
+ 		light.light_color = Color("ffedce")
+ 	if theme == "desert":
+ 		# Sun-baked daylight, with warm open shade rather than a sunset/haze pass.
+-		light.rotation_degrees = Vector3(-46,-48,0)
++		light.rotation_degrees = DESERT_SUN_ROTATION
+ 		light.shadow_opacity = 0.90
+ 		environment.ambient_light_color = Color("c5b9a4")
+ 		environment.ambient_light_energy = 0.30

@@ -1,0 +1,117 @@
+extends SceneTree
+## Paired actual Garage pixels/triangle budgets for indexed-stream reuse.
+var checks: int = 0
+var failures: int = 0
+var output: String = "res://../docs/evidence/garage-customisation-speed-2026-10-13/assembly"
+func _initialize() -> void: _run.call_deferred()
+func check(ok: bool, label: String) -> void:
+	checks += 1
+	if not ok:
+		failures += 1
+		print("FAIL: "+label)
+func settle() -> void:
+	for frame: int in range(12): await process_frame
+	await RenderingServer.frame_post_draw
+func counts(car: CarVisual) -> Vector3i:
+	var result := Vector3i.ZERO
+	for mesh: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+		for surface: int in range(mesh.mesh.get_surface_count()):
+			var arrays: Array = mesh.mesh.surface_get_arrays(surface)
+			result.x += 1
+			result.y += (arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX]!=null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size())/3
+			result.z += arrays[Mesh.ARRAY_VERTEX].size()
+	return result
+func signature(car: CarVisual) -> Array:
+	var result: Array = []
+	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+		var pose: Transform3D = node.transform
+		var ancestor: Node3D = node.get_parent()
+		while ancestor!=car:
+			pose = ancestor.transform*pose
+			ancestor = ancestor.get_parent()
+		var hash := HashingContext.new()
+		hash.start(HashingContext.HASH_SHA256)
+		hash.update(var_to_bytes(node.mesh.surface_get_arrays(0)))
+		result.append([pose,hash.finish().hex_encode(),node.mesh.get_surface_count()])
+	return result
+func _run() -> void:
+	for arg: String in OS.get_cmdline_user_args():
+		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
+	output = ProjectSettings.globalize_path(output)
+	DirAccess.make_dir_recursive_absolute(output)
+	root.size = Vector2i(960,540)
+	var holder := Control.new()
+	root.add_child(holder)
+	MenuStyle.fill(holder)
+	var view := CarShowroom.new()
+	view.garage_mode = true
+	holder.add_child(view)
+	MenuStyle.fill(view)
+	await settle()
+	view.set_process(false)
+	var report: Array[Dictionary] = []
+	for id: String in VehicleCatalog.IDS:
+		for variant: int in range(2 if id=="compact" else 1):
+			var parts: Dictionary = VehicleCustomisation.defaults()
+			if variant==1: parts = {"version":1,"hood":"louvres","aero":"wing","rims":"turbine","body":"club"}
+			var previous: CarVisual = view.car
+			view.car = CarVisual.new()
+			view.car.vehicle_id = id
+			view.car.customisation = parts
+			view.car.livery = VehicleLivery.defaults(id)
+			previous.get_parent().add_child(view.car)
+			view.car.transform = previous.transform
+			previous.get_parent().remove_child(previous)
+			previous.queue_free()
+			ShowroomStudio._studio_glass(view.car,{})
+			view.reflections.mark_stage(view.turntable)
+			view.reflections.set_visible(true)
+			var geometry_before: Vector3i = counts(view.car)
+			var original: Array = signature(view.car)
+			await settle()
+			# Hold the matched static reflection inputs during the buffer swap.
+			# Capture updates are tested separately by test_garage_reflections.
+			view.reflections.set_visible(false)
+			await settle()
+			var before: Image = view.showroom_viewport.get_texture().get_image()
+			var candidate: CarVisual
+			for repeat: int in range(2):
+				candidate = CarVisual.new()
+				candidate.vehicle_id = id
+				candidate.customisation = parts
+				candidate.livery = VehicleLivery.defaults(id)
+				candidate.cache_menu_assembly = true
+				root.add_child(candidate)
+				if repeat==0:
+					candidate.queue_free()
+					await process_frame
+			check(signature(candidate)==original,"exact arrays and original GPU transform frames "+id+"/"+str(variant))
+			var geometry_after: Vector3i = counts(candidate)
+			var nodes: Array[Node] = view.car.find_children("*","MeshInstance3D",true,false)
+			var prepared: Array[Node] = candidate.find_children("*","MeshInstance3D",true,false)
+			# Swap only buffers on the same live instances/materials. Recreating
+			# instances can change the engine's shadow-edge draw ordering.
+			for index: int in range(nodes.size()): nodes[index].mesh = prepared[index].mesh
+			candidate.queue_free()
+			await settle()
+			var after: Image = view.showroom_viewport.get_texture().get_image()
+			var a: PackedByteArray = before.get_data()
+			var b: PackedByteArray = after.get_data()
+			var changed: int = 0
+			var maximum: int = 0
+			for index: int in range(a.size()):
+				if a[index]!=b[index]: changed += 1
+				maximum = maxi(maximum,absi(int(a[index])-int(b[index])))
+			check(maximum<=1,"identical retained artwork/lighting "+id+"/"+str(variant))
+			check(geometry_before==geometry_after,"same draws/triangles/vertices "+id+"/"+str(variant))
+			report.append({"vehicle":id,"variant":variant,"before":str(geometry_before),"after":str(geometry_after),"changed_channels":changed,"maximum_channel_delta":maximum})
+			after.save_png(output.path_join(id+"-"+str(variant)+".png"))
+	check(VisualGeometry.menu_batch_hits>0,"immutable prepared groups reused")
+	check(VisualGeometry.menu_batch_bytes<=VisualGeometry.MENU_BATCH_BYTES,"prepared assembly byte budget")
+	var file := FileAccess.open(output.path_join("equivalence.json"),FileAccess.WRITE)
+	file.store_string(JSON.stringify(report,"\t"))
+	file.close()
+	holder.queue_free()
+	await process_frame
+	print("FAST_GARAGE_ASSEMBLY: %d checks, %d failures"%[checks,failures])
+	quit(1 if failures else 0)

@@ -1,0 +1,1015 @@
+--- a/game/backend/resume_recovery.gd
++++ b/game/backend/resume_recovery.gd
+@@ -6,7 +6,12 @@
+ var busy: bool = false
+ var _next_msec: int = 0
+ var _serial: int = 0
++var _deadlines: Dictionary = {}
++var _cursor: Dictionary = {}
++var _resolved: Dictionary = {}
+ const Files = preload("res://backend/atomic_json.gd")
++const REQUEST_INTERVAL_SECONDS: int = 5
++const MAX_INSPECTED: int = 64
+ 
+ func _directory(owner: String, origin: String) -> String:
+ 	var base: String = root_override if not root_override.is_empty() else client.session_path.get_base_dir().path_join("resume_recovery") if not client.session_path.is_empty() else "user://resume_recovery"
+@@ -20,7 +25,7 @@
+ 	_next_msec = 0
+ 
+ func save(entry: Dictionary) -> bool:
+-	if str(entry.get("owner","")).is_empty() or str(entry.get("origin","")).is_empty() or str(entry.get("begin_key","")).is_empty(): return false
++	if str(entry.get("owner","")).is_empty() or str(entry.get("origin","")).is_empty() or _request_body(entry).is_empty(): return false
+ 	var path: String = _directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json")
+ 	return Files.write(path,entry,32768)
+ 
+@@ -39,28 +44,95 @@
+ 	var owner: String = str(client.player.get("id",""))
+ 	var origin: String = str(client.base_url())
+ 	var directory: String = _directory(owner,origin)
++	if not _ready_scope(directory):
++		busy = false
++		return
+ 	var filenames: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
+-	var inspected: int = 0
+-	for filename: String in filenames:
+-		if not filename.ends_with(".json"): continue
+-		inspected += 1
+-		if inspected > 16: break
+-		var entry: Dictionary = Files.read(directory.path_join(filename),32768)
++	var start: int = int(_cursor.get(directory,0)) % maxi(1,filenames.size())
++	for offset: int in range(mini(MAX_INSPECTED,filenames.size())):
++		var index: int = (start+offset) % filenames.size()
++		_cursor[directory] = index+1
++		var filename: String = filenames[index]
++		if not filename.ends_with(".json") or filename.begins_with("."): continue
++		var path: String = directory.path_join(filename)
++		var entry: Dictionary = Files.read(path,32768)
+ 		if entry.has("_read_error") or str(entry.get("owner","")) != owner or str(entry.get("origin","")) != origin or not entry.get("selection") is Dictionary: continue
++		if entry.get("recovery_resolved",false) or _resolved.has(path):
++			DirAccess.remove_absolute(path)
++			continue
++		if entry.has("recovery_failure"): continue
+ 		var key: String = str(entry.get("begin_key",""))
+ 		if filename != str(entry.get("consume_key","")).sha256_text()+".json": continue
+ 		var confirming: bool = entry.get("stage","pending") == "confirm"
+ 		if active.has(key) and not confirming: continue
+-		var body: Dictionary = {"begin_key":key,"consume_key":entry.consume_key,
+-			"selection":entry.selection,"action":"confirm" if confirming else "abandon"}
+-		if not str(entry.get("race_id","")).is_empty(): body.race_id = entry.race_id
+-		if not str(entry.get("ticket_id","")).is_empty(): body.ticket_id = entry.ticket_id
++		var body: Dictionary = _request_body(entry)
++		if body.is_empty():
++			_block(path,entry,"INVALID_RECOVERY_JOURNAL")
++			continue
++		# One background write per interval, including explicit reconcile calls.
++		# Persist the wait before delivery so restarts/shared profiles respect it.
++		_delay_scope(directory,REQUEST_INTERVAL_SECONDS,false,true)
+ 		var response: Dictionary = await client.request_api("/resume-recovery",HTTPClient.METHOD_POST,body,"",true)
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+-		if response.ok:
+-			if response.data.state in ["consumed","abandoned","absent"]:
+-				DirAccess.remove_absolute(directory.path_join(filename))
+-		elif str(response.error) == "RACE_ALREADY_SUBMITTED":
++		if (response.get("ok",false) and response.get("data",{}).get("state") in ["consumed","abandoned","absent"]) or str(response.get("error","")) == "RACE_ALREADY_SUBMITTED":
+ 			# Accepted replay binds all its receipts; refund is prohibited.
+-			DirAccess.remove_absolute(directory.path_join(filename))
++			_resolved[path] = true
++			entry.recovery_resolved = true
++			Files.write(path,entry,32768)
++			DirAccess.remove_absolute(path)
++			_delay_scope(directory,REQUEST_INTERVAL_SECONDS,false)
++		elif int(response.get("status",0)) in [400,403,404,409,410,422]:
++			# Preserve the original operation for repair; never repeat a definitive
++			# rejection or invent a replacement charge/key.
++			_block(path,entry,str(response.get("error","RECOVERY_REJECTED")))
++		else:
++			_delay_scope(directory,maxi(30,int(response.get("retry_after",0))),true)
++		break
+ 	busy = false
++
++static func _request_body(entry: Dictionary) -> Dictionary:
++	for key: String in ["begin_key","consume_key"]:
++		if not entry.get(key) is String or entry[key].length() < 8 or entry[key].length() > 128: return {}
++	if not entry.get("selection") is Dictionary or entry.get("stage","pending") not in ["pending","confirm"]: return {}
++	var selection: Dictionary = entry.selection.duplicate(true)
++	for field: String in selection:
++		if field not in ["ordinal","input_offset","from_tick","to_tick","recovery"]: return {}
++	for field: String in ["ordinal","input_offset","from_tick","to_tick"]:
++		var value: Variant = selection.get(field)
++		var minimum: int = 0 if field == "to_tick" else 1
++		var maximum: int = 3 if field == "ordinal" else 215999 if field == "to_tick" else 216000
++		if not (value is int or value is float) or not is_finite(float(value)) or float(value) < minimum or float(value) > maximum or float(value) != float(int(value)): return {}
++		# Godot JSON reloads integers as floats. Cast only validated whole fields;
++		# changing the server's strict contract would hide corrupt evidence.
++		selection[field] = int(value)
++	if selection.get("recovery") != null and selection.recovery != "v1": return {}
++	if selection.from_tick-selection.to_tick < 1 or selection.from_tick-selection.to_tick > 1200: return {}
++	var body: Dictionary = {"begin_key":entry.begin_key,"consume_key":entry.consume_key,"selection":selection,"action":"confirm" if entry.get("stage","pending") == "confirm" else "abandon"}
++	for field: String in ["race_id","ticket_id"]:
++		if entry.get(field,"") == "": continue
++		if not entry.get(field) is String or entry[field].length() != 36: return {}
++		body[field] = entry[field]
++	return body
++
++func _block(path: String, entry: Dictionary, error: String) -> void:
++	entry.recovery_failure = error
++	Files.write(path,entry,32768)
++
++func _ready_scope(directory: String) -> bool:
++	if not _deadlines.has(directory):
++		var saved: Dictionary = Files.read(directory.path_join(".retry.json"),1024)
++		var seconds: int = clampi(int(saved.get("retry_delay",0)),0,3600)
++		if client.server_now() > 0 and int(saved.get("retry_server_at",0)) > 0:
++			seconds = clampi(int(saved.retry_server_at)-client.server_now(),0,seconds)
++		_deadlines[directory] = Time.get_ticks_msec()+seconds*1000
++	return Time.get_ticks_msec() >= int(_deadlines[directory])
++
++func _delay_scope(directory: String, seconds: int, failed: bool, reserve: bool = false) -> void:
++	var saved: Dictionary = Files.read(directory.path_join(".retry.json"),1024)
++	var streak: int = mini(6,int(saved.get("retry_streak",0))+1) if failed else 0
++	# Keep the previous failure streak while reserving the next delivery.
++	if reserve: streak = int(saved.get("retry_streak",0))
++	var wait_seconds: int = maxi(seconds,mini(600,30*int(pow(2,streak-1)))) if failed else seconds
++	saved = {"retry_streak":streak,"retry_delay":wait_seconds,"retry_server_at":client.server_now()+wait_seconds if client.server_now() > 0 else 0}
++	Files.write(directory.path_join(".retry.json"),saved,1024)
++	_deadlines[directory] = Time.get_ticks_msec()+wait_seconds*1000
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -147,6 +147,10 @@
+ 	var config := ConfigFile.new()
+ 	config.set_value("session", "url", _base_url)
+ 	config.set_value("session", "refresh_token", _refresh_token)
++	# The same private file already holds the more powerful refresh credential.
++	# Sharing its current access credential avoids rotation ping-pong between
++	# game instances belonging to the same explicit login.
++	config.set_value("session", "access_token", _access_token)
+ 	config.set_value("session", "login_id", _login_id)
+ 	config.set_value("session", "player_id", str(player.get("id","")))
+ 	if not _refresh_request_id.is_empty(): config.set_value("session","refresh_request_id",_refresh_request_id)
+@@ -256,6 +260,18 @@
+ 		_refresh_token = str(config.get_value("session","refresh_token",""))
+ 		_refresh_request_id = str(config.get_value("session","refresh_request_id",""))
+ 		if expected_player.is_empty(): expected_player = saved_player
++		var saved_access: String = str(config.get_value("session","access_token",""))
++		if not path.is_empty() and not saved_access.is_empty() and saved_access != _access_token and _refresh_request_id.is_empty():
++			_access_token = saved_access
++			var reused: Dictionary = _checked(await _send(path,method,payload,true,key),path,method)
++			if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
++			# A concurrent explicit login/sign-out still fences this request, even
++			# when the already issued access credential was accepted by the server.
++			var latest := ConfigFile.new()
++			if not has_saved_session() or latest.load(session_path) != OK or _stored_login_id(latest) != _login_id:
++				clear_session(true)
++				return _failure("ACCOUNT_CHANGED")
++			if int(reused.status) != 401: return reused
+ 	var supports_recovery: bool = not _refresh_request_id.is_empty() or int(_capabilities.get("refresh_recovery_seconds",0)) > 0
+ 	var body: Dictionary = {"refresh_token":_refresh_token}
+ 	if supports_recovery:
+@@ -440,10 +456,15 @@
+ 			var oldest: String = str(_read_cache.keys()[0])
+ 			cache_bytes -= int(_read_cache[oldest].bytes)
+ 			_read_cache.erase(oldest)
+-	var retry_after: int = 0
+-	for header: String in completed[2]:
+-		if header.to_lower().begins_with("retry-after:"): retry_after = clampi(int(header.get_slice(":",1).strip_edges()),1,60)
++	var retry_after: int = _retry_after(completed[2])
+ 	return {"ok":status >= 200 and status < 300,"status":status,"data":parsed,"body":decoded.body,"retry_after":retry_after,"error":"" if status >= 200 and status < 300 else str(parsed.get("detail","HTTP_ERROR"))}
++
++static func _retry_after(headers: PackedStringArray) -> int:
++	for header: String in headers:
++		if header.to_lower().begins_with("retry-after:"):
++			var seconds: String = header.get_slice(":",1).strip_edges()
++			if seconds.is_valid_int(): return clampi(int(seconds),1,3600)
++	return 0
+ 
+ func _remember(response: Dictionary, generation: int = -1) -> Dictionary:
+ 	if generation != -1 and generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -31,6 +31,8 @@
+ var _pending_iterators: Dictionary = {}
+ var result_saves: Node
+ var _retry_deadlines: Dictionary = {}
++var _write_deadlines: Dictionary = {}
++var _flush_deadlines: Dictionary = {}
+ const MAX_FLUSH_JOBS: int = 16
+ 
+ func _ready() -> void:
+@@ -818,7 +820,7 @@
+ 	if not _retry_deadlines.has(id):
+ 		# Ignore legacy phone-wall-clock deadlines. New saved waits are bounded;
+ 		# corrected server time can shorten them after a restart.
+-		var wait_seconds: int = clampi(int(job.get("retry_delay",0)),0,600)
++		var wait_seconds: int = clampi(int(job.get("retry_delay",0)),0,3600)
+ 		var epoch: int = int(job.get("retry_server_at",0))
+ 		if epoch > 0 and client.server_now() > 0: wait_seconds = clampi(epoch-client.server_now(),0,wait_seconds)
+ 		_retry_deadlines[id] = Time.get_ticks_msec()+wait_seconds*1000
+@@ -829,7 +831,7 @@
+ 	job.retry_streak = mini(streak,6)
+ 	var bound: int = maxi(seconds,mini(600,15*int(pow(2,mini(streak,5))))) if failed else seconds
+ 	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])%maxi(1,bound/3+1)
+-	job.retry_delay = mini(600,bound+jitter)
++	job.retry_delay = maxi(seconds,mini(600,bound+jitter))
+ 	job.retry_server_at = client.server_now()+int(job.retry_delay) if client.server_now() > 0 else 0
+ 	job.erase("retry_at")
+ 	_retry_deadlines[str(job.ticket)] = Time.get_ticks_msec()+int(job.retry_delay)*1000
+@@ -871,6 +873,8 @@
+ 	if not _migrate_outbox(): return
+ 	var owner: String = str(client.player.get("id",""))
+ 	var origin: String = str(client.base_url())
++	var request_scope: String = origin+"/"+owner
++	if Time.get_ticks_msec() < int(_flush_deadlines.get(request_scope,0)): return
+ 	var directory: String = outbox_path().get_base_dir().path_join("runs")
+ 	if not await _recover_pending(directory) or str(client.player.get("id","")) != owner or client.base_url() != origin: return
+ 	var jobs: Array[Dictionary] = _pending_jobs(directory)
+@@ -882,6 +886,9 @@
+ 	if not ids.is_empty() and bool(client._capabilities.get("batch_run_status",false)):
+ 		batch = await client.request_api("/runs/status?"+"&".join(ids),HTTPClient.METHOD_GET,{},"",true)
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: return
++		if int(batch.get("status",0)) == 429:
++			_pause_flush(request_scope,batch)
++			return
+ 		if batch.ok and batch.data.get("items") is Array:
+ 			for item: Variant in batch.data.items:
+ 				if Client.valid_run(item): polled[str(item.run_id)] = item
+@@ -894,6 +901,7 @@
+ 		if job.has("done") or not _job_ready(job): continue
+ 		if job.has("failure"):
+ 			if job.get("failure","") != "verifier_unavailable" or not job.get("retryable",false): continue
++			if not _reserve_background_write(request_scope): continue
+ 			if not job.has("retry_key"):
+ 				job.retry_key = client.new_operation_key()
+ 				_save_job(path,job)
+@@ -903,12 +911,16 @@
+ 				_delay_job(job,maxi(30,int(retried.get("retry_after",0))),true)
+ 				if str(retried.get("error","")) in ["CONTRACT_UNSUPPORTED","INVALID_REPLAY"]: job.retryable = false
+ 				_save_job(path,job)
++				if int(retried.get("status",0)) == 429:
++					_pause_flush(request_scope,retried)
++					return
+ 				continue
+ 			job.erase("failure")
+ 			job.erase("retry_key")
+ 			_save_job(path,job)
+ 		var response: Dictionary = {}
+ 		if not job.has("run_id"):
++			if not _reserve_background_write(request_scope): continue
+ 			response = await _submit_saved(job,path)
+ 			checked = true
+ 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+@@ -921,6 +933,9 @@
+ 					job.rejection_status = int(response.status)
+ 				status = "Score upload pending: "+str(response.get("error","Unavailable"))
+ 				_save_job(path,job)
++				if int(response.get("status",0)) == 429:
++					_pause_flush(request_scope,response)
++					return
+ 				continue
+ 			job.run_id = response.data.run_id
+ 			_save_job(path,job)
+@@ -930,6 +945,10 @@
+ 		checked = true
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+ 		if not response.ok and int(response.get("status",0)) == 404:
++			if not _reserve_background_write(request_scope):
++				_delay_job(job,5)
++				_save_job(path,job)
++				continue
+ 			# Reconcile the original ticket/key/content. Never mint a replacement attempt.
+ 			var recovered: Dictionary = await _submit_saved(job,path)
+ 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+@@ -948,6 +967,9 @@
+ 			unavailable = unavailable or int(response.get("status",0)) >= 500 or response.get("error") == "NETWORK_ERROR"
+ 			_delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
+ 			_save_job(path,job)
++			if int(response.get("status",0)) == 429:
++				_pause_flush(request_scope,response)
++				return
+ 			continue
+ 		if response.data.status == "verified":
+ 			if not str(job.get("publish","")).is_empty():
+@@ -967,3 +989,15 @@
+ 		_save_job(path,job)
+ 		if job.get("done",false) and _read(path).get("done",false): _retire_replay(job)
+ 	if checked: run_connection_failed = unavailable
++
++func _reserve_background_write(request_scope: String) -> bool:
++	if Time.get_ticks_msec() < int(_write_deadlines.get(request_scope,0)): return false
++	# Result uploads cost four units. Leave room in the shared account budget
++	# for actual race starts, resume operations and player actions.
++	_write_deadlines[request_scope] = Time.get_ticks_msec()+5000
++	return true
++
++func _pause_flush(request_scope: String, response: Dictionary) -> void:
++	# A rate limit applies to the account, so stop the whole batch rather than
++	# sending every remaining saved job into the same exhausted budget.
++	_flush_deadlines[request_scope] = Time.get_ticks_msec()+maxi(60,int(response.get("retry_after",0)))*1000
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -10,6 +10,7 @@
+ var last_error: String = ""
+ var _pending: Dictionary = {}
+ var legacy_directories: Array[String] = []
++var _retry_deadlines: Dictionary = {}
+ 
+ func scope() -> String:
+ 	return str(cloud.client._base_url)+"/"+str(cloud.client.player.get("id","guest"))
+@@ -220,11 +221,14 @@
+ 			_retire_published(str(job._path),job)
+ 			continue
+ 		if job.get("state") == "finishing" and job.has("receipt"):
++			if not _job_ready(job): continue
++			_delay_job(job,15)
++			_save(str(job._path),job)
+ 			await _finalize(str(job._path),job,owner_scope)
+ 			continue
+ 		# Historical autosync journals are preserved, never resumed as uploads.
+ 		if not job.get("publish_requested",false) or int(job.get("publish_workflow",0)) != 2: continue
+-		if job.has("failure") or int(job.get("retry_at",0)) > int(Time.get_unix_time_from_system()): continue
++		if job.has("failure") or not _job_ready(job): continue
+ 		if job.has("document") and not _archived(str(job.document.id)):
+ 			await _advance(str(job._path),job,owner_scope)
+ 	busy = false
+@@ -258,11 +262,13 @@
+ 		if not response.ok:
+ 			last_error = str(response.error)
+ 			if int(response.status) in [400,403,409,410,422]: job.failure = "Publication needs attention: "+last_error
+-			else: job.retry_at = int(Time.get_unix_time_from_system())+maxi(15,int(response.get("retry_after",0)))
++			else: _delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
+ 			_save(path,job)
+ 			return
+ 		if not response.data.get("publication_id") is String:
+ 			last_error = "Publication returned an incomplete receipt. Its saved request will retry."
++			_delay_job(job,15,true)
++			_save(path,job)
+ 			return
+ 		job.publication_id = response.data.publication_id
+ 		job.remote = response.data
+@@ -270,12 +276,25 @@
+ 		state_data = response.data
+ 	else:
+ 		var status: Dictionary = await cloud.client.request_api("/me/publications/"+str(job.publication_id),HTTPClient.METHOD_GET,{},"",true)
+-		if scope() != owner_scope or not status.ok or _archived(str(job.document.id),path.get_base_dir()): return
++		if scope() != owner_scope or _archived(str(job.document.id),path.get_base_dir()): return
++		if not status.ok:
++			_delay_job(job,maxi(15,int(status.get("retry_after",0))),true)
++			_save(path,job)
++			return
+ 		state_data = status.data
++	if state_data.get("state") not in ["queued","verifying","published","failed"]:
++		_delay_job(job,15,true)
++		_save(path,job)
++		return
++	var previous_state: String = str(job.state)
+ 	job.remote = state_data
+ 	job.state = str(state_data.get("state","queued"))
+ 	if job.state == "published":
+-		if not state_data.get("receipt") is Dictionary: return
++		if not state_data.get("receipt") is Dictionary:
++			job.state = previous_state
++			_delay_job(job,15,true)
++			_save(path,job)
++			return
+ 		job.receipt = state_data.receipt
+ 		job.track_id = str(job.receipt.get("track_id",""))
+ 		job.version_id = str(job.receipt.get("version_id",""))
+@@ -286,8 +305,29 @@
+ 		job.failure = "No publishing slots left. Add slots, then Retry. Your track remains saved." if state_data.get("failure_code") == "NO_PUBLISHING_SLOTS" else "Complete a fresh test lap before publishing this revision." if state_data.get("failure_code") == "invalid_creator_proof" else str(state_data.get("detail","Publication verification failed"))
+ 		last_error = job.failure
+ 	elif job.state in ["queued","verifying"]:
+-		job.retry_at = int(Time.get_unix_time_from_system())+maxi(1,ceili(float(state_data.get("poll_after_ms",2500))/1000.0))
++		_delay_job(job,maxi(1,ceili(float(state_data.get("poll_after_ms",2500))/1000.0)))
+ 	_save(path,job)
++
++func _job_ready(job: Dictionary) -> bool:
++	var key: String = str(job.upload_key)
++	if not _retry_deadlines.has(key):
++		var seconds: int = clampi(int(job.get("retry_delay",0)),0,3600)
++		# Legacy publication waits used the device wall clock. Bound them after
++		# restart; a wrong phone clock must never strand a saved publication.
++		if not job.has("retry_delay") and job.has("retry_at"):
++			seconds = clampi(int(job.retry_at)-int(Time.get_unix_time_from_system()),0,600)
++		if cloud.client.server_now() > 0 and int(job.get("retry_server_at",0)) > 0:
++			seconds = clampi(int(job.retry_server_at)-cloud.client.server_now(),0,seconds)
++		_retry_deadlines[key] = Time.get_ticks_msec()+seconds*1000
++	return Time.get_ticks_msec() >= int(_retry_deadlines[key])
++
++func _delay_job(job: Dictionary, seconds: int, failed: bool = false) -> void:
++	var streak: int = mini(6,int(job.get("retry_streak",0))+1) if failed else 0
++	job.retry_streak = streak
++	job.retry_delay = maxi(seconds,mini(600,15*int(pow(2,streak-1)))) if failed else seconds
++	job.retry_server_at = cloud.client.server_now()+int(job.retry_delay) if cloud.client.server_now() > 0 else 0
++	job.erase("retry_at")
++	_retry_deadlines[str(job.upload_key)] = Time.get_ticks_msec()+int(job.retry_delay)*1000
+ 
+ func prepare_test(document: Dictionary) -> Dictionary:
+ 	# Editing, guest/offline testing and saved lap capture have no network path.
+@@ -321,6 +361,8 @@
+ 		job.upload_key = cloud.client.new_operation_key()
+ 	job.erase("failure")
+ 	job.erase("retry_at")
++	job.erase("retry_delay")
++	_retry_deadlines.erase(str(job.upload_key))
+ 	if not _save(path,job): return false
+ 	await process_jobs()
+ 	return true
+@@ -336,6 +378,8 @@
+ 	job.remote = response.data
+ 	job.erase("failure")
+ 	job.erase("retry_at")
++	job.erase("retry_delay")
++	_retry_deadlines.erase(str(job.upload_key))
+ 	job.state = str(response.data.get("state","queued"))
+ 	if _save(path,job): await process_jobs()
+ 
+--- a/game/tests/test_backend_exception_recovery.gd
++++ b/game/tests/test_backend_exception_recovery.gd
+@@ -126,6 +126,7 @@
+ 	check(int(job.get("retry_delay",0)) > 0,"protocol failure backs off")
+ 	malformed.mode = "normal"
+ 	cloud._retry_deadlines[TICKET] = 0
++	cloud._write_deadlines.clear() # Advance the independent background-write interval.
+ 	await cloud.flush_outbox()
+ 	check(cloud.upload_job(TICKET).get("run_id") == "recovered-run","corrected response recovers without restart")
+ 	cloud.queue_free(); malformed.queue_free()
+@@ -188,7 +189,7 @@
+ 	credits.free()
+ 	await funder.resume_recovery.reconcile()
+ 	check(funder.consumptions == 1 and funder.balance == 2,"abandoned recovery returns resource without replaying charge")
+-	check(DirAccess.get_files_at(directory).is_empty(),"authoritatively resolved operation is retired")
++	check(DirAccess.get_files_at(directory) == PackedStringArray([".retry.json"]),"authoritatively resolved operation is retired, leaving only pacing metadata")
+ 	funder.queue_free()
+ 
+ 	check(not Client.valid_response("/runs",HTTPClient.METHOD_POST,{}),"missing run id is invalid protocol")
+--- a/game/tests/test_local_draft_publication.gd
++++ b/game/tests/test_local_draft_publication.gd
+@@ -114,6 +114,8 @@
+ 	check(not previous_proof.has("frames") and int(previous_proof.input_count) == frames.size(),"durable creator proof stores bounded trajectory and ticks without a duplicate control replay")
+ 	var job: Dictionary = flow.status_for(document)
+ 	job.erase("retry_at")
++	job.erase("retry_delay")
++	flow._retry_deadlines.erase(str(job.upload_key))
+ 	check(flow._save(str(staged.path),job),"isolated retry fence reset")
+ 	await flow.process_jobs()
+ 	attempts = client.requests.filter(func(row: Dictionary) -> bool: return row.path == "/publications")
+@@ -125,7 +127,7 @@
+ 	var reads_before: int = client.requests.size()
+ 	await flow.process_jobs()
+ 	check(client.requests.size() == reads_before,"pending publication obeys server polling cadence instead of every idle tick")
+-	await create_timer(3.1).timeout
++	flow._retry_deadlines[str(flow.status_for(document).upload_key)] = 0 # Advance the monotonic polling deadline.
+ 	await flow.process_jobs()
+ 	check(flow.can_retry(document) and flow.status_for(document).state == "failed","slot/infrastructure rejection exposes an explicit publication retry: "+JSON.stringify(flow.status_for(document).get("remote",{})))
+ 	await flow.retry(document)
+--- a/game/tests/test_session_rotation.gd
++++ b/game/tests/test_session_rotation.gd
+@@ -17,6 +17,7 @@
+ class SimulatedClient extends Client:
+ 	var service: Service
+ 	var change_login: Callable
++	var change_login_on_reuse: Callable
+ 	var sign_out_during_refresh: bool = false
+ 	func _send(path: String, _method: HTTPClient.Method, payload: Dictionary, authorized: bool, _key: String = "", _headers: PackedStringArray = [], _owner: int = 0) -> Dictionary:
+ 		var sent_access: String = _access_token
+@@ -32,8 +33,11 @@
+ 			service.refresh = "fixture-refresh-"+str(service.rotations).pad_zeros(32)
+ 			return {"ok":true,"status":200,"error":"","data":{"access_token":service.access,"refresh_token":service.refresh,"player":{"id":"rotation-player","display_name":"Rotation driver"}}}
+ 		if authorized and (sent_access != service.access or sent_access == "expired"): return _failure("INVALID_SESSION",401)
++		if authorized and change_login_on_reuse.is_valid(): change_login_on_reuse.call()
+ 		if service.offline_retry: return _failure("NETWORK_ERROR")
+ 		service.reads += 1
++		if path == "/me": return {"ok":true,"status":200,"error":"","data":{"id":"rotation-player"}}
++		if path == "/runs": return {"ok":true,"status":202,"error":"","data":{"run_id":"rotation-run","status":"queued"}}
+ 		return {"ok":true,"status":200,"error":"","data":{}}
+ 
+ func _initialize() -> void: call_deferred("run")
+@@ -74,9 +78,36 @@
+ 	while responses.size() < 2: await process_frame
+ 	check(responses.all(func(value: Dictionary) -> bool: return value.ok),"simultaneous readers/writers sharing a save both succeed")
+ 	check(service.reuses == 0 and first.signed_in() and second.signed_in(),"shared renewal never replays a consumed refresh or logs out either client")
++	check(service.rotations == 1,"shared clients reuse the issued access token instead of rotating each other out")
++	for attempt: int in range(8):
++		await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++		await second.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	check(service.rotations == 1,"alternating instances do not cause ongoing credential ping-pong")
+ 	check(not DirAccess.dir_exists_absolute(first.session_path+".rotation"),"shared request lease is released")
+ 	first.queue_free(); second.queue_free()
+ 	await process_frame
++
++	service = Service.new()
++	first = client(service,"cached-expired")
++	var saved := ConfigFile.new()
++	saved.load(first.session_path)
++	saved.set_value("session","access_token","another-expired-credential")
++	saved.save(first.session_path)
++	var expired: Dictionary = await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	check(expired.ok and service.rotations == 1,"an expired saved access credential falls back to one authenticated renewal")
++	first.queue_free(); await process_frame
++
++	service = Service.new()
++	first = client(service,"reuse-login-fence")
++	second = client(service,"reuse-login-fence",first)
++	await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	second.change_login_on_reuse = func() -> void:
++		first._login_id = "different-explicit-login"
++		first._save_session()
++	var fenced: Dictionary = await second.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
++	check(fenced.error == "ACCOUNT_CHANGED" and not second.signed_in(),"cached credential reuse remains fenced against an explicit login during delivery")
++	check(first.has_saved_session() and not FileAccess.file_exists(first.session_path+".signed_out"),"reuse fence preserves the newer saved login")
++	first.queue_free(); second.queue_free(); await process_frame
+ 
+ 	service = Service.new()
+ 	first = client(service,"same-client")
+--- a/backend/tests/test_exception_recovery.py
++++ b/backend/tests/test_exception_recovery.py
+@@ -102,7 +102,7 @@
+         assert client.get("/v1/me").headers["x-server-time"]
+ 
+ 
+-def resume_operation(domain, *, bank=0):
++def resume_operation(domain, *, bank=0, selection=None):
+     version, _ = public_course(domain)
+     issued = ticket(domain, version, "Alice")
+     if bank:
+@@ -112,7 +112,7 @@
+     beginning_key, consume_key = "recover-begin-key", "recover-consume-key"
+     beginning = domain.client.post("/v1/resume-races", json={"ticket_id": issued["ticket_id"]},
+                                    headers=headers(domain, "Alice", beginning_key)).json()
+-    selection = {"ordinal": 1, "input_offset": 10, "from_tick": 10, "to_tick": 0, "recovery": "v1"}
++    selection = selection or {"ordinal": 1, "input_offset": 10, "from_tick": 10, "to_tick": 0, "recovery": "v1"}
+     response = domain.client.post("/v1/resume-races/" + beginning["race_id"] + "/resumes", json=selection,
+                                   headers=headers(domain, "Alice", consume_key))
+     assert response.status_code == 200
+--- /dev/null
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -0,0 +1,262 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Recovery = preload("res://backend/resume_recovery.gd")
++const Files = preload("res://backend/atomic_json.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const TICKET: String = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
++const RACE: String = "cccccccc-cccc-cccc-cccc-cccccccccccc"
++var checks: int = 0
++var failures: int = 0
++var workspace: String
++
++class API extends Client:
++	var bodies: Array[Dictionary] = []
++	var paths: Array[String] = []
++	var held: bool = false
++	var change_owner: bool = false
++	var reply: Dictionary = {"ok":true,"status":200,"data":{"state":"consumed","receipt_id":RACE,"used":1,"wallet":{"balance":2,"free":1,"reset_at":1900000000}},"error":""}
++	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		bodies.append(payload.duplicate(true))
++		paths.append(_path)
++		if held: await get_tree().create_timer(0.02).timeout
++		if change_owner: player = {"id":"other-owner"}
++		return reply.duplicate(true)
++
++func _initialize() -> void:
++	workspace = ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir().path_join("build/resume-recovery-budget-"+str(Time.get_ticks_usec()))
++	call_deferred("run")
++
++func check(value: bool, description: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: ",description)
++
++func journal(index: int = 0) -> Dictionary:
++	return {"owner":"fixture-owner","origin":"https://recovery-fixture.invalid","begin_key":"begin-key-%04d"%index,"consume_key":"consume-key-%04d"%index,"race_id":RACE,"ticket_id":TICKET,"stage":"confirm","selection":{"ordinal":1,"input_offset":3600,"from_tick":3600,"to_tick":2400,"recovery":"v1"}}
++
++func fixture(name: String) -> API:
++	var api := API.new()
++	api.configure("https://recovery-fixture.invalid")
++	api.player = {"id":"fixture-owner"}
++	api._access_token = "fixture-access"
++	api._capabilities = {"resume_recovery":true}
++	api._sample_time(1900000000)
++	root.add_child(api)
++	api.resume_recovery.root_override = workspace.path_join(name)
++	api.resume_recovery.set_process(false)
++	return api
++
++func directory(api: API) -> String:
++	return api.resume_recovery._directory("fixture-owner",api.base_url())
++
++func path(api: API, entry: Dictionary) -> String:
++	return directory(api).path_join(str(entry.consume_key).sha256_text()+".json")
++
++func expire(api: API) -> void:
++	api.resume_recovery._deadlines[directory(api)] = 0
++
++func failure(status: int, code: String = "UNAVAILABLE", retry_after: int = 0) -> Dictionary:
++	return {"ok":false,"status":status,"error":code,"data":{},"retry_after":retry_after}
++
++func cloud_for(api: API, name: String) -> Node:
++	var cloud := Cloud.new()
++	cloud.client = api
++	cloud.root_override = workspace.path_join(name)
++	root.add_child(cloud)
++	return cloud
++
++func run() -> void:
++	check(Client._retry_after(PackedStringArray(["Retry-After: 120"])) == 120,"HTTP header retains waits longer than one minute")
++	check(Client._retry_after(PackedStringArray(["retry-after: nonsense"])) == 0,"invalid cooldown header does not become an immediate retry")
++	check(Client._retry_after(PackedStringArray(["Retry-After: 999999"])) == 3600,"server cooldown is bounded to one hour")
++	var api: API = fixture("wire")
++	check(api.resume_recovery.save(journal()),"save integer recovery journal")
++	await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 1,"restored journal reaches recovery")
++	if not api.bodies.is_empty():
++		var wire: String = Client._encode_request(api.bodies[0],false).body.get_string_from_utf8()
++		var wire_path: String = OS.get_environment("BMT_RECOVERY_WIRE_PATH")
++		if wire_path.is_empty(): wire_path = workspace.path_join("wire.json")
++		check(Files.write(wire_path,api.bodies[0]),"actual recovery wire exported for strict backend integration")
++		check(not wire.contains("3600.0") and not wire.contains("1.0"),"serialized wire uses JSON integers")
++		for key: String in ["ordinal","input_offset","from_tick","to_tick"]:
++			check(api.bodies[0].selection[key] is int,"restored %s stays an integer for strict server validation"%key)
++	api.free()
++
++	api = fixture("active-confirm")
++	api.resume_recovery.save(journal())
++	api.resume_recovery.register_race(journal().begin_key)
++	await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 1 and api.bodies[0].action == "confirm","delivered resume confirms while its race is active")
++	api.free()
++
++	api = fixture("accepted-race")
++	api.resume_recovery.save(journal())
++	api.reply = failure(409,"RACE_ALREADY_SUBMITTED")
++	await api.resume_recovery.reconcile()
++	check(not FileAccess.file_exists(path(api,journal())),"accepted replay retires recovery without attempting a refund")
++	api.free()
++
++	api = fixture("capability")
++	api.resume_recovery.save(journal())
++	api._capabilities = {}
++	await api.resume_recovery.reconcile()
++	check(api.bodies.is_empty() and FileAccess.file_exists(path(api,journal())),"unsupported recovery retains the journal without a request")
++	api.free()
++
++	for status: int in [400,403,404,409,410,422]:
++		api = fixture("terminal-%d"%status)
++		var original: Dictionary = journal()
++		api.resume_recovery.save(original)
++		api.reply = failure(status,"DEFINITIVE_REJECTION")
++		await api.resume_recovery.reconcile()
++		expire(api)
++		await api.resume_recovery.reconcile()
++		var retained: Dictionary = Files.read(path(api,original))
++		check(api.bodies.size() == 1,"terminal %d is not retried"%status)
++		check(retained.get("recovery_failure") == "DEFINITIVE_REJECTION" and retained.consume_key == original.consume_key and Recovery._request_body(retained).selection == original.selection,"terminal %d preserves the exact operation for repair"%status)
++		api.free()
++
++	for status: int in [0,401,429,500,502,503]:
++		api = fixture("transient-%d"%status)
++		for index: int in range(17): check(api.resume_recovery.save(journal(index)),"durable transient backlog")
++		api.reply = failure(status,"TEMPORARY",120 if status == 429 else 0)
++		await api.resume_recovery.reconcile()
++		for attempt: int in range(20): await api.resume_recovery.reconcile()
++		check(api.bodies.size() == 1,"transient %d stops the whole backlog"%status)
++		var retry: Dictionary = Files.read(directory(api).path_join(".retry.json"))
++		check(int(retry.retry_delay) >= (120 if status == 429 else 30),"transient cooldown honors Retry-After")
++		api._sample_time(1900000000+86400)
++		await api.resume_recovery.reconcile()
++		check(api.bodies.size() == 1,"server time adjustment cannot accelerate an in-process retry")
++		api._sample_time(1900000000)
++		var peer: API = fixture("transient-%d"%status)
++		await peer.resume_recovery.reconcile()
++		check(peer.bodies.is_empty(),"persisted transient wait survives restart/shared profile")
++		peer.free()
++		expire(api)
++		api.reply = failure(503)
++		await api.resume_recovery.reconcile()
++		retry = Files.read(directory(api).path_join(".retry.json"))
++		check(int(retry.retry_streak) == 2 and int(retry.retry_delay) >= 60,"consecutive failures back off exponentially")
++		api.free()
++
++	api = fixture("healthy-backlog")
++	for index: int in range(17): api.resume_recovery.save(journal(index))
++	await api.resume_recovery.reconcile()
++	await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 1,"healthy backlog is paced too")
++	for index: int in range(16):
++		expire(api)
++		await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 17,"all backlog entries eventually progress past the former sixteen-file prefix")
++	api.free()
++
++	api = fixture("invalid-journal")
++	var invalid: Dictionary = journal()
++	invalid.selection.ordinal = 1.5
++	check(not api.resume_recovery.save(invalid),"fractional evidence cannot enter the queue")
++	Files.write(path(api,invalid),invalid)
++	api.resume_recovery.save(journal(1))
++	await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 1 and api.bodies[0].consume_key == journal(1).consume_key,"invalid evidence does not block another operation")
++	expire(api)
++	await api.resume_recovery.reconcile()
++	check(Files.read(path(api,invalid)).get("recovery_failure") == "INVALID_RECOVERY_JOURNAL","invalid original is preserved without a network retry")
++	for field: String in ["ordinal","input_offset","from_tick","to_tick"]:
++		invalid = journal()
++		invalid.selection[field] = INF
++		check(Recovery._request_body(invalid).is_empty(),"nonfinite %s rejected"%field)
++	invalid = journal()
++	invalid.selection.input_offset = "3600"
++	check(Recovery._request_body(invalid).is_empty(),"string ticks rejected without coercion")
++	invalid = journal()
++	invalid.selection.to_tick = -1
++	check(Recovery._request_body(invalid).is_empty(),"out-of-bound evidence rejected")
++	invalid = journal()
++	invalid.selection.extra = 1
++	check(Recovery._request_body(invalid).is_empty(),"unknown selection fields rejected")
++	api.free()
++
++	api = fixture("active")
++	var pending: Dictionary = journal()
++	pending.stage = "pending"
++	api.resume_recovery.save(pending)
++	api.resume_recovery.register_race(pending.begin_key)
++	await api.resume_recovery.reconcile()
++	check(api.bodies.is_empty(),"active uncertain race cannot be abandoned")
++	api.resume_recovery.leave_race(pending.begin_key)
++	await api.resume_recovery.reconcile()
++	check(api.bodies.size() == 1 and api.bodies[0].action == "abandon","leaving race recovers its original abandoned operation")
++	api.free()
++
++	api = fixture("owner-change")
++	api.resume_recovery.save(journal())
++	api.change_owner = true
++	await api.resume_recovery.reconcile()
++	check(FileAccess.file_exists(path(api,journal())) and not api.resume_recovery.busy,"late response after account switch preserves owner evidence and releases latch")
++	api.free()
++
++	api = fixture("overlap")
++	api.resume_recovery.save(journal())
++	api.held = true
++	api.resume_recovery.reconcile()
++	await api.resume_recovery.reconcile()
++	while api.resume_recovery.busy: await process_frame
++	check(api.bodies.size() == 1,"overlapping reconciliation sends exactly one operation")
++	api.free()
++
++	for rate_limited: bool in [false,true]:
++		api = fixture("outbox-client-%s"%rate_limited)
++		var cloud: Node = cloud_for(api,"outbox-%s"%rate_limited)
++		for index: int in range(20):
++			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index},[[0,255,0]]),"outbox backlog is durable")
++		api.reply = failure(429,"RATE_LIMITED",120) if rate_limited else {"ok":true,"status":202,"data":{"run_id":"run-fixture","status":"verified"},"error":""}
++		await cloud.flush_outbox()
++		await cloud.flush_outbox()
++		check(api.paths.size() == 1,"outbox %s does not spend the budget on every remaining job"%rate_limited)
++		check(cloud.upload_jobs().size() == 20,"outbox retains every saved result")
++		if rate_limited:
++			var request_scope: String = api.base_url()+"/fixture-owner"
++			check(int(cloud._flush_deadlines[request_scope])-Time.get_ticks_msec() > 110000,"whole outbox honors Retry-After")
++		else:
++			cloud._write_deadlines.clear()
++			await cloud.flush_outbox()
++			check(api.paths.size() == 2,"healthy paced backlog continues when its write interval expires")
++		cloud.free()
++		api.free()
++
++	for status: int in [429,503,200,201]:
++		api = fixture("publication-client-%d"%status)
++		var cloud: Node = cloud_for(api,"publication-%d"%status)
++		var flow := TrackLifecycle.new()
++		flow.cloud = cloud
++		flow.library = TrackLibrary.new(workspace.path_join("publication-library-%d"%status))
++		root.add_child(flow)
++		var job: Dictionary = {"schema":"track-lifecycle-1","scope":flow.scope(),"library_directory":flow.library.directory,"fingerprint":"fixture-fingerprint","upload_key":"fixture-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"queued","created_at":1900000000,"document":{"id":"publication_fixture","name":"Publication fixture"},"publish_requested":true,"publish_workflow":2,"publication_id":"publication-id"}
++		var job_path: String = flow._root().path_join("fixture.job.json")
++		check(flow._save(job_path,job),"publication recovery journal saved")
++		api.reply = failure(status,"TEMPORARY",120) if status >= 400 else {"ok":true,"status":200,"data":{} if status == 200 else {"state":"published"},"error":""}
++		await flow.process_jobs()
++		for attempt: int in range(20): await flow.process_jobs()
++		check(api.paths.size() == 1,"publication failure/malformed response %d backs off"%status)
++		var saved: Dictionary = flow._read(job_path)
++		check(not saved.has("_read_error") and saved.upload_key == job.upload_key and saved.document.id == job.document.id,"publication evidence remains readable after failure")
++		check(int(saved.retry_delay) >= (120 if status >= 400 else 15),"publication polling honors error cooldown")
++		api._sample_time(1900000000+86400)
++		await flow.process_jobs()
++		check(api.paths.size() == 1,"publication cooldown uses monotonic in-process time")
++		api._sample_time(1900000000)
++		flow._retry_deadlines.clear()
++		await flow.process_jobs()
++		check(api.paths.size() == 1,"publication cooldown survives scheduler restart")
++		flow._retry_deadlines[job.upload_key] = 0
++		api.reply = {"ok":true,"status":200,"data":{"state":"queued","poll_after_ms":2500},"error":""}
++		await flow.process_jobs()
++		check(api.paths.size() == 2 and int(flow._read(job_path).retry_streak) == 0,"publication service recovery resets backoff without replacing its identity")
++		flow.free()
++		cloud.free()
++		api.free()
++	print("RESUME_RECOVERY_BUDGET: %d checks, %d failures"%[checks,failures])
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/game/tests/test_resume_recovery_budget.gd.uid
+@@ -0,0 +1 @@
++uid://cqw6n54im0fsl
+--- /dev/null
++++ b/backend/tests/test_resume_recovery_wire.py
+@@ -0,0 +1,61 @@
++"""Exercise bytes produced by the pinned native client's saved-journal path."""
++import json
++import os
++import subprocess
++import uuid
++from pathlib import Path
++
++import pytest
++from test_domains import domain as domain_fixture
++from test_domains import headers
++from test_exception_recovery import resume_operation
++
++domain = domain_fixture
++
++
++@pytest.fixture(scope="module")
++def native_recovery_wire():
++    if os.name != "nt":
++        pytest.skip("Native saved-journal wire integration uses the Windows dev entry point")
++    repo = Path(__file__).resolve().parents[2]
++    work = repo / "build" / ("recovery-wire-" + uuid.uuid4().hex)
++    work.mkdir(parents=True)
++    wire = work / "wire.json"
++    environment = {**os.environ, "APPDATA": str(work / "profile"), "BMT_RECOVERY_WIRE_PATH": str(wire)}
++    run = subprocess.run(
++        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(repo / "scripts/dev.ps1"),
++         "-Action", "TestScript", "-ScriptPath", "res://tests/test_resume_recovery_budget.gd"],
++        cwd=repo, env=environment, capture_output=True, text=True, timeout=90, check=False,
++    )
++    assert run.returncode == 0, run.stdout + run.stderr
++    body = json.loads(wire.read_text())
++    for field in ("ordinal", "input_offset", "from_tick", "to_tick"):
++        assert type(body["selection"][field]) is int, (field, wire.read_text())
++    return body
++
++
++@pytest.mark.godot
++@pytest.mark.parametrize("bank", [0, 2])
++@pytest.mark.parametrize("action", ["confirm", "abandon"])
++def test_saved_native_wire_recovers_once_without_replaying_a_charge(domain, native_recovery_wire, bank, action):
++    _, consumed, recovery = resume_operation(domain, bank=bank, selection=native_recovery_wire["selection"])
++    body = {**native_recovery_wire, **recovery, "action": action}
++    replies = [domain.client.post("/v1/resume-recovery", json=body, headers=headers(domain, "Alice"))
++               for _ in range(2)]
++    assert [reply.status_code for reply in replies] == [200, 200], [reply.text for reply in replies]
++    assert replies[0].json() == replies[1].json()
++    assert replies[0].json()["state"] == ("consumed" if action == "confirm" else "abandoned")
++    expected = consumed["wallet"]["balance"] if action == "confirm" else bank
++    assert replies[0].json()["wallet"]["balance"] == expected
++
++
++@pytest.mark.godot
++def test_backend_still_rejects_fractional_or_float_evidence(domain, native_recovery_wire):
++    _, _, recovery = resume_operation(domain, selection=native_recovery_wire["selection"])
++    for value in (1.0, 1.5, "1"):
++        body = {**recovery, "action": "confirm",
++                "selection": {**recovery["selection"], "ordinal": value}}
++        response = domain.client.post("/v1/resume-recovery", json=body, headers=headers(domain, "Alice"))
++        assert response.status_code == 422
++    assert domain.client.post("/v1/resume-recovery", json={**recovery, "action": "confirm"},
++                              headers=headers(domain, "Alice")).status_code == 200
+--- /dev/null
++++ b/scripts/test_recovery_postgres.py
+@@ -0,0 +1,65 @@
++"""Run recovery/auth regressions with a task-owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-recovery-pg-" + secrets.token_hex(4)
++    label = "recovery-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*arguments):
++        return subprocess.run([*docker, *arguments], capture_output=True, text=True, timeout=30, check=False)
++
++    if call("image", "inspect", "postgres:17").returncode:
++        raise RuntimeError("Existing PostgreSQL 17 image unavailable; no image pulled")
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++                   "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=recovery_test",
++                   "-e", "POSTGRES_DB=recovery_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service changed")
++    result = None
++    try:
++        for _ in range(30):
++            if call("exec", name, "pg_isready", "-U", "recovery_test").returncode == 0:
++                break
++            time.sleep(.5)
++        else:
++            raise RuntimeError("Owned PostgreSQL did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://recovery_test:{password}@127.0.0.1:{port}/recovery_test"
++        result = subprocess.run(
++            [sys.executable, "-m", "pytest", "tests/test_resume_recovery_wire.py",
++             "tests/test_exception_recovery.py", "tests/test_auth.py", "-q", "--tb=short", "--show-capture=no"],
++            cwd=ROOT / "backend", env=env, capture_output=True, text=True, check=False, timeout=180,
++        )
++        output = (result.stdout + result.stderr).replace(password, "[REDACTED]")
++        evidence = ROOT / "docs/evidence/recovery-rate-limit-2026-10-12"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "backend-regression.log").write_text(output, encoding="utf-8")
++        print(output[-6000:])
++    finally:
++        owned = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if owned.returncode != 0 or json.loads(owned.stdout).get("bmt.task") != label:
++            raise RuntimeError("Owned database label changed; leaving it untouched")
++        if call("stop", name).returncode:
++            raise RuntimeError("Owned database cleanup failed")
++        print("Owned PostgreSQL removed")
++    return result.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/docs/RECOVERY_RATE_LIMIT_2026_10_12.md
+@@ -0,0 +1,53 @@
++# Recovery request flood — 2026-10-12
++
++Owner requests the complete root cause of the Race Again `RATE_LIMITED` dialog, a review of similar retry paths, fixes and regression tests. Requirement IDs REC01–REC06, B05/B07, R01, Q01. This is a client reliability change; canonical simulation, scoring, five laps, backend limits and server resource authority are unchanged.
++
++## Confirmed cause
++
++Read-only Cloud Logging inspection of POST traffic between 18:15:00 and 18:27:00 UTC (21:15–21:27 Helsinki) found 1,182 `/v1/resume-recovery` requests from the Godot Windows user agent: 926 HTTP 422, 151 HTTP 401 and 105 HTTP 429. Three `/v1/runs` uploads and one `/v1/run-tickets` request also received 429. The ticket rejection was at 18:24:41.851145 UTC. Logs do not attribute requests to a particular Godot process or account; no CPU/GPU overload conclusion or exact instance count is inferred.
++
++The 17 saved local recovery journals were inspected without changing them. Each contains a confirmed resume, whole-valued tick fields and valid-length operation/race/ticket identities. Godot's JSON parser reloads those integers as floats. The existing recovery path sent the restored dictionary directly. An actual pinned-engine reproduction serialized `ordinal: 1.0`, `input_offset: 3600.0`, `from_tick: 3600.0` and `to_tick: 2400.0`. The existing strict Python `ResumeRecovery`/`Consume` model rejected all four fields with `int_type`. All 17 journals reproduce those same validation errors. Existing native mocks skipped the serialized HTTP boundary and therefore missed this defect.
++
++Recovery retried a prefix of up to 16 files every roughly 5–7.5 seconds, ignoring both terminal validation failures and transient errors. The account budget is shared with race tickets and result uploads. This explains the request flood and why Race Again was blocked. Codex CPU work does not spend this budget. Additional running game instances sharing credentials/journals can amplify the traffic; logs alone do not identify which instances were involved.
++
++## Changes and reviewed adjacent paths
++
++- REC01: `game/backend/resume_recovery.gd` builds a validated recovery request. Only finite, bounded, whole-valued integer fields are cast; fractions, strings, unknown fields and invalid identities are rejected locally. Existing saved journals are repaired at the request boundary without changing charge keys or replaying consumption.
++- REC02: one recovery write per five-second interval, rotating bounded scans rather than a permanently retried prefix, scope-wide exponential backoff, bounded `Retry-After` and persisted cooldowns. Definitive rejections are preserved with a failure marker for repair, not repeatedly posted. Authoritatively resolved operations are retired; a failed local removal cannot repeatedly resubmit a known resolved operation. Active uncertain races are never abandoned by the background worker. Account/origin fences remain.
++- REC03: `game/backend/backend_client.gd` persists the current access credential alongside the existing refresh credential in the same private session file. Under the existing process lock, a matching explicit login reuses a newer saved credential before rotating again. A rejected cached credential falls back to refresh; login, sign-out and in-flight identity fences remain. This fixes the separately reproduced alternating-instance rotation loop. The live refresh counts alone do not prove that every refresh had this cause. `Retry-After` numeric headers now retain waits up to one hour instead of truncating them to one minute.
++- REC04: `game/backend/cloud_tracks.gd` paces background writes (including restore reconciliation and verifier retries) and stops the entire batch on 429. Its saved per-job waits also retain longer server cooldowns. Fresh player race authorization retains its independent path and original ticket/key semantics.
++- REC05: `game/backend/track_lifecycle.gd` backs off failed status polling and malformed publication successes, using monotonic in-process deadlines and persisted restart waits. Incomplete published receipts retain a readable prior state; finishing retries are paced too. Explicit publish/retry resets the corresponding wait. Local drafts and proof packages stay intact.
++- REC06: `game/tests/test_resume_recovery_budget.gd`, `backend/tests/test_resume_recovery_wire.py` and `scripts/test_recovery_postgres.py` add native and actual-wire/backend regressions. Existing session/recovery/publication tests exercise the new scheduler. The session mock now returns valid `/me` and `/runs` replies; publication retry tests explicitly advance the monotonic deadline instead of only clearing the old wall-clock field.
++
++Also reviewed: result-save queue storage retries, refresh recovery keys/process lock, trajectory/control/rewind upload normalization, telemetry restore normalization/backoff, and challenge/Weekly Rivalry polling backoff. These already retain operation identity or normalize their integer fields. No broad JSON coercion or weaker backend validation was added.
++
++## Actual commands and outcomes
++
++Pinned build: `godot-version.txt`, 4.7.2.stable.official.ed1daf0bf; entry point `scripts/dev.ps1`. Native runs use a task test profile (`$env:APPDATA = Join-Path $PWD 'build/resume-recovery-user'`) and fictional/mock API identities. Windows sandbox attempts failed on the user log directory and certificate store; the same isolated tests then ran with the required system access.
++
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/<file>`:
++
++| Test file | Final actual outcome |
++| --- | --- |
++| `test_resume_recovery_budget.gd` | 248 checks, zero failures |
++| `test_session_rotation.gd` | 17 checks, zero failures |
++| `test_backend_exception_recovery.gd` | 28 checks, zero failures |
++| `test_mission_outbox.gd` | 11 checks, zero failures |
++| `test_refreshed_ticket_priority.gd` | 26 checks, zero failures |
++| `test_local_draft_publication.gd` | 31 checks, zero failures; actual 2605-tick creator lap/436 trajectory samples |
++
++The first native reproduction failed all four integer-type assertions and exported the rejected actual wire. Intermediate regression failures were corrected: test dictionary equality after JSON float reload, scan-order expectations, stale mock HTTP receipts, and tests resetting the previous wall-clock scheduler only. Assertions about operation identity, charges, account isolation and pacing were retained.
++
++`.tools/backend-venv/Scripts/python.exe scripts/test_recovery_postgres.py`: 76 passed, two expected SQLite skips of PostgreSQL-only concurrency cases. Actual Godot-produced saved-journal payloads pass the strict HTTP backend on both SQLite and PostgreSQL, for daily/banked confirmation and abandonment, repeated idempotent recovery, and unchanged rejection of float/fraction/string evidence. The task-owned PostgreSQL 17 container was removed after its ownership label was checked. [Actual backend log](evidence/recovery-rate-limit-2026-10-12/backend-regression.log). The initial direct pytest command encountered 19 connection errors from the stale `.tools/backend-postgres.env` service at localhost:55439; the owned-database rerun resolves this environment failure without editing shared configuration or weakening tests.
++
++Ruff on the changed Python tests/helper and `git diff --check` on the touched tracked files pass.
++
++Broader checks outside the acceptance claim: `test_track_lifecycle.gd` requires its live local integration backend; none was available, so discovery/sign-in/slot setup failed. `test_product_telemetry.gd` returned 54/55 checks with its stale-event expiry expectation failing. Its runtime and test source were not changed by this task; its retry/normalization review is not a claim that the entire telemetry suite passes. No full Validate, physics regression, Android export, installation, backend deployment or live recovery writes were performed.
++
++## Remaining acceptance and delivery
++
++Final Doctor with the real installed tool configuration succeeded and reported an attached DN2103 Android phone. No physical-device race or updated Android build was tested. No visual layout changed, so new UI captures are not applicable.
++
++Restart all running game instances to load these source fixes; older processes can continue posting the original invalid requests. On the updated client, valid old journals settle through the existing authoritative endpoint at the bounded pace. No manual journal deletion, replacement consumption, refund invention, backend schema change or deployment is needed for this fix. An installed APK/executable still needs a separately built updated client before it contains these changes.
++
++The workspace contains extensive pre-existing changes. The review checkpoint for this slice is the task-only patch in this evidence directory; unrelated work is preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 REC01-REC06/B05/B07/R01/Q01: Race Again rate limit traced to17confirmed resume journals: Godot reloads four integer fields as floats; strict422 plus unbacked16-file polling floods account budget (1182 recoveryPOSTs/12min; run-ticket429). Validated integer repair/bounded rotating recovery/persisted exponential scope cooldown/terminal evidence preserved; current-access reuse under login/process fences; paced whole-outbox429 handling and monotonic publication failure/malformed-receipt waits. Native248/session17/recovery28/outbox11/ticket26/local-publication31=361pass; actual Godot-wire SQLite+ownedPG76pass/2expectedskips/Ruff/diffcheck pass. Earlier stalePG endpoint19setup errors replaced by ownedDB success; broader local-live lifecycle unavailable and telemetry54/55 expiry failure retained. Doctor attachedDN2103; no physical-device race/APK/export-install/fullValidate/physics/backend/deploy/livewrites. Task-only review patch/commands/owner restart-device acceptance: docs/RECOVERY_RATE_LIMIT_2026_10_12.md.
++
+ 2026-10-12 garage GW01-GW03/GC06-GC28/CW13/CW15/CW16/V06/G01/R01/Q01: detailed marked workshop and owner corrections for repeated stock/tools + whole-room materials. Original fabricated bench/rack/cabinet/cases, forged tools/vice/socket rail, smooth compressor/gauge/motor/hose, shaped spare-wheel spokes/brakes/sidewalls; distinct fluids/parts/brake package/bag/carton shelves and mixed tools. Cached opaque paint/brush/cast/polymer/rubber/cloth finishes, timber grain, dielectric concrete; stock spacing/shelf clearance/roof/fixed stage/framing/zoom/light-sweep/local paint-dirt intact. Native19+Mobile19 details, overview25+25, polish38/carousel175/transition23/exactmodel80/wash1402/Import pass. Room59meshes193038tri204199vertices finite; car64mesh104558tri/source-glass exact. Cold525.305ms/CPU1.025median-1.591p95/GPU1.688median-3.773p95 desktop diagnostic only. Typed-array/case-name/count-fixture corrections and unrelated missing-class Import resolved without weakened invariants. Doctor attached DN2103; no device export/install/test/backend/deploy. Actual files/commands/scoped checkpoint/captures/owner-device acceptance: docs/GARAGE_WORKSHOP_DETAIL.md.
+ 
+ 2026-10-12 WE38-WE39/V04/V05/G01/R01/Q01: owner tries Winter road reflections. Original static cloud/blue sky in128px quality radiance plus shared ground/deck gloss with dull abrasion/frost; pigment/scuffs/camera/canonical retained; kit166->167. Compatibility104/Mobile103 reflection proof:155481/183138 changed pixels,0 unstable; capture170/Mobile environment101/bridge4views pass. RTX3090 fixture4K5s600ticks median3.350ms/p955.594ms/0 over16.667ms; no incremental-cost/phone claim. Doctor attached DN2103; no physical-device test/export-install/fullValidate/physics/backend/deploy/livewrites. Files/actual commands/captures/isolated checkpoint/owner-device acceptance: docs/WINTER_REFLECTIONS.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-12 REC01-REC06/B05/B07/R01/Q01: Race Again rate limit traced to17confirmed resume journals: Godot reloads four integer fields as floats; strict422 plus unbacked16-file polling floods account budget (1182 recoveryPOSTs/12min; run-ticket429). Validated integer repair/bounded rotating recovery/persisted exponential scope cooldown/terminal evidence preserved; current-access reuse under login/process fences; paced whole-outbox429 handling and monotonic publication failure/malformed-receipt waits. Native248/session17/recovery28/outbox11/ticket26/local-publication31=361pass; actual Godot-wire SQLite+ownedPG76pass/2expectedskips/Ruff/diffcheck pass. Earlier stalePG endpoint19setup errors replaced by ownedDB success; broader local-live lifecycle unavailable and telemetry54/55 expiry failure retained. Doctor attachedDN2103; no physical-device race/APK/export-install/fullValidate/physics/backend/deploy/livewrites. Task-only review patch/commands/owner restart-device acceptance: docs/RECOVERY_RATE_LIMIT_2026_10_12.md.
++
+ 2026-10-12 WE38-WE39/V04/V05/G01/R01/Q01: owner tries Winter road reflections. Original static cloud/blue sky in128px quality radiance plus shared ground/deck gloss with dull abrasion/frost; pigment/scuffs/camera/canonical retained; kit166->167. Compatibility104/Mobile103 reflection proof:155481/183138 changed pixels,0 unstable; capture170/Mobile environment101/bridge4views pass. RTX3090 fixture4K5s600ticks median3.350ms/p955.594ms/0 over16.667ms; no incremental-cost/phone claim. Doctor attached DN2103; no physical-device test/export-install/fullValidate/physics/backend/deploy/livewrites. Files/actual commands/captures/isolated checkpoint/owner-device acceptance: docs/WINTER_REFLECTIONS.md.
+ 
+ 2026-10-12 WE35-WE37/V04/V05/G01/R01/Q01: owner cold light-blue ice/white ice scuffs and supplied road reference. Original directional artwork retains weak broad threads; positive fine scrape detail whitens from existing samples; pale actual marks use explicit contact-slope normals instead of deep-rut shading; static wear frosts rather than darkens. Native101/Mobile101/environment, native170/Mobile170/contact presentation, soil166=708 checks/0fail. Legacy capture migrates superseded WE06 no-powder expectation to bounded ice wake/no smoke/stronger loose spray; cached banks checked by actual mesh/material. RTX3090 Slippery4K active20s median3.280ms/p955.193ms/0 frames >16.667ms; no isolated speedup/phone claim. No new textures/draws/particles/collision/camera changes; kit158 invalidation retained under later unrelated kits. Doctor no phone, device/export/fullValidate/physics/backend/deploy/livewrites not performed. Files/actual commands/captures/scoped checkpoint/owner-device acceptance: docs/WINTER_BLUE_ICE.md.

@@ -1,0 +1,66 @@
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -94,7 +94,12 @@
+ vec3 sand_detail(vec3 base, vec2 p) {
+ 	if (winter_snow) return snow_detail(p);
+ 	if (desert_dunes) return dune_sand(p);
+-	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
++	// Two independent mineral scales suppress obvious repeated clusters. Both
++	// reuse the existing packed map, keeping the Android sampler budget intact.
++	float grain = texture(surface_factors,p/16.0).b;
++	float settled = texture(surface_factors,vec2(-p.y,p.x)/27.0+vec2(0.37,0.61)).b;
++	float mineral = mix(grain,settled,0.28);
++	return base * (0.8 + mineral * 0.4);
+ }
+ 
+ // Fine mineral grain on an even sandy bank, distinct from the smooth road.
+--- a/scripts/bake-surface-detail.py
++++ b/scripts/bake-surface-detail.py
+@@ -40,7 +40,15 @@
+ chips = smooth(.685,.755,noise(7.3,27.1,13.7))
+ asphalt = base*(1+((mineral-.32)*.085-(pores-.14)*.045)*(.45+1.15*density)+(chips-.08)*.022)
+ grit = noise(8.7,31.4,7.1)
+-sand = .965+(noise(.65,8.3,21.7)-.5)*.045+(noise(4.3,19.2,3.8)-.5)*.045+(noise(19.)-.5)*.12+smooth(.58,.82,noise(19.))*.04-smooth(.685,.885,grit)*.16
++# Rounded fine minerals, shallow compacted hollows and quiet settled variation.
++# Avoid the old isolated dark grit blobs; grain reads as sand rather than gravel.
++old_sand = .965+(noise(.65,8.3,21.7)-.5)*.045+(noise(4.3,19.2,3.8)-.5)*.045+(noise(19.)-.5)*.12+smooth(.58,.82,noise(19.))*.04-smooth(.685,.885,grit)*.16
++fine = noise(29.,13.1,4.7)
++settled = noise(11.4,7.3,22.1)
++sand = (noise(.22,8.3,21.7)-.5)*.022+(settled-.5)*.045+(fine-.5)*.105
++sand += smooth(.60,.82,fine)*.018-(1-smooth(.20,.40,settled))*.016
++# Preserve the approved pigment's average brightness exactly before encoding.
++sand += old_sand.mean()-sand.mean()
+ pixels = np.stack(((asphalt-.8)/.4,noise(2.8),(sand-.8)/.4),axis=-1)
+ pixels = pixels.reshape(SIZE,2,SIZE,2,3).mean(axis=(1,3))
+ pixels = np.rint(np.clip(pixels,0,1)*255).astype(np.uint8)
+--- /dev/null
++++ b/game/tests/capture_sand_refinement.gd
+@@ -0,0 +1,28 @@
++extends SceneTree
++## Local review fixture; never writes player documents or changes driving rules.
++func _initialize() -> void:
++	capture.call_deferred()
++
++func capture() -> void:
++	root.size = Vector2i(1600,900)
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.paint = [{"surface":2,"width":35.0,"shape":"round","points":[[-38.0,-12.0]],"protect_road":true}]
++	assert(TrackDocument.validate(doc).is_empty())
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.set("initial_track",track)
++	game.set("production_mode",true)
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.set("paused",true)
++	(game.get("race_cues") as Control).hide()
++	for frame: int in range(16):
++		game.call("_process",0.0)
++		await RenderingServer.frame_post_draw
++	var folder: String = "res://../docs/evidence/sand-refinement-2026-10-13/"
++	var suffix: String = "mobile" if RenderingServer.get_current_rendering_method() == "mobile" else "compatibility"
++	var result: Error = root.get_texture().get_image().save_png(folder+suffix+".png")
++	print("SAND_REVIEW capture=",result," renderer=",suffix)
++	game.queue_free()
++	await process_frame
++	quit(0 if result == OK else 1)

@@ -1,0 +1,133 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "R01",
+    "Q01"
+  ],
+  "scope": "Second pass through backend input validation, immutable storage/retry durability, authentication, transaction/lease recovery, backup handling and optional ghost presentation. Four additional gaps were reproduced and fixed locally.",
+  "findings": [
+    {
+      "id": "BR07",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "Stored JSON validation missed exponent overflow and differed across providers",
+      "before": "A blob with a matching SHA256 and {\"coordinate\":1e400} decoded to infinity. S3/GCS also used permissive JSON decoders.",
+      "after": "A shared pure JSON parser checks finite floats, duplicate keys, valid Unicode and depth. Local storage, S3, GCS and archive/restore all use the same integrity decoder. HTTP's existing 1,200,000-node/depth limits remain; stored byte-bounded canonical expansions retain their allowance. Iterator traversal uses memory proportional to depth.",
+      "files": [
+        "backend/bmt_backend/json_data.py",
+        "backend/bmt_backend/middleware.py",
+        "backend/bmt_backend/storage.py",
+        "backend/bmt_backend/s3_storage.py",
+        "backend/bmt_backend/gcs_storage.py"
+      ],
+      "tests": [
+        "test_stored_json_rejects_invalid_data_even_with_matching_hash: three providers, compressed/plain and five invalid trees",
+        "test_shared_storage_validation_keeps_finite_values_and_unicode",
+        "ArchiveTests.test_invalid_content_and_decompression_bomb_never_publish_a_file"
+      ]
+    },
+    {
+      "id": "BR08",
+      "status": "fixed",
+      "severity": "high",
+      "title": "Immutable retries could acknowledge a file whose publication flush failed",
+      "before": "After the final name was linked and directory sync raised OSError, a retry returned the existing digest even while the same durability error persisted.",
+      "after": "Reuse verifies the object and repeats root/shard directory sync before acknowledgement. Continued flush failures stay retryable failures; recovery returns the same digest without replacing or duplicating the object.",
+      "files": [
+        "backend/bmt_backend/storage.py"
+      ],
+      "tests": [
+        "test_reused_publication_retries_failed_directory_flush"
+      ],
+      "limit": "Injected directory-sync failure and successful retry were tested. Physical power-loss behavior on the deployment filesystem was not tested."
+    },
+    {
+      "id": "BR09",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "Unicode normalization could overflow the database username-key column",
+      "before": "The accepted 40-character name U+FDFA repeated 40 times expands to a 720-character NFKC comparison key; PostgreSQL allows 160.",
+      "after": "Display-name validation checks normalized comparison length before a database write. Profile changes/new sign-ins reject these names with 422 and retain the original profile. Ordinary Unicode names and collision comparison rules remain.",
+      "files": [
+        "backend/bmt_backend/auth.py"
+      ],
+      "tests": [
+        "test_expanding_unicode_name_is_rejected_without_changing_profile",
+        "test_expanding_unicode_names_never_reach_postgres_write"
+      ]
+    },
+    {
+      "id": "BR10",
+      "status": "fixed",
+      "severity": "medium",
+      "title": "Finite ghost data could exceed renderable geometry ranges",
+      "before": "The server and client accepted 1e300 in a ghost pose; finiteness of a double does not make it a valid Vector3 component.",
+      "after": "The server drops optional poses outside the existing broad 100,000-component safety range while still accepting valid timing proof. The client applies the same bound before rendering, including recordings saved by older servers.",
+      "files": [
+        "backend/bmt_backend/verifier.py",
+        "game/backend/weekly_rivalry_client.gd"
+      ],
+      "tests": [
+        "test_finite_but_unrenderable_ghost_is_invalid_optional_data",
+        "test_ghost_presentation_bound_is_inclusive",
+        "test_optional_ghost_integer_overflow_preserves_valid_verified_result: now includes positive/negative finite 1e300",
+        "game/tests/test_backend_second_pass.gd: 20 checks passed"
+      ]
+    }
+  ],
+  "tests": {
+    "focused": {
+      "passed": 82,
+      "skipped": 1,
+      "subtests_passed": 13,
+      "file": "focused.xml"
+    },
+    "sqlite_regression": {
+      "passed": 206,
+      "skipped": 1,
+      "subtests_passed": 13,
+      "file": "regression-sqlite.xml"
+    },
+    "postgres_regression": {
+      "passed": 35,
+      "skipped": 1,
+      "file": "regression-postgres.xml"
+    },
+    "linux_recovery": {
+      "passed": 86,
+      "skipped": 1,
+      "subtests_passed": 21,
+      "file": "linux-recovery.xml"
+    },
+    "native": {
+      "checks": 20,
+      "failures": 0,
+      "file": "native-ghost-validation.log",
+      "engine": "4.7.2.stable.official.ed1daf0bf through scripts/dev.ps1"
+    },
+    "lint": "Ruff passed for every touched Python file",
+    "counting": "Counts are per invocation and overlap; subtests are separate.",
+    "commands": [
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_robustness_second_pass.py backend/tests/test_storage.py backend/tests/test_s3_storage.py backend/tests/test_gcs_storage.py backend/tests/test_usernames.py backend/deploy/test_operations.py -q -x -m 'not postgres and not godot' --junitxml=.tools/backend-robustness-second-pass-20261013/focused.xml",
+      ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_robustness_fixes.py backend/tests/test_review_reliability.py backend/tests/test_review_followups.py backend/tests/test_communication_boundary.py backend/tests/test_medium_communication.py backend/tests/test_auth.py backend/tests/test_usernames.py backend/tests/test_browser_auth.py backend/tests/test_readiness.py backend/tests/test_exception_recovery.py backend/deploy/test_operations.py -q -x -k 'not postgres' --junitxml=.tools/backend-robustness-second-pass-20261013/regression-sqlite.xml",
+      "Using the documented disposable PostgreSQL URL privately with host 127.0.0.1: python -m pytest backend/tests/test_robustness_second_pass.py backend/tests/test_robustness_fixes.py backend/tests/test_auth_postgres.py backend/tests/test_replica_failures.py -q -x -k postgres --junitxml=.tools/backend-robustness-second-pass-20261013/regression-postgres.xml",
+      "wsl -d Ubuntu -- docker run --rm --name bmt-robustness-second-pass-20261013 --network none --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/backend,target=/workspace/backend,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-robustness-second-pass-20261013,target=/evidence' --workdir /workspace/backend --env PYTHONPATH=/workspace/backend --env BMT_GODOT_BIN= bmt-backend:local python -m pytest tests/test_robustness_second_pass.py tests/test_robustness_fixes.py tests/test_worker_lifecycle.py deploy/test_operations.py deploy/test_backup_wrapper.py -q -x -m 'not postgres' -k 'not postgres' -p no:cacheprovider --junitxml=/evidence/linux-recovery.xml",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_backend_second_pass.gd",
+      "wsl -d Ubuntu -- docker stop bmt-backend-test: exited 0; restored its original stopped state."
+    ]
+  },
+  "preservation": [
+    "Canonical driving, scoring, approved graphics, resources and pinned contracts remain unchanged.",
+    "No migration, new dependency, production write/provider call/deployment or APK/device test.",
+    "Concurrent communication/pool/lifecycle changes were read and preserved."
+  ],
+  "remaining_acceptance": [
+    "Actual deployment-host reboot, power-loss, database failover and production restore drill.",
+    "HTTP adapters retain connect/read inactivity timeouts; the review does not establish a hard wall-clock limit for every blocked OS/provider IO operation. Platform termination, readiness failures and durable lease recovery remain relevant.",
+    "Legacy unguarded temporary files still require stopped-writer cleanup, as documented in the first repair."
+  ],
+  "checkpoint": "task-only.patch; scoped uncommitted changes against saved starting files."
+}

@@ -1,0 +1,1531 @@
+--- a/game/persistence/track_library.gd
++++ b/game/persistence/track_library.gd
+@@ -6,6 +6,9 @@
+ var last_error: String = ""
+ var revision: int = 0
+ var owner_name: String = ""
++const READ_CACHE = preload("res://persistence/document_read_cache.gd")
++var last_read_path: String = ""
++var last_read_digest: String = ""
+ 
+ 
+ func _init(root: String = "user://tracks") -> void:
+@@ -62,7 +65,7 @@
+ 	return error
+ 
+ 
+-func load_document(id: String) -> Dictionary:
++func load_document(id: String, summary: bool = false) -> Dictionary:
+ 	if not TrackDocument.valid_id(id):
+ 		last_error = "The track identifier is invalid."
+ 		return {}
+@@ -70,8 +73,9 @@
+ 	# Prefer committed state, then last known good state, then a first-save
+ 	# temporary. Reads recover even after a crash between the two renames.
+ 	for candidate: String in [path,path+".bak",path+".tmp"]:
+-		var data: Dictionary = _read(candidate)
++		var data: Dictionary = _read_summary(candidate) if summary else _read(candidate)
+ 		if not data.is_empty() and data.id == id:
++			last_read_path = candidate
+ 			last_error = ""
+ 			return data
+ 	last_error = "This saved track could not be read."
+@@ -99,8 +103,18 @@
+ 		last_error = "This file is too large; creator tracks are at most 512 KB."
+ 		file.close()
+ 		return {}
+-	var text: String = file.get_as_text()
++	var content: PackedByteArray = file.get_buffer(file.get_length())
+ 	file.close()
++	return _decode_document(path,content)
++
++func _decode_document(path: String, content: PackedByteArray) -> Dictionary:
++	last_read_digest = READ_CACHE.digest(content)
++	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
++	var cached: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest)
++	if not cached.is_empty():
++		last_error = ""
++		return cached
++	var text: String = content.get_string_from_utf8()
+ 	var parser := JSON.new()
+ 	if parser.parse(text) != OK:
+ 		last_error = "This file is not valid track JSON."
+@@ -110,7 +124,24 @@
+ 		last_error = errors[0]
+ 		return {}
+ 	last_error = ""
++	READ_CACHE.put_value(cache_path,last_read_digest,parser.data)
+ 	return parser.data
++
++func _read_summary(path: String) -> Dictionary:
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file == null: return {}
++	if file.get_length() > TrackDocument.MAX_BYTES: file.close(); return {}
++	var content: PackedByteArray = file.get_buffer(file.get_length()); file.close()
++	last_read_digest = READ_CACHE.digest(content)
++	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
++	var summary: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest,true)
++	if not summary.is_empty(): return summary
++	var doc: Dictionary = _decode_document(path,content)
++	if doc.is_empty(): return {}
++	summary = {"id":doc.id,"name":doc.name,"creator":doc.get("creator",""),"theme":doc.theme,"pieces":doc.pieces,
++		"piece_count":doc.pieces.size(),"object_count":doc.objects.size(),"fingerprint":draft_fingerprint(doc)}
++	READ_CACHE.put_value(cache_path,last_read_digest,summary,true)
++	return summary
+ 
+ 
+ func _atomic_write(document: Dictionary, path: String) -> Error:
+@@ -179,6 +210,7 @@
+ 	drafts.owner_name = owner_name
+ 	var error: Error=drafts.save_document(document)
+ 	last_error=drafts.last_error
++	if error == OK: revision += 1
+ 	return error
+ 
+ func load_wip(id: String) -> Dictionary:
+@@ -193,24 +225,30 @@
+ 	drafts.owner_name = owner_name
+ 	var error: Error = drafts.delete_document(id)
+ 	last_error = drafts.last_error
++	if error == OK: revision += 1
+ 	return error
+ 
+ func list_wips() -> Array[Dictionary]:
+ 	return TrackLibrary.new(directory.path_join("wip")).list_documents()
+ 
+-func editable_entries() -> Array[Dictionary]:
++func editable_entries(summaries: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
+ 	# Saved originals and editor autosaves are versions of the same local draft.
+ 	var by_id: Dictionary = {}
+ 	for source: String in ["saved","wip"]:
+ 		var store := TrackLibrary.new(directory.path_join("wip") if source == "wip" else directory)
+-		for doc: Dictionary in store.list_documents():
++		var folder := DirAccess.open(store.directory)
++		if folder == null: continue
++		var ids: Dictionary = {}
++		for filename: String in folder.get_files():
++			var base: String = filename.trim_suffix(".bak").trim_suffix(".tmp")
++			if base.ends_with(".json") and TrackDocument.valid_id(base.trim_suffix(".json")): ids[base.trim_suffix(".json")] = true
++		var sorted_ids: Array = ids.keys(); sorted_ids.sort()
++		for id: String in sorted_ids:
++			if cancelled.is_valid() and cancelled.call(): return []
++			var doc: Dictionary = store.load_document(id,summaries)
++			if doc.is_empty(): continue
+ 			if is_published(str(doc.id)): continue
+-			var modified: int = 0
+-			for suffix: String in [".json",".json.bak",".json.tmp"]:
+-				var path: String = store.directory.path_join(str(doc.id)+suffix)
+-				if FileAccess.file_exists(path) and not store._read(path).is_empty():
+-					modified = FileAccess.get_modified_time(path)
+-					break
++			var modified: int = FileAccess.get_modified_time(store.last_read_path)
+ 			var item: Dictionary = {"id":doc.id,"document":doc,"modified":modified,"source":source,
+ 				"load_id":("wip:" if source == "wip" else "")+str(doc.id)}
+ 			if not by_id.has(doc.id) or modified >= int(by_id[doc.id].modified): by_id[doc.id] = item
+@@ -246,6 +284,10 @@
+ 	if not TrackDocument.valid_id(document.get("id")): return false
+ 	var snapshot: Dictionary = _test_library().load_document(str(document.id))
+ 	return not snapshot.is_empty() and draft_fingerprint(snapshot) == draft_fingerprint(document)
++
++func is_tested_fingerprint(id: String, fingerprint: String) -> bool:
++	var summary: Dictionary = _test_library().load_document(id,true)
++	return not summary.is_empty() and summary.fingerprint == fingerprint
+ 
+ func mark_tested(document: Dictionary) -> Error:
+ 	if not owner_name.is_empty(): document["creator"] = owner_name
+--- a/game/ui/draft_browser.gd
++++ b/game/ui/draft_browser.gd
+@@ -19,6 +19,12 @@
+ var count: Label
+ var previous: Button
+ var next: Button
++const SCANS = preload("res://persistence/draft_scan.gd")
++var scan: RefCounted
++var scanning: bool = false
++var scan_revision: int = -1
++var scan_directory: String
++var scan_scope: String
+ 
+ func _ready() -> void:
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -62,6 +68,20 @@
+ 	get_viewport().size_changed.connect(_show_detail)
+ 	_refresh()
+ 
++func _exit_tree() -> void:
++	if scan != null: scan.cancel()
++
++func _process(_delta: float) -> void:
++	if scan != null and scan.done:
++		var completed = scan; scan = null
++		if library.directory != scan_directory or library.revision != scan_revision or (lifecycle != null and lifecycle.scope() != scan_scope):
++			_load_entries(); return
++		var selected_id: String = str(selection.get("id",""))
++		entries = completed.entries
++		for item: Dictionary in entries:
++			if str(item.id) == selected_id: selection = item
++		scanning = false; _refresh()
++
+ func _refresh() -> void:
+ 	for child: Node in gallery.get_children():
+ 		gallery.remove_child(child)
+@@ -78,7 +98,7 @@
+ 	var visible_entries: Array[Dictionary] = matches.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE)
+ 	if visible_entries.is_empty():
+ 		selection = {}
+-		var empty := MenuStyle.label("No drafts saved yet. Create a track to get started." if entries.is_empty() else "No drafts match your search.",24,true)
++		var empty := MenuStyle.label("Loading drafts…" if scanning else "No drafts saved yet. Create a track to get started." if entries.is_empty() else "No drafts match your search.",24,true)
+ 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 		empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		gallery.add_child(empty)
+@@ -120,7 +140,8 @@
+ 	detail.visible = not selection.is_empty()
+ 	if selection.is_empty(): return
+ 	var item: Dictionary = selection
+-	var doc: Dictionary = item.document
++	var doc: Dictionary = library.load_wip(str(item.id)) if item.source == "wip" else library.load_document(str(item.id))
++	if doc.is_empty(): _load_entries(); return
+ 	var row := HBoxContainer.new()
+ 	row.add_theme_constant_override("separation",12)
+ 	var actions: Control = row
+@@ -209,17 +230,18 @@
+ 	var selected_id: String = str(selection.get("id",""))
+ 	_load_entries()
+ 	for item: Dictionary in entries:
+-		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
+ 		if str(item.id) == selected_id: selection = item
+ 	_refresh()
+ 
+ func _load_entries() -> void:
+-	entries = library.editable_entries()
+-	for item: Dictionary in entries:
+-		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
++	if scan != null: scan.cancel()
++	scanning = true
++	scan_directory = library.directory; scan_revision = library.revision
++	scan_scope = lifecycle.scope() if lifecycle != null else ""
++	scan = SCANS.start(scan_directory,get_tree(),lifecycle._root() if lifecycle != null else "")
+ 
+ static func _counts(doc: Dictionary) -> String:
+-	return "%d road pieces  ·  %d objects" % [doc.pieces.size(),doc.objects.size()]
++	return "%d road pieces  ·  %d objects" % [doc.get("piece_count",doc.pieces.size()),doc.get("object_count",doc.get("objects",[]).size())]
+ 
+ static func _stamp(item: Dictionary) -> String:
+ 	if int(item.modified) <= 0: return "Unknown"
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -84,10 +84,13 @@
+ 	return true
+ 
+ func _read(path: String) -> Dictionary:
++	return _read_job(path,cloud._read)
++
++static func _read_job(path: String, reader: Callable) -> Dictionary:
+ 	var existed: bool = false
+ 	for candidate: String in [path,path+".bak",path+".tmp"]:
+ 		existed = existed or FileAccess.file_exists(candidate)
+-		var value: Dictionary = cloud._read(candidate)
++		var value: Dictionary = reader.call(candidate)
+ 		if value.get("schema") != "track-lifecycle-1": continue
+ 		var complete: bool = true
+ 		for field: String in ["scope","library_directory","fingerprint","upload_key","publish_key","ticket_key","state"]:
+@@ -239,6 +242,11 @@
+ 
+ func ready_to_publish(document: Dictionary) -> bool:
+ 	var job: Dictionary = status_for(document)
++	return job.has("proof_file") and job.get("state","") in ["local_ready","ready","saved","draft","invalid","failed"] and not job.get("publish_requested",false)
++
++static func ready_to_publish_fingerprint(fingerprint: String, workflow_directory: String) -> bool:
++	if fingerprint.length() != 64 or not fingerprint.is_valid_hex_number(false): return false
++	var job: Dictionary = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
+ 	return job.has("proof_file") and job.get("state","") in ["local_ready","ready","saved","draft","invalid","failed"] and not job.get("publish_requested",false)
+ 
+ func can_retry(document: Dictionary) -> bool:
+--- a/game/editor/editor_world.gd
++++ b/game/editor/editor_world.gd
+@@ -92,6 +92,7 @@
+ 	track = data
+ 	if is_node_ready() and not _building:
+ 		if reuse:
++			track.editor_roads = {}
+ 			if _visual_track.metadata.get("creator_document",{}).get("objects",[]) != track.metadata.get("creator_document",{}).get("objects",[]) or _visual_track.metadata.get("scenery_objects",[]) != track.metadata.get("scenery_objects",[]):
+ 				var target: NativeTrack = track
+ 				_building = true
+@@ -166,6 +167,7 @@
+ 			_build_track()
+ 			return
+ 	else:
++		target.editor_roads = {}
+ 		world.add_child(candidate)
+ 		candidate.refresh_editor_objects(target)
+ 	if visual != null:
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -161,8 +161,11 @@
+ 	if result != null and not editor_pending_road_bake.is_empty() and result.metadata.get("creator_document",{}) == editor_pending_road_bake:
+ 		NativeTrackVisual.request_saved_road_bake.call_deferred(result)
+ 		editor_pending_road_bake.clear()
+-	if not is_instance_valid(canvas) or screen != "create": return
++	if not is_instance_valid(canvas) or screen != "create":
++		if result != null: result.editor_roads = {}
++		return
+ 	if document != editor_preview_document:
++		if result != null: result.editor_roads = {}
+ 		_queue_editor_preview()
+ 		return
+ 	editor_preview_document = {}
+@@ -3854,6 +3857,9 @@
+ 	if track != null:
+ 		track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,source.paint)
+ 		track.editor_road_mask = CreatorPreviewMasks.road(track)
++		# Cold road jobs remain separate from compilation: undo/profile changes may
++		# join this preview worker, but must never join seconds of road geometry.
++		if not Thread.is_main_thread(): track.editor_roads = preload("res://editor/road_preparation.gd").prepare(track,false,true)
+ 	return track
+ 
+ 
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -36,6 +36,7 @@
+ var snow_banks := SnowBanks.new()
+ var editor_overlay_mask: Image
+ var editor_road_mask: Image
++var editor_roads: Dictionary = {}
+ 
+ 
+ static func read(path: String) -> NativeTrack:
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -54,10 +56,14 @@
+ var _editor_object_revision: int = 0
+ var _editor_authored_batches: RefCounted
+ var _capture_editor_prop_arrays: bool = false
++var _capture_road_arrays: bool = false
++var _prepared_road_parts: Array = []
++var prepare_editor_roads: bool = true
++const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
+ var cache_road_meshes: bool = true
+ var persist_road_meshes: bool = true
+ var cache_race_world: bool = false
+ var world_built: bool = false
+ const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
+ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+ const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+@@ -313,16 +345,35 @@
+ 	var pieces: Array = document.get("pieces",[])
+ 	if pieces.is_empty(): return
+ 	var cache_key: Array = [track.content_hash,VERSION,theme_id,colors,partition_night_ground]
+-	if cache_road_meshes and _restore_road_meshes(cache_key): return
++	var packet: Dictionary = track.editor_roads if editor_preview and prepare_editor_roads else {}
++	var geometry_key: String = str(packet.get("key",""))
++	if editor_preview and prepare_editor_roads and geometry_key.is_empty(): geometry_key = EDITOR_ROADS.key_for(track)
++	var first_child: int = get_child_count()
++	if cache_road_meshes and _restore_road_meshes(cache_key,geometry_key,track):
++		track.editor_roads = {}
++		if not geometry_key.is_empty(): _remember_road_meshes(cache_key,first_child,track,geometry_key)
++		return
++	if editor_preview and prepare_editor_roads and not _capture_road_arrays:
++		if packet.get("parts",[]).is_empty():
++			var job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
++			while not job.done:
++				await get_tree().process_frame
++				if not is_inside_tree(): return
++			packet = job.packet
++		if not packet.is_empty():
++			await _install_prepared_roads(track,packet)
++			track.editor_roads = {}
++			if _menu_slices and not is_inside_tree(): return
++			if cache_road_meshes: _remember_road_meshes(cache_key,first_child,track,str(packet.key))
++			return
+ 	if cache_road_meshes and persist_road_meshes and not editor_preview:
+ 		var stored: Dictionary = ROAD_DISK_CACHE.read_entry(cache_key)
+ 		if not stored.is_empty():
+ 			_admit_road_entry(stored)
+ 			if _restore_road_meshes(cache_key): return
+-	var first_child: int = get_child_count()
+ 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
+-	var texture: ImageTexture = ImageTexture.create_from_image(mask)
+-	var road_texture: ImageTexture = ImageTexture.create_from_image(_creator_road_mask(track))
++	var texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(mask)
++	var road_texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(_creator_road_mask(track))
+ 	var winter_bank := SurfaceTool.new()
+ 	winter_bank.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var winter_sections: int = 0
+@@ -484,17 +535,56 @@
+ 		_remember_road_meshes(cache_key,first_child,track)
+ 
+ 
+-func _restore_road_meshes(key: Array) -> bool:
++func _install_prepared_roads(track: NativeTrack, packet: Dictionary) -> void:
++	var texture := ImageTexture.create_from_image(_creator_overlay_mask(track,track.metadata.creator_document.paint))
++	var road_texture := ImageTexture.create_from_image(_creator_road_mask(track))
++	for part: Dictionary in packet.parts:
++		if _menu_slices and not await _yield_build(): return
++		match part.role:
++			"road":
++				var args: Array = part.arguments
++				await _commit_creator_road(null,args[0],texture,road_texture,args[1],args[2],args[3],args[4],args[5],args[6],args[7],part.arrays)
++			"winter": _commit_winter_bank(null,texture,track.half_extent,road_texture,part.arrays)
++			"kerb": await _build_kerbs(track,part.arrays)
++	for name: String in packet.metadata: set_meta(name,packet.metadata[name])
++
++func _rebind_road_masks(material: ShaderMaterial, track: NativeTrack, textures: Dictionary) -> void:
++	var names: Dictionary = {}
++	for uniform: Dictionary in material.shader.get_shader_uniform_list(): names[uniform.name] = true
++	if names.has("overlay_mask"):
++		if not textures.has("overlay"): textures.overlay = ImageTexture.create_from_image(_creator_overlay_mask(track,track.metadata.creator_document.paint))
++		material.set_shader_parameter("overlay_mask",textures.overlay)
++		if names.has("verge_blend_mask"): material.set_shader_parameter("verge_blend_mask",textures.overlay)
++	if names.has("road_mask"):
++		if not textures.has("road"): textures.road = ImageTexture.create_from_image(_creator_road_mask(track))
++		material.set_shader_parameter("road_mask",textures.road)
++	if names.has("exclusion"):
++		if not textures.has("exclusion"):
++			var pixels := PackedByteArray(); pixels.resize(track.cells.size())
++			for index: int in range(pixels.size()): pixels[index] = 255 if track.kerbs.blocked[index] != 0 else 0
++			textures.exclusion = ImageTexture.create_from_image(Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,pixels))
++		material.set_shader_parameter("exclusion",textures.exclusion)
++
++func _restore_road_meshes(key: Array, geometry_key: String = "", target: NativeTrack = null) -> bool:
+ 	for index: int in range(_road_mesh_cache.size()):
+ 		var entry: Dictionary = _road_mesh_cache[index]
+-		if entry.key != key: continue
++		if entry.key.slice(1) != key.slice(1): continue
++		if entry.key != key and (geometry_key.is_empty() or entry.get("geometry_key","") != geometry_key): continue
+ 		_road_mesh_cache.remove_at(index)
+ 		_road_mesh_cache.append(entry)
++		var rebound: Dictionary = {}
++		var textures: Dictionary = {}
+ 		for data: Dictionary in entry.meshes:
+ 			# Only immutable road resources are shared. Every scene owns new nodes.
+ 			var instance := MeshInstance3D.new()
+ 			instance.mesh = data.mesh
+ 			instance.material_override = data.material
++			if entry.key != key and target != null:
++				var source_id: int = data.material.get_instance_id()
++				if not rebound.has(source_id):
++					rebound[source_id] = data.material.duplicate()
++					_rebind_road_masks(rebound[source_id],target,textures)
++				instance.material_override = rebound[source_id]
+ 			instance.transform = data.transform
+ 			instance.layers = data.layers
+ 			instance.cast_shadow = data.shadow
+@@ -504,7 +594,7 @@
+ 	return false
+ 
+ 
+-func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack) -> void:
++func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack, geometry_key: String = "") -> void:
+ 	var meshes: Array[Dictionary] = []
+ 	# Conservative vertex/index plus CPU/GPU mask allowance; cap both bytes
+ 	# and entries. Oversized roads still use the ordinary uncached builder.
+@@ -521,7 +611,7 @@
+ 	var metadata: Dictionary = {}
+ 	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
+ 		if has_meta(name): metadata[name] = get_meta(name)
+-	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes}
++	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes,"geometry_key":geometry_key}
+ 	_admit_road_entry(entry)
+ 	var id: String = ROAD_DISK_CACHE.identity(key)
+ 	if persist_road_meshes and (not editor_preview or _pending_road_bakes.has(id)):
+@@ -546,12 +636,13 @@
+ 
+ static func _admit_road_entry(entry: Dictionary) -> void:
+ 	for index: int in range(_road_mesh_cache.size()-1,-1,-1):
+-		if _road_mesh_cache[index].key == entry.key: _road_mesh_cache.remove_at(index)
++		if _road_mesh_cache[index].key == entry.key or (not str(entry.get("geometry_key","")).is_empty() and _road_mesh_cache[index].get("geometry_key","") == entry.geometry_key): _road_mesh_cache.remove_at(index)
+ 	var total: int = int(entry.bytes)
+ 	for existing: Dictionary in _road_mesh_cache: total += int(existing.bytes)
+ 	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= ROAD_CACHE_MAX_ENTRIES or total > ROAD_CACHE_BUDGET):
+ 		total -= int(_road_mesh_cache.pop_front().bytes)
+ 	_road_mesh_cache.append(entry)
++	EDITOR_ROADS.account_gpu(_road_mesh_cache)
+ 
+ 
+ 
+@@ -780,37 +871,48 @@
+ 
+ 
+ 
+-func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false) -> void:
++func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false, prepared_arrays: Array = []) -> void:
+ 	# Polygon triangulation and edge strips can have opposite winding. All
+ 	# these surfaces are horizontal: normalize clockwise top faces and use
+ 	# explicit up normals instead of inferring lighting from polygon order.
+-	var source: ArrayMesh = tool.commit()
+-	var arrays: Array = source.surface_get_arrays(0)
+-	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+-	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL] if arrays[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
+-	var uv := PackedVector2Array()
+-	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+-	var uv2 := PackedVector2Array()
+-	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
+-	var vertex_colors := PackedColorArray()
+-	if arrays[Mesh.ARRAY_COLOR] != null: vertex_colors = arrays[Mesh.ARRAY_COLOR]
+-	var flat := SurfaceTool.new()
+-	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for triangle: int in range(0,vertices.size(),3):
+-		if _menu_yield_due():
+-			if not await _yield_build(): return
+-		var order: Array[int] = [triangle,triangle+1,triangle+2]
+-		if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+-			order = [triangle,triangle+2,triangle+1]
+-		for index: int in order:
+-			flat.set_normal(normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
+-			if not uv.is_empty(): flat.set_uv(uv[index])
+-			if not uv2.is_empty(): flat.set_uv2(uv2[index])
+-			if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+-			flat.add_vertex(vertices[index])
++	if prepared_arrays.is_empty():
++		var arrays: Array
++		if _capture_road_arrays:
++			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),theme_id == "desert" and gravel)
++		else:
++			var source: ArrayMesh = tool.commit()
++			arrays = source.surface_get_arrays(0)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL] if arrays[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
++		var uv := PackedVector2Array()
++		if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
++		var uv2 := PackedVector2Array()
++		if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
++		var vertex_colors := PackedColorArray()
++		if arrays[Mesh.ARRAY_COLOR] != null: vertex_colors = arrays[Mesh.ARRAY_COLOR]
++		var flat := SurfaceTool.new()
++		flat.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for triangle: int in range(0,vertices.size(),3):
++			if _menu_yield_due():
++				if not await _yield_build(): return
++			var order: Array[int] = [triangle,triangle+1,triangle+2]
++			if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
++				order = [triangle,triangle+2,triangle+1]
++			for index: int in order:
++				flat.set_normal(normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
++				if not uv.is_empty(): flat.set_uv(uv[index])
++				if not uv2.is_empty(): flat.set_uv2(uv2[index])
++				if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
++				flat.add_vertex(vertices[index])
++		if theme_id == "desert" and gravel: flat.index()
++		prepared_arrays = flat.commit_to_arrays()
++	if _capture_road_arrays:
++		_prepared_road_parts.append({"role":"road","arrays":prepared_arrays,"arguments":[color,extent,gravel,grass,kerb,asphalt_surface,edge_fringe,road_marking]})
++		return
+ 	var instance := MeshInstance3D.new()
+-	if theme_id == "desert" and gravel: flat.index()
+-	instance.mesh = flat.commit()
++	var mesh := ArrayMesh.new()
++	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
++	instance.mesh = mesh
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/storm_creator_road.gdshader") if theme_id == "storm" and not grass and not gravel else CREATOR_ROAD_SHADER
+ 	if theme_id == "desert": material.shader = preload("res://track/desert_road.gdshader")
+@@ -1506,45 +1608,52 @@
+ 	BreakablePropVisual.update_debris(self,state)
+ 
+ 
+-func _build_kerbs(track: NativeTrack) -> void:
++func _build_kerbs(track: NativeTrack, prepared_arrays: Array = []) -> void:
+ 	if theme_id == "winter": return # Ploughed snow covers the retained canonical kerbs.
+ 	if track.kerbs.triangles.is_empty(): return
+ 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
+-	var document: Dictionary = track.metadata.get("creator_document",{})
+-	var triangles: Array[Dictionary] = track.kerbs.triangles
+-	var pieces: Array = document.get("pieces",[])
+-	var fair: bool = pieces.size() > 1
+-	if pieces.size() == 1 and pieces[0].kind not in ["spline","bridge"]:
+-		fair = VisualRoadJoin._base_shape(pieces,0,0.0,RoadPieces.prepare_endpoints(pieces)).swept
+-	# Ordinary solitary pieces retain their canonical kerb; folded ones need
+-	# the same exposed cosmetic border as their road surface.
+-	if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+-		triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
+-		if _menu_slices and not is_inside_tree(): return
+-	if triangles.is_empty(): return
+-	var tool := SurfaceTool.new()
+-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for triangle: Dictionary in triangles:
+-		if _menu_yield_due():
+-			if not await _yield_build(): return
+-		var vertices := PackedVector3Array()
+-		for i: int in range(3):
+-			var point: Vector3 = VisualGeometry.world(triangle.points[i])
+-			var height: float = triangle.heights[i]
+-			if theme_id == "desert":
+-				# Keep the canonical footprint; irregular low sand crowns are cosmetic.
+-				var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
+-				height *= 1.25+rough*0.55
+-			vertices.append(point+Vector3.UP*(0.018+height))
+-		var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
+-		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
+-		if normal.y < 0.0: normal = -normal
+-		for i: int in order:
+-			tool.set_normal(normal)
+-			tool.set_uv(triangle.uv[i])
+-			tool.add_vertex(vertices[i])
++	if prepared_arrays.is_empty():
++		var document: Dictionary = track.metadata.get("creator_document",{})
++		var triangles: Array[Dictionary] = track.kerbs.triangles
++		var pieces: Array = document.get("pieces",[])
++		var fair: bool = pieces.size() > 1
++		if pieces.size() == 1 and pieces[0].kind not in ["spline","bridge"]:
++			fair = VisualRoadJoin._base_shape(pieces,0,0.0,RoadPieces.prepare_endpoints(pieces)).swept
++		# Ordinary solitary pieces retain their canonical kerb; folded ones need
++		# the same exposed cosmetic border as their road surface.
++		if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
++			triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
++			if _menu_slices and not is_inside_tree(): return
++		if triangles.is_empty(): return
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for triangle: Dictionary in triangles:
++			if _menu_yield_due():
++				if not await _yield_build(): return
++			var vertices := PackedVector3Array()
++			for i: int in range(3):
++				var point: Vector3 = VisualGeometry.world(triangle.points[i])
++				var height: float = triangle.heights[i]
++				if theme_id == "desert":
++					# Keep the canonical footprint; irregular low sand crowns are cosmetic.
++					var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
++					height *= 1.25+rough*0.55
++				vertices.append(point+Vector3.UP*(0.018+height))
++			var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
++			var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
++			if normal.y < 0.0: normal = -normal
++			for i: int in order:
++				tool.set_normal(normal)
++				tool.set_uv(triangle.uv[i])
++				tool.add_vertex(vertices[i])
++		prepared_arrays = tool.commit_to_arrays()
++	if _capture_road_arrays:
++		_prepared_road_parts.append({"role":"kerb","arrays":prepared_arrays})
++		return
+ 	var mesh := MeshInstance3D.new()
+-	mesh.mesh = tool.commit()
++	var surface_mesh := ArrayMesh.new()
++	surface_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
++	mesh.mesh = surface_mesh
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/kerb.gdshader")
+ 	material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
+@@ -1710,13 +1819,18 @@
+ 	return row
+ 
+ 
+-func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2, road_mask: Texture2D) -> void:
++func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2, road_mask: Texture2D, prepared_arrays: Array = []) -> void:
++	if prepared_arrays.is_empty():
++		tool.index()
++		prepared_arrays = tool.commit_to_arrays()
++	if _capture_road_arrays:
++		_prepared_road_parts.append({"role":"winter","arrays":prepared_arrays})
++		return
+ 	var mesh := MeshInstance3D.new()
+ 	mesh.name = "WinterSnowBanks"
+-	# Shared corners retain identical position/normal/UV/colour; avoid running
+-	# the vertex shader six times for the same bank-grid point.
+-	tool.index()
+-	mesh.mesh = tool.commit()
++	var surface_mesh := ArrayMesh.new()
++	surface_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
++	mesh.mesh = surface_mesh
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/winter_bank.gdshader")
+ 	_bind_grass(material)
+--- a/game/tests/test_tyres_and_load.gd
++++ b/game/tests/test_tyres_and_load.gd
+@@ -100,6 +100,7 @@
+ 	(app.get("root_ui") as Node).find_child("LoadTrack",true,false).pressed.emit()
+ 	await process_frame
+ 	var browser: Node = app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	check(app.get("screen")=="drafts" and browser!=null,"Create Load opens editing gallery")
+ 	check(browser.get("entries").size()==6,"gallery includes autosave-only tracks")
+ 	var gallery: Node = browser.get("gallery")
+@@ -140,6 +141,7 @@
+ 	await process_frame
+ 	check(app.get("screen")=="drafts","editor Load uses the same gallery")
+ 	browser = app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	browser.emit_signal("back_requested")
+ 	await process_frame
+ 	check(app.get("screen")=="create" and app.get("document").pieces[0].width==14.0,"Back from editor browser restores work")
+@@ -162,6 +164,7 @@
+ 	check(app.get("document").is_empty(),"deleting current draft prevents later autosave resurrection")
+ 	check(library.delete_editable("../invalid")==ERR_INVALID_PARAMETER,"deletion rejects path traversal")
+ 	browser = app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	search = browser.find_child("DraftSearch",true,false)
+ 	search.text = "Storm valley"; search.text_changed.emit(search.text)
+ 	browser.find_child("ContinueEditing",true,false).pressed.emit()
+@@ -217,6 +220,11 @@
+ 	# this verifies workflow, not human driving acceptance.
+ 	for step: int in range(ceili(track.route_length*2.0)+6):
+ 		var to: Vector2 = track._race_route_point(origin+float(step)*0.5)
++		# Timestamp the synthetic movement too: creator completion now retains trajectory evidence.
++		var simulation: VehicleSimulation = game.get("sim")
++		simulation.state.tick += 6
++		simulation.state.position = to
++		simulation.state.velocity = (to-from)*20.0
+ 		game.call("_advance_practice_validation",from,to,track.nearest_route(to))
+ 		from = to
+ 	check(game.get("practice_validation").finished,"one complete ordered lap satisfies practice witness")
+@@ -230,9 +238,10 @@
+ 		if child is AcceptDialog: child.hide(); child.queue_free()
+ 	await process_frame
+ 	var browser: Node = app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	var search: LineEdit = browser.find_child("DraftSearch",true,false)
+ 	search.text="Tested oval"; search.text_changed.emit(search.text)
+-	check(browser.find_child("PublishDraft",true,false).disabled,"a local completion alone cannot bypass backend-verified publication")
++	check(not browser.find_child("PublishDraft",true,false).disabled and not library.is_published(doc.id),"completed local evidence enables explicit Publish without minting a publication")
+ 	if "--capture" in OS.get_cmdline_user_args():
+ 		for i: int in range(3): await RenderingServer.frame_post_draw
+ 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../docs/evidence/draft-browser/tested.png"))
+--- a/game/tests/test_track_deletion.gd
++++ b/game/tests/test_track_deletion.gd
+@@ -33,6 +33,7 @@
+ 	app.selected_track = TrackCompiler.compile(doc)
+ 	app.call("_show_screen","drafts")
+ 	var browser: Control=app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	var tile: Button = browser.find_child("Draft_my_track",true,false)
+ 	check(tile != null,"saved local track is available in Load track")
+ 	if tile != null: tile.pressed.emit()
+@@ -60,6 +61,7 @@
+ 	check(records.settings.last_track!="creator_my_track" and app.get("selected_track").identity!="creator_my_track","last and active selections cleared")
+ 	check((app.get("document") as Dictionary).is_empty(),"in-memory editor cannot autosave deleted track")
+ 	browser=app.get("root_ui").find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	check(browser.entries.size()==1 and browser.entries[0].id=="keep_me","library reindexes after deletion")
+ 	app.call("_show_screen","tracks")
+ 	check(app.root_ui.find_child("DeleteUserTrack",true,false)==null,"Race has no local-track delete action")
+@@ -67,6 +69,7 @@
+ 	check(library.save_document(draft)==OK,"save unfinished draft")
+ 	app.call("_show_screen","drafts")
+ 	browser=app.root_ui.find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
+ 	tile=browser.find_child("Draft_unfinished",true,false)
+ 	if tile != null: tile.pressed.emit()
+ 	check(tile != null and browser.find_child("DeleteDraft",true,false)!=null,"unfinished draft can also be deleted")
+--- a/game/tests/test_creator_refinement.gd
++++ b/game/tests/test_creator_refinement.gd
+@@ -147,6 +147,7 @@
+ 	app.call("_show_screen","drafts")
+ 	for i: int in range(40): await process_frame
+ 	var draft_browser: Control = app.root_ui.find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,draft_browser),"draft gallery completes preparation")
+ 	check(draft_browser != null and draft_browser.find_child("Draft_"+str(road.id),true,false) != null,"Load track contains the saved local circuit")
+ 	var catalog := TrackCatalog.new(library)
+ 	catalog.add_local(str(road.id))
+--- a/game/tests/test_free_editor.gd
++++ b/game/tests/test_free_editor.gd
+@@ -183,6 +183,7 @@
+ 	app.call("_show_screen","drafts")
+ 	await process_frame
+ 	var drafts: Control = app.root_ui.find_child("DraftBrowser",true,false)
++	check(await preload("res://tests/draft_scan_wait.gd").ready(self,drafts),"draft gallery completes preparation")
+ 	var tile: Button = drafts.find_child("Draft_"+str(remix.id),true,false)
+ 	check(tile != null,"saved starter remix appears in Load track")
+ 	if tile != null: tile.pressed.emit()
+--- a/game/tests/test_road_cache.gd
++++ b/game/tests/test_road_cache.gd
+@@ -45,7 +45,7 @@
+ 		original.theme_id = theme
+ 		original.colors = TrackTheme.palette(theme)
+ 		root.add_child(original)
+-		original._build_creator_roads(track)
++		await original._build_creator_roads(track)
+ 		var expected: Array = signature(original)
+ 		check(not expected.is_empty(),theme+" road fixture is nonempty")
+ 		last_entry = CACHE.read_entry(key)
+@@ -55,7 +55,7 @@
+ 		restored.theme_id = theme
+ 		restored.colors = TrackTheme.palette(theme)
+ 		root.add_child(restored)
+-		restored._build_creator_roads(track)
++		await restored._build_creator_roads(track)
+ 		check(signature(restored) == expected,theme+" disk-loaded meshes, materials, masks and render flags exactly match")
+ 		for name: String in original.get_meta_list():
+ 			check(restored.get_meta(name,null) == original.get_meta(name),theme+" retains "+name)
+@@ -80,7 +80,7 @@
+ 		editor.theme_id = theme
+ 		editor.colors = TrackTheme.palette(theme)
+ 		root.add_child(editor)
+-		editor._build_creator_roads(track)
++		await editor._build_creator_roads(track)
+ 		check(not CACHE.read_entry(key).is_empty(),"saved editor road is baked when pending geometry completes")
+ 		DirAccess.remove_absolute(path+".sha256")
+ 		NativeTrackVisual.request_saved_road_bake(track)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 ED03-ED04/R01/T01-T04/V03/V05/Q01: owner fixes editor review chat items3/4. Cancellable background draft/status summaries, verified immutable32MiB parse cache and lazy selected documents; parent WIP revision/scope guards retain recovery/locks. Separate CPU-only road jobs keep joined compilation light; conservative geometry keys share unchanged meshes and current masks within existing32MiB road budget. Compatibility415/MobileVulkan415 exact arrays+painted pixels, workflow252/tyres75/cache70/delete23/refine33/free48/creator113/incremental47/parser674 pass. Desktop96-piece roads1.37-5.50s ->28-114ms main publication plus worker; reuse1-18ms.128-draft open4.8-5.3ms, warm scans196-227ms off-thread. Cold CPU cost/Night publication/render intervals remain; no phoneFPS/device/APK/fullValidate/backend/deploy. Concurrent car API interruption resolved by its owner; original timestamp/publication assertions corrected to current trajectory workflow. Actual commands/captures/limits/task-only patch: docs/evidence/editor-loading-roads-2026-10-13/report.json.
++
+ 2026-10-13 COMM-03/B05/B07/Q01: owner implements client network health. Capability-gated fixed category/method/status/error/latency/queue/preparation/HTTP/decode/retry/HTTP429/body counters, server-anchored upload ages and selected safe request UUIDs; no URL/body/credential/freeform-error collection. Account/origin RAM4scopes/16categories/128keys/8samples,5min menu snapshots and existing passive outbox;0032 prepared facts/partial sample index and Studio Network filters/IDs. FinalSQLite82pass/2deselected, ownedPG60pass/removed, actual nativeHTTP12 with exact backend IDs/ACK/no Run; native network28/telemetry55/quality57/session17/exception28/outbox11/priority26/recovery260 zero failures; browser29/JS/Ruff/diff pass. Initial timing/durable-queue fixture issues corrected with assertions retained; native packet4698B/maxevent819B desktop-only. No phone/APK/full game regression/livewrites/deploy;0032/app rollout and physical-network acceptance remain. Commands/captures/scoped receipt: docs/evidence/network-health-2026-10-13/review.json; docs/PRODUCT_TELEMETRY_2026_10_11.md.
+ 
+ 2026-10-13 WIND10-WIND12/V04/V05/G01/R01/Q01: owner ground motion/detached-overlay correction. Winter-wind12 moving opaque road/terrain/bridge/bank-toe powder; physical pigment/roughness/specular/normal integration, zero49ground36bank card submissions when surface support exists,48 grains2.6-9.8cm high/96tri. Six shared run-owned finish copies after prepared-world completion, exact restore/rebind/no cached-resource mutation; two packed flow reads/localized world field, unchanged prevailing speed/physics/camera/car-impact clouds. Kit191/loaded-interface proof excludes stale expanded shaders; actual-car reference bound after startup creation and independent of volume focus. Native72/Mobile72, sampler60/cache70/driving72 pass; paused/restored ground pixels and all opaque/mixed car roof checks exact. Initial ribbon/cache/car-binding/background-diagnostic failures corrected with assertions retained; invalid driving script path corrected. Concurrent partitions/uniform terrain/editor-road prep retained/excluded; desktop profiles no isolated or phone FPS claim. DN2103 attached/no phone run/APK/fullValidate/backend/deploy. Actual commands/files/captures/scoped checkpoint/owner acceptance: docs/WINTER_GROUND_SNOW.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 ED03-ED04/R01/T01-T04/V03/V05/Q01: owner fixes editor review chat items3/4. Cancellable background draft/status summaries, verified immutable32MiB parse cache and lazy selected documents; parent WIP revision/scope guards retain recovery/locks. Separate CPU-only road jobs keep joined compilation light; conservative geometry keys share unchanged meshes and current masks within existing32MiB road budget. Compatibility415/MobileVulkan415 exact arrays+painted pixels, workflow252/tyres75/cache70/delete23/refine33/free48/creator113/incremental47/parser674 pass. Desktop96-piece roads1.37-5.50s ->28-114ms main publication plus worker; reuse1-18ms.128-draft open4.8-5.3ms, warm scans196-227ms off-thread. Cold CPU cost/Night publication/render intervals remain; no phoneFPS/device/APK/fullValidate/backend/deploy. Concurrent car API interruption resolved by its owner; original timestamp/publication assertions corrected to current trajectory workflow. Actual commands/captures/limits/task-only patch: docs/evidence/editor-loading-roads-2026-10-13/report.json.
++
+ 2026-10-13 COMM-03/B05/B07/Q01: owner implements client network health. Capability-gated fixed category/method/status/error/latency/queue/preparation/HTTP/decode/retry/HTTP429/body counters, server-anchored upload ages and selected safe request UUIDs; no URL/body/credential/freeform-error collection. Account/origin RAM4scopes/16categories/128keys/8samples,5min menu snapshots and existing passive outbox;0032 prepared facts/partial sample index and Studio Network filters/IDs. FinalSQLite82pass/2deselected, ownedPG60pass/removed, actual nativeHTTP12 with exact backend IDs/ACK/no Run; native network28/telemetry55/quality57/session17/exception28/outbox11/priority26/recovery260 zero failures; browser29/JS/Ruff/diff pass. Initial timing/durable-queue fixture issues corrected with assertions retained; native packet4698B/maxevent819B desktop-only. No phone/APK/full game regression/livewrites/deploy;0032/app rollout and physical-network acceptance remain. Commands/captures/scoped receipt: docs/evidence/network-health-2026-10-13/review.json; docs/PRODUCT_TELEMETRY_2026_10_11.md.
+ 
+ 2026-10-13 WIND10-WIND12/V04/V05/G01/R01/Q01: owner ground motion/detached-overlay correction. Winter-wind12 moving opaque road/terrain/bridge/bank-toe powder; physical pigment/roughness/specular/normal integration, zero49ground36bank card submissions when surface support exists,48 grains2.6-9.8cm high/96tri. Six shared run-owned finish copies after prepared-world completion, exact restore/rebind/no cached-resource mutation; two packed flow reads/localized world field, unchanged prevailing speed/physics/camera/car-impact clouds. Kit191/loaded-interface proof excludes stale expanded shaders; actual-car reference bound after startup creation and independent of volume focus. Native72/Mobile72, sampler60/cache70/driving72 pass; paused/restored ground pixels and all opaque/mixed car roof checks exact. Initial ribbon/cache/car-binding/background-diagnostic failures corrected with assertions retained; invalid driving script path corrected. Concurrent partitions/uniform terrain/editor-road prep retained/excluded; desktop profiles no isolated or phone FPS claim. DN2103 attached/no phone run/APK/fullValidate/backend/deploy. Actual commands/files/captures/scoped checkpoint/owner acceptance: docs/WINTER_GROUND_SNOW.md.
+--- /dev/null
++++ b/game/persistence/document_read_cache.gd
+@@ -0,0 +1,34 @@
++extends RefCounted
++## Immutable verified binary documents/summaries. Always verify current file bytes.
++const BUDGET: int = 32 * 1024 * 1024
++const LIMIT: int = 1024
++static var entries: Dictionary = {}
++static var bytes: int = 0
++static var guard := Mutex.new()
++
++static func get_value(path: String, digest: String, summary: bool = false) -> Dictionary:
++	var key: String = ("summary:" if summary else "document:")+path
++	guard.lock()
++	var entry: Dictionary = entries.get(key,{})
++	var buffer: PackedByteArray = entry.data if entry.get("digest","") == digest else PackedByteArray()
++	guard.unlock()
++	return bytes_to_var(buffer) if not buffer.is_empty() else {}
++
++static func put_value(path: String, digest: String, value: Dictionary, summary: bool = false) -> void:
++	var data: PackedByteArray = var_to_bytes(value)
++	var key: String = ("summary:" if summary else "document:")+path
++	var size: int = data.size()+key.to_utf8_buffer().size()+digest.length()+96
++	if size > BUDGET: return
++	guard.lock()
++	if entries.has(key): bytes -= int(entries[key].bytes); entries.erase(key)
++	while not entries.is_empty() and (entries.size() >= LIMIT or bytes+size > BUDGET):
++		var expired: String = entries.keys()[0]
++		bytes -= int(entries[expired].bytes); entries.erase(expired)
++	entries[key] = {"digest":digest,"data":data,"bytes":size}
++	bytes += size
++	guard.unlock()
++
++static func digest(data: PackedByteArray) -> String:
++	var context := HashingContext.new()
++	context.start(HashingContext.HASH_SHA256); context.update(data)
++	return context.finish().hex_encode()
+--- /dev/null
++++ b/game/persistence/draft_scan.gd
+@@ -0,0 +1,49 @@
++extends RefCounted
++## Retire cancelled scans between files; page close never joins a live worker.
++static var pending: Array = []
++static var tree: SceneTree
++var thread: Thread
++var entries: Array[Dictionary] = []
++var done: bool = false
++var aborted: bool = false
++var guard := Mutex.new()
++
++static func start(directory: String, owner_tree: SceneTree, workflow_directory: String = "") -> RefCounted:
++	var job = load("res://persistence/draft_scan.gd").new()
++	job.thread = Thread.new()
++	if job.thread.start(job.run.bind(directory,workflow_directory),Thread.PRIORITY_LOW) != OK: job.done = true; job.thread = null; return job
++	pending.append(job)
++	if tree == null:
++		tree = owner_tree
++		tree.process_frame.connect(reap)
++		tree.root.tree_exiting.connect(finish)
++	return job
++
++func cancel() -> void:
++	guard.lock(); aborted = true; guard.unlock()
++
++func cancelled() -> bool:
++	guard.lock(); var value: bool = aborted; guard.unlock()
++	return value
++
++func run(directory: String, workflow_directory: String) -> Array[Dictionary]:
++	var storage := TrackLibrary.new(directory)
++	var result: Array[Dictionary] = storage.editable_entries(true,cancelled)
++	for item: Dictionary in result:
++		if cancelled(): return []
++		item.tested = TrackLifecycle.ready_to_publish_fingerprint(item.document.fingerprint,workflow_directory) if not workflow_directory.is_empty() else storage.is_tested_fingerprint(str(item.id),item.document.fingerprint)
++	return result
++
++static func reap() -> void:
++	for index: int in range(pending.size()-1,-1,-1):
++		var job = pending[index]
++		if job.thread.is_alive(): continue
++		job.entries = job.thread.wait_to_finish()
++		job.thread = null; job.done = true
++		pending.remove_at(index)
++
++static func finish() -> void:
++	for job in pending: job.cancel()
++	for job in pending:
++		job.thread.wait_to_finish(); job.thread = null; job.done = true
++	pending.clear(); tree = null
+--- /dev/null
++++ b/game/editor/road_preparation.gd
+@@ -0,0 +1,80 @@
++extends RefCounted
++## CPU arrays only. GPU materials, textures and scene nodes publish on main.
++const BUDGET: int = 32 * 1024 * 1024
++static var entries: Array = []
++static var bytes: int = 0
++static var gpu_bytes: int = 0
++static var gpu_keys: Dictionary = {}
++static var guard := Mutex.new()
++
++static func key_for(track: NativeTrack) -> String:
++	var doc: Dictionary = track.metadata.get("creator_document",{})
++	var road_cells := PackedByteArray()
++	if doc.get("theme",track.metadata.get("theme","pine")) == "desert":
++		road_cells.resize(track.cells.size())
++		for index: int in range(road_cells.size()): road_cells[index] = 1 if track.cells[index] == 0 else 0
++	var geometry: Array = [NativeTrackVisual.VERSION,TrackTheme.normalized(str(track.metadata.get("theme","pine"))),doc.get("pieces",[]),doc.get("surface","asphalt"),doc.get("base_track",""),track.half_extent,track.cell_size,road_cells,track.kerbs.triangles]
++	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
++	return digest.finish().hex_encode()
++
++static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false) -> Dictionary:
++	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
++	var key: String = key_for(track)
++	guard.lock()
++	for entry: Dictionary in entries:
++		if entry.key == key:
++			guard.unlock(); return entry.packet
++	var uploaded: bool = gpu_keys.has(key)
++	guard.unlock()
++	if cached_only or (uploaded and not force): return {"key":key,"parts":[],"metadata":{}}
++	var builder := NativeTrackVisual.new()
++	builder.name = "RoadCPUBuilder"
++	builder.theme_id = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
++	builder.colors = TrackTheme.palette(builder.theme_id)
++	builder.cache_road_meshes = false; builder.persist_road_meshes = false
++	builder._capture_road_arrays = true
++	builder._build_creator_roads(track)
++	var metadata: Dictionary = {}
++	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
++		if builder.has_meta(name): metadata[name] = builder.get_meta(name)
++	var packet: Dictionary = {"key":key,"parts":builder._prepared_road_parts,"metadata":metadata}
++	var size: int = 0
++	for part: Dictionary in packet.parts:
++		var arrays: Array = part.arrays
++		size += arrays[Mesh.ARRAY_VERTEX].size()*96
++		if arrays[Mesh.ARRAY_INDEX] != null: size += arrays[Mesh.ARRAY_INDEX].size()*4
++	builder.free()
++	guard.lock()
++	if size <= BUDGET-gpu_bytes:
++		while not entries.is_empty() and (entries.size() >= 8 or bytes+size+gpu_bytes > BUDGET): bytes -= int(entries.pop_front().bytes)
++		entries.append({"key":key,"packet":packet,"bytes":size}); bytes += size
++	guard.unlock()
++	return packet
++
++static func account_gpu(cache: Array) -> void:
++	guard.lock()
++	gpu_bytes = 0; gpu_keys.clear()
++	for entry: Dictionary in cache:
++		gpu_bytes += int(entry.bytes)
++		if not str(entry.get("geometry_key","")).is_empty(): gpu_keys[entry.geometry_key] = true
++	while not entries.is_empty() and bytes+gpu_bytes > BUDGET: bytes -= int(entries.pop_front().bytes)
++	guard.unlock()
++
++static func unpack_intermediate(arrays: Array, decode_normals: bool) -> Array:
++	# Match this pinned engine's intermediate ArrayMesh encode/decode, without
++	# creating a rendering resource. See the exact engine-source fixture checks.
++	var result: Array = arrays.duplicate()
++	if decode_normals and arrays[Mesh.ARRAY_NORMAL] != null:
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL].duplicate()
++		for index: int in range(normals.size()):
++			var packed: Vector2 = normals[index].octahedron_encode()*65535.0
++			var oct := Vector2(float(clampi(int(packed.x),0,65535))/65535.0,float(clampi(int(packed.y),0,65535))/65535.0)
++			normals[index] = Vector3.octahedron_decode(oct)
++		result[Mesh.ARRAY_NORMAL] = normals
++	if arrays[Mesh.ARRAY_COLOR] != null:
++		var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR].duplicate()
++		for index: int in range(colors.size()):
++			var c: Color = colors[index]
++			colors[index] = Color(float(clampi(int(c.r*255.0),0,255))/255.0,float(clampi(int(c.g*255.0),0,255))/255.0,float(clampi(int(c.b*255.0),0,255))/255.0,float(clampi(int(c.a*255.0),0,255))/255.0)
++		result[Mesh.ARRAY_COLOR] = colors
++	return result
+--- /dev/null
++++ b/game/editor/road_preparation_job.gd
+@@ -0,0 +1,27 @@
++extends RefCounted
++const PREPARATION = preload("res://editor/road_preparation.gd")
++static var pending: Array = []
++static var tree: SceneTree
++var thread: Thread
++var packet: Dictionary = {}
++var done: bool = false
++
++static func start(track: NativeTrack, owner_tree: SceneTree) -> RefCounted:
++	var job = load("res://editor/road_preparation_job.gd").new()
++	job.thread = Thread.new()
++	if job.thread.start(PREPARATION.prepare.bind(track,true),Thread.PRIORITY_LOW) != OK: job.done = true; job.thread = null; return job
++	pending.append(job)
++	if tree == null:
++		tree = owner_tree; tree.process_frame.connect(reap); tree.root.tree_exiting.connect(finish)
++	return job
++
++static func reap() -> void:
++	for index: int in range(pending.size()-1,-1,-1):
++		var job = pending[index]
++		if job.thread.is_alive(): continue
++		job.packet = job.thread.wait_to_finish(); job.thread = null; job.done = true
++		pending.remove_at(index)
++
++static func finish() -> void:
++	for job in pending: job.thread.wait_to_finish(); job.thread = null; job.done = true
++	pending.clear(); tree = null
+--- /dev/null
++++ b/game/tests/test_editor_loading_roads.gd
+@@ -0,0 +1,156 @@
++extends SceneTree
++const PREPARATION = preload("res://editor/road_preparation.gd")
++const CACHE = preload("res://persistence/document_read_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var evidence: String
++var metrics: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func metric(name: String, started: int) -> void:
++	var entry: Dictionary = {"operation":name,"ms":(Time.get_ticks_usec()-started)/1000.0}
++	metrics.append(entry); print("EDITOR_LOADING_ROADS ",JSON.stringify(entry))
++
++func circuit(count: int = 96) -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "loading_roads"; doc.name = "Loading roads"
++	var position := Vector2(-47,-36); var heading: float = 0.0
++	for side: int in range(2):
++		for index: int in range((count-2)/2):
++			var piece: Dictionary = RoadPieces.create("straight",position,heading,6)
++			piece.length = 94.0/float((count-2)/2); doc.pieces.append(piece); position = RoadPieces.end_pose(piece).position
++		var turn: Dictionary = RoadPieces.create("hairpin",position,heading,6); turn.radius = 36.0; doc.pieces.append(turn)
++		var pose: Dictionary = RoadPieces.end_pose(turn); position = pose.position; heading = pose.heading
++	return RoadPieces.route_from_pieces(doc).document
++
++func mesh_digest(visual: Node3D) -> String:
++	var context := HashingContext.new(); context.start(HashingContext.HASH_SHA256)
++	for node: Node in visual.get_children():
++		if not node is MeshInstance3D: continue
++		context.update(var_to_bytes(node.mesh.surface_get_arrays(0)))
++	return context.finish().hex_encode()
++
++func roads(theme_id: String) -> void:
++	var doc: Dictionary = circuit(); doc.theme = theme_id
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,doc.paint)
++	track.editor_road_mask = CreatorPreviewMasks.road(track)
++	var original := NativeTrackVisual.new(); original.theme_id = theme_id; original.colors = TrackTheme.palette(theme_id)
++	original.editor_preview = true
++	original.cache_road_meshes = false; original.persist_road_meshes = false; original.prepare_editor_roads = false
++	var current := NativeTrackVisual.new(); current.theme_id = theme_id; current.colors = original.colors
++	original.name = "OriginalRoads"; current.name = "PreparedRoads"
++	current.cache_road_meshes = false; current.persist_road_meshes = false; current.editor_preview = true
++	var viewport := SubViewport.new(); viewport.size = Vector2i(1280,720); viewport.own_world_3d = true
++	viewport.name = "RoadViewport"
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
++	var stage := Node3D.new(); viewport.add_child(stage); stage.add_child(original); stage.add_child(current)
++	stage.name = "RoadStage"
++	var began: int = Time.get_ticks_usec(); await original._build_creator_roads(track); metric(theme_id+"_original_generation",began)
++	var thread := Thread.new(); began = Time.get_ticks_usec(); thread.start(PREPARATION.prepare.bind(track,true))
++	var slowest: float = 0.0
++	while thread.is_alive():
++		var frame: int = Time.get_ticks_usec(); await process_frame; slowest = maxf(slowest,(Time.get_ticks_usec()-frame)/1000.0)
++	track.editor_roads = thread.wait_to_finish(); metric(theme_id+"_worker_generation",began)
++	metrics.append({"operation":theme_id+"_maximum_worker_frame_interval","ms":slowest})
++	print("EDITOR_ROAD_WORKER maximum_frame_interval_ms=",slowest)
++	check(not track.editor_roads.parts.is_empty(),theme_id+" worker supplies CPU-only mesh arrays")
++	began = Time.get_ticks_usec(); await current._build_creator_roads(track); metric(theme_id+"_main_publication",began)
++	check(mesh_digest(original) == mesh_digest(current),theme_id+" original/worker mesh arrays match exactly")
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 120
++	camera.name = "RoadCamera"
++	stage.add_child(camera); camera.look_at_from_position(Vector3(0,150,-95),Vector3.ZERO); camera.current = true
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-58,-35,0); light.shadow_enabled = true; stage.add_child(light)
++	light.name = "RoadLight"
++	var ambient := WorldEnvironment.new(); ambient.environment = Environment.new()
++	ambient.name = "RoadEnvironment"
++	ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; ambient.environment.ambient_light_energy = 0.45
++	stage.add_child(ambient)
++	if DisplayServer.get_name() != "headless":
++		current.hide(); original.show(); for frame: int in range(5): await RenderingServer.frame_post_draw
++		var a: Image = viewport.get_texture().get_image()
++		original.hide(); current.show(); for frame: int in range(5): await RenderingServer.frame_post_draw
++		var b: Image = viewport.get_texture().get_image()
++		a.save_png(evidence+"/"+theme_id+"-original.png"); b.save_png(evidence+"/"+theme_id+"-worker.png")
++		check(a.get_data() == b.get_data(),theme_id+" actual paired road pixels are exact")
++	# Geometry is independent of metadata and non-road object edits, but masks are live.
++	var changed: Dictionary = doc.duplicate(true); changed.name = "Renamed road"; changed.objects.append({"kind":"tyre_stack","position":[0,0],"rotation":0.0})
++	var other: NativeTrack = TrackCompiler.compile(changed)
++	check(PREPARATION.key_for(track) == PREPARATION.key_for(other),theme_id+" metadata/tyre edits retain road geometry identity")
++	current._remember_road_meshes([track.content_hash,NativeTrackVisual.VERSION,theme_id,current.colors,true],0,track,PREPARATION.key_for(track))
++	other.editor_overlay_mask = CreatorPreviewMasks.overlay(other,changed.paint); other.editor_road_mask = CreatorPreviewMasks.road(other)
++	other.editor_roads = PREPARATION.prepare(other)
++	var retained := NativeTrackVisual.new(); retained.name = "ReusedRoads"; retained.editor_preview = true; retained.theme_id = theme_id; retained.colors = current.colors; retained.persist_road_meshes = false
++	stage.add_child(retained)
++	began = Time.get_ticks_usec(); await retained._build_creator_roads(other); metric(theme_id+"_unchanged_geometry_reuse",began)
++	check(mesh_digest(retained) == mesh_digest(current),theme_id+" reused road attributes stay exact after metadata/tyre edits")
++	check(retained.get_child(0).mesh == current.get_child(0).mesh,theme_id+" unchanged geometry reuses the actual mesh resource")
++	check(PREPARATION.bytes+PREPARATION.gpu_bytes <= PREPARATION.BUDGET,theme_id+" prepared CPU/GPU cache shares the original byte budget")
++	var painted: Dictionary = changed.duplicate(true)
++	painted.paint.append({"surface":2,"width":4.0,"shape":"round","points":[[0.0,-28.0]]})
++	var painted_track: NativeTrack = TrackCompiler.compile(painted)
++	painted_track.editor_overlay_mask = CreatorPreviewMasks.overlay(painted_track,painted.paint)
++	painted_track.editor_road_mask = CreatorPreviewMasks.road(painted_track)
++	check(PREPARATION.key_for(painted_track) == PREPARATION.key_for(track),theme_id+" off-road paint retains geometry while changing its overlay")
++	check(painted_track.editor_overlay_mask.get_data() != track.editor_overlay_mask.get_data(),theme_id+" paint fixture changes the live mask")
++	painted_track.editor_roads = PREPARATION.prepare(painted_track)
++	var masked := NativeTrackVisual.new(); masked.name = "MaskedReusedRoads"; masked.editor_preview = true; masked.theme_id = theme_id; masked.colors = current.colors; masked.persist_road_meshes = false
++	stage.add_child(masked); await masked._build_creator_roads(painted_track)
++	check(masked.get_child(0).mesh == retained.get_child(0).mesh,theme_id+" off-road painting reuses the actual road mesh")
++	for child: Node in masked.get_children():
++		var material: ShaderMaterial = child.material_override
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			if uniform.name == "overlay_mask": check(material.get_shader_parameter("overlay_mask").get_image().get_data() == painted_track.editor_overlay_mask.get_data(),theme_id+" reused material binds the latest overlay")
++	var fresh := NativeTrackVisual.new(); fresh.name = "FreshPaintedRoads"; fresh.editor_preview = true; fresh.prepare_editor_roads = false; fresh.cache_road_meshes = false; fresh.persist_road_meshes = false; fresh.theme_id = theme_id; fresh.colors = current.colors
++	stage.add_child(fresh); await fresh._build_creator_roads(painted_track)
++	check(mesh_digest(fresh) == mesh_digest(masked),theme_id+" fresh and reused painted roads retain exact attributes")
++	if DisplayServer.get_name() != "headless":
++		original.hide(); current.hide(); retained.hide(); masked.hide(); fresh.show()
++		for frame: int in range(5): await RenderingServer.frame_post_draw
++		var painted_a: Image = viewport.get_texture().get_image()
++		fresh.hide(); masked.show()
++		for frame: int in range(5): await RenderingServer.frame_post_draw
++		var painted_b: Image = viewport.get_texture().get_image()
++		painted_a.save_png(evidence+"/"+theme_id+"-paint-fresh.png"); painted_b.save_png(evidence+"/"+theme_id+"-paint-reused.png")
++		check(painted_a.get_data() == painted_b.get_data(),theme_id+" reused materials match actual freshly painted pixels")
++	changed.pieces[0].width += 1.0
++	check(PREPARATION.key_for(track) != PREPARATION.key_for(TrackCompiler.compile(changed)),theme_id+" geometry edits invalidate preparation")
++	viewport.queue_free(); await process_frame
++
++func listing() -> void:
++	var library := TrackLibrary.new(evidence+"/library")
++	var source: Dictionary = circuit()
++	for index: int in range(128):
++		var doc: Dictionary = source.duplicate(true); doc.id = "draft_%03d" % index; doc.name = "Draft %03d" % index
++		check(library.save_document(doc) == OK and library.save_wip(doc) == OK,"listing fixture saves "+str(index))
++	for repeat: int in range(3):
++		var began: int = Time.get_ticks_usec(); var entries: Array = library.editable_entries(true); metric("summary_list_128_"+str(repeat),began)
++		check(entries.size() == 128 and not entries[0].document.has("paint"),"summary listing deduplicates versions without retaining full maps")
++	var browser = preload("res://ui/draft_browser.gd").new(); browser.library = library
++	var began: int = Time.get_ticks_usec(); root.add_child(browser); metric("browser_open_handler",began)
++	var deadline: int = Time.get_ticks_msec()+30000
++	while browser.scanning and Time.get_ticks_msec()<deadline: await process_frame
++	check(not browser.scanning and browser.entries.size()==128,"browser asynchronously presents actual drafts")
++	check(browser.find_child("ContinueEditing",true,false)!=null,"selected draft actions remain usable")
++	var first: Dictionary = library.load_document("draft_000"); first.name = "External same-sized change"
++	var file := FileAccess.open(library.directory+"/draft_000.json",FileAccess.WRITE); file.store_string(JSON.stringify(first,"\t",true)); file.close()
++	check(library.load_document("draft_000").name == first.name,"file-content verification invalidates stale cached parsing")
++	var copy: Dictionary = library.load_document("draft_000"); copy.objects.clear(); copy.name = "Mutated returned value"
++	check(library.load_document("draft_000").name == first.name,"decoded cache results own independent mutable values")
++	check(library.save_document(first) == OK,"recovery fixture creates a real previous committed backup")
++	file = FileAccess.open(library.directory+"/draft_000.json",FileAccess.WRITE); file.store_string("{invalid}"); file.close()
++	check(not library.load_document("draft_000").is_empty(),"corrupt primary still recovers the valid backup")
++	check(CACHE.bytes <= CACHE.BUDGET,"read cache retains its byte budget")
++	browser._load_entries(); began = Time.get_ticks_usec(); browser.queue_free(); await process_frame; metric("leave_pending_scan",began)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://").path_join("../build/editor-loading-roads-2026-10-13").simplify_path().path_join(RenderingServer.get_current_rendering_method()+"-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	await listing()
++	for biome: String in ["pine","desert","winter","night_city"]: await roads(biome)
++	var file := FileAccess.open(evidence+"/results.json",FileAccess.WRITE); file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("EDITOR_LOADING_ROADS_TESTS: %d checks, %d failures; evidence=%s" % [checks,failures,evidence])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/draft_scan_wait.gd
+@@ -0,0 +1,7 @@
++extends RefCounted
++## Await the actual asynchronous gallery state without hiding failed assertions.
++static func ready(tree: SceneTree, browser: Node) -> bool:
++	var deadline: int = Time.get_ticks_msec()+15000
++	while is_instance_valid(browser) and bool(browser.get("scanning")) and Time.get_ticks_msec()<deadline:
++		await tree.process_frame
++	return is_instance_valid(browser) and not bool(browser.get("scanning"))
+--- /dev/null
++++ b/game/persistence/document_read_cache.gd.uid
+@@ -0,0 +1 @@
++uid://cen128wraon08
+--- /dev/null
++++ b/game/persistence/draft_scan.gd.uid
+@@ -0,0 +1 @@
++uid://dgq6ox528x8y1
+--- /dev/null
++++ b/game/editor/road_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://drg3ftlb571bu
+--- /dev/null
++++ b/game/editor/road_preparation_job.gd.uid
+@@ -0,0 +1 @@
++uid://dc28x6yuvvlq1
+--- /dev/null
++++ b/game/tests/test_editor_loading_roads.gd.uid
+@@ -0,0 +1 @@
++uid://cko53mo465714
+--- /dev/null
++++ b/game/tests/draft_scan_wait.gd.uid
+@@ -0,0 +1 @@
++uid://dop3jgjegfhin
+--- /dev/null
++++ b/docs/evidence/editor-loading-roads-2026-10-13/report.json
+@@ -0,0 +1,359 @@
++{
++  "date": "2026-10-13",
++  "requirements": [
++    "R01",
++    "T01",
++    "T02",
++    "T03",
++    "T04",
++    "V03",
++    "V05",
++    "Q01"
++  ],
++  "scope": "Owner requested fixes to chat findings 3 (draft loading/listing) and 4 (road generation/invalidation). Original JSON review priorities combined the earlier object/save findings, so these correspond to JSON review entries 2 and 3.",
++  "changes": {
++    "draft_loading": [
++      "Draft gallery immediately builds its controls and scans saved/WIP documents plus tested/publication summaries on a cancellable low-priority worker. Directory, library revision and profile scope guards discard stale scans. Closing the page never joins its live scan.",
++      "A 32 MiB/1024-entry immutable binary cache avoids repeated JSON parse/validation and summary fingerprinting. Every hit hashes the actual current file bytes, detecting external and same-size edits; decoded documents own independent mutable values.",
++      "Cards retain only names/themes/piece outlines/counts/fingerprints. Full authoring documents load lazily for the selected actions. Primary/backup/temp precedence, saved/WIP ordering and publication locks are retained. Reads no longer reread documents just for timestamps; cold summary decoding reuses its first file buffer.",
++      "Successful WIP writes/deletes increment the parent library revision. Lifecycle readers share existing recovery/schema validation while static worker reads avoid accessing live UI/network nodes."
++    ],
++    "roads": [
++      "Low-priority road jobs produce CPU-only triangle/index/normal/UV/colour arrays. ArrayMesh upload, texture/material binding and scene publication remain on the main thread with existing frame slicing.",
++      "Cold road generation is separate from the compiler worker joined by Undo/profile transitions. Compilation can attach an already prepared packet or just its dependency key; foreground callers also defer cold geometry to the road job.",
++      "A conservative geometry digest uses visual version, biome, road pieces/surface/base source, extent/cell size, canonical kerb triangles and Desert road occupancy. Metadata and irrelevant prop/paint edits can reuse the actual immutable road meshes. Geometry/width/extent/surface/biome/road-occupancy changes invalidate as needed.",
++      "Document hashes and disk cache contracts remain canonical. Reused materials are duplicated per original shared material and rebind shared current overlay/road/exclusion textures, keeping older scenes intact. Prepared CPU arrays and the existing GPU road cache share its original 32 MiB allowance.",
++      "Faithfully emulates the pinned engine intermediate normal/colour packing so worker arrays retain the original renderer pixels. Exact original bank branch forms and shader inputs are retained."
++    ]
++  },
++  "environment": {
++    "engine": "4.7.2.stable.official.ed1daf0bf",
++    "os": "Windows desktop",
++    "gpu": "NVIDIA GeForce RTX 3090",
++    "renderers": [
++      "Compatibility/OpenGL3",
++      "Mobile/Vulkan"
++    ],
++    "capture_size": [
++      1280,
++      720
++    ],
++    "fixtures": "128 unique drafts with saved/WIP versions and 96 connected road pieces; 96-piece paired road geometry in four biomes; isolated disposable workspace/user test stores."
++  },
++  "measurements": {
++    "compatibility": {
++      "checks": 415,
++      "failures": 0,
++      "metrics": [
++        {
++          "ms": 1310.974,
++          "operation": "summary_list_128_0"
++        },
++        {
++          "ms": 214.936,
++          "operation": "summary_list_128_1"
++        },
++        {
++          "ms": 195.569,
++          "operation": "summary_list_128_2"
++        },
++        {
++          "ms": 4.843,
++          "operation": "browser_open_handler"
++        },
++        {
++          "ms": 21.212,
++          "operation": "leave_pending_scan"
++        },
++        {
++          "ms": 1420.327,
++          "operation": "pine_original_generation"
++        },
++        {
++          "ms": 1342.358,
++          "operation": "pine_worker_generation"
++        },
++        {
++          "ms": 45.587,
++          "operation": "pine_main_publication"
++        },
++        {
++          "ms": 12.458,
++          "operation": "pine_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 5504.182,
++          "operation": "desert_original_generation"
++        },
++        {
++          "ms": 5493.734,
++          "operation": "desert_worker_generation"
++        },
++        {
++          "ms": 32.458,
++          "operation": "desert_main_publication"
++        },
++        {
++          "ms": 1.074,
++          "operation": "desert_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 2290.613,
++          "operation": "winter_original_generation"
++        },
++        {
++          "ms": 2411.507,
++          "operation": "winter_worker_generation"
++        },
++        {
++          "ms": 28.29,
++          "operation": "winter_main_publication"
++        },
++        {
++          "ms": 1.128,
++          "operation": "winter_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 1374.158,
++          "operation": "night_city_original_generation"
++        },
++        {
++          "ms": 1327.644,
++          "operation": "night_city_worker_generation"
++        },
++        {
++          "ms": 113.612,
++          "operation": "night_city_main_publication"
++        },
++        {
++          "ms": 18.362,
++          "operation": "night_city_unchanged_geometry_reuse"
++        }
++      ]
++    },
++    "mobile": {
++      "checks": 415,
++      "failures": 0,
++      "metrics": [
++        {
++          "ms": 1370.556,
++          "operation": "summary_list_128_0"
++        },
++        {
++          "ms": 221.274,
++          "operation": "summary_list_128_1"
++        },
++        {
++          "ms": 227.179,
++          "operation": "summary_list_128_2"
++        },
++        {
++          "ms": 5.308,
++          "operation": "browser_open_handler"
++        },
++        {
++          "ms": 23.623,
++          "operation": "leave_pending_scan"
++        },
++        {
++          "ms": 1999.354,
++          "operation": "pine_original_generation"
++        },
++        {
++          "ms": 1379.645,
++          "operation": "pine_worker_generation"
++        },
++        {
++          "ms": 46.022,
++          "operation": "pine_main_publication"
++        },
++        {
++          "ms": 17.161,
++          "operation": "pine_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 5676.79,
++          "operation": "desert_original_generation"
++        },
++        {
++          "ms": 5393.693,
++          "operation": "desert_worker_generation"
++        },
++        {
++          "ms": 32.226,
++          "operation": "desert_main_publication"
++        },
++        {
++          "ms": 1.393,
++          "operation": "desert_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 2563.586,
++          "operation": "winter_original_generation"
++        },
++        {
++          "ms": 2378.862,
++          "operation": "winter_worker_generation"
++        },
++        {
++          "ms": 26.429,
++          "operation": "winter_main_publication"
++        },
++        {
++          "ms": 1.202,
++          "operation": "winter_unchanged_geometry_reuse"
++        },
++        {
++          "ms": 1658.252,
++          "operation": "night_city_original_generation"
++        },
++        {
++          "ms": 1345.296,
++          "operation": "night_city_worker_generation"
++        },
++        {
++          "ms": 120.282,
++          "operation": "night_city_main_publication"
++        },
++        {
++          "ms": 16.073,
++          "operation": "night_city_unchanged_geometry_reuse"
++        }
++      ]
++    }
++  },
++  "measurement_notes": [
++    "Main-thread road publication: Compatibility 28.290-113.612 ms; Mobile 26.429-120.282 ms. Original synchronous road generation 1.374-5.504 s and 1.658-5.677 s respectively. These are operation durations, not phone FPS or guaranteed frame limits.",
++    "Unchanged road mesh reuse: Compatibility 1.074-18.362 ms; Mobile 1.202-17.161 ms.",
++    "128-draft first summary pass 1.311/1.371 s; subsequent verified summary scans 195.569-227.179 ms. Gallery open handlers 4.843/5.308 ms; pending-page close 21.212/23.623 ms including a process-frame wait. Actual filesystem scan continues asynchronously.",
++    "The earlier review reported a 1.940 s median 128-draft list. This historical probe differs in retained objects/cache conditions and is not a strict paired benchmark.",
++    "Observed maximum worker frame intervals were 8.569/19.262/17.010/105.917 ms (Compatibility) and 9.597/16.630/14.443/114.947 ms (Mobile), in pine/desert/winter/night order. Night rendering and uncontrolled concurrent host activity remain relevant; asynchronous generation does not prove hitch-free rendering."
++  ],
++  "commands": [
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_loading_roads.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++      "result": "415 checks, 0 failures; exact arrays and actual paired pixels for pine/desert/winter/night_city, including reused painted roads.",
++      "log": "compatibility-profile.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_loading_roads.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 180",
++      "result": "415 checks, 0 failures; same exact geometry, pixel, recovery and bounded-cache assertions.",
++      "log": "mobile-profile.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestTyresLoad -CommandTimeoutSeconds 180",
++      "result": "75 checks, 0 failures.",
++      "log": "tyres-load.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRoadCache -CommandTimeoutSeconds 180",
++      "result": "70 checks, 0 failures.",
++      "log": "road-cache.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestWorkflow -CommandTimeoutSeconds 180",
++      "result": "252 checks, 0 failures.",
++      "log": "workflow.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestDeleteTracks -CommandTimeoutSeconds 180",
++      "result": "23 checks, 0 failures.",
++      "log": "delete.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRefinement -CommandTimeoutSeconds 180",
++      "result": "33 checks, 0 failures.",
++      "log": "refinement.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestFreeEditor -CommandTimeoutSeconds 180",
++      "result": "48 checks, 0 failures.",
++      "log": "free-editor.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCreator -CommandTimeoutSeconds 180",
++      "result": "113 checks, 0 failures.",
++      "log": "creator.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -CommandTimeoutSeconds 180",
++      "result": "47 checks, 0 failures; earlier object/save fixes retained. Final handler samples: unchanged Save 10.653 ms, tyre placement 72.891 ms, moved container 118.589 ms.",
++      "log": "incremental.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 120",
++      "result": "674 scripts, 0 failures.",
++      "log": "parse.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180",
++      "result": "Completed exit 0; registered newly introduced concurrent script dependencies."
++    },
++    {
++      "command": "git diff --check -- <changed tracked runtime/test files>",
++      "result": "Passed. CRLF conversion notices only."
++    }
++  ],
++  "diagnostic_history": [
++    "Initial probe recovery assertion lacked a real backup. Saving the fixture twice created the intended previous committed state; the original recovery assertion then passed.",
++    "Mesh equivalence initially exposed intermediate engine normal and colour quantization. The CPU preparation now reproduces that exact packing; final assertions use exact mesh arrays and image bytes, without tolerance relaxation.",
++    "A race-only original reference initially entered concurrent spatial-mesh work. Both paired road fixtures now explicitly use the actual editor path; concurrent unnamed-chunk fixes were preserved and excluded.",
++    "An existing publication fixture completed gate sweeps at an unchanging simulation tick, incompatible with current trajectory-only completion. It now timestamps its actual synthetic movement. Its obsolete disabled-Publish assertion now verifies that local evidence enables explicit Publish without minting a publication; the existing guest/no-cloud-publication and persisted-completion assertions remain.",
++    "One final Compatibility/parser attempt encountered a concurrently unfinished CompactDetail.rim_detail API. After that unrelated edit became consistent, both reruns passed. No car-model edit belongs to this task."
++  ],
++  "limits": [
++    "No physical-phone commands, phone acceptance/FPS, Android export/install, deployment, full Validate or online publication.",
++    "Cold road generation still takes seconds of CPU time; this change moves that work off input handling and reuses completed geometry.",
++    "GPU upload, shader preparation and Night light partition publication still cost main/render-thread time. Existing compiler joins and whole-scene work outside road preparation retain their earlier behavior.",
++    "Task-only checkpoint excludes concurrent car kits, spatial terrain, biomes, race startup, communication and backend robustness changes."
++  ],
++  "remaining_acceptance": "Exercise large draft browsing, cold Desert/Winter roads, rapid edits/undo/redo, page close, save/return and sustained memory/input-to-display response on supported phones.",
++  "changed_files": [
++    "game/persistence/track_library.gd",
++    "game/persistence/document_read_cache.gd",
++    "game/persistence/draft_scan.gd",
++    "game/ui/draft_browser.gd",
++    "game/backend/track_lifecycle.gd",
++    "game/editor/road_preparation.gd",
++    "game/editor/road_preparation_job.gd",
++    "game/editor/editor_world.gd",
++    "game/core/app.gd",
++    "game/track/native_track.gd",
++    "game/track/native_track_visual.gd",
++    "game/tests/test_editor_loading_roads.gd",
++    "game/tests/draft_scan_wait.gd",
++    "game/tests/test_tyres_and_load.gd",
++    "game/tests/test_track_deletion.gd",
++    "game/tests/test_creator_refinement.gd",
++    "game/tests/test_free_editor.gd",
++    "game/tests/test_road_cache.gd",
++    "DEVELOPMENT_STATUS.md",
++    "docs/PHASE_0_PLAN.md"
++  ],
++  "source_sha256": {
++    "game/persistence/track_library.gd": "e11cd736e0c580fdcdc319040a1980702ff03238ead5dbc2e26b007a1bff801f",
++    "game/persistence/document_read_cache.gd": "da26cb59d8a61800d6b4f4f768ada919d20d7efb5a4eb944aba6ab33be5df069",
++    "game/persistence/draft_scan.gd": "9eedcce6105f297af4fa697e434c9215745b08d29421d994af3018528aedc541",
++    "game/ui/draft_browser.gd": "6ed0048c43798cd57852c0e203e25e64c78f1977827f32fdceac593e96e2b2da",
++    "game/backend/track_lifecycle.gd": "599be5ebfc3e2bf191933a7213b5898a4e1023a89604751562776d7d86900d62",
++    "game/editor/road_preparation.gd": "a31f26626007047120b004e5defbc35f68de96a35d6f8426198c61bc94d47e2f",
++    "game/editor/road_preparation_job.gd": "9c41d392971090ffe93801416c47d931444f18b4ee40ca6587ca9f49907e2fd2",
++    "game/editor/editor_world.gd": "d5747d7572a0c8314efd981d40ff3ecbf62e23b12d095f0cc60217f0306b4fb9",
++    "game/core/app.gd": "9ab34338c9e020d65bab0d4c6cd283300b8785af592734670270636303eaa088",
++    "game/track/native_track.gd": "c90c43e927b6ad11317895a58436d9fec7d6590e93c57c5767002e047031b37c",
++    "game/track/native_track_visual.gd": "f0944e2831165a2baa2b25ded1e4a61001ad519c5bb9d8e3d52f7d5232282e57",
++    "game/tests/test_editor_loading_roads.gd": "aa1da3005c878496d26638892090a57462d49d1f9b7c151d47e5884c2d2f59bc",
++    "game/tests/draft_scan_wait.gd": "c21ad3cc6a86f9b6a6b4b7f49217fa94a6670c2cf7aaff48b97471aa862ab103",
++    "game/tests/test_tyres_and_load.gd": "8746f79f9edfe5bc165cec7591fd555ea869cd76ea2ceee69778ae40fd7137fb",
++    "game/tests/test_track_deletion.gd": "d801bcc8aa697e918707062be385c967edd769d2ca8a18ac49a277026ca50442",
++    "game/tests/test_creator_refinement.gd": "61adb03823ee5317bb8f90616e0568459f54e3e55eb955eaceb3e27256bc4eea",
++    "game/tests/test_free_editor.gd": "1ab71fa0fac04789f08a0b5fd01fd7a9eb09c2da1024540f13dc3e4a6d30dfba",
++    "game/tests/test_road_cache.gd": "37bd87e495d83e346de9a0fb596dfb8b4ab798adca8e67c0f92ca5c25222210b"
++  },
++  "packing_sources": [
++    "https://raw.githubusercontent.com/godotengine/godot/ed1daf0bf/servers/rendering/rendering_server.cpp",
++    "https://raw.githubusercontent.com/godotengine/godot/ed1daf0bf/core/math/vector3.cpp"
++  ],
++  "checkpoint": "implementation.patch",
++  "checkpoint_validation": "checkpoint-validation.json"
++}

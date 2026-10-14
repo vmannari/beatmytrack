@@ -1,0 +1,391 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2784,10 +2784,10 @@
+ 		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice)
+ 	return race_loading
+ 
+-func _present_race_loading() -> void:
++func _present_race_loading() -> bool:
+ 	# Layout and actually draw the overlay before synchronous scene construction.
+ 	await get_tree().process_frame
+-	if DisplayServer.get_name() == "headless": return
++	if DisplayServer.get_name() == "headless": return false
+ 	# Minimized/suspended windows may stop emitting frame_post_draw entirely.
+ 	# Wait for an actual draw normally, but never make it an unbounded race gate.
+ 	var drawn: Dictionary = {"done": false}
+@@ -2798,6 +2798,7 @@
+ 		await get_tree().process_frame
+ 	if RenderingServer.frame_post_draw.is_connected(observe):
+ 		RenderingServer.frame_post_draw.disconnect(observe)
++	return drawn.done
+ 
+ func _race_loading_matches(expected_id: int) -> bool:
+ 	return is_instance_valid(race_loading) and race_loading.get_instance_id() == expected_id
+@@ -2993,7 +2994,15 @@
+ 	# Render the prepared world once with the countdown/input still frozen.
+ 	game.call("_process", 0.0)
+ 	loading.stage("Preparing start…")
+-	await _present_race_loading()
++	var prepared_finish: VehicleWeathering = game.get("car_weathering")
++	var finish_warmed: bool = prepared_finish.begin_render_warmup()
++	var finish_drawn: bool = await _present_race_loading()
++	# Always restore after the bounded draw wait, including cancellation/focus loss.
++	prepared_finish.end_render_warmup()
++	if finish_warmed and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
++		game.call("_process", 0.0)
++		# The exact clean/livery finish is visible before releasing the loading cover.
++		await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if not is_instance_valid(prepared_game) or game != prepared_game:
+ 		cloud_starting = false
+@@ -3004,6 +3013,7 @@
+ 		_close_race_loading(loading_id)
+ 		_leave_race()
+ 		return
++	game.set("weathering_prepared", finish_drawn)
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+ 	_telemetry_begin_attempt(track)
+ 	cloud_starting = false
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -126,6 +126,7 @@
+ var profile_physics_total_us: int = 0
+ var profile_process_total_us: int = 0
+ var condition_save_count: int = 0
++var weathering_prepared: bool = false
+ var hitch_diagnostics_enabled: bool = true
+ var hitch_diagnostics: Node
+ var profile_skip_telemetry: bool = false
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -40,6 +40,7 @@
+ var materials: Array[ShaderMaterial] = []
+ var contacts := SurfaceAudioModel.new()
+ var installed: bool = false
++var _render_warming: bool = false
+ var axle_half: float = 1.28
+ var wheel_half_span: float = 0.83
+ var wheel_radius: float = 0.37
+@@ -207,8 +208,21 @@
+ 	if dirt_amount > 0.0:
+ 		smudge = clampf(smudge + (before - snow_amount) * 0.75, 0.0, 1.0)
+ 
+-func _update_finish() -> void:
+-	if amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
++func begin_render_warmup() -> bool:
++	# Real mesh/material combinations must be drawn at least once in Compatibility.
++	# The race-loading cover hides this pass; cosmetic values remain exact.
++	if installed or _render_warming or materials.is_empty(): return false
++	_render_warming = true
++	_update_finish(true)
++	return true
++
++func end_render_warmup() -> void:
++	if not _render_warming: return
++	_render_warming = false
++	_update_finish()
++
++func _update_finish(force_install: bool = false) -> void:
++	if not force_install and amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
+ 		if installed:
+ 			for binding: Dictionary in bindings:
+ 				if not is_instance_valid(binding.node): continue
+@@ -324,6 +338,7 @@
+ 	return _body.global_transform.affine_inverse() * node.global_transform * local_point
+ 
+ func reset() -> void:
++	_render_warming = false
+ 	_finish_values.clear()
+ 	if installed:
+ 		for binding: Dictionary in bindings:
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -86,11 +86,16 @@
+ 	var row: Dictionary = {"wall_ms": (now - _started_usec) / 1000.0, "frame_ms": frame_us / 1000.0, "tick": simulation.state.tick, "race_ms": simulation.state.tick * 1000.0 / VehicleSimulation.TICK_RATE, "countdown_ticks": int(game.get("countdown_ticks")), "callbacks_ms": (now - _idle_start_usec) / 1000.0 if _idle_start_usec > 0 else 0.0, "between_callbacks_ms": max(0, _idle_start_usec - _last_usec) / 1000.0 if _last_usec > 0 else 0.0, "stages_ms": sections, "draw_boundary_ms": _draw_us / 1000.0 if _draw_count != _last_draw_count else -1.0, "blocked": blocked, "speed_mps": simulation.state.velocity.length(), "route_index": simulation.state.route_index, "elevated": simulation.state.track_elevated, "weathering_installed": condition.installed, "condition_save_count": int(game.get("condition_save_count")), "rewind_entries": game.get("rewind_history").entries.size(), "proof_frames": game.get("online_frames").size()}
+ 	_last_draw_count = _draw_count
+ 	row.background = _background_context()
++	row.weathering_prepared = bool(game.get("weathering_prepared"))
+ 	var track: NativeTrack = game.get("native_track")
+ 	row.track_hash = track.content_hash if track != null else ""
+ 	row.biome = str(track.metadata.get("theme", "pine")) if track != null else "pine"
+ 	var dust: Node = game.get("sand_dust")
+ 	row.effects = {"dust_emitters": dust.get("dust_emitters").size(), "spray_emitters": dust.get("spray_emitters").size(), "smoke_emitters": dust.get("smoke_emitters").size(), "snow_powder_emitters": dust.get("snow_powder").size(), "snow_bursts": int(dust.get("snow_burst_count")), "trail_cursor": int(game.get("trails").get("cursor"))}
++	row.effects.clipping_active_mask = _emitter_mask(dust.get("clipping_emitters"))
++	row.effects.mud_active_mask = _emitter_mask(dust.get("mud_emitters"))
++	row.effects.dust_active_mask = _emitter_mask(dust.get("dust_emitters"))
++	row.effects.smoke_active_mask = _emitter_mask(dust.get("smoke_emitters"))
+ 	var storm: Node = game.get("storm_weather")
+ 	if storm != null: row.effects.storm_strikes = storm.get("strikes")
+ 	row.engine_monitors = {"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, "physics_tick_ms": Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0, "memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC), "resources": Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT), "draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), "pipeline_canvas": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_CANVAS), "pipeline_mesh": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_MESH), "pipeline_surface": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SURFACE), "pipeline_draw": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW), "pipeline_specialization": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SPECIALIZATION)}
+@@ -100,6 +105,12 @@
+ 	if _revision > _saved_revision and now >= _next_write_usec: flush_async()
+ 	observed_frames += 1
+ 	observer_total_us += Time.get_ticks_usec() - started
++
++static func _emitter_mask(emitters: Array) -> int:
++	var bits: int = 0
++	for index: int in range(mini(32, emitters.size())):
++		if emitters[index].emitting: bits |= 1 << index
++	return bits
+ 
+ func _background_context() -> Dictionary:
+ 	var parent: Node = game.get_parent()
+--- a/game/backend/client_quality.gd
++++ b/game/backend/client_quality.gd
+@@ -120,7 +120,8 @@
+ 		_last_frame_usec = 0
+ 		return
+ 	var current_game: Node = app.get("game") if app != null else null
+-	var racing: bool = is_instance_valid(current_game) and not bool(current_game.get("paused")) and not bool(app.get("_telemetry_race_finished"))
++	# A cancelled setup can briefly expose a partial node without race properties.
++	var racing: bool = is_instance_valid(current_game) and current_game.get("paused") == false and app.get("_telemetry_race_finished") != true
+ 	var usec: int = Time.get_ticks_usec()
+ 	var frame_ms: float = (usec-_last_frame_usec)/1000.0 if _last_frame_usec > 0 else delta*1000.0
+ 	_last_frame_usec = usec
+--- a/game/tests/test_over_under_loading.gd
++++ b/game/tests/test_over_under_loading.gd
+@@ -51,6 +51,7 @@
+ 		if is_instance_valid(app.game):
+ 			app.game.set_physics_process(false)
+ 			check(app.game.hud != null and app.game.track_session.target_laps == 5 and revealed.get("countdown", -1) == 360 and revealed.get("tick", -1) == 0, "prepared five-lap bridge race remains at full countdown")
++			check(app.game.weathering_prepared == (DisplayServer.get_name() != "headless") and not app.game.car_weathering._render_warming, "preparation records an actual draw and restores clean bindings before racing")
+ 			print("OVER_UNDER_LOAD_MS ", Time.get_ticks_msec()-began)
+ 			app._leave_race()
+ 		await process_frame
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH05-RH07/Q01/V05/G01/R01: owner live PC freeze captured4.255792s, render-boundary4.228334s immediately after first car-weathering bind at tick326; no condition save. Isolated firstdirty170.831ms/repeat8.322, preparation-firstdirty8.358ms; strongly implicates first-use finish compilation, driver stack not captured. Exact-value actual-material draw under existing loading cover/restoration before full360-tick countdown; safe cancellation/bounded actual-draw marker and emitter masks. Pixel/condition/state72Compatibility+72Mobile/loading20+21/wash1383/quality57/App99/hitch36/parse645/import pass. Concurrent editor/customisation/telemetry/audio work preserved/excluded; scoped patch/evidence in docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md. AttachedDN2103, no phone test/APK/export-install/fullValidate/backend/deploy; restart and owner/device recurrence acceptance pending.
++
+ 2026-10-13 RCM01-RCM03/V04/V05/G01/R01/Q01: owner improves car batching and adds locally saved Settings > Graphics > Simpler car models, off by default/next race/detailed garage. Compact detailed64->50mesh104558tri exact retained; simpler39594visible/2220shadowtri/five stock casters, fitted frames keep actual shadows. Both-renderer85+85 and actual Settings15+15 pass; model72/batch35/driving72/rewind61/records54/weather805/wash1383/parse644 pass. Isolated car+ground130/102/57draws and209140/209140/41838primitives; MobileGPU0.102/0.102/0.091ms, Compatibility load-sensitive, no phone FPS claim. Concurrent livery/fitted-kit/loading/audio retained. Doctor DN2103 attached; no physical run/APK/fullValidate/backend/deploy. Captures, commands, task-only Git patch/hashed reversal and remaining acceptance: docs/RACING_CAR_MODELS.md.
+ 
+ 2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01: owner sees banks only; sparse filtered grain normals let terrain texture catch real sunlight, sun-facing guard avoids dark grit; shared unchanged sun rotation, same mineral read/bank finish; kit186->188. Native14/Mobile14 terrain-only11774/14410 pixels with banks/pebbles disabled, exact restored pixels/disabled-original0/max1of255/motion pass; Desert87/cache70/sampler60/Import pass. Frozen18draws/421818primitives; shared-host/stale-query limits prevent clean cost/FPS claim. DN2103 attached, no device test/APK/full regression/backend/deploy. Actual commands/initial diagnostics/checkpoint/owner acceptance: docs/DESERT_TERRAIN_GLINTS_2026_10_13.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH05-RH07/Q01/V05/G01/R01: owner live PC freeze captured4.255792s, render-boundary4.228334s immediately after first car-weathering bind at tick326; no condition save. Isolated firstdirty170.831ms/repeat8.322, preparation-firstdirty8.358ms; strongly implicates first-use finish compilation, driver stack not captured. Exact-value actual-material draw under existing loading cover/restoration before full360-tick countdown; safe cancellation/bounded actual-draw marker and emitter masks. Pixel/condition/state72Compatibility+72Mobile/loading20+21/wash1383/quality57/App99/hitch36/parse645/import pass. Concurrent editor/customisation/telemetry/audio work preserved/excluded; scoped patch/evidence in docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md. AttachedDN2103, no phone test/APK/export-install/fullValidate/backend/deploy; restart and owner/device recurrence acceptance pending.
++
+ 2026-10-13 RCM01-RCM03/V04/V05/G01/R01/Q01: owner improves car batching and adds locally saved Settings > Graphics > Simpler car models, off by default/next race/detailed garage. Compact detailed64->50mesh104558tri exact retained; simpler39594visible/2220shadowtri/five stock casters, fitted frames keep actual shadows. Both-renderer85+85 and actual Settings15+15 pass; model72/batch35/driving72/rewind61/records54/weather805/wash1383/parse644 pass. Isolated car+ground130/102/57draws and209140/209140/41838primitives; MobileGPU0.102/0.102/0.091ms, Compatibility load-sensitive, no phone FPS claim. Concurrent livery/fitted-kit/loading/audio retained. Doctor DN2103 attached; no physical run/APK/fullValidate/backend/deploy. Captures, commands, task-only Git patch/hashed reversal and remaining acceptance: docs/RACING_CAR_MODELS.md.
+ 
+ 2026-10-13 DS26/DS23-DS25/V02/V04/V05/G01/R01/Q01: owner sees banks only; sparse filtered grain normals let terrain texture catch real sunlight, sun-facing guard avoids dark grit; shared unchanged sun rotation, same mineral read/bank finish; kit186->188. Native14/Mobile14 terrain-only11774/14410 pixels with banks/pebbles disabled, exact restored pixels/disabled-original0/max1of255/motion pass; Desert87/cache70/sampler60/Import pass. Frozen18draws/421818primitives; shared-host/stale-query limits prevent clean cost/FPS claim. DN2103 attached, no device test/APK/full regression/backend/deploy. Actual commands/initial diagnostics/checkpoint/owner acceptance: docs/DESERT_TERRAIN_GLINTS_2026_10_13.md.
+--- a/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
++++ b/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
+@@ -86,3 +86,49 @@
+ 
+ Evidence is under `docs/evidence/race-hitch-2026-10-13/`: raw command logs, real profile JSON, injected-save captures, pre-task source snapshots and `task-only.patch` with hashes. The checkpoint compares runtime edits against those snapshots so existing unrelated workspace changes are excluded. No broad full-Validate, Android export/install, production deployment or live account/backend write was performed. Doctor found attached DN2103, but **no physical-phone logger/reproduction/performance test was performed**. No visible UI/art change required screenshots. Remaining acceptance: capture the owner's exact recurrence, identify its resource/call/driver cause, then validate an attributable fix and observer overhead on PC and the physical phone.
+ 
++## Owner recurrence captured and material preparation fix, later 2026-10-13
++
++Requirements RH05–RH07 / Q01 / V05 / G01 / R01: preserve the reported live event, attribute its first-use trigger, move material preparation before the countdown, and retain exact cosmetics/artwork/canonical state.
++
++The owner's running PC process was **16784**, started at **21:15:16 Helsinki time**, using the actual project (not a diagnostic script). Its capture `race-1791915345-16784-800038329277.json` records a **4,255.792 ms frame** at tick **342** / **2.850 s driving** on the published pine track, Compact, Compatibility/RTX 3090. The preceding render-signal interval was **4,228.334 ms**. Game physics totaled **18.229 ms**, presentation **1.216 ms**, condition saving **0 ms**, recovery **4.314 ms**, and cloud local IO **0.068 ms**. No diagnostic transport/writer or editor worker was active. The live game was left running and was not restarted or modified through remote control.
++
++The last ordinary frame, tick **326**, was the **first** frame with `weathering_installed=true`; all preceding retained frames were false. Its binding work took **0.751 ms**, and the subsequent draw stalled. Thus the actual event follows the first switch from the clean car materials to the dirt/snow finish materials. Compatibility compilation counters were zero; they do not provide a GPU/driver stack or identify the compiler operation themselves.
++
++A separate frozen scene isolates this switch with no physics, inputs, condition saves or active driving effects. First dirty-material use took **170.831 ms** (**168.904 ms** between render signals); repeated use took **8.322 ms**. After rendering those same materials during preparation, first dirty use took **8.358 ms**, with exact cosmetic snapshot preservation. An independent grass-particle activation took **20.484 ms**, while first dirty use in that process still took **175.688 ms** and repeated dirty use **8.324 ms**. These observations strongly implicate first-use vehicle-finish shader/driver compilation; they are not a claim that the owner's 4.2-second delay was reproduced at the same magnitude or that every intermittent native stall has one cause. Driver cache and concurrent host activity affect timings.
++
++Compatibility requires actual rendering of a material in the camera frustum while loading to avoid first-use shader stutters; merely preloading its resource is insufficient. The implementation follows [Godot's documented Compatibility preparation approach](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html).
++
++The normal app race-start path now temporarily binds the actual weathering materials with the **unchanged** cosmetic values under the existing loading cover, waits for an actual render using the existing bounded wait, then restores the exact clean/livery bindings and renders them before releasing the cover. Countdown/physics remain disabled throughout. Already-dirty cars use their existing finish. Cancellation, focus loss and reset restore safely. A suspended renderer retains the existing timeout behavior; it is never falsely marked as having completed a material draw. New local captures record `weathering_prepared` and active grass/mud/dust/smoke masks to distinguish subsequent first-use effects.
++
++Additional changed files:
++
++- `game/vehicle/vehicle_weathering.gd`: cancellable preparation binding, without fabricating dirt or altering wash volumes.
++- `game/core/app.gd`: covered draw/restore before starting; bounded draw helper returns whether a render occurred.
++- `game/core/game.gd` / `game/diagnostics/race_hitch_monitor.gd`: actual-draw marker and active-emitter context.
++- `game/backend/client_quality.gd`: treat a cancelled partial node with missing race properties as non-racing, fixing a null-to-bool error exposed by the existing loading test.
++- `game/tests/profile_weathering_first_use.gd` (+ UID), `game/tests/test_weathering_preparation.gd` (+ UID), `game/tests/test_over_under_loading.gd`: isolated first-use probe, exact pixels/condition/bindings/state for five cars plus a patterned/stickered Compact, and actual draw/full countdown/cancellation checks.
++
++Actual additional commands, through the pinned `scripts/dev.ps1` entry point:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_weathering_first_use.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_weathering_first_use.gd -Graphical -TestArgument '--warm'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_weathering_first_use.gd -Graphical -TestArgument '--particles'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_weathering_preparation.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_weathering_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_client_quality.gd
++scripts/dev.ps1 -Action TestApp
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action Import
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action Doctor
++```
++
++Final checks: preparation **72 Compatibility + 72 Mobile/Vulkan**, loading **20 headless + 21 graphical**, car wash **1,383**, client quality **57**, app **99**, hitch capture **36**, full parse **645**, import and task diff/patch checks pass. Every before/after framebuffer is byte-exact once original materials have settled, including the patterned/stickered car; paired screenshots are saved and inspected. Canonical state and the full **360-tick countdown** remain exact. No shader/artwork, geometry, driving/scoring contract or dust/snow budget was changed.
++
++Retained initial issues: partial-node observer bool conversion error fixed; one loading teardown assertion failed during a parallel run and passed unchanged on isolated/final headless and graphical reruns; temporary fixture diagnostic inserted in the wrong scope caused a parse error and was removed; a concurrently changed audio-extension configuration referenced its new DLL before the DLL existed, then succeeded after the other work finished; early Vulkan decorated-car comparison differed by **56 pixels at at most one channel unit** while its original material was still in first-use specialization. The strict pixel assertion was retained, and the fixture now lets the original shader settle before taking its baseline; final comparisons are exact. Unrelated editor, vehicle-customisation, telemetry-schema and audio-extension revisions were preserved and excluded from this checkpoint.
++
++Live JSON, isolated probe JSON, command logs, paired pixels, original snapshots and a **task-only** review patch/hash manifest are under `docs/evidence/race-hitch-recurrence-2026-10-13/`. The patch uses a checkpoint base containing concurrent changes and excludes those changes from the fix. Restart the PC game to load this fix; the already-running instance uses its loaded scripts. Doctor still found attached DN2103, but no physical-phone race/preparation test, APK export/install, full Validate or backend deployment was performed for this follow-up. Remaining acceptance is the owner's repeated clean-car race starts after restart, then physical-device confirmation; compilation can still take time under the loading cover, and other first-use effects remain observable rather than claimed solved.
+--- /dev/null
++++ b/game/tests/profile_weathering_first_use.gd
+@@ -0,0 +1,66 @@
++extends SceneTree
++## Isolate the material transition observed in the owner's live freeze.
++## No inputs, particles, condition saves or player storage during measurement.
++var game: Node
++var rows: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func rendered_frames(count: int) -> void:
++	for index: int in range(count): await RenderingServer.frame_post_draw
++
++func measure(label: String, effect: VehicleWeathering, dirt: float) -> void:
++	var started: int = Time.get_ticks_usec()
++	effect.dirt_amount = dirt
++	effect.melt(0.0)
++	var bind_us: int = Time.get_ticks_usec() - started
++	await RenderingServer.frame_post_draw
++	var first_us: int = Time.get_ticks_usec() - started
++	var draw_us: int = game.hitch_diagnostics._draw_us
++	rows.append({"phase": label, "first_frame_ms": first_us / 1000.0, "draw_ms": draw_us / 1000.0, "bind_ms": bind_us / 1000.0, "installed": effect.installed, "bindings": effect.bindings.size(), "materials": effect.materials.size()})
++	await rendered_frames(6)
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless":
++		push_error("First-use probe needs a graphical renderer")
++		quit(1)
++		return
++	game = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.production_mode = true
++	game.paused = true
++	root.add_child(game)
++	game.paused = true
++	game.hitch_diagnostics.persist_enabled = false
++	game.set_physics_process(false)
++	await rendered_frames(30)
++	var effect: VehicleWeathering = game.car_weathering
++	await measure("initial_clean", effect, 0.0)
++	if "--particles" in OS.get_cmdline_user_args():
++		var emitters: Array = game.sand_dust.clipping_emitters + game.sand_dust.mud_emitters
++		var started: int = Time.get_ticks_usec()
++		for emitter: GPUParticles3D in emitters:
++			emitter.position = game.car.position
++			emitter.emitting = true
++		await rendered_frames(1)
++		rows.append({"phase": "first_grass_particles", "first_frame_ms": (Time.get_ticks_usec() - started) / 1000.0, "draw_ms": game.hitch_diagnostics._draw_us / 1000.0, "weathering_installed": effect.installed})
++		for emitter: GPUParticles3D in emitters: emitter.emitting = false
++		await rendered_frames(30)
++	if "--warm" in OS.get_cmdline_user_args():
++		var before: Dictionary = effect.snapshot()
++		var started: int = Time.get_ticks_usec()
++		effect.begin_render_warmup()
++		await rendered_frames(2)
++		effect.end_render_warmup()
++		rows.append({"phase": "loading_warmup", "elapsed_ms": (Time.get_ticks_usec() - started) / 1000.0, "cosmetics_exact": effect.snapshot() == before, "restored_clean": not effect.installed})
++		await rendered_frames(6)
++	await measure("first_dirty", effect, 0.12)
++	await measure("restore_clean", effect, 0.0)
++	await measure("repeat_dirty", effect, 0.12)
++	var report: Dictionary = {"engine": Engine.get_version_info().string, "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "tick": game.sim.state.tick, "rows": rows}
++	print("WEATHERING_FIRST_USE ", JSON.stringify(report))
++	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/race-hitch-recurrence-2026-10-13")
++	var file := FileAccess.open(folder.path_join("first-use-%s-%d.json" % [report.renderer, OS.get_process_id()]), FileAccess.WRITE)
++	file.store_string(JSON.stringify(report)); file.close()
++	game.free()
++	quit()
+--- /dev/null
++++ b/game/tests/profile_weathering_first_use.gd.uid
+@@ -0,0 +1 @@
++uid://xxec8vy1doek
+--- /dev/null
++++ b/game/tests/test_weathering_preparation.gd
+@@ -0,0 +1,89 @@
++extends SceneTree
++## Actual car surfaces, pixels and frozen race state across preparation rendering.
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func settle(frames: int = 4) -> void:
++	for index: int in range(frames):
++		if DisplayServer.get_name() == "headless": await process_frame
++		else: await RenderingServer.frame_post_draw
++
++func surfaces(effect: VehicleWeathering) -> Array[Material]:
++	var result: Array[Material] = []
++	for binding: Dictionary in effect.bindings:
++		result.append(binding.node.material_override if binding.override else binding.node.get_surface_override_material(binding.index))
++	return result
++
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../docs/evidence/race-hitch-recurrence-2026-10-13/preparation-" + RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var cars: Array[String] = []
++	cars.assign(VehicleCatalog.IDS)
++	cars.append("compact")
++	for case_index: int in range(cars.size()):
++		var id: String = cars[case_index]
++		var case_name: String = id + ("-decorated" if case_index == cars.size() - 1 else "")
++		var game: Node = load("res://core/game.tscn").instantiate()
++		if case_index == cars.size() - 1:
++			var livery: Dictionary = VehicleLivery.defaults(id)
++			livery.pattern = LiveryCatalog.patterns[0].id
++			livery.stickers.hood.id = "crest"
++			var records := LocalRecords.new(output.path_join("fixture-records.json"))
++			records.settings.vehicle_liveries = {id: livery}
++			game.preference_records = records
++		game.vehicle_id = id
++		game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++		game.production_mode = true
++		root.add_child(game)
++		game.hitch_diagnostics.persist_enabled = false
++		game.paused = true
++		game._process(0.0)
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		# Let the original Mobile shader finish background specialization before
++		# comparing it with the same restored shader, preserving exact pixel checks.
++		await settle(120 if DisplayServer.get_name() != "headless" else 4)
++		var effect: VehicleWeathering = game.car_weathering
++		var condition: Dictionary = effect.snapshot()
++		var state: Dictionary = RewindHistory.properties(game.sim.state)
++		var original: Array[Material] = surfaces(effect)
++		var before: Image
++		if DisplayServer.get_name() != "headless": before = root.get_texture().get_image()
++		check(not effect.installed and effect.begin_render_warmup(), id + " clean finish enters preparation")
++		check(effect.installed and effect.snapshot() == condition, id + " real finish renders without cosmetic mutation")
++		check(not effect.begin_render_warmup(), id + " repeated preparation does not nest")
++		await settle()
++		effect.end_render_warmup()
++		await settle()
++		check(not effect.installed and surfaces(effect) == original, id + " exact clean surface bindings restored")
++		check(effect.snapshot() == condition, id + " wash/grime/cosmetic data retained exactly")
++		check(RewindHistory.properties(game.sim.state) == state and game.countdown_ticks == 360, id + " no physics tick or countdown consumed")
++		if before != null:
++			var after: Image = root.get_texture().get_image()
++			check(after.get_data() == before.get_data(), id + " preparation preserves exact rendered appearance")
++			check(before.save_png(output.path_join(case_name + "-before.png")) == OK and after.save_png(output.path_join(case_name + "-after.png")) == OK, case_name + " paired pixel evidence saved")
++		effect.dirt_amount = 0.25
++		effect.melt(0.0)
++		var dirty: Dictionary = effect.snapshot()
++		var dirty_surfaces: Array[Material] = surfaces(effect)
++		check(not effect.begin_render_warmup(), id + " retained dirty finish uses normal preparation draw")
++		effect.end_render_warmup()
++		check(effect.installed and effect.snapshot() == dirty and surfaces(effect) == dirty_surfaces, id + " dirty finish remains exact")
++		effect.reset()
++		effect.restore(condition)
++		check(effect.begin_render_warmup(), id + " clean preparation can be cancelled")
++		effect.reset()
++		effect.end_render_warmup()
++		check(not effect.installed and not effect._render_warming, id + " reset cancels preparation safely")
++		game.free()
++		await process_frame
++	print("WEATHERING_PREPARATION: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_weathering_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://r4d353cg7hcu

@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "COMM-01",
+    "COMM-02",
+    "COMM-04",
+    "B05",
+    "B07",
+    "Q01"
+  ],
+  "scope": "Owner-requested fixes 1, 2 and 4 from the backend communication review",
+  "changes": {
+    "1": "Challenge result polling honors Retry-After, includes bounded jitter, resets consecutive failures on valid responses and backs off malformed success. Shared header parser accepts all three HTTP-date forms with bounded waits.",
+    "2": "Pinned development/export entry point generates a source-content identity for runtime telemetry and project/Android version names. Uncommitted runtime sources and new shipping assets count; generated UID metadata, tests and export-excluded content do not.",
+    "4": "Negotiated schema3 contains renderer, applied car detail, render-target pixel dimensions, 3D scale, explicit FPS cap, VSync and display refresh. Start context is frozen, one-Hz/end observations flag changes, and one package per attempt remains. Migration0031 stores nullable legacy context; Studio offers renderer/exact setup/consistency filters."
+  },
+  "compatibility": {
+    "bootstrap_legacy_quality_schema_version": 2,
+    "quality_schema_versions": [
+      2,
+      3
+    ],
+    "old_server": "Current client captures schema2 without unsupported fields.",
+    "backend_downgrade": "Persisted schema3 is deferred unchanged; no trimmed retry with the same event ID.",
+    "historical_data": "Legacy contexts remain NULL/unknown; neither display settings nor build identities are backfilled."
+  },
+  "validation": [
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_race_statistics.py backend/tests/test_product_analytics.py backend/tests/test_client_quality.py backend/tests/test_challenges.py backend/tests/test_communication_boundary.py -k \"not postgres\" -m \"not godot\" -q --tb=short --show-capture=no --basetemp build/communication-fixes-124-20261013/pytest-final-sqlite",
+      "outcome": "113 passed, 2 skipped, 33 deselected"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_race_statistics.py -k \"migration or render_context\" -q --tb=short --show-capture=no --basetemp build/communication-fixes-124-20261013/pytest-migration",
+      "outcome": "12 passed, 17 deselected"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_communication_fixes_postgres.py",
+      "outcome": "63 passed; ownership-labelled PostgreSQL17 created and removed; includes JSONB distinct/options/filter and concurrent receipt/projection acceptance"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_http_retry.gd",
+      "outcome": "14 checks, 0 failures"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenges.gd",
+      "outcome": "165 checks, 0 failures"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_product_telemetry.gd",
+      "outcome": "55 checks, 0 failures; rechecked with concurrent client changes"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_statistics_app.gd",
+      "outcome": "16 checks, 0 failures; rechecked with concurrent client changes"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_client_quality.gd -Graphical -RenderingMethod gl_compatibility",
+      "outcome": "58 checks, 0 failures"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_client_quality.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan",
+      "outcome": "58 checks, 0 failures"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_build_identity.ps1",
+      "outcome": "7 checks passed in an isolated repository; same contents stable, dirty/new sources change ID, generated metadata/tests excluded, runtime/export identities match"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_studio_monitor_console.py --output docs/evidence/communication-fixes-124-2026-10-13/browser-final",
+      "outcome": "28 checks passed; seeded loopback, actual HTTP ingestion/projection, visible setup selection and containment at1440/960/390; no remote application requests"
+    },
+    {
+      "command": ".tools/backend-venv/Lib/site-packages/playwright/driver/node.exe scripts/test_studio_monitor_views.js",
+      "outcome": "6 presentation contract checks passed"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m ruff check backend/bmt_backend/race_statistics.py backend/bmt_backend/race_statistics_models.py backend/bmt_backend/migrations/versions/0031_race_render_context.py backend/tests/test_race_statistics.py backend/tests/test_race_statistics_postgres.py scripts/test_communication_fixes_postgres.py scripts/test_studio_monitor_console.py",
+      "outcome": "All checks passed"
+    },
+    {
+      "command": "git diff --check -- game/backend/backend_client.gd game/backend/challenges_client.gd game/backend/client_quality.gd game/backend/product_telemetry.gd game/project.godot game/export_presets.cfg scripts/dev.ps1 backend/bmt_backend/app.py game/tests/test_challenges.gd",
+      "outcome": "Passed"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_studio_monitor_console.py --output docs/evidence/communication-fixes-124-2026-10-13/browser-final-reviewed",
+      "outcome": "28 checks passed; final visible caption/setup capture inspected"
+    },
+    {
+      "command": "git apply --check --reverse docs/evidence/communication-fixes-124-2026-10-13/task-only.patch",
+      "outcome": "Passed; preserves current CRLF/LF worktree formats and excludes concurrent changes"
+    }
+  ],
+  "measured_fixture": {
+    "race_packet_bytes": 3320,
+    "measurement": "Mobile/Vulkan desktop fixture, incremental JSON only; Compatibility3330bytes",
+    "telemetry_active_menu_requests_per_simulated_hour": 20,
+    "telemetry_idle_menu_requests_per_simulated_hour": 10
+  },
+  "initial_diagnostics": [
+    "Direct dot-sourcing hit PowerShell execution policy; pinned runner uses existing process-only Bypass.",
+    "Initial native restart assertion failed because JSON schema3 restored as a floating Variant; bounded integer normalization corrected it, assertion retained.",
+    "Node was unavailable on PATH; existing Playwright bundled Node executed checks.",
+    "Ruff found existing browser-fixture import ordering and later concurrent app import ordering; task-owned imports corrected, concurrent source preserved.",
+    "Checkpoint dry-run initially found CRLF/LF normalization mismatches; exact worktree newline preservation corrected it before a successful reverse apply check."
+  ],
+  "concurrent_work": "Shared client session-vault/request-node/lifecycle and backend dependency logging/storage changes preserved. Scope checkpoint excludes these changes; this task does not claim their implementation.",
+  "remaining_acceptance": [
+    "Authorized backend rollout must apply0031 before enabling the source API; both old v2 and current v3 ingestion remain accepted.",
+    "Fresh Android APK must be exported/installed to obtain the new source identity and capture; no APK/device test or live deployment performed here.",
+    "Physical-device renderer/graphics/resolution/frame pacing and actual network/radio/thermal cost acceptance remain.",
+    "Context changes are observed once per second and at finish; very short changes between observations are not guaranteed detected.",
+    "Build identity labels shipping source contents, not a cryptographic APK/artifact checksum."
+  ],
+  "changed_files": [
+    "DEVELOPMENT_STATUS.md",
+    "backend/bmt_backend/admin_ui/monitor.js",
+    "backend/bmt_backend/app.py",
+    "backend/bmt_backend/migrations/versions/0031_race_render_context.py",
+    "backend/bmt_backend/race_statistics.py",
+    "backend/bmt_backend/race_statistics_models.py",
+    "backend/tests/test_race_statistics.py",
+    "backend/tests/test_race_statistics_postgres.py",
+    "docs/PHASE_0_PLAN.md",
+    "docs/STUDIO_RACE_STATISTICS_CLIENT_2026_10_12.md",
+    "docs/schemas/race-statistics-v3.schema.json",
+    "game/backend/backend_client.gd",
+    "game/backend/challenges_client.gd",
+    "game/backend/client_quality.gd",
+    "game/backend/product_telemetry.gd",
+    "game/backend/race_render_context.gd",
+    "game/backend/race_render_context.gd.uid",
+    "game/core/build_identity.gd",
+    "game/core/build_identity.gd.uid",
+    "game/export_presets.cfg",
+    "game/project.godot",
+    "game/tests/test_challenges.gd",
+    "game/tests/test_client_quality.gd",
+    "game/tests/test_http_retry.gd",
+    "game/tests/test_http_retry.gd.uid",
+    "game/tests/test_race_statistics_app.gd",
+    "scripts/build_identity.ps1",
+    "scripts/dev.ps1",
+    "scripts/test_build_identity.ps1",
+    "scripts/test_communication_fixes_postgres.py",
+    "scripts/test_studio_monitor_console.py"
+  ],
+  "checkpoint": "task-only.patch; shared client/app bases preserve concurrent edits",
+  "checkpoint_sha256": "2063e4bbf907a4bb59c529bad6361b615cac28a42976545b0b7dd81d24a46434",
+  "checkpoint_note": "Generated source identity reflects the shared workspace at checkpoint creation and refreshes on the next pinned run/export. Concurrent implementation is excluded."
+}

@@ -1,0 +1,416 @@
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -37,6 +37,14 @@
+ var _next_write_usec: int = 0
+ var _recovery_previous: int = 0
+ var _cloud_previous: int = 0
++const MAX_RENDER_ITEMS: int = 128
++const MAX_RENDER_CONTEXTS: int = 64
++var _render_items: Array[VisualInstance3D] = []
++var _render_descriptors: Array[Dictionary] = []
++var _render_seen: Dictionary = {}
++var _render_context: Dictionary = {}
++var _render_next_usec: int = 0
++var _render_truncated: int = 0
+ 
+ class IdleStart extends Node:
+ 	var monitor: Node
+@@ -58,10 +66,15 @@
+ 	log_path = directory.path_join("race-" + token + ".json")
+ 	var track: NativeTrack = game.get("native_track")
+ 	header = {"schema": 1, "engine": Engine.get_version_info().string, "os": OS.get_name(), "os_version": OS.get_version(), "model": OS.get_model_name(), "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "debug_build": OS.is_debug_build(), "track_id": track.identity if track != null else "playground", "track_hash": track.content_hash if track != null else "", "biome": str(track.metadata.get("theme", "pine")) if track != null else "pine", "car": str(game.get("vehicle_id")), "practice": bool(game.get("editor_test")) or bool(game.get("attempt_practice")), "physics": VehicleSimulation.PHYSICS_VERSION, "rules": RaceRules.KEY, "track_kit": NativeTrackVisual.VERSION, "threshold_ms": THRESHOLD_US / 1000, "history_frames": HISTORY_FRAMES, "stage_note": "Nested timings overlap; engine monitors may be delayed/debug-only; draw_boundary_ms is wall time between render signals, not GPU time. Previous draw and current callbacks share one interval."}
++	_collect_render_items(game.get_node_or_null("World"))
++	header.render_items = _render_descriptors
++	header.render_items_truncated = _render_truncated
++	header.schema = 2
+ 	RenderingServer.frame_pre_draw.connect(_pre_draw)
+ 	RenderingServer.frame_post_draw.connect(_post_draw)
+ 
+ func _pre_draw() -> void:
++	_sample_render_context(Time.get_ticks_usec())
+ 	_draw_start_usec = Time.get_ticks_usec()
+ 
+ func _post_draw() -> void:
+@@ -96,6 +109,12 @@
+ 	row.effects.mud_active_mask = _emitter_mask(dust.get("mud_emitters"))
+ 	row.effects.dust_active_mask = _emitter_mask(dust.get("dust_emitters"))
+ 	row.effects.smoke_active_mask = _emitter_mask(dust.get("smoke_emitters"))
++	for group_name: String in ["tyre_emitters", "spray_emitters", "deck_dust_emitters", "deck_tyre_emitters", "water_drops", "snow_chips", "snow_powder", "snow_impacts", "snow_push"]:
++		var group: Array = dust.get(group_name)
++		row.effects[group_name + "_count"] = group.size()
++		row.effects[group_name + "_active_mask"] = _emitter_mask(group)
++	row.motion = {"jump_height": simulation.state.jump_height, "roll_ticks": simulation.state.roll_ticks, "heading": simulation.state.heading}
++	row.previous_render_context = _render_context
+ 	var storm: Node = game.get("storm_weather")
+ 	if storm != null: row.effects.storm_strikes = storm.get("strikes")
+ 	row.engine_monitors = {"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, "physics_tick_ms": Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0, "memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC), "resources": Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT), "draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), "pipeline_canvas": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_CANVAS), "pipeline_mesh": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_MESH), "pipeline_surface": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SURFACE), "pipeline_draw": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW), "pipeline_specialization": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SPECIALIZATION)}
+@@ -111,6 +130,56 @@
+ 	for index: int in range(mini(32, emitters.size())):
+ 		if emitters[index].emitting: bits |= 1 << index
+ 	return bits
++
++func _collect_render_items(node: Node) -> void:
++	if node == null: return
++	if node is MeshInstance3D or node is MultiMeshInstance3D:
++		if _render_items.size() >= MAX_RENDER_ITEMS:
++			_render_truncated += 1
++		else:
++			var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node.multimesh != null else null
++			var materials: Array[String] = []
++			if mesh != null:
++				for index: int in range(mini(4, mesh.get_surface_count())):
++					var material: Material = node.material_override if node.material_override != null else node.get_active_material(index) if node is MeshInstance3D else mesh.surface_get_material(index)
++					if material == null: continue
++					var key: String = str(material.get_class())
++					if material is ShaderMaterial and material.shader != null:
++						key += ":" + material.shader.resource_path + ":" + material.shader.code.sha256_text()
++					elif material is BaseMaterial3D:
++						key += ":shade%d/diff%d/spec%d/alpha%d/cull%d/tex%d/normal%d/emission%d/coat%d/vertex%d" % [material.shading_mode, material.diffuse_mode, material.specular_mode, material.transparency, material.cull_mode, int(material.albedo_texture != null), int(material.normal_enabled), int(material.emission_enabled), int(material.clearcoat_enabled), int(material.vertex_color_use_as_albedo)]
++					if key not in materials: materials.append(key)
++			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials})
++			_render_items.append(node)
++	for child: Node in node.get_children(): _collect_render_items(child)
++
++func _sample_render_context(now: int) -> void:
++	if now < _render_next_usec or not is_instance_valid(game): return
++	_render_next_usec = now + 200000
++	var camera: Camera3D = game.get("camera")
++	if camera == null: return
++	var started: int = Time.get_ticks_usec()
++	var visible: Array[int] = []
++	var entered: Array[int] = []
++	var planes: Array[Plane] = camera.get_frustum()
++	for index: int in range(_render_items.size()):
++		if not is_instance_valid(_render_items[index]): continue
++		var node: VisualInstance3D = _render_items[index]
++		if not node.is_visible_in_tree(): continue
++		var box: AABB = node.global_transform * node.get_aabb()
++		var outside: bool = false
++		for plane: Plane in planes:
++			if plane.distance_to(box.get_center()) > (box.size * 0.5).dot(plane.normal.abs()):
++				outside = true
++				break
++		if outside: continue
++		visible.append(index)
++		if not _render_seen.has(index):
++			_render_seen[index] = true
++			entered.append(index)
++	var viewport: Viewport = game.get_viewport()
++	# Candidates, not an assertion that these objects/shadow passes reached the GPU.
++	_render_context = {"sample_wall_ms": (now - _started_usec) / 1000.0, "candidate_ids": visible, "first_candidate_ids": entered, "sampling_ms": (Time.get_ticks_usec() - started) / 1000.0, "width": viewport.get_visible_rect().size.x, "height": viewport.get_visible_rect().size.y, "msaa": viewport.msaa_3d, "render_scale": viewport.scaling_3d_scale, "projection": camera.projection, "fov": camera.fov, "size": camera.size}
+ 
+ func _background_context() -> Dictionary:
+ 	var parent: Node = game.get_parent()
+@@ -161,7 +230,26 @@
+ 	if history.size() > HISTORY_FRAMES: history.pop_front()
+ 
+ func snapshot() -> Dictionary:
+-	return {"header": header.duplicate(true), "events": events.duplicate(true), "dropped_events": dropped_events}
++	var captured: Array[Dictionary] = events.duplicate(true)
++	var contexts: Array[Dictionary] = []
++	var context_ids: Dictionary = {}
++	var dropped_contexts: int = 0
++	for event: Dictionary in captured:
++		var rows: Array = [event.frame] + event.before + event.after
++		for row: Dictionary in rows:
++			if not row.get("previous_render_context") is Dictionary: continue
++			var context: Dictionary = row.previous_render_context
++			row.erase("previous_render_context")
++			var key: String = str(context.get("sample_wall_ms", -1))
++			if context.is_empty():
++				row.render_context_id = -1
++				continue
++			if not context_ids.has(key) and contexts.size() < MAX_RENDER_CONTEXTS:
++				context_ids[key] = contexts.size()
++				contexts.append(context)
++			row.render_context_id = int(context_ids.get(key, -1))
++			if row.render_context_id < 0: dropped_contexts += 1
++	return {"header": header.duplicate(true), "events": captured, "dropped_events": dropped_events, "render_contexts": contexts, "dropped_render_contexts": dropped_contexts}
+ 
+ func flush_async() -> void:
+ 	if not persist_enabled or _thread != null or _revision <= _saved_revision: return
+--- a/game/tests/test_race_hitch_monitor.gd
++++ b/game/tests/test_race_hitch_monitor.gd
+@@ -126,8 +126,23 @@
+ 	game.set_physics_process(false)
+ 	var state_before: Dictionary = RewindHistory.properties(game.sim.state)
+ 	game._process(0.0)
++	game.sand_dust.tyre_emitters[0].emitting = true
++	game.sand_dust.spray_emitters[1].emitting = true
++	monitor._render_next_usec = 0
++	monitor._sample_render_context(Time.get_ticks_usec())
+ 	monitor._last_usec = 0
+ 	monitor._process(0.0)
++	check(monitor.latest.effects.tyre_emitters_active_mask == 1 and monitor.latest.effects.spray_emitters_active_mask == 2, "individual cloud and spray activation is identifiable")
++	check(monitor.header.render_items.size() > 0 and monitor.header.render_items.size() <= monitor.MAX_RENDER_ITEMS and monitor.latest.previous_render_context.candidate_ids.size() <= monitor.MAX_RENDER_ITEMS, "render inventory and frustum candidates stay bounded")
++	check(monitor.latest.previous_render_context.sampling_ms >= 0 and monitor.latest.previous_render_context.width > 0 and monitor.latest.motion.jump_height == game.sim.state.jump_height, "render context and jump state are observed")
++	monitor.events.clear(); monitor.history.clear()
++	for index: int in range(80): monitor.history.append(monitor.latest)
++	for index: int in range(monitor.MAX_EVENTS):
++		monitor.events.append({"frame": monitor.latest, "before": monitor.history.slice(0,monitor.HISTORY_FRAMES), "after": monitor.history.slice(0,monitor.AFTER_FRAMES)})
++	var full: Dictionary = monitor.snapshot()
++	check(full.render_contexts.size() == 1 and full.events[0].frame.render_context_id == 0 and full.dropped_render_contexts == 0, "repeated frame contexts serialize once without losing their association")
++	check(JSON.stringify(full).to_utf8_buffer().size() <= monitor.MAX_FILE_BYTES, "full eight-event actual-frame capture fits the existing storage cap")
++	check(monitor.latest.has("previous_render_context"), "serialization never rewrites the live sampled frame")
+ 	check(RewindHistory.properties(game.sim.state) == state_before, "observer never advances canonical state")
+ 	late.free()
+ 	game.free()
+--- a/game/track/spatial_mesh_chunks.gd
++++ b/game/track/spatial_mesh_chunks.gd
+@@ -35,6 +35,7 @@
+ 		parent.add_child(source)
+ 		return [source]
+ 	var result: Array[MeshInstance3D] = []
++	var source_name: String = str(source.name) if not source.name.is_empty() else "MeshInstance3D"
+ 	for key: Vector2i in groups:
+ 		var chosen: PackedInt32Array = groups[key]
+ 		var map: Dictionary = {}
+@@ -59,7 +60,7 @@
+ 		var mesh := ArrayMesh.new()
+ 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,part)
+ 		var node := MeshInstance3D.new()
+-		node.name = source.name if result.is_empty() else str(source.name)+"_Tile_"+str(key.x)+"_"+str(key.y)
++		node.name = source_name if result.is_empty() else source_name+"_Tile_"+str(key.x)+"_"+str(key.y)
+ 		node.mesh = mesh
+ 		node.material_override = source.material_override
+ 		node.transform = source.transform
+--- /dev/null
++++ b/scripts/capture-race-hitch-trace.ps1
+@@ -0,0 +1,81 @@
++param(
++    [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$GameProcessId,
++    [ValidateRange(10, 120)][int]$Seconds = 60,
++    [ValidateRange(100, 10000)][int]$ThresholdMs = 500
++)
++Set-StrictMode -Version Latest
++$ErrorActionPreference = 'Stop'
++$taskRoot = Split-Path -Parent $PSScriptRoot
++$process = Get-Process -Id $GameProcessId -ErrorAction Stop
++if ($process.ProcessName -notlike 'Godot*') { throw 'Expected a Godot game process.' }
++$startedProcess = $process.StartTime.ToUniversalTime().Ticks
++$wpr = (Get-Command wpr.exe -ErrorAction Stop).Source
++$session = 'BMT-RaceHitch-' + $GameProcessId + '-' + [guid]::NewGuid().ToString('N')
++$output = Join-Path $taskRoot ('build/race-hitch-traces/' + $session)
++New-Item -ItemType Directory -Path $output -Force | Out-Null
++$hitchDirectory = Join-Path $env:APPDATA 'Circuit01Lab/diagnostics/race_hitches'
++$baseline = @{}
++function Read-Hitches {
++    $result = @{}
++    if (-not (Test-Path -LiteralPath $hitchDirectory)) { return $result }
++    foreach ($file in Get-ChildItem -LiteralPath $hitchDirectory -Filter ('race-*-' + $GameProcessId + '-*.json') -File) {
++        try { $result[$file.Name] = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
++        catch { continue } # Atomic replacement or a concurrently retiring capture.
++    }
++    return $result
++}
++foreach ($entry in (Read-Hitches).GetEnumerator()) { $baseline[$entry.Key] = [double](($entry.Value.events | ForEach-Object { $_.frame.wall_ms } | Measure-Object -Maximum).Maximum) }
++$metadata = [ordered]@{ process_id = $GameProcessId; process_start_utc_ticks = $startedProcess; trace_session = $session; started_utc = [datetime]::UtcNow.ToString('o'); profiles = @('CPU', 'GPU'); seconds_limit = $Seconds; threshold_ms = $ThresholdMs; captured_new_hitch = $false; stop_reason = 'time_limit' }
++$owned = $false
++try {
++    # Unique controller: never cancel/stop another user's recording. Memory mode
++    # uses bounded circular buffers; no heap/file/network recording or upload.
++    $ErrorActionPreference = 'Continue'
++    $startOutput = & $wpr -start CPU -start GPU -instancename $session 2>&1
++    $startExit = $LASTEXITCODE
++    $ErrorActionPreference = 'Stop'
++    $startOutput | ForEach-Object { $_.ToString() } | Tee-Object -FilePath (Join-Path $output 'start.log')
++    $metadata.start_exit_code = $startExit
++    if ($startExit -ne 0) { $metadata.stop_reason = 'start_failed'; throw 'WPR could not start the owned recording; see start.log.' }
++    $owned = $true
++    Write-Host ('RACE_HITCH_TRACE recording PID=' + $GameProcessId + ' for at most ' + $Seconds + ' seconds; output=' + $output)
++    $timer = [diagnostics.stopwatch]::StartNew()
++    while ($timer.Elapsed.TotalSeconds -lt $Seconds) {
++        $current = Get-Process -Id $GameProcessId -ErrorAction SilentlyContinue
++        if ($null -eq $current -or $current.StartTime.ToUniversalTime().Ticks -ne $startedProcess) { $metadata.stop_reason = 'process_exited'; break }
++        foreach ($entry in (Read-Hitches).GetEnumerator()) {
++            $events = @($entry.Value.events)
++            $previous = if ($baseline.ContainsKey($entry.Key)) { [double]$baseline[$entry.Key] } else { -1 }
++            for ($index = 0; $index -lt $events.Count; $index++) {
++                if ([double]$events[$index].frame.wall_ms -le $previous) { continue }
++                if ([double]$events[$index].frame.frame_ms -lt $ThresholdMs) { continue }
++                $metadata.captured_new_hitch = $true
++                $metadata.stop_reason = 'new_hitch'
++                $metadata.capture_file = $entry.Key
++                $metadata.frame_ms = [double]$events[$index].frame.frame_ms
++                $metadata.race_tick = [int]$events[$index].frame.tick
++                Copy-Item -LiteralPath (Join-Path $hitchDirectory $entry.Key) -Destination $output
++                break
++            }
++            $baseline[$entry.Key] = [double](($events | ForEach-Object { $_.frame.wall_ms } | Measure-Object -Maximum).Maximum)
++            if ($metadata.captured_new_hitch) { break }
++        }
++        if ($metadata.captured_new_hitch) { break }
++        Start-Sleep -Milliseconds 250
++    }
++} finally {
++    if ($owned) {
++        $ErrorActionPreference = 'Continue'
++        $stopOutput = & $wpr -stop (Join-Path $output 'cpu-gpu.etl') 'Beat my track recovered render stall' -skipPdbGen -compress -instancename $session 2>&1
++        $metadata.stop_exit_code = $LASTEXITCODE
++        if ($metadata.stop_exit_code -ne 0) {
++            & $wpr -cancel -instancename $session 2>&1 | Out-File -LiteralPath (Join-Path $output 'cancel.log')
++            $metadata.cancel_exit_code = $LASTEXITCODE
++        }
++        $ErrorActionPreference = 'Stop'
++        $stopOutput | ForEach-Object { $_.ToString() } | Tee-Object -FilePath (Join-Path $output 'stop.log')
++    }
++    $metadata.finished_utc = [datetime]::UtcNow.ToString('o')
++    $metadata | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $output 'capture.json') -Encoding UTF8
++    Write-Host ('RACE_HITCH_TRACE complete captured_new_hitch=' + $metadata.captured_new_hitch + ' reason=' + $metadata.stop_reason + ' output=' + $output)
++}
+--- /dev/null
++++ b/scripts/capture-race-hitch-threads.ps1
+@@ -0,0 +1,67 @@
++param(
++    [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$GameProcessId,
++    [ValidateRange(5, 120)][int]$Seconds = 60,
++    [ValidateRange(100, 10000)][int]$ThresholdMs = 500
++)
++Set-StrictMode -Version Latest
++$ErrorActionPreference = 'Stop'
++$taskRoot = Split-Path -Parent $PSScriptRoot
++$gameProcess = Get-Process -Id $GameProcessId -ErrorAction Stop
++if ($gameProcess.ProcessName -notlike 'Godot*') { throw 'Expected a Godot game process.' }
++$processStart = $gameProcess.StartTime.ToUniversalTime().Ticks
++$output = Join-Path $taskRoot ('build/race-hitch-threads/' + $GameProcessId + '-' + [guid]::NewGuid().ToString('N'))
++New-Item -ItemType Directory -Path $output -Force | Out-Null
++$hitchDirectory = Join-Path $env:APPDATA 'Circuit01Lab/diagnostics/race_hitches'
++$baseline = @{}
++function Read-GameHitches {
++    $result = @{}
++    if (-not (Test-Path -LiteralPath $hitchDirectory)) { return $result }
++    foreach ($file in Get-ChildItem -LiteralPath $hitchDirectory -Filter ('race-*-' + $GameProcessId + '-*.json') -File) {
++        try { $result[$file.Name] = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json }
++        catch { continue }
++    }
++    return $result
++}
++foreach ($entry in (Read-GameHitches).GetEnumerator()) { $baseline[$entry.Key] = [double](($entry.Value.events | ForEach-Object { $_.frame.wall_ms } | Measure-Object -Maximum).Maximum) }
++$samples = New-Object 'System.Collections.Generic.List[object]'
++$timer = [diagnostics.stopwatch]::StartNew()
++$metadata = [ordered]@{ process_id = $GameProcessId; process_start_utc_ticks = $processStart; started_utc = [datetime]::UtcNow.ToString('o'); seconds_limit = $Seconds; threshold_ms = $ThresholdMs; captured_new_hitch = $false; stop_reason = 'time_limit'; samples = $samples }
++Write-Host ('RACE_HITCH_THREADS observing PID=' + $GameProcessId + ' for at most ' + $Seconds + ' seconds; output=' + $output)
++try {
++    while ($timer.Elapsed.TotalSeconds -lt $Seconds) {
++        $current = Get-Process -Id $GameProcessId -ErrorAction SilentlyContinue
++        if ($null -eq $current -or $current.StartTime.ToUniversalTime().Ticks -ne $processStart) { $metadata.stop_reason = 'process_exited'; break }
++        $threads = New-Object 'System.Collections.Generic.List[object]'
++        foreach ($thread in $current.Threads) {
++            if ($threads.Count -ge 256) { break }
++            try {
++                $state = $thread.ThreadState.ToString()
++                $wait = if ($state -eq 'Wait') { $thread.WaitReason.ToString() } else { '' }
++                $threads.Add([ordered]@{ id = $thread.Id; cpu_ms = $thread.TotalProcessorTime.TotalMilliseconds; kernel_ms = $thread.PrivilegedProcessorTime.TotalMilliseconds; state = $state; wait = $wait })
++            } catch { continue } # A worker may exit between enumeration/query.
++        }
++        $samples.Add([ordered]@{ elapsed_ms = $timer.Elapsed.TotalMilliseconds; utc = [datetime]::UtcNow.ToString('o'); process_cpu_ms = $current.TotalProcessorTime.TotalMilliseconds; threads = $threads })
++        foreach ($entry in (Read-GameHitches).GetEnumerator()) {
++            $events = @($entry.Value.events)
++            $previous = if ($baseline.ContainsKey($entry.Key)) { [double]$baseline[$entry.Key] } else { -1 }
++            for ($index = 0; $index -lt $events.Count; $index++) {
++                if ([double]$events[$index].frame.wall_ms -le $previous) { continue }
++                if ([double]$events[$index].frame.frame_ms -lt $ThresholdMs) { continue }
++                $metadata.captured_new_hitch = $true
++                $metadata.stop_reason = 'new_hitch'
++                $metadata.frame_ms = [double]$events[$index].frame.frame_ms
++                $metadata.race_tick = [int]$events[$index].frame.tick
++                Copy-Item -LiteralPath (Join-Path $hitchDirectory $entry.Key) -Destination $output
++                break
++            }
++            $baseline[$entry.Key] = [double](($events | ForEach-Object { $_.frame.wall_ms } | Measure-Object -Maximum).Maximum)
++            if ($metadata.captured_new_hitch) { break }
++        }
++        if ($metadata.captured_new_hitch) { break }
++        Start-Sleep -Milliseconds 250
++    }
++} finally {
++    $metadata.finished_utc = [datetime]::UtcNow.ToString('o')
++    $metadata | ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath (Join-Path $output 'threads.json') -Encoding UTF8
++    Write-Host ('RACE_HITCH_THREADS complete captured_new_hitch=' + $metadata.captured_new_hitch + ' reason=' + $metadata.stop_reason + ' samples=' + $samples.Count)
++}
+--- /dev/null
++++ b/game/tests/probe_hitch_scene_start.gd
+@@ -0,0 +1,13 @@
++extends SceneTree
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.production_mode = "--uncached" not in OS.get_cmdline_user_args()
++	game.hitch_diagnostics_enabled = false
++	print("SCENE_PROBE before_ready diagnostics_disabled")
++	root.add_child(game)
++	print("SCENE_PROBE after_ready")
++	for index: int in range(5): await process_frame
++	game.free()
++	quit()
+--- a/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
++++ b/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
+@@ -133,3 +133,47 @@
+ 
+ Live JSON, isolated probe JSON, command logs, paired pixels, original snapshots and a **task-only** review patch/hash manifest are under `docs/evidence/race-hitch-recurrence-2026-10-13/`. The patch uses a checkpoint base containing concurrent changes and excludes those changes from the fix. Restart the PC game to load this fix; the already-running instance uses its loaded scripts. Doctor still found attached DN2103, but no physical-phone race/preparation test, APK export/install, full Validate or backend deployment was performed for this follow-up. Remaining acceptance is the owner's repeated clean-car race starts after restart, then physical-device confirmation; compilation can still take time under the loading cover, and other first-use effects remain observable rather than claimed solved.
+ 
++## Desert recurrence after material preparation, later 2026-10-13
++
++Requirements RH08–RH10 / Q01 / G01 / R01: preserve the new live event, distinguish it from first car-material activation, and add evidence for still-unidentified native/render work. **The early-race freeze is not generally fixed.** The previous preparation pass addresses a first-use material path; this recurrence shows it is insufficient to explain/eliminate every stall.
++
++The owner reports **normal driving**. The actual running PC process **35568**, started at **22:03:47 Helsinki time**, captured Speedy/Desert/Compact/Compatibility/RTX 3090 in `race-1791918253-35568-766400013488.json`. The main event is **1,099.773 ms** at tick **544**, **4.533 s of driving**, with **1,087.339 ms** between render signals. Game physics was **8.872 ms**, presentation **1.489 ms**, condition saving **0 ms**, and the recorded recovery/cloud IO was **0 ms**. No editor worker or telemetry writer was active in that event.
++
++`weathering_prepared=true` and `weathering_installed=true` throughout the retained preceding **523 ms**, as was the four-wheel dust active mask **15**. Thus this capture does not support blaming the first car-finish swap or first recorded dust activation. It also contains a separate **164.545 ms** countdown interval with only **6.656 ms** in the render boundary; the two events should not be conflated. The immutable cached Speedy document has 16 pieces, three jump objects and **no bridges**. Draw calls rise from 301 to 302 around the large event, but the old capture cannot identify which object/effect/pipeline did that. Compatibility compilation counters remain zero, so a shader/driver wait or scheduling explanation remains unconfirmed without a native stack/GPU trace.
++
++The logger now records every car particle group's allocation and active-wheel mask, jump/roll/heading state, and a bounded mesh/material inventory. At **5 Hz**, immediately before rendering, it samples camera-frustum candidates, first candidate appearances, viewport size, MSAA/render scale and projection. This describes possible draw resources rather than asserting actual GPU visibility: shadow passes, occlusion and native work remain outside that observation. The inventory is capped at **128 items**, four material roles per mesh; truncation is explicit. Shader source hashes and StandardMaterial feature roles distinguish candidates without dumping source code, player inputs, positions or cosmetic snapshots. The inventory captures the initial world; dynamically allocated emitters remain covered by their group counters.
++
++Local diagnostic **schema 2** serializes repeated render contexts once in a table, with per-frame indices and explicit dropped-context counts. Up to **64** contexts fit the existing eight-event/eight-file/**2 MiB per file** limits. The full eight-event actual-frame stress check verifies the existing byte cap and preserves the live sampled frames. A disposable 12-second Desert probe completed **1,440 ticks / 117.81 m**; observer processing averaged **151.47 µs/frame**, and sampled render-context work was **0.103–0.115 ms** in retained startup samples. It had a 2.790-second startup render stall, but did not reproduce the live Speedy event during driving. These shared-host observations are not a phone performance/overhead acceptance test or a controlled speedup claim.
++
++Two read-only PC capture helpers were prepared:
++
++- `scripts/capture-race-hitch-threads.ps1`: cumulative per-thread/process CPU time and thread wait state at roughly four samples/second, with exact PID/start-time fences, a 256-thread/sample bound and a 120-second maximum. It watches for newly captured slow events, including replacement in a full eight-event buffer, and preserves the related JSON. It pauses/restarts no game and stops when its selected process exits.
++- `scripts/capture-race-hitch-trace.ps1`: Windows Performance Recorder CPU/GPU memory-mode capture, a unique owned recording name, a time limit and stop/cancel handling restricted to that recording. It records no heap, network traffic or file-content profile and uploads nothing. Raw native traces, if available, belong under ignored `build/`, not published evidence. Usage follows [Microsoft's WPR command-line documentation](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/wpr-command-line-options).
++
++The real WPR attempt **failed before recording**: `0xc5585011`, “Failed to enable the policy to profile system performance.” Sandbox escalation was permitted; this was a Windows profiling-policy/privilege failure, **not** an automatic approval-review rejection. No ETL or native stack was obtained. WPR status was subsequently confirmed **not recording**. The earlier attempt also exposed PowerShell treating native stderr as terminating; the helper now preserves native output/exit status and handles cleanup explicitly.
++
++The reported process exited before the fallback attach. Its replacement process **33296** was independently verified as the actual project game. The thread helper collected **83 valid samples / 32–33 threads** over **24.585 s**, then stopped when that process exited, with **no new captured stall**. This validates basic thread collection and process-exit cleanup; it does not explain the earlier freeze, retrospectively recover its native stack, or constitute a passing recurrence test. Native CPU/GPU profiling still needs an administrator/policy-enabled Windows session for the prepared WPR helper. No user game process was terminated or restarted by this task.
++
++Additional changed files are the monitor, its regression test, the two PC helpers, and `game/tests/probe_hitch_scene_start.gd` (+ UID), which isolated a separate race-construction failure with diagnostics disabled. Concurrent mesh-chunking work assigned the empty name of an unparented source to its first chunk. `game/track/spatial_mesh_chunks.gd` now supplies `MeshInstance3D` only when that source is unnamed; existing names, triangles, normals, UVs, pigments, materials, transforms, shadows and budgets remain unchanged. This construction error arose during subsequent shared-workspace edits and is **not** claimed to have caused the earlier recorded Desert stall. The checkpoint includes only this two-line correction to the concurrently introduced chunker.
++
++Actual follow-up commands:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_race_start.gd -Graphical -TestArgument '--themes=desert'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_hitch_scene_start.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_hitch_scene_start.gd -Graphical -TestArgument '--uncached'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_spatial_mesh_chunks.gd
++scripts/dev.ps1 -Action Import
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action Doctor
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-race-hitch-trace.ps1 -GameProcessId 35568 -Seconds 60
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/capture-race-hitch-threads.ps1 -GameProcessId 33296 -Seconds 60
++wpr.exe -status
++```
++
++Final actual validation: hitch tests **42 headless / 42 Compatibility / 42 Mobile-Vulkan**, exact mesh-chunk signature **34**, full parse **671**, pinned import and helper PowerShell AST checks pass. Actual injectable one-second and save stalls, foreground/pause suppression, every added emission context, bounded inventory/deduplication/byte cap and unchanged canonical state remain checked. Initial graphic missed-save assertions, a concurrently added terrain class missing from Godot's class cache, and the unrelated empty-name construction failure are retained; import restored class discovery, the naming bug was fixed, and the original assertions were kept. No visual/gameplay change was made for this Desert follow-up, so no new art screenshots were required.
++
++Evidence/checkpoint is under `docs/evidence/desert-hitch-recurrence-2026-10-13/`: preserved live JSON, cached public track document, source snapshots, actual command outcomes, sampled thread data and a scoped review patch/hash manifest. Doctor found attached DN2103; **no phone logger/performance test, APK export/install, full Validate or backend deployment** was performed. Restart into updated source to obtain the expanded automatic capture; the original reported sessions have exited. Remaining acceptance: another actual recurrence with the new context (and preferably a successful native CPU/GPU trace) to identify the responsible resource/call/wait, then an attributable fix validated on PC and phone.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH08-RH10/Q01/G01/R01: actual Speedy Desert normal-driving freeze1.099773s at544ticks/4.533s, render-boundary1.087339s; finish prepared/installed and dust mask15 already stable; save/backend0ms. Cause remains unconfirmed. Local schema2 captures all emitter masks/jump/roll/frustum resource roles/view state, bounded128items/64deduplicated contexts/eight events-files/2MiB. WPR denied Windows profiling policy0xc5585011/no ETL/no recording left; read-only thread fallback83samples/32-33threads ends on process exit/no new stall. Hitch42head+42Compatibility+42Mobile/mesh34/parse671/import/PS-AST pass; fixed concurrent unnamed-chunk construction without geometry change. Original assertions/source changes preserved; no blanket freeze fix. Doctor DN2103 attached/no phone test/APK/fullValidate/backend/deploy. Actual evidence/scoped checkpoint/trace limitations: docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md.
++
+ 2026-10-13 B01/B05/B07/R01/Q01 BR07-BR10: owner second backend robustness pass found/fixed four additional gaps. Shared bounded strict JSON catches exponent infinity/duplicate keys/invalid Unicode/depth across ingress and Local/S3/GCS/archive; constant-depth traversal keeps canonical expansion allowance. Immutable reuse repeats failed root/shard directory sync before acknowledgement. Normalized username key length checked before SQL (40-char display can expand to720 versus160 column). Broad100000 ghost component bounds protect stored/current presentation; invalid optional ghosts never affect valid timing proof. Focus82/1skip+13subtests, SQLite206/1skip+13subtests, PostgreSQL35/1skip, isolatedLinux86/1skip+21subtests, pinnedGodot20/0, Ruff/diff pass. Fixture restored stopped; no new schema/dependency, production writes/provider calls/deploy, physics/art/APK/device test. Actual reboot/power-loss/failover/restore and fully stalled OS/provider IO remain target-host acceptance. Concurrent communication changes preserved. Commands, evidence, limitations and task-only patch: docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
+ 
+ 2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH08-RH10/Q01/G01/R01: actual Speedy Desert normal-driving freeze1.099773s at544ticks/4.533s, render-boundary1.087339s; finish prepared/installed and dust mask15 already stable; save/backend0ms. Cause remains unconfirmed. Local schema2 captures all emitter masks/jump/roll/frustum resource roles/view state, bounded128items/64deduplicated contexts/eight events-files/2MiB. WPR denied Windows profiling policy0xc5585011/no ETL/no recording left; read-only thread fallback83samples/32-33threads ends on process exit/no new stall. Hitch42head+42Compatibility+42Mobile/mesh34/parse671/import/PS-AST pass; fixed concurrent unnamed-chunk construction without geometry change. Original assertions/source changes preserved; no blanket freeze fix. Doctor DN2103 attached/no phone test/APK/fullValidate/backend/deploy. Actual evidence/scoped checkpoint/trace limitations: docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md.
++
+ 2026-10-13 B01/B05/B07/R01/Q01 BR07-BR10: owner second backend robustness pass found/fixed four additional gaps. Shared bounded strict JSON catches exponent infinity/duplicate keys/invalid Unicode/depth across ingress and Local/S3/GCS/archive; constant-depth traversal keeps canonical expansion allowance. Immutable reuse repeats failed root/shard directory sync before acknowledgement. Normalized username key length checked before SQL (40-char display can expand to720 versus160 column). Broad100000 ghost component bounds protect stored/current presentation; invalid optional ghosts never affect valid timing proof. Focus82/1skip+13subtests, SQLite206/1skip+13subtests, PostgreSQL35/1skip, isolatedLinux86/1skip+21subtests, pinnedGodot20/0, Ruff/diff pass. Fixture restored stopped; no new schema/dependency, production writes/provider calls/deploy, physics/art/APK/device test. Actual reboot/power-loss/failover/restore and fully stalled OS/provider IO remain target-host acceptance. Concurrent communication changes preserved. Commands, evidence, limitations and task-only patch: docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
+ 
+ 2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
+--- /dev/null
++++ b/game/tests/probe_hitch_scene_start.gd.uid
+@@ -0,0 +1 @@
++uid://4xx4br0ycsgg

@@ -1,0 +1,524 @@
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -22,6 +22,8 @@
+ var cached_snapshot: bool = false
+ var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+ var _last_refresh_msec: int = -60000
++var _continue_group: String = ""
++var _continue_key: String = ""
+ const REFRESH_INTERVAL_MSEC: int = 30000
+ 
+ func _cache_scope() -> String:
+@@ -80,6 +82,8 @@
+ 	_ghost_pending.clear()
+ 	cached_snapshot = false
+ 	_last_refresh_msec = -60000
++	_continue_group = ""
++	_continue_key = ""
+ 
+ static func valid_snapshot(value: Dictionary) -> bool:
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+@@ -150,6 +154,14 @@
+ 	busy = false
+ 	request_scope = ""
+ 	if response.ok and valid_snapshot(response.data):
++		if model.group_id != str(response.data.get("group_id","")):
++			model = WeeklyRivalry.new()
++			result_ticket = ""
++			result_state = ""
++			_ghost_cache.clear()
++			_ghost_pending.clear()
++			_continue_group = ""
++			_continue_key = ""
+ 		model.apply_snapshot(response.data)
+ 		snapshot_scope = original
+ 		cached_snapshot = false
+@@ -287,16 +299,31 @@
+ 		changed.emit()
+ 
+ func continue_week() -> void:
+-	if busy or not model.completed: return
+-	var original: String = scope()
+-	var generation: int = _generation
+-	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/continue",HTTPClient.METHOD_POST,{},client.new_operation_key(),true)
++	if busy or not model.completed or snapshot_scope != scope() or not client.signed_in(): return
++	var original: String = scope()
++	# Own the whole acknowledgement/enrollment transition before yielding. Late
++	# result polls belong to the old week and must not replace the new board.
++	_generation += 1
++	var generation: int = _generation
++	result_polling = false
++	busy = true
++	request_scope = original
++	error = ""
++	if _continue_group != model.group_id:
++		_continue_group = model.group_id
++		_continue_key = client.new_operation_key()
++	changed.emit()
++	var response: Dictionary = await client.request_api("/rivalry/"+_continue_group+"/continue",HTTPClient.METHOD_POST,{},_continue_key,true)
+ 	if original != scope() or generation != _generation: return
+ 	if response.ok:
+ 		_configure_cache()
+ 		snapshot_cache.forget("current")
+-		reset()
+-		await refresh()
++		cached_snapshot = false
++		# Join targets the actual current UTC week even on an older backend with
++		# several unreviewed finales. Keep the finale visible until it succeeds.
++		await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
+ 	else:
++		busy = false
++		request_scope = ""
+ 		error = "Could not continue. Try again."
+ 		changed.emit()
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -461,10 +461,23 @@
+     old = replay_response(session, player.id, scope, key, {})
+     if old is not None:
+         return old
+-    group, member = require_member(session, group_id, player.id, request)
++    group, _ = require_member(session, group_id, player.id, request)
+     if snapshot(session, group, player.id)["state"] != "complete":
+         raise HTTPException(409, "RIVALRY_NOT_COMPLETE")
+-    member.acknowledged = True
++    # Continue leaves the reviewed finale and any older history in this car's
++    # population. Otherwise /current walks the unacknowledged weeks backwards
++    # and makes the player press Continue once for every missed finale.
++    ended_groups = select(RivalryGroup.id).where(
++        RivalryGroup.vehicle_id == group.vehicle_id,
++        RivalryGroup.test_population.is_(group.test_population),
++        RivalryGroup.week_start <= group.week_start,
++        RivalryGroup.ends_at <= now(),
++    )
++    session.execute(update(RivalryMember).where(
++        RivalryMember.player_id == player.id,
++        RivalryMember.group_id.in_(ended_groups),
++        RivalryMember.acknowledged.is_(False),
++    ).values(acknowledged=True))
+     return commit_response(session, player.id, scope, key, {}, {"acknowledged": True})
+ 
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 WC01-WC04/WR01/WR03/WR08/B05/B07/R01/Q01: Weekly Rivalry repeated Continue fix. Baseline missed-three-weeks test returns older complete finale (1fail/1pass). Scoped historical acknowledgement plus immediate client busy/stable retry key/direct current-week enrollment/late-reply fence; retain finale on error and clear old-group result/ghost/native state. New nativeCompatibility44/MobileVulkan44, automatic7/weekly1109/App99/entry66; SQLite12/ownedPostgreSQL11 and Ruff pass. Six fixture captures inspected; owned database removed. Configured old PostgreSQL timeout/restricted-log-image attempts recorded; successful permitted reruns. Doctor no attached phone; no device test/APK/fullValidate/live account write/deploy. Actual files/commands/scoped checkpoint/owner-device-server rollout acceptance: docs/RIVALRY_WEEK_COMPLETION.md.
++
+ 2026-10-12 STUDIO-LOCAL-DRAFTS-01/STUDIO-CATALOGUE-01/STUDIO-RACE-PACKAGE-01/STUDIO-HEATMAP-SCOPE-01/STUDIO-PLAYER-01/STUDIO-MONITOR-01/BMT-018/030/033/034/036/050/051/070: prototype-led Studio monitor revision. Drafts remain local; explicit trajectory-verified publication alone commits catalogue/proof/slot. Published filters/shape previews, actual device-OS one-package-per-attempt heatmaps, richer player/case/competition/reliability/monetisation investigation and source coverage. Live GET confirms zero old quality observations; no invented backfill. Native quality46/product55/App14, local publication31/HTTP81/adapter14, SQLite162 and owned PostgreSQL-backed240 (7 skips each), browser27/three widths, presentation6 and final frontier-cap28 pass. Sample3061B;100 packages fold into one row; no diagnostic HTTP while driving. Doctor no phone; no device test/APK/fullValidate/live writes/deploy. Financial fulfillment/revenue/reversal/recovery/compensation and operational SLO/restore sources remain unavailable. Commands, limits, captures and scoped checkpoint: docs/STUDIO_MONITOR_REVISION_2026_10_12.md.
+ 
+ 2026-10-12 WE25-WE26/WE21-WE24/V04/V05/G01/R01/Q01: owner rejects regular rounded banks and requests whiter blue terrain. Kit142 steeper plough face/broken upper shelf/independent packed fragments/slope-fitted feet/mesh-footprint normals; original snow pigment blue-to-white blend <=42%/same texture samples, road/poles/camera/physics retained. Indexed cached banks/240-fragment cap/same draws; final Native101/MobileVulkan100 and wind47 pass. RTX3090 Slippery4K full20s 2399ticks/78.9m median3.17ms/p954.43ms/no >16.667ms; cold roads~3.2s/shape reuse mesh buffers byte-identical, no speedup claim. Diagnostic focus pause/tick fence corrects incomplete sample. Doctor empty ADB/no phone performance test/export-install/fullValidate/physics/backend/deploy/livewrites. Actual commands/captures/scoped checkpoint/owner acceptance: docs/WINTER_BANK_MASSES.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-12 WC01-WC04/WR01/WR03/WR08/B05/B07/R01/Q01: Weekly Rivalry repeated Continue fix. Baseline missed-three-weeks test returns older complete finale (1fail/1pass). Scoped historical acknowledgement plus immediate client busy/stable retry key/direct current-week enrollment/late-reply fence; retain finale on error and clear old-group result/ghost/native state. New nativeCompatibility44/MobileVulkan44, automatic7/weekly1109/App99/entry66; SQLite12/ownedPostgreSQL11 and Ruff pass. Six fixture captures inspected; owned database removed. Configured old PostgreSQL timeout/restricted-log-image attempts recorded; successful permitted reruns. Doctor no attached phone; no device test/APK/fullValidate/live account write/deploy. Actual files/commands/scoped checkpoint/owner-device-server rollout acceptance: docs/RIVALRY_WEEK_COMPLETION.md.
++
+ 2026-10-12 STUDIO-LOCAL-DRAFTS-01/STUDIO-CATALOGUE-01/STUDIO-RACE-PACKAGE-01/STUDIO-HEATMAP-SCOPE-01/STUDIO-PLAYER-01/STUDIO-MONITOR-01/BMT-018/030/033/034/036/050/051/070: prototype-led Studio monitor revision. Drafts remain local; explicit trajectory-verified publication alone commits catalogue/proof/slot. Published filters/shape previews, actual device-OS one-package-per-attempt heatmaps, richer player/case/competition/reliability/monetisation investigation and source coverage. Live GET confirms zero old quality observations; no invented backfill. Native quality46/product55/App14, local publication31/HTTP81/adapter14, SQLite162 and owned PostgreSQL-backed240 (7 skips each), browser27/three widths, presentation6 and final frontier-cap28 pass. Sample3061B;100 packages fold into one row; no diagnostic HTTP while driving. Doctor no phone; no device test/APK/fullValidate/live writes/deploy. Financial fulfillment/revenue/reversal/recovery/compensation and operational SLO/restore sources remain unavailable. Commands, limits, captures and scoped checkpoint: docs/STUDIO_MONITOR_REVISION_2026_10_12.md.
+ 
+ 2026-10-12 WE25-WE26/WE21-WE24/V04/V05/G01/R01/Q01: owner rejects regular rounded banks and requests whiter blue terrain. Kit142 steeper plough face/broken upper shelf/independent packed fragments/slope-fitted feet/mesh-footprint normals; original snow pigment blue-to-white blend <=42%/same texture samples, road/poles/camera/physics retained. Indexed cached banks/240-fragment cap/same draws; final Native101/MobileVulkan100 and wind47 pass. RTX3090 Slippery4K full20s 2399ticks/78.9m median3.17ms/p954.43ms/no >16.667ms; cold roads~3.2s/shape reuse mesh buffers byte-identical, no speedup claim. Diagnostic focus pause/tick fence corrects incomplete sample. Doctor empty ADB/no phone performance test/export-install/fullValidate/physics/backend/deploy/livewrites. Actual commands/captures/scoped checkpoint/owner acceptance: docs/WINTER_BANK_MASSES.md.
+diff --git a/game/tests/test_rivalry_week_completion.gd b/game/tests/test_rivalry_week_completion.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_rivalry_week_completion.gd
+@@ -0,0 +1,169 @@
++extends "res://tests/test_rivalry_result.gd"
++## Delayed requests exercise the real finale button and scoped rollover adapter.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++
++class DelayedClient extends Node:
++	signal reply_ready
++	signal result_ready
++	var player: Dictionary = {"id":"driver_2"}
++	var development: bool = false
++	var keys: int = 0
++	var calls: Array[Dictionary] = []
++	var pending_path: String = ""
++	var response: Dictionary = {}
++	var result_response: Dictionary = {}
++	func base_url() -> String: return "http://week-fixture.invalid"
++	func signed_in() -> bool: return true
++	func test_drivers_available() -> bool: return development
++	func new_operation_key() -> String:
++		keys += 1
++		return "week-key-"+str(keys)
++	func recent_run(_ticket: String) -> Dictionary: return {}
++	func request_api(path: String, method: int, payload: Dictionary, key: String, authorized: bool) -> Dictionary:
++		calls.append({"path":path,"method":method,"payload":payload.duplicate(true),"key":key,"authorized":authorized})
++		if path.ends_with("/result"):
++			await result_ready
++			return result_response.duplicate(true)
++		pending_path = path
++		await reply_ready
++		return response.duplicate(true)
++	func respond(value: Dictionary) -> void:
++		response = value
++		pending_path = ""
++		reply_ready.emit()
++
++var service: DelayedClient
++var adapter: Node
++var completed_snapshot: Dictionary
++var active_snapshot: Dictionary
++
++func prepare() -> void:
++	adapter.reset()
++	adapter.test_population = service.development
++	adapter.model.apply_snapshot(completed_snapshot)
++	adapter.snapshot_scope = adapter.scope()
++	adapter.model.last_result = {"valid":true,"ms":100000}
++	adapter.model.native_cache = {"old-track":"cached"}
++	service.calls.clear()
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-week-completion-2026-10-12/ui")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	OS.set_environment("BMT_API_URL","")
++	service = DelayedClient.new()
++	root.add_child(service)
++	completed_snapshot = fixture()
++	completed_snapshot.state = "complete"
++	active_snapshot = fixture()
++	active_snapshot.group_id = "current-week"
++	active_snapshot.week = 42
++	for row: Dictionary in active_snapshot.standings:
++		row.points = 0; row.rank = null; row.completed = 0
++	for track: Dictionary in active_snapshot.tracks:
++		for row: Dictionary in track.entries:
++			row.ms = null; row.ticks = null; row.rank = null; row.points = 0
++	adapter = Adapter.new()
++	adapter.client = service
++	root.add_child(adapter)
++	for development: bool in [false,true]:
++		service.development = development
++		prepare()
++		adapter.continue_week()
++		check(adapter.busy and adapter.request_scope == adapter.scope(),"Continue immediately owns the request and disables repeats")
++		await adapter.continue_week()
++		await adapter.refresh()
++		check(service.calls.size() == 1,"double presses and timer refresh never overlap the acknowledgement")
++		var first_key: String = service.calls[0].key
++		service.respond({"ok":false,"data":{},"error":"CONNECTION_FAILED"})
++		check(not adapter.busy and adapter.model.completed and not adapter.error.is_empty(),"failed acknowledgement retains the finale and enables retry")
++		adapter.continue_week()
++		check(service.calls[-1].key == first_key,"lost acknowledgement retries reuse the same operation key")
++		service.respond({"ok":true,"data":{"acknowledged":true}})
++		check(adapter.busy and service.pending_path == "/rivalry/join","one press joins the current week directly, bypassing old current snapshots")
++		check(service.calls[-1].payload.get("test_population") == development and service.calls[-1].payload.get("automatic_test_drivers") == development,"current-week enrollment preserves real/development population")
++		# Baseline used a current GET here, so this also proves that regression.
++		service.respond({"ok":false,"data":{},"error":"CONNECTION_FAILED"})
++		check(not adapter.busy and adapter.model.completed and not adapter.error.is_empty(),"failed enrollment preserves the reviewed finale for retry")
++		adapter.continue_week()
++		check(service.calls[-1].key == first_key,"retry after failed enrollment reuses the acknowledged operation")
++		service.respond({"ok":true,"data":{"acknowledged":true}})
++		service.respond({"ok":true,"data":active_snapshot})
++		check(not adapter.busy and adapter.model.group_id == "current-week" and adapter.model.status == "active" and adapter.model.tracks.size() == 5,"one retry finishes on all five current-week tracks")
++		check(adapter.model.last_result.is_empty() and adapter.model.native_cache.is_empty() and adapter.result_ticket.is_empty(),"new week clears previous result and native preview state")
++		check(not adapter.cached_snapshot and adapter.snapshot_scope == adapter.scope(),"new week is authoritative in the current scope")
++	prepare()
++	adapter.result_ticket = "old-week-ticket"
++	adapter.poll_result()
++	check(adapter.result_polling,"old week's result request starts before Continue")
++	adapter.continue_week()
++	service.respond({"ok":true,"data":{"acknowledged":true}})
++	service.respond({"ok":true,"data":active_snapshot})
++	service.result_response = {"ok":true,"data":{"status":"rejected"}}
++	service.result_ready.emit()
++	check(adapter.model.group_id == "current-week" and adapter.error.is_empty() and not adapter.result_polling,"late old-week result cannot overwrite the next week or add an error")
++	prepare()
++	adapter.continue_week()
++	adapter.reset()
++	service.player.id = "other-account"
++	service.respond({"ok":true,"data":{"acknowledged":true}})
++	check(service.calls.size() == 1 and adapter.model.tracks.is_empty() and not adapter.busy,"account reset fences a late acknowledgement and prevents enrollment")
++	service.player.id = "driver_2"
++	prepare()
++	adapter.continue_week()
++	service.respond({"ok":true,"data":{"acknowledged":true}})
++	adapter.reset()
++	service.respond({"ok":true,"data":active_snapshot})
++	check(adapter.model.tracks.is_empty() and not adapter.busy,"reset fences a late enrollment response")
++	prepare()
++	adapter.model.status = "settling"
++	adapter.model.completed = false
++	await adapter.continue_week()
++	check(service.calls.is_empty(),"settling results cannot be acknowledged")
++	prepare()
++	adapter.snapshot_scope = "different-car"
++	await adapter.continue_week()
++	check(service.calls.is_empty(),"an out-of-scope finale cannot be acknowledged")
++	adapter.queue_free()
++	await process_frame
++	await app_flow()
++	service.queue_free()
++	await process_frame
++	print("RIVALRY_WEEK_COMPLETION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func app_flow() -> void:
++	var folder: String = "user://rivalry_week_completion_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	adapter = app.rivalry
++	adapter.client = service
++	service.development = false
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		prepare()
++		app.rivalry_section = "overview"
++		app._show_screen("rivalry")
++		await settle()
++		var next: Button = app.content.find_child("RivalryNextWeek",true,false)
++		check(next != null and not next.disabled,"complete week exposes one usable Continue action")
++		if DisplayServer.get_name() != "headless": await capture("finale",dimensions)
++		next.pressed.emit()
++		await settle()
++		next = app.content.find_child("RivalryNextWeek",true,false)
++		check(next != null and next.disabled,"actual rebuilt finale disables Continue during acknowledgement")
++		if DisplayServer.get_name() != "headless": await capture("continuing",dimensions)
++		service.respond({"ok":true,"data":{"acknowledged":true}})
++		await settle()
++		next = app.content.find_child("RivalryNextWeek",true,false)
++		check(next != null and next.disabled,"Continue remains disabled throughout enrollment")
++		service.respond({"ok":true,"data":active_snapshot})
++		await settle()
++		check(app.screen == "rivalry" and app.rivalry_section == "overview" and app.content.find_child("RivalryNextWeek",true,false) == null,"single finale press replaces the completed week with current overview")
++		check(adapter.model.week == 42 and adapter.model.tracks.size() == 5 and not adapter.busy,"current week is fully populated and ready for racing")
++		if DisplayServer.get_name() != "headless": await capture("next-week",dimensions)
++	app.queue_free()
++	await process_frame
+diff --git a/backend/tests/test_rivalry_week_completion.py b/backend/tests/test_rivalry_week_completion.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_rivalry_week_completion.py
+@@ -0,0 +1,96 @@
++"""One finale action advances across missed weeks without changing race results."""
++from sqlalchemy import select
++from test_domains import domain as _domain_fixture
++from test_domains import headers, submit
++from test_rivalry import join, rivalry_ticket, seed
++
++from bmt_backend.rivalry import week_window
++from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.worker import process_one
++
++rivalry_domain = _domain_fixture
++
++
++def current(domain, player="Alice"):
++    response = domain.client.get("/v1/rivalry/current?vehicle_id=compact", headers=headers(domain, player))
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++def test_continue_skips_all_older_finales_with_scoped_idempotency(rivalry_domain, monkeypatch):
++    seed(rivalry_domain)
++    timestamp = week_window(1791763200)[0] + 3600
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
++    histories = []
++    for _ in range(3):
++        histories.append(join(rivalry_domain))
++        join(rivalry_domain, "Bob")
++        timestamp += 7 * 86400
++    latest = histories[-1]
++    assert current(rivalry_domain)["group_id"] == latest["group_id"]
++    url = f"/v1/rivalry/{latest['group_id']}/continue"
++    request_headers = headers(rivalry_domain, "Alice", "continue-missed-weeks")
++    denied = rivalry_domain.client.post(url, json={}, headers=headers(rivalry_domain, "Carol"))
++    assert denied.status_code == 404
++    first = rivalry_domain.client.post(url, json={}, headers=request_headers)
++    retry = rivalry_domain.client.post(url, json={}, headers=request_headers)
++    assert first.status_code == retry.status_code == 200
++    assert first.json() == retry.json() == {"acknowledged": True}
++    assert current(rivalry_domain)["state"] == "not_joined"
++    assert current(rivalry_domain, "Bob")["group_id"] == latest["group_id"]
++    with rivalry_domain.factory() as session:
++        members = session.scalars(select(RivalryMember).where(RivalryMember.player_id == rivalry_domain.players["Alice"])).all()
++        assert len(members) == 3 and all(member.acknowledged for member in members)
++        # Another car and population remain independent even for this player.
++        source = session.get(RivalryGroup, latest["group_id"])
++        for car, test in [("kart", False), ("compact", True)]:
++            group = RivalryGroup(week_start=source.week_start, ends_at=source.ends_at,
++                vehicle_id=car, test_population=test, contract_key=f"scope-{car}-{test}",
++                skill_band=-1, tracks=source.tracks, member_count=1)
++            session.add(group)
++            session.flush()
++            session.add(RivalryMember(group_id=group.id, player_id=rivalry_domain.players["Alice"],
++                week_start=group.week_start, contract_key=group.contract_key))
++        session.commit()
++    # A new key remains safe, and never acknowledges the new week's membership.
++    active = join(rivalry_domain)
++    assert active["state"] == "active" and active["group_id"] not in [item["group_id"] for item in histories]
++    assert rivalry_domain.client.post(url, json={}, headers=headers(rivalry_domain, "Alice")).status_code == 200
++    assert current(rivalry_domain)["group_id"] == active["group_id"]
++    with rivalry_domain.factory() as session:
++        unacknowledged = session.scalars(select(RivalryMember).where(
++            RivalryMember.player_id == rivalry_domain.players["Alice"], RivalryMember.acknowledged.is_(False))).all()
++        assert len(unacknowledged) == 3  # Current, other car, other population.
++    for history in histories:
++        retained = rivalry_domain.client.get(f"/v1/rivalry/{history['group_id']}", headers=headers(rivalry_domain, "Alice"))
++        assert retained.status_code == 200 and retained.json()["state"] == "complete"
++
++
++def test_week_boundary_waits_for_verification_then_continues_once(rivalry_domain, monkeypatch):
++    seed(rivalry_domain)
++    original = join(rivalry_domain)
++    url = f"/v1/rivalry/{original['group_id']}/continue"
++    request_headers = headers(rivalry_domain, "Alice", "continue-at-boundary")
++    issued = rivalry_ticket(rivalry_domain, original["group_id"])
++    submit(rivalry_domain, issued, "Alice", frames=20)
++    timestamp = original["ends_at"] - 1
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
++    assert current(rivalry_domain)["state"] == "active"
++    assert rivalry_domain.client.post(url, json={}, headers=request_headers).status_code == 409
++    timestamp += 1
++    assert current(rivalry_domain)["state"] == "settling"
++    assert rivalry_domain.client.post(url, json={}, headers=request_headers).status_code == 409
++    with rivalry_domain.factory() as session:
++        assert not session.get(RivalryMember, (original["group_id"], rivalry_domain.players["Alice"])).acknowledged
++    assert process_one(rivalry_domain.app)
++    finale = current(rivalry_domain)
++    assert finale["state"] == "complete" and finale["standings"][0]["points"] == 30
++    assert rivalry_domain.client.post(url, json={}, headers=request_headers).status_code == 200
++    next_week = join(rivalry_domain, key="join-next-week")
++    assert next_week == join(rivalry_domain, key="join-next-week")
++    assert next_week["state"] == "active" and next_week["group_id"] != original["group_id"]
++    assert next_week["ends_at"] == original["ends_at"] + 7 * 86400
++    assert len(next_week["tracks"]) == 5 and next_week["standings"][0]["points"] == 0
++    assert rivalry_ticket(rivalry_domain, next_week["group_id"])["rivalry_group"] == next_week["group_id"]
++    retained = rivalry_domain.client.get(f"/v1/rivalry/{original['group_id']}", headers=headers(rivalry_domain, "Alice")).json()
++    assert retained["standings"] == finale["standings"] and retained["tracks"] == finale["tracks"]
+diff --git a/scripts/test_rivalry_week_postgres.py b/scripts/test_rivalry_week_postgres.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_rivalry_week_postgres.py
+@@ -0,0 +1,63 @@
++"""Rivalry rollover regressions against an owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-rivalry-week-pg-" + secrets.token_hex(4)
++    label = "rivalry-week-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*arguments):
++        return subprocess.run([*docker, *arguments], capture_output=True, text=True, timeout=30, check=False)
++
++    if call("image", "inspect", "postgres:17").returncode:
++        raise RuntimeError("Existing PostgreSQL 17 image unavailable; no image pulled")
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++        "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=rivalry_test",
++        "-e", "POSTGRES_DB=rivalry_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service changed")
++    try:
++        for _ in range(30):
++            if call("exec", name, "pg_isready", "-U", "rivalry_test").returncode == 0:
++                break
++            time.sleep(.5)
++        else:
++            raise RuntimeError("Owned PostgreSQL did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://rivalry_test:{password}@127.0.0.1:{port}/rivalry_test"
++        result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_rivalry_week_completion.py",
++            "tests/test_rivalry.py", "-k", "postgres", "-q", "--tb=short", "--show-capture=no"],
++            cwd=ROOT / "backend", env=env, capture_output=True, text=True, check=False, timeout=180)
++        output = (result.stdout + result.stderr).replace(password, "[REDACTED]")
++        evidence = ROOT / "docs/evidence/rivalry-week-completion-2026-10-12"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "postgres-regression.log").write_text(output, encoding="utf-8")
++        print(output[-8500:])
++    finally:
++        check = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if check.returncode == 0 and json.loads(check.stdout).get("bmt.task") == label:
++            if call("stop", name).returncode:
++                raise RuntimeError("Owned database cleanup failed")
++            print("Owned PostgreSQL removed")
++        else:
++            raise RuntimeError("Owned database label changed; leaving it untouched")
++    return result.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/RIVALRY_WEEK_COMPLETION.md b/docs/RIVALRY_WEEK_COMPLETION.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_WEEK_COMPLETION.md
+@@ -0,0 +1,55 @@
++# Weekly Rivalry completion, 2026-10-12
++
++The owner reported having to press **Continue to next week** repeatedly. This task implements WC01–WC04 under WR01/WR03/WR08, B05/B07, R01 and Q01.
++
++- **WC01:** one successful finale action enrolls in the current UTC week with five tracks, for either real or development populations.
++- **WC02:** acknowledgement and enrollment share a busy interval; repeated presses/background refresh cannot overlap them. Failed requests retain the reviewed finale for retry with a stable acknowledgement idempotency key.
++- **WC03:** continuing dismisses older ended finales for this player, car and population without modifying scores, history, tickets or another player's acknowledgement. Current/newer weeks remain unacknowledged. Active/settling finales cannot continue.
++- **WC04:** account resets and late old-week result/enrollment replies cannot replace the new board. Changing groups clears prior result, ghost and native-preview state.
++
++## Reproduction and fix
++
++`/rivalry/current` selects the latest **unacknowledged** older membership. The old Continue endpoint acknowledged only its selected membership. With three missed finales, a successful Continue returned another older complete week, repeatedly. The new backend regression reproduced this before modification: **one failed, one passed**, with `complete` returned where `not_joined` was expected.
++
++The client also did not set `busy` or emit a change before its acknowledgement request, allowing repeated presses to queue independent operations. After success it reset its model and fetched `/current`; real populations stopped at the unjoined introduction, while automatic development enrollment could begin only after all older finales had been dismissed. The existing automatic-flow fixture modeled only one old finale and advanced its fake clock on Continue, so it did not expose the historical backlog.
++
++The server now acknowledges this player's ended memberships through the reviewed week's start, restricted to its car and population. The selected group's verification must first be complete. This is a presentation acknowledgement only: older race verification and stored results remain intact and historical group views remain readable.
++
++The client owns acknowledgement/enrollment immediately and directly calls the existing current-week Join endpoint after acknowledgement. This also avoids replaying old finales against an older deployed server. The completed screen stays visible and disabled until enrollment succeeds; failed enrollment retains it for a retry. No extra player-facing text was added. Existing five-lap, best-only scoring, pinned contracts, normal-results-first and real/artificial isolation contracts remain unchanged. No migration or API schema change is required.
++
++Changed files:
++
++- `game/backend/weekly_rivalry_client.gd` — transition ownership, direct enrollment, retry key and stale-reply/result cleanup.
++- `backend/bmt_backend/rivalry.py` — scoped dismissal of older ended finales.
++- `game/tests/test_rivalry_week_completion.gd` — delayed acknowledgement/enrollment, repeat presses/timer refresh, retry keys, real/development populations, old result replies, account/reset fences, settling/scope guards and actual app signal/button rebuilding at two widths.
++- `backend/tests/test_rivalry_week_completion.py` — three missed weeks, private membership, idempotency, retained history, other-car/population/new-week isolation, exact end boundary, pending verification, verified final points, next-week enrollment/ticket and unchanged historic standings.
++- `scripts/test_rivalry_week_postgres.py` — repeatable tests using the existing PostgreSQL 17 image in a newly owned loopback-only container, redacted logs and label-checked cleanup; no existing service modified.
++- This document, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and scoped evidence/checkpoint.
++
++## Actual verification
++
++Godot commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned **4.7.2.stable.official.ed1daf0bf**. Python commands used `.tools/backend-venv/Scripts/python.exe`.
++
++| Actual command/arguments | Outcome |
++| --- | --- |
++| `-m pytest backend/tests/test_rivalry_week_completion.py -k 'not postgres' -q --tb=short` before the fix | **1 failed / 1 passed / 2 deselected**; older finale reproduced. |
++| `-m pytest backend/tests/test_rivalry_week_completion.py backend/tests/test_rivalry.py -k 'not postgres' -q --tb=short --show-capture=no` | **12 passed / 11 deselected**. |
++| Final focused `-m pytest backend/tests/test_rivalry_week_completion.py -k 'not postgres' -q --tb=short --show-capture=no` | **2 passed / 2 deselected**; [log](evidence/rivalry-week-completion-2026-10-12/sqlite-rollover.log). |
++| `scripts/test_rivalry_week_postgres.py` | **11 passed / 12 deselected** on an owned PostgreSQL 17; container removed. [Log](evidence/rivalry-week-completion-2026-10-12/postgres-regression.log). |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_week_completion.gd -CommandTimeoutSeconds 120` | Initial **36 checks / 0 failures** before adding the late-result case. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_week_completion.gd -Graphical -CommandTimeoutSeconds 120` | **44 checks / 0 failures**, including six captured images. |
++| Same new test with `-Graphical -RenderingMethod mobile -RenderingDriver vulkan` | **44 checks / 0 failures**, including six captured images. Desktop rendering only. |
++| `-Action TestScript -ScriptPath res://tests/test_automatic_rivalry_flow.gd -CommandTimeoutSeconds 60` | **7 checks / 0 failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 120` | **1,109 checks / 0 failures**. |
++| `-Action TestApp -CommandTimeoutSeconds 120` | **99 checks / 0 failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_entry.gd -CommandTimeoutSeconds 90` | **66 checks / 0 failures**. |
++| Ruff for the changed backend, new backend test and PostgreSQL runner | Passed. |
++| `-Action Doctor` | Pinned engine/templates found; **empty ADB device list**. |
++
++The first sandboxed Godot invocation could not open its usual user log directory; the permitted native rerun passed. The configured historical PostgreSQL endpoint at localhost:55439 timed out for both new parameterized cases; the owned-container runner then verified both new cases and existing rivalry regressions. Its first restricted invocation could not access the existing image; the permitted local Docker run succeeded. No assertions were removed to resolve these environment failures. FastAPI/httpx deprecation warnings remain.
++
++Captured fixture evidence: [completed week](evidence/rivalry-week-completion-2026-10-12/ui/finale-1280x720.png), [disabled Continue at 960×540](evidence/rivalry-week-completion-2026-10-12/ui/continuing-960x540.png), and [current week at 1280×720](evidence/rivalry-week-completion-2026-10-12/ui/next-week-1280x720.png). These show synthetic fixture standings, not the owner's actual account.
++
++No phone was attached and no physical-device test, Android export/install, live account mutation, backend deployment or full physics regression was performed. Restart/rebuild the client to use the direct enrollment fix; the server's historical-dismissal change remains local until separately authorized deployment. Remaining acceptance: the owner's actual account/latency and the physical-device week transition. Local desktop tests do not claim physical-device or production acceptance.
++
++The reviewable eight-file [task-only checkpoint](evidence/rivalry-week-completion-2026-10-12/scoped-change.patch) is built against saved pre-task versions; it preserves unrelated working-tree edits. Its [manifest](evidence/rivalry-week-completion-2026-10-12/checkpoint.json) records HEAD and before/after SHA-256 values. `git apply --reverse --check --whitespace=error-all` and targeted `git diff --check` passed. Native test logs are retained in the evidence `logs/` directory. No mixed working-tree commit was created.

@@ -1,0 +1,242 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index c75f1a9..1111a1d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Desert tire-mark colour and shade override (2026-10-13)
++The owner rejects dark, mismatched car-deposited tire marks, superseding the earlier colour approval. Desert marks use the warm road pigment with correct source-colour binding, softer tread/contact lighting and lower opacity; ordinary rolling stays faint while high brake/slip compaction remains legible. Preserve original nine-second dust, other-biome marks, trail geometry/sampling/bridge guards, camera and canonical driving/scoring. See `docs/DESERT_TIRE_MARKS_2026_10_13.md` for actual files, commands, both-renderer captures, scoped checkpoint and remaining owner/device acceptance.
++
+ ## Desert winter-style blend and golden road override (2026-10-13)
+ The owner requests Winter's settled/granular road-to-bank transition, lighter quieter road and continuous bridge patterns, then rejects the dull road hue. Use the shared settled/broken fringe over a wider sand foot, a restrained golden-sand road/shoulder palette matching the dunes, corrected bridge transverse UV/continuous lighting and matching deposited grains across ramp mouths. Preserve original nine-second dust, approved tire-mark colour, low irregular bank geometry, camera and canonical driving/scoring. See `docs/DESERT_WINTER_BLEND_2026_10_13.md` for actual files, commands, screenshots, scoped checkpoint and remaining owner/device acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 1a9dc9c..9639a0f 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
++
+ 2026-10-13 ST04/V04/V05/G01/R01/Q01: owner prefers original sand. Original colour formula/mapping restored; shallow surface-weighted distance-faded mineral lighting relief candidate, no extra sampler/gloss. kit181->182. Bake/Import/native+Mobile off-on captures0/Desert87pass; sand crop mean delta0.495/0.457channel units. Owner review pending; no phone/motion/performance/APK/full regression/deploy. docs/SAND_TEXTURE_REFINEMENT.md.
+ 
+ 2026-10-13 ST03/V04/V05/G01/R01/Q01: owner rejects almost-uniform sand. Full-scale larger mineral groups/warped soft wind crests/stronger middle detail restore visible gameplay texture, original mean0.9566 retained; kit180->181. Bake/Import/native+Mobile captures0/Desert87pass/diffcheck0. No fresh physical-phone/APK/performance/full regression/deploy. Actual files/commands/task-only follow-up patch/acceptance: docs/SAND_TEXTURE_REFINEMENT.md.
+diff --git a/docs/DESERT_TIRE_MARKS_2026_10_13.md b/docs/DESERT_TIRE_MARKS_2026_10_13.md
+new file mode 100644
+index 0000000..a29ec13
+--- /dev/null
++++ b/docs/DESERT_TIRE_MARKS_2026_10_13.md
+@@ -0,0 +1,27 @@
++# Desert tire marks fitted to warm sand
++
++2026-10-13 DS22/V02/V04/V05/G01/R01/Q01. The owner now rejects dark, mismatched tire marks left by the car. This explicitly supersedes the earlier tire-mark colour approval. Desert marks use quieter warm compaction while original dust, camera, canonical driving/scoring, five laps and local per-car condition remain intact.
++
++The old narrow rut's steep faces produced excessive directional shade, while the tread had strong dark ribs. Desert now shades the mark with its actual ground/bridge contact normal, uses restrained tread variation and binds a source-colour pigment derived from the current warm desert road (`TrackTheme.DESERT[0] × 0.92`). Binding it as `source_color` matches the road's renderer colour handling; raw instance RGB made an initial Mobile iteration too pale. Maximum opacity decreases from 0.28 to 0.24. Ordinary rolling stays faint; existing high brake/slip strength adds bounded compaction above 0.45, preserving readable strong marks. Existing feathered edges and world-space grain remain.
++
++There is no new texture, draw, mesh, contact or canonical rule. Trail ring capacity, mesh/profile, width, relief, sampling, intensity, placement, bridge clipping and ground/deck separation are unchanged. Other biomes retain their exact style cases and intensity scaling. `preserved-contracts.json` contains unchanged function hashes and exact dust-file preservation. The shader's new pigment, flag and pressure varying affect desert loose-surface marks only.
++
++Changed files: `game/vehicle/skid_trails.gd`; new diagnostic `game/tests/capture_desert_tire_marks.gd`/UID; an optional output-folder argument in existing `game/tests/test_bridge_trails.gd`; this report, `AGENTS.md`, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. No asset generation or schema/version contract change.
++
++Commands use pinned `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Action / suffix | Actual result |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/capture_desert_tire_marks.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-tire-marks-2026-10-13/before/'` | Six baseline images: ordinary rolling, sustained braking and loose sand, each with a matching surface-only view. Each marked view has 396 per-wheel segments. Canonical snapshot/cells/hash preserved. |
++| Same with folder `final` | Six final Compatibility images; same counts and preservation checks. First rolling/braking alpha 0.0647/0.1045 versus baseline 0.0755/0.1219. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan` and folder `mobile-final` | Six final desktop Mobile/Vulkan images; same counts and checks; source-colour binding keeps warm sand pigment. |
++| `TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-tire-marks-2026-10-13/bridge-final/'` | Eight checks, zero failures. 43,502 roof pixels: 9,727 contaminated in deliberately unprotected control, zero with normal protection. Existing deck-mark visibility, independent layers and canonical snapshot checks pass. |
++| Same with Mobile/Vulkan and folder `mobile-bridge-final` | Eight checks, zero failures; 9,519 unprotected/zero protected roof pixels. Original deck-visibility threshold remains unchanged. |
++| `TestDesert` | Final 87 checks, zero failures: original dense dust and exact five-car packed/loose-sand replay behavior. |
++| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed. |
++
++The diagnostic uses a detached scripted presentation state with a frozen race; it is not a completed/verified race or real player telemetry. The original simulation snapshot, cells and content hash remain exact. Dust is not sampled in these images to expose the marks clearly; its runtime file and generation remain byte-for-byte unchanged. Inspect final [rolling](evidence/desert-tire-marks-2026-10-13/final/rolling.png), [braking](evidence/desert-tire-marks-2026-10-13/final/braking.png), [loose sand](evidence/desert-tire-marks-2026-10-13/final/loose-sand.png) and [Mobile braking](evidence/desert-tire-marks-2026-10-13/mobile-final/braking.png), compared with [baseline braking](evidence/desert-tire-marks-2026-10-13/before/braking.png).
++
++Initial failures are retained in logs: the capture initially called a nonexistent state-restore method and now uses a separate presentation state; raw instance tint appeared pale on Mobile and is replaced by source-colour binding; the first colour-corrected opacity made strong deck marks too faint for the unchanged visibility test, addressed with bounded high-strength compaction. A Python pixel-analysis attempt lacked PIL and installed nothing; no numerical contrast-reduction claim is made. Mobile exits also print `OpVectorExtractDynamic is not supported yet.` messages; the final rendered visibility/clipping assertions pass, but no warning-free engine claim is made.
++
++Task-only baseline/fix Git checkpoint: `build/desert_tire_marks/checkpoint-repo`; review patch/ledger under `docs/evidence/desert-tire-marks-2026-10-13/`. Main branch/index and unrelated work are preserved. No export/install/device run, backend operation, live account write, production deployment, full regression or performance benchmark. Owner appearance acceptance, dense repeated-lap accumulation and physical-phone visibility/performance remain open.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 218f36d..a0a2010 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
++
+ 2026-10-13 ST04/V04/V05/G01/R01/Q01: owner prefers original sand. Original colour formula/mapping restored; shallow surface-weighted distance-faded mineral lighting relief candidate, no extra sampler/gloss. kit181->182. Bake/Import/native+Mobile off-on captures0/Desert87pass; sand crop mean delta0.495/0.457channel units. Owner review pending; no phone/motion/performance/APK/full regression/deploy. docs/SAND_TEXTURE_REFINEMENT.md.
+ 
+ 2026-10-13 ST03/V04/V05/G01/R01/Q01: owner rejects almost-uniform sand. Full-scale larger mineral groups/warped soft wind crests/stronger middle detail restore visible gameplay texture, original mean0.9566 retained; kit180->181. Bake/Import/native+Mobile captures0/Desert87pass/diffcheck0. No fresh physical-phone/APK/performance/full regression/deploy. Actual files/commands/task-only follow-up patch/acceptance: docs/SAND_TEXTURE_REFINEMENT.md.
+diff --git a/game/tests/capture_desert_tire_marks.gd b/game/tests/capture_desert_tire_marks.gd
+new file mode 100644
+index 0000000..df53fa7
+--- /dev/null
++++ b/game/tests/capture_desert_tire_marks.gd
+@@ -0,0 +1,65 @@
++extends SceneTree
++## Scripted per-wheel presentation samples, with a frozen race and no dust.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	root.size = Vector2i(1600,900)
++	var folder: String = "res://../docs/evidence/desert-tire-marks-2026-10-13/after/"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=").trim_suffix("/")+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = "desert"
++	doc.objects = []
++	doc["automatic_scenery"] = false
++	var road: Dictionary = RoadPieces.create("straight",Vector2(-28,0),0.0,12.0)
++	road.length = 56.0
++	doc.pieces = [road]
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var cells: PackedInt32Array = track.cells.duplicate()
++	var content: String = track.content_hash
++	var race: Node = load("res://core/game.tscn").instantiate()
++	race.initial_track = track
++	race.production_mode = true
++	root.add_child(race)
++	race.set_physics_process(false)
++	race.set_process(false)
++	race.countdown_ticks = 0
++	race.race_cues.hide()
++	var trails: SkidTrails = race.trails
++	var camera: FollowCamera = race.camera
++	var canonical_state: VehicleState = race.sim.state
++	var canonical_before: Array = canonical_state.snapshot()
++	var state := VehicleState.new()
++	race.sim.state = state
++	for profile: String in ["rolling","braking","loose-sand"]:
++		trails.clear()
++		var drive: DriveFrame = DriveFrame.sample(0,0,0.75 if profile == "braking" else 0.0)
++		for i: int in range(100):
++			var t: float = float(i)/99.0
++			var p := Vector2(-18.0+t*36.0, (9.0 if profile == "loose-sand" else 0.0)+sin(t*PI)*1.5)
++			var tangent := Vector2(36.0,cos(t*PI)*PI*1.5).normalized()
++			state.position = p
++			state.velocity = tangent*16.0
++			state.heading = atan2(tangent.x,tangent.y)
++			state.yaw_rate = 0.0
++			state.tire_dirt = 0.0
++			trails.sample(state,drive,null,track)
++		assert(trails.instances.visible_instance_count > 100)
++		race.previous_position = state.position
++		race.previous_heading = state.heading
++		race.call("_process",0.0)
++		camera.follow(Vector2(1,4 if profile == "loose-sand" else 0),Vector2.ZERO,PI*0.5,0.0,true)
++		for frame: int in range(10): await RenderingServer.frame_post_draw
++		assert(root.get_texture().get_image().save_png(folder+profile+".png") == OK)
++		print("DESERT_TIRE_MARK_CAPTURE: ",profile," segments=",trails.instances.visible_instance_count," first_tint=",trails.mark_colors[0])
++		trails.visible = false
++		for frame: int in range(3): await RenderingServer.frame_post_draw
++		assert(root.get_texture().get_image().save_png(folder+profile+"-surface.png") == OK)
++		trails.visible = true
++	race.sim.state = canonical_state
++	assert(canonical_state.snapshot() == canonical_before and track.cells == cells and track.content_hash == content)
++	print("DESERT_TIRE_MARK_CAPTURE: six views; canonical snapshot/cells/hash preserved; scripted cosmetic samples")
++	race.queue_free()
++	await process_frame
++	quit()
+diff --git a/game/tests/capture_desert_tire_marks.gd.uid b/game/tests/capture_desert_tire_marks.gd.uid
+new file mode 100644
+index 0000000..ac8fe92
+--- /dev/null
++++ b/game/tests/capture_desert_tire_marks.gd.uid
+@@ -0,0 +1 @@
++uid://e0o6gbnrxwec
+diff --git a/game/tests/test_bridge_trails.gd b/game/tests/test_bridge_trails.gd
+index 44323ef..e5bbca7 100644
+--- a/game/tests/test_bridge_trails.gd
++++ b/game/tests/test_bridge_trails.gd
+@@ -20,6 +20,8 @@ func capture() -> Image:
+ func difference(a: Color, b: Color) -> float:
+ 	return maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b)))
+ func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): output = argument.trim_prefix("--folder=")
+ 	root.size = Vector2i(1280,900)
+ 	root.msaa_3d = Viewport.MSAA_2X
+ 	var track: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json")))
+diff --git a/game/vehicle/skid_trails.gd b/game/vehicle/skid_trails.gd
+index d78bf6f..378e4ea 100644
+--- a/game/vehicle/skid_trails.gd
++++ b/game/vehicle/skid_trails.gd
+@@ -6,6 +6,7 @@ extends Node3D
+ const CAPACITY: int = 16384
+ const SAMPLE_DISTANCE: float = 0.32
+ const MAX_SEGMENT_LENGTH: float = 1.5
++const DESERT_COMPACTION_TONE: float = 0.92
+ var instances: MultiMesh
+ var mark_colors := PackedColorArray()
+ var mark_custom := PackedColorArray()
+@@ -22,7 +23,11 @@ var previous_right_strength: float = 0.0
+ var previous_front_left_strength: float = 0.0
+ var previous_front_right_strength: float = 0.0
+ var active: bool = false
+-var desert_sand: bool = false
++var desert_sand: bool = false:
++	set(value):
++		if desert_sand == value: return
++		desert_sand = value
++		if _bridge_material != null: _bridge_material.set_shader_parameter("desert_sand_trails",value)
+ var _bridge_track: NativeTrack
+ var _bridge_material: ShaderMaterial
+ var _previous_elevated: bool = false
+@@ -60,8 +65,11 @@ func _trail_material() -> ShaderMaterial:
+ shader_type spatial;
+ render_mode blend_mix, depth_draw_opaque, cull_disabled;
+ #include "res://vehicle/dust_bridge_clip.gdshaderinc"
++uniform bool desert_sand_trails = false;
++uniform vec4 desert_sand_pigment : source_color = vec4(0.60,0.48,0.31,1.0);
+ 
+ varying float loose_surface;
++varying float sand_pressure;
+ varying float ice_scuff;
+ varying vec3 ice_contact_normal;
+ varying highp vec3 trail_world;
+@@ -74,6 +82,7 @@ float hash21(vec2 p) {
+ 
+ void vertex() {
+ 	loose_surface = INSTANCE_CUSTOM.b;
++	sand_pressure = INSTANCE_CUSTOM.g;
+ 	ice_scuff = 1.0-smoothstep(0.005,0.015,abs(INSTANCE_CUSTOM.r-0.8));
+ 	// The instance follows the contact slope, including bridge ramps. Avoid
+ 	// the shared groove normals and their almost-flat nonuniform scale.
+@@ -96,9 +105,20 @@ void fragment() {
+ 	float asphalt_streaks = 0.82 + 0.18 * smoothstep(0.15, 0.85, sin(UV.x * 21.99) * 0.5 + 0.5);
+ 	float asphalt_tone = asphalt_streaks * mix(0.88, 1.08, asphalt_grain);
+ 	float tone = mix(asphalt_tone, loose_tone, loose_surface);
++	if (desert_sand_trails && loose_surface > 0.5) {
++		// Pressed sand has quiet tread values, rather than dark rubber ribs.
++		tone = mix(0.95,1.01,tread)-center_press*0.02+shoulder*0.025;
++		// Rolling stays quiet; a heavy brake/slide leaves visible compaction.
++		tone *= mix(1.0,0.82,smoothstep(0.45,0.95,sand_pressure));
++		// Match the road/contact light response. The narrow rut's angled
++		// faces otherwise become dark lines under the desert sun.
++		NORMAL = normalize((VIEW_MATRIX * vec4(ice_contact_normal,0.0)).xyz);
++		SPECULAR = 0.0;
++	}
+ 	float chipped_edge = mix(1.0, smoothstep(0.18, 0.62, grain + (1.0 - across) * 0.72), loose_surface * smoothstep(0.76, 1.0, across));
+ 	float feather = 1.0 - smoothstep(0.72, 1.0, across);
+ 	ALBEDO = COLOR.rgb * tone;
++	if (desert_sand_trails && loose_surface > 0.5) { ALBEDO = desert_sand_pigment.rgb * tone; }
+ 	ROUGHNESS = 1.0;
+ 	if (ice_scuff > 0.5) {
+ 		NORMAL = normalize((VIEW_MATRIX * vec4(ice_contact_normal,0.0)).xyz);
+@@ -111,6 +131,8 @@ void fragment() {
+ """
+ 	var material := ShaderMaterial.new()
+ 	material.shader = shader
++	material.set_shader_parameter("desert_sand_trails",desert_sand)
++	material.set_shader_parameter("desert_sand_pigment",TrackTheme.DESERT[0]*DESERT_COMPACTION_TONE)
+ 	return material
+ 
+ 
+@@ -326,7 +348,8 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool
+ 		_:
+ 			result = Vector4(0.49, 0.34, 0.18, 0.78) if dirt > 0.025 else Vector4(0.10, 0.11, 0.105, 0.70)
+ 	if kind == 2 and desert:
+-		result = Vector4(0.66,0.55,0.39,0.28) # Restrained pressed-sand grooves.
++		var sand: Color = TrackTheme.DESERT[0]*DESERT_COMPACTION_TONE
++		result = Vector4(sand.r,sand.g,sand.b,0.24) # Quiet compaction in the road's warm sand hue.
+ 	if kind in [0,5,8,9]: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
+ 	else: result.w *= lerpf(0.12, 1.0, clampf(strength, 0.0, 1.0))
+ 	return result

@@ -1,0 +1,518 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 73faafb..83e2322 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Garage selection zoom and car transition override (2026-10-12)
++The owner requires selecting cars to retain zoom and adds a disappear/appear effect. Preview/confirmation retain the existing showroom/viewport/room and actual camera position, zoom, tilt and yaw; only the car and sized pedestal are replaced. A brief cancellable opaque dissolve exchanges cars and their contact shadows; paint/washing/trophy navigation/page hiding settle the effect safely. Explicit Reset still fits the current car. Preserve confirmation semantics, static 3D cards, local per-car cosmetics and canonical handling/scoring. See `docs/GARAGE_CAR_TRANSITION.md` for actual files, commands, captures and remaining owner/device acceptance.
++
+ ## Garage trophy wall and workshop detail override (2026-10-12)
+ The owner requests clearer premium icons, more workshop detail, recognisable tyres and a visible trophy wall specifically on the right-hand side wall. Garage now has original solid car/palette/car-droplet/wrench/trophy rail glyphs, detailed spare wheels and an empty six-bay illuminated display mounted on that side wall. Selecting Trophy wall eases the camera in; selecting another submenu returns to the car pose and cancels stale movement. Preserve car confirmation, turning/tilt/zoom/washing, local per-car cosmetics and canonical handling/scoring. Future award grants and population are not invented. AAA remains a target requiring owner/device review. See `docs/GARAGE_TROPHY_WALL.md` for actual commands, captures, measured desktop cost and remaining acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 8c236a4..d02bd59 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 garage GC20-GC21/GC06-GC19/CW13/CW15/CW16/V06/G01/R01/Q01: selection retains actual camera position/zoom/tilt/yaw by replacing car+pedestal in the existing world/viewport. Original0.18s-out/0.24s-in ordered opaque dissolve with contact shadows, bounded outgoing cleanup and material restoration; rapid selections/latest confirmation, paint/wash/trophy/hide cancellation and explicit Reset preserved. Compatibility143 incl120 actual stepped-motion frames/Mobile23; existing carousel175+175/view59/wash1402/Import pass. No shared thumbnail/material/condition/handling change. Native material shader-RID attempt removed; timed fixture boundary and outgoing node naming corrected. Doctor no phone; no device/export/backend/deploy. Actual files/commands/motion/scoped checkpoint/owner-device acceptance: docs/GARAGE_CAR_TRANSITION.md.
++
+ 2026-10-12 garage GC15-GC19/GC06-GC14/CW13/CW15/CW16/V06/G01/R01/Q01: owner right-side trophy wall and workshop/icon/tyre detail. Solid original rail glyphs, shelving/utilities/compressor, profiled spare tyres with tread/spokes/rims/brakes/lugs; illuminated empty six-bay display on right side wall visible from car view. Cancellable eased camera close-up/return preserves car pose, local paint/dirt, washing and confirmation. Compatibility295 incl120motionframes/Mobile175/view59/wash1402/exactmodel80/swipes268/Import pass. Actual stills at three widths/two renderers and lossless camera APNG; cold425.678ms/viewportCPU0.704ms-GPU0.304ms medians are desktop samples only. Doctor no attached phone/no device/export/backend/deploy. No fabricated trophies or award-grant criteria. Files/commands/task-only checkpoint/owner-device visual acceptance: docs/GARAGE_TROPHY_WALL.md.
+ 
+ 2026-10-12 DS01-DS07/V02/V04/V05/G01/R01/Q01: desert reference/table and low-bank/tire-colour clarifications. Kit151 darker dune pigment/readable compacted road/longitudinal wear/soft granular joins; original 13-26cm eroded piles/317 saved-track deposits/600 cap/same shoulder batch. Directional daylight and localized 1.4s translucent wake replace nine-second obstruction; tire-mark colour unchanged. Compatibility+desktopMobile six captures each/57060 pile vertices road-clear and low/cells-hash exact; Desert88/Shoulders71+18+union/Soil163/BridgeDust121/Cache66/Import pass. Biomes107 retains five existing New/unsaved-draft confirmation failures. Doctor no phone; no device performance/export-install/fullValidate/physics merge/backend/deploy. Actual commands/task-only checkpoint/owner-device acceptance: docs/DESERT_REFINEMENT_2026_10_12.md.
+diff --git a/docs/GARAGE_CAR_TRANSITION.md b/docs/GARAGE_CAR_TRANSITION.md
+new file mode 100644
+index 0000000..3cca43c
+--- /dev/null
++++ b/docs/GARAGE_CAR_TRANSITION.md
+@@ -0,0 +1,34 @@
++# Garage car selection: retained zoom and dissolve
++
++Owner request, 2026-10-12. GC20: selecting a car retains zoom. GC21: disappear/appear effect for vehicle changes. Preserve GC06–GC19/CW13/CW15/CW16/V06/G01/R01/Q01.
++
++Previously car previews deleted the entire showroom, restoring its default zoom/tilt/rotation. Garage now replaces only the actual car and its correctly sized pedestal inside the existing viewport/world. The showroom, garage architecture and camera persist. The camera's base distance is retained as well as zoom, tilt and turntable yaw, so switching differently sized cars does not silently reframe the room. Select car confirms the current preview without restarting its effect or resetting the view. Explicit Reset still fits the currently displayed car. A larger car can occupy more screen space at the retained camera position; the existing zoom controls remain available.
++
++Vehicle changes dissolve the outgoing model over 0.18s, exchange at disappearance, then reveal the incoming model over 0.24s. This uses an original opaque ordered pixel dissolve, preserving depth and avoiding transparent body/glass sorting. Contact shadows participate; the garage and camera do not fade. Shader finishes retain their original code and parameters in temporary material copies; standard surfaces carry their base colour, roughness, metal/specular/emission and vertex-colour properties during the brief effect. Original material references are restored on completion/cancellation. No gameplay mesh, shader, handling, collision, PB, score or reward contract is modified.
++
++Rapid previews cancel the prior effect and retain only the latest car. Outgoing pedestals and their contact geometry are released together. Starting washing or changing paint settles the incoming car before interaction; trophy navigation and page hiding also settle the effect. Local per-car dirt and paint remain separate, car preview remains unconfirmed until Select car, and carousel thumbnails keep their existing materials and one-shot renders.
++
++Changed files: `game/ui/garage_page.gd`, `car_showroom.gd`, `garage_environment.gd`. Added `game/ui/garage_car_reveal.gd` (+UID), `game/tests/test_garage_car_transition.gd` (+UID), this document. Updated `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Actual commands on pinned `4.7.2.stable.official.ed1daf0bf`, isolated local test records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_car_transition.gd -Graphical -TestArgument '--capture-motion'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_car_transition.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/garage-car-transition-2026-10-12/mobile'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -TestArgument '--evidence-root=res://../docs/evidence/garage-car-transition-2026-10-12'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/garage-car-transition-2026-10-12/mobile/carousel'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
++python build/encode_garage_car_motion.py
++python build/checkpoint_garage_car_transition.py
++```
++
++Final transition passes: Compatibility **143 checks including 120 actual rendered motion frames**, desktop Mobile/Vulkan **23**, zero failures. Tests cover actual camera equality after preview/confirmation, existing viewport/room identity, outgoing/incoming phases, cleanup, repeated rapid previews, last-car confirmation, unchanged thumbnail materials, per-car dirt, trophy-camera return, page hiding and explicit Reset. Existing carousel passes **175 checks on each renderer**, view controls **59**, manual washing/local condition **1,402**; zero failures. Import passes. Initial attempted `Material.get_shader_rid` access was unavailable in the pinned engine; that approach was removed and replaced with native authored shader copies. An initial timing check hit the exact floating-point segment boundary, and repeated pedestal names were auto-renamed; the fixture advances 1ms beyond the boundary and the outgoing pedestal now has an explicit separate name. Original invariants remain intact.
++
++Evidence: [before](evidence/garage-car-transition-2026-10-12/before-switch.png), [disappearing](evidence/garage-car-transition-2026-10-12/disappearing.png), [empty pedestal](evidence/garage-car-transition-2026-10-12/empty-pedestal.png), [appearing](evidence/garage-car-transition-2026-10-12/appearing.png), [motion](evidence/garage-car-transition-2026-10-12/car-transition-motion.png), matching Mobile stills and existing three-width carousel captures. The 960x540 lossless APNG contains 120 actual Godot renders, with the production tween stepped at 1/30s for deterministic review capture; its four-second playback is not a performance measurement. Python stdlib assembly verifies each source PNG's CRC and format. Raw frames are in `build/garage-car-motion-2026-10-12`; animation is approximately 43MB.
++
++Task-only two-commit Git checkpoint: `build/garage_car_transition/checkpoint-repo`; baseline sources, scoped patch, hashes and actual logs: `docs/evidence/garage-car-transition-2026-10-12`. Main branch/index and concurrent unrelated changes are preserved. Godot's documented [ShaderMaterial](https://docs.godotengine.org/en/stable/classes/class_shadermaterial.html) and [BaseMaterial3D](https://docs.godotengine.org/en/stable/classes/class_basematerial3d.html) resources support the menu-only material handling; the actual pinned engine runs above establish behavior.
++
++Doctor reported no attached Android device. No phone test, APK export/install, full Validate, physics merge/regression, backend operation or deployment was performed. Owner effect/style review and physical-device frame pacing/readability remain acceptance checks; no desktop result establishes AAA or phone acceptance.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 022fad3..0fa84c9 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1831,3 +1831,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Garage right-side trophy wall and workshop detail, 2026-10-12
+ 
+ 2026-10-12 garage GC15-GC19/GC06-GC14/CW13/CW15/CW16/V06/G01/R01/Q01: owner right-side trophy wall and workshop/icon/tyre detail. Solid original rail glyphs, shelving/utilities/compressor, profiled spare tyres with tread/spokes/rims/brakes/lugs; illuminated empty six-bay display on right side wall visible from car view. Cancellable eased camera close-up/return preserves car pose, local paint/dirt, washing and confirmation. Compatibility295 incl120motionframes/Mobile175/view59/wash1402/exactmodel80/swipes268/Import pass. Actual stills at three widths/two renderers and lossless camera APNG; cold425.678ms/viewportCPU0.704ms-GPU0.304ms medians are desktop samples only. Doctor no attached phone/no device/export/backend/deploy. No fabricated trophies or award-grant criteria. Files/commands/task-only checkpoint/owner-device visual acceptance: docs/GARAGE_TROPHY_WALL.md.
++
++
++## Garage retained zoom and car dissolve, 2026-10-12
++
++2026-10-12 garage GC20-GC21/GC06-GC19/CW13/CW15/CW16/V06/G01/R01/Q01: selection retains actual camera position/zoom/tilt/yaw by replacing car+pedestal in the existing world/viewport. Original0.18s-out/0.24s-in ordered opaque dissolve with contact shadows, bounded outgoing cleanup and material restoration; rapid selections/latest confirmation, paint/wash/trophy/hide cancellation and explicit Reset preserved. Compatibility143 incl120 actual stepped-motion frames/Mobile23; existing carousel175+175/view59/wash1402/Import pass. No shared thumbnail/material/condition/handling change. Native material shader-RID attempt removed; timed fixture boundary and outgoing node naming corrected. Doctor no phone; no device/export/backend/deploy. Actual files/commands/motion/scoped checkpoint/owner-device acceptance: docs/GARAGE_CAR_TRANSITION.md.
+diff --git a/game/tests/test_garage_car_transition.gd b/game/tests/test_garage_car_transition.gd
+new file mode 100644
+index 0000000..6d6152b
+--- /dev/null
++++ b/game/tests/test_garage_car_transition.gd
+@@ -0,0 +1,118 @@
++extends SceneTree
++## Real showroom replacement, effect cancellation and zoom/condition regression.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/garage-car-transition-2026-10-12"
++func _initialize() -> void: _run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: " + label)
++func frame() -> void:
++	await process_frame
++	await RenderingServer.frame_post_draw
++func capture(name: String) -> void:
++	await frame()
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png")) == OK,"capture " + name)
++func materials(node: Node, result: Array[Material]) -> void:
++	if node is MeshInstance3D:
++		for index: int in range(node.mesh.get_surface_count()): result.append(node.get_active_material(index))
++	for child: Node in node.get_children(): materials(child,result)
++func _run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(960,540)
++	var directory: String = "user://garage_transition_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	var wear: Dictionary = VehicleWeathering.new().snapshot()
++	wear.dirt = 0.85
++	check(VehicleCondition.save(app.records,"compact",wear) == OK,"seed local condition")
++	app._show_screen("garage")
++	await create_timer(0.3).timeout
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	var view: CarShowroom = page.showroom
++	view.set_zoom(0.87)
++	view.rotate_view(Vector2(15,-2))
++	var camera_pose: Transform3D = view.camera.transform
++	var tilt: float = view.elevation
++	var yaw: float = view.yaw
++	var room: Node = view.showroom_viewport.find_child("GarageArchitecture",true,false)
++	var viewport: SubViewport = view.showroom_viewport
++	await capture("before-switch")
++	page.preview_car(1)
++	check(view == page.showroom and viewport == view.showroom_viewport and room == viewport.find_child("GarageArchitecture",true,false),"replacement retains showroom, viewport and room")
++	check(view.zoom == 0.87 and view.elevation == tilt and view.yaw == yaw and view.camera.transform.is_equal_approx(camera_pose),"preview preserves actual camera and zoom/tilt/rotation")
++	check(view.incoming_reveal.visibility == 0 and view.outgoing_reveal.visibility == 1 and not view.turntable.visible,"outgoing car disappears before incoming car appears")
++	view.car_motion.pause()
++	view.car_motion.custom_step(0.09)
++	check(view.outgoing_reveal.visibility > 0 and view.outgoing_reveal.visibility < 1,"outgoing effect has intermediate opacity")
++	await capture("disappearing")
++	view.car_motion.custom_step(0.091)
++	check(view.turntable.visible and not view.outgoing_pedestal.visible and view.incoming_reveal.visibility < 0.01,"exchange occurs with incoming car fully dissolved")
++	await capture("empty-pedestal")
++	view.car_motion.custom_step(0.12)
++	check(view.incoming_reveal.visibility > 0 and view.incoming_reveal.visibility < 1,"incoming effect has intermediate opacity")
++	await capture("appearing")
++	view.car_motion.custom_step(0.13)
++	await frame()
++	check(view.car_motion == null and view.outgoing_pedestal == null and view.incoming_reveal == null,"completed effect releases outgoing model and restores materials")
++	var original: Array[Material] = []
++	materials(view.car,original)
++	var shared_before: Array[Material] = []
++	materials((page.thumbnails.pickup as CarShowroom).car,shared_before)
++	page._confirm_car()
++	check(view.zoom == 0.87 and view.camera.transform.is_equal_approx(camera_pose) and VehicleCatalog.selected == "pickup","Select car confirms without resetting zoom or camera")
++	check(view.car_motion == null,"confirming current preview does not replay replacement")
++	page._show_section("cars")
++	page.preview_car(2)
++	page.preview_car(4)
++	page._confirm_car()
++	check(view.car.vehicle_id == "kart" and VehicleCatalog.selected == "kart" and view.zoom == 0.87,"rapid preview and confirmation retain last car and zoom")
++	view.finish_car_transition()
++	await frame()
++	check(view.turntable.visible and view.car_motion == null and viewport.find_children("Turntable*","Node3D",true,false).size() == 1,"rapid cancellation leaves one visible car pedestal")
++	var shared_after: Array[Material] = []
++	materials((page.thumbnails.pickup as CarShowroom).car,shared_after)
++	check(shared_before == shared_after,"transition never changes carousel/shared materials")
++	check(VehicleCondition.read(app.records,"compact").dirt == 0.85 and float(VehicleCondition.read(app.records,"kart").get("dirt",0.0)) == 0,"per-car local condition survives replacement")
++	page._show_section("cars")
++	page.preview_car(0)
++	page._show_section("trophies")
++	check(view.car_motion == null and view.trophy_view,"trophy camera cancels car effect")
++	page._show_section("care")
++	await create_timer(0.75).timeout
++	check(view.camera.transform.is_equal_approx(camera_pose) and view.zoom == 0.87,"trophy return retains pre-selection zoom and pose")
++	page._show_section("cars")
++	page.preview_car(1)
++	page.hide()
++	check(view.car_motion == null and view.turntable.visible,"hiding page settles effect")
++	page.show()
++	view.reset_view()
++	check(view.zoom == 1 and view.garage_distance > 0,"explicit Reset still restores default framing")
++	if "--capture-motion" in OS.get_cmdline_user_args():
++		var frames: String = ProjectSettings.globalize_path("res://../build/garage-car-motion-2026-10-12")
++		DirAccess.make_dir_recursive_absolute(frames)
++		for index: int in range(120):
++			if index == 12: page.preview_car(0)
++			if index == 60: page.preview_car(2)
++			if view.car_motion != null:
++				view.car_motion.pause()
++				view.car_motion.custom_step(1.0/30.0)
++			await frame()
++			check(root.get_texture().get_image().save_png(frames.path_join("turntable-%03d.png"%index)) == OK,"actual transition frame " + str(index))
++	await capture("after-switch")
++	app.queue_free()
++	await process_frame
++	print("GARAGE_CAR_TRANSITION: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_car_transition.gd.uid b/game/tests/test_garage_car_transition.gd.uid
+new file mode 100644
+index 0000000..dd93011
+--- /dev/null
++++ b/game/tests/test_garage_car_transition.gd.uid
+@@ -0,0 +1 @@
++uid://8ecw6qcji8w1
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index 79821f1..6487022 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -17,6 +17,10 @@ var garage_mode: bool = false
+ var turntable: Node3D
+ var trophy_view: bool = false
+ var camera_motion: Tween
++var car_motion: Tween
++var outgoing_pedestal: Node3D
++var incoming_reveal: GarageCarReveal
++var outgoing_reveal: GarageCarReveal
+ var interaction_inset_top: float = 0.0
+ var interaction_inset_bottom: float = 0.0
+ var framing_scale: float = 1.0
+@@ -28,6 +32,7 @@ var yaw: float = 0.70
+ var pointer: int = -1
+ var elevation: float = atan(0.32)
+ var zoom: float = 1.0
++var garage_distance: float = 0.0
+ var touches: Dictionary = {}
+ var pinch_distance: float = 0.0
+ var resume_orbit: bool = false
+@@ -92,8 +97,71 @@ func refresh_thumbnail() -> void:
+ 	showroom_viewport.size = Vector2i(maxi(1, roundi(size.x)), maxi(1, roundi(size.y)))
+ 	showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+ 
++func replace_car(id: String, paint: Dictionary, wear: Dictionary) -> void:
++	finish_car_transition()
++	_clear_gesture()
++	var previous_deck: Node3D = turntable
++	previous_deck.name = "OutgoingTurntable"
++	var previous_car: CarVisual = car
++	var world: Node3D = camera.get_parent()
++	vehicle_id = id
++	livery = paint.duplicate(true)
++	condition = wear.duplicate(true)
++	car = CarVisual.new()
++	car.vehicle_id = id
++	car.livery = livery
++	world.add_child(car)
++	turntable = GarageEnvironment.build_pedestal(world,car)
++	weathering = VehicleWeathering.new()
++	weathering.configure(car,"pine",VehicleCatalog.config(id))
++	weathering.restore(condition)
++	pick_meshes.clear()
++	_orbit()
++	if not is_visible_in_tree():
++		previous_deck.queue_free()
++		return
++	outgoing_pedestal = previous_deck
++	outgoing_reveal = GarageCarReveal.new()
++	_prepare_car_reveal(outgoing_reveal,previous_car,previous_deck)
++	incoming_reveal = GarageCarReveal.new()
++	_prepare_car_reveal(incoming_reveal,car,turntable)
++	incoming_reveal.set_visibility(0.0)
++	turntable.hide()
++	car_motion = create_tween()
++	car_motion.tween_method(outgoing_reveal.set_visibility,1.0,0.0,0.18).set_trans(Tween.TRANS_SINE)
++	car_motion.tween_callback(_exchange_pedestals)
++	car_motion.tween_method(incoming_reveal.set_visibility,0.0,1.0,0.24).set_trans(Tween.TRANS_SINE)
++	car_motion.tween_callback(finish_car_transition)
++
++func _prepare_car_reveal(reveal: GarageCarReveal, model: CarVisual, deck: Node3D) -> void:
++	reveal.prepare(model)
++	for child: Node in deck.get_children():
++		if child is MeshInstance3D:
++			var material: Material = child.get_active_material(0)
++			if material is ShaderMaterial and material.shader == preload("res://ui/studio_contact.gdshader"):
++				reveal.prepare(child)
++
++func _exchange_pedestals() -> void:
++	if is_instance_valid(outgoing_pedestal): outgoing_pedestal.hide()
++	turntable.show()
++
++func finish_car_transition() -> void:
++	if car_motion != null: car_motion.kill()
++	car_motion = null
++	if incoming_reveal != null: incoming_reveal.restore()
++	if outgoing_reveal != null: outgoing_reveal.restore()
++	incoming_reveal = null
++	outgoing_reveal = null
++	if is_instance_valid(outgoing_pedestal): outgoing_pedestal.queue_free()
++	outgoing_pedestal = null
++	if is_instance_valid(turntable): turntable.show()
++
+ func _orbit() -> void:
+-	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * zoom * framing_scale
++	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
++	if garage_mode:
++		if garage_distance == 0.0: garage_distance = distance
++		distance = garage_distance
++	distance *= zoom
+ 	var horizontal: float = cos(elevation) * distance
+ 	var angle: float = GARAGE_CAMERA_YAW if garage_mode else yaw
+ 	var target_height: float = 0.55 + (GarageEnvironment.DECK_HEIGHT if garage_mode else 0.0)
+@@ -105,6 +173,7 @@ func _orbit() -> void:
+ 
+ func set_trophy_view(active: bool) -> void:
+ 	if not garage_mode or read_only or active == trophy_view: return
++	finish_car_transition()
+ 	_clear_gesture()
+ 	set_wash_mode(false)
+ 	if camera_motion != null: camera_motion.kill()
+@@ -131,7 +200,7 @@ func owns_gesture(location: Vector2) -> bool:
+ 	return rect.has_point(location) and location.y >= rect.position.y + interaction_inset_top and location.y <= rect.end.y - interaction_inset_bottom
+ 
+ func _drag(event: InputEvent) -> void:
+-	if trophy_view or (camera_motion != null and camera_motion.is_running()):
++	if trophy_view or (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running()):
+ 		accept_event()
+ 		return
+ 	if (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
+@@ -187,6 +256,7 @@ func reset_view() -> void:
+ 	yaw = DEFAULT_YAW
+ 	elevation = atan(0.28) if garage_mode else atan(0.32)
+ 	zoom = 1.0
++	garage_distance = 0.0
+ 	_clear_gesture()
+ 	_orbit()
+ 
+@@ -204,6 +274,7 @@ func _clear_gesture() -> void:
+ 	resume_orbit = false
+ 
+ func apply_livery(value: Dictionary) -> void:
++	finish_car_transition()
+ 	livery = value.duplicate(true)
+ 	if is_instance_valid(car):
+ 		car.apply_livery(livery)
+@@ -211,6 +282,7 @@ func apply_livery(value: Dictionary) -> void:
+ 		refresh_thumbnail()
+ 
+ func set_wash_mode(enabled: bool) -> void:
++	if enabled: finish_car_transition()
+ 	_clear_gesture()
+ 	washing = false
+ 	wash_pointer_valid = false
+diff --git a/game/ui/garage_car_reveal.gd b/game/ui/garage_car_reveal.gd
+new file mode 100644
+index 0000000..0714a08
+--- /dev/null
++++ b/game/ui/garage_car_reveal.gd
+@@ -0,0 +1,83 @@
++class_name GarageCarReveal
++extends RefCounted
++## Temporary menu-only opaque dissolve. Original materials remain untouched.
++static var shaders: Dictionary = {}
++const STANDARD: String = """shader_type spatial;
++uniform vec4 garage_albedo : source_color = vec4(1.0);
++uniform float garage_roughness = 0.8;
++uniform float garage_metallic = 0.0;
++uniform float garage_specular = 0.5;
++uniform vec3 garage_emission : source_color;
++uniform bool garage_vertex_color = false;
++void fragment() {
++	ALBEDO = garage_albedo.rgb * (garage_vertex_color ? COLOR.rgb : vec3(1.0));
++	ROUGHNESS = garage_roughness;
++	METALLIC = garage_metallic;
++	SPECULAR = garage_specular;
++	EMISSION = garage_emission;
++}
++"""
++var bindings: Array[Dictionary] = []
++var materials: Array[ShaderMaterial] = []
++var visibility: float = 1.0
++
++func prepare(root: Node3D) -> void:
++	var copies: Dictionary = {}
++	_collect(root, copies)
++
++func _collect(node: Node3D, copies: Dictionary) -> void:
++	if node is MeshInstance3D:
++		var original_override: Material = node.material_override
++		for index: int in range(1 if original_override != null else node.mesh.get_surface_count()):
++			var source: Material = node.get_active_material(index)
++			if source == null: continue
++			if not copies.has(source):
++				copies[source] = _copy(source)
++				materials.append(copies[source])
++			bindings.append({"node":node,"index":index,"override":original_override,"surface":node.get_surface_override_material(index)})
++			if original_override != null: node.material_override = copies[source]
++			else: node.set_surface_override_material(index, copies[source])
++	for child: Node in node.get_children():
++		if child is Node3D: _collect(child, copies)
++
++func _copy(source: Material) -> ShaderMaterial:
++	var code: String = source.shader.code if source is ShaderMaterial else STANDARD
++	if source is BaseMaterial3D:
++		var modes: String = "unshaded" if source.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED else "diffuse_toon" if source.diffuse_mode == BaseMaterial3D.DIFFUSE_TOON else "diffuse_burley"
++		if source.cull_mode == BaseMaterial3D.CULL_DISABLED: modes += ", cull_disabled"
++		code = code.replace("shader_type spatial;","shader_type spatial;\nrender_mode " + modes + ";")
++	var key: String = code
++	if not shaders.has(code):
++		var expression := RegEx.new()
++		expression.compile("void\\s+fragment\\s*\\(\\s*\\)\\s*\\{")
++		var match: RegExMatch = expression.search(code)
++		assert(match != null, "Garage reveal requires a spatial fragment shader")
++		var injection: String = "\nvec2 garage_pixel = mod(floor(FRAGCOORD.xy), 4.0);\nvec2 garage_low = mod(garage_pixel, 2.0);\nvec2 garage_high = floor(garage_pixel / 2.0);\nfloat garage_rank = 4.0 * (2.0 * garage_low.x + 3.0 * garage_low.y - 4.0 * garage_low.x * garage_low.y) + (2.0 * garage_high.x + 3.0 * garage_high.y - 4.0 * garage_high.x * garage_high.y);\nfloat garage_threshold = (garage_rank + 0.5) / 16.0;\nif (garage_visibility < garage_threshold) { discard; }\n"
++		code = code.insert(match.get_end(), injection)
++		code = code.insert(code.find(";")+1, "\nuniform float garage_visibility = 1.0;\n")
++		var shader := Shader.new()
++		shader.code = code
++		shaders[key] = shader
++	var result: ShaderMaterial = source.duplicate() as ShaderMaterial if source is ShaderMaterial else ShaderMaterial.new()
++	result.shader = shaders[key]
++	if source is BaseMaterial3D:
++		result.set_shader_parameter("garage_albedo",source.albedo_color)
++		result.set_shader_parameter("garage_roughness",source.roughness)
++		result.set_shader_parameter("garage_metallic",source.metallic)
++		result.set_shader_parameter("garage_specular",source.metallic_specular)
++		result.set_shader_parameter("garage_emission",source.emission * source.emission_energy_multiplier if source.emission_enabled else Color.BLACK)
++		result.set_shader_parameter("garage_vertex_color",source.vertex_color_use_as_albedo)
++	result.render_priority = source.render_priority
++	return result
++
++func set_visibility(value: float) -> void:
++	visibility = value
++	for material: ShaderMaterial in materials: material.set_shader_parameter("garage_visibility",value)
++
++func restore() -> void:
++	for binding: Dictionary in bindings:
++		if not is_instance_valid(binding.node): continue
++		binding.node.material_override = binding.override
++		binding.node.set_surface_override_material(binding.index,binding.surface)
++	bindings.clear()
++	materials.clear()
+diff --git a/game/ui/garage_car_reveal.gd.uid b/game/ui/garage_car_reveal.gd.uid
+new file mode 100644
+index 0000000..df38bda
+--- /dev/null
++++ b/game/ui/garage_car_reveal.gd.uid
+@@ -0,0 +1 @@
++uid://dq5p0bcmb3ffb
+diff --git a/game/ui/garage_environment.gd b/game/ui/garage_environment.gd
+index 5e8dba0..8dfa684 100644
+--- a/game/ui/garage_environment.gd
++++ b/game/ui/garage_environment.gd
+@@ -155,6 +155,12 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
+ 	rim.spot_angle = 54
+ 	world.add_child(rim)
+ 	rim.look_at(Vector3(0, 0.8, 0))
++	return build_pedestal(world, car)
++
++static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
++	var inset: Material = surfaces.inset
++	var steel: Material = surfaces.steel
++	var edges: Material = surfaces.edges
+ 	var stage := Node3D.new()
+ 	stage.name = "Turntable"
+ 	world.add_child(stage)
+@@ -177,7 +183,7 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
+ 	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
+ 	for wheel: Vector3 in car.wheel_rest_positions:
+ 		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
+-	ShowroomStudio._contact(world, Vector3(0, 0.002, 0), Vector2.ONE * (radius * 2.2), 0.52)
++	ShowroomStudio._contact(stage, Vector3(0, 0.002, 0), Vector2.ONE * (radius * 2.2), 0.52)
+ 	return stage
+ 
+ static func _workbench(root: Node3D, position: Vector3) -> void:
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index 6d2f714..1396f53 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -266,13 +266,19 @@ func preview_car(index: int) -> void:
+ 	_finish_tools()
+ 	var chosen: String = VehicleCatalog.IDS[index]
+ 	if chosen != vehicle_id:
+-		preview.remove_child(showroom)
+-		showroom.queue_free()
+ 		vehicle_id = chosen
+ 		heading.text = VehicleCatalog.title(vehicle_id)
+-		_create_showroom()
++		_replace_showroom_car()
+ 	_update_cards()
+ 
++func _replace_showroom_car() -> void:
++	draft = VehicleLivery.for_car(records.settings,vehicle_id)
++	_livery_saved = draft.duplicate(true)
++	var wear: Dictionary = VehicleCondition.read(records,vehicle_id)
++	showroom.replace_car(vehicle_id,draft,wear)
++	_condition_saved = wear.duplicate(true)
++	_condition_presented = showroom.weathering.snapshot()
++
+ func _confirm_car() -> void:
+ 	open_car(VehicleCatalog.IDS.find(vehicle_id))
+ 
+@@ -298,12 +304,10 @@ func refresh_selection() -> void:
+ 	# A warmed page may have been built before another page selected a car.
+ 	if _selected_vehicle_id == VehicleCatalog.selected: return
+ 	_finish_tools()
+-	preview.remove_child(showroom)
+-	showroom.queue_free()
+ 	vehicle_id = VehicleCatalog.selected
+ 	_selected_vehicle_id = vehicle_id
+ 	heading.text = VehicleCatalog.title(vehicle_id)
+-	_create_showroom()
++	_replace_showroom_car()
+ 	_show_section("cars")
+ 	_update_cards()
+ 
+@@ -440,7 +444,9 @@ func _finish_tools() -> void:
+ 	if view_hint != null: view_hint.text = "Drag to turn"
+ 
+ func _visibility_changed() -> void:
+-	if not is_visible_in_tree(): _finish_tools()
++	if not is_visible_in_tree():
++		_finish_tools()
++		showroom.finish_car_transition()
+ 
+ func telemetry_exposures() -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []

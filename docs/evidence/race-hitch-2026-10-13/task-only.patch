@@ -1,0 +1,760 @@
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -121,6 +121,13 @@
+ var profile_music_us: int = 0
+ var profile_water_us: int = 0
+ var profile_history_us: int = 0
++var profile_condition_us: int = 0
++var profile_weathering_us: int = 0
++var profile_physics_total_us: int = 0
++var profile_process_total_us: int = 0
++var condition_save_count: int = 0
++var hitch_diagnostics_enabled: bool = true
++var hitch_diagnostics: Node
+ var profile_skip_telemetry: bool = false
+ var _render_viewport: Viewport
+ var _base_msaa: Viewport.MSAA = Viewport.MSAA_DISABLED
+@@ -268,6 +275,10 @@
+ 	resume_credits.show_ads = OS.is_debug_build() and preference_records != null and bool(preference_records.settings.get("development_show_ads", false))
+ 	add_child(resume_credits)
+ 	restart()
++	if hitch_diagnostics_enabled:
++		hitch_diagnostics = preload("res://diagnostics/race_hitch_monitor.gd").new()
++		hitch_diagnostics.game = self
++		add_child(hitch_diagnostics)
+ 	print("PLAYGROUND_READY")
+ 	if OS.is_debug_build():
+ 		for argument: String in OS.get_cmdline_user_args():
+@@ -280,6 +291,11 @@
+ 
+ 
+ func _physics_process(_delta: float) -> void:
++	var started: int = Time.get_ticks_usec() if profile_enabled else 0
++	_advance_physics(_delta)
++	if profile_enabled: profile_physics_total_us += Time.get_ticks_usec() - started
++
++func _advance_physics(_delta: float) -> void:
+ 	if sim == null or paused:
+ 		return
+ 	if finish_sim != null:
+@@ -426,6 +442,11 @@
+ 
+ 
+ func _process(delta: float) -> void:
++	var started: int = Time.get_ticks_usec() if profile_enabled else 0
++	_present_frame(delta)
++	if profile_enabled: profile_process_total_us += Time.get_ticks_usec() - started
++
++func _present_frame(delta: float) -> void:
+ 	if sim == null:
+ 		return
+ 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+@@ -454,8 +475,10 @@
+ 	var water_depth: float = _presentation_water_depth(point)
+ 	if profile_enabled: profile_water_us += Time.get_ticks_usec() - water_start
+ 	car.present(point, heading, presented.state, frame)
++	var weathering_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
+ 	if finish_sim != null and not paused: car_weathering.melt(delta)
++	if profile_enabled: profile_weathering_us += Time.get_ticks_usec() - weathering_start
+ 	condition_save_elapsed += delta
+ 	if condition_save_elapsed >= 5.0:
+ 		_save_condition()
+@@ -848,10 +871,13 @@
+ 
+ 
+ func _save_condition() -> void:
++	var started: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	condition_save_elapsed = 0.0
+ 	if preference_records != null and car != null:
++		condition_save_count += 1
+ 		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot())
+ 		if error != OK: push_warning("Local car condition save failed: " + error_string(error))
++	if profile_enabled: profile_condition_us += Time.get_ticks_usec() - started
+ 
+ func _exit_tree() -> void:
+ 	_save_condition()
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -33,6 +33,7 @@
+ var _retry_deadlines: Dictionary = {}
+ var _write_deadlines: Dictionary = {}
+ var _flush_deadlines: Dictionary = {}
++var profile_local_io_us: int = 0
+ const MAX_FLUSH_JOBS: int = 16
+ 
+ func _ready() -> void:
+@@ -164,7 +165,10 @@
+ 	return (root_override if not root_override.is_empty() else "user://cloud").path_join(str(client.base_url()).sha256_text())
+ 
+ func _read(path: String) -> Dictionary:
+-	return _read_file(path)
++	var started: int = Time.get_ticks_usec()
++	var result: Dictionary = _read_file(path)
++	profile_local_io_us += Time.get_ticks_usec() - started
++	return result
+ 
+ static func _read_file(path: String) -> Dictionary:
+ 	if not FileAccess.file_exists(path): return {}
+@@ -176,7 +180,10 @@
+ 	return value if value is Dictionary else {"_read_error":true}
+ 
+ func _write(path: String, value: Dictionary) -> bool:
+-	return _write_file(path,value)
++	var started: int = Time.get_ticks_usec()
++	var result: bool = _write_file(path,value)
++	profile_local_io_us += Time.get_ticks_usec() - started
++	return result
+ 
+ static func _write_file(path: String, value: Dictionary) -> bool:
+ 	var encoded: String = JSON.stringify(value)
+--- a/game/backend/resume_recovery.gd
++++ b/game/backend/resume_recovery.gd
+@@ -9,6 +9,7 @@
+ var _deadlines: Dictionary = {}
+ var _cursor: Dictionary = {}
+ var _resolved: Dictionary = {}
++var profile_callback_us: int = 0
+ const Files = preload("res://backend/atomic_json.gd")
+ const REQUEST_INTERVAL_SECONDS: int = 5
+ const MAX_INSPECTED: int = 64
+@@ -35,8 +36,11 @@
+ 
+ func _process(_delta: float) -> void:
+ 	if not busy and Time.get_ticks_msec() >= _next_msec:
++		var started: int = Time.get_ticks_usec()
+ 		_next_msec = Time.get_ticks_msec()+5000+int(Crypto.new().generate_random_bytes(1)[0])*10
+ 		reconcile()
++		# Initial synchronous journal work only, excluding network wait.
++		profile_callback_us += Time.get_ticks_usec() - started
+ 
+ func reconcile() -> void:
+ 	if busy or not client.signed_in() or not bool(client._capabilities.get("resume_recovery",false)): return
+@@ -73,6 +77,7 @@
+ 		# Persist the wait before delivery so restarts/shared profiles respect it.
+ 		_delay_scope(directory,REQUEST_INTERVAL_SECONDS,false,true)
+ 		var response: Dictionary = await client.request_api("/resume-recovery",HTTPClient.METHOD_POST,body,"",true)
++		var callback_started: int = Time.get_ticks_usec()
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+ 		if (response.get("ok",false) and response.get("data",{}).get("state") in ["consumed","abandoned","absent"]) or str(response.get("error","")) == "RACE_ALREADY_SUBMITTED":
+ 			# Accepted replay binds all its receipts; refund is prohibited.
+@@ -87,6 +92,7 @@
+ 			_block(path,entry,str(response.get("error","RECOVERY_REJECTED")))
+ 		else:
+ 			_delay_scope(directory,maxi(30,int(response.get("retry_after",0))),true)
++		profile_callback_us += Time.get_ticks_usec() - callback_started
+ 		break
+ 	busy = false
+ 
+--- a/game/tests/profile_race_start.gd
++++ b/game/tests/profile_race_start.gd
+@@ -4,7 +4,11 @@
+ 
+ func run() -> void:
+ 	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	var themes: Array[String] = []
++	var probe_seconds: float = 12.0
+ 	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--themes="): themes.assign(argument.trim_prefix("--themes=").split(","))
++		if argument.begins_with("--seconds="): probe_seconds = clampf(float(argument.trim_prefix("--seconds=")), 5.0, 30.0)
+ 		if argument.begins_with("--track="):
+ 			var document: Dictionary = TrackLibrary.new().load_document(argument.trim_prefix("--track=").trim_prefix("creator_"))
+ 			if document.is_empty():
+@@ -12,21 +16,38 @@
+ 				quit(1)
+ 				return
+ 			track = TrackCompiler.compile(document)
+-	var fields: Array[String] = ["sim","rules","ai","present","particles","trails","telemetry"]
++	var fields: Array[String] = ["sim","rules","ai","present","particles","trails","telemetry","weather","weathering","condition","audio","history","physics_total","process_total"]
++	var run_index: int = 0
++	var output: String = ProjectSettings.globalize_path("res://../build/race-hitch-profile")
++	DirAccess.make_dir_recursive_absolute(output)
+ 	# Drive first so a stationary pass cannot prewarm first-use race effects.
+-	for moving: bool in [true,false,true]:
++	var runs: Array[bool] = [true,false,true]
++	if not themes.is_empty():
++		runs.clear()
++		for theme: String in themes: runs.append(true)
++	for moving: bool in runs:
++		if not themes.is_empty(): track.metadata.theme = themes[run_index]
++		run_index += 1
+ 		var game: Node = load("res://core/game.tscn").instantiate()
+ 		game.set("initial_track",track)
+ 		game.set("production_mode",true)
+ 		game.set("ai_enabled",moving)
+ 		game.set("profile_enabled",true)
++		# Exercise the real five-second cosmetic persistence on disposable records.
++		var records := LocalRecords.new(output.path_join("records-%d.json" % run_index))
++		game.set("preference_records",records)
+ 		root.add_child(game)
++		game.get("hitch_diagnostics").directory = output
++		game.get("hitch_diagnostics").log_path = output.path_join("race-%d-%d.json" % [OS.get_process_id(),run_index])
+ 		var start: int = Time.get_ticks_usec()
+ 		var last: int = start
+ 		var rows: Array[Dictionary] = []
+ 		var distance: float = 0.0
+ 		var previous: Vector2 = game.get("sim").state.position
+-		while Time.get_ticks_usec()-start < 14000000:
++		var previous_costs: Dictionary = {}
++		var deadline: int = start + int((probe_seconds + 20.0) * 1000000.0)
++		# Cold shaders can delay countdown. Bound wall time, measure actual driving.
++		while game.get("sim").state.tick < int(probe_seconds * 120.0) and Time.get_ticks_usec() < deadline:
+ 			await process_frame
+ 			# Other desktop windows must not silently turn a moving probe into a pause.
+ 			game.set("paused",false)
+@@ -36,13 +57,15 @@
+ 			var now: int = Time.get_ticks_usec()
+ 			var row: Dictionary = {"seconds":(now-start)/1000000.0,"ms":(now-last)/1000.0,"tick":game.get("sim").state.tick}
+ 			for field: String in fields:
+-				row[field] = game.get("profile_"+field+"_us")/1000.0
+-				game.set("profile_"+field+"_us",0)
++				var total: int = game.get("profile_"+field+"_us")
++				row[field] = (total - int(previous_costs.get(field,0))) / 1000.0
++				previous_costs[field] = total
+ 			rows.append(row)
+ 			last = now
+ 		rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.ms > b.ms)
+-		print("RACE_START track=",track.identity," moving=",moving," metres=",distance," ticks=",game.get("sim").state.tick," worst=",JSON.stringify(rows.slice(0,12)))
+-		if game.get("sim").state.tick < 1000 or (moving and distance < 20.0):
++		var monitor: Node = game.get("hitch_diagnostics")
++		print("RACE_START track=",track.identity," theme=",track.metadata.get("theme","pine")," moving=",moving," metres=",distance," ticks=",game.get("sim").state.tick," saves=",game.get("condition_save_count")," observer_mean_us=",monitor.observer_total_us / maxf(1.0,monitor.observed_frames)," worst=",JSON.stringify(rows.slice(0,12)))
++		if game.get("sim").state.tick < int(probe_seconds * 120.0) or (moving and distance < 20.0):
+ 			push_error("Race-start probe did not exercise sufficient live simulation")
+ 			quit(1)
+ 			return
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH01-RH04/Q01/V05/G01/R01: investigated intermittent early-race freeze; exact owner trigger/root cause remains unconfirmed. Current PC captures show render-boundary startup1.831s/driving137.832ms; five-second real-record-copy saves guest8.897median/13.100maxms, signed-in6.562/10.272ms. Automatic local guest/practice/countdown/driving observer retains bounded surrounding frames/stage-save-recovery-cloud IO/effect/pipeline context; low-priority atomic writer/eight files, no diagnostic upload. Final hitch36head+36Compatibility+36Mobile, recovery248/exception28/quality46/driving72/tracks167/rewind61/records54/App99/parse618/import/diffcheck pass. AttachedDN2103, no physical-phone test/APK/export-install/fullValidate/backend/deploy. Actual evidence/scoped task patch/limitations: docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md.
++
+ 2026-10-13 TR01-TR04/V04/V05/G01/R01/Q01: owner alternate tire-mark appearance/drawing-effort request. Four-vertex/two-triangle joined ribbons replace thirty vertices/ten triangles; immutable shared wheel endpoints, pressure taper and analytic rounded grooves. Same16384 slots/four wheels/0.32m spacing/approved desert pigment/intensity/bridge guards/canonical/camera/dust. Both-renderer ribbon19+19, headless14, soil163+166, Desert87, bridge8+8 and six desert views each pass. Full-budget desktop GPU0.299-0.340->0.151-0.152ms Compatibility/0.252-0.254->0.119ms Mobile, triangle work80% lower; small CPU join overhead reported. Concurrent visibility/hitch work preserved and excluded from scoped patch. DN2103 attached, no device test/APK/full regression/deploy. Commands/captures/checkpoint/acceptance: docs/TIRE_RIBBONS.md.
+ 
+ 2026-10-13 GVP01-GVP03/GC27-GC29/GWR01/GRD01-GRD03/V06/G01/R01/Q01: trophy final visual pass. Smooth backing/folded leaf normals/rounded stems/shallow raised lettering/quiet satin edging/softer warm light/source-colour stone pigments; original composition/empty six slots/reflections/local cosmetics retained. Compatibility32/Mobile32/transition23/floor-deck25=112pass/0fail; four-size captures. DN2103 attached, no phone test/export-install/performance claim. Files/commands/scoped checkpoint/owner-device acceptance: docs/TROPHY_WALL_VISUAL_PASS.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 RH01-RH04/Q01/V05/G01/R01: investigated intermittent early-race freeze; exact owner trigger/root cause remains unconfirmed. Current PC captures show render-boundary startup1.831s/driving137.832ms; five-second real-record-copy saves guest8.897median/13.100maxms, signed-in6.562/10.272ms. Automatic local guest/practice/countdown/driving observer retains bounded surrounding frames/stage-save-recovery-cloud IO/effect/pipeline context; low-priority atomic writer/eight files, no diagnostic upload. Final hitch36head+36Compatibility+36Mobile, recovery248/exception28/quality46/driving72/tracks167/rewind61/records54/App99/parse618/import/diffcheck pass. AttachedDN2103, no physical-phone test/APK/export-install/fullValidate/backend/deploy. Actual evidence/scoped task patch/limitations: docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md.
++
+ 2026-10-13 TR01-TR04/V04/V05/G01/R01/Q01: owner alternate tire-mark appearance/drawing-effort request. Four-vertex/two-triangle joined ribbons replace thirty vertices/ten triangles; immutable shared wheel endpoints, pressure taper and analytic rounded grooves. Same16384 slots/four wheels/0.32m spacing/approved desert pigment/intensity/bridge guards/canonical/camera/dust. Both-renderer ribbon19+19, headless14, soil163+166, Desert87, bridge8+8 and six desert views each pass. Full-budget desktop GPU0.299-0.340->0.151-0.152ms Compatibility/0.252-0.254->0.119ms Mobile, triangle work80% lower; small CPU join overhead reported. Concurrent visibility/hitch work preserved and excluded from scoped patch. DN2103 attached, no device test/APK/full regression/deploy. Commands/captures/checkpoint/acceptance: docs/TIRE_RIBBONS.md.
+ 
+ 2026-10-13 GVP01-GVP03/GC27-GC29/GWR01/GRD01-GRD03/V06/G01/R01/Q01: trophy final visual pass. Smooth backing/folded leaf normals/rounded stems/shallow raised lettering/quiet satin edging/softer warm light/source-colour stone pigments; original composition/empty six slots/reflections/local cosmetics retained. Compatibility32/Mobile32/transition23/floor-deck25=112pass/0fail; four-size captures. DN2103 attached, no phone test/export-install/performance claim. Files/commands/scoped checkpoint/owner-device acceptance: docs/TROPHY_WALL_VISUAL_PASS.md.
+--- /dev/null
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -0,0 +1,223 @@
++extends Node
++## Local presentation diagnostics, including guests/practice. No telemetry/upload.
++## Timings are observations only; never change canonical ticks, inputs or pause.
++const FIELDS: Array[String] = ["physics_total", "process_total", "sim", "rules", "ai", "present", "particles", "trails", "telemetry", "weather", "car", "props", "camera", "hud", "audio", "contact", "music", "water", "history", "weathering", "condition"]
++const THRESHOLD_US: int = 100000
++const HISTORY_FRAMES: int = 64
++const AFTER_FRAMES: int = 16
++const MAX_EVENTS: int = 8
++const MAX_FILES: int = 8
++const MAX_FILE_BYTES: int = 2 * 1024 * 1024
++var game: Node
++var directory: String = "user://diagnostics/race_hitches"
++var persist_enabled: bool = true
++var console_enabled: bool = true
++var events: Array[Dictionary] = []
++var history: Array[Dictionary] = []
++var latest: Dictionary = {}
++var header: Dictionary = {}
++var log_path: String = ""
++var dropped_events: int = 0
++var observer_total_us: int = 0
++var observed_frames: int = 0
++var _previous: PackedInt64Array = PackedInt64Array()
++var _last_usec: int = 0
++var _started_usec: int = 0
++var _idle_start_usec: int = 0
++var _draw_start_usec: int = 0
++var _draw_us: int = 0
++var _draw_count: int = 0
++var _last_draw_count: int = 0
++var _foreground: bool = true
++var _was_blocked: bool = false
++var _thread: Thread
++var _revision: int = 0
++var _saved_revision: int = 0
++var _writing_revision: int = 0
++var _next_write_usec: int = 0
++var _recovery_previous: int = 0
++var _cloud_previous: int = 0
++
++class IdleStart extends Node:
++	var monitor: Node
++	func _process(_delta: float) -> void:
++		monitor._idle_start_usec = Time.get_ticks_usec()
++
++func _ready() -> void:
++	process_priority = 1000000
++	var anchor := IdleStart.new()
++	anchor.monitor = self
++	anchor.process_priority = -1000000
++	add_child(anchor)
++	game.profile_enabled = true
++	_previous.resize(FIELDS.size())
++	_previous.fill(0)
++	_started_usec = Time.get_ticks_usec()
++	# Filename is local process context, not a player/device identity.
++	var token: String = "%d-%d-%d" % [int(Time.get_unix_time_from_system()), OS.get_process_id(), get_instance_id()]
++	log_path = directory.path_join("race-" + token + ".json")
++	var track: NativeTrack = game.get("native_track")
++	header = {"schema": 1, "engine": Engine.get_version_info().string, "os": OS.get_name(), "os_version": OS.get_version(), "model": OS.get_model_name(), "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "debug_build": OS.is_debug_build(), "track_id": track.identity if track != null else "playground", "track_hash": track.content_hash if track != null else "", "biome": str(track.metadata.get("theme", "pine")) if track != null else "pine", "car": str(game.get("vehicle_id")), "practice": bool(game.get("editor_test")) or bool(game.get("attempt_practice")), "physics": VehicleSimulation.PHYSICS_VERSION, "rules": RaceRules.KEY, "track_kit": NativeTrackVisual.VERSION, "threshold_ms": THRESHOLD_US / 1000, "history_frames": HISTORY_FRAMES, "stage_note": "Nested timings overlap; engine monitors may be delayed/debug-only; draw_boundary_ms is wall time between render signals, not GPU time. Previous draw and current callbacks share one interval."}
++	RenderingServer.frame_pre_draw.connect(_pre_draw)
++	RenderingServer.frame_post_draw.connect(_post_draw)
++
++func _pre_draw() -> void:
++	_draw_start_usec = Time.get_ticks_usec()
++
++func _post_draw() -> void:
++	if _draw_start_usec > 0: _draw_us = Time.get_ticks_usec() - _draw_start_usec
++	_draw_count += 1
++
++func _process(_delta: float) -> void:
++	var started: int = Time.get_ticks_usec()
++	_reap_writer()
++	if not is_instance_valid(game) or game.get("sim") == null: return
++	var now: int = Time.get_ticks_usec()
++	var frame_us: int = now - _last_usec if _last_usec > 0 else 0
++	var blocked: bool = not _foreground or bool(game.get("paused")) or game.get("finish_sim") != null
++	var sections: Dictionary = {}
++	for index: int in range(FIELDS.size()):
++		var value: int = int(game.get("profile_" + FIELDS[index] + "_us"))
++		# External profilers may reset their counters; this observer never does.
++		sections[FIELDS[index]] = max(0, value - _previous[index]) / 1000.0 if value >= _previous[index] else value / 1000.0
++		_previous[index] = value
++	var simulation: VehicleSimulation = game.get("sim")
++	var condition: VehicleWeathering = game.get("car_weathering")
++	var row: Dictionary = {"wall_ms": (now - _started_usec) / 1000.0, "frame_ms": frame_us / 1000.0, "tick": simulation.state.tick, "race_ms": simulation.state.tick * 1000.0 / VehicleSimulation.TICK_RATE, "countdown_ticks": int(game.get("countdown_ticks")), "callbacks_ms": (now - _idle_start_usec) / 1000.0 if _idle_start_usec > 0 else 0.0, "between_callbacks_ms": max(0, _idle_start_usec - _last_usec) / 1000.0 if _last_usec > 0 else 0.0, "stages_ms": sections, "draw_boundary_ms": _draw_us / 1000.0 if _draw_count != _last_draw_count else -1.0, "blocked": blocked, "speed_mps": simulation.state.velocity.length(), "route_index": simulation.state.route_index, "elevated": simulation.state.track_elevated, "weathering_installed": condition.installed, "condition_save_count": int(game.get("condition_save_count")), "rewind_entries": game.get("rewind_history").entries.size(), "proof_frames": game.get("online_frames").size()}
++	_last_draw_count = _draw_count
++	row.background = _background_context()
++	var track: NativeTrack = game.get("native_track")
++	row.track_hash = track.content_hash if track != null else ""
++	row.biome = str(track.metadata.get("theme", "pine")) if track != null else "pine"
++	var dust: Node = game.get("sand_dust")
++	row.effects = {"dust_emitters": dust.get("dust_emitters").size(), "spray_emitters": dust.get("spray_emitters").size(), "smoke_emitters": dust.get("smoke_emitters").size(), "snow_powder_emitters": dust.get("snow_powder").size(), "snow_bursts": int(dust.get("snow_burst_count")), "trail_cursor": int(game.get("trails").get("cursor"))}
++	var storm: Node = game.get("storm_weather")
++	if storm != null: row.effects.storm_strikes = storm.get("strikes")
++	row.engine_monitors = {"process_ms": Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0, "physics_tick_ms": Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0, "memory_bytes": Performance.get_monitor(Performance.MEMORY_STATIC), "resources": Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT), "draw_calls": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), "pipeline_canvas": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_CANVAS), "pipeline_mesh": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_MESH), "pipeline_surface": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SURFACE), "pipeline_draw": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW), "pipeline_specialization": Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_SPECIALIZATION)}
++	observe(row, frame_us >= THRESHOLD_US and _last_usec > 0 and not blocked and not _was_blocked)
++	_was_blocked = blocked
++	_last_usec = now
++	if _revision > _saved_revision and now >= _next_write_usec: flush_async()
++	observed_frames += 1
++	observer_total_us += Time.get_ticks_usec() - started
++
++func _background_context() -> Dictionary:
++	var parent: Node = game.get_parent()
++	if parent == null or parent.get_script() == null or parent.get_script().resource_path != "res://core/app.gd": return {}
++	var result: Dictionary = {"cloud_starting": bool(parent.get("cloud_starting")), "editor_worker": parent.get("editor_preview_thread") != null}
++	var online: Node = parent.get("online")
++	if online != null and online.get("client") != null:
++		var recovery: Node = online.get("client").get("resume_recovery")
++		if recovery != null:
++			var total: int = recovery.get("profile_callback_us")
++			result.recovery_callback_ms = max(0, total - _recovery_previous) / 1000.0
++			_recovery_previous = total
++			result.recovery_busy = bool(recovery.get("busy"))
++	var telemetry: Node = parent.get("product_telemetry")
++	if telemetry != null:
++		result.telemetry_writer = telemetry.get("_thread") != null
++		result.telemetry_transport_allowed = bool(telemetry.get("_allowed"))
++	var cloud: Node = parent.get("cloud")
++	if cloud != null:
++		var total: int = cloud.get("profile_local_io_us")
++		result.cloud_local_io_ms = max(0, total - _cloud_previous) / 1000.0
++		_cloud_previous = total
++		result.cloud_flushing = bool(cloud.get("flushing"))
++		result.cloud_refreshing = bool(cloud.get("refreshing"))
++	return result
++
++func observe(row: Dictionary, hitch: bool) -> void:
++	latest = row
++	for event: Dictionary in events:
++		if event.after.size() < AFTER_FRAMES:
++			event.after.append(row)
++			_revision += 1
++	if hitch:
++		if events.size() >= MAX_EVENTS:
++			# Keep the worst events if a device runs slowly for a whole race.
++			var smallest: int = 0
++			for index: int in range(1, events.size()):
++				if events[index].frame.frame_ms < events[smallest].frame.frame_ms: smallest = index
++			dropped_events += 1
++			_revision += 1
++			if row.frame_ms > events[smallest].frame.frame_ms: events.remove_at(smallest)
++			else: hitch = false
++		if hitch:
++			events.append({"frame": row, "before": history.duplicate(), "after": []})
++			_revision += 1
++			if console_enabled: print("RACE_HITCH frame_ms=%.3f tick=%d countdown=%d local_log=%s" % [row.frame_ms, row.tick, row.countdown_ticks, log_path])
++	history.append(row)
++	if history.size() > HISTORY_FRAMES: history.pop_front()
++
++func snapshot() -> Dictionary:
++	return {"header": header.duplicate(true), "events": events.duplicate(true), "dropped_events": dropped_events}
++
++func flush_async() -> void:
++	if not persist_enabled or _thread != null or _revision <= _saved_revision: return
++	_writing_revision = _revision
++	# Detached immutable data only; worker never accesses scene objects.
++	var payload: Dictionary = snapshot()
++	_thread = Thread.new()
++	var error: Error = _thread.start(_write_snapshot.bind(log_path, payload), Thread.PRIORITY_LOW)
++	if error != OK:
++		_thread = null
++		_next_write_usec = Time.get_ticks_usec() + 5000000
++		push_warning("Race hitch log worker failed: " + error_string(error))
++
++func _reap_writer() -> void:
++	if _thread == null or _thread.is_alive(): return
++	var result: Error = _thread.wait_to_finish()
++	_thread = null
++	if result == OK: _saved_revision = _writing_revision
++	else: push_warning("Race hitch log write failed: " + error_string(result))
++	_next_write_usec = Time.get_ticks_usec() + (1000000 if result == OK else 5000000)
++
++static func _write_snapshot(path: String, payload: Dictionary) -> Error:
++	var folder: String = path.get_base_dir()
++	var error: Error = DirAccess.make_dir_recursive_absolute(folder)
++	if error != OK: return error
++	var content: String = JSON.stringify(payload)
++	if content.to_utf8_buffer().size() > MAX_FILE_BYTES: return ERR_OUT_OF_MEMORY
++	var file := FileAccess.open(path + ".tmp", FileAccess.WRITE)
++	if file == null: return FileAccess.get_open_error()
++	file.store_string(content)
++	file.flush()
++	error = file.get_error()
++	file.close()
++	if error != OK: return error
++	error = DirAccess.rename_absolute(path + ".tmp", path)
++	if error != OK: return error
++	# Only our fixed-name diagnostic files in this one directory are eligible.
++	var files: Array[String] = []
++	for filename: String in DirAccess.get_files_at(folder):
++		if filename.begins_with("race-") and filename.ends_with(".json"): files.append(filename)
++	files.sort()
++	var excess: int = maxi(0, files.size() - MAX_FILES)
++	for oldest: String in files:
++		if excess <= 0: break
++		if folder.path_join(oldest) == path: continue
++		if DirAccess.remove_absolute(folder.path_join(oldest)) == OK: excess -= 1
++	return OK
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
++		_foreground = false
++		_last_usec = 0
++		history.clear()
++		flush_async()
++	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]:
++		_foreground = true
++		_last_usec = 0
++		history.clear()
++
++func _exit_tree() -> void:
++	RenderingServer.frame_pre_draw.disconnect(_pre_draw)
++	RenderingServer.frame_post_draw.disconnect(_post_draw)
++	# Join only at teardown; never wait for a live worker during a racing frame.
++	if _thread != null:
++		var result: Error = _thread.wait_to_finish()
++		if result == OK: _saved_revision = _writing_revision
++		_thread = null
++	if persist_enabled and _revision > _saved_revision:
++		var error: Error = _write_snapshot(log_path, snapshot())
++		if error != OK: push_warning("Final race hitch log write failed: " + error_string(error))
+--- /dev/null
++++ b/game/diagnostics/race_hitch_monitor.gd.uid
+@@ -0,0 +1 @@
++uid://cwocnnanredla
+--- /dev/null
++++ b/game/tests/test_race_hitch_monitor.gd
+@@ -0,0 +1,135 @@
++extends SceneTree
++## Real callbacks and deliberately delayed disposable persistence, no player IO.
++const Monitor = preload("res://diagnostics/race_hitch_monitor.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++class SlowRecords extends LocalRecords:
++	var delay_ms: int = 0
++	func save_records() -> Error:
++		if delay_ms > 0:
++			OS.delay_msec(delay_ms)
++			delay_ms = 0
++		return OK
++
++class LateCallback extends Node:
++	var delay_ms: int = 0
++	func _process(_delta: float) -> void:
++		if delay_ms > 0:
++			var wait_ms: int = delay_ms
++			delay_ms = 0
++			OS.delay_msec(wait_ms)
++
++func _initialize() -> void: call_deferred("run")
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: " + message)
++
++func settle_frames(count: int = 5) -> void:
++	for index: int in range(count): await process_frame
++
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../build/race-hitch-tests/%d" % OS.get_process_id())
++	DirAccess.make_dir_recursive_absolute(output)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	var records := SlowRecords.new()
++	game.preference_records = records
++	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	game.production_mode = true
++	root.add_child(game)
++	var monitor: Node = game.hitch_diagnostics
++	monitor.persist_enabled = false
++	monitor.log_path = output.path_join("race-callbacks.json")
++	check(monitor != null and game.profile_enabled, "automatic capture needs no debug marker, login or server")
++	game.countdown_ticks = 0
++	game.paused = false
++	await settle_frames()
++	monitor.events.clear(); monitor.history.clear()
++	await settle_frames()
++	var late := LateCallback.new()
++	late.process_priority = 100
++	root.add_child(late)
++	late.delay_ms = 1100
++	await settle_frames()
++	check(not monitor.events.is_empty(), "a late sibling callback outside Game is captured")
++	var callback_events: Array = monitor.events.filter(func(event: Dictionary) -> bool: return event.frame.callbacks_ms >= 1000)
++	check(not callback_events.is_empty(), "injected late callback is identified among renderer stalls")
++	if not callback_events.is_empty():
++		var row: Dictionary = callback_events[0].frame
++		check(row.frame_ms >= 1000 and row.callbacks_ms >= 1000, "one-second wall-clock stall remains visible despite capped engine delta")
++		check(row.stages_ms.process_total < 100, "external stall is distinguished from Game presentation")
++		check(callback_events[0].before.size() > 0 and callback_events[0].after.size() > 0, "surrounding frames retained")
++	monitor.events.clear()
++	game.car_weathering.dirt_amount = 0.15
++	records.delay_ms = 180
++	game.condition_save_elapsed = 5.0
++	await settle_frames()
++	check(not monitor.events.is_empty(), "real five-second condition save stall captured")
++	var save_events: Array = monitor.events.filter(func(event: Dictionary) -> bool: return event.frame.stages_ms.condition >= 170)
++	check(not save_events.is_empty(), "injected save is identified among subsequent renderer stalls")
++	if not save_events.is_empty():
++		var row: Dictionary = save_events[0].frame
++		check(row.stages_ms.condition >= 170 and row.stages_ms.process_total >= 170, "save duration is attributable without including network wait")
++		check(row.condition_save_count > 0, "periodic save count recorded")
++	check(Monitor._write_snapshot(output.path_join("observed-save.json"), monitor.snapshot()) == OK, "actual injected save evidence retained separately from synthetic stress")
++	check(monitor.header.track_hash == game.native_track.content_hash and monitor.header.car == game.vehicle_id, "exact local track and car context recorded")
++	check(not monitor.header.has("ticket") and not monitor.header.has("account") and not monitor.header.has("condition"), "diagnostics contain no credential, account or cosmetic snapshot")
++	monitor.events.clear()
++	game.paused = true
++	await settle_frames()
++	late.delay_ms = 180
++	await settle_frames()
++	check(monitor.events.is_empty(), "pause time does not masquerade as a racing freeze")
++	game.paused = false
++	await settle_frames()
++	monitor._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++	late.delay_ms = 180
++	await settle_frames()
++	monitor._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++	await settle_frames()
++	check(monitor.events.is_empty(), "focus loss and resume do not create false hitches")
++	monitor.set_process(false)
++	monitor.console_enabled = false
++	monitor.events.clear(); monitor.history.clear()
++	for index: int in range(100):
++		monitor.observe({"frame_ms": 100.0 + index, "tick": index, "countdown_ticks": 0}, true)
++	check(monitor.events.size() == Monitor.MAX_EVENTS and monitor.history.size() == Monitor.HISTORY_FRAMES and monitor.dropped_events == 92, "events and frame history have hard bounds")
++	check(monitor.events.all(func(event: Dictionary) -> bool: return event.frame.frame_ms >= 192), "full buffer retains worst hitches")
++	for index: int in range(40): monitor.observe({"frame_ms": 8.0, "tick": 100 + index}, false)
++	check(monitor.events.all(func(event: Dictionary) -> bool: return event.after.size() == Monitor.AFTER_FRAMES), "post-event capture has a hard bound")
++	var payload: Dictionary = monitor.snapshot()
++	monitor.events.clear()
++	check(payload.events.size() == Monitor.MAX_EVENTS, "writer snapshot is detached from live event state")
++	check(Monitor._write_snapshot(monitor.log_path, payload) == OK, "atomic local JSON capture written")
++	var readback: Variant = JSON.parse_string(FileAccess.get_file_as_string(monitor.log_path))
++	check(readback is Dictionary and readback.events.size() == Monitor.MAX_EVENTS and not FileAccess.file_exists(monitor.log_path + ".tmp"), "persisted log round-trips with no unfinished temporary")
++	var unrelated := FileAccess.open(output.path_join("unrelated.txt"), FileAccess.WRITE)
++	unrelated.store_string("keep"); unrelated.close()
++	for index: int in range(12):
++		check(Monitor._write_snapshot(output.path_join("race-retention-%02d.json" % index), payload) == OK, "bounded retention write %d" % index)
++	var log_count: int = 0
++	for filename: String in DirAccess.get_files_at(output):
++		if filename.begins_with("race-") and filename.ends_with(".json"): log_count += 1
++	check(log_count == Monitor.MAX_FILES and FileAccess.file_exists(output.path_join("unrelated.txt")), "rotation keeps eight diagnostic files and preserves other files")
++	monitor.events = payload.events
++	monitor.persist_enabled = true
++	monitor.flush_async()
++	var deadline: int = Time.get_ticks_msec() + 5000
++	while monitor._thread != null and Time.get_ticks_msec() < deadline:
++		monitor._reap_writer()
++		await process_frame
++	check(monitor._thread == null and monitor._saved_revision == monitor._revision, "asynchronous persistence completes without blocking a racing callback")
++	game.set_physics_process(false)
++	var state_before: Dictionary = RewindHistory.properties(game.sim.state)
++	game._process(0.0)
++	monitor._last_usec = 0
++	monitor._process(0.0)
++	check(RewindHistory.properties(game.sim.state) == state_before, "observer never advances canonical state")
++	late.free()
++	game.free()
++	print("RACE_HITCH_TESTS: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_race_hitch_monitor.gd.uid
+@@ -0,0 +1 @@
++uid://bghmg2elolhew
+--- /dev/null
++++ b/game/tests/profile_condition_save.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Read actual settings, write only a disposable copy; no player data in output.
++func _initialize() -> void: call_deferred("run")
++
++func run() -> void:
++	var source := LocalRecords.new()
++	var explicit_path: bool = false
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--records="):
++			source.path = argument.trim_prefix("--records=")
++			explicit_path = true
++	source.load_records()
++	var sources: Array[LocalRecords] = [source]
++	if not explicit_path:
++		var largest_path: String = ""
++		var largest_size: int = 0
++		for profile: String in DirAccess.get_directories_at("user://players"):
++			var path: String = "user://players".path_join(profile).path_join("records.json")
++			var file := FileAccess.open(path, FileAccess.READ)
++			if file == null: continue
++			if file.get_length() > largest_size:
++				largest_size = file.get_length()
++				largest_path = path
++			file.close()
++		if not largest_path.is_empty():
++			var largest := LocalRecords.new(largest_path)
++			largest.load_records()
++			sources.append(largest)
++	var directory: String = ProjectSettings.globalize_path("res://../build/race-hitch-save-profile")
++	DirAccess.make_dir_recursive_absolute(directory)
++	for index: int in range(sources.size()):
++		if not measure(sources[index], directory.path_join("records-%d.json" % index), index):
++			quit(1)
++			return
++	quit()
++
++func measure(source: LocalRecords, path: String, index: int) -> bool:
++	var disposable := LocalRecords.new(path)
++	disposable.records = source.records.duplicate(true)
++	disposable.settings = source.settings.duplicate(true)
++	var durations: Array[float] = []
++	for sample_index: int in range(30):
++		var start: int = Time.get_ticks_usec()
++		var error: Error = disposable.save_records()
++		durations.append((Time.get_ticks_usec() - start) / 1000.0)
++		if error != OK:
++			push_error("Disposable save failed: " + error_string(error))
++			return false
++	durations.sort()
++	print("CONDITION_SAVE_PROFILE store=", index, " bytes=", FileAccess.get_file_as_bytes(disposable.path).size(), "median_ms=", durations[15], "max_ms=", durations[-1], "samples=", durations.size())
++	return true
+--- /dev/null
++++ b/game/tests/profile_condition_save.gd.uid
+@@ -0,0 +1 @@
++uid://6gidhmfbfvf3
+--- /dev/null
++++ b/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
+@@ -0,0 +1,87 @@
++# Intermittent early-race freeze investigation, 2026-10-13
++
++Requirements: RH01 investigate the reported first-5–10-second freeze; RH02 automatically capture subsequent stalls; RH03 bound diagnostic cost/storage and preserve local privacy; RH04 retain canonical racing and persistence; Q01/V05/G01/R01. This extends [the September investigation](RACE_START_HITCH.md). The owner's exact intermittent one-second driving freeze is **not confirmed fixed**. No speculative gameplay, artwork, camera, dust, scoring or persistence change was made.
++
++## Findings
++
++The old profiler only instantiated Game, omitted preferences/normal cosmetic saves, reported seven partial script sections and stopped after a fixed wall-time window. It did not observe the account/recovery/outbox nodes in the actual application. A cold render stall could consume the window and make its minimum-live-tick assertion fail.
++
++The first current Compatibility run reproduced a 4,499.149 ms startup frame at tick 0 and a 280.913 ms frame at tick 162. Recorded script sections accounted for only a small part of the latter. This run failed the diagnostic's old 1,000-tick minimum (786 ticks), and is retained as an observation, not a passing performance test.
++
++Instrumentation now measures actual wall-clock intervals, the entire Game physics/presentation callbacks, surrounding process callbacks, render-signal boundaries, first-use effect context and synchronous save/recovery/cloud IO. The updated profiler waits for 1,440 actual driving ticks with a bounded wall deadline, and writes preferences only to disposable build storage.
++
++Six current Compatibility runs completed 12 actual driving seconds each: moving/stationary/moving pine, then moving desert/winter/storm on starter geometry. The two pine moving runs each drove 118.90 m; stationary drove 0 m. Desert drove 117.81 m, winter/storm 118.90 m. No one-second stall during driving was established in these six runs. Captures do establish render-boundary stalls:
++
++| Capture | Frame interval | Previous render boundary | Current process callbacks | Tick |
++| --- | ---: | ---: | ---: | ---: |
++| Pine first start | 270.814 ms | 266.866 ms | 0.703 ms | 0 |
++| Desert first start | 245.673 ms | 241.843 ms | 0.675 ms | 0 |
++| Winter start | 170.498 ms | 156.538 ms | 0.671 ms | 0 |
++| Storm first start | 1,831.120 ms | 1,812.465 ms | 1.493 ms | 0 |
++| Storm at scene wall time 5.582 s | 137.832 ms | 128.554 ms | 1.347 ms | 104 |
++
++Tick 104 is only 0.867 s of driving after countdown/startup. For that event Game physics totaled 6.705 ms, presentation 1.290 ms, condition save 0 ms; no lightning occurred. Weathering was already installed in preceding frames, so that capture does not establish its initial material swap as the trigger. Compatibility pipeline counters were all zero and do not establish or exclude shader compilation.
++
++First-use rendering/shader/driver work is a plausible lead, not a proven root cause. These wall measurements cannot separate shader compilation, GPU/driver waits or OS scheduling. Other workspace/GPU activity was present; these are diagnostic observations, not isolated benchmarks or phone FPS measurements.
++
++The five-second periodic car-condition save remains synchronous and is now separately timed. Thirty actual-record-copy saves measured guest 23,383 B: median 8.897 ms / max 13.100 ms; largest existing signed-in profile 38,916 B: median 6.562 ms / max 10.272 ms. Original files were read only. This does not reproduce a one-second save freeze, or rule out occasional antivirus/storage latency on another device. Recovery scans and cloud journal IO are also possible intermittent sources and are now identifiable in a capture.
++
++## Automatic capture and recovery of evidence
++
++Every newly created Game installs `race_hitch_monitor.gd`, including guests and practice. No marker, login, service capability or network connection is needed. It observes countdown and active driving, suppresses paused/background/focus-resume intervals, and never changes simulation state, inputs or clocks.
++
++PC files are written to:
++
++```text
++%APPDATA%\Circuit01Lab\diagnostics\race_hitches\race-*.json
++```
++
++Restart into the updated source/build before reproducing. The currently installed phone APK has **not** been updated by this task. A later Android build uses `user://diagnostics/race_hitches` inside the app's private files directory. After a recurrence, retain the newest JSON files; the console also emits `RACE_HITCH` with the filename and tick. No user-facing diagnostic controls/text were added.
++
++Each event contains the slow frame and up to 64 previous/16 following frames: real elapsed interval, wall/race time, countdown, physics/presentation and individual stage durations, engine/pipeline monitors, render-boundary duration, speed/route/layer, weathering binding, emitter allocations, trail cursor, snow bursts/lightning, save count, proof/history sizes, recovery callback time, cloud local IO and transport/worker state. Header records exact track hash, car, engine/renderer/adapter, OS/model and contract/art versions. Per-frame biome/hash keeps in-place track changes identifiable. No credentials, account/ticket IDs, raw inputs/trajectory or cosmetic snapshots enter the log. Logs remain local and are never enqueued as telemetry.
++
++Monotonic timestamps are necessary because Godot can cap/smooth `delta` during a real stall. Nested stage timings overlap and must not be summed. A sampled interval includes the previous render and current physics/process work; adjacent frames resolve first-use changes. `draw_boundary_ms` is wall time between render signals, **not GPU execution time**. Engine monitors can lag or be unavailable in release. API semantics: [Node processing/delta](https://docs.godotengine.org/en/stable/classes/class_node.html), [Performance monitors](https://docs.godotengine.org/en/stable/classes/class_performance.html).
++
++Storage is bounded to the eight worst events per scene and eight completed files, each capped at 2 MiB, plus a temporary during atomic replacement. A low-priority worker serializes/flushes detached snapshots; live callbacks never wait for the writer or serialize JSON. Normal frames stay in a bounded memory ring. The observer itself averaged 73–86 microseconds/frame in these PC profiles, excluding added Game timing calls; this is not a whole-feature overhead comparison or phone cost measurement. Teardown joins the worker and preserves remaining evidence. Recovery/cloud changes are timing counters only.
++
++The logger captures **recovered** freezes. A permanent main-thread deadlock or process/power loss before capture completes still needs an external stack trace/device diagnostic. If an event has little script time but a long render boundary, investigate that exact effect/renderer with engine verbosity or an OS/driver trace. If `condition` or recovery/cloud IO dominates, investigate that call and storage path using its measured duration.
++
++## Changed files and actual validation
++
++- `game/diagnostics/race_hitch_monitor.gd` (+ UID): automatic bounded observer/worker.
++- `game/core/game.gd`: observational callback wrappers, weathering/condition durations and monitor installation.
++- `game/backend/resume_recovery.gd`: synchronous callback timing excluding network waits.
++- `game/backend/cloud_tracks.gd`: local read/write timing counters.
++- `game/tests/profile_race_start.gd`: full-duration cold/repeated/biome probe with disposable preferences.
++- `game/tests/test_race_hitch_monitor.gd` (+ UID): real injected one-second late callback and delayed condition save, external-work attribution, surrounding evidence, pause/focus suppression, independent worker, worst-event/file bounds and canonical-state observation.
++- `game/tests/profile_condition_save.gd` (+ UID): read-only-source disposable guest/largest-account save measurements.
++- This report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and scoped evidence/checkpoint.
++
++Actual entry-point commands (PowerShell `-NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` throughout):
++
++```powershell
++scripts/dev.ps1 -Action ProfileRaceStart
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_race_start.gd -Graphical -TestArgument '--themes=desert,winter,storm'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_condition_save.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_resume_recovery_budget.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_backend_exception_recovery.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_client_quality.gd
++scripts/dev.ps1 -Action TestDriving
++scripts/dev.ps1 -Action TestTracks
++scripts/dev.ps1 -Action TestRewind
++scripts/dev.ps1 -Action TestRecords
++scripts/dev.ps1 -Action TestApp
++scripts/dev.ps1 -Action Import
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action Doctor
++git diff --check -- game/core/game.gd game/backend/cloud_tracks.gd game/backend/resume_recovery.gd game/tests/profile_race_start.gd
++```
++
++Final results: hitch tests **36 headless + 36 Compatibility + 36 Mobile/Vulkan**, recovery budget **248**, exception recovery **28**, client quality **46**, driving **72**, tracks/replay **167**, rewind **61**, records **54**, app **99**, parse **618 scripts**, import and diff check all pass. Deliberately injected callback captures were approximately 1,106–1,109 ms; delayed saves approximately 186–191 ms and correctly attributed.
++
++Initial attempts retained in evidence: sandbox denial writing Godot's usual external user log (rerun with authorized elevation); old wall-duration profiler's insufficient-live-ticks failure; diagnostic output directory needed `globalize_path`; a fixture had no prehistory after clearing it; Vulkan produced an extra real renderer stall after the injected save, requiring selection of the intended event rather than assuming the last event was it; helper variable-shadow parse error corrected. Assertions and canonical invariants were retained.
++
++Evidence is under `docs/evidence/race-hitch-2026-10-13/`: raw command logs, real profile JSON, injected-save captures, pre-task source snapshots and `task-only.patch` with hashes. The checkpoint compares runtime edits against those snapshots so existing unrelated workspace changes are excluded. No broad full-Validate, Android export/install, production deployment or live account/backend write was performed. Doctor found attached DN2103, but **no physical-phone logger/reproduction/performance test was performed**. No visible UI/art change required screenshots. Remaining acceptance: capture the owner's exact recurrence, identify its resource/call/driver cause, then validate an attributable fix and observer overhead on PC and the physical phone.

@@ -1,0 +1,854 @@
+diff --git a/game/backend/session_vault.gd b/game/backend/session_vault.gd
+--- a/game/backend/session_vault.gd
++++ b/game/backend/session_vault.gd
+@@ -1,6 +1,7 @@
+ extends RefCounted
+ ## The platform protects the key. No embedded key or plaintext fallback.
+ const HEADER: String = "BMT-SESSION-1\n"
++var _encoding_pattern: RegEx = RegEx.create_from_string("^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$")
+ var adapter: Object
+ 
+ func _init() -> void:
+@@ -20,4 +21,9 @@
+ 
+ func open(text: String, context: String) -> String:
+ 	if not available() or not text.begins_with(HEADER) or text.length() > 90000: return ""
+-	return str(adapter.call("openSession",Marshalls.base64_to_raw(text.trim_prefix(HEADER)),context))
++	var encoded: String = text.trim_prefix(HEADER)
++	# Reject corrupt framing before calling a decoder that emits engine errors.
++	if encoded.is_empty() or encoded.length() > 87384 or _encoding_pattern.search(encoded) == null: return ""
++	var bytes: PackedByteArray = Marshalls.base64_to_raw(encoded)
++	if bytes.is_empty() or bytes.size() > 65536 or Marshalls.raw_to_base64(bytes) != encoded: return ""
++	return str(adapter.call("openSession",bytes,context))
+diff --git a/game/backend/session_rotation_lock.gd b/game/backend/session_rotation_lock.gd
+--- a/game/backend/session_rotation_lock.gd
++++ b/game/backend/session_rotation_lock.gd
+@@ -47,7 +47,8 @@
+ func _owner() -> Dictionary:
+ 	var file := FileAccess.open(path.path_join("owner.json"),FileAccess.READ)
+ 	if file == null or file.get_length() > 1024: return {}
+-	var value: Variant = JSON.parse_string(file.get_as_text())
++	var parser := JSON.new()
++	var value: Variant = parser.data if parser.parse(file.get_as_text()) == OK else null
+ 	return value if value is Dictionary else {}
+ 
+ func release() -> void:
+diff --git a/game/backend/track_lifecycle.gd b/game/backend/track_lifecycle.gd
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -12,10 +12,13 @@
+ var legacy_directories: Array[String] = []
+ var _retry_deadlines: Dictionary = {}
+ var _batch_deadlines: Dictionary = {}
+-var _batch_markers: Dictionary = {}
++var _batch_failed_deadlines: Dictionary = {}
++
++func _wait_root() -> String:
++	return _root().path_join(".publication-waits")
+ 
+ func _valid_batch_wait(saved: Dictionary, owner_scope: String) -> bool:
+-	if saved.get("schema") != "publication-retry-1" or saved.get("scope") != owner_scope or not saved.get("nonce") is String or str(saved.nonce).is_empty(): return false
++	if saved.get("schema") != "publication-retry-1" or saved.get("scope") != owner_scope or not saved.get("nonce") is String or str(saved.nonce).is_empty() or str(saved.nonce).length() > 128: return false
+ 	for field: String in ["delay","server_at"]:
+ 		var value: Variant = saved.get(field)
+ 		if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)) or value < 0: return false
+@@ -23,35 +26,78 @@
+ 
+ func _batch_ready() -> bool:
+ 	var owner_scope: String = scope()
+-	var path: String = _root().path_join("publication-retry.json")
++	if Time.get_ticks_msec() < int(_batch_failed_deadlines.get(owner_scope,0)): return false
++	_batch_failed_deadlines.erase(owner_scope)
++	var paths: Array[String] = []
++	var legacy: String = _root().path_join("publication-retry.json")
++	if FileAccess.file_exists(legacy) or FileAccess.file_exists(legacy+".tmp"): paths.append(legacy)
++	var seen: Dictionary = {}
++	for filename: String in DirAccess.get_files_at(_wait_root()) if DirAccess.dir_exists_absolute(_wait_root()) else PackedStringArray():
++		var base: String = filename.trim_suffix(".tmp")
++		if not base.ends_with(".wait.json") or seen.has(base): continue
++		seen[base] = true
++		paths.append(_wait_root().path_join(base))
++	var ready: bool = true
++	for path: String in paths:
++		if not _wait_ready(path,owner_scope,path == legacy): ready = false
++	return ready
++
++func _wait_ready(path: String, owner_scope: String, legacy: bool) -> bool:
+ 	var saved: Dictionary = cloud._read(path)
+-	if FileAccess.file_exists(path+".tmp"):
+-		var interrupted: Dictionary = cloud._read(path+".tmp")
+-		if not _valid_batch_wait(interrupted,owner_scope):
+-			last_error = "Publication recovery data needs repair; original files are preserved."
+-			return false
+-		saved = interrupted
+-	if FileAccess.file_exists(path) and not _valid_batch_wait(saved,owner_scope):
++	# Legacy writes reused a global temporary name. New writes are immutable and
++	# have one unique filename per pause, so peers cannot overwrite each other.
++	if FileAccess.file_exists(path+".tmp") and (legacy or not _valid_batch_wait(saved,owner_scope)):
++		saved = cloud._read(path+".tmp")
++	if not _valid_batch_wait(saved,owner_scope):
++		# Another reader can retire this unique nonce between enumeration and
++		# opening it. Absence is not a corrupt journal or a reason to pause.
++		if not FileAccess.file_exists(path) and not FileAccess.file_exists(path+".tmp"): return true
+ 		last_error = "Publication recovery data needs repair; original files are preserved."
+ 		return false
+-	var marker: String = str(saved.get("nonce",""))
+-	if not marker.is_empty() and _batch_markers.get(owner_scope,"") != marker:
+-		var delay: int = clampi(int(saved.get("delay",0)),0,3600)
+-		if cloud.client.server_now() > 0 and int(saved.get("server_at",0)) > 0:
++	var marker: String = str(saved.nonce)
++	var hash: String = marker.sha256_text()
++	if not legacy and path.get_file() != hash+".wait.json": return false
++	var receipt_path: String = _wait_root().path_join(hash+".done.json")
++	var receipt: Dictionary = cloud._read(receipt_path)
++	var key: String = owner_scope+"/"+marker
++	if receipt.get("schema") == "publication-wait-done-1" and receipt.get("scope") == owner_scope and receipt.get("nonce") == marker:
++		if not legacy: _retire_wait(path,receipt_path)
++		_batch_deadlines.erase(key)
++		return true
++	if not _batch_deadlines.has(key):
++		var delay: int = clampi(int(saved.delay),0,3600)
++		if cloud.client.server_now() > 0 and int(saved.server_at) > 0:
+ 			delay = clampi(int(saved.server_at)-cloud.client.server_now(),0,delay)
+-		_batch_markers[owner_scope] = marker
+-		_batch_deadlines[owner_scope] = Time.get_ticks_msec()+delay*1000
+-	return Time.get_ticks_msec() >= int(_batch_deadlines.get(owner_scope,0))
++		_batch_deadlines[key] = Time.get_ticks_msec()+delay*1000
++	var elapsed: bool = Time.get_ticks_msec() >= int(_batch_deadlines[key])
++	if cloud.client.server_now() > 0 and int(saved.server_at) > 0 and cloud.client.server_now() >= int(saved.server_at): elapsed = true
++	if not elapsed: return false
++	# The receipt belongs to this immutable nonce, never a newer peer pause.
++	# Keeping legacy receipts prevents a clockless restart reviving the old wait.
++	if not cloud._write(receipt_path,{"schema":"publication-wait-done-1","scope":owner_scope,"nonce":marker}): return false
++	if not legacy: _retire_wait(path,receipt_path)
++	_batch_deadlines.erase(key)
++	return true
++
++func _retire_wait(path: String, receipt_path: String) -> void:
++	# Unique filenames are never reused by a newer pause. This cannot erase a
++	# peer's subsequent 429; a durable completion remains until deletion succeeds.
++	for suffix: String in ["", ".tmp"]:
++		if FileAccess.file_exists(path+suffix): DirAccess.remove_absolute(path+suffix)
++	if not FileAccess.file_exists(path) and not FileAccess.file_exists(path+".tmp"):
++		for suffix: String in ["", ".tmp"]:
++			if FileAccess.file_exists(receipt_path+suffix): DirAccess.remove_absolute(receipt_path+suffix)
+ 
+ func _pause_batch(response: Dictionary) -> void:
+-	if int(response.get("status",0)) != 429: return
+-	var delay: int = clampi(maxi(60,int(response.get("retry_after",0))),1,3600)
+-	_batch_ready()
+-	delay = maxi(delay,ceili(maxi(0,int(_batch_deadlines.get(scope(),0))-Time.get_ticks_msec())/1000.0))
++	var status: int = int(response.get("status",0))
++	if status not in [429,502,503,504]: return
++	var delay: int = clampi(maxi(60 if status == 429 else 15,int(response.get("retry_after",0))),1,3600)
+ 	var marker: String = TrackLibrary.unique_id()
+-	_batch_markers[scope()] = marker
+-	_batch_deadlines[scope()] = Time.get_ticks_msec()+delay*1000
+-	if not cloud._write(_root().path_join("publication-retry.json"),{"schema":"publication-retry-1","scope":scope(),"nonce":marker,"delay":delay,"server_at":cloud.client.server_now()+delay if cloud.client.server_now() > 0 else 0}):
++	_batch_deadlines[scope()+"/"+marker] = Time.get_ticks_msec()+delay*1000
++	if not cloud._write(_wait_root().path_join(marker.sha256_text()+".wait.json"),{"schema":"publication-retry-1","scope":scope(),"nonce":marker,"delay":delay,"server_at":cloud.client.server_now()+delay if cloud.client.server_now() > 0 else 0}):
++		var path: String = _wait_root().path_join(marker.sha256_text()+".wait.json")
++		if not FileAccess.file_exists(path) and not FileAccess.file_exists(path+".tmp"): _batch_deadlines.erase(scope()+"/"+marker)
++		_batch_failed_deadlines[scope()] = maxi(int(_batch_failed_deadlines.get(scope(),0)),Time.get_ticks_msec()+delay*1000)
+ 		last_error = "Could not save publication retry state. Free storage and retry."
+ 
+ func scope() -> String:
+@@ -398,6 +444,7 @@
+ 	if not cloud.client.signed_in():
+ 		last_error = "Sign in to publish. Your draft and test lap remain on this device."
+ 		return false
++	if not _batch_ready(): return false
+ 	var path: String = _path(document)
+ 	var job: Dictionary = _read(path)
+ 	if job.get("state") in ["finishing","published"]: return true
+@@ -425,6 +472,7 @@
+ 	return true
+ 
+ func retry(document: Dictionary) -> void:
++	if not _batch_ready(): return
+ 	var path: String = _path(document)
+ 	var job: Dictionary = _read(path)
+ 	if not job.has("publication_id") or not can_retry(document): return
+@@ -436,7 +484,10 @@
+ 		if not _save(path,job): return
+ 	var response: Dictionary = await cloud.client.request_api("/me/publications/"+str(job.publication_id)+"/retry",
+ 		HTTPClient.METHOD_POST,{},str(job.publication_retry_key),true)
+-	if scope() != owner_scope or not response.ok: return
++	if scope() != owner_scope: return
++	if not response.ok:
++		_pause_batch(response)
++		return
+ 	job.remote = response.data
+ 	job.erase("publication_retry_key")
+ 	job.erase("failure")
+diff --git a/backend/deploy/lock_dependencies.py b/backend/deploy/lock_dependencies.py
+--- a/backend/deploy/lock_dependencies.py
++++ b/backend/deploy/lock_dependencies.py
+@@ -7,7 +7,11 @@
+ import urllib.request
+ from pathlib import Path
+ 
+-PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([A-Za-z0-9][A-Za-z0-9_.+-]*)$")
++PIN = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)==([A-Za-z0-9][A-Za-z0-9_.+-]*)$")
++
++
++def canonical_name(name):
++    return re.sub(r"[-_.]+", "-", name).lower()
+ 
+ 
+ def pinned_versions(text):
+@@ -20,7 +24,7 @@
+         if match is None:
+             raise ValueError("Every requirement must have one explicit version")
+         name, version = match.groups()
+-        if name.lower().replace("_", "-") in {n.lower().replace("_", "-") for n in result}:
++        if canonical_name(name) in {canonical_name(n) for n in result}:
+             raise ValueError("Duplicate package pin")
+         result[name] = version
+     return result
+@@ -50,7 +54,8 @@
+         match = PIN.fullmatch(value)
+         if match is None:
+             raise ValueError("--add requires an explicit name==version")
+-        pins[match[1]] = match[2]
++        existing = next((name for name in pins if canonical_name(name) == canonical_name(match[1])), match[1])
++        pins[existing] = match[2]
+     pins = dict(sorted(pins.items(), key=lambda item: item[0].lower()))
+     context = ssl.create_default_context(cafile=str(args.cert) if args.cert else None)
+     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -55,16 +55,20 @@
+         # Warm the pinned, immutable contract before accepting concurrent races.
+         # Auth-only isolated tests may omit an engine; deployed APIs configure it.
+         adapter = application.state.verifier
+-        if isinstance(adapter, GodotVerifier) and settings.godot_bin:
+-            await run_in_threadpool(adapter.manifest)
+         try:
++            if isinstance(adapter, GodotVerifier) and settings.godot_bin:
++                await run_in_threadpool(adapter.manifest)
+             yield
+         finally:
+-            await application.state.readiness.close()
+-            if hasattr(application.state.blobs, "close"):
+-                await run_in_threadpool(application.state.blobs.close)
+-            if hasattr(adapter, "close"):
+-                await run_in_threadpool(adapter.close)
++            try:
++                await application.state.readiness.close()
++            finally:
++                try:
++                    if hasattr(application.state.blobs, "close"):
++                        await run_in_threadpool(application.state.blobs.close)
++                finally:
++                    if hasattr(adapter, "close"):
++                        await run_in_threadpool(adapter.close)
+ 
+     app = FastAPI(title="Beat my track API", version="0.1.0", docs_url="/docs", redoc_url=None, lifespan=lifespan)
+     app.state.settings = settings
+diff --git a/backend/bmt_backend/browser_auth.py b/backend/bmt_backend/browser_auth.py
+--- a/backend/bmt_backend/browser_auth.py
++++ b/backend/bmt_backend/browser_auth.py
+@@ -113,6 +113,7 @@
+         update(BrowserLogin)
+         .where(
+             BrowserLogin.id == row_id,
++            BrowserLogin.nonce == nonce,
+             BrowserLogin.subject.is_(None),
+             BrowserLogin.consumed.is_(False),
+             BrowserLogin.expires_at > now(),
+diff --git a/backend/tests/test_lock_refresh_followup.py b/backend/tests/test_lock_refresh_followup.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_lock_refresh_followup.py
+@@ -0,0 +1,37 @@
++"""Dependency updates respect the canonical distribution name, without network."""
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++import pytest
++
++spec = importlib.util.spec_from_file_location("bmt_lock_followup", Path(__file__).parents[1] / "deploy/lock_dependencies.py")
++lock = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(lock)
++
++
++def test_case_alias_replaces_existing_version_without_duplicate(tmp_path, monkeypatch):
++    path = tmp_path / "requirements.lock"
++    path.write_text("CacheControl==0.14.4\n")
++    receipt = tmp_path / "receipt.json"
++    def fake(name, version, _context):
++        return {"name": name, "version": version, "wheels": [{"filename": "fixture.whl", "sha256": "a" * 64}]}
++    monkeypatch.setattr(lock, "metadata", fake)
++    monkeypatch.setattr(sys, "argv", ["lock_dependencies.py", "--lock", str(path), "--add", "cachecontrol==0.14.5", "--receipt", str(receipt)])
++    lock.main()
++    pins = lock.pinned_versions(path.read_text())
++    assert len(pins) == 1 and list(pins.values()) == ["0.14.5"]
++    assert len(json.loads(receipt.read_text())) == 1
++
++
++@pytest.mark.parametrize("value", ["some.pkg==1\nsome-pkg==2", "some__pkg==1\nsome-pkg==2", "some.-_pkg==1\nsome-pkg==2"])
++def test_all_pep503_alias_duplicates_are_rejected(value):
++    with pytest.raises(ValueError, match="Duplicate"):
++        lock.pinned_versions(value)
++
++
++@pytest.mark.parametrize("value", ["package.==1", "package-==1", "package_==1"])
++def test_invalid_distribution_names_are_rejected(value):
++    with pytest.raises(ValueError):
++        lock.pinned_versions(value)
+diff --git a/backend/tests/test_communication_cleanup.py b/backend/tests/test_communication_cleanup.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_communication_cleanup.py
+@@ -0,0 +1,44 @@
++"""Startup failure and partial teardown still release every owned adapter."""
++from types import SimpleNamespace
++
++import pytest
++from fastapi.testclient import TestClient
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.verifier import GodotVerifier
++
++
++@pytest.mark.parametrize("failure", ["warmup", "readiness", "blobs"])
++def test_lifespan_cleanup_survives_failure(tmp_path, failure):
++    events = []
++    class Verifier(GodotVerifier):
++        def __init__(self):
++            pass
++        def manifest(self):
++            events.append("manifest")
++            if failure == "warmup":
++                raise RuntimeError("fixture-warmup-failure")
++            return {}
++        def close(self):
++            events.append("verifier-close")
++    class Readiness:
++        def open(self):
++            events.append("readiness-open")
++        async def close(self):
++            events.append("readiness-close")
++            if failure == "readiness":
++                raise RuntimeError("fixture-readiness-close-failure")
++    def close_blobs():
++        events.append("blobs-close")
++        if failure == "blobs":
++            raise RuntimeError("fixture-blobs-close-failure")
++    app = create_app(Settings(database_url="sqlite://", object_dir=str(tmp_path), godot_bin="fixture"), verifier=Verifier())
++    app.state.readiness = Readiness()
++    app.state.blobs = SimpleNamespace(close=close_blobs)
++    try:
++        with pytest.raises(RuntimeError, match="fixture-"), TestClient(app):
++            pass
++        assert events == ["readiness-open", "manifest", "readiness-close", "blobs-close", "verifier-close"]
++    finally:
++        app.state.engine.dispose()
+diff --git a/backend/tests/test_medium_communication.py b/backend/tests/test_medium_communication.py
+--- a/backend/tests/test_medium_communication.py
++++ b/backend/tests/test_medium_communication.py
+@@ -45,7 +45,7 @@
+         assert not any(session.scalars(select(SessionFamily.revoked)))
+ 
+ 
+-@pytest.mark.parametrize("changed", [None, "expires", "consumed", "completed", "provider_failure"])
++@pytest.mark.parametrize("changed", [None, "expires", "consumed", "completed", "nonce", "provider_failure"])
+ def test_browser_complete_releases_pool_and_rechecks_challenge(auth_app, changed):
+     settings = replace(auth_app.state.settings, google_web_client_id="test-client", public_base_url="https://game.example")
+     app = create_app(settings, engine=auth_app.state.engine, identity_verifier=auth_app.state.identity_verifier)
+@@ -67,7 +67,7 @@
+                 raise HTTPException(503, "IDENTITY_PROVIDER_UNAVAILABLE")
+             if changed:
+                 fields = {"expires": {"expires_at": now()-1}, "consumed": {"consumed": True},
+-                          "completed": {"subject": "other-subject"}}[changed]
++                          "completed": {"subject": "other-subject"}, "nonce": {"nonce": "replacement-nonce"}}[changed]
+                 with app.state.session_factory() as session:
+                     session.execute(update(BrowserLogin).values(**fields))
+                     session.commit()
+diff --git a/game/tests/test_communication_followup.gd b/game/tests/test_communication_followup.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_communication_followup.gd
+@@ -0,0 +1,160 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const RotationLock = preload("res://backend/session_rotation_lock.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String
++
++class API extends Client:
++	var calls: Array[Dictionary] = []
++	func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, body: Dictionary = {}, key: String = "", _auth: bool = false) -> Dictionary:
++		calls.append({"path":path,"method":method,"body":body.duplicate(true),"key":key})
++		if path == "/bootstrap": return {"ok":true,"status":200,"data":{"publication_workflow_version":2},"error":""}
++		return {"ok":false,"status":429,"data":{},"error":"RATE_LIMITED","retry_after":90}
++
++class RefusingCloud extends Cloud:
++	func _write(path: String, value: Dictionary) -> bool:
++		return false if ".publication-waits" in path else super._write(path,value)
++
++class RetiringCloud extends Cloud:
++	func _read(path: String) -> Dictionary:
++		if path.ends_with(".wait.json"):
++			DirAccess.remove_absolute(path)
++			return {}
++		return super._read(path)
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL: "+message)
++func api(owner: String) -> API:
++	var result := API.new()
++	root.add_child(result)
++	result.configure("http://127.0.0.1:1")
++	result.player = {"id":owner}
++	result._access_token = "fixture-access"
++	return result
++func flow(client: API, overridden: Node = null) -> TrackLifecycle:
++	var cloud: Node = Cloud.new() if overridden == null else overridden
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	root.add_child(cloud)
++	var result := TrackLifecycle.new()
++	result.cloud = cloud
++	result.library = TrackLibrary.new(folder.path_join("drafts"))
++	root.add_child(result)
++	return result
++func run() -> void:
++	create_timer(25).timeout.connect(func() -> void: print("FAIL: communication follow-up timeout"); quit(1))
++	folder = ProjectSettings.globalize_path("res://../build/communication-followup-native-"+str(Time.get_ticks_usec()))
++	DirAccess.make_dir_recursive_absolute(folder)
++	var client: API = api("elapsed-owner")
++	var first: TrackLifecycle = flow(client)
++	first._pause_batch({"status":429,"retry_after":60})
++	check(not first._batch_ready(),"fresh publication pause blocks processing")
++	for deadline: String in first._batch_deadlines: first._batch_deadlines[deadline] = 0 # Advance only disposable monotonic deadlines.
++	check(first._batch_ready(),"elapsed publication pause becomes ready")
++	check(flow(client)._batch_ready(),"elapsed clockless pause stays elapsed after controller restart")
++	check(DirAccess.get_files_at(first._wait_root()).is_empty(),"completed immutable waits release their files")
++	var storage_refusal: TrackLifecycle = flow(api("refused-owner"),RefusingCloud.new())
++	storage_refusal._pause_batch({"status":429,"retry_after":60})
++	check(not storage_refusal._batch_ready(),"failed deadline persistence still blocks repeated requests in memory")
++	var retiring: TrackLifecycle = flow(api("retiring-owner"),RetiringCloud.new())
++	retiring._pause_batch({"status":429,"retry_after":60})
++	check(retiring._batch_ready() and retiring.last_error.is_empty(),"concurrent expiry between listing and reading is not reported as corruption")
++	var legacy_client: API = api("legacy-owner")
++	var legacy: TrackLifecycle = flow(legacy_client)
++	legacy.cloud._write(legacy._root().path_join("publication-retry.json"),{"schema":"publication-retry-1","scope":legacy.scope(),"nonce":"legacy-pause","delay":60,"server_at":0})
++	check(not legacy._batch_ready(),"legacy pause files still enforce their full wait")
++	for deadline: String in legacy._batch_deadlines: legacy._batch_deadlines[deadline] = 0
++	check(legacy._batch_ready() and flow(legacy_client)._batch_ready(),"legacy wait completion is durable across restart")
++	var peer_client: API = api("two-pause-owner")
++	var peer_a: TrackLifecycle = flow(peer_client)
++	var peer_b: TrackLifecycle = flow(peer_client)
++	peer_a._pause_batch({"status":429,"retry_after":60}); peer_b._pause_batch({"status":429,"retry_after":90})
++	check(DirAccess.get_files_at(peer_a._wait_root()).size() == 2,"independent peers publish immutable pause records")
++	check(not peer_a._batch_ready(),"both pause records are observed")
++	var expire_one: String = str(peer_a._batch_deadlines.keys()[0])
++	peer_a._batch_deadlines[expire_one] = 0
++	check(not peer_a._batch_ready() and not flow(peer_client)._batch_ready(),"expiring one nonce cannot clear the other peer's pause")
++	var late_client: API = api("late-clock-owner")
++	var late: TrackLifecycle = flow(late_client)
++	late_client._sample_time(1800000000)
++	late._pause_batch({"status":429,"retry_after":60})
++	late_client._server_sample = 0
++	check(not late._batch_ready(),"pause remains conservative without a sampled server clock")
++	late_client._sample_time(1800000061)
++	check(late._batch_ready(),"a later authoritative clock releases the elapsed server deadline")
++	for status: int in [502,503,504]:
++		var unavailable: TrackLifecycle = flow(api("unavailable-"+str(status)))
++		unavailable._pause_batch({"status":status,"retry_after":5})
++		check(not unavailable._batch_ready(),"service backpressure also pauses later publication calls")
++	client = api("retry-owner")
++	var retrying: TrackLifecycle = flow(client)
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json")).document
++	document.id = TrackLibrary.unique_id()
++	var path: String = retrying._path(document)
++	var job := {"schema":"track-lifecycle-1","scope":retrying.scope(),"library_directory":retrying.library.directory,
++		"fingerprint":"retry-fixture","upload_key":"upload-permanent","publish_key":"publish-permanent","ticket_key":"ticket-permanent",
++		"state":"failed","created_at":1,"document":document,"vehicle":"compact","contract":{},"proof_file":"retry.proof.json",
++		"publish_requested":true,"publish_workflow":2,"publication_id":"publication-fixture","remote":{"retryable":true}}
++	check(retrying._save(path,job),"retry fixture committed")
++	retrying.cloud._write(retrying._root().path_join("retry.proof.json"),{"fixture":"unchanged creator evidence"})
++	var original: PackedByteArray = FileAccess.get_file_as_bytes(retrying._root().path_join("retry.proof.json"))
++	await retrying.retry(document)
++	check(client.calls.size() == 1 and client.calls[0].path.ends_with("/retry"),"explicit retry sends one request")
++	check(not retrying._batch_ready(),"explicit retry 429 persists the shared pause")
++	var saved: Dictionary = retrying.status_for(document)
++	check(saved.has("publication_retry_key") and saved.upload_key == "upload-permanent","rejected retry retains both operation identities")
++	await retrying.retry(document)
++	check(client.calls.size() == 1,"repeated explicit retry obeys the pause")
++	var restarted: TrackLifecycle = flow(client)
++	await restarted.retry(document)
++	check(client.calls.size() == 1,"explicit retry remains paused after restart")
++	check(not await restarted.request_publish(document) and client.calls.size() == 1,"explicit Publish does not issue bootstrap or upload calls during the pause")
++	check(FileAccess.get_file_as_bytes(retrying._root().path_join("retry.proof.json")) == original,"explicit retry failures retain exact creator evidence")
++	var vault: RefCounted = preload("res://backend/session_vault.gd").new()
++	for invalid: String in ["", "%%%%", "AAAA=", "A===", "AAAA\nAAAA", "AB==", "x".repeat(90001)]:
++		check(vault.open("BMT-SESSION-1\n"+invalid,"fixture-context").is_empty(),"malformed encrypted-save framing is rejected quietly")
++	var lock := RotationLock.new(folder.path_join("corrupt-lock"))
++	DirAccess.make_dir_absolute(lock.path)
++	var owner := FileAccess.open(lock.path.path_join("owner.json"),FileAccess.WRITE)
++	owner.store_string("{invalid"); owner.close()
++	check(lock._owner().is_empty() and DirAccess.dir_exists_absolute(lock.path),"malformed lock ownership is preserved and parsed quietly")
++	await real_process_pauses()
++	for child: Node in root.get_children():
++		if child != root.get_node_or_null("AudioWorld"): child.queue_free()
++	await process_frame
++	print("COMMUNICATION_FOLLOWUP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func real_process_pauses() -> void:
++	var pids: Array[int] = []
++	var notices: Array[String] = []
++	for index: int in range(2):
++		var notify: String = folder.path_join("publication-child-"+str(index)+".json")
++		notices.append(notify)
++		pids.append(OS.create_process(OS.get_executable_path(),PackedStringArray(["--headless","--path",ProjectSettings.globalize_path("res://"),"--script","res://tests/publication_pause_worker.gd","--","--folder="+folder,"--notify="+notify])))
++	var began: int = Time.get_ticks_msec()
++	while not notices.all(func(path: String) -> bool: return FileAccess.file_exists(path+".ready")):
++		if Time.get_ticks_msec()-began > 12000: check(false,"publication child readiness deadline"); return
++		await process_frame
++	check(pids[0] > 0 and pids[1] > 0 and pids[0] != pids[1],"two actual publication writer processes started")
++	var go := FileAccess.open(folder.path_join("publication-go"),FileAccess.WRITE)
++	go.store_string("go"); go.close()
++	while not notices.all(func(path: String) -> bool: return FileAccess.file_exists(path)):
++		if Time.get_ticks_msec()-began > 18000: check(false,"publication child result deadline"); return
++		await process_frame
++	var result_a: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(notices[0]))
++	var result_b: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(notices[1]))
++	check(result_a.pid == pids[0] and result_b.pid == pids[1] and result_a.blocked and result_b.blocked,"each owned process enforces its shared-scope pause")
++	check(result_a.root == result_b.root and DirAccess.get_files_at(str(result_a.root)).size() == 2,"simultaneous processes retain both immutable pause files")
++	var parent: TrackLifecycle = flow(api("actual-process-pause-owner"))
++	parent.cloud.client._sample_time(1800000000)
++	check(not parent._batch_ready(),"parent observes both actual process pauses")
++	parent.cloud.client._sample_time(1800000091)
++	check(parent._batch_ready() and DirAccess.get_files_at(parent._wait_root()).is_empty(),"expired process pauses are retired without reviving on restart")
++	while pids.any(func(pid: int) -> bool: return OS.is_process_running(pid)):
++		if Time.get_ticks_msec()-began > 20000: check(false,"publication child teardown deadline"); return
++		await process_frame
+diff --git a/game/tests/publication_pause_worker.gd b/game/tests/publication_pause_worker.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/publication_pause_worker.gd
+@@ -0,0 +1,36 @@
++extends SceneTree
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var folder: String = ""
++	var notify: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=")
++		elif argument.begins_with("--notify="): notify = argument.trim_prefix("--notify=")
++	if folder.is_empty() or notify.is_empty(): quit(1); return
++	var client: Node = preload("res://backend/backend_client.gd").new()
++	root.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	client.player = {"id":"actual-process-pause-owner"}
++	client._access_token = "fictional-fixture"
++	client._sample_time(1800000000)
++	var cloud: Node = preload("res://backend/cloud_tracks.gd").new()
++	cloud.client = client
++	root.add_child(cloud)
++	var flow := TrackLifecycle.new()
++	flow.cloud = cloud
++	flow.library = TrackLibrary.new(folder.path_join("drafts"))
++	root.add_child(flow)
++	var file := FileAccess.open(notify+".ready",FileAccess.WRITE)
++	if file == null: quit(1); return
++	file.store_string(str(OS.get_process_id())); file.close()
++	var began: int = Time.get_ticks_msec()
++	while not FileAccess.file_exists(folder.path_join("publication-go")):
++		if Time.get_ticks_msec()-began > 15000: quit(1); return
++		await process_frame
++	flow._pause_batch({"status":429,"retry_after":90})
++	file = FileAccess.open(notify,FileAccess.WRITE)
++	if file == null: quit(1); return
++	file.store_string(JSON.stringify({"pid":OS.get_process_id(),"root":flow._wait_root(),"blocked":not flow._batch_ready()})); file.close()
++	client.queue_free(); cloud.queue_free(); flow.queue_free()
++	await process_frame
++	quit(0)
+diff --git a/game/tests/test_medium_communication.gd b/game/tests/test_medium_communication.gd
+--- a/game/tests/test_medium_communication.gd
++++ b/game/tests/test_medium_communication.gd
+@@ -130,14 +130,14 @@
+ 	check(controller(other)._batch_ready(),"another account has an independent publication budget")
+ 	var isolated: TrackLifecycle = controller(other)
+ 	isolated._pause_batch({"status":429,"retry_after":90})
+-	var wait_path: String = isolated._root().path_join("publication-retry.json")
++	var wait_path: String = isolated._wait_root().path_join(DirAccess.get_files_at(isolated._wait_root())[0])
+ 	check(DirAccess.rename_absolute(wait_path,wait_path+".tmp") == OK,"disposable interrupted retry replacement prepared")
+ 	check(not controller(other)._batch_ready(),"interrupted retry replacement survives restart")
+ 	var corrupt := FileAccess.open(wait_path+".tmp",FileAccess.WRITE)
+ 	corrupt.store_string(JSON.stringify({"schema":"publication-retry-1","scope":isolated.scope()})); corrupt.close()
+ 	check(not controller(other)._batch_ready(),"incomplete retry metadata cannot erase an unknown cooldown")
+ 	# Advance only disposable monotonic deadlines; don't wait a real two minutes.
+-	restart._batch_deadlines[restart.scope()] = 0
++	for deadline: String in restart._batch_deadlines: restart._batch_deadlines[deadline] = 0
+ 	for job: Dictionary in restart.jobs(): restart._retry_deadlines[str(job.upload_key)] = 0
+ 	client.reject = false
+ 	await restart.process_jobs()
+diff --git a/game/tests/test_resume_recovery_budget.gd b/game/tests/test_resume_recovery_budget.gd
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -286,6 +286,9 @@
+ 	root.add_child(retry_flow)
+ 	api.reply = {"ok":true,"status":200,"data":{"state":"queued","retryable":false,"poll_after_ms":2500},"error":""}
+ 	await retry_flow.retry(retry_document)
++	check(api.keys.size() == 1,"service-unavailable publication retry remains deferred after restart")
++	api._sample_time(1900000016) # Advance the authoritative fixture clock past the 15-second pause.
++	await retry_flow.retry(retry_document)
+ 	check(api.keys[1] == retry_key,"publication retry survives restart with exactly the same operation key")
+ 	var acknowledged: Dictionary = retry_flow._read(retry_path)
+ 	check(not acknowledged.has("publication_retry_key") and acknowledged.upload_key == retry_job.upload_key,"acknowledgement retires only the retry key")
+diff --git a/game/tests/test_request_trace.gd b/game/tests/test_request_trace.gd
+--- a/game/tests/test_request_trace.gd
++++ b/game/tests/test_request_trace.gd
+@@ -29,7 +29,22 @@
+ 	check(response.error == "INVALID_RESPONSE" and response.get("request_id") == ID,"schema-validation failure retains correlation")
+ 	response = client._checked({"ok":true,"data":{},"request_id":"private-header"},"/me",HTTPClient.METHOD_GET)
+ 	check(not response.has("request_id"),"schema-validation failure rejects unsafe correlation values")
++	var cancelled: Array[Dictionary] = []
++	collect_cancelled(client,cancelled)
++	await create_timer(0.03).timeout
++	client.cancel_public_reads(91)
++	while cancelled.is_empty(): await process_frame
++	check(cancelled[0].error == "CANCELLED","owner cancellation finishes its own request")
++	await process_frame # Deferred node release must settle before reuse.
++	response = await client.request_public("/trace-fresh",92)
++	check(response.ok and response.data.get("value") == "fresh-request","request node can serve a new owner after cancellation")
++	await create_timer(0.4).timeout
++	response = await client.request_public("/trace-fresh",92)
++	check(response.ok and response.data.get("value") == "fresh-request" and cancelled.size() == 1,"old socket completion cannot satisfy or repeat a newer request")
+ 	client.queue_free()
+ 	await process_frame
+ 	print("REQUEST_TRACE: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
++
++func collect_cancelled(client: Node, values: Array[Dictionary]) -> void:
++	values.append(await client.request_public("/trace-slow",91))
+diff --git a/scripts/test_request_trace.py b/scripts/test_request_trace.py
+--- a/scripts/test_request_trace.py
++++ b/scripts/test_request_trace.py
+@@ -2,6 +2,7 @@
+ import os
+ import subprocess
+ import threading
++import time
+ from datetime import datetime, timedelta, timezone
+ from email.utils import format_datetime
+ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+@@ -14,6 +15,11 @@
+     class Handler(BaseHTTPRequestHandler):
+         def do_GET(self):
+             status, body = 200, b'{"value":1}'
++            if self.path.endswith("trace-slow"):
++                time.sleep(0.3)
++                body = b'{"value":"cancelled-old-request"}'
++            elif self.path.endswith("trace-fresh"):
++                body = b'{"value":"fresh-request"}'
+             if self.path.endswith("trace-error"):
+                 status, body = 429, b'{"detail":"RATE_LIMITED"}'
+             elif self.path.endswith("trace-invalid"):
+@@ -29,7 +35,10 @@
+             if status == 429:
+                 self.send_header("Retry-After", format_datetime(datetime.now(timezone.utc)+timedelta(seconds=75), usegmt=True))
+             self.end_headers()
+-            self.wfile.write(body)
++            try:
++                self.wfile.write(body)
++            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
++                pass  # The disposable cancellation fixture closes this socket.
+         def log_message(self, *_args):
+             pass
+     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+diff --git a/scripts/test_communication_followup_postgres.py b/scripts/test_communication_followup_postgres.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_communication_followup_postgres.py
+@@ -0,0 +1,67 @@
++"""Run the combined communication follow-up and adjacent regressions with a task-owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-communication-pg-" + secrets.token_hex(4)
++    label = "communication-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*arguments):
++        return subprocess.run([*docker, *arguments], capture_output=True, text=True, timeout=30, check=False)
++
++    if call("image", "inspect", "postgres:17").returncode:
++        raise RuntimeError("Existing PostgreSQL 17 image unavailable; no image pulled")
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++                   "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=recovery_test",
++                   "-e", "POSTGRES_DB=recovery_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service changed")
++    result = None
++    try:
++        for _ in range(30):
++            if call("exec", name, "pg_isready", "-U", "recovery_test").returncode == 0:
++                break
++            time.sleep(.5)
++        else:
++            raise RuntimeError("Owned PostgreSQL did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://recovery_test:{password}@127.0.0.1:{port}/recovery_test"
++        result = subprocess.run(
++            [sys.executable, "-m", "pytest", "tests/test_communication_cleanup.py", "tests/test_lock_refresh_followup.py", "tests/test_request_trace.py", "tests/test_build_inputs.py", "tests/test_medium_communication.py", "tests/test_auth.py", "tests/test_auth_postgres.py",
++             "tests/test_browser_auth.py", "tests/test_exception_recovery.py", "tests/test_communication_boundary.py",
++             "tests/test_publication_intents.py", "tests/test_gcs_storage.py", "tests/test_s3_storage.py",
++             "tests/test_provider_proofs.py", "tests/test_worker_lifecycle.py", "tests/test_gcp_staging.py", "tests/test_gcp_update.py", "-q", "--tb=short", "--show-capture=no"],
++            cwd=ROOT / "backend", env=env, capture_output=True, text=True, check=False, timeout=420,
++        )
++        output = (result.stdout + result.stderr).replace(password, "[REDACTED]")
++        evidence = ROOT / "docs/evidence/communication-followup-2026-10-13"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "backend-regression.log").write_text(output, encoding="utf-8")
++        print(output[-6000:])
++    finally:
++        owned = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if owned.returncode != 0 or json.loads(owned.stdout).get("bmt.task") != label:
++            raise RuntimeError("Owned database label changed; leaving it untouched")
++        if call("stop", name).returncode:
++            raise RuntimeError("Owned database cleanup failed")
++        print("Owned PostgreSQL removed")
++    return result.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/COMMUNICATION_FOLLOWUP_2026_10_13.md b/docs/COMMUNICATION_FOLLOWUP_2026_10_13.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COMMUNICATION_FOLLOWUP_2026_10_13.md
+@@ -0,0 +1,75 @@
++# Combined communication follow-up — 2026-10-13
++
++Owner request: make another pass over the H1–H4, M1–M6 and L1–L3 fixes. Requirements B01, B05, B07, Q01; follow-up findings CF01–CF05. No production deployment, live account changes or canonical driving/scoring changes.
++
++## Additional gaps fixed
++
++| ID | Finding and resulting behavior |
++| --- | --- |
++| CF01 | Publication Retry did not honor or persist the shared 429 pause. Elapsed clockless waits could revive after controller restart, and one reused temporary filename allowed peer writes to overlap. Each pause now has an immutable nonce-specific record; all outstanding pauses are observed, expiry is durable, and retiring one nonce cannot erase another. Explicit Publish/Retry respect the same wait. 502/503/504 backpressure also defers further publication requests. |
++| CF02 | Malformed Base64 saved-session framing and malformed rotation-lock JSON could emit engine errors. Framing is checked before decoding, noncanonical/oversized encodings are rejected, and lock ownership is parsed quietly while preserving uncertain ownership. |
++| CF03 | Updating `CacheControl` through `--add cachecontrol==...` could write duplicate conflicting pins. Distribution names now follow [PyPA normalization](https://packaging.python.org/en/latest/specifications/name-normalization/), including runs of dots, underscores and hyphens; aliases replace the existing reviewed pin. Invalid names and alias duplicates are rejected. |
++| CF04 | Verifier warmup ran outside the application's teardown guard, and a cleanup exception could skip later adapter cleanup. Failed startup now attempts readiness, blob-transport and verifier cleanup; failure of one cleanup cannot skip the others. |
++| CF05 | Browser completion rechecked expiry/consumption/completion after provider IO but did not compare the snapshotted nonce. The conditional update now checks that nonce too. A challenge changed during verification is rejected without holding a DB connection during the provider call. |
++
++CF01 retains compatibility with existing `publication-retry.json` and interrupted temporary records. New records live in `.publication-waits/<nonce hash>.wait.json`; completion receipts are tied to that nonce. Completed immutable records are retired, while the legacy receipt prevents the old relative wait from reviving. A later authoritative server clock can release a previously seeded conservative deadline. Storage refusal still keeps the wait in memory; corrupt/uncertain records preserve original jobs and evidence. A peer retiring a file between enumeration and reading is treated as absence rather than a false corruption report.
++
++The review also exercised actual HTTPRequest cancellation and reuse: the cancelled owner's request completes once, a new owner receives its own response, and the old socket completion does not satisfy a later request. That path passed without a runtime transport change.
++
++## Changed files
++
++- `game/backend/track_lifecycle.gd`, `session_vault.gd`, `session_rotation_lock.gd`.
++- `backend/bmt_backend/app.py`, `browser_auth.py`, `backend/deploy/lock_dependencies.py`.
++- `backend/tests/test_communication_cleanup.py`, `test_lock_refresh_followup.py`, `test_medium_communication.py`.
++- `game/tests/test_communication_followup.gd`, `publication_pause_worker.gd` and generated UIDs; updated `test_medium_communication.gd`, `test_resume_recovery_budget.gd`, `test_request_trace.gd`.
++- `scripts/test_request_trace.py`, `scripts/test_communication_followup_postgres.py`.
++- This report and task entries in `DEVELOPMENT_STATUS.md` / `docs/PHASE_0_PLAN.md`.
++
++The dependency pins, image digest and wheel hashes remain unchanged. The lock-refresh fix was tested offline with a fictional metadata provider and temporary lockfiles; no package version was updated.
++
++## Actual verification
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_communication_followup.gd
++.tools/backend-secure-venv/Scripts/python.exe scripts/test_request_trace.py
++.tools/backend-secure-venv/Scripts/python.exe scripts/test_communication_followup_postgres.py
++.tools/backend-secure-venv/Scripts/python.exe build/communication-followup-2026-10-13/test_runtime_build.py
++```
++
++**254 backend tests passed, nine expected skips**, using SQLite and a generated owned PostgreSQL 17 container. This covers the combined communication fixes, real refresh/logout races, provider IO connection lifetime, modified browser nonce, startup/teardown failures, hash enforcement, package aliases and adjacent deployment-plan/storage/publication/recovery tests. Three additional invalid-name cases added after that matrix started pass in the focused follow-up run (**10 passed** including cleanup/alias cases). The owned container was removed after its label was checked. [Backend result](evidence/communication-followup-2026-10-13/backend-regression.log).
++
++**75 Linux tests passed, two expected PostgreSQL skips** in the fresh, pinned Python runtime stage with verified local wheels and `--network=none`. The test additionally copies the lock-refresh helper needed by the offline helper tests. Runtime and project `pip check` pass: Python 3.12.15, HTTPS OpenSSL 3.0.22, cryptography 50.0.2, setuptools 84.0.0. [Linux result](evidence/communication-followup-2026-10-13/linux-runtime.log).
++
++**513 pinned Godot checks passed**:
++
++| Regression | Checks / failures |
++| --- | --- |
++| Communication follow-up | 37 / 0 |
++| Medium communication | 31 / 0 |
++| Local draft publication | 31 / 0 |
++| Backend exception recovery | 28 / 0 |
++| Session rotation | 17 / 0 |
++| Shared resume recovery | 21 / 0 |
++| Refreshed ticket priority | 26 / 0 |
++| Resume recovery budget | 261 / 0 |
++| HTTP retry | 20 / 0 |
++| Network health | 28 / 0 |
++| Real HTTP trace/cancellation fixture | 13 / 0 |
++
++The follow-up includes two actual task-owned Godot child processes synchronized before writing the same publication scope. Both immutable pause files survive; the parent observes both waits and retires them after advancing its authoritative fixture clock. Children have bounded lifetimes and finish; no game/editor process is stopped. New cases cover expiry/restart, legacy migration, overlapping pauses, interrupted writes, storage refusal, clock backfill, explicit retry identity, exact evidence bytes and malformed-save/lock framing.
++
++Ruff, local/container `pip check`, scoped whitespace and reverse-application checks pass. A fresh OSV query of all **46 pinned packages returns no advisory matches**; this is a database check rather than a claim of exhaustive vulnerability coverage.
++
++## Reproduction and test corrections
++
++Before the fixes, the new publication test reported **five failures in 11 checks**: elapsed wait revival, missing explicit-retry pause, repeated retry calls, restart retry calls and a Publish/bootstrap call during the wait. The package-alias tests reported **four failures**. The assertions remain and pass after the fixes.
++
++The existing retry-identity test initially indexed a second request that is now correctly deferred after a 503. It now first verifies that restart sends no request during the pause, advances the fixture's authoritative clock past the existing fifteen-second minimum, then retains every original key/acknowledgement assertion. A focused test invocation encountered the already unavailable external fixture port; final database cases use the owned disposable container. These runs are not reported as passing.
++
++## Limits and rollout
++
++No full verifier/OS-library image, full Validate, physics/replay suite, Android game export/install or new physical-device test was performed. Native Keystore code is unchanged from the prior thirteen-check phone fixture; the new framing logic is verified through the real Windows adapter. No visible layout changed, so screenshots are not applicable.
++
++Production remains on its existing image. Matching backend rollout, coordinated client restart/update, actual game sign-in/restore through Android JNI and real proxy-chain/device acceptance remain separately authorized checks. Previously documented target-host power-loss/failover and completely stalled provider/OS IO acceptance remain outside this local pass. Do not interpret the results as proof that no further bug or vulnerability can exist.
++
++Original baselines and scoped checkpoint: `build/communication-followup-2026-10-13/` and `docs/evidence/communication-followup-2026-10-13/`. Concurrent authoring/JSON/body-validation, UI, audio and diagnostics work is retained and excluded from this task's patch.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 CF01-CF05/B01/B05/B07/Q01: owner fresh combined communication pass fixes publication explicit retry/expiry restart/peer-write gaps with immutable nonce records, legacy completion/retirement/storage/clock/502-504 safeguards; quiet protected-save/lock framing; canonical distribution-alias updates; startup/partial teardown cleanup; browser nonce CAS. Original new11-check test failed5 and alias4failed, then retained assertions pass. Owned-PG254(9skips), focused10, offline fresh Linux75(2skips), native513 incl actualHTTP13/two synchronized child writer processes; OSV46/no matches/Ruff/pip-check/checkpoint pass. Retry identity test now first checks503 deferral then advances fixture server clock and retains original keys. Concurrent work preserved/excluded. No production writes/deploy/fullverifier/fullValidate/physics/Android/new device test; previous host/proxy/JNI acceptance remains. Files/commands/scoped checkpoint: docs/COMMUNICATION_FOLLOWUP_2026_10_13.md.
++
+ 2026-10-13 SPT01-SPT02/V03/V05/G01/R01/Q01: owner fixes racing render audit rows3/4. Immutable whole-triangle static scenery/bank chunks, conservative offscreen benefit gate/direct fallback and one original complete shadow caster; named source geometry/editor retained batches preserved within unchanged64MiB world/32MiB road budgets. Exact5x5 uniform terrain uses unused existing mask channel, original active bytes/coordinates/boundary feathering/full8 fallback; uniform2/3 reads versus9/18, no extra sampler. Both-renderer72+72 exact pixels; large field131072->66560 combined primitives/2->5 submissions, direct overview. Desktop Vulkan terrain~0-6% component gain/Compatibility effectively flat; no phoneFPS claim. Footprints17152/geometry34/selector12+12/packing3885/samplers60/world85/road70/followup133/wind33/driving72/rewind61/wash1383/bridge8/parser678/import pass. Initial atlas/naive chunk/cache/headless pixel-fixture issues corrected without weakening assertions; parallel car/editor/Winter changes retained. No phone test/APK/fullValidate/physics/backend/deploy. Actual commands/captures/limits/scoped patch: docs/SPATIAL_TERRAIN_PERFORMANCE.md.
+ 
+ 2026-10-13 ED03-ED04/R01/T01-T04/V03/V05/Q01: owner fixes editor review chat items3/4. Cancellable background draft/status summaries, verified immutable32MiB parse cache and lazy selected documents; parent WIP revision/scope guards retain recovery/locks. Separate CPU-only road jobs keep joined compilation light; conservative geometry keys share unchanged meshes and current masks within existing32MiB road budget. Compatibility415/MobileVulkan415 exact arrays+painted pixels, workflow252/tyres75/cache70/delete23/refine33/free48/creator113/incremental47/parser674 pass. Desktop96-piece roads1.37-5.50s ->28-114ms main publication plus worker; reuse1-18ms.128-draft open4.8-5.3ms, warm scans196-227ms off-thread. Cold CPU cost/Night publication/render intervals remain; no phoneFPS/device/APK/fullValidate/backend/deploy. Concurrent car API interruption resolved by its owner; original timestamp/publication assertions corrected to current trajectory workflow. Actual commands/captures/limits/task-only patch: docs/evidence/editor-loading-roads-2026-10-13/report.json.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 CF01-CF05/B01/B05/B07/Q01: owner fresh combined communication pass fixes publication explicit retry/expiry restart/peer-write gaps with immutable nonce records, legacy completion/retirement/storage/clock/502-504 safeguards; quiet protected-save/lock framing; canonical distribution-alias updates; startup/partial teardown cleanup; browser nonce CAS. Original new11-check test failed5 and alias4failed, then retained assertions pass. Owned-PG254(9skips), focused10, offline fresh Linux75(2skips), native513 incl actualHTTP13/two synchronized child writer processes; OSV46/no matches/Ruff/pip-check/checkpoint pass. Retry identity test now first checks503 deferral then advances fixture server clock and retains original keys. Concurrent work preserved/excluded. No production writes/deploy/fullverifier/fullValidate/physics/Android/new device test; previous host/proxy/JNI acceptance remains. Files/commands/scoped checkpoint: docs/COMMUNICATION_FOLLOWUP_2026_10_13.md.
++
+ 2026-10-13 SPT01-SPT02/V03/V05/G01/R01/Q01: owner fixes racing render audit rows3/4. Immutable whole-triangle static scenery/bank chunks, conservative offscreen benefit gate/direct fallback and one original complete shadow caster; named source geometry/editor retained batches preserved within unchanged64MiB world/32MiB road budgets. Exact5x5 uniform terrain uses unused existing mask channel, original active bytes/coordinates/boundary feathering/full8 fallback; uniform2/3 reads versus9/18, no extra sampler. Both-renderer72+72 exact pixels; large field131072->66560 combined primitives/2->5 submissions, direct overview. Desktop Vulkan terrain~0-6% component gain/Compatibility effectively flat; no phoneFPS claim. Footprints17152/geometry34/selector12+12/packing3885/samplers60/world85/road70/followup133/wind33/driving72/rewind61/wash1383/bridge8/parser678/import pass. Initial atlas/naive chunk/cache/headless pixel-fixture issues corrected without weakening assertions; parallel car/editor/Winter changes retained. No phone test/APK/fullValidate/physics/backend/deploy. Actual commands/captures/limits/scoped patch: docs/SPATIAL_TERRAIN_PERFORMANCE.md.
+ 
+ 2026-10-13 ED03-ED04/R01/T01-T04/V03/V05/Q01: owner fixes editor review chat items3/4. Cancellable background draft/status summaries, verified immutable32MiB parse cache and lazy selected documents; parent WIP revision/scope guards retain recovery/locks. Separate CPU-only road jobs keep joined compilation light; conservative geometry keys share unchanged meshes and current masks within existing32MiB road budget. Compatibility415/MobileVulkan415 exact arrays+painted pixels, workflow252/tyres75/cache70/delete23/refine33/free48/creator113/incremental47/parser674 pass. Desktop96-piece roads1.37-5.50s ->28-114ms main publication plus worker; reuse1-18ms.128-draft open4.8-5.3ms, warm scans196-227ms off-thread. Cold CPU cost/Night publication/render intervals remain; no phoneFPS/device/APK/fullValidate/backend/deploy. Concurrent car API interruption resolved by its owner; original timestamp/publication assertions corrected to current trajectory workflow. Actual commands/captures/limits/task-only patch: docs/evidence/editor-loading-roads-2026-10-13/report.json.
+diff --git a/game/tests/test_communication_followup.gd.uid b/game/tests/test_communication_followup.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_communication_followup.gd.uid
+@@ -0,0 +1 @@
++uid://b2nu3ksqpvp78
+diff --git a/game/tests/publication_pause_worker.gd.uid b/game/tests/publication_pause_worker.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/publication_pause_worker.gd.uid
+@@ -0,0 +1 @@
++uid://ck8td33fyxr5l

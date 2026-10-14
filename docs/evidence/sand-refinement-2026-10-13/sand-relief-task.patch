@@ -1,0 +1,54 @@
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -95,6 +95,20 @@
+ 	if (winter_snow) return snow_detail(p);
+ 	if (desert_dunes) return dune_sand(p);
+ 	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
++}
++
++// Original sand pigment is retained; shallow mineral relief supplies actual
++// directional light response instead of adding another colour/noise pattern.
++uniform bool sand_relief_enabled = true;
++vec3 sand_relief(vec2 p, vec3 original, mat4 view, float weight) {
++	if (!sand_relief_enabled || winter_snow || desert_dunes || packed_sand || weight <= 0.001) return original;
++	vec2 uv = p/32.0;
++	float h = texture(surface_factors,uv).b;
++	vec2 slope = vec2(texture(surface_factors,uv+vec2(0.06/32.0,0.0)).b-h,
++		texture(surface_factors,uv+vec2(0.0,0.06/32.0)).b-h)*0.90;
++	float fade = 1.0-smoothstep(0.12,0.35,length(fwidth(p)));
++	vec3 relief = normalize(vec3(-slope.x*fade,1.0,-slope.y*fade));
++	return normalize(mix(original,(view*vec4(relief,0.0)).xyz,clamp(weight,0.0,1.0)));
+ }
+ 
+ // Fine mineral grain on an even sandy bank, distinct from the smooth road.
+--- a/game/track/terrain.gdshaderinc
++++ b/game/track/terrain.gdshaderinc
+@@ -63,6 +63,7 @@
+ 	}
+ 	ALBEDO = blended;
+ 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.b);
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
+ 	ROUGHNESS = 1.0;
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -141,6 +141,7 @@
+   SPECULAR = 0.5;
+  }
+ 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0-relief_weight : 0.0);
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
+ 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-181"
++const VERSION: String = "track-kit-182"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]

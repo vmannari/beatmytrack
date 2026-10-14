@@ -1,0 +1,1334 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Winter and desert performance override (2026-10-13)
++The owner requests better frame rate while retaining the approved appearance. Use scoped opaque terrain/backdrop ordering, exact four-kind terrain-mask packing with the full eight-kind fallback, shared loose-surface detail and fixed material-role compilation. Keep Winter's original snow-bank branch form; preserve all artwork, detail, dust/snow budgets, camera and canonical driving/scoring. Desktop paired GPU time drops about 5% in Compatibility and 28–36% in Mobile/Vulkan; these are not phone FPS measurements. See `docs/BIOME_PERFORMANCE_2026_10_13.md` for commands, pixel/motion/cache proofs, checkpoint, concurrent trail exclusions and remaining physical-device acceptance.
+ 
+ ## Desert tire-mark colour and shade override (2026-10-13)
+ The owner rejects dark, mismatched car-deposited tire marks, superseding the earlier colour approval. Desert marks use the warm road pigment with correct source-colour binding, softer tread/contact lighting and lower opacity; ordinary rolling stays faint while high brake/slip compaction remains legible. Preserve original nine-second dust, other-biome marks, trail geometry/sampling/bridge guards, camera and canonical driving/scoring. See `docs/DESERT_TIRE_MARKS_2026_10_13.md` for actual files, commands, both-renderer captures, scoped checkpoint and remaining owner/device acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 BPERF01-BPERF04/V02/V04/V05/G01/R01/Q01: owner performance pass preserving approved winter/desert appearance. Opaque depth ordering/exact four-kind masks with eight-kind fallback/shared loose shading/fixed material roles; kit182->183. Paired RTX3090 4K GPU medians Compatibility Winter2.1615->2.0425ms(-5.51%)/Desert2.2715->2.1505(-5.33%); Mobile/Vulkan Winter2.0585->1.3245(-35.66%)/Desert2.0365->1.4670(-27.96%). 17+17 pixel checks pass, desert exact/winter<=2of255; packing3885/sampler60+60/cache70/driving72/Desert87/parse609/shoulders71+18/bridge656+656/winter motion-reflections109+109 pass. Cached ice-material discovery fixed without weaker assertions; original dust/camera/canonical source exact, concurrent trail revisions preserved/excluded. DN2103 attached; no phone performance/render test/APK/export-install/fullValidate/physics merge/backend/deploy. Actual commands/captures/scoped checkpoint/owner-device acceptance: docs/BIOME_PERFORMANCE_2026_10_13.md.
++
+ 2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
+ 
+ 2026-10-13 TM01-TM03/V04/V05/G01/R01/Q01: owner tire-mark seam/performance request. Exact driven-length marks remove six-centimetre double-opacity bands; continuous world grain/tread and fixed transverse streak phase remove resets. Same16384-slot/four-wheel/thirty-vertex/single-draw budget and approved pigments/canonical/dust/camera retained. Both-renderer seam8+8, soil166, Desert87, bridge8+8 pass; full-budget desktop GPU medians0.310-0.347->0.279-0.280ms Compatibility, 0.275-0.316->0.252-0.253ms Mobile. DN2103 attached, no device test/APK/full regression/deploy. Actual files/commands/paired captures/review patch/remaining acceptance: docs/TIRE_MARK_SEAMS.md.
+--- /dev/null
++++ b/docs/BIOME_PERFORMANCE_2026_10_13.md
+@@ -0,0 +1,57 @@
++# Winter and desert performance pass
++
++2026-10-13, owner-requested BPERF01–BPERF04 / V02 / V04 / V05 / G01 / R01 / Q01. Preserve the approved winter ice, reflections, banks, blowing/pushed snow, golden desert road and bank blend, original nine-second dust, tire-mark colour, camera, local car condition, five ordinary laps and canonical driving/scoring. Presentation kit 182 → 183 invalidates prepared worlds and disposable road caches.
++
++Runtime changes:
++
++- `game/track/native_track_visual.gd`: draw opaque terrain after roads/banks/props, then the kilometre-wide backdrop. Hidden fragments can fail depth before evaluating their surface detail. Winter/desert maps containing at most four surface kinds pack the original eight mask channels into one RGBA sheet; richer painted maps retain both original sheets. No cells, geometry, palette or artwork change.
++- `game/track/surface_shader_variants.gd`: compile fixed material-role reads and the exact packed-mask remap. Retain role uniforms for inspection and cache serialization, plus the existing dynamic material for diagnostics. Keep Winter's original snow-bank branch form to preserve its Mobile edge shading.
++- `game/track/terrain.gdshaderinc`: skip an empty second mask; unpack packed channels before the unchanged nine-tap filtering/fringe semantics; share identical snow/dune detail between the two loose-terrain channels while retaining the original accumulation order and weights.
++- `game/track/creator_road.gdshaderinc` and `bridge_road.gdshaderinc`: skip immediately overwritten base shading; snow/dune skirts do not evaluate an identical second artwork or its irrelevant nine-sample blend mask.
++- `game/track/winter_ice.gdshaderinc`: skip the reflected cloud field only where its seam contribution is exactly zero.
++
++Opaque ordering follows Godot's documented [queue and render-priority order](https://docs.godotengine.org/en/4.6/tutorials/3d/standard_material_3d.html#render-priority). The improvement is established by the local measurements below, not inferred from that documentation.
++
++## Evidence and method
++
++`game/tests/profile_biome_shaders.gd` runs an explicit unscored diagnostic without records/account/upload adapters. Original pre-task shader generation and includes are retained in `game/tests/fixtures/biome_performance_before/`. A single frozen scene alternates baseline/optimized/baseline/optimized, with one-second warmup before each measured five-second stage. Camera, meshes, artwork, lighting, resolution, render scale and 2× MSAA are identical within each pair; only shaders, equivalent mask packing and opaque order differ. Both fixture maps use the packed path.
++
++Three 1600×900 views per biome compare baseline/optimized/restored baseline after settling the Mobile sky. Snow/dust/trails are hidden only in this exact material proof. Required baseline stability is zero changed pixels; the unchanged tolerance is at most 2/255 per RGB channel. Performance uses 3840×2160, 100% render scale, uncapped/VSync-off diagnostics on an RTX 3090 and pinned Godot 4.7.2. These are GPU throughput measurements of frozen desktop scenes, not physical-phone FPS, thermal acceptance or complete five-lap races.
++
++Final paired results and exact pixel counts are recorded in `docs/evidence/biome-performance-2026-10-13/accepted-paired/{gl_compatibility,mobile}/report.json`. Their before/after PNGs are the visual evidence. Actual moving scenes, original dust and snow/reflection checks are recorded separately. A hash ledger proves the canonical simulation, original dust and camera source unchanged. `skid_trails.gd` changed concurrently outside this task; those changes are retained and excluded from the task-only checkpoint. Tire marks are hidden in the paired material proof, so they do not affect its comparisons. This task does not edit tire colours or trail code.
++
++Mean of the two stage GPU medians, with all draw/primitive counts identical within each renderer's pair:
++
++| Renderer / biome | Before | After | GPU-time reduction |
++| --- | ---: | ---: | ---: |
++| Compatibility / Winter | 2.1615 ms | 2.0425 ms | 5.51% |
++| Compatibility / Desert | 2.2715 ms | 2.1505 ms | 5.33% |
++| Mobile/Vulkan / Winter | 2.0585 ms | 1.3245 ms | 35.66% |
++| Mobile/Vulkan / Desert | 2.0365 ms | 1.4670 ms | 27.96% |
++
++Both renderers pass 17 paired checks each. Desert has zero changed pixels in every view. Winter has 11–12 changed pixels/view in Compatibility and 25–34 in Mobile out of 1,440,000 pixels; maximum channel change is 2/255 and restored-baseline instability is zero. No texture/detail/particle reduction, resolution scaling or camera change accounts for these savings. Frame intervals in these frozen scenes also improve, but they are not claimed as driving/phone FPS. Desktop GPU results cannot be transferred numerically to the attached Mali-G77/GLES phone.
++
++Inspected actual [Winter driving](evidence/biome-performance-2026-10-13/gameplay/winter-motion-mobile/driving.png), [Winter motion](evidence/biome-performance-2026-10-13/gameplay/winter-motion-mobile/driving-motion.html), [Desert gameplay](evidence/biome-performance-2026-10-13/gameplay/desert-mobile/after/route-35.png) and [Desert bridge mouth](evidence/biome-performance-2026-10-13/gameplay/bridge-mobile/entry.png). Compatibility equivalents and all paired views are retained in the same evidence tree.
++
++## Actual verification
++
++Commands use `powershell -NoProfile -ExecutionPolicy Bypass` and `scripts/dev.ps1`, which selects the pinned engine rather than the older PATH alias. Engine calls required sandbox escalation for normal `user://` logs/caches; the first restricted run could not write those logs. Doctor's restricted ADB check also failed; the permitted retry found matching templates and the OnePlus DN2103 (`PRQKU4U4PREQNRWG`). Device availability is not a device test.
++
++- `TestScript -ScriptPath res://tests/test_biome_terrain_packing.gd`: 3,885 checks, zero failures across five biomes, including every source-channel byte in two four-kind layouts, all eight kinds/fallback, canonical cells and scoped opaque priority.
++- `TestDesert`: 87 checks, zero failures, including original dust and five-car packed/loose behavior.
++- `TestRoadCache`: 70 checks, zero failures.
++- `TestScript -ScriptPath res://tests/test_terrain_sampler_budget.gd`: 60 checks, zero failures across five biomes.
++- `TestDriving`: 72 checks, zero failures, including exact replay at multiple presentation rates and production camera/input behavior.
++- `TestScript -ScriptPath res://tests/test_script_parse.gd`: 609 scripts, zero failures.
++- `TestShoulders`: union, 71 joins and 18 contours, zero failures.
++- Final paired diagnostic: `TestScript -Graphical -ScriptPath res://tests/profile_biome_shaders.gd -TestArgument @('--seconds=5','--folder=res://../docs/evidence/biome-performance-2026-10-13/accepted-paired')`; Mobile adds `-RenderingMethod mobile -RenderingDriver vulkan`: 17 checks per renderer, zero failures.
++- `TestScript -Graphical -ScriptPath res://tests/test_winter_environment.gd -TestArgument @('--capture','--fresh-roads','--output-dir=<task gameplay folder>')`: 100 checks per renderer, zero failures, actual gameplay/material/rotated/compact captures.
++- `TestScript -Graphical -ScriptPath res://tests/capture_desert_refinement.gd -TestArgument @('--stage=after','--evidence-root=<task gameplay folder>')`: six views on each renderer; 60,799 bank vertices/184 clods, canonical cells/hash unchanged, actual original-dust captures.
++- `TestScript -Graphical -ScriptPath res://tests/test_desert_bank_bridge_blend.gd -TestArgument '--folder=<task bridge folder>/'`: 656 checks per renderer, zero failures. Compatibility entry/exit RGB delta 0.029607/0.014673; Mobile 0.031859/0.016169, both below the original 0.035 tolerance.
++- Graphical all-biome sampler check: 60 checks, zero failures. New captures copied into this task; historical captures restored from the pre-run copies.
++- Final `Import`: exit zero; stable IDs generated for the new diagnostics and archived includes.
++- `TestScript -Graphical -ScriptPath res://tests/test_winter_environment.gd -TestArgument @('--capture','--reflection-proof','--seam-proof','--video','--output-dir=<task motion folder>')`: final 109 checks per renderer, zero failures, including 150 actual motion frames each. Compatibility broad/seam contributions 28,334/46,296 pixels, Mobile 83,914/33,357; zero unstable pixels. The cached-material discovery fix in this test reads original biome flags from `surface_dynamic_material`, with all existing pixel and stability assertions retained.
++
++Intermediate failures are retained: the initial diagnostic inherited a conflicting `capture` method and attempted to hide absent desert wind; these were fixed in the diagnostic. Mobile's first unsettled sky produced an unstable baseline; timed settling fixed the comparison. Constant vector indexing caused a Mobile compiler error, so packed slots now generate direct named-channel assignments. Folding `smooth_road_bank` changed one Winter MSAA edge pixel by 3/255; retaining its original branch resolves this with the original 2/255 tolerance. Mobile seam checks initially selected only fresh terrain after loading specialized road materials from disk, reporting zero contribution; reading their original material metadata correctly includes all three ice materials and restores the existing proof. A shell-escaped exit guard failed between the final paired renderer commands; both engine diagnostics still ran independently and report their own outcomes. A nested PowerShell array command also failed parsing before engine launch; file-based runners produced the actual visual results. No acceptance threshold or failing invariant was weakened.
++
++No Android export/install/physical-device rendering or performance test, full Validate, physics merge, backend changes, live score writes or production deployment performed. Remaining acceptance: owner driving/frame-pacing review, representative phone/thermal measurements, broader track/camera coverage and low-end hardware. The task-only patch and isolated Git checkpoint preserve the shared index/HEAD and unrelated existing workspace changes.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 BPERF01-BPERF04/V02/V04/V05/G01/R01/Q01: owner performance pass preserving approved winter/desert appearance. Opaque depth ordering/exact four-kind masks with eight-kind fallback/shared loose shading/fixed material roles; kit182->183. Paired RTX3090 4K GPU medians Compatibility Winter2.1615->2.0425ms(-5.51%)/Desert2.2715->2.1505(-5.33%); Mobile/Vulkan Winter2.0585->1.3245(-35.66%)/Desert2.0365->1.4670(-27.96%). 17+17 pixel checks pass, desert exact/winter<=2of255; packing3885/sampler60+60/cache70/driving72/Desert87/parse609/shoulders71+18/bridge656+656/winter motion-reflections109+109 pass. Cached ice-material discovery fixed without weaker assertions; original dust/camera/canonical source exact, concurrent trail revisions preserved/excluded. DN2103 attached; no phone performance/render test/APK/export-install/fullValidate/physics merge/backend/deploy. Actual commands/captures/scoped checkpoint/owner-device acceptance: docs/BIOME_PERFORMANCE_2026_10_13.md.
++
+ 2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
+ 
+ 2026-10-13 TM01-TM03/V04/V05/G01/R01/Q01: owner tire-mark seam/performance request. Exact driven-length marks remove six-centimetre double-opacity bands; continuous world grain/tread and fixed transverse streak phase remove resets. Same16384-slot/four-wheel/thirty-vertex/single-draw budget and approved pigments/canonical/dust/camera retained. Both-renderer seam8+8, soil166, Desert87, bridge8+8 pass; full-budget desktop GPU medians0.310-0.347->0.279-0.280ms Compatibility, 0.275-0.316->0.252-0.253ms Mobile. DN2103 attached, no device test/APK/full regression/deploy. Actual files/commands/paired captures/review patch/remaining acceptance: docs/TIRE_MARK_SEAMS.md.
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/bridge_road.gdshaderinc
+@@ -0,0 +1,43 @@
++#include "res://track/surface_detail.gdshaderinc"
++uniform vec4 road_color : source_color = vec4(0.204,0.212,0.220,1.0);
++uniform bool winter_bridge_width_data = false;
++uniform bool desert_bridge_width_data = false;
++uniform vec4 sand_color : source_color = vec4(0.60,0.50,0.37,1.0);
++varying vec3 world_position;
++varying float winter_half_width;
++varying vec2 desert_apron_data;
++void vertex() {
++    world_position = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
++    winter_half_width = winter_bridge_width_data ? UV2.x : 5.0;
++    desert_apron_data = UV2;
++    if (NORMAL.y < 0.0) { NORMAL = -NORMAL; }
++}
++void fragment() {
++    ALBEDO = surface_detail(road_color.rgb,world_position.xz,true);
++    if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
++    if (packed_sand && desert_bridge_width_data) {
++        // Same 1.95 m foot as the exposed ground fringe. UV.y already has
++        // the corrected signed cross-road coordinate, independent of phase.
++        float across = clamp((abs(UV.y)-desert_apron_data.x+1.45)/1.95,0.0,1.0);
++        float deposited = desert_bank_coverage(across,world_position.xz)*(1.0-desert_apron_data.y);
++        if (deposited > 0.001) ALBEDO = mix(ALBEDO,desert_shoulder(sand_color.rgb,world_position.xz),deposited);
++    }
++    if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
++    ROUGHNESS = 1.0;
++ SPECULAR = 0.0;
++ if (icy_road) {
++  vec2 road_uv = winter_road_uv(UV);
++  vec4 finish = texture(ice_finish,road_uv);
++  float frost = winter_edge_frost(UV,world_position.xz,winter_half_width);
++  vec2 ice_response = winter_reflective_finish(finish,frost);
++  ROUGHNESS = ice_response.x;
++  SPECULAR = ice_response.y;
++  NORMAL = winter_road_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,road_uv);
++  RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));
++ }
++ if (wet_road) {
++  ROUGHNESS = wet_road_roughness(world_position.xz);
++  SPECULAR = wet_road_specular(world_position.xz);
++ }
++ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
++}
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/bridge_road.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://bo5v6f1rqnmaw
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/creator_road.gdshaderinc
+@@ -0,0 +1,149 @@
++#include "res://track/surface_detail.gdshaderinc"
++#include "res://track/kerb_paint.gdshaderinc"
++
++uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
++uniform sampler2D verge_blend_mask : filter_linear, repeat_disable;
++uniform sampler2D road_mask : filter_linear, repeat_disable;
++uniform vec2 road_mask_texel;
++uniform vec4 sand_color : source_color;
++uniform vec2 map_extent;
++uniform vec4 road_color : source_color;
++uniform vec4 asphalt_base_color : source_color;
++uniform bool gravel = false;
++uniform bool grass = false;
++uniform bool kerb = false;
++uniform bool asphalt_surface = false;
++uniform bool edge_fringe = false;
++uniform bool road_marking = false;
++uniform bool winter_width_data = false;
++uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
++uniform vec4 grass_color : source_color;
++varying vec3 world_position;
++varying float bank_slope;
++varying float winter_half_width;
++varying vec4 desert_join;
++
++void vertex() {
++	bank_slope = 1.0-NORMAL.y;
++	winter_half_width = COLOR.r*32.0;
++	desert_join = COLOR;
++	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++}
++
++// Filter only the decorative sand join; road/marking masks stay exact.
++float sand_coverage(vec2 uv) {
++	vec2 d = 0.65 / vec2(textureSize(verge_blend_mask,0));
++	float value = texture(verge_blend_mask,uv).b * 4.0;
++	value += 2.0*(texture(verge_blend_mask,uv+vec2(d.x,0.0)).b+texture(verge_blend_mask,uv-vec2(d.x,0.0)).b);
++	value += 2.0*(texture(verge_blend_mask,uv+vec2(0.0,d.y)).b+texture(verge_blend_mask,uv-vec2(0.0,d.y)).b);
++	value += texture(verge_blend_mask,uv+d).b+texture(verge_blend_mask,uv-d).b;
++	value += texture(verge_blend_mask,uv+vec2(d.x,-d.y)).b+texture(verge_blend_mask,uv+vec2(-d.x,d.y)).b;
++	float sand = value / 16.0;
++	if (sand > 0.001 && sand < 0.999) {
++		sand = 1.0-grass_fringe(mix(0.55,0.98,1.0-sand),world_position.xz);
++	}
++	return sand;
++}
++
++void fragment() {
++	vec2 map_uv = (world_position.xz + map_extent) / (map_extent * 2.0);
++	// Every painted cell wins over the procedural road, including asphalt
++	// paint used to open a junction. Obstacles keep their native footprints.
++	if (any(lessThan(map_uv, vec2(0.0))) || any(greaterThan(map_uv, vec2(1.0)))
++			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
++	// Keep-road protects the road mesh, not its grass skirt or gravel fringe.
++	vec3 mask = texture(overlay_mask,map_uv).rgb;
++	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
++	float sand = 0.0;
++	if (grass || gravel) { sand = sand_coverage(map_uv); }
++	float relief_weight = grass ? (1.0-sand) : 0.0;
++	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
++	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0); }
++	if (asphalt_surface && packed_sand) { ALBEDO = compacted_road(road_color.rgb,edge_fringe ? UV2 : UV); }
++	if (asphalt_surface && packed_sand && desert_join.a > 0.001) {
++		float along = atan(desert_join.g*2.0-1.0,desert_join.r*2.0-1.0)*10.0/6.28318530718;
++		vec2 other_uv = vec2(along,(desert_join.b-0.5)*32.0);
++		ALBEDO = mix(ALBEDO,compacted_road(road_color.rgb,other_uv),desert_join.a);
++	}
++	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
++		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
++	}
++	float wet_coverage = wet_road && asphalt_surface ? 1.0 : 0.0;
++	if (edge_fringe && !icy_road) {
++		// UV.y spans the cosmetic blend strip (1.95 m for desert), so
++		// curves never inherit the coarse canonical surface-grid staircase.
++		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
++		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
++		// Reuse the grass/sand shoulder's settled + broken fringe blend.
++		// Remap it across a wider band, retaining texture through the transition.
++		float asphalt_coverage = packed_sand ? 1.0-desert_bank_coverage(UV.y,world_position.xz) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
++		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
++		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
++		wet_coverage *= asphalt_coverage;
++	}
++	if (road_marking) {
++		// Preserve a continuous readable line while breaking up its pigment
++		// with mild fading and sparse asphalt-coloured chips.
++		float fade = pigment(world_position.xz * 1.9 + vec2(27.0, 8.0)) * 0.12;
++		float chip_noise = pigment(world_position.xz * 13.0 + vec2(5.0, 41.0));
++		float chip_aa = max(fwidth(chip_noise) * 0.75, 0.025);
++		float chips = smoothstep(0.66 - chip_aa, 0.78 + chip_aa, chip_noise) * 0.42;
++		vec3 worn_asphalt = surface_detail(asphalt_base_color.rgb, world_position.xz, true);
++		ALBEDO = mix(ALBEDO, worn_asphalt, fade + chips);
++	}
++	if (grass) { ALBEDO = mix(painted_grass(road_color.rgb,world_position.xz),sand_detail(sand_color.rgb,world_position.xz),sand); }
++	if (kerb) {
++		// Fit complete equal blocks to each exposed run. An odd count starts
++		// and ends white; no arbitrary half-red slivers at curve boundaries.
++		float count = max(1.0,2.0*floor(UV.y/3.0)+1.0);
++		float block_length = max(UV.y/count,0.001);
++		float tip = smoothstep(0.0, min(block_length,1.8), min(UV.x,UV.y-UV.x));
++		if (UV2.x > mix(0.12,1.0,tip)) { discard; }
++		float phase = mod(UV.x+block_length,block_length*2.0);
++		float aa = max(fwidth(UV.x),0.001);
++		float pale = smoothstep(block_length-aa,block_length+aa,phase);
++		if (UV.x < aa || UV.x > UV.y-aa) { pale = 1.0; }
++		ALBEDO = racing_kerb_paint(mix(road_color.rgb,kerb_pale.rgb,pale),world_position.xz,UV.x,1.0);
++	}
++	if (gravel) {
++		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
++		if (packed_sand) {
++			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
++			ALBEDO *= 1.0-contact*0.025;
++		}
++		float fringe;
++		if (packed_sand) {
++			float drift_edge = UV.y+(texture(surface_factors,world_position.xz/28.0).g-0.5)*0.24*4.0*UV.y*(1.0-UV.y);
++			fringe = smoothstep(0.58,1.0,drift_edge)*(1.0-sand);
++		} else { fringe = (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz))*(1.0-sand); }
++		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
++		relief_weight = fringe;
++	}
++	ROUGHNESS = 1.0;
++ SPECULAR = 0.0;
++ if (icy_road && asphalt_surface && !edge_fringe) {
++  vec2 road_uv = winter_road_uv(UV);
++  vec4 finish = texture(ice_finish,road_uv);
++  float frost = winter_edge_frost(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0);
++  vec2 ice_response = winter_reflective_finish(finish,frost);
++  ROUGHNESS = ice_response.x;
++  SPECULAR = ice_response.y;
++  NORMAL = winter_road_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,road_uv);
++  RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));
++ }
++ if (wet_road && wet_coverage > 0.0) {
++  ROUGHNESS = mix(1.0,wet_road_roughness(world_position.xz),wet_coverage);
++  SPECULAR = wet_road_specular(world_position.xz)*wet_coverage;
++ }
++ if (wet_road && (road_marking || kerb)) {
++  ALBEDO *= 0.90;
++  ROUGHNESS = kerb ? 0.30 : 0.24;
++  SPECULAR = 0.5;
++ }
++	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0-relief_weight : 0.0);
++	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
++	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
++	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
++ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,wet_coverage);
++}
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/creator_road.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://dup3xd0fcx6b8
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/surface_detail.gdshaderinc
+@@ -0,0 +1,363 @@
++#include "res://track/winter_ice.gdshaderinc"
++uniform sampler2D ice_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++uniform sampler2D ice_finish : filter_linear_mipmap_anisotropic, repeat_enable;
++uniform bool winter_snow = false;
++uniform sampler2D snow_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++vec3 snow_detail(vec2 p) {
++	vec3 snow = texture(snow_albedo,p/11.0).rgb;
++	vec3 other = texture(snow_albedo,vec2(-p.y,p.x)/19.0+vec2(0.31,0.57)).rgb;
++	// Lift the blue pigment in the original artwork toward neutral white.
++	// Actual cool lighting/shadows and the sculpted texture remain intact.
++	vec3 original = mix(snow,other,0.22)*0.82;
++	float blue = smoothstep(0.015,0.15,original.b-original.r);
++	vec3 artwork = mix(original,vec3(original.b*0.98,original.b,original.b*1.01),blue*0.42);
++	// Ground, banks and deposited snow share the bank's accepted neutral-white
++	// value treatment. Their cool colour comes from the scene light/shadows.
++	float detail = dot(artwork,vec3(0.2126,0.7152,0.0722));
++	return vec3(clamp(detail*1.06+0.09,0.0,0.82));
++}
++// Baked original colour factors, generated by scripts/bake-surface-detail.py.
++uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
++uniform bool icy_road = false;
++uniform bool wet_road = false;
++global uniform float storm_ripple_time;
++global uniform bool storm_ripples_enabled;
++uniform bool packed_sand = false;
++uniform bool desert_dunes = false;
++uniform sampler2D desert_apron : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++uniform sampler2D desert_road_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++uniform vec2 desert_road_reference = vec2(0.50,0.22);
++uniform sampler2D dune_factors : filter_linear_mipmap_anisotropic, repeat_enable;
++uniform sampler2D dune_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++
++vec3 dune_sand(vec2 p) {
++	// Broad crests and wind ripples stay in the original artwork. Multi-metre
++	// mineral patches vary independently of the dune tile, without runtime noise.
++	vec3 sand = texture(dune_albedo,p/28.0).rgb;
++	// Keep the authored dune shapes; slightly strengthen their wind ripple values.
++	float ripple = dot(sand,vec3(0.2126,0.7152,0.0722));
++	sand *= 1.0+(ripple-0.5)*0.22;
++	vec2 mineral = texture(surface_factors,p/96.0+vec2(0.17,0.43)).gb;
++	vec3 pigment = mix(vec3(0.58,0.57,0.54),vec3(0.63,0.62,0.59),smoothstep(0.35,0.65,mineral.x));
++	// Preserve pale crest highlights and deepen the warmer sheltered faces.
++	float face = dot(sand,vec3(0.2126,0.7152,0.0722));
++	sand *= 0.84+smoothstep(0.16,0.64,face)*0.28;
++	return sand*pigment*(0.92+mineral.y*0.17);
++}
++
++vec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) {
++	if (!desert_dunes || weight <= 0.001) return original;
++	vec2 slope = (texture(dune_factors,p/32.0).gb-0.5)*0.58;
++	vec3 relief = normalize(vec3(-slope.x,1.0,-slope.y));
++	return normalize(mix(original,(view*vec4(relief,0.0)).xyz,clamp(weight,0.0,1.0)));
++}
++// Original world-space pigment pattern. Derivative filtering limits distant shimmer.
++uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++uniform bool hybrid_grass = false;
++uniform sampler2D grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
++uniform sampler2D grass_macro_mask : filter_linear_mipmap_anisotropic, repeat_enable;
++uniform sampler2D grass_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
++
++vec3 grass_relief(vec2 p, vec3 original, mat4 view, float weight) {
++	if (!hybrid_grass || weight <= 0.001) return original;
++	vec3 detail = texture(grass_normal,p/0.8).rgb*2.0-1.0;
++	float fade = 1.0-smoothstep(0.025,0.10,length(fwidth(p)));
++	vec3 world_normal = normalize(vec3(detail.x*0.11*fade,1.0,detail.y*0.11*fade));
++	return normalize(mix(original,(view*vec4(world_normal,0.0)).xyz,weight));
++}
++float pigment(vec2 p) {
++	vec2 cell = floor(p);
++	vec2 f = fract(p);
++	f = f * f * (3.0 - 2.0 * f);
++	vec3 a = fract(vec3(cell.xyx) * 0.1031);
++	a += dot(a, a.yzx + 33.33);
++	float n00 = fract((a.x + a.y) * a.z);
++	a = fract(vec3((cell + vec2(1,0)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	float n10 = fract((a.x+a.y)*a.z);
++	a = fract(vec3((cell + vec2(0,1)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	float n01 = fract((a.x+a.y)*a.z);
++	a = fract(vec3((cell + vec2(1,1)).xyx) * 0.1031); a += dot(a,a.yzx+33.33);
++	return mix(mix(n00,n10,f.x),mix(n01,fract((a.x+a.y)*a.z),f.x),f.y);
++}
++// Shared broken, short grass fringe for road shoulders and painted terrain.
++float grass_fringe(float coverage, vec2 p) {
++	return smoothstep(0.55,0.98,coverage+(pigment(p*5.0)-0.5)*0.32);
++}
++// Halfway between the original broken edge and the quieter smooth shoulder.
++// Painted terrain keeps its own fringe; only roadside grass uses this blend.
++float shoulder_fringe(float coverage, vec2 p) {
++	float settled = smoothstep(0.60,0.94,coverage+(texture(surface_factors,p/16.0).g-0.5)*0.04);
++	return mix(settled,grass_fringe(coverage,p),0.5);
++}
++// Matte sand shared by terrain paint and roadside shoulders. Grain is
++// isotropic (no grass-like diagonal strokes), with filtered fine minerals.
++vec3 sand_detail(vec3 base, vec2 p) {
++	if (winter_snow) return snow_detail(p);
++	if (desert_dunes) return dune_sand(p);
++	return base * (0.8 + texture(surface_factors,p/32.0).b * 0.4);
++}
++
++// Original sand pigment is retained; shallow mineral relief supplies actual
++// directional light response instead of adding another colour/noise pattern.
++uniform bool sand_relief_enabled = true;
++vec3 sand_relief(vec2 p, vec3 original, mat4 view, float weight) {
++	if (!sand_relief_enabled || winter_snow || desert_dunes || packed_sand || weight <= 0.001) return original;
++	vec2 uv = p/32.0;
++	float h = texture(surface_factors,uv).b;
++	vec2 slope = vec2(texture(surface_factors,uv+vec2(0.06/32.0,0.0)).b-h,
++		texture(surface_factors,uv+vec2(0.0,0.06/32.0)).b-h)*0.90;
++	float fade = 1.0-smoothstep(0.12,0.35,length(fwidth(p)));
++	vec3 relief = normalize(vec3(-slope.x*fade,1.0,-slope.y*fade));
++	return normalize(mix(original,(view*vec4(relief,0.0)).xyz,clamp(weight,0.0,1.0)));
++}
++
++// Fine mineral grain on an even sandy bank, distinct from the smooth road.
++vec3 desert_shoulder(vec3 base, vec2 p) {
++	vec3 grit = texture(desert_apron,p/6.0).rgb;
++	// Remove the artwork's broad pigment patches while retaining fine grit.
++	// Mip-filtered local colour is subtracted, not painted as another deposit mask.
++	vec3 local_sand = texture(desert_apron,p/6.0,5.0).rgb;
++	float drift = texture(surface_factors,p/52.0+vec2(0.13,0.71)).g;
++	return max(base*(0.93+(drift-0.5)*0.10)+(grit-local_sand)*0.52,vec3(0.0));
++}
++
++// Shared world-space baked asphalt. Random repair/crack shapes are removed;
++// binder variation and mineral grain remain presentation-only.
++vec3 dry_asphalt_detail(vec3 base, vec2 p) {
++	// Fine aggregate stays subordinate to multi-metre binder variation.
++	// Both fields reuse the baked factors; no per-frame noise or decals.
++	float grain = texture(surface_factors,p/32.0,0.75).r;
++	float broad = texture(surface_factors,p/384.0+vec2(0.23,0.41)).g;
++	return base * (1.015+(grain-0.54)*0.22+(broad-0.5)*0.04);
++}
++
++// Wet asphalt is the baseline. Only the upper tail of the metre-scale basin
++// field contains standing water; aggregate never drives puddle boundaries.
++float road_puddle(vec2 p) {
++ float basin = pigment(p*0.22+vec2(3.2,7.6))*0.70;
++ basin += pigment(p*0.71+vec2(11.7,2.4))*0.24;
++ basin += pigment(p*2.7+vec2(6.1,19.3))*0.06;
++ float feather = max(fwidth(basin),0.008);
++ return smoothstep(0.65-feather,0.72+feather,basin);
++}
++
++float wet_road_roughness(vec2 p) {
++ float pool = road_puddle(p);
++ float grain = (texture(surface_factors,p/32.0).r-0.54)*0.16;
++ // Retain fine surface variation in standing water without losing its sheen.
++ return mix(clamp(0.38+grain,0.33,0.43),clamp(0.18+grain*0.6,0.15,0.21),pool);
++}
++
++float wet_road_specular(vec2 p) {
++ // Water-filled depressions retain a stronger environment highlight than
++ // exposed binder/aggregate. The road remains a non-metallic dielectric.
++ return mix(0.28,0.52,road_puddle(p));
++}
++
++// One contained impact per world-space cell; no neighbour search or particles.
++vec2 rain_impact_hash(vec2 p) {
++ vec3 h = fract(vec3(p.x,p.y,p.x)*vec3(0.1031,0.1030,0.0973));
++ h += dot(h,h.yzx+33.33);
++ return fract((h.xx+h.yz)*h.zy);
++}
++
++vec2 rain_impact_slope(vec2 p) {
++ vec2 cell = floor(p/0.42);
++ vec2 seed = rain_impact_hash(cell);
++ float clock = storm_ripple_time+seed.x*0.38;
++ float event = floor(clock/0.38);
++ vec2 center = rain_impact_hash(cell+event*vec2(17.1,39.7));
++ vec2 offset = fract(p/0.42)*0.42-(vec2(0.12)+center*0.18);
++ float age = mod(clock,0.38);
++ float radius = length(offset);
++ float wave = clamp((radius-age*0.30)*35.0,-1.0,1.0);
++ float envelope = smoothstep(0.0,0.025,age)*(1.0-smoothstep(0.14,0.26,age));
++ float shoulder = 1.0-wave*wave;
++ float ring = wave*shoulder*shoulder*4.0*envelope;
++ return offset/max(radius,0.001)*ring*0.22;
++}
++
++vec3 wet_road_relief(vec2 p, vec3 original, mat4 view, float weight) {
++ // Terrain uses this helper too: grass/sand pixels have no wet road weight.
++ if (weight <= 0.001) return original;
++ vec2 grain = vec2(texture(surface_factors,p/8.0).g,texture(surface_factors,p/8.0+vec2(0.37,0.61)).g)-vec2(0.5);
++ float pool = road_puddle(p);
++ float strength = mix(0.16,0.045,pool);
++ strength *= 1.0-smoothstep(0.10,0.35,length(fwidth(p)));
++ vec2 slope = grain*strength;
++ if (storm_ripples_enabled) {
++  float visibility = 1.0-smoothstep(0.18,0.40,length(fwidth(p)));
++  if (pool*visibility*weight > 0.001) slope += rain_impact_slope(p)*pool*visibility;
++ }
++ vec3 ripple = (view*vec4(slope.x,0.0,slope.y,0.0)).xyz;
++ return normalize(original+ripple*weight);
++}
++
++vec3 surface_detail(vec3 base, vec2 p, bool road) {
++	float visibility = 1.0 - smoothstep(0.05,0.22,length(fwidth(p)));
++	if (road && packed_sand) {
++		float broad = texture(surface_factors,p/64.0).g;
++		float grain = texture(surface_factors,p/32.0).r;
++		return base * (0.97+(broad-0.5)*0.025+(grain-0.54)*0.035);
++	}
++	if (road && wet_road) {
++		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
++		float film = road_puddle(p);
++		return base*mix(0.76,0.65,film)*(1.0+grain*mix(0.3,0.14,film));
++	}
++	if (road && icy_road) {
++		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);
++	}
++	if (road) { return dry_asphalt_detail(base,p); }
++
++	// Sparse short blade strokes rather than circular noise clouds.
++	vec2 cell = floor(p * 2.4);
++	float seed = fract(sin(dot(cell,vec2(127.1,311.7)))*43758.5453);
++	float other = fract(sin(dot(cell,vec2(269.5,183.3)))*43758.5453);
++	vec2 local = fract(p * 2.4) - vec2(0.25+seed*0.5,0.25+other*0.5);
++	float blade = (1.0-smoothstep(0.025,0.09,abs(local.x + local.y*(seed-0.5)*1.5)))
++		* smoothstep(-0.35,-0.1,local.y) * (1.0-smoothstep(0.05,0.32,local.y));
++	blade *= step(0.72,seed) * visibility;
++	float plane = smoothstep(0.35,0.65,pigment(p*0.12));
++	return base * (0.97 + plane*0.055 - blade*0.09);
++}
++
++// Filter baked grain along the local road axis for compacted sandy wear.
++vec3 packed_wear(vec3 base, vec2 road_uv) {
++ float tracks = texture(surface_factors,road_uv/vec2(45.0,4.0)).g;
++ float broad = texture(surface_factors,road_uv/vec2(140.0,32.0)).g;
++ float grooves = texture(surface_factors,road_uv/vec2(19.0,1.3)).g;
++ return base*(1.0+(tracks-0.5)*0.015+(broad-0.5)*0.010+(grooves-0.5)*0.008);
++}
++
++// Offset phases hide texture boundaries; actual metre UVs turn the grooves
++// with the road instead of painting an isotropic cloud over it.
++vec3 compacted_road(vec3 base, vec2 metres) {
++	vec2 uv = metres.yx/vec2(6.5,10.0);
++	vec2 f = fract(uv);
++	vec2 w = smoothstep(vec2(0.0),vec2(0.12),f)*(vec2(1.0)-smoothstep(vec2(0.88),vec2(1.0),f));
++	vec3 a = texture(desert_road_albedo,uv,0.75).rgb;
++	vec3 b = texture(desert_road_albedo,uv+vec2(0.5,0.0),0.75).rgb;
++	vec3 c = texture(desert_road_albedo,uv+vec2(0.0,0.5),0.75).rgb;
++	vec3 d = texture(desert_road_albedo,uv+vec2(0.5,0.5),0.75).rgb;
++	vec3 artwork = mix(mix(d,c,w.x),mix(b,a,w.x),w.y);
++	float reference_value = OUTPUT_IS_SRGB ? desert_road_reference.x : desert_road_reference.y;
++	float pressed = clamp(dot(artwork,vec3(0.2126,0.7152,0.0722))/reference_value,0.82,1.18);
++	return base*mix(0.99,pressed,0.25);
++}
++
++// Winter's bank foot uses a settled deposit broken into wind-sized tongues
++// and fine grains. Reuse that shoulder blend across the wider sand apron.
++float desert_bank_coverage(float across, vec2 p) {
++	float breakup = pigment(p*0.73+vec2(17.3,8.1))-0.5;
++	float deposited = smoothstep(0.05,0.90,across)+breakup*0.30*4.0*across*(1.0-across);
++	return shoulder_fringe(mix(0.48,1.06,clamp(deposited,0.0,1.0)),p);
++}
++
++// World-space grain avoids phase resets and triangular UV patches at joins.
++vec3 packed_wear_world(vec3 base, vec2 p, vec2 axis) {
++	float angle = atan(axis.y,axis.x+0.000001)*0.5;
++	vec2 direction = vec2(cos(angle),sin(angle));
++	float grain = texture(surface_factors,p/32.0).g*0.50;
++	grain += texture(surface_factors,(p+direction*0.32)/32.0).g*0.25;
++	grain += texture(surface_factors,(p-direction*0.32)/32.0).g*0.25;
++	return base*(1.0+(grain-0.5)*0.05);
++}
++
++// Short, broken laying/wear grain aligned to the local road tangent. Sample
++// the same world-space field on both sides, so reversed pieces agree and
++// changing direction through a bend does not rotate texture coordinates.
++vec3 directional_asphalt(vec3 base, vec2 p, vec2 encoded_axis) {
++	float strength = smoothstep(0.15,0.75,length(encoded_axis));
++	float angle = atan(encoded_axis.y,encoded_axis.x+0.000001)*0.5;
++	vec2 direction = vec2(cos(angle),sin(angle));
++	float worn = texture(surface_factors,p/32.0).g*0.4;
++	worn += texture(surface_factors,(p+direction*0.28)/32.0).g*0.24;
++	worn += texture(surface_factors,(p-direction*0.28)/32.0).g*0.24;
++	worn += texture(surface_factors,(p+direction*0.56)/32.0).g*0.06;
++	worn += texture(surface_factors,(p-direction*0.56)/32.0).g*0.06;
++	float breakup = smoothstep(0.25,0.75,pigment(p*0.73+vec2(13.1,6.4)));
++	return base*(1.0+(worn-0.5)*0.15*mix(0.25,1.0,breakup)*strength);
++}
++
++vec3 painted_grass(vec3 base, vec2 p) {
++	if (winter_snow) return snow_detail(p);
++	if (desert_dunes) return dune_sand(p);
++	if (hybrid_grass) {
++		vec3 macro = texture(grass_macro_mask,p/32.0).rgb;
++		// Actual narrow-blade meadow clumps with visible root depth. The
++		// offset companion sample breaks repetition without runtime noise.
++		vec3 paint = texture(grass_albedo,p/10.0,0.85).rgb;
++		vec3 companion = texture(grass_albedo,vec2(-p.y,p.x)/17.0+vec2(0.31,0.57),1.0).rgb;
++		vec3 vegetation = mix(paint,companion,0.18)*base/vec3(0.3765,0.4196,0.2118);
++		// Retain the meadow's blade fans while compressing their contrast and
++		// yellow highlights into the same restrained palette as scenery.
++		float value = dot(vegetation,vec3(0.2126,0.7152,0.0722));
++		vegetation = mix(vegetation,vec3(value),0.18);
++		vegetation = mix(vegetation,base,0.38);
++		vec3 patch = mix(vec3(0.88,0.95,0.91),vec3(1.05,1.06,0.98),macro.r);
++		return vegetation*patch*0.72;
++	}
++	// Cool neutral palettes use snow/concrete grain without green brush pigment.
++	if (base.b > base.r * 0.95) return base * (0.94 + pigment(p * 0.7) * 0.06);
++	// A 20 m tile gives legible brush clusters at driving scale. An offset
++	// second sample and slower colour mask soften recognizable repetition.
++	vec3 paint = texture(painted_grass_texture,p/20.0,0.75).rgb;
++	vec3 broad = texture(painted_grass_texture,p/47.0+vec2(0.37,0.61),1.0).rgb;
++	vec3 tint = base / vec3(0.3765,0.4196,0.2118);
++	return mix(mix(paint,broad,0.18)*tint,base,0.18)*(0.82+pigment(p*0.08)*0.10);
++}
++
++vec2 winter_road_uv(vec2 metres) { return metres.yx/vec2(5.0,9.0); }
++
++float winter_edge_frost(vec2 uv, vec2 p, float half_width) {
++	float tongues = (pigment(p*0.73+vec2(17.3,8.1))-0.5)*0.85;
++	float edge = 1.0-smoothstep(-0.25,2.80,half_width-abs(uv.y)+tongues);
++	// Exactly the same settled/broken fringe method as the Grass shoulder.
++	return shoulder_fringe(mix(0.48,1.05,edge),p);
++}
++
++vec3 winter_wear_width(vec2 uv, vec2 p, float half_width) {
++	vec2 ice_uv = winter_road_uv(uv);
++	vec3 artwork = texture(ice_albedo,ice_uv).rgb;
++	vec3 local_ice = texture(ice_albedo,ice_uv,3.0).rgb;
++	// Fine crystalline abrasion adds ice detail without strengthening broad threads.
++	vec3 ice = quiet_winter_ice(artwork)+(artwork-local_ice)*0.22;
++	// Whiten only fine positive scrape detail; broad directional threads stay quiet.
++	float crystals = smoothstep(0.025,0.14,dot(artwork-local_ice,vec3(0.2126,0.7152,0.0722)));
++	ice = mix(ice,vec3(0.84,0.86,0.87),crystals*0.55);
++	float frost = texture(surface_factors,p/90.0,4.0).g;
++	float dust = smoothstep(0.43,0.70,frost);
++	float edge_snow = winter_edge_frost(uv,p,half_width)*0.68;
++	// Faint frosted wheel paths follow the authored road axis through bends.
++	float path = 1.0-smoothstep(0.07,0.20,abs(abs(uv.y)-1.15));
++	float older = 1.0-smoothstep(0.04,0.14,abs(abs(uv.y)-1.62));
++	float wear = texture(surface_factors,p/70.0,3.0).r;
++	ice = mix(ice,vec3(0.77,0.80,0.82),(path*0.07+older*0.04)*smoothstep(0.22,0.72,wear));
++	vec3 powder = mix(snow_detail(p),vec3(0.80,0.83,0.85),0.40);
++	return mix(ice,powder,min(dust*0.20+edge_snow,1.0));
++}
++
++vec3 winter_wear(vec3 base, vec2 uv, vec2 p) { return winter_wear_width(uv,p,5.0); }
++
++vec3 winter_ice_normal(vec2 slopes, vec3 original, mat4 view, vec2 p, float weight) {
++	float detail = 1.0-smoothstep(0.08,0.25,length(fwidth(p)));
++	vec2 slope = (slopes*2.0-1.0)*0.12*detail;
++	return normalize(original+(view*vec4(-slope.x,0.0,-slope.y,0.0)).xyz*weight);
++}
++
++vec3 winter_road_ice_normal(vec2 slopes, vec3 original, mat4 view, vec2 p, vec2 road_uv) {
++	// Transform baked texture slopes using the actual road-coordinate Jacobian.
++	// This follows curves and rotated bridges without assuming world X/Z grain.
++	vec2 dx = dFdx(p), dy = dFdy(p);
++	float determinant = dx.x*dy.y-dx.y*dy.x;
++	vec2 slope = (slopes*2.0-1.0)*0.09;
++	float hx = dot(slope,dFdx(road_uv)), hy = dot(slope,dFdy(road_uv));
++	vec2 gradient = abs(determinant) > 0.000001 ? vec2(hx*dy.y-hy*dx.y,hy*dx.x-hx*dy.x)/determinant : vec2(0.0);
++	return normalize(original+(view*vec4(-gradient.x,0.0,-gradient.y,0.0)).xyz);
++}
++
++vec3 winter_snow_relief(vec2 p, vec3 original, mat4 view, float weight) {
++	// The owner prefers the original textured snowfield; no cloud-like tilts.
++	return original;
++}
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/surface_detail.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://x7gd7yrpbq50
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/surface_shader_variants.gd.txt
+@@ -0,0 +1,60 @@
++class_name SurfaceShaderVariants
++extends RefCounted
++## Fixed visual-material flags become constants; samples and lighting stay intact.
++const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
++const INCLUDES: Dictionary = {
++	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
++	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
++	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
++	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
++	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
++}
++static var cache: Dictionary = {}
++
++static func specialize(material: ShaderMaterial) -> void:
++	var dynamic: ShaderMaterial = material.duplicate()
++	var source: String = material.shader.code
++	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
++	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
++		source = source.replace("diffuse_toon","diffuse_burley")
++	for pass_index: int in range(3):
++		for path: String in INCLUDES:
++			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
++	for flag: String in FLAGS:
++		var pattern := RegEx.new()
++		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = pattern.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
++		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
++	# GLES drivers count declared samplers even in constant-disabled branches.
++	# Alias unreachable biome samples to the shared factor sampler so those
++	# declarations cannot consume phone texture units. Active artwork is untouched.
++	var inactive: Array[String] = []
++	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
++		inactive.append_array(["snow_albedo","ice_albedo","ice_finish"])
++	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
++		inactive.append_array(["desert_apron","desert_road_albedo","dune_factors","dune_albedo"])
++	if not (material.get_shader_parameter("hybrid_grass") == true):
++		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
++	for sampler: String in inactive:
++		var declaration := RegEx.new()
++		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
++		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
++	# Aliases in early helper bodies require the shared sampler declared first.
++	var factors := RegEx.new()
++	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
++	var factor_declaration: RegExMatch = factors.search(source)
++	if factor_declaration != null:
++		source = factors.sub(source,"",true)
++		var header_end: int = source.find(";",source.find("render_mode")) + 1
++		source = source.insert(header_end,"\n" + factor_declaration.get_string())
++	var key: String = source.sha256_text()
++	if not cache.has(key):
++		var shader := Shader.new()
++		shader.code = source
++		if cache.size()>=64: cache.erase(cache.keys()[0])
++		cache[key] = shader
++	material.set_meta("surface_dynamic_material",dynamic)
++	material.shader = cache[key] as Shader
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/terrain.gdshaderinc
+@@ -0,0 +1,82 @@
++#include "res://track/surface_detail.gdshaderinc"
++
++uniform sampler2D surface_low : filter_linear, repeat_disable;
++uniform sampler2D surface_high : filter_linear, repeat_disable;
++uniform vec2 map_texel;
++uniform vec4 color_0 : source_color;
++uniform vec4 color_1 : source_color;
++uniform vec4 color_2 : source_color;
++uniform vec4 color_3 : source_color;
++uniform vec4 color_4 : source_color;
++uniform vec4 color_5 : source_color;
++uniform vec4 color_6 : source_color;
++uniform vec4 color_7 : source_color;
++varying vec3 world_position;
++
++void vertex() {
++	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++}
++
++vec4 feather(sampler2D source, vec2 uv) {
++	vec2 offset = map_texel * 0.65;
++	vec4 value = texture(source,uv) * 4.0;
++	value += texture(source,uv+vec2(offset.x,0.0))*2.0;
++	value += texture(source,uv-vec2(offset.x,0.0))*2.0;
++	value += texture(source,uv+vec2(0.0,offset.y))*2.0;
++	value += texture(source,uv-vec2(0.0,offset.y))*2.0;
++	value += texture(source,uv+offset);
++	value += texture(source,uv-offset);
++	value += texture(source,uv+vec2(offset.x,-offset.y));
++	value += texture(source,uv+vec2(-offset.x,offset.y));
++	return value / 16.0;
++}
++void fragment() {
++	vec4 low = feather(surface_low, UV);
++	vec4 high = feather(surface_high, UV);
++	// Keep a short, irregular grass fringe matching the road shoulder instead
++	// of a broad airbrushed halo. Preserve relative weights of other materials.
++	float grass_weight = low.g;
++	if (grass_weight > 0.001 && grass_weight < 0.999) {
++		float broken_grass = grass_fringe(mix(0.55,0.98,grass_weight),world_position.xz);
++		float rest = (1.0-broken_grass)/(1.0-grass_weight);
++		low *= rest;
++		high *= rest;
++		low.g = broken_grass;
++	}
++	float weights[8] = float[8](low.r,low.g,low.b,low.a,high.r,high.g,high.b,high.a);
++	vec3 colors[8] = vec3[8](color_0.rgb,color_1.rgb,color_2.rgb,color_3.rgb,color_4.rgb,color_5.rgb,color_6.rgb,color_7.rgb);
++	// Blend all material contributions instead of choosing a hard winner.
++	vec3 blended = vec3(0.0);
++	for (int i = 0; i < 8; i++) {
++		// Absent surfaces contribute exactly zero; avoid evaluating their detail.
++		if (weights[i] <= 0.0) continue;
++		vec3 layer = colors[i];
++		if (i == 1) layer = painted_grass(layer,world_position.xz);
++		else if (i == 2) layer = sand_detail(layer,world_position.xz);
++		else if (i == 0 || i == 7) layer = surface_detail(layer,world_position.xz,i == 0);
++		else if (i == 3 || i == 6) {
++			float band = step(0.82,sin(world_position.z*0.52+sin(world_position.x*0.18)*0.4));
++			layer *= 0.98 + band*0.045;
++			layer = mix(layer*0.88,color_6.rgb*1.15,pigment(world_position.xz*0.35)*0.22);
++		}
++		blended += layer * weights[i];
++	}
++	ALBEDO = blended;
++	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.b);
++	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
++	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
++	ROUGHNESS = 1.0;
++ SPECULAR = 0.0;
++ if (icy_road && low.r > 0.0) {
++  vec4 finish = texture(ice_finish,world_position.xz/6.0);
++  ROUGHNESS = mix(1.0,max(0.18,finish.a*0.65),low.r);
++  SPECULAR = mix(0.55,0.25,finish.b*0.6)*low.r;
++  NORMAL = winter_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,low.r);
++ }
++ if (wet_road && low.r > 0.0) {
++  ROUGHNESS = mix(1.0,wet_road_roughness(world_position.xz),low.r);
++  SPECULAR = wet_road_specular(world_position.xz)*low.r;
++ }
++ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.r);
++}
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/terrain.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://2eeqpx8ya7f8
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/winter_ice.gdshaderinc
+@@ -0,0 +1,28 @@
++// Keep crystalline frost and scraped compacted snow readable in the artwork.
++vec3 quiet_winter_ice(vec3 artwork) {
++	float grain = dot(artwork,vec3(0.2126,0.7152,0.0722));
++	return vec3(0.50,0.56,0.60)+(grain-0.30)*0.20;
++}
++
++uniform float winter_seam_reflection_strength : hint_range(0.0,1.0) = 1.0;
++
++// Packed A follows elongated existing artwork ridges; broad ice stays matte.
++float winter_seam_weight(vec4 finish, float frost) {
++	return finish.a*(1.0-smoothstep(0.20,0.75,frost))*winter_seam_reflection_strength;
++}
++
++vec2 winter_reflective_finish(vec4 finish, float frost) {
++	float seam = winter_seam_weight(finish,frost);
++	return vec2(mix(0.88,0.12,seam),mix(0.08,1.0,seam));
++}
++
++// Thin reflective facets catch the same static sky directions with stronger
++// contrast; this feeds reflected lighting, not albedo or self-illumination.
++vec4 winter_seam_radiance(vec3 normal, vec3 view, mat4 inverse_view, float seam) {
++	vec3 direction = normalize((inverse_view*vec4(reflect(-view,normal),0.0)).xyz);
++	float field = sin(direction.x*18.0+direction.z*7.0)
++		+sin(direction.z*23.0-direction.x*9.0+1.7)*0.45;
++	float cloud = smoothstep(0.15,1.15,field);
++	vec3 light = mix(vec3(0.40,0.65,0.95),vec3(2.0,2.2,2.4),cloud);
++	return vec4(light,seam*0.72);
++}
+--- /dev/null
++++ b/game/tests/fixtures/biome_performance_before/winter_ice.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://cnkw0iwtiwie
+--- /dev/null
++++ b/game/tests/profile_biome_shaders.gd
+@@ -0,0 +1,158 @@
++extends "res://tests/test_winter_environment.gd"
++## Explicit, unscored same-scene A/B. Baseline shader sources are archived fixtures.
++const BASELINE: String = "res://tests/fixtures/biome_performance_before/"
++var folder: String = "res://../docs/evidence/biome-performance-2026-10-13/paired"
++var seconds: float = 6.0
++var entries: Array[Dictionary] = []
++var report: Dictionary = {}
++var themes: Array[String] = ["winter","desert"]
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=")
++		if argument.begins_with("--seconds="): seconds = float(argument.trim_prefix("--seconds="))
++		if argument.begins_with("--themes="): themes.assign(argument.trim_prefix("--themes=").split(","))
++	folder += "/" + RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
++	var old_script := GDScript.new()
++	var source: String = FileAccess.get_file_as_string(BASELINE + "surface_shader_variants.gd.txt")
++	source = source.replace("class_name SurfaceShaderVariants","")
++	for path: String in SurfaceShaderVariants.INCLUDES:
++		source = source.replace('preload("' + path + '")','preload("' + BASELINE + path.get_file() + '")')
++	old_script.source_code = source
++	check(old_script.reload() == OK,"archived baseline shader generator compiles")
++	var old: RefCounted = old_script.new()
++	report = {"engine":Engine.get_version_info().string,"device":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"visual_version":NativeTrackVisual.VERSION,"note":"Same frozen scene, camera, mesh buffers, artwork and light; shaders, exact mask packing and opaque draw order switch. Effects hidden for pixel proof. Desktop GPU throughput, not phone or sustained driving FPS.","themes":{}}
++	for theme: String in themes:
++		var doc: Dictionary = make_track().metadata.creator_document.duplicate(true)
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.initial_track = track
++		game.production_mode = true
++		game.attempt_practice = true
++		root.add_child(game)
++		for i: int in range(10): await process_frame
++		check(game.preference_records == null and game.rating_records == null,"diagnostic has no record adapters")
++		game.paused = true
++		game.set_process(false)
++		game.set_physics_process(false)
++		game.race_cues.hide()
++		game.sand_dust.hide()
++		if game.winter_snow_wind != null: game.winter_snow_wind.hide()
++		game.trails.hide()
++		entries.clear()
++		for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
++			var material: ShaderMaterial = node.material_override as ShaderMaterial
++			if material == null or not material.has_meta("surface_dynamic_material"): continue
++			var baseline: ShaderMaterial = material.get_meta("surface_dynamic_material").duplicate()
++			baseline.render_priority = 0
++			if material.get_shader_parameter("terrain_packed") == true:
++				var packed: Image = (material.get_shader_parameter("surface_low") as Texture2D).get_image()
++				var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++				var low := Image.create(packed.get_width(),packed.get_height(),false,Image.FORMAT_RGBA8)
++				var high := Image.create(packed.get_width(),packed.get_height(),false,Image.FORMAT_RGBA8)
++				for y: int in range(packed.get_height()):
++					for x: int in range(packed.get_width()):
++						var channels: Color = packed.get_pixel(x,y)
++						var a := Color(0,0,0,0)
++						var b := Color(0,0,0,0)
++						for channel: int in range(4):
++							var kind: int = slots[channel]
++							if kind >= 0 and kind < 4: a[kind] = channels[channel]
++							elif kind >= 4: b[kind-4] = channels[channel]
++						low.set_pixel(x,y,a)
++						high.set_pixel(x,y,b)
++				baseline.set_shader_parameter("surface_low",ImageTexture.create_from_image(low))
++				baseline.set_shader_parameter("surface_high",ImageTexture.create_from_image(high))
++			old.call("specialize",baseline)
++			entries.append({"node":node,"optimized":material,"baseline":baseline})
++		check(not entries.is_empty(),theme + " material pair exists")
++		var proofs: Array[Dictionary] = []
++		root.size = Vector2i(1600,900)
++		for view: int in range(3):
++			var point: Vector2 = track.route[view * track.route.size() / 3]
++			game.camera.follow(point,Vector2.ZERO,0.0,0.0,true)
++			var original: Image = await capture_pair("baseline",theme + "-" + str(view) + "-before.png")
++			var optimized: Image = await capture_pair("optimized",theme + "-" + str(view) + "-after.png")
++			var restored: Image = await capture_pair("baseline","")
++			var proof: Dictionary = compare(original,optimized)
++			proof["unstable"] = compare(original,restored).changed
++			proof["view"] = view
++			proofs.append(proof)
++			check(proof.unstable == 0,theme + " frozen baseline is stable")
++			check(proof.max_channel_delta <= 2,theme + " optimized pixels retain approved shading within 2/255")
++			print("BIOME_PIXEL_PROOF: ",theme," ",JSON.stringify(proof))
++		root.size = Vector2i(3840,2160)
++		game.camera.follow(track.route[0],Vector2.ZERO,0.0,0.0,true)
++		var viewport: RID = root.get_viewport_rid()
++		RenderingServer.viewport_set_measure_render_time(viewport,true)
++		var stages: Array[Dictionary] = []
++		for mode: String in ["baseline","optimized","baseline","optimized"]:
++			set_mode(mode)
++			await measure(viewport,1.0)
++			var stage: Dictionary = await measure(viewport,seconds)
++			stage["mode"] = mode
++			stages.append(stage)
++			print("BIOME_SHADER_STAGE: ",theme," ",JSON.stringify(stage))
++		set_mode("optimized")
++		var packed_terrain: bool = false
++		for entry: Dictionary in entries:
++			if entry.optimized.get_shader_parameter("terrain_packed") == true: packed_terrain = true
++		report.themes[theme] = {"content_hash":track.content_hash,"materials":entries.size(),"packed_terrain":packed_terrain,"pixel_proofs":proofs,"stages":stages}
++		FileAccess.open(folder + "/report.json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++		game.queue_free()
++		await process_frame
++	print("BIOME_SHADER_PROFILE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func set_mode(mode: String) -> void:
++	for entry: Dictionary in entries: entry.node.material_override = entry[mode]
++
++func capture_pair(mode: String, filename: String) -> Image:
++	set_mode(mode)
++	# Let asynchronous Mobile sky/radiance preparation settle before proof.
++	await measure(root.get_viewport_rid(),1.0)
++	for frame: int in range(8): await RenderingServer.frame_post_draw
++	var captured: Image = root.get_texture().get_image()
++	captured.convert(Image.FORMAT_RGBA8)
++	if not filename.is_empty(): captured.save_png(folder + "/" + filename)
++	return captured
++
++func compare(a: Image, b: Image) -> Dictionary:
++	var changed: int = 0
++	var maximum: int = 0
++	var total: int = 0
++	var left: PackedByteArray = a.get_data()
++	var right: PackedByteArray = b.get_data()
++	for pixel: int in range(a.get_width()*a.get_height()):
++		var different: bool = false
++		for channel: int in range(3):
++			var delta: int = absi(left[pixel*4+channel]-right[pixel*4+channel])
++			total += delta
++			maximum = maxi(maximum,delta)
++			different = different or delta > 0
++		if different: changed += 1
++	return {"changed":changed,"max_channel_delta":maximum,"mean_channel_delta":float(total)/(a.get_width()*a.get_height()*3)}
++
++func measure(viewport: RID, duration: float) -> Dictionary:
++	var frames: Array[float] = []
++	var gpu: Array[float] = []
++	var cpu: Array[float] = []
++	var start: int = Time.get_ticks_usec()
++	var previous: int = start
++	while Time.get_ticks_usec()-start < duration*1000000.0:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		frames.append(float(now-previous)/1000.0)
++		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(viewport))
++		cpu.append(RenderingServer.viewport_get_measured_render_time_cpu(viewport))
++		previous = now
++	return {"samples":frames.size(),"frame_ms":quantiles(frames),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(cpu),"viewport":[root.size.x,root.size.y],"scale":root.scaling_3d_scale,"msaa":root.msaa_3d,"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)}
++
++func quantiles(values: Array[float]) -> Dictionary:
++	values.sort()
++	return {"p50":values[values.size()/2],"p95":values[mini(values.size()-1,floori(values.size()*0.95))],"max":values[-1]}
+--- /dev/null
++++ b/game/tests/profile_biome_shaders.gd.uid
+@@ -0,0 +1 @@
++uid://ccli6etubaxoq
+--- /dev/null
++++ b/game/tests/test_biome_terrain_packing.gd
+@@ -0,0 +1,54 @@
++extends SceneTree
++## Exact per-cell reconstruction implies exact bilinear/nine-tap mask filtering.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(label)
++
++func run() -> void:
++	for theme: String in ["winter","desert","pine","storm","night_city"]:
++		for kinds: Array in [[0,1,2,4],[0,1,3,7],[0,1,2,3,4,5,6,7]]:
++			var track := NativeTrack.new()
++			track.metadata = {"theme":theme}
++			track.grid_width = 16
++			track.grid_height = 16
++			track.half_extent = Vector2(8,8)
++			track.cells.resize(256)
++			for index: int in range(256): track.cells[index] = int(kinds[index % kinds.size()])
++			var before: PackedInt32Array = track.cells.duplicate()
++			var visual := NativeTrackVisual.new()
++			visual.theme_id = theme
++			visual.colors = TrackTheme.palette(theme)
++			root.add_child(visual)
++			await visual._build_terrain(track)
++			var material: ShaderMaterial = visual.get_child(0).material_override
++			var packed: bool = material.get_shader_parameter("terrain_packed")
++			check(packed == (theme in ["winter","desert"] and kinds.size() <= 4),theme + " packs only eligible four-channel maps")
++			var low: Image = (material.get_shader_parameter("surface_low") as Texture2D).get_image()
++			var high: Image = (material.get_shader_parameter("surface_high") as Texture2D).get_image()
++			var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++			for y: int in range(16):
++				for x: int in range(16):
++					var weights: Array[float] = [0,0,0,0,0,0,0,0]
++					var a: Color = low.get_pixel(x,y)
++					var b: Color = high.get_pixel(x,y)
++					for channel: int in range(4):
++						if packed:
++							if slots[channel] >= 0: weights[slots[channel]] = a[channel]
++						else:
++							weights[channel] = a[channel]
++							weights[channel+4] = b[channel]
++					var expected: Array[float] = [0,0,0,0,0,0,0,0]
++					expected[track.cells[y*16+x]] = 1.0
++					check(weights == expected,theme + " preserves every source-channel byte")
++			check(track.cells == before,theme + " leaves canonical cells unchanged")
++			check(material.render_priority == (1 if theme in ["winter","desert"] else 0),theme + " opaque terrain order is scoped")
++			visual.free()
++	print("BIOME_TERRAIN_PACKING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_biome_terrain_packing.gd.uid
+@@ -0,0 +1 @@
++uid://dhx8dx1dkmnkr
+--- a/game/tests/test_winter_environment.gd
++++ b/game/tests/test_winter_environment.gd
+@@ -144,7 +144,12 @@
+ 	var materials: Array[ShaderMaterial] = []
+ 	for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
+ 		var material: Material = node.material_override
+-		if material is ShaderMaterial and material.get_shader_parameter("icy_road") == true and not materials.has(material): materials.append(material)
++		if not material is ShaderMaterial: continue
++		# Serialized specialization stores constant biome flags in this original
++		# material; the executable shader no longer declares those uniforms.
++		var parameters: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
++		if parameters.get_shader_parameter("icy_road") == true and not materials.has(material): materials.append(material)
++	print("WINTER_SEAM_MATERIALS: ",materials.size())
+ 	check(not materials.is_empty(),"actual ice materials found for seam reflection comparison")
+ 	var enabled: Image = root.get_texture().get_image()
+ 	for material: ShaderMaterial in materials: material.set_shader_parameter("winter_seam_reflection_strength",0.0)
+--- a/game/track/bridge_road.gdshaderinc
++++ b/game/track/bridge_road.gdshaderinc
+@@ -13,8 +13,9 @@
+     if (NORMAL.y < 0.0) { NORMAL = -NORMAL; }
+ }
+ void fragment() {
+-    ALBEDO = surface_detail(road_color.rgb,world_position.xz,true);
+     if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
++    else if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
++    else { ALBEDO = surface_detail(road_color.rgb,world_position.xz,true); }
+     if (packed_sand && desert_bridge_width_data) {
+         // Same 1.95 m foot as the exposed ground fringe. UV.y already has
+         // the corrected signed cross-road coordinate, independent of phase.
+@@ -22,7 +23,6 @@
+         float deposited = desert_bank_coverage(across,world_position.xz)*(1.0-desert_apron_data.y);
+         if (deposited > 0.001) ALBEDO = mix(ALBEDO,desert_shoulder(sand_color.rgb,world_position.xz),deposited);
+     }
+-    if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
+     ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
+  if (icy_road) {
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -55,11 +55,12 @@
+ 	vec3 mask = texture(overlay_mask,map_uv).rgb;
+ 	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
+ 	float sand = 0.0;
+-	if (grass || gravel) { sand = sand_coverage(map_uv); }
++	if (gravel || (grass && !winter_snow && !desert_dunes)) { sand = sand_coverage(map_uv); }
+ 	float relief_weight = grass ? (1.0-sand) : 0.0;
+-	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
++	// Avoid shading a base that the fixed material role immediately replaces.
+ 	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0); }
+-	if (asphalt_surface && packed_sand) { ALBEDO = compacted_road(road_color.rgb,edge_fringe ? UV2 : UV); }
++	else if (asphalt_surface && packed_sand) { ALBEDO = compacted_road(road_color.rgb,edge_fringe ? UV2 : UV); }
++	else if (!(grass || gravel || kerb)) { ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface); }
+ 	if (asphalt_surface && packed_sand && desert_join.a > 0.001) {
+ 		float along = atan(desert_join.g*2.0-1.0,desert_join.r*2.0-1.0)*10.0/6.28318530718;
+ 		vec2 other_uv = vec2(along,(desert_join.b-0.5)*32.0);
+@@ -91,7 +92,10 @@
+ 		vec3 worn_asphalt = surface_detail(asphalt_base_color.rgb, world_position.xz, true);
+ 		ALBEDO = mix(ALBEDO, worn_asphalt, fade + chips);
+ 	}
+-	if (grass) { ALBEDO = mix(painted_grass(road_color.rgb,world_position.xz),sand_detail(sand_color.rgb,world_position.xz),sand); }
++	if (grass) {
++		ALBEDO = painted_grass(road_color.rgb,world_position.xz);
++		if (!winter_snow && !desert_dunes) ALBEDO = mix(ALBEDO,sand_detail(sand_color.rgb,world_position.xz),sand);
++	}
+ 	if (kerb) {
+ 		// Fit complete equal blocks to each exposed run. An odd count starts
+ 		// and ends white; no arbitrary half-red slivers at curve boundaries.
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-182"
++const VERSION: String = "track-kit-183"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -94,6 +94,9 @@
+ 	ground.set_shader_parameter("ground_color", colors[1])
+ 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
+ 	_bind_grass(ground)
++	# Opaque roads/banks/props populate depth first. Their hidden terrain and
++	# the kilometre-wide backdrop then fail depth before expensive shading.
++	if theme_id in ["winter","desert"]: ground.render_priority = 2
+ 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
+ 	SurfaceShaderVariants.specialize(ground)
+ 	if theme_id == "night_city" and partition_night_ground and _lamps_inside_terrain(track):
+@@ -200,6 +203,10 @@
+ 	high.fill(Color(0,0,0,0))
+ 	var hide_boundary: bool = _hide_creator_boundary(track)
+ 	var object_ground: PackedByteArray = _authored_barrier_cells(track)
++	var high_present: bool = false
++	var present: Dictionary = {}
++	var terrain_kinds := PackedByteArray()
++	terrain_kinds.resize(track.cells.size())
+ 	for y: int in range(track.grid_height):
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+@@ -210,12 +217,36 @@
+ 			# Object collision footprints are not concrete paving beneath foliage.
+ 			if kind == 4 and not object_ground.is_empty() and object_ground[y*track.grid_width+x] == 1: kind = 1
+ 			if hide_boundary and _boundary_cell(track,x,y): kind = 1
++			terrain_kinds[y*track.grid_width+x] = kind
++			present[kind] = true
+ 			var weights := Color(0,0,0,0)
+ 			weights[kind % 4] = 1.0
+ 			if kind < 4: low.set_pixel(x, y, weights)
+-			else: high.set_pixel(x, y, weights)
++			else:
++				high.set_pixel(x, y, weights)
++				high_present = true
++	# Four or fewer surface kinds fit the same exact masks into one RGBA sheet.
++	# Keep all eight kinds on the original path for richer painted documents.
++	var packed: bool = theme_id in ["winter","desert"] and present.size() <= 4
++	var slots := Vector4i(-1,-1,-1,-1)
++	if packed:
++		var kinds: Array = present.keys()
++		kinds.sort()
++		for index: int in range(kinds.size()): slots[index] = int(kinds[index])
++		low = Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_RGBA8)
++		for y: int in range(track.grid_height):
++			if _menu_yield_due():
++				await get_tree().process_frame
++				if not is_inside_tree(): return
++				_slice_started = Time.get_ticks_usec()
++			for x: int in range(track.grid_width):
++				var weights := Color(0,0,0,0)
++				weights[kinds.find(int(terrain_kinds[y*track.grid_width+x]))] = 1.0
++				low.set_pixel(x,y,weights)
++		high_present = false
+ 	var surface := ShaderMaterial.new()
+ 	surface.shader = preload("res://track/storm_terrain.gdshader") if theme_id == "storm" else TERRAIN_SHADER
++	if theme_id in ["winter","desert"]: surface.render_priority = 1
+ 	surface.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+ 	surface.set_shader_parameter("icy_road", theme_id == "winter")
+ 	surface.set_shader_parameter("wet_road", theme_id == "storm")
+@@ -224,6 +255,9 @@
+ 	_bind_grass(surface)
+ 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
+ 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
++	surface.set_shader_parameter("terrain_high_present",high_present)
++	surface.set_shader_parameter("terrain_packed",packed)
++	surface.set_shader_parameter("terrain_slots",slots)
+ 	surface.set_shader_parameter("map_texel", Vector2(1.0 / track.grid_width, 1.0 / track.grid_height))
+ 	for i: int in range(colors.size()):
+ 		# Terrain sand uses the exact same theme tint as the road shoulder.
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -2,6 +2,7 @@
+ extends RefCounted
+ ## Fixed visual-material flags become constants; samples and lighting stay intact.
+ const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed"]
+ const INCLUDES: Dictionary = {
+ 	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
+ 	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
+@@ -28,6 +29,33 @@
+ 		var value: Variant = material.get_shader_parameter(flag)
+ 		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
+ 		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
++	# These roles are immutable for a built surface. Keep their public uniforms
++	# for material inspection/cache serialization, but compile their reads away.
++	for flag: String in MATERIAL_FLAGS:
++		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
++		# lighting when constant-folded, changing a sparse MSAA edge pixel.
++		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
++		var declaration := RegEx.new()
++		declaration.compile("uniform bool " + flag + "\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = declaration.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1) == "true" if value == null else bool(value)
++		var reads := RegEx.new()
++		reads.compile("\\b" + flag + "\\b")
++		source = reads.sub(source,"fixed_" + flag,true)
++		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
++	if material.get_shader_parameter("terrain_packed") == true:
++		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
++		var channels: Array[String] = ["r","g","b","a"]
++		for channel: int in range(4):
++			var kind: int = slots[channel]
++			if kind < 0: continue
++			assignments += "\n\t%s.%s = packed.%s;" % ["low" if kind < 4 else "high",channels[kind % 4],channels[channel]]
++		var remap := RegEx.new()
++		remap.compile("(?s)// packed_terrain_begin.*?// packed_terrain_end")
++		source = remap.sub(source,assignments,true)
+ 	# GLES drivers count declared samplers even in constant-disabled branches.
+ 	# Alias unreachable biome samples to the shared factor sampler so those
+ 	# declarations cannot consume phone texture units. Active artwork is untouched.
+--- a/game/track/terrain.gdshaderinc
++++ b/game/track/terrain.gdshaderinc
+@@ -2,6 +2,9 @@
+ 
+ uniform sampler2D surface_low : filter_linear, repeat_disable;
+ uniform sampler2D surface_high : filter_linear, repeat_disable;
++uniform bool terrain_high_present = true;
++uniform bool terrain_packed = false;
++uniform ivec4 terrain_slots = ivec4(0,1,2,3);
+ uniform vec2 map_texel;
+ uniform vec4 color_0 : source_color;
+ uniform vec4 color_1 : source_color;
+@@ -32,7 +35,22 @@
+ }
+ void fragment() {
+ 	vec4 low = feather(surface_low, UV);
+-	vec4 high = feather(surface_high, UV);
++	vec4 high = terrain_high_present ? feather(surface_high, UV) : vec4(0.0);
++	// packed_terrain_begin
++	if (terrain_packed) {
++		vec4 packed = low;
++		low = vec4(0.0);
++		high = vec4(0.0);
++		if (terrain_slots.x >= 0 && terrain_slots.x < 4) low[terrain_slots.x] = packed.r;
++		else if (terrain_slots.x >= 4) high[terrain_slots.x-4] = packed.r;
++		if (terrain_slots.y >= 0 && terrain_slots.y < 4) low[terrain_slots.y] = packed.g;
++		else if (terrain_slots.y >= 4) high[terrain_slots.y-4] = packed.g;
++		if (terrain_slots.z >= 0 && terrain_slots.z < 4) low[terrain_slots.z] = packed.b;
++		else if (terrain_slots.z >= 4) high[terrain_slots.z-4] = packed.b;
++		if (terrain_slots.w >= 0 && terrain_slots.w < 4) low[terrain_slots.w] = packed.a;
++		else if (terrain_slots.w >= 4) high[terrain_slots.w-4] = packed.a;
++	}
++	// packed_terrain_end
+ 	// Keep a short, irregular grass fringe matching the road shoulder instead
+ 	// of a broad airbrushed halo. Preserve relative weights of other materials.
+ 	float grass_weight = low.g;
+@@ -47,11 +65,18 @@
+ 	vec3 colors[8] = vec3[8](color_0.rgb,color_1.rgb,color_2.rgb,color_3.rgb,color_4.rgb,color_5.rgb,color_6.rgb,color_7.rgb);
+ 	// Blend all material contributions instead of choosing a hard winner.
+ 	vec3 blended = vec3(0.0);
++	// Snow and dune pigment ignore the base colour: both terrain channels use
++	// the same world artwork. Evaluate it once and retain each exact weight.
++	vec3 loose = vec3(0.0);
++	if ((winter_snow || desert_dunes) && (low.g > 0.0 || low.b > 0.0)) {
++		loose = painted_grass(color_1.rgb,world_position.xz);
++	}
+ 	for (int i = 0; i < 8; i++) {
+ 		// Absent surfaces contribute exactly zero; avoid evaluating their detail.
+ 		if (weights[i] <= 0.0) continue;
+ 		vec3 layer = colors[i];
+-		if (i == 1) layer = painted_grass(layer,world_position.xz);
++		if ((winter_snow || desert_dunes) && (i == 1 || i == 2)) layer = loose;
++		else if (i == 1) layer = painted_grass(layer,world_position.xz);
+ 		else if (i == 2) layer = sand_detail(layer,world_position.xz);
+ 		else if (i == 0 || i == 7) layer = surface_detail(layer,world_position.xz,i == 0);
+ 		else if (i == 3 || i == 6) {
+--- a/game/track/winter_ice.gdshaderinc
++++ b/game/track/winter_ice.gdshaderinc
+@@ -19,6 +19,9 @@
+ // Thin reflective facets catch the same static sky directions with stronger
+ // contrast; this feeds reflected lighting, not albedo or self-illumination.
+ vec4 winter_seam_radiance(vec3 normal, vec3 view, mat4 inverse_view, float seam) {
++	// Most packed ice has exactly zero seam coverage. Its reflected radiance
++	// is unused, so skip the directional cloud field on those fragments.
++	if (seam <= 0.0) return vec4(0.0);
+ 	vec3 direction = normalize((inverse_view*vec4(reflect(-view,normal),0.0)).xyz);
+ 	float field = sin(direction.x*18.0+direction.z*7.0)
+ 		+sin(direction.z*23.0-direction.x*9.0+1.7)*0.45;

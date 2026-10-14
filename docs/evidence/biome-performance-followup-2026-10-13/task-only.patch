@@ -1,0 +1,1041 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Remaining biome optimisation items and parallel tire precedence (2026-10-13)
++The owner requests all remaining weathering-upload, offscreen-trail, zero-contribution particle and prepared-geometry items. The parallel tire task owns ribbon geometry/shading/pressure/sampling and takes precedence. Retain its one MultiMesh draw and full 16,384-slot ring; compact only a conservative draw view, with direct uploads for small/no-camera populations, original slot ordering and immediate append/reset/return. Cache unchanged finish values, skip only exact-zero particle contributions and reuse completed non-editor previews within existing byte budgets. Kit184; both-renderer equivalence/pixel/cache/bridge and merged driving/rewind/washing checks pass. Phone FPS remains untested. See `docs/BIOME_PERFORMANCE_FOLLOWUP_2026_10_13.md` for commands, captures, measurements, locked-editor import limitation and scoped checkpoint.
+ 
+ ## Desert sand and pebble sun-reflection override (2026-10-13)
+ The owner requests sun-catching glistening on terrain sand and small stones. Use sparse, distance-filtered dielectric mineral highlights from actual lighting/view/shadows, sharing the existing packed texture. Keep broad sand and scrub matte, compacted roads nonreflective, and pebble population/geometry in the original batch. Preserve approved pigments, performance optimizations, original dust, tire marks, camera and canonical driving/scoring. See `docs/DESERT_SUN_GLINTS_2026_10_13.md` for actual paired pixels/motion/GPU cost, files/checkpoint and owner/device acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 BPERF05-BPERF08/V02/V04/V05/G01/R01/Q01: owner fixes all remaining optimisation items; parallel tire geometry/shading/pressure/sampling takes precedence. Single-draw conservative trail visibility retains16384/submits512 in wide-field fixture/exact pixels; direct fast path avoids provisional paging cost. State-only melt/changed-uniform caching preserves five-car condition, zero unchanged uploads. Exact-zero particle skips preserve dust/air and allMobile pixels, <=1of255 Compatibility snow. Preview-world reuse first-race terrain/scenery Compatibility Winter525.077->1.434ms/Desert119.860->0.123; Mobile528.484->20.332/131.488->0.142, not fresh-install/phone FPS. Kit183->184; followup146+146/particle9+9/weather860/wash1383/ribbons14/soil163/desert87/driving72/rewind61/cache70/prepared80/parse618/bridge8+8/winter-motion106 pass. Initial capture shutdown warning not reproduced in two subsequent runs. Import locked by open editor audioDLL; no phone test/APK/fullValidate/backend/deploy. Commands/captures/scoped checkpoint/acceptance: docs/BIOME_PERFORMANCE_FOLLOWUP_2026_10_13.md.
++
+ 2026-10-13 DS23/DS24/V02/V04/V05/G01/R01/Q01: sparse sun/shadow/view-responsive mineral finish on desert loose sand/banks/pebbles; same texture/draws/triangles, matte scrub/firm road; kit184->185. Native13/Mobile13 exact restored display-pixel/motion checks, disabled-versus-original0/max1of255; sampler60/cache70/Desert87/Import pass. Paired RTX3090 1600x900 mean-median GPU cost +0.0405ms Native/+0.0245ms Mobile; frozen desktop only. Concurrent visibility retained/excluded; original desert generation functions exact. DN2103 attached; no phone/APK/full regression/backend/deploy. Actual commands/initial diagnostic failures/checkpoint/owner acceptance: docs/DESERT_SUN_GLINTS_2026_10_13.md.
+ 
+ 2026-10-13 WSP04-WSP05/WSP01-WSP03/BPERF01-BPERF04/G01/R01/V04/V05/Q01: owner missing bank powder restored. Baseline height bake0cells reproduced original-Shader identity failure after fixed-role compilation; retained smooth_road_bank uniform now identifies specialized/disk/legacyfalse-role materials. Winter-spray7 whiter/broken textured dust-style powder/wider random birth; same44slots/four systems/0.42s entry+0.62s push, accepted forces/physics56 exact and biome-performance code untouched. Native52040/Mobile52040/Desert87 pass; cold/real disk/legacy role regression/exact heights, GPU1836/1781 pixels,180motionframes/80pushframes each. Fixed-position GPU timing load-sensitive, no incremental/phone FPS claim; diagnostic readback/profile gaps retained. Fixture absolute-cache path corrected with assertions preserved. Doctor DN2103 attached; no phone test/APK/fullValidate/backend/deploy/livewrites. Actual commands/files/captures/scoped checkpoint/owner-device acceptance: docs/WINTER_POWDER_RESTORE.md.
+--- /dev/null
++++ b/docs/BIOME_PERFORMANCE_FOLLOWUP_2026_10_13.md
+@@ -0,0 +1,57 @@
++# Remaining winter/desert optimisation items
++
++2026-10-13, owner requests all four remaining items. Requirements BPERF05 weathering uploads, BPERF06 offscreen tire-mark submission, BPERF07 zero-contribution particle shading, BPERF08 prepared geometry reuse; preserve V02/V04/V05/G01/R01/Q01, local cosmetics, original nine-second dust, five laps and canonical driving/scoring. The owner's parallel tire-mark task takes precedence over this task's trail work.
++
++## Final implementation
++
++- `game/vehicle/vehicle_weathering.gd`: split state-only melting from material updates, avoiding the second upload inside Desert exposure. Cache each of the twelve finish values and upload only changed values; configuration, restore, washing, reset and paint behavior remain. Unchanged values make zero upload calls. Exact pre-task state comparisons cover all five cars in Winter/Desert, including melt/wash/restore.
++- `game/vehicle/trail_visibility.gd` and small hooks in `skid_trails.gd`: retain the parallel task's four-vertex joined ribbons, shading, pressure, sampling, original `MultiMesh` API, one draw and 16,384 allocated/stored slots. Conservative groups of 512 slots select a compact draw view in original global slot order. Stored segments are never deleted by visibility and reappear on return. Small/no-camera populations retain the original direct uploads. Camera refresh has a conservative metre of padding, a half-metre position interval, immediate projection/orientation/new-group refresh, and no repeated unchanged-view scan. Newly appended groups and partial groups update immediately; reset clears both counts. The draw count and retained count are distinct after compaction.
++- `game/vehicle/sand_dust.gd`, `winter_snow_wind.gdshader`, `winter_air_snow.gdshader`: skip shading only when colour alpha, cloud shape, distance fade or opaque intersection gives exactly zero contribution. No low-alpha threshold, shorter lifetime, reduced density/count, smaller particles, changed wind/gravity or lower resolution is introduced. Dust birth and bridge guards remain.
++- `game/track/native_track_visual.gd` and `game/ui/track_showroom.gd`: completed sliced non-editor previews now populate the existing bounded prepared-world cache and can be reused by the first race. Preview image keys include the visual kit. Road-memory entries may retain eight smaller documents rather than two, within the same 32 MiB limit; world-cache limits remain five/64 MiB. Kit 183 → 184 invalidates disposable presentation caches. Editor worlds remain excluded, and every restored world owns fresh mutable nodes/instance buffers.
++- `scripts/dev.ps1`: fix `-EngineVerbose` placement before engine/user argument separation. Previously it was appended after `--` and became a user argument, preventing the requested cleanup diagnostics from showing engine details.
++
++The provisional multi-draw trail-page approach was removed after the owner clarified precedence. The final renderer remains one draw. The saved trail-only baseline is reconstructed from the current parallel-task source by reversing only this task's visibility hooks; its geometry/shader/pressure changes are retained. Their separate measurements and source are recorded in [TIRE_RIBBONS.md](TIRE_RIBBONS.md).
++
++## Actual measurements and limits
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, RTX 3090, 1600×900, 2× MSAA. Explicit unscored fixtures use no account/score adapters. Both before/after sides use the same final ribbon geometry and identical stored segment data. These are component measurements, not a physical-phone FPS prediction.
++
++| Finding | Actual result |
++| --- | --- |
++| Unchanged weathering finish | Approximately 18–54 µs before versus 0.7–1.5 µs after, depending on car/biome; zero repeated uploads after the initial values. This times unchanged updates, not all active car presentation. |
++| Wide-field culling fixture | All 16,384 marks retained; 512 submitted near the camera. Ground+marks stays at two total draws. Submitted primitives fall from 32,770 to 1,026 with the parallel task's two-triangle ribbons. |
++| Trail appearance | Zero changed pixels on both renderers; original CPU transforms, pigment/custom arrays and cursor agree through a full overwrite. Remote uploads match the original renderer's actual packed precision. |
++| Trail sampling | Final direct-path medians 39.316→37.727 µs Compatibility and 36.856→37.327 µs Mobile. Direction varies with process load; no guaranteed CPU speedup or full-game FPS gain is claimed. Active visibility also has bounded bounds/refresh/compaction work. |
++| First race after preview, Compatibility | Winter terrain/scenery 525.077→1.434 ms; Desert 119.860→0.123 ms. |
++| First race after preview, desktop Mobile/Vulkan | Winter 528.484→20.332 ms; Desert 131.488→0.142 ms. Both race paths already have preview-built road resources. This is prepared-world reuse, not a fresh-install cold-build reduction. |
++| Particle pixel proof | Dust/air exact on both renderers; all Mobile comparisons exact. Compatibility wind changes five pixels and bank one pixel, at most 1/255. All restored reference images are stable; original tolerance ≤2/255 retained. |
++
++Short particle/GPU timer stages vary with desktop activity and include the proxy ground. They do not establish a reliable incremental particle speedup. The implementation removes known zero-contribution work; further physical-device profiling remains necessary. Raw alternating stages are retained, including slower samples. The cold preview build still costs time when no prepared world exists or an entry is evicted.
++
++## Actual commands and outcomes
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass` and `scripts/dev.ps1`. Normal Godot user logs/caches required permitted runner access. No older PATH engine was used.
++
++- `TestScript -ScriptPath res://tests/test_biome_followup.gd -Graphical`, then Mobile with `-RenderingMethod mobile -RenderingDriver vulkan`: final 146 checks each, zero failures. Exact condition/ring state, GPU precision, pixel stability, leave/return, append/reset, fixed draw/budget and preview/cold/restored mesh parity. Task-owned JSON/PNG evidence in `docs/evidence/biome-performance-followup-2026-10-13/{gl_compatibility,mobile}`.
++- `TestScript -ScriptPath res://tests/test_particle_followup.gd -Graphical`, both renderers: nine checks each, zero failures; actual material routines frozen on deterministic depth/particle proxies. Evidence in `particles-gl_compatibility` / `particles-mobile`.
++- `TestScript -ScriptPath res://tests/test_vehicle_weathering.gd`: 860 checks, zero failures.
++- `TestScript -ScriptPath res://tests/test_car_wash.gd`: 1,383 checks, zero failures.
++- `TestScript -ScriptPath res://tests/test_tire_ribbons.gd`: parallel renderer's 14 headless checks, zero failures.
++- `TestSoil`: 163 checks, zero failures.
++- `TestDesert`: 87 checks, zero failures, including original dust and five-car behavior.
++- `TestDriving`: 72 checks, zero failures.
++- `TestRewind`: 61 checks, zero failures.
++- `TestRoadCache`: 70 checks, zero failures.
++- `TestScript -ScriptPath res://tests/test_prepared_race_load.gd`: 80 checks, zero failures; restored mutable buffers/props isolated and canonical driving exact.
++- `TestScript -ScriptPath res://tests/test_script_parse.gd`: final 618 scripts, zero failures; earlier 619 reflected the provisional helper that was subsequently removed.
++- `TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical`, both renderers: eight checks each, zero failures; protected roof pixels zero.
++- `TestScript -ScriptPath res://tests/test_winter_environment.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument @('--capture','--video','--seam-proof','--output-dir=<task folder>')`: 106 checks, zero failures; 150 actual motion frames and 33,357 seam-contribution pixels, zero unstable pixels.
++- `TestScript -ScriptPath res://tests/capture_desert_refinement.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument @('--stage=after','--evidence-root=<task folder>')`: six actual gameplay/dust views, 60,799 bank vertices / 184 clods, canonical cells/hash unchanged. First final capture produced a shutdown resource warning; two subsequent captures, including true engine verbose after the runner fix, completed cleanly. The initial warning is retained, not counted as a clean runner result.
++- `Doctor`: matching engine/templates and OnePlus DN2103 attached. No physical-phone run/performance test performed.
++- `Import`: failed while a concurrently open Godot editor held `~bmt_windows_audio_v3.dll`; the editor was not closed or altered. Runtime script/graphical suites and parse checks passed independently. No import/export success is claimed for that invocation.
++
++Intermediate equivalence failure was caused by the parallel task changing geometry after the original snapshot; comparison was rebased to its final renderer. A provisional culling implementation added unnecessary sampling/unchanged-view cost; the final direct-upload path and cached view guard replace it. A pigment assertion initially compared half-precision renderer data with unquantized CPU values; the final assertion compares both renderers' original/compacted precision, with exact CPU state and the same pixel threshold retained. A particle fixture initially passed a Window to a Node3D helper and was corrected. No acceptance assertion or threshold was weakened.
++
++Inspected [culled tire marks](evidence/biome-performance-followup-2026-10-13/mobile/trails-after.png), [dust proof](evidence/biome-performance-followup-2026-10-13/particles-mobile/dust-after.png), [Winter driving](evidence/biome-performance-followup-2026-10-13/winter-motion/driving.png), [Winter motion](evidence/biome-performance-followup-2026-10-13/winter-motion/driving-motion.html) and [Desert dust](evidence/biome-performance-followup-2026-10-13/desert-gameplay/after/driving-dust.png).
++
++No canonical physics/rules/compiler contract change, backend operation, live score write, Android export/install, full Validate or production deployment. Remaining acceptance: owner review of the merged tire renderer, physical-phone/thermal frame pacing, active-culling overhead on representative tracks and genuinely cold/evicted cache cases. The task-only patch/isolated checkpoint excludes the parallel tire geometry/appearance, hitch-monitor, trophy-wall and other unrelated work; shared index/HEAD remain unchanged.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 BPERF05-BPERF08/V02/V04/V05/G01/R01/Q01: owner fixes all remaining optimisation items; parallel tire geometry/shading/pressure/sampling takes precedence. Single-draw conservative trail visibility retains16384/submits512 in wide-field fixture/exact pixels; direct fast path avoids provisional paging cost. State-only melt/changed-uniform caching preserves five-car condition, zero unchanged uploads. Exact-zero particle skips preserve dust/air and allMobile pixels, <=1of255 Compatibility snow. Preview-world reuse first-race terrain/scenery Compatibility Winter525.077->1.434ms/Desert119.860->0.123; Mobile528.484->20.332/131.488->0.142, not fresh-install/phone FPS. Kit183->184; followup146+146/particle9+9/weather860/wash1383/ribbons14/soil163/desert87/driving72/rewind61/cache70/prepared80/parse618/bridge8+8/winter-motion106 pass. Initial capture shutdown warning not reproduced in two subsequent runs. Import locked by open editor audioDLL; no phone test/APK/fullValidate/backend/deploy. Commands/captures/scoped checkpoint/acceptance: docs/BIOME_PERFORMANCE_FOLLOWUP_2026_10_13.md.
++
+ 2026-10-13 DS23/DS24/V02/V04/V05/G01/R01/Q01: sparse sun/shadow/view-responsive mineral finish on desert loose sand/banks/pebbles; same texture/draws/triangles, matte scrub/firm road; kit184->185. Native13/Mobile13 exact restored display-pixel/motion checks, disabled-versus-original0/max1of255; sampler60/cache70/Desert87/Import pass. Paired RTX3090 1600x900 mean-median GPU cost +0.0405ms Native/+0.0245ms Mobile; frozen desktop only. Concurrent visibility retained/excluded; original desert generation functions exact. DN2103 attached; no phone/APK/full regression/backend/deploy. Actual commands/initial diagnostic failures/checkpoint/owner acceptance: docs/DESERT_SUN_GLINTS_2026_10_13.md.
+ 
+ 2026-10-13 WSP04-WSP05/WSP01-WSP03/BPERF01-BPERF04/G01/R01/V04/V05/Q01: owner missing bank powder restored. Baseline height bake0cells reproduced original-Shader identity failure after fixed-role compilation; retained smooth_road_bank uniform now identifies specialized/disk/legacyfalse-role materials. Winter-spray7 whiter/broken textured dust-style powder/wider random birth; same44slots/four systems/0.42s entry+0.62s push, accepted forces/physics56 exact and biome-performance code untouched. Native52040/Mobile52040/Desert87 pass; cold/real disk/legacy role regression/exact heights, GPU1836/1781 pixels,180motionframes/80pushframes each. Fixed-position GPU timing load-sensitive, no incremental/phone FPS claim; diagnostic readback/profile gaps retained. Fixture absolute-cache path corrected with assertions preserved. Doctor DN2103 attached; no phone test/APK/fullValidate/backend/deploy/livewrites. Actual commands/files/captures/scoped checkpoint/owner-device acceptance: docs/WINTER_POWDER_RESTORE.md.
+--- /dev/null
++++ b/game/tests/test_biome_followup.gd
+@@ -0,0 +1,317 @@
++extends SceneTree
++## Task-owned equivalence/culling/cache checks and alternating desktop profiles.
++const BEFORE: String = "res://../build/biome-performance-followup-2026-10-13/before/"
++var output: String = "res://../docs/evidence/biome-performance-followup-2026-10-13"
++var checks: int = 0
++var failures: int = 0
++var report: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(label)
++
++func legacy(path: String, classname: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string(BEFORE+path).replace("\r\n","\n").replace("class_name "+classname+"\n","")
++	check(script.reload() == OK,"saved pre-task " + classname + " compiles")
++	return script
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	output += "/" + RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	report = {"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"device":RenderingServer.get_video_adapter_name(),"scope":"Explicit unscored fixtures; no account or score adapters"}
++	await weathering()
++	await trails()
++	await preparation()
++	FileAccess.open(output+"/report.json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("BIOME_FOLLOWUP: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
++
++func bed(theme: String) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.metadata = {"theme":theme}
++	track.cell_size = 10.0
++	track.grid_width = 20
++	track.grid_height = 20
++	track.half_extent = Vector2(100,100)
++	track.cells.resize(400)
++	track.cells.fill(2 if theme == "desert" else 0)
++	track.deck_cells.resize(400)
++	track.deck_cells.fill(-1)
++	return track
++
++func weathering() -> void:
++	var old: GDScript = legacy("game/vehicle/vehicle_weathering.gd","VehicleWeathering")
++	var profiles: Array[Dictionary] = []
++	for id: String in VehicleCatalog.IDS:
++		var left := CarVisual.new()
++		var right := CarVisual.new()
++		left.vehicle_id = id
++		right.vehicle_id = id
++		root.add_child(left)
++		root.add_child(right)
++		for theme: String in ["winter","desert"]:
++			var before: RefCounted = old.new()
++			var after := VehicleWeathering.new()
++			before.configure(left,theme,VehicleCatalog.config(id))
++			after.configure(right,theme,VehicleCatalog.config(id))
++			var track: NativeTrack = bed(theme)
++			var state := VehicleState.new()
++			state.velocity = Vector2(0,20)
++			for tick: int in range(1,601):
++				state.tick = tick
++				before.present(state,track,false)
++				after.present(state,track,false)
++				if tick%60 == 0:
++					check(before.snapshot() == after.snapshot(),id+" "+theme+" exact local condition state")
++			var retained: Dictionary = after.snapshot()
++			before.restore(retained)
++			after.restore(retained)
++			before.melt(0.73)
++			after.melt(0.73)
++			before.wash(Vector3.ZERO,0.3)
++			after.wash(Vector3.ZERO,0.3)
++			check(before.snapshot() == after.snapshot(),id+" exact melt/wash/restore")
++			var uploads: int = after.parameter_uploads
++			for repeat: int in range(20): after._update_finish()
++			check(after.parameter_uploads == uploads,"unchanged finish values perform no uploads")
++			var timings: Array[Dictionary] = []
++			for label: String in ["before","after","before","after"]:
++				var effect: RefCounted = before if label == "before" else after
++				var start: int = Time.get_ticks_usec()
++				for repeat: int in range(1000): effect._update_finish()
++				timings.append({"mode":label,"us_per_unchanged_update":float(Time.get_ticks_usec()-start)/1000.0})
++			profiles.append({"car":id,"theme":theme,"materials":after.materials.size(),"stages":timings})
++			before.reset()
++			after.reset()
++		left.free()
++		right.free()
++	report["weathering"] = profiles
++	print("FOLLOWUP_WEATHERING: five cars, exact state and unchanged-upload checks complete")
++
++func trails() -> void:
++	var old: GDScript = legacy("game/vehicle/skid_trails.gd","SkidTrails")
++	var before: Node3D = old.new()
++	var after := SkidTrails.new()
++	root.add_child(before)
++	root.add_child(after)
++	var stages: Array[Dictionary] = []
++	for index: int in range(SkidTrails.CAPACITY+37):
++		var page: int = (index%SkidTrails.CAPACITY)/TrailVisibility.PAGE_SIZE
++		var local: int = index%TrailVisibility.PAGE_SIZE
++		var x: float = (local%32-16)*0.4 + page*140.0
++		var z: float = (local/32-8)*0.55
++		var a := Vector3(x,0.028,z)
++		var b: Vector3 = a+Vector3(0.16,0,0.27)
++		var strength: float = 0.15 + (local%7)*0.1
++		before._mark(a,b,0.3,index%3,strength)
++		after._mark(a,b,0.3,index%3,strength)
++	print("FOLLOWUP_RING_PARITY: cursor=",before.cursor == after.cursor," transforms=",before.mark_transforms == after.mark_transforms," colours=",before.mark_colors == after.mark_colors," custom=",before.mark_custom == after.mark_custom)
++	for index: int in range(SkidTrails.CAPACITY):
++		if before.mark_transforms[index] != after.mark_transforms[index]:
++			print("FOLLOWUP_RING_FIRST_DIFFERENCE: ",index," before=",before.mark_transforms[index]," after=",after.mark_transforms[index])
++			break
++	check(before.cursor == after.cursor and before.mark_transforms == after.mark_transforms and before.mark_colors == after.mark_colors and before.mark_custom == after.mark_custom,"complete ring overwrite preserves all segment state")
++	check(after.trail_visibility.retained_count == SkidTrails.CAPACITY,"offscreen marks remain stored at original ring capacity")
++	check(after.instances.instance_count == SkidTrails.CAPACITY and after.get_child_count() == 1,"single GPU draw and allocation retain the original fixed ring budget")
++	var cpu: Dictionary = {}
++	var state := VehicleState.new()
++	var input := DriveFrame.sample(0,0,1)
++	for effect: Node3D in [before,after]:
++		var values: Array[float] = []
++		for repeat: int in range(3):
++			effect.clear()
++			var start: int = Time.get_ticks_usec()
++			for index: int in range(2000):
++				var angle: float = index*0.02
++				state.position = Vector2(sin(angle),cos(angle))*22.0
++				state.heading = angle+PI*0.5
++				state.velocity = state.forward()*25.0+state.right()*8.0
++				effect.sample(state,input)
++			values.append(float(Time.get_ticks_usec()-start)/2000.0)
++		values.sort()
++		cpu["before" if effect == before else "after"] = values[1]
++	report["trail_sampling_us"] = cpu
++	print("FOLLOWUP_TRAIL_SAMPLE_US: ",JSON.stringify(cpu))
++	# Restore the exact wide-field ring after the isolated emission benchmark.
++	before.clear()
++	after.clear()
++	for index: int in range(SkidTrails.CAPACITY):
++		var page: int = index/TrailVisibility.PAGE_SIZE
++		var local: int = index%TrailVisibility.PAGE_SIZE
++		var a := Vector3((local%32-16)*0.4+page*140.0,0.028,(local/32-8)*0.55)
++		before._mark(a,a+Vector3(0.16,0,0.27),0.3,index%3,0.15+(local%7)*0.1)
++		after._mark(a,a+Vector3(0.16,0,0.27),0.3,index%3,0.15+(local%7)*0.1)
++	if DisplayServer.get_name() != "headless":
++		root.size = Vector2i(1600,900)
++		root.content_scale_size = root.size
++		root.msaa_3d = Viewport.MSAA_2X
++		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++		Engine.max_fps = 0
++		var camera := Camera3D.new()
++		root.add_child(camera)
++		camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++		camera.size = 24
++		camera.position = Vector3(0,20,15)
++		camera.look_at(Vector3.ZERO)
++		var light := DirectionalLight3D.new()
++		root.add_child(light)
++		light.rotation_degrees = Vector3(-58,-35,0)
++		var environment := WorldEnvironment.new()
++		root.add_child(environment)
++		environment.environment = Environment.new()
++		environment.environment.background_mode = Environment.BG_COLOR
++		environment.environment.background_color = Color(0.2,0.2,0.2)
++		environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++		environment.environment.ambient_light_energy = 0.5
++		var ground := MeshInstance3D.new()
++		ground.mesh = PlaneMesh.new()
++		ground.mesh.size = Vector2(30,30)
++		ground.material_override = VisualGeometry.material(Color(0.65,0.67,0.68))
++		root.add_child(ground)
++		var saved: Array[Transform3D] = after.mark_transforms.duplicate()
++		var counts: Array[int] = []
++		for position: float in [0.0,1400.0,0.0]:
++			camera.position = Vector3(position,20,15)
++			camera.look_at(Vector3(position,0,0))
++			after.trail_visibility.present(camera,after.mark_colors,after.mark_custom)
++			counts.append(after.instances.visible_instance_count)
++			check(counts[-1] > 0 and counts[-1] <= TrailVisibility.PAGE_SIZE*2,"conservative frustum groups retain local marks and cull remote marks")
++			if position == 1400.0:
++				check(after.instances.get_instance_transform(0).is_equal_approx(after.mark_transforms[5120]),"compacted remote group uploads its exact ribbon transform")
++				print("FOLLOWUP_REMOTE_BUFFER: colour=",after.instances.get_instance_color(0)," reference=",before.instances.get_instance_color(5120)," custom=",after.instances.get_instance_custom_data(0)," reference_custom=",before.instances.get_instance_custom_data(5120))
++				check(after.instances.get_instance_color(0).is_equal_approx(before.instances.get_instance_color(5120)),"compacted remote group preserves renderer pigment precision")
++				check(after.instances.get_instance_custom_data(0).is_equal_approx(before.instances.get_instance_custom_data(5120)),"compacted remote group preserves renderer endpoint-pressure precision")
++		check(after.mark_transforms == saved and counts[0] == counts[2],"moving away and returning restores the same retained marks")
++		camera.position = Vector3(0,20,15)
++		camera.look_at(Vector3.ZERO)
++		var viewport: RID = root.get_viewport_rid()
++		RenderingServer.viewport_set_measure_render_time(viewport,true)
++		var images: Array[Image] = []
++		for label: String in ["before","after","before","after"]:
++			before.visible = label == "before"
++			after.visible = label == "after"
++			await measure(viewport,0.5)
++			var stage: Dictionary = await measure(viewport,1.0)
++			stage["mode"] = label
++			stage["retained"] = after.trail_visibility.retained_count
++			stage["submitted"] = after.instances.visible_instance_count if label == "after" else before.instances.visible_instance_count
++			stages.append(stage)
++			var captured: Image = root.get_texture().get_image()
++			captured.convert(Image.FORMAT_RGBA8)
++			captured.save_png(output+"/trails-"+label+".png")
++			if images.size() < 3: images.append(captured)
++			print("FOLLOWUP_TRAIL_STAGE: ",JSON.stringify(stage))
++		var delta: Dictionary = pixel_delta(images[0],images[1])
++		check(delta.maximum <= 2,"culled trail pages preserve visible pixels within 2/255")
++		check(pixel_delta(images[0],images[2]).changed == 0,"trail reference pixels are stable")
++		report["trail_pixels"] = delta
++		after.clear()
++		for index: int in range(1024):
++			var a := Vector3((index%16)*0.3+(0.0 if index < 512 else 1400.0),0.028,(index%32)*0.1)
++			after._mark(a,a+Vector3(0,0,0.3),0.3,2,0.8)
++		after.trail_visibility.present(camera,after.mark_colors,after.mark_custom)
++		check(after.instances.visible_instance_count == 512 and after.trail_visibility.retained_count == 1024,"draw view retains a separate full stored count")
++		after._mark(Vector3(0,0.028,1),Vector3(0,0.028,1.3),0.3,2,0.8)
++		after.trail_visibility.present(camera,after.mark_colors,after.mark_custom)
++		check(after.instances.visible_instance_count == 513 and after.instances.get_instance_transform(512).is_equal_approx(after.mark_transforms[1024]),"new occupied visible group appears immediately after compaction")
++		after._mark(Vector3(1,0.028,1),Vector3(1,0.028,1.3),0.3,2,0.8)
++		after.trail_visibility.present(camera,after.mark_colors,after.mark_custom)
++		check(after.instances.visible_instance_count == 514 and after.instances.get_instance_transform(513).is_equal_approx(after.mark_transforms[1025]),"append to a compacted partial group extends its draw count")
++		after.clear()
++		check(after.instances.visible_instance_count == 0 and after.trail_visibility.retained_count == 0,"attempt reset clears storage and compacted visibility immediately")
++		camera.free()
++		light.free()
++		environment.free()
++		ground.free()
++	report["trail_stages"] = stages
++	before.free()
++	after.free()
++
++func preparation() -> void:
++	var worlds = NativeTrackVisual.PREPARED_WORLDS
++	var rows: Array[Dictionary] = []
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
++	for theme: String in ["winter","desert"]:
++		worlds.entries.clear()
++		NativeTrackVisual._road_mesh_cache.clear()
++		var doc: Dictionary = TrackDocument.create_default()
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var cells: PackedInt32Array = track.cells.duplicate()
++		var preview := NativeTrackVisual.new()
++		preview.cache_race_world = true
++		root.add_child(preview)
++		var start: int = Time.get_ticks_usec()
++		await preview.build(track,BridgePresentation.new(track),true)
++		var preview_ms: float = float(Time.get_ticks_usec()-start)/1000.0
++		check(worlds.entries.size() == 1,"sliced preview admits a completed prepared world")
++		var expected: PackedByteArray = mesh_digest(preview)
++		var uncached := NativeTrackVisual.new()
++		root.add_child(uncached)
++		start = Time.get_ticks_usec()
++		await uncached.build(track,BridgePresentation.new(track))
++		var uncached_ms: float = float(Time.get_ticks_usec()-start)/1000.0
++		var race := NativeTrackVisual.new()
++		race.cache_race_world = true
++		root.add_child(race)
++		start = Time.get_ticks_usec()
++		await race.build(track,BridgePresentation.new(track))
++		var reused_ms: float = float(Time.get_ticks_usec()-start)/1000.0
++		check(mesh_digest(race) == expected and mesh_digest(uncached) == expected,"preview/cold/reused mesh buffers exactly agree")
++		check(track.cells == cells,"presentation reuse leaves canonical cells unchanged")
++		check(race.light_instances.size() == preview.light_instances.size(),"prepared props bind to fresh race nodes")
++		if not preview.light_instances.is_empty():
++			var original: Vector3 = race.light_instances[0].position
++			preview.light_instances[0].position += Vector3.ONE*10
++			check(race.light_instances[0].position == original,"preview and race props remain isolated")
++		rows.append({"theme":theme,"preview_build_ms":preview_ms,"first_race_without_world_reuse_ms":uncached_ms,"first_race_using_preview_ms":reused_ms,"cache_bytes":worlds.entries[0].bytes,"note":"Road resources already exist from preview in both first-race paths; measures reuse of prepared terrain/scenery, not a fresh-install cold build."})
++		preview.free()
++		uncached.free()
++		race.free()
++		print("FOLLOWUP_PREPARATION: ",JSON.stringify(rows[-1]))
++	report["preparation"] = rows
++	worlds.entries.clear()
++
++func mesh_digest(visual: Node) -> PackedByteArray:
++	var hash := HashingContext.new()
++	hash.start(HashingContext.HASH_SHA256)
++	for node: Node in visual.find_children("*","MeshInstance3D",true,false):
++		hash.update(var_to_bytes(node.transform))
++		for surface: int in range(node.mesh.get_surface_count()): hash.update(var_to_bytes(node.mesh.surface_get_arrays(surface)))
++	return hash.finish()
++
++func pixel_delta(a: Image, b: Image) -> Dictionary:
++	var maximum: int = 0
++	var changed: int = 0
++	var left: PackedByteArray = a.get_data()
++	var right: PackedByteArray = b.get_data()
++	for pixel: int in range(a.get_width()*a.get_height()):
++		var difference: int = 0
++		for channel: int in range(3): difference = maxi(difference,absi(left[pixel*4+channel]-right[pixel*4+channel]))
++		maximum = maxi(maximum,difference)
++		if difference > 0: changed += 1
++	return {"maximum":maximum,"changed":changed}
++
++func measure(viewport: RID, duration: float) -> Dictionary:
++	var frames: Array[float] = []
++	var gpu: Array[float] = []
++	var cpu: Array[float] = []
++	var start: int = Time.get_ticks_usec()
++	var previous: int = start
++	while Time.get_ticks_usec()-start < duration*1000000.0:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		frames.append(float(now-previous)/1000.0)
++		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(viewport))
++		cpu.append(RenderingServer.viewport_get_measured_render_time_cpu(viewport))
++		previous = now
++	frames.sort()
++	gpu.sort()
++	cpu.sort()
++	return {"frame_ms":frames[frames.size()/2],"gpu_ms":gpu[gpu.size()/2],"render_cpu_ms":cpu[cpu.size()/2],"samples":frames.size(),"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)}
+--- /dev/null
++++ b/game/tests/test_biome_followup.gd.uid
+@@ -0,0 +1 @@
++uid://b1x6xwthhcm5h
+--- /dev/null
++++ b/game/tests/test_particle_followup.gd
+@@ -0,0 +1,104 @@
++extends "res://tests/test_biome_followup.gd"
++## Freeze the actual material routines on deterministic cloud/snow/depth proxies.
++func run() -> void:
++	output += "/particles-" + RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1600,900)
++	root.content_scale_size = root.size
++	root.msaa_3d = Viewport.MSAA_2X
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	var camera := Camera3D.new()
++	root.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 40
++	camera.position = Vector3(0,26,20)
++	camera.look_at(Vector3.ZERO)
++	var environment := WorldEnvironment.new()
++	root.add_child(environment)
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color(0.2,0.2,0.2)
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_energy = 0.5
++	var light := DirectionalLight3D.new()
++	root.add_child(light)
++	light.rotation_degrees = Vector3(-58,-35,0)
++	var world := Node3D.new()
++	root.add_child(world)
++	VisualGeometry.box(world,Vector3(90,0.1,90),Vector3(0,-0.05,0),VisualGeometry.material(Color(0.6,0.64,0.67)))
++	VisualGeometry.box(world,Vector3(6,1.8,5),Vector3(4,0.9,-2),VisualGeometry.material(Color(0.2,0.3,0.4)))
++	var old_script: GDScript = legacy("game/vehicle/sand_dust.gd","SandDust")
++	var old_dust: Node3D = old_script.new()
++	var new_dust := SandDust.new()
++	var viewport: RID = root.get_viewport_rid()
++	RenderingServer.viewport_set_measure_render_time(viewport,true)
++	var rows: Array[Dictionary] = []
++	for kind: String in ["dust","wind","bank","air"]:
++		var before: ShaderMaterial
++		var after: ShaderMaterial
++		var proxy := MultiMeshInstance3D.new()
++		proxy.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		var instances := MultiMesh.new()
++		instances.transform_format = MultiMesh.TRANSFORM_3D
++		instances.use_custom_data = true
++		instances.use_colors = true
++		if kind == "dust":
++			before = old_dust._particle_material(SandDust.MODE_DUST)
++			after = new_dust._particle_material(SandDust.MODE_DUST)
++			instances.mesh = new_dust._cloud_mesh(Vector2(10,10),after)
++			instances.instance_count = 12
++			for index: int in range(12):
++				instances.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3((index%4-1.5)*3,1.2+index*0.06,(index/4-1)*3)))
++				instances.set_instance_color(index,Color(0.8,0.7,0.5,0.36))
++		else:
++			var filename: String = "winter_air_snow.gdshader" if kind == "air" else "winter_snow_wind.gdshader"
++			before = ShaderMaterial.new()
++			before.shader = Shader.new()
++			before.shader.code = FileAccess.get_file_as_string(BEFORE+"game/track/"+filename)
++			after = ShaderMaterial.new()
++			after.shader = load("res://track/"+filename)
++			var mesh := PlaneMesh.new()
++			mesh.size = Vector2(0.16,0.08) if kind == "air" else Vector2(12,3)
++			if kind == "bank": mesh.subdivide_width = 5
++			instances.mesh = mesh
++			instances.instance_count = 24 if kind == "air" else 20
++			for index: int in range(instances.instance_count):
++				instances.set_instance_transform(index,Transform3D(Basis.IDENTITY,Vector3((index%5-2)*7,0.6 if kind == "bank" else 0.065,(index/5-2)*5)))
++				instances.set_instance_custom_data(index,Color(float(index)/instances.instance_count,float(index%4)/4.0,0.6,1))
++		for material: ShaderMaterial in [before,after]:
++			if kind == "dust": material.set_shader_parameter("billowing",true)
++			else:
++				material.set_shader_parameter("strength",0.85)
++				material.set_shader_parameter("focus",Vector3.ZERO)
++				material.set_shader_parameter("elapsed",2.3)
++				material.set_shader_parameter("travel",11.7)
++				if kind != "air":
++					material.set_shader_parameter("bank",kind == "bank")
++					material.set_shader_parameter("flow_texture",load("res://assets/textures/winter_wind_flow_v1.png"))
++					material.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
++		proxy.multimesh = instances
++		root.add_child(proxy)
++		var images: Array[Image] = []
++		var stages: Array[Dictionary] = []
++		for mode: String in ["before","after","before","after"]:
++			proxy.material_override = before if mode == "before" else after
++			await measure(viewport,0.5)
++			var stage: Dictionary = await measure(viewport,1.0)
++			stage["mode"] = mode
++			stages.append(stage)
++			var captured: Image = root.get_texture().get_image()
++			captured.convert(Image.FORMAT_RGBA8)
++			captured.save_png(output+"/"+kind+"-"+mode+".png")
++			if images.size() < 3: images.append(captured)
++		var delta: Dictionary = pixel_delta(images[0],images[1])
++		check(pixel_delta(images[0],images[2]).changed == 0,kind+" frozen reference is stable")
++		check(delta.maximum <= 2,kind+" visible pixels preserved within 2/255")
++		rows.append({"kind":kind,"pixels":delta,"stages":stages})
++		print("FOLLOWUP_PARTICLE_STAGE: ",JSON.stringify(rows[-1]))
++		proxy.free()
++	old_dust.free()
++	new_dust.free()
++	FileAccess.open(output+"/report.json",FileAccess.WRITE).store_string(JSON.stringify(rows,"\t"))
++	print("PARTICLE_FOLLOWUP: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_particle_followup.gd.uid
+@@ -0,0 +1 @@
++uid://dvje4hnt84xhd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-183"
++const VERSION: String = "track-kit-185"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -58,6 +58,7 @@
+ const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
+ const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
+ const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
++const ROAD_CACHE_MAX_ENTRIES: int = 8
+ static var _road_mesh_cache: Array[Dictionary] = []
+ static var _pending_road_bakes: Dictionary = {}
+ 
+@@ -86,7 +87,7 @@
+ 	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
+ 	colors = TrackTheme.palette(theme_id)
+ 	var world_key: Array = [track.content_hash,VERSION,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
+-	var reuse_world: bool = cache_race_world and not editor_preview and not menu_slices
++	var reuse_world: bool = cache_race_world and not editor_preview
+ 	if reuse_world and PREPARED_WORLDS.restore(world_key,self): return
+ 	var ground := ShaderMaterial.new()
+ 	ground.shader = preload("res://track/ground.gdshader")
+@@ -551,7 +552,7 @@
+ 		if _road_mesh_cache[index].key == entry.key: _road_mesh_cache.remove_at(index)
+ 	var total: int = int(entry.bytes)
+ 	for existing: Dictionary in _road_mesh_cache: total += int(existing.bytes)
+-	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= 2 or total > ROAD_CACHE_BUDGET):
++	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= ROAD_CACHE_MAX_ENTRIES or total > ROAD_CACHE_BUDGET):
+ 		total -= int(_road_mesh_cache.pop_front().bytes)
+ 	_road_mesh_cache.append(entry)
+ 
+@@ -987,6 +988,7 @@
+ 	# Owner rejected standing grass blades; meadow uses the static surface only.
+ 	var scenery := SurfaceTool.new()
+ 	scenery.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if theme_id == "desert": scenery.set_uv2(Vector2.ZERO)
+ 	if theme_id == "desert":
+ 		# Refreshes replace the batch, so its diagnostics describe this build only.
+ 		for key: String in ["desert_stones","desert_large_stones","desert_scrub","desert_roadside_stones"]:
+@@ -1039,6 +1041,11 @@
+ 		if theme_id != "desert": VisualGeometry.ink(material)
+ 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 		instance.material_override = material
++		if theme_id == "desert":
++			var mineral := ShaderMaterial.new()
++			mineral.shader = preload("res://track/desert_pebbles.gdshader")
++			mineral.set_shader_parameter("surface_factors",SURFACE_FACTORS)
++			instance.material_override = mineral
+ 		add_child(instance)
+ 
+ 
+@@ -1094,6 +1101,7 @@
+ 
+ 
+ func _desert_rock(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float, seed_value: int, color: Color) -> void:
++	tool.set_uv2(Vector2(1.0,0.0))
+ 	# Asymmetric, flattened weathered stones with broad worn top planes and
+ 	# irregular bevels; distinct lengths/widths avoid round polygon pellets.
+ 	var lower: Array[Vector3] = []
+@@ -1114,6 +1122,7 @@
+ 		var next: int = (i+1)%8
+ 		_quad(tool,lower[next],lower[i],upper[i],upper[next])
+ 		for vertex: Vector3 in [upper[next],crown,upper[i]]: tool.add_vertex(vertex)
++	tool.set_uv2(Vector2.ZERO)
+ 
+ 
+ func _desert_scrub(tool: SurfaceTool, center: Vector3, size: float, turn: float, seed_value: int) -> void:
+--- a/game/track/winter_air_snow.gdshader
++++ b/game/track/winter_air_snow.gdshader
+@@ -22,6 +22,10 @@
+ 	snow_world = VERTEX;
+ }
+ void fragment() {
++	vec2 p = UV*2.0-1.0;
++	float grain = 1.0-smoothstep(0.1,1.0,dot(p,p));
++	float fade = 1.0-smoothstep(22.0,31.0,length(snow_world.xz-focus.xz));
++	if (grain <= 0.0 || fade <= 0.0 || strength <= 0.0) discard;
+ 	float depth = texture(scene_depth,SCREEN_UV).r;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+ 	vec3 ndc = vec3(SCREEN_UV,depth)*2.0-1.0;
+@@ -30,9 +34,6 @@
+ #endif
+ 	vec4 opaque = INV_VIEW_MATRIX*INV_PROJECTION_MATRIX*vec4(ndc,1.0);
+ 	if (opaque.y/opaque.w > 0.20) discard;
+-	vec2 p = UV*2.0-1.0;
+-	float grain = 1.0-smoothstep(0.1,1.0,dot(p,p));
+-	float fade = 1.0-smoothstep(22.0,31.0,length(snow_world.xz-focus.xz));
+ 	ALBEDO = vec3(0.72,0.79,0.87);
+ 	ROUGHNESS = 1.0;
+ 	ALPHA = grain*fade*strength*0.40;
+--- a/game/track/winter_snow_wind.gdshader
++++ b/game/track/winter_snow_wind.gdshader
+@@ -52,6 +52,9 @@
+ }
+ 
+ void fragment() {
++	if (strength <= 0.0) discard;
++	float distance_fade = 1.0 - smoothstep(23.0, 30.0, length(world_position.xz - focus.xz));
++	if (distance_fade <= 0.0) discard;
+ 	// One advected world field crosses card/source boundaries continuously.
+ 	vec2 wind = vec2(0.91, -0.414608);
+ 	vec2 side = vec2(-wind.y, wind.x);
+@@ -69,7 +72,7 @@
+ 	float birth = bank ? smoothstep(0.0, 0.9, along_source) : 1.0;
+ 	float shape = cross_fade * ends * birth * mix(fingers, lifted, source);
+ 	shape *= mix(0.50, 1.0, density.b);
+-	float distance_fade = 1.0 - smoothstep(23.0, 30.0, length(world_position.xz - focus.xz));
++	if (shape <= 0.0) discard;
+ 	// Soft opaque intersections (terrain/car), with renderer-correct depth reconstruction.
+ 	float depth = texture(scene_depth, SCREEN_UV).r;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+@@ -84,6 +87,7 @@
+ 	// at car/bridge edges while letting lifted powder remain over lower snow.
+ 	vec4 opaque_world = INV_VIEW_MATRIX * view;
+ 	intersection *= 1.0 - smoothstep(world_position.y, world_position.y + 0.045, opaque_world.y / opaque_world.w);
++	if (intersection <= 0.0) discard;
+ 	// Share the snowbanks' colour and actual directional/ambient/shadow light.
+ 	float snow_grain = texture(snow_albedo, world_position.xz / 11.0,2.0).r;
+ 	ALBEDO = (vec3(0.65,0.71,0.79)+(snow_grain-0.5)*0.07)*mix(0.85,1.0,density.r);
+--- a/game/ui/track_showroom.gd
++++ b/game/ui/track_showroom.gd
+@@ -27,7 +27,7 @@
+ 	if DisplayServer.get_name() == "headless":
+ 		ready_for_display = true
+ 		return
+-	var key: String = track.content_hash+":"+str(Vector2i(size))
++	var key: String = track.content_hash+":"+NativeTrackVisual.VERSION+":"+str(Vector2i(size))
+ 	if _images.has(key):
+ 		_show_image(_images[key])
+ 		return
+@@ -53,6 +53,7 @@
+ 	light.directional_shadow_max_distance = 160
+ 	world.add_child(light)
+ 	var visual := NativeTrackVisual.new()
++	visual.cache_race_world = true
+ 	world.add_child(visual)
+ 	await visual.build(track,BridgePresentation.new(track),true)
+ 	if not is_inside_tree(): return
+--- a/game/vehicle/sand_dust.gd
++++ b/game/vehicle/sand_dust.gd
+@@ -15,7 +15,7 @@
+ const MODE_SMOKE: int = 4
+ const MODE_WATER: int = 5
+ 
+-const WINTER_PRESENTATION_VERSION: String = "winter-spray-6"
++const WINTER_PRESENTATION_VERSION: String = "winter-spray-7"
+ var snow_chips: Array[GPUParticles3D] = []
+ var snow_powder: Array[GPUParticles3D] = []
+ var snow_impacts: Array[GPUParticles3D] = []
+@@ -474,9 +474,11 @@
+ 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0]*particle_scale.x,INV_VIEW_MATRIX[1]*particle_scale.y,INV_VIEW_MATRIX[2]*particle_scale.z,MODEL_MATRIX[3]);
+ }
+ void fragment() {
++	if (COLOR.a <= 0.0) discard;
+ 	vec2 p = UV*2.0-1.0;
+ 	float radius = length(p);
+ 	float haze = 1.0-smoothstep(0.12,1.0,radius);
++	if (haze <= 0.0) discard;
+ 	haze *= haze;
+ 	ALBEDO = COLOR.rgb;
+ 	ROUGHNESS = 1.0;
+@@ -519,6 +521,8 @@
+ 	dust_density_height = MODEL_MATRIX[3].y;
+ }
+ void fragment() {
++	if (COLOR.a <= 0.0) discard;
++	if (billowing && length(UV*2.0-1.0) >= 1.0) discard;
+ 	vec4 puff = texture(dust_texture,clamp(cloud_uv,vec2(0.0),vec2(1.0)));
+ 	float alpha = smoothstep(0.02,alpha_softness,puff.a);
+ 	float value = dot(puff.rgb,vec3(0.299,0.587,0.114));
+@@ -529,6 +533,7 @@
+ 		vec2 p = UV * 2.0 - 1.0;
+ 		alpha = (1.0-smoothstep(0.42,1.0,length(p))) * mix(0.80,1.0,puff.a);
+ 		ALBEDO = COLOR.rgb * mix(0.94,1.04,value);
++		if (alpha <= 0.0) discard;
+ 		// Soften intersections with the road/car instead of cutting a billboard in half.
+ 		float depth = texture(scene_depth,SCREEN_UV).r;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+@@ -548,7 +553,9 @@
+ 		}
+ 		alpha *= dust_bridge_surface_visibility(opaque_world.xyz/opaque_world.w,dust_center_height);
+ 	}
++	if (alpha <= 0.0) discard;
+ 	alpha *= dust_bridge_visibility_at_height(dust_world,dust_center_height);
++	if (alpha <= 0.0) discard;
+ 	vec3 camera_ray = PROJECTION_MATRIX[3].w>0.5 ? INV_VIEW_MATRIX[2].xyz : normalize(INV_VIEW_MATRIX[3].xyz-dust_world);
+ 	alpha *= dust_bridge_projected_visibility(dust_world,camera_ray,dust_center_height);
+ 	ALPHA = COLOR.a * alpha;
+@@ -624,6 +631,7 @@
+ 		# Compact powder rolls outward, then falls and thins. Reuse the textured
+ 		# dust renderer with twenty total puffs instead of forty-eight solid clods.
+ 		var push: GPUParticles3D = _snow_cloud("SnowBankPush%d" % index,10,0.62,Vector2(1.45,0.90),0.64)
++		(push.process_material as ParticleProcessMaterial).emission_sphere_radius = 0.20
+ 		snow_push.append(push)
+ 		add_child(push)
+ 
+@@ -636,7 +644,7 @@
+ 	var shape: String = "alpha = (1.0-smoothstep(0.42,1.0,length(p))) * mix(0.80,1.0,puff.a);"
+ 	var tint: String = "ALBEDO = COLOR.rgb * mix(0.94,1.04,value);"
+ 	assert(original.contains(shape) and original.contains(tint),"Snow powder requires the shared textured-cloud renderer")
+-	snow_shader.code = original.replace(shape,"alpha = (1.0-smoothstep(0.25,1.0,length(p))) * smoothstep(0.06,0.80,puff.a) * mix(0.55,1.0,smoothstep(0.16,0.72,value));").replace(tint,"ALBEDO = COLOR.rgb * mix(vec3(0.72,0.81,0.92),vec3(1.02),smoothstep(0.18,0.82,value));")
++	snow_shader.code = original.replace(shape,"alpha = (1.0-smoothstep(0.30,1.0,length(p))) * smoothstep(0.10,0.76,puff.a) * mix(0.40,1.0,smoothstep(0.20,0.74,value));").replace(tint,"ALBEDO = COLOR.rgb * mix(vec3(0.80,0.86,0.94),vec3(1.02),smoothstep(0.18,0.82,value));")
+ 	material.shader = snow_shader
+ 	material.set_shader_parameter("billowing",true)
+ 	material.set_shader_parameter("intersection_fade",0.22)
+@@ -769,13 +777,21 @@
+ 	_bank_visual_heights.clear()
+ 	for node: Node in visual.get_children():
+ 		if not node is MeshInstance3D or not node.material_override is ShaderMaterial: continue
+-		if node.material_override.shader != preload("res://track/winter_bank.gdshader"): continue
++		if not _is_snow_bank_material(node.material_override): continue
+ 		for surface: int in range(node.mesh.get_surface_count()):
+ 			var arrays: Array = node.mesh.surface_get_arrays(surface)
+ 			for vertex: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
+ 				var point: Vector3 = node.global_transform*vertex
+ 				var key := Vector2i(roundi(point.x*2.0),roundi(-point.z*2.0))
+ 				_bank_visual_heights[key] = maxf(float(_bank_visual_heights.get(key,-INF)),point.y)
++
++func _is_snow_bank_material(material: ShaderMaterial) -> bool:
++	if material.shader == null: return false
++	# Fixed-role compilation and disk/prepared caches replace the Shader object.
++	# The public bank role remains declared for inspection and serialization.
++	for parameter: Dictionary in material.shader.get_shader_uniform_list():
++		if parameter.name == "smooth_road_bank": return true
++	return false
+ 
+ func _snow_surface_height(at: Vector2, contact_height: float) -> float:
+ 	if contact_height <= 0.0: return contact_height
+--- a/game/vehicle/skid_trails.gd
++++ b/game/vehicle/skid_trails.gd
+@@ -1,12 +1,14 @@
+ class_name SkidTrails
+ extends Node3D
+-## Race-persistent fixed-size ring rendered in one instanced draw.
++## Race-persistent fixed-size ring. Geometry and sampling belong to the shared
++## tire-mark renderer; optional visibility compacts only offscreen draw groups.
+ 
+ const CAPACITY: int = 16384
+ const SAMPLE_DISTANCE: float = 0.32
+ const MAX_SEGMENT_LENGTH: float = 1.5
+ const DESERT_COMPACTION_TONE: float = 0.92
+ var instances: MultiMesh
++var trail_visibility: TrailVisibility
+ var mark_colors := PackedColorArray()
+ var mark_custom := PackedColorArray()
+ var mark_transforms: Array[Transform3D] = []
+@@ -60,7 +62,10 @@
+ 	batch.multimesh = instances
+ 	batch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	add_child(batch)
+-
++	trail_visibility = TrailVisibility.new(instances,mark_transforms)
++
++func _process(_delta: float) -> void:
++	if visible: trail_visibility.present(get_viewport().get_camera_3d(),mark_colors,mark_custom,global_transform)
+ 
+ 
+ func _trail_material() -> ShaderMaterial:
+@@ -185,6 +190,7 @@
+ 	active = false
+ 	cursor = 0
+ 	instances.visible_instance_count = 0
++	trail_visibility.clear()
+ 	_previous_marks.fill(-1)
+ 
+ 
+@@ -358,10 +364,13 @@
+ 	mark_colors[cursor] = tint
+ 	var loose: float = 1.0 if surface_kind in [1,2,7,10] else 0.0
+ 	mark_custom[cursor] = Color(float(surface_kind)/10.0,strength if start_strength < 0.0 else start_strength,loose,strength if end_strength < 0.0 else end_strength)
+-	instances.set_instance_transform(cursor,mark_transforms[cursor])
+-	instances.set_instance_color(cursor,mark_colors[cursor])
+-	instances.set_instance_custom_data(cursor,mark_custom[cursor])
+-	instances.visible_instance_count = mini(CAPACITY,instances.visible_instance_count+1)
++	if trail_visibility.active:
++		trail_visibility.record(cursor,mark_colors,mark_custom)
++	else:
++		instances.set_instance_transform(cursor,mark_transforms[cursor])
++		instances.set_instance_color(cursor,mark_colors[cursor])
++		instances.set_instance_custom_data(cursor,mark_custom[cursor])
++		instances.visible_instance_count = mini(CAPACITY,instances.visible_instance_count+1)
+ 	cursor = (cursor + 1) % CAPACITY
+ 
+ 
+--- /dev/null
++++ b/game/vehicle/trail_visibility.gd
+@@ -0,0 +1,137 @@
++class_name TrailVisibility
++extends RefCounted
++## Preserve the renderer's single MultiMesh and full ring; compact only its draw view.
++const PAGE_SIZE: int = 512
++var active: bool = false
++var _retained_count: int = 0
++var retained_count: int:
++	get: return _retained_count if active else instances.visible_instance_count
++var instances: MultiMesh
++var _transforms: Array[Transform3D]
++var _bounds: Array[AABB] = []
++var _valid: Array[bool] = []
++var _all_bounds := AABB()
++var _has_bounds: bool = false
++var _offsets := PackedInt32Array()
++var _selection: int = -1
++var _packed: bool = false
++var _buffer := PackedFloat32Array()
++var _view_dirty: bool = true
++var _view_pose := Transform3D(Basis.IDENTITY,Vector3.INF)
++var _view_projection := Projection()
++var _mesh_bounds: AABB
++
++func _init(resource: MultiMesh, transforms: Array[Transform3D]) -> void:
++	instances = resource
++	_mesh_bounds = resource.mesh.get_aabb()
++	_transforms = transforms
++	for page: int in range(ceili(float(instances.instance_count)/PAGE_SIZE)):
++		_bounds.append(AABB())
++		_valid.append(false)
++	_offsets.resize(_bounds.size())
++	_offsets.fill(-1)
++	_buffer.resize(instances.instance_count*20)
++
++func clear() -> void:
++	_retained_count = 0
++	active = false
++	_valid.fill(false)
++	_offsets.fill(-1)
++	_has_bounds = false
++	_selection = -1
++	_packed = false
++	_view_dirty = true
++	instances.custom_aabb = AABB()
++
++func record(index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
++	_retained_count = mini(instances.instance_count,_retained_count+1)
++	var page: int = index/PAGE_SIZE
++	if _selection & (1 << page) == 0: _view_dirty = true
++	var box: AABB = _transforms[index]*_mesh_bounds
++	_bounds[page] = _bounds[page].merge(box) if _valid[page] else box
++	_valid[page] = true
++	if index%PAGE_SIZE == PAGE_SIZE-1:
++		_view_dirty = true
++		_bounds[page] = _transforms[page*PAGE_SIZE]*_mesh_bounds
++		for item: int in range(1,PAGE_SIZE): _bounds[page] = _bounds[page].merge(_transforms[page*PAGE_SIZE+item]*_mesh_bounds)
++	_all_bounds = _all_bounds.merge(box) if _has_bounds else box
++	_has_bounds = true
++	# One resource and one draw: no additional batches or altered ring ordering.
++	var slot: int = _offsets[page]+index%PAGE_SIZE if _packed and _offsets[page] >= 0 else (-1 if _packed else index)
++	if slot >= 0:
++		instances.set_instance_transform(slot,_transforms[index])
++		instances.set_instance_color(slot,colors[index])
++		instances.set_instance_custom_data(slot,custom[index])
++	if not _packed: instances.visible_instance_count = retained_count
++
++func present(camera: Camera3D, colors: PackedColorArray, custom: PackedColorArray, world: Transform3D = Transform3D.IDENTITY) -> void:
++	if camera == null or retained_count < PAGE_SIZE*2: return
++	if not active:
++		_retained_count = instances.visible_instance_count
++		active = true
++		for index: int in range(_retained_count):
++			var page: int = index/PAGE_SIZE
++			var box: AABB = _transforms[index]*_mesh_bounds
++			_bounds[page] = _bounds[page].merge(box) if _valid[page] else box
++			_valid[page] = true
++			_all_bounds = _all_bounds.merge(box) if _has_bounds else box
++			_has_bounds = true
++	var pose: Transform3D = camera.global_transform
++	var projection: Projection = camera.get_camera_projection()
++	# One metre of conservative padding covers a half-metre camera refresh
++	# interval. Pose/projection changes and newly occupied groups refresh now.
++	if not _view_dirty and pose.basis == _view_pose.basis and projection == _view_projection and pose.origin.distance_squared_to(_view_pose.origin) < 0.25:
++		_update_count()
++		return
++	_view_dirty = false
++	_view_pose = pose
++	_view_projection = projection
++	var planes: Array[Plane] = camera.get_frustum()
++	var selection: int = 0
++	for page: int in range(_bounds.size()):
++		if not _valid[page]: continue
++		var box: AABB = world * _bounds[page].grow(1.0)
++		var visible: bool = true
++		for plane: Plane in planes:
++			if plane.distance_to(box.get_center()) > (box.size*0.5).dot(plane.normal.abs()):
++				visible = false
++				break
++		if visible: selection |= 1 << page
++	# Small rings and fully visible rings keep the renderer's direct uploads.
++	var full: int = (1 << ceili(float(retained_count)/PAGE_SIZE))-1
++	if retained_count < PAGE_SIZE*2 or selection == full: selection = full
++	if selection == _selection:
++		_update_count()
++		return
++	_selection = selection
++	if selection == full and not _packed: return
++	_offsets.fill(-1)
++	var drawn: int = 0
++	for page: int in range(_bounds.size()):
++		if selection & (1 << page) == 0: continue
++		_offsets[page] = drawn
++		for index: int in range(page*PAGE_SIZE,mini((page+1)*PAGE_SIZE,retained_count)):
++			_pack(drawn,index,colors,custom)
++			drawn += 1
++	# Unused slots are zero-area and never included in visible_instance_count.
++	instances.buffer = _buffer
++	instances.visible_instance_count = drawn
++	instances.custom_aabb = _all_bounds.grow(0.005)
++	_packed = selection != full
++
++func _update_count() -> void:
++	if not _packed: return
++	var last: int = (retained_count-1)/PAGE_SIZE
++	if _offsets[last] < 0: return
++	var count: int = _offsets[last]+(retained_count-1)%PAGE_SIZE+1
++	if instances.visible_instance_count != count: instances.visible_instance_count = count
++
++func _pack(slot: int, index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
++	var at: int = slot*20
++	var pose: Transform3D = _transforms[index]
++	_buffer[at] = pose.basis.x.x; _buffer[at+1] = pose.basis.y.x; _buffer[at+2] = pose.basis.z.x; _buffer[at+3] = pose.origin.x
++	_buffer[at+4] = pose.basis.x.y; _buffer[at+5] = pose.basis.y.y; _buffer[at+6] = pose.basis.z.y; _buffer[at+7] = pose.origin.y
++	_buffer[at+8] = pose.basis.x.z; _buffer[at+9] = pose.basis.y.z; _buffer[at+10] = pose.basis.z.z; _buffer[at+11] = pose.origin.z
++	for channel: int in range(4):
++		_buffer[at+12+channel] = colors[index][channel]
++		_buffer[at+16+channel] = custom[index][channel]
+--- /dev/null
++++ b/game/vehicle/trail_visibility.gd.uid
+@@ -0,0 +1 @@
++uid://bh4i7vs64pmwi
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -42,6 +42,9 @@
+ var axle_half: float = 1.28
+ var wheel_half_span: float = 0.83
+ var wheel_radius: float = 0.37
++const FINISH_PARAMETERS: Array[String] = ["amount","snow","slow_amount","slow_snow","deposit_color","mud","smudge","wetness","wash_volume","slow_wash_volume","wash_min","wash_size"]
++var _finish_values: Array = []
++var parameter_uploads: int = 0
+ 
+ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
+ 	var retained: Dictionary = snapshot()
+@@ -147,7 +150,7 @@
+ 		snow_amount = 1.0 - (1.0 - snow_amount) * exp(-exposure)
+ 		slow_snow_amount = 1.0 - (1.0 - slow_snow_amount) * exp(-exposure * SLOW_RATE)
+ 	else:
+-		melt(seconds)
++		_melt_state(seconds)
+ 		slow_dirt_amount = 1.0 - (1.0 - slow_dirt_amount) * exp(-exposure * SLOW_RATE)
+ 		var added: float = (1.0 - dirt_amount) * (1.0 - exp(-exposure))
+ 		if added > 0.0:
+@@ -185,12 +188,15 @@
+ 			grime_age[index] = mini(255, grime_age[index] + steps)
+ 
+ func melt(seconds: float) -> void:
++	_melt_state(seconds)
++	_update_finish()
++
++func _melt_state(seconds: float) -> void:
+ 	var before: float = snow_amount
+ 	snow_amount = maxf(0.0, snow_amount - maxf(seconds, 0.0) / 8.0)
+ 	slow_snow_amount = maxf(0.0, slow_snow_amount - maxf(seconds, 0.0) / 8.0)
+ 	if dirt_amount > 0.0:
+ 		smudge = clampf(smudge + (before - snow_amount) * 0.75, 0.0, 1.0)
+-	_update_finish()
+ 
+ func _update_finish() -> void:
+ 	if amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
+@@ -206,19 +212,15 @@
+ 			if binding.override: binding.node.material_override = binding.finish
+ 			else: binding.node.set_surface_override_material(binding.index, binding.finish)
+ 		installed = true
+-	for material: ShaderMaterial in materials:
+-		material.set_shader_parameter("amount", dirt_amount)
+-		material.set_shader_parameter("snow", snow_amount)
+-		material.set_shader_parameter("slow_amount", slow_dirt_amount)
+-		material.set_shader_parameter("slow_snow", slow_snow_amount)
+-		material.set_shader_parameter("deposit_color", deposit_color)
+-		material.set_shader_parameter("mud", mud_amount)
+-		material.set_shader_parameter("smudge", smudge)
+-		material.set_shader_parameter("wetness", wetness)
+-		material.set_shader_parameter("wash_volume", wash_texture)
+-		material.set_shader_parameter("slow_wash_volume", slow_wash_texture)
+-		material.set_shader_parameter("wash_min", bounds.position)
+-		material.set_shader_parameter("wash_size", bounds.size)
++		_finish_values.clear()
++	var values: Array = [dirt_amount,snow_amount,slow_dirt_amount,slow_snow_amount,deposit_color,mud_amount,smudge,wetness,wash_texture,slow_wash_texture,bounds.position,bounds.size]
++	if values == _finish_values: return
++	for index: int in range(values.size()):
++		if _finish_values.size() == values.size() and values[index] == _finish_values[index]: continue
++		for material: ShaderMaterial in materials:
++			material.set_shader_parameter(FINISH_PARAMETERS[index],values[index])
++			parameter_uploads += 1
++	_finish_values = values
+ 
+ func snapshot() -> Dictionary:
+ 	if wash_image == null:
+@@ -312,6 +314,7 @@
+ 	return _body.global_transform.affine_inverse() * node.global_transform * local_point
+ 
+ func reset() -> void:
++	_finish_values.clear()
+ 	if installed:
+ 		for binding: Dictionary in bindings:
+ 			if not is_instance_valid(binding.node): continue
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -65,7 +65,7 @@
+ }
+ 
+ function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogName) {
+-    if ($EngineVerbose -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) { $Arguments += '--verbose' }
++    if ($EngineVerbose -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) { $Arguments = @('--verbose') + $Arguments }
+     if ([System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) {
+         if ($RenderingMethod) { $Arguments = @('--rendering-method', $RenderingMethod) + $Arguments }
+         if ($RenderingDriver) { $Arguments = @('--rendering-driver', $RenderingDriver) + $Arguments }

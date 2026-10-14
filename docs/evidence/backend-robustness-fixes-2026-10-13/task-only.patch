@@ -1,0 +1,1635 @@
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -12,6 +12,7 @@
+ import math
+ import re
+ import subprocess
++import sys
+ import tempfile
+ import threading
+ import time
+@@ -425,6 +426,14 @@
+         return result
+ 
+ 
++def finite_number(value):
++    # JSON integers are unbounded. math.isfinite converts them to a float and
++    # can raise OverflowError before a malformed sample reaches its bounds.
++    if type(value) is int:
++        return -sys.float_info.max <= value <= sys.float_info.max
++    return type(value) is float and math.isfinite(value)
++
++
+ def validate_race_proof(proof, frames):
+     if (type(proof) is not dict or set(proof) != {"schema", "samples"}
+             or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
+@@ -433,7 +442,7 @@
+     previous = -1
+     for sample in proof["samples"]:
+         if (type(sample) is not list or len(sample) != 8
+-                or any(type(value) not in (int, float) or not math.isfinite(value) for value in sample)
++                or any(not finite_number(value) for value in sample)
+                 or type(sample[0]) is not int or not previous < sample[0] <= frames
+                 or type(sample[6]) is not int or sample[6] not in (0, 1)
+                 or not 0 <= sample[7] <= 32
+@@ -449,13 +458,13 @@
+     if type(recording) is not dict or set(recording) != {"ticks", "poses"}:
+         raise VerifierUnavailable("Canonical ghost is missing")
+     duration, poses = recording["ticks"], recording["poses"]
+-    if (type(duration) not in (int, float) or not math.isfinite(duration) or not 0 < duration <= race_ticks
++    if (not finite_number(duration) or not 0 < duration <= race_ticks
+             or type(poses) is not list or not 2 <= len(poses) <= MAX_FRAMES // 6 + 7):
+         raise VerifierUnavailable("Canonical ghost exceeds recording bounds")
+     previous = -1
+     for pose in poses:
+         if (type(pose) is not list or len(pose) != 7
+-                or any(type(value) not in (int, float) or not math.isfinite(value) for value in pose)
++                or any(not finite_number(value) for value in pose)
+                 or not previous < pose[0] <= duration):
+             raise VerifierUnavailable("Canonical ghost has malformed samples")
+         previous = pose[0]
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -9,6 +9,7 @@
+ from sqlalchemy import and_, func, or_, select, update
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
++from sqlalchemy.exc import SQLAlchemyError
+ 
+ from .contracts import BUILD_FIELDS, build_contract
+ from .identity_models import Player
+@@ -174,13 +175,13 @@
+             from .verifier import validate_ghost
+             try:
+                 validate_ghost(result["ghost"], ticks)
+-            except RuntimeError:
++            except (RuntimeError, ValueError, OverflowError):
+                 result.pop("ghost",None)  # Bad presentation cannot invalidate a proper race.
+         if needs_ghost and result.get("ghost"):
+             # Durability and fsync must not hold Run/Group/PB/queue locks.
+             try:
+                 ghost_hash = app.state.blobs.put_json(result["ghost"])
+-            except (OSError, RuntimeError):
++            except (OSError, RuntimeError, ValueError, SQLAlchemyError):
+                 logger.warning("ghost_storage_unavailable",extra={"run_id":run_id})
+     except VerifierStopping:
+         # Keep the durable lease; a replacement can recover it after expiry.
+@@ -239,6 +240,11 @@
+     settings = app.state.settings
+     maximum_attempts = settings.max_job_attempts
+     with app.state.session_factory() as session:
++        # Run ownership is immutable. Discover it without a row lock, then use
++        # the same Player -> Run order as retry/admission/account writers.
++        player_id = session.scalar(select(Run.player_id).where(Run.id == run_id))
++        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
++            .execution_options(populate_existing=True)) if player_id is not None else None
+         run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+         if run is None or run.status != "verifying" or run.lease_token != token or run.lease_until <= now():
+             logger.warning("verification_lease_lost", extra={"run_id": run_id, "worker_id": worker_id})
+@@ -257,7 +263,6 @@
+             return True
+         # Serialize PB projections with account restriction/test-identity changes.
+         # Both writers lock Player before touching board visibility counters.
+-        player = session.scalar(select(Player).where(Player.id == run.player_id).with_for_update())
+         test_disabled = (player.is_test_driver or pinned_manifest.get("test_population")) and not settings.test_drivers_enabled
+         if player.disabled or test_disabled:
+             run.status, run.failure_code, run.finished_at, run.lease_token = (
+--- a/backend/bmt_backend/publications.py
++++ b/backend/bmt_backend/publications.py
+@@ -28,6 +28,7 @@
+     RunTicket,
+     Track,
+     TrackVersion,
++    commit_response,
+     digest,
+     new_id,
+     now,
+@@ -147,15 +148,21 @@
+ 
+ @router.post("/me/publications/{publication_id}/retry")
+ def retry_publication(publication_id: str, request: Request, session: DB, player: Auth, key: Key):
+-    replay_response(session, player.id, "publication-retry", key, {})
++    body = {"publication_id": publication_id}
++    old = replay_response(session, player.id, "publication-retry", key, body)
++    if old is not None:
++        return old
+     lock_entitlements(session, player.id)
++    old = replay_response(session, player.id, "publication-retry", key, body)
++    if old is not None:
++        return old
+     intent = owned(session, player.id, publication_id, lock=True)
+     if intent.status == "failed" and intent.failure_code in RETRYABLE:
+         admit(session, player.id, request.app.state.settings.max_queued_runs)
+         intent.status, intent.attempts, intent.lease_until, intent.lease_token = "queued", 0, 0, None
+         intent.failure_code, intent.detail = None, None
+-    session.commit()
+-    return payload(intent)
++        intent.finished_at = None
++    return commit_response(session, player.id, "publication-retry", key, body, payload(intent))
+ 
+ 
+ def admin_payload(intent):
+--- a/backend/bmt_backend/storage.py
++++ b/backend/bmt_backend/storage.py
+@@ -4,11 +4,67 @@
+ import hashlib
+ import io
+ import json
++import logging
+ import os
+ import re
++import stat
+ import tempfile
++import time
+ from pathlib import Path
+ from typing import Protocol
++
++MAX_BLOB_BYTES = 8 * 1024 * 1024
++MAX_STORED_BLOB_BYTES = MAX_BLOB_BYTES + 65536
++TEMPORARY_NAME = re.compile(r"\.pending-[A-Za-z0-9_-]{6,80}(?:\.guard)?")
++
++
++def reject_stored_constant(_value):
++    raise ValueError("Nonfinite stored JSON")
++
++
++def decode_blob_json(body: bytes, digest: str) -> dict:
++    """Verify the exact stored bytes, including bounded decompression, before use."""
++    if len(body) > MAX_STORED_BLOB_BYTES:
++        raise OSError("Stored object exceeds limit")
++    if body.startswith(b"\x1f\x8b"):
++        try:
++            with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
++                body = source.read(MAX_BLOB_BYTES + 1)
++        except (OSError, EOFError) as exc:
++            raise OSError("Object compression integrity check failed") from exc
++    if len(body) > MAX_BLOB_BYTES or hashlib.sha256(body).hexdigest() != digest:
++        raise OSError("Object integrity check failed")
++    try:
++        data = json.loads(body, parse_constant=reject_stored_constant)
++    except (ValueError, UnicodeError, RecursionError) as exc:
++        raise OSError("Invalid stored object") from exc
++    if not isinstance(data, dict):
++        raise OSError("Invalid stored object")
++    return data
++
++
++def sync_directory(path):
++    if os.name != "nt":
++        directory = os.open(path, os.O_RDONLY)
++        try:
++            os.fsync(directory)
++        finally:
++            os.close(directory)
++
++
++def lock_temporary(stream):
++    """OS-released nonblocking lock; a separate guard leaves blob reads usable."""
++    stream.seek(0)
++    try:
++        if os.name == "nt":
++            import msvcrt
++            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
++        else:
++            import fcntl
++            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
++    except (BlockingIOError, PermissionError):
++        return False
++    return True
+ 
+ 
+ def canonical_json(data: dict) -> bytes:
+@@ -28,6 +84,16 @@
+     def __init__(self, root: str):
+         self.root = Path(root).resolve()
+         self.root.mkdir(parents=True, exist_ok=True)
++        # Startup is a single bounded pass. Retention's resumable cursor reaches
++        # later shards; active writers and legacy unguarded files stay intact.
++        try:
++            rows, _cursor = self.list_objects(None, 1000, True)
++            for row in rows:
++                if "temporary" in row:
++                    self.cleanup_temporary(row, time.time()-86400, apply=True)
++        except OSError as exc:
++            logging.getLogger("bmt.storage").warning("temporary_cleanup_unavailable",
++                extra={"exception_type": type(exc).__name__})
+ 
+     def _path(self, digest: str) -> Path:
+         if not re.fullmatch(r"[0-9a-f]{64}", digest):
+@@ -44,9 +110,17 @@
+         if path.exists():
+             self.get_json(digest)  # Detect disk corruption instead of silently trusting it.
+             return digest
++        # Also persists a shard created by a concurrent first publisher.
++        sync_directory(self.root)
+         fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
++        guard = None
+         try:
+             with os.fdopen(fd, "wb") as stream:
++                guard = open(temporary + ".guard", "x+b")  # noqa: SIM115 - closed in finally; guards publication after stream close
++                guard.write(b"0")
++                guard.flush()
++                if not lock_temporary(guard):
++                    raise OSError("Temporary object guard unavailable")
+                 stream.write(gzip.compress(body, compresslevel=3, mtime=0) if len(body) >= 1024 else body)
+                 stream.flush()
+                 os.fsync(stream.fileno())
+@@ -56,38 +130,26 @@
+                 os.link(temporary, path)
+             except FileExistsError:
+                 self.get_json(digest)
+-            if os.name != "nt":
+-                directory = os.open(path.parent, os.O_RDONLY)
+-                try:
+-                    os.fsync(directory)
+-                finally:
+-                    os.close(directory)
++            sync_directory(path.parent)
+         finally:
+-            if os.path.exists(temporary):
+-                os.unlink(temporary)
++            try:
++                Path(temporary).unlink(missing_ok=True)
++            finally:
++                if guard is not None:
++                    guard.close()
++                    Path(temporary + ".guard").unlink(missing_ok=True)
+         return digest
+ 
+     def get_json(self, digest: str) -> dict:
+         path = self._path(digest)
+         with path.open("rb") as stream:
+-            body = stream.read(8 * 1024 * 1024 + 1)
+-        if body.startswith(b"\x1f\x8b"):
+-            try:
+-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
+-                    body = source.read(8 * 1024 * 1024 + 1)
+-            except (OSError, EOFError) as exc:
+-                raise OSError("Object compression integrity check failed") from exc
+-        if len(body) > 8 * 1024 * 1024 or hashlib.sha256(body).hexdigest() != digest:
+-            raise OSError("Object integrity check failed")
+-        data = json.loads(body)
+-        if not isinstance(data, dict):
+-            raise OSError("Invalid stored object")
+-        return data
++            body = stream.read(MAX_STORED_BLOB_BYTES + 1)
++        return decode_blob_json(body, digest)
+ 
+     def delete(self, digest):
+         self._path(digest).unlink(missing_ok=True)
+ 
+-    def list_objects(self, cursor, limit):
++    def list_objects(self, cursor, limit, include_temporary=False):
+         from itertools import islice
+         cursor = cursor or {"shard":0,"offset":0}
+         shard, offset = cursor["shard"], cursor["offset"]
+@@ -106,12 +168,78 @@
+                             and name.startswith(directory.name)):
+                         info = entry.stat(follow_symlinks=False)
+                         rows.append({"digest":name[:64],"modified":int(info.st_mtime),"bytes":info.st_size})
++                    elif (include_temporary and TEMPORARY_NAME.fullmatch(name)
++                            and entry.is_file(follow_symlinks=False)):
++                        info = entry.stat(follow_symlinks=False)
++                        rows.append({"temporary": name, "shard": directory.name,
++                                     "modified": int(info.st_mtime), "bytes": info.st_size})
+                     if inspected >= limit:
+                         exhausted = False
+                         break
+                 if exhausted:
+                     shard, offset = shard+1, 0
+         return rows, {"shard":shard,"offset":offset} if shard < 256 else None
++
++    def cleanup_temporary(self, row, cutoff, *, apply=False, offline=False):
++        """Clean only aged, unlocked writer groups from the bounded GC scan.
++
++        Old unguarded files require stopped writers: an older deployed process
++        cannot advertise its active write to this version's advisory guards.
++        """
++        name, shard = row["temporary"], row["shard"]
++        if not TEMPORARY_NAME.fullmatch(name) or not re.fullmatch(r"[0-9a-f]{2}", shard):
++            raise ValueError("Invalid temporary object identity")
++        directory = self.root / shard
++        if directory.is_symlink():
++            return [], 0
++        path = directory / name
++        data = path.with_name(name.removesuffix(".guard"))
++        guard_path = data.with_name(data.name + ".guard")
++        orphan_guard = name.endswith(".guard")
++        if orphan_guard and data.exists():
++            return [], 0
++        lock_path = guard_path if guard_path.exists() else data
++        if lock_path == data and not offline:
++            return [], 0
++        try:
++            fd = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
++        except FileNotFoundError:
++            return [], 0
++        except PermissionError:
++            return [], 0
++        with os.fdopen(fd, "r+b") as guard:
++            info = os.fstat(guard.fileno())
++            try:
++                current = lock_path.stat(follow_symlinks=False)
++            except FileNotFoundError:
++                return [], 0
++            if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(current.st_mode)
++                    or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)
++                    or not lock_temporary(guard)):
++                return [], 0
++            try:
++                info = path.stat(follow_symlinks=False)
++            except FileNotFoundError:
++                return [], 0
++            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
++                return [], 0
++            names, size = [name], info.st_size
++            if not orphan_guard and lock_path == guard_path:
++                names.append(guard_path.name)
++                size += os.fstat(guard.fileno()).st_size
++            if apply and not orphan_guard and lock_path == guard_path:
++                path.unlink(missing_ok=True)
++        # Windows cannot remove an open guard. Legitimate writers never reuse a
++        # temporary name, and its data was removed while the guard was locked.
++        if apply:
++            for entry in names:
++                try:
++                    (directory / entry).unlink(missing_ok=True)
++                except PermissionError:
++                    # A concurrent cleanup may still hold the orphan guard.
++                    if not entry.endswith(".guard"):
++                        raise
++        return names, size
+ 
+ 
+ class PinnedBlobStore:
+--- a/backend/bmt_backend/s3_storage.py
++++ b/backend/bmt_backend/s3_storage.py
+@@ -10,9 +10,10 @@
+ from xml.etree import ElementTree
+ 
+ import requests
++from urllib3.exceptions import HTTPError as StreamError
+ 
++from .http_transport import PooledTransport
+ from .storage import canonical_json
+-from .http_transport import PooledTransport
+ 
+ LIMIT = 8*1024*1024
+ 
+@@ -71,8 +72,8 @@
+                 if len(data) > limit:
+                     raise OSError("Object response exceeds limit")
+                 return response.status_code,data
+-        except requests.RequestException as exc:
+-            raise OSError("Object service unavailable") from exc
++        except (requests.RequestException, StreamError):
++            raise OSError("Object service unavailable") from None
+ 
+     def put_json(self, data):
+         body = canonical_json(data)
+--- a/backend/bmt_backend/maintenance.py
++++ b/backend/bmt_backend/maintenance.py
+@@ -3,7 +3,7 @@
+ import argparse
+ import json
+ 
+-from sqlalchemy import String, cast, delete, or_, select, update
++from sqlalchemy import String, cast, delete, or_, select, union_all, update
+ 
+ from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
+ from .config import Settings
+@@ -72,15 +72,26 @@
+         races.update(session.scalars(select(ResumeRace.id).where(~ResumeRace.id.in_(unsettled), ResumeRace.expires_at < cutoff,
+             ResumeRace.ticket_id.is_(None)).order_by(ResumeRace.expires_at, ResumeRace.id).limit(1000)))
+         receipts = set(session.scalars(select(ResumeReceipt.id).where(ResumeReceipt.race_id.in_(races))))
+-        rows, next_cursor = blobs.list_objects(cursor, scan_limit)
++        rows, next_cursor = blobs.list_objects(cursor, scan_limit, True) if local else blobs.list_objects(cursor, scan_limit)
++        temporary_files, temporary_bytes, temporary_removed = 0, 0, []
++        for row in rows:
++            if "temporary" in row:
++                names, size = blobs.cleanup_temporary(row, now()-86400, apply=apply, offline=offline)
++                temporary_files += len(names)
++                temporary_bytes += size
++                temporary_removed.extend((row["shard"], name) for name in names)
++        objects_inspected = len(rows)
++        rows = [row for row in rows if "temporary" not in row]
+         eligible = [row for row in rows if row["modified"] < now()-86400]
+         hashes = [row["digest"] for row in eligible]
+-        referenced = set(session.scalars(select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes))))
+-        referenced.update(session.scalars(select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes))))
+-        referenced.update(session.scalars(select(PublicationIntent.replay_hash).where(PublicationIntent.replay_hash.in_(hashes))))
+         keep = [] if online else [~Run.id.in_(run_ids)]
+-        referenced.update(session.scalars(select(Run.replay_hash).where(Run.replay_hash.in_(hashes), *keep)))
+-        referenced.update(session.scalars(select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), *keep)))
++        referenced = set(session.scalars(union_all(
++            select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes)),
++            select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes)),
++            select(PublicationIntent.replay_hash).where(PublicationIntent.replay_hash.in_(hashes)),
++            select(Run.replay_hash).where(Run.replay_hash.in_(hashes), *keep),
++            select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), *keep),
++        )))
+         orphaned = [row for row in eligible if row["digest"] not in referenced]
+         if online and apply:
+             from sqlalchemy.dialects.postgresql import insert as pg_insert
+@@ -105,10 +116,13 @@
+                 safe.append(row)
+             orphaned = safe
+         if apply and next_cursor is not None and "shard" in next_cursor:
+-            next_cursor["offset"] = max(0, next_cursor["offset"]-sum(row["digest"].startswith(f"{next_cursor['shard']:02x}") for row in orphaned))
++            removed = sum(row["digest"].startswith(f"{next_cursor['shard']:02x}") for row in orphaned)
++            removed += sum(shard == f"{next_cursor['shard']:02x}" for shard, _name in temporary_removed)
++            next_cursor["offset"] = max(0, next_cursor["offset"]-removed)
+         result = {"runs": len(run_ids), "tickets": len(tickets), "resume_races": len(races),
+                   "orphaned_objects": len(orphaned), "orphaned_bytes": sum(row["bytes"] for row in orphaned), "applied": apply,
+-                  "archived_weeks": archived, "objects_inspected":len(rows), "object_scan_limit": scan_limit,
++                  "temporary_files": temporary_files, "temporary_bytes": temporary_bytes,
++                  "archived_weeks": archived, "objects_inspected":objects_inspected, "object_scan_limit": scan_limit,
+                   "objects_deferred": next_cursor is not None, "next_object_cursor": next_cursor}
+         if apply:
+             session.execute(delete(ResumeReceipt).where(ResumeReceipt.race_id.in_(races)))
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -1,3 +1,4 @@
++import logging
+ from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI, HTTPException, Request
+@@ -11,7 +12,7 @@
+ from .config import Settings
+ from .db import make_engine, make_session_factory
+ from .middleware import IdentityBudgets, RequestBoundary
+-from .observability import configure_logging
++from .observability import configure_logging, dependency_failure
+ from .readiness import DependencyFailure, ReadinessProbe
+ from .security import GoogleIdentityVerifier
+ from .storage import make_blob_store
+@@ -114,6 +115,7 @@
+ 
+     @app.exception_handler(SQLAlchemyError)
+     async def unavailable(request: Request, _error):
++        dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "database")
+         app.state.readiness.invalidate()
+         return JSONResponse(
+             {"detail": "DATABASE_UNAVAILABLE", "request_id": request.state.request_id}, status_code=503
+@@ -121,6 +123,7 @@
+ 
+     @app.exception_handler(OSError)
+     async def storage_unavailable(request: Request, _error):
++        dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "storage")
+         app.state.readiness.invalidate(storage=True)
+         return JSONResponse({"detail":"STORAGE_UNAVAILABLE","request_id":request.state.request_id},status_code=503)
+ 
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -22,6 +22,7 @@
+ 
+ from .client_address import ClientAddress
+ from .identity_models import RateBucket
++from .observability import dependency_failure
+ from .security import digest
+ 
+ log = logging.getLogger("bmt.requests")
+@@ -221,13 +222,15 @@
+         request_id = str(uuid.uuid4())
+         scope.setdefault("state", {})["request_id"] = request_id
+         status = 500
++        response_started = False
+         acquired = False
+         acquired_pool = None
+         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
+ 
+         async def response_send(message):
+-            nonlocal status, response_bytes
++            nonlocal status, response_bytes, response_started
+             if message["type"] == "http.response.start":
++                response_started = True
+                 status = message["status"]
+                 message["headers"] += [
+                     (b"x-request-id", request_id.encode()),
+@@ -247,6 +250,13 @@
+             return await JSONResponse({"detail": message, "request_id": request_id}, status_code=code)(
+                 scope, receive, response_send
+             )
++
++        async def database_error(exc):
++            dependency_failure(log, exc, request_id, "database")
++            probe = getattr(getattr(scope.get("app"), "state", None), "readiness", None)
++            if probe is not None:
++                probe.invalidate()
++            return await error(503, "DATABASE_UNAVAILABLE")
+ 
+         try:
+             method = scope["method"]
+@@ -285,8 +295,8 @@
+                     if (provided and not self.known_credential(credential_key)
+                             and not await self.peer_budget(peer, "credential_admission", self.settings.pre_auth_limit_per_minute)):
+                         return await error(429, "RATE_LIMITED")
+-                except SQLAlchemyError:
+-                    return await error(503, "DATABASE_UNAVAILABLE")
++                except SQLAlchemyError as exc:
++                    return await database_error(exc)
+                 if provided:
+                     try:
+                         if await run_in_threadpool(self.validated_identity_budget, scope, headers[b"authorization"]):
+@@ -297,8 +307,8 @@
+                             if not await self.peer_budget(peer, category, anonymous_limit):
+                                 self.deny_credential(denial_key)
+                                 return await error(429, "RATE_LIMITED")
+-                    except SQLAlchemyError:
+-                        return await error(503, "DATABASE_UNAVAILABLE")
++                    except SQLAlchemyError as exc:
++                        return await database_error(exc)
+                     except HTTPException as denied:
+                         # Keep a valid credential's NAT admission when only its
+                         # player budget is exhausted; never cache it as an auth grant.
+@@ -374,8 +384,8 @@
+                     token = parsed.get("token" if scope["path"].endswith("/poll") else "refresh_token", "") if isinstance(parsed, dict) else ""
+                     try:
+                         allowed = await run_in_threadpool(check_budget, self.session_factory, digest(str(token)), scope["path"], 60)
+-                    except SQLAlchemyError:
+-                        return await error(503, "DATABASE_UNAVAILABLE")
++                    except SQLAlchemyError as exc:
++                        return await database_error(exc)
+                     if not allowed:
+                         return await error(429, "RATE_LIMITED")
+             sent = False
+@@ -388,6 +398,13 @@
+                 return await receive()
+ 
+             await self.app(scope, buffered_receive, response_send)
++        except Exception as exc:
++            # Exception text/traceback can contain credentials or submitted
++            # values. The structured logger keeps only its type and request ID.
++            log.error("request_failed", extra={"request_id": request_id, "exception_type": type(exc).__name__})
++            if response_started:
++                raise
++            return await error(500, "INTERNAL_ERROR")
+         finally:
+             # Include Pydantic validation, the endpoint, storage and response
+             # serialization: releasing after json.loads did not bound live trees.
+--- a/backend/bmt_backend/observability.py
++++ b/backend/bmt_backend/observability.py
+@@ -2,6 +2,15 @@
+ 
+ import json
+ import logging
++import re
++
++
++def dependency_failure(logger, error, request_id, dependency):
++    fields = {"request_id": request_id, "exception_type": type(error).__name__}
++    sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
++    if isinstance(sqlstate, str) and re.fullmatch(r"[A-Z0-9]{5}", sqlstate):
++        fields["sqlstate"] = sqlstate
++    logger.error(dependency + "_unavailable", extra=fields)
+ 
+ 
+ class JsonFormatter(logging.Formatter):
+@@ -14,7 +23,7 @@
+         if not isinstance(value, dict):
+             value = {"event": message}
+         value["level"] = record.levelname.lower()
+-        for field in ("run_id", "time_ticks", "failure_code", "worker_id",
++        for field in ("run_id", "time_ticks", "failure_code", "worker_id", "request_id", "exception_type", "sqlstate",
+                       "verification_seconds", "verification_compute_ms", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
+             if hasattr(record, field):
+                 value[field] = getattr(record, field)
+--- a/backend/deploy/object_archive.py
++++ b/backend/deploy/object_archive.py
+@@ -6,10 +6,20 @@
+ import gzip
+ import io
+ import os
+-import shutil
++import re
+ import sys
+ import tarfile
+ from pathlib import Path, PurePosixPath
++
++from bmt_backend.storage import MAX_STORED_BLOB_BYTES, decode_blob_json, sync_directory
++
++
++def object_digest(relative):
++    parts = relative.parts
++    if (len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{2}", parts[0])
++            or not re.fullmatch(r"[0-9a-f]{64}\.json", parts[1]) or not parts[1].startswith(parts[0])):
++        raise ValueError("Invalid content-addressed object path")
++    return parts[1][:64]
+ 
+ 
+ def require_empty(root: Path) -> None:
+@@ -32,6 +42,8 @@
+             store = S3BlobStore(settings)
+         archive_objects(store)
+         return
++    if root.is_symlink() or not root.is_dir():
++        raise ValueError("Object root must be a regular directory")
+     # An interrupted atomic publish can leave the temporary and final names linked.
+     # Serialize both as regular data; restoring archive link entries is forbidden.
+     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", dereference=True) as output:
+@@ -43,7 +55,23 @@
+                 source = Path(directory) / name
+                 if source.is_symlink() or not (source.is_file() or source.is_dir()):
+                     raise ValueError("Only regular object files and directories can be backed up")
+-                output.add(source, arcname=source.relative_to(root).as_posix(), recursive=False)
++                relative = source.relative_to(root)
++                if source.is_dir():
++                    if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", name):
++                        raise ValueError("Invalid object shard")
++                    output.add(source, arcname=relative.as_posix(), recursive=False)
++                else:
++                    key = object_digest(relative)
++                    with source.open("rb") as stream:
++                        body = stream.read(MAX_STORED_BLOB_BYTES + 1)
++                        entry = output.gettarinfo(fileobj=stream, arcname=relative.as_posix())
++                    if not entry.isfile():
++                        raise ValueError("Object must be a regular file")
++                    decode_blob_json(body, key)
++                    # Verify and archive the same bounded bytes, rather than
++                    # reopening a file after its integrity check.
++                    entry.size = len(body)
++                    output.addfile(entry, io.BytesIO(body))
+ 
+ 
+ def archive_objects(store) -> None:
+@@ -75,15 +103,29 @@
+                 raise ValueError("Archive links and special files are forbidden")
+             destination = root.joinpath(*relative.parts)
+             if member.isdir():
++                if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", relative.parts[0]):
++                    raise ValueError("Invalid object shard")
+                 destination.mkdir(parents=True, exist_ok=True)
+             else:
+-                destination.parent.mkdir(parents=True, exist_ok=True)
++                key = object_digest(relative)
++                if not 0 <= member.size <= MAX_STORED_BLOB_BYTES:
++                    raise ValueError("Stored object exceeds limit")
+                 payload = source.extractfile(member)
+                 if payload is None:
+                     raise ValueError("Object archive file has no content")
++                with payload:
++                    body = payload.read(MAX_STORED_BLOB_BYTES + 1)
++                if len(body) != member.size:
++                    raise ValueError("Truncated object archive")
++                decode_blob_json(body, key)
++                destination.parent.mkdir(parents=True, exist_ok=True)
+                 # Exclusive create rejects duplicate file entries and never overwrites.
+-                with payload, destination.open("xb") as output:
+-                    shutil.copyfileobj(payload, output)
++                with destination.open("xb") as output:
++                    output.write(body)
++                    output.flush()
++                    os.fsync(output.fileno())
++                sync_directory(destination.parent)
++        sync_directory(root)
+ 
+ 
+ if __name__ == "__main__":
+--- a/backend/deploy/test_operations.py
++++ b/backend/deploy/test_operations.py
+@@ -2,6 +2,8 @@
+ 
+ from __future__ import annotations
+ 
++import gzip
++import hashlib
+ import io
+ import os
+ import subprocess
+@@ -10,6 +12,8 @@
+ import tempfile
+ import unittest
+ from pathlib import Path
++
++from bmt_backend.storage import MAX_BLOB_BYTES, LocalBlobStore
+ 
+ HELPER = Path(__file__).with_name("object_archive.py")
+ 
+@@ -21,6 +25,7 @@
+             input=data,
+             capture_output=True,
+             check=False,
++            env=os.environ | {"BMT_OBJECT_BACKEND": "local"},
+         )
+ 
+     def payload(self, name="valid.json", kind=tarfile.REGTYPE):
+@@ -40,15 +45,15 @@
+         with tempfile.TemporaryDirectory() as temp:
+             base = Path(temp)
+             source, destination = base / "source", base / "destination"
+-            (source / "ab").mkdir(parents=True)
+-            (source / "ab" / "object.json").write_bytes(b'{"hello":"world"}')
++            store = LocalBlobStore(str(source))
++            key = store.put_json({"hello": "world"})
+             backup = self.call("archive", source)
+             self.assertEqual(backup.returncode, 0, backup.stderr)
+             restored = self.call("restore", destination, backup.stdout)
+             self.assertEqual(restored.returncode, 0, restored.stderr)
+-            self.assertEqual((destination / "ab" / "object.json").read_bytes(), b'{"hello":"world"}')
++            self.assertEqual(LocalBlobStore(str(destination)).get_json(key), {"hello": "world"})
+             self.assertNotEqual(self.call("restore", destination, backup.stdout).returncode, 0)
+-            self.assertEqual((destination / "ab" / "object.json").read_bytes(), b'{"hello":"world"}')
++            self.assertEqual(LocalBlobStore(str(destination)).get_json(key), {"hello": "world"})
+ 
+     def test_traversal_absolute_paths_and_links_rejected(self):
+         for name, kind in (
+@@ -68,27 +73,47 @@
+ 
+     def test_duplicate_entries_never_overwrite(self):
+         data = io.BytesIO()
++        original = b'{"value":"original"}'
++        key = hashlib.sha256(original).hexdigest()
+         with tarfile.open(fileobj=data, mode="w") as archive:
+-            for payload in (b"original", b"modified"):
+-                member = tarfile.TarInfo("object.json")
++            for payload in (original, original):
++                member = tarfile.TarInfo(key[:2] + "/" + key + ".json")
+                 member.size = len(payload)
+                 archive.addfile(member, io.BytesIO(payload))
+         with tempfile.TemporaryDirectory() as temp:
+             root = Path(temp) / "objects"
+             self.assertNotEqual(self.call("restore", root, data.getvalue()).returncode, 0)
+-            self.assertEqual((root / "object.json").read_bytes(), b"original")
++            self.assertEqual((root / key[:2] / (key + ".json")).read_bytes(), original)
+ 
+     def test_interrupted_hardlink_publication_round_trip(self):
+         with tempfile.TemporaryDirectory() as temp:
+             source, destination = Path(temp) / "source", Path(temp) / "restored"
+-            source.mkdir()
+-            (source / ".pending-write").write_bytes(b"complete-object")
+-            os.link(source / ".pending-write", source / "published.json")
++            body = b'{"complete":"object"}'
++            key = hashlib.sha256(body).hexdigest()
++            directory = source / key[:2]
++            directory.mkdir(parents=True)
++            (directory / ".pending-write").write_bytes(body)
++            os.link(directory / ".pending-write", directory / (key + ".json"))
+             backup = self.call("archive", source)
+             self.assertEqual(backup.returncode, 0, backup.stderr)
+             restored = self.call("restore", destination, backup.stdout)
+             self.assertEqual(restored.returncode, 0, restored.stderr)
+-            self.assertEqual((destination / "published.json").read_bytes(), b"complete-object")
++            self.assertEqual(LocalBlobStore(str(destination)).get_json(key), {"complete": "object"})
++
++    def test_invalid_content_and_decompression_bomb_never_publish_a_file(self):
++        for raw, compressed in ((b'[]', False), (b'{"x":NaN}', False),
++                (b'{"x":"' + b'x' * MAX_BLOB_BYTES + b'"}', True)):
++            with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as temp:
++                key = hashlib.sha256(raw).hexdigest()
++                body = gzip.compress(raw) if compressed else raw
++                output = io.BytesIO()
++                with tarfile.open(fileobj=output, mode="w") as archive:
++                    entry = tarfile.TarInfo(key[:2] + "/" + key + ".json")
++                    entry.size = len(body)
++                    archive.addfile(entry, io.BytesIO(body))
++                root = Path(temp) / "restore"
++                self.assertNotEqual(self.call("restore", root, output.getvalue()).returncode, 0)
++                self.assertFalse((root / key[:2] / (key + ".json")).exists())
+ 
+ 
+ if __name__ == "__main__":
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-13 backend robustness repairs BR01-BR06: numeric validation rejects overflow; optional ghost data/storage failures cannot determine race acceptance. Finalization locks Player before Run, and publication retries commit owner/target-bound idempotency receipts. The app saves an unknown retry key until acknowledgement. Local archives verify the exact bounded gzip/JSON bytes against their SHA256 names before backup/restore publication. New temporary uploads hold OS-released sidecar guards through publication; startup scans at most 1,000 entries, and reference-aware retention continues with its existing cursor. Only files at least 24 hours old and unlocked are candidates. Legacy files without guards require --offline with every writer stopped; do not infer that an old deployed writer is inactive from file age. Maintenance reports temporary_files/temporary_bytes (logical name sizes, which can include a hardlink alias); its reference lookup is one bounded UNION query, retaining publication proofs and the original two-query test ceiling. S3 raw-stream exceptions map to STORAGE_UNAVAILABLE/503, invalidate readiness and keep Retry-After/request IDs. Unknown errors and database SQLSTATE/class diagnostics exclude bodies, credentials and exception text. No new migration or dependency is required by these repairs. Deploy matching backend/client artifacts only through the separately authorized rollout process; production reboot/power-loss and restore drills remain deployment-host acceptance. Tests and task-only checkpoint: ../../docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
++
+ 2026-10-05 native GCS and GCP staging: the Google adapter uses existing google-auth/HTTP dependencies, runtime ADC and immutable generation preconditions. Provider archives accept GCS. The [staging runbook](gcp/README.md) targets the owner-supplied `beat-my-track` project with explicit application/migration identities, pinned image digests, bounded replicas/DB pools, expiry and owned cleanup. Local image/contract/SQL tests are verified; Google CLI/ADC are not configured, so live bucket/deployment acceptance and pricing review remain. No credits or existing services were used/changed. [Evidence and limits](../../docs/BACKEND_GCS_STAGING_2026_10_05.md).
+ 
+ 2026-10-05 readiness/replica failures: `/healthz` performs no dependency IO; `/readyz` coalesces requests with a two-second HTTP deadline, two-second success cache and 30-second on-demand deep-storage interval. API storage errors invalidate caches immediately. `BMT_READINESS_CACHE_SECONDS`, `BMT_READINESS_STORAGE_CACHE_SECONDS` and `BMT_READINESS_TIMEOUT_SECONDS` configure these bounded defaults. Keep external probe timeouts above the application's deadline. Synthetic separate-process tests cover shared sessions, concurrent retries/resource consumption, storage faults, killed/stale workers and SQL finalization recovery. No existing services were restarted/migrated. [Actual checks and limits](../../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
+--- a/backend/tests/test_replica_failures.py
++++ b/backend/tests/test_replica_failures.py
+@@ -15,6 +15,7 @@
+ import httpx
+ import pytest
+ from sqlalchemy import create_engine, select
++from test_domains import FakeVerifier
+ 
+ from bmt_backend.config import Settings
+ from bmt_backend.db import make_engine, make_session_factory
+@@ -148,18 +149,23 @@
+ 
+ def published(replicas):
+     creator = sign_in(replicas, "Creator")
+-    uploaded = replicas.a.client.post("/v1/tracks", json={"name": "Fixture loop", "document": {"shape": "oval"}},
++    document = {"schema": "creator-track-v5", "id": "replica_fixture", "shape": "oval",
++                "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
++    from bmt_backend.publications import CONTRACT_FIELDS
++    manifest = FakeVerifier().validate_track(document)
++    contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
++    contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
++    uploaded = replicas.a.client.post("/v1/publications", json={"name": "Fixture loop",
++        "document": document, "vehicle_id": "compact", "contract": contract,
++        "replay": {"schema": "bmt-trajectory-v1", "input_count": 120,
++            "race_proof": {"schema": "bmt-race-path-v1", "samples": [[0, 0, 0, 0], [120, 0, 0, 0]]}}},
+         headers=auth(creator, "creator-upload"))
+-    assert uploaded.status_code == 201
+-    version = uploaded.json()
+-    issued = race_ticket(replicas, version, creator)
+-    result = replicas.b.client.post("/v1/runs", json=payload(issued), headers=auth(creator, "creator-proof"))
+-    assert result.status_code == 202
++    assert uploaded.status_code == 202, uploaded.text
+     worker(replicas)
+-    assert replicas.a.client.get(f"/v1/runs/{result.json()['run_id']}", headers=auth(creator)).json()["status"] == "verified"
+-    assert replicas.b.client.post(f"/v1/track-versions/{version['version_id']}/publish",
+-        headers=auth(creator, "fixture-publish")).status_code == 200
+-    return version
++    result = replicas.b.client.get("/v1/me/publications/" + uploaded.json()["publication_id"],
++        headers=auth(creator))
++    assert result.status_code == 200 and result.json()["state"] == "published", result.text
++    return result.json()["receipt"]
+ 
+ 
+ def race_ticket(replicas, version, token):
+--- a/backend/tests/worker_signal_probe.py
++++ b/backend/tests/worker_signal_probe.py
+@@ -51,7 +51,7 @@
+             return super().verify_run(*args, **kwargs)
+ 
+     verifier = ProbeVerifier()
+-    app = create_app(Settings(environment="test", allow_sync_track_validation=True,
++    app = create_app(Settings(environment="test", allow_sync_track_validation=True, local_drafts_only=False,
+         database_url=f"sqlite:///{(folder / 'db.sqlite').as_posix()}", object_dir=str(folder / "objects"),
+         worker_shutdown_grace_seconds=1, rate_limit_per_minute=10000, write_limit_per_minute=10000),
+         verifier=verifier)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 B01/B05/B07/R01/Q01 BR01-BR06: owner fixes all six backend review findings. Overflow-safe validation/optional-ghost isolation, Player-before-Run finalization, durable target-bound publication retry receipts and saved app retry keys, exact-byte SHA256/JSON/gzip archive/restore checks, OS-guarded aged temporary cleanup (bounded startup and resumable retention), and normalized S3 failures/private correlated server diagnostics. Original retention query ceiling retained via one UNION; replica fixtures use current publication, original deadline/rollback/fencing assertions preserved. SQLite203 pass/12skip +10subtests, focused28/1skip +10subtests, PostgreSQL66/3skip, Linux45/1skip +18subtests, native260/0 plus strict wire5 pass; Ruff/diff pass. Localhost fresh DB connection3.063s versus explicit IPv4 0.023s explained test delays; final PG uses the same disposable DB with unchanged deadlines. Fixture restored stopped; matching rollout, legacy unguarded temporary cleanup with all writers stopped, physical host reboot/power-loss/restore and device acceptance remain. No new schema/dependency, production writes/migration/deploy, APK/device test or canonical physics change. Concurrent batch-wait edits preserved/excluded. Commands, evidence and task-only checkpoint: docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
++
+ 2026-10-13 WIND07-WIND09/V04/V05/G01/R01/Q01: owner stronger spatial/temporal speed variance and realistic powder. Winter-wind11 bounded positive Eulerian phase warp/unequal gust phases/shorter packets with white cores; 48 grains invert same map in4 shader steps,72-125% individual travel. Same49ground36bank48air/3batches626tri/texture reads/5.4-21.6mps prevailing/CPU placement; extra shader arithmetic only. Native61/Mobile61 pass incl calibrated GPU phase-speed probe, spatial spread2.7x previous, temporal mean variation4.4mps; pixel-exact previous restoration/frozen motion/normal-MSAA moving roofs/canonical snapshots. Initial numeric decoding fixed with known21.6mps calibration; overly thin mask replaced retaining white cores. Vehicle clouds/artwork/camera/physics/scoring preserved; DN2103 attached/no phone run/APK/fullValidate/backend/deploy. Actual files/commands/motion/cost limits/scoped checkpoint/owner acceptance: docs/WINTER_WIND_FLOW.md.
+ 
+ 2026-10-13 M1-M6/B01/B05/B07/Q01: owner fixes medium communication findings. Patched crypto50.0.2/maintained local TLS; possession-based idempotent logout; Windows DPAPI/Android Keystore protected shared credentials and leased legacy migration; durable publication-scope 429 pause; per-thread provider TCP pools/retired-thread shutdown and bounded client nodes; provider verification outside DB transactions with fresh CAS. PostgreSQL-backed198(9skips), Linux/Python3.12 patched image83(3skips), native439 and physical DN2103 Keystore13 pass; offline Android bridge/Windows DLL/pip-check/Ruff pass, OSV45/no matches. Concurrent logging/quality/retry/audio/editor changes preserved and excluded. Import hit locked DLL after class registration; affected native tests then passed. No game APK export/install/fullValidate/fullphysics/live account writes/deploy. Source rollout/restart/JNI sign-in acceptance remains. Files/commands/corrections/scoped checkpoint: docs/COMMUNICATION_M1_M6_2026_10_13.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 B01/B05/B07/R01/Q01 BR01-BR06: owner fixes all six backend review findings. Overflow-safe validation/optional-ghost isolation, Player-before-Run finalization, durable target-bound publication retry receipts and saved app retry keys, exact-byte SHA256/JSON/gzip archive/restore checks, OS-guarded aged temporary cleanup (bounded startup and resumable retention), and normalized S3 failures/private correlated server diagnostics. Original retention query ceiling retained via one UNION; replica fixtures use current publication, original deadline/rollback/fencing assertions preserved. SQLite203 pass/12skip +10subtests, focused28/1skip +10subtests, PostgreSQL66/3skip, Linux45/1skip +18subtests, native260/0 plus strict wire5 pass; Ruff/diff pass. Localhost fresh DB connection3.063s versus explicit IPv4 0.023s explained test delays; final PG uses the same disposable DB with unchanged deadlines. Fixture restored stopped; matching rollout, legacy unguarded temporary cleanup with all writers stopped, physical host reboot/power-loss/restore and device acceptance remain. No new schema/dependency, production writes/migration/deploy, APK/device test or canonical physics change. Concurrent batch-wait edits preserved/excluded. Commands, evidence and task-only checkpoint: docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
++
+ 2026-10-13 WIND07-WIND09/V04/V05/G01/R01/Q01: owner stronger spatial/temporal speed variance and realistic powder. Winter-wind11 bounded positive Eulerian phase warp/unequal gust phases/shorter packets with white cores; 48 grains invert same map in4 shader steps,72-125% individual travel. Same49ground36bank48air/3batches626tri/texture reads/5.4-21.6mps prevailing/CPU placement; extra shader arithmetic only. Native61/Mobile61 pass incl calibrated GPU phase-speed probe, spatial spread2.7x previous, temporal mean variation4.4mps; pixel-exact previous restoration/frozen motion/normal-MSAA moving roofs/canonical snapshots. Initial numeric decoding fixed with known21.6mps calibration; overly thin mask replaced retaining white cores. Vehicle clouds/artwork/camera/physics/scoring preserved; DN2103 attached/no phone run/APK/fullValidate/backend/deploy. Actual files/commands/motion/cost limits/scoped checkpoint/owner acceptance: docs/WINTER_WIND_FLOW.md.
+ 
+ 2026-10-13 M1-M6/B01/B05/B07/Q01: owner fixes medium communication findings. Patched crypto50.0.2/maintained local TLS; possession-based idempotent logout; Windows DPAPI/Android Keystore protected shared credentials and leased legacy migration; durable publication-scope 429 pause; per-thread provider TCP pools/retired-thread shutdown and bounded client nodes; provider verification outside DB transactions with fresh CAS. PostgreSQL-backed198(9skips), Linux/Python3.12 patched image83(3skips), native439 and physical DN2103 Keystore13 pass; offline Android bridge/Windows DLL/pip-check/Ruff pass, OSV45/no matches. Concurrent logging/quality/retry/audio/editor changes preserved and excluded. Import hit locked DLL after class registration; affected native tests then passed. No game APK export/install/fullValidate/fullphysics/live account writes/deploy. Source rollout/restart/JNI sign-in acceptance remains. Files/commands/corrections/scoped checkpoint: docs/COMMUNICATION_M1_M6_2026_10_13.md.
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -86,6 +93,9 @@
+ 		for field: String in ["scope","library_directory","fingerprint","upload_key","publish_key","ticket_key","state"]:
+ 			if not value.get(field) is String: complete = false
+ 		if not (value.get("created_at") is int or value.get("created_at") is float): complete = false
++		if value.has("publication_retry_key"):
++			complete = complete and value.publication_retry_key is String
++			if complete: complete = not value.publication_retry_key.is_empty() and value.publication_retry_key.length() <= 128
+ 		if value.get("state") == "published":
+ 			complete = complete and value.get("receipt") is Dictionary
+ 		else:
+@@ -411,10 +421,16 @@
+ 	var job: Dictionary = _read(path)
+ 	if not job.has("publication_id") or not can_retry(document): return
+ 	var owner_scope: String = scope()
++	# Save the retry operation before delivery. A lost reply or app restart
++	# reuses this key; the immutable publication upload keeps its own identity.
++	if not job.has("publication_retry_key"):
++		job.publication_retry_key = cloud.client.new_operation_key()
++		if not _save(path,job): return
+ 	var response: Dictionary = await cloud.client.request_api("/me/publications/"+str(job.publication_id)+"/retry",
+-		HTTPClient.METHOD_POST,{},cloud.client.new_operation_key(),true)
++		HTTPClient.METHOD_POST,{},str(job.publication_retry_key),true)
+ 	if scope() != owner_scope or not response.ok: return
+ 	job.remote = response.data
++	job.erase("publication_retry_key")
+ 	job.erase("failure")
+ 	job.erase("retry_at")
+ 	job.erase("retry_delay")
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -12,12 +12,14 @@
+ class API extends Client:
+ 	var bodies: Array[Dictionary] = []
+ 	var paths: Array[String] = []
++	var keys: Array[String] = []
+ 	var held: bool = false
+ 	var change_owner: bool = false
+ 	var reply: Dictionary = {"ok":true,"status":200,"data":{"state":"consumed","receipt_id":RACE,"used":1,"wallet":{"balance":2,"free":1,"reset_at":1900000000}},"error":""}
+ 	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
+ 		bodies.append(payload.duplicate(true))
+ 		paths.append(_path)
++		keys.append(_key)
+ 		if held: await get_tree().create_timer(0.02).timeout
+ 		if change_owner: player = {"id":"other-owner"}
+ 		return reply.duplicate(true)
+@@ -252,12 +254,51 @@
+ 		await flow.process_jobs()
+ 		check(api.paths.size() == 1,"publication cooldown survives scheduler restart")
+ 		flow._retry_deadlines[job.upload_key] = 0
++		# Both the per-job wait and the shared 429 wait must have elapsed.
++		flow._batch_deadlines[flow.scope()] = 0
+ 		api.reply = {"ok":true,"status":200,"data":{"state":"queued","poll_after_ms":2500},"error":""}
+ 		await flow.process_jobs()
+ 		check(api.paths.size() == 2 and int(flow._read(job_path).retry_streak) == 0,"publication service recovery resets backoff without replacing its identity")
+ 		flow.free()
+ 		cloud.free()
+ 		api.free()
++	api = fixture("publication-retry-journal")
++	var retry_cloud: Node = cloud_for(api,"publication-retry-journal")
++	var retry_library := TrackLibrary.new(workspace.path_join("publication-retry-library"))
++	var retry_flow := TrackLifecycle.new()
++	retry_flow.cloud = retry_cloud
++	retry_flow.library = retry_library
++	root.add_child(retry_flow)
++	var retry_document: Dictionary = {"id":"publication_retry_fixture","name":"Retry fixture"}
++	var retry_job: Dictionary = {"schema":"track-lifecycle-1","scope":retry_flow.scope(),"library_directory":retry_library.directory,"fingerprint":TrackLibrary.draft_fingerprint(retry_document),"upload_key":"immutable-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"failed","created_at":1900000000,"document":retry_document,"publish_requested":true,"publish_workflow":2,"publication_id":"retry-publication-id","failure":"Temporarily unavailable","remote":{"state":"failed","retryable":true}}
++	var retry_path: String = retry_flow._path(retry_document)
++	check(retry_flow._save(retry_path,retry_job),"publication retry journal saved")
++	api.reply = failure(503,"UNAVAILABLE")
++	await retry_flow.retry(retry_document)
++	var pending_retry: Dictionary = retry_flow._read(retry_path)
++	var retry_key: String = str(pending_retry.get("publication_retry_key",""))
++	check(not retry_key.is_empty() and api.keys[0] == retry_key,"unknown publication retry keeps its saved operation key")
++	check(pending_retry.upload_key == retry_job.upload_key,"retry never changes the original publication identity")
++	retry_flow.free()
++	retry_flow = TrackLifecycle.new()
++	retry_flow.cloud = retry_cloud
++	retry_flow.library = retry_library
++	root.add_child(retry_flow)
++	api.reply = {"ok":true,"status":200,"data":{"state":"queued","retryable":false,"poll_after_ms":2500},"error":""}
++	await retry_flow.retry(retry_document)
++	check(api.keys[1] == retry_key,"publication retry survives restart with exactly the same operation key")
++	var acknowledged: Dictionary = retry_flow._read(retry_path)
++	check(not acknowledged.has("publication_retry_key") and acknowledged.upload_key == retry_job.upload_key,"acknowledgement retires only the retry key")
++	acknowledged.state = "failed"
++	acknowledged.failure = "Another dependency failure"
++	acknowledged.remote = {"state":"failed","retryable":true}
++	check(retry_flow._save(retry_path,acknowledged),"subsequent publication failure is saved")
++	var previous_calls: int = api.keys.size()
++	await retry_flow.retry(retry_document)
++	check(api.keys[previous_calls] != retry_key,"a later explicit retry gets a new operation identity")
++	retry_flow.free()
++	retry_cloud.free()
++	api.free()
+ 	api = fixture("publication-size-client")
+ 	var size_cloud: Node = cloud_for(api,"publication-size")
+ 	var size_flow := TrackLifecycle.new()
+--- a/backend/tests/test_product_domain_events.py
++++ b/backend/tests/test_product_domain_events.py
+@@ -92,8 +92,11 @@
+         raise RuntimeError("Injected publication outbox failure")
+ 
+     monkeypatch.setattr(telemetry, "append_server_event", unavailable)
+-    with pytest.raises(RuntimeError, match="Injected publication outbox failure"):
+-        publish(domain, version)
++    unavailable_response = domain.client.post(
++        f"/v1/track-versions/{version['version_id']}/publish", headers=headers(domain))
++    assert unavailable_response.status_code == 500
++    assert unavailable_response.json()["detail"] == "INTERNAL_ERROR"
++    assert unavailable_response.json()["request_id"] == unavailable_response.headers["x-request-id"]
+     with domain.factory() as session:
+         assert session.get(TrackVersion, version["version_id"]).state == "tested"
+         assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 0
+--- /dev/null
++++ b/backend/tests/test_robustness_fixes.py
+@@ -0,0 +1,648 @@
++"""BR01-BR06: acceptance, concurrency, immutable retries and safe recovery."""
++
++import logging
++import os
++import subprocess
++import sys
++import threading
++import time
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import event, select
++from sqlalchemy.exc import OperationalError
++
++PROJECT_ROOT = next(
++    parent for parent in Path(__file__).resolve().parents if (parent / "backend" / "pyproject.toml").is_file()
++)
++import test_replica_failures as replica_tests
++from test_domains import FakeVerifier, headers, public_course, submit, ticket
++from test_domains import domain as domain_fixture
++from test_publication_intents import body as publication_body
++from test_publication_intents import publications as publications_fixture
++from test_publication_intents import request as publish_request
++
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.publications import process_one as publish_one
++from bmt_backend.track_models import IdempotencyRecord, Run
++from bmt_backend.verifier import GodotVerifier
++from bmt_backend.worker import process_one
++
++domain = domain_fixture
++publications = publications_fixture
++
++
++@pytest.fixture(params=["sqlite", "postgres"])
++def review_replicas(tmp_path, request, monkeypatch):
++    if request.param == "postgres" and not os.environ.get("BMT_TEST_DATABASE_URL"):
++        config = PROJECT_ROOT / ".tools" / "backend-postgres.env"
++        if not config.is_file():
++            pytest.skip("Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database")
++        url = next(
++            line.split("=", 1)[1].strip()
++            for line in config.read_text().splitlines()
++            if line.startswith("BMT_TEST_DATABASE_URL=")
++        )
++        monkeypatch.setenv("BMT_TEST_DATABASE_URL", url)
++    yield from replica_tests.replicas.__wrapped__(tmp_path, request)
++
++
++def test_large_integer_movement_proof_is_invalid_input(domain):
++    version, _ = public_course(domain)
++    issued = ticket(domain, version, "Alice")
++    replay = {
++        "schema": "bmt-replay-v1",
++        "frames": [[0, 255, 0]] * 20,
++        "race_proof": {
++            "schema": "bmt-race-proof-v1",
++            "samples": [[0, 10**400, 0, 0, 0, 0, 0, 0], [20, 0, 0, 0, 0, 0, 0, 0]],
++        },
++    }
++    with TestClient(domain.app, raise_server_exceptions=False) as client:
++        reply = client.post(
++            "/v1/runs",
++            json={"ticket_id": issued["ticket_id"], "replay": replay},
++            headers=headers(domain, "Alice"),
++        )
++    assert reply.status_code == 422, reply.text
++    assert "movement sample" in reply.json()["detail"]
++    assert reply.headers["x-request-id"]
++
++
++def test_optional_ghost_integer_overflow_preserves_valid_verified_result(domain, monkeypatch):
++    version, _ = public_course(domain)
++    issued = ticket(domain, version, "Alice")
++    geometry = {
++        "gates": [[1, 0, 0, 0, 1, 0, -1, 1, 0], [-1, 0, 0, 0, 1, 0, -1, 1, 0]],
++        "start": [-0.1, 0, 0],
++        "creator_start": [-0.1, 0, 0],
++        "maximum_speed": {"compact": 1000},
++        "extent": [10, 10],
++        "manifest": domain.app.state.verifier.validate_track({"shape": "oval"}),
++    }
++    replay = {
++        "schema": "bmt-trajectory-v1",
++        "input_count": 10,
++        "race_proof": {
++            "schema": "bmt-race-path-v1",
++            "samples": [[tick, -0.1 if tick % 2 == 0 else 0.1, 0, 0] for tick in range(11)],
++        },
++        "ghost": {
++            "ticks": 10,
++            "poses": [[0, 10**400, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0]],
++        },
++    }
++    from bmt_backend.trajectory_verifier import check
++
++    assert check(geometry, replay["race_proof"], 10, "compact")["lap_ticks"] == [2] * 5
++    accepted = domain.client.post(
++        "/v1/runs",
++        json={"ticket_id": issued["ticket_id"], "replay": replay},
++        headers=headers(domain, "Alice"),
++    )
++    assert accepted.status_code == 202, accepted.text
++    queued = accepted.json()
++    adapter = GodotVerifier(domain.app.state.settings)
++    monkeypatch.setattr(adapter, "manifest", domain.app.state.verifier.manifest)
++    monkeypatch.setattr(adapter, "race_geometry", lambda document: geometry)
++    domain.app.state.verifier = adapter
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        run = session.get(Run, queued["run_id"])
++        assert run.status == "verified"
++        assert run.failure_code is None and run.ghost_hash is None
++        assert run.attempts == 1 and run.time_ticks == 10
++    without_ghost = {key: value for key, value in replay.items() if key != "ghost"}
++    control = domain.client.post(
++        "/v1/runs",
++        json={
++            "ticket_id": ticket(domain, version, "Bob")["ticket_id"],
++            "replay": without_ghost,
++        },
++        headers=headers(domain, "Bob"),
++    )
++    assert control.status_code == 202
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(Run, control.json()["run_id"]).status == "verified"
++
++
++def test_publication_retry_saves_identity_without_reexecuting(publications, monkeypatch):
++    domain = publications
++    domain.app.state.settings = replace(domain.app.state.settings, max_job_attempts=1)
++
++    def unavailable(*args, **kwargs):
++        raise RuntimeError("synthetic dependency failure")
++
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", unavailable)
++    intent = publish_request(domain)
++    assert publish_one(domain.app)
++    identity = intent["publication_id"]
++    auth = headers(domain, key="same-publication-retry-operation")
++    path = "/v1/me/publications/" + identity + "/retry"
++    first = domain.client.post(path, headers=auth, json={})
++    assert first.status_code == 200 and first.json()["state"] == "queued"
++    assert publish_one(domain.app)
++    assert domain.client.post(path, headers=auth, json={}).json() == first.json()
++    with domain.factory() as session:
++        row = session.get(PublicationIntent, identity)
++        assert row.status == "failed" and row.attempts == 1
++        assert (
++            session.scalar(
++                select(IdempotencyRecord).where(IdempotencyRecord.key == "same-publication-retry-operation")
++            )
++            is not None
++        )
++
++
++def test_retry_and_finalize_complete_concurrently_without_deadlock(domain, monkeypatch):
++    if not domain.postgres:
++        pytest.skip("Requires actual PostgreSQL row locks")
++    version, _ = public_course(domain)
++    queued = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    armed = threading.Event()
++    locked, release, retry_attempted, retry_locked = (threading.Event() for _ in range(4))
++    actual = domain.app.state.verifier.verify_run
++
++    def verify(*args, **kwargs):
++        result = actual(*args, **kwargs)
++        armed.set()
++        return result
++
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", verify)
++    sqlstates = []
++
++    def capture_error(context):
++        sqlstates.append(getattr(context.original_exception, "sqlstate", None))
++
++    def before_sql(connection, cursor, sql, params, context, many):
++        if (
++            armed.is_set()
++            and "FOR UPDATE" in sql
++            and "FROM players" in sql
++            and not threading.current_thread().name.startswith("review-worker")
++        ):
++            retry_attempted.set()
++
++    def after_sql(connection, cursor, sql, params, context, many):
++        if armed.is_set() and "FOR UPDATE" in sql:
++            if threading.current_thread().name.startswith("review-worker") and not locked.is_set():
++                locked.set()
++                assert release.wait(10)
++            elif "FROM players" in sql:
++                retry_locked.set()
++
++    event.listen(domain.app.state.engine, "after_cursor_execute", after_sql)
++    event.listen(domain.app.state.engine, "before_cursor_execute", before_sql)
++    event.listen(domain.app.state.engine, "handle_error", capture_error)
++    try:
++        with (
++            TestClient(domain.app, raise_server_exceptions=False) as client,
++            ThreadPoolExecutor(max_workers=1, thread_name_prefix="review-worker") as workers,
++            ThreadPoolExecutor(max_workers=1) as callers,
++        ):
++            job = workers.submit(process_one, domain.app)
++            assert locked.wait(10)
++            try:
++                retry = callers.submit(
++                    client.post,
++                    "/v1/runs/" + queued["run_id"] + "/retry",
++                    json={},
++                    headers=headers(domain, "Alice"),
++                )
++                assert retry_attempted.wait(10)
++                # With the old Run -> Player order the retry can hold Player
++                # here; releasing the worker then creates the actual SQL cycle.
++                retry_locked.wait(0.1)
++            finally:
++                release.set()
++            assert job.result(timeout=15)
++            assert retry.result(timeout=15).status_code == 200
++        assert not sqlstates
++        with domain.factory() as session:
++            assert session.get(Run, queued["run_id"]).status == "verified"
++    finally:
++        release.set()
++        event.remove(domain.app.state.engine, "after_cursor_execute", after_sql)
++        event.remove(domain.app.state.engine, "before_cursor_execute", before_sql)
++        event.remove(domain.app.state.engine, "handle_error", capture_error)
++
++
++def test_interrupted_local_publication_temporary_is_reclaimed_by_retention(domain):
++    root = domain.app.state.blobs.root
++    child = subprocess.run(
++        [
++            sys.executable,
++            "-c",
++            (
++                "import os,sys; from bmt_backend.storage import LocalBlobStore; "
++                "store=LocalBlobStore(sys.argv[1]); os.link=lambda *args: os._exit(86); "
++                "store.put_json({'interrupted-upload':'saved-evidence'})"
++            ),
++            str(root),
++        ],
++        timeout=10,
++        check=False,
++    )
++    assert child.returncode == 86
++    pending = [path for path in root.glob("*/.pending-*") if not path.name.endswith(".guard")]
++    assert len(pending) == 1
++    from bmt_backend.maintenance import retain
++    from bmt_backend.track_models import now
++
++    os.utime(pending[0], (now() - 100 * 86400,) * 2)
++    result = retain(domain.factory, domain.app.state.blobs, apply=True, online=True)
++    assert result["orphaned_objects"] == 0
++    assert result["temporary_files"] == 2
++    assert not pending[0].exists()
++    assert not list(root.glob("*/.pending-*"))
++
++
++def test_store_restart_reclaims_an_aged_interrupted_upload(tmp_path):
++    from bmt_backend.storage import LocalBlobStore
++
++    root = tmp_path / "objects"
++    child = subprocess.run(
++        [
++            sys.executable,
++            "-c",
++            (
++                "import os,sys; from bmt_backend.storage import LocalBlobStore; "
++                "store=LocalBlobStore(sys.argv[1]); os.link=lambda *args: os._exit(86); "
++                "store.put_json({'interrupted':'restart'})"
++            ),
++            str(root),
++        ],
++        timeout=10,
++        check=False,
++    )
++    assert child.returncode == 86
++    pending = next(path for path in root.glob("*/.pending-*") if not path.name.endswith(".guard"))
++    os.utime(pending, (time.time() - 100 * 86400,) * 2)
++    LocalBlobStore(str(root))
++    assert not list(root.glob("*/.pending-*"))
++
++
++def test_local_archive_and_restore_refuse_corrupt_content(tmp_path):
++    from bmt_backend.storage import LocalBlobStore
++
++    source, target = tmp_path / "source", tmp_path / "target"
++    store = LocalBlobStore(str(source))
++    key = store.put_json({"durable": "course"})
++    store._path(key).write_bytes(b"corrupt")
++    archive_script = PROJECT_ROOT / "backend" / "deploy" / "object_archive.py"
++    archived = subprocess.run(
++        [sys.executable, str(archive_script), "archive", "--root", str(source)],
++        capture_output=True,
++        timeout=10,
++        check=False,
++        env=os.environ | {"BMT_OBJECT_BACKEND": "local"},
++    )
++    assert archived.returncode != 0 and b"integrity" in archived.stderr
++    import io
++    import tarfile
++
++    content = io.BytesIO()
++    with tarfile.open(fileobj=content, mode="w") as tar:
++        entry = tarfile.TarInfo(key[:2] + "/" + key + ".json")
++        entry.size = 7
++        tar.addfile(entry, io.BytesIO(b"corrupt"))
++    restored = subprocess.run(
++        [sys.executable, str(archive_script), "restore", "--root", str(target)],
++        input=content.getvalue(),
++        capture_output=True,
++        timeout=10,
++        check=False,
++        env=os.environ | {"BMT_OBJECT_BACKEND": "local"},
++    )
++    assert restored.returncode != 0 and b"integrity" in restored.stderr
++    assert not LocalBlobStore(str(target))._path(key).exists()
++
++
++@pytest.mark.parametrize("stream_error", ["timeout", "protocol"])
++def test_s3_stream_timeout_is_normalized_to_storage_failure(monkeypatch, auth_app, stream_error):
++    from urllib3.exceptions import ProtocolError, ReadTimeoutError
++
++    from bmt_backend.config import Settings
++    from bmt_backend.s3_storage import S3BlobStore
++
++    settings = Settings(
++        object_backend="s3",
++        s3_endpoint="https://objects.example",
++        s3_bucket="review-bucket",
++        s3_access_key="synthetic-access",
++        s3_secret_key="synthetic-secret",
++    )
++
++    class Response:
++        status_code = 200
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *args):
++            pass
++
++        @property
++        def raw(self):
++            return self
++
++        def read(self, *args, **kwargs):
++            if stream_error == "timeout":
++                raise ReadTimeoutError(None, None, "private stream timeout")
++            raise ProtocolError("private interrupted stream")
++
++    monkeypatch.setattr("bmt_backend.s3_storage.requests.request", lambda *args, **kwargs: Response())
++    with pytest.raises(OSError, match="Object service unavailable"):
++        S3BlobStore(settings).get_json("0" * 64)
++    adapter = S3BlobStore(settings)
++
++    @auth_app.get("/v1/robustness-storage")
++    def read_storage():
++        return adapter.get_json("0" * 64)
++
++    with TestClient(auth_app, raise_server_exceptions=False) as client:
++        auth_app.state.readiness.storage_expires_at = time.monotonic() + 60
++        response = client.get("/v1/robustness-storage")
++        assert response.status_code == 503 and response.json()["detail"] == "STORAGE_UNAVAILABLE"
++        assert response.json()["request_id"] == response.headers["x-request-id"]
++        assert response.headers["retry-after"] == "5"
++        assert auth_app.state.readiness.storage_expires_at == 0
++        assert "private" not in response.text
++
++
++def test_actual_worker_kill_recovery_with_current_publication_workflow(review_replicas):
++    from types import SimpleNamespace
++
++    replicas = review_replicas
++    creator = replica_tests.sign_in(replicas, "Creator")
++    content = publication_body(
++        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(verifier=FakeVerifier())))
++    )
++    requested = replicas.a.client.post(
++        "/v1/publications",
++        json=content,
++        headers=replica_tests.auth(creator, "review-create-publication"),
++    )
++    assert requested.status_code == 202, requested.text
++    replica_tests.worker(replicas)
++    published = replicas.b.client.get(
++        "/v1/me/publications/" + requested.json()["publication_id"],
++        headers=replica_tests.auth(creator),
++    ).json()
++    assert published["state"] == "published", published
++    token = replica_tests.sign_in(replicas, "Restart driver")
++    issued = replica_tests.race_ticket(replicas, published["receipt"], token)
++    accepted = replicas.b.client.post(
++        "/v1/runs",
++        json=replica_tests.payload(issued),
++        headers=replica_tests.auth(token, "review-worker-kill"),
++    )
++    assert accepted.status_code == 202, accepted.text
++    identity = accepted.json()["run_id"]
++    old = replica_tests.worker(replicas, pause=True)
++    try:
++        deadline = time.monotonic() + 10
++        while (
++            not Path(str(old.prefix) + ".claimed").exists()
++            and time.monotonic() < deadline
++            and old.process.poll() is None
++        ):
++            time.sleep(0.02)
++        assert Path(str(old.prefix) + ".claimed").exists()
++        with replicas.factory() as session:
++            assert session.get(Run, identity).status == "verifying"
++        replicas.processes.stop(old, kill=True)
++        replica_tests.expire_lease(replicas, identity)
++        new = replica_tests.worker(replicas)
++        assert new.process.pid != old.process.pid
++        replica_tests.one_pb(replicas, token, identity)
++        assert (
++            replicas.b.client.get("/v1/runs/" + identity, headers=replica_tests.auth(token)).json()["status"]
++            == "verified"
++        )
++    finally:
++        replicas.processes.stop(old, kill=True)
++
++
++def test_publication_retry_key_cannot_target_another_intent(publications, monkeypatch):
++    monkeypatch.setattr(
++        publications.app.state.verifier,
++        "verify_run",
++        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("unavailable")),
++    )
++    first = publish_request(publications)
++    second = publish_request(publications, publication_body(publications, id="another_local_document"))
++    for identity in (first["publication_id"], second["publication_id"]):
++        with publications.factory() as session:
++            row = session.get(PublicationIntent, identity)
++            row.status, row.failure_code = "failed", "validator_unavailable"
++            session.commit()
++    auth = headers(publications, key="bound-publication-retry")
++    assert (
++        publications.client.post(
++            "/v1/me/publications/" + first["publication_id"] + "/retry", headers=auth
++        ).status_code
++        == 200
++    )
++    assert (
++        publications.client.post(
++            "/v1/me/publications/" + second["publication_id"] + "/retry", headers=auth
++        ).status_code
++        == 409
++    )
++    with publications.factory() as session:
++        assert session.get(PublicationIntent, second["publication_id"]).status == "failed"
++
++
++def test_concurrent_publication_retry_has_one_durable_receipt(review_replicas):
++    from types import SimpleNamespace
++
++    replicas = review_replicas
++    creator = replica_tests.sign_in(replicas, "Creator")
++    content = publication_body(
++        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(verifier=FakeVerifier())))
++    )
++    created_reply = replicas.a.client.post(
++        "/v1/publications", json=content, headers=replica_tests.auth(creator, "concurrent-publication-source")
++    )
++    assert created_reply.status_code == 202
++    created = created_reply.json()
++    with replicas.factory() as session:
++        row = session.get(PublicationIntent, created["publication_id"])
++        row.status, row.failure_code, row.attempts = "failed", "validator_unavailable", 3
++        session.commit()
++    auth = replica_tests.auth(creator, "concurrent-publication-retry")
++    path = "/v1/me/publications/" + created["publication_id"] + "/retry"
++    with ThreadPoolExecutor(max_workers=4) as pool:
++        replies = list(pool.map(lambda _: replicas.a.client.post(path, headers=auth), range(4)))
++    assert all(reply.status_code == 200 for reply in replies)
++    assert all(reply.json() == replies[0].json() for reply in replies)
++    with replicas.factory() as session:
++        assert (
++            len(
++                session.scalars(
++                    select(IdempotencyRecord).where(IdempotencyRecord.key == "concurrent-publication-retry")
++                ).all()
++            )
++            == 1
++        )
++
++
++def test_retention_preserves_an_aged_active_upload(domain):
++    root = domain.app.state.blobs.root
++    ready, release = root.parent / "active-ready", root.parent / "active-release"
++    program = (
++        "import os,sys,time; from pathlib import Path; from bmt_backend.storage import LocalBlobStore; "
++        "real=os.link\n"
++        "def pause(*args):\n"
++        " Path(sys.argv[2]).touch()\n"
++        " while not Path(sys.argv[3]).exists(): time.sleep(0.01)\n"
++        " return real(*args)\n"
++        "os.link=pause\n"
++        "LocalBlobStore(sys.argv[1]).put_json({'active':'immutable'})\n"
++    )
++    child = subprocess.Popen(
++        [sys.executable, "-c", program, str(root), str(ready), str(release)],
++        stdout=subprocess.DEVNULL,
++        stderr=subprocess.PIPE,
++        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
++    )
++    try:
++        deadline = time.monotonic() + 10
++        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert ready.exists()
++        pending = next(path for path in root.glob("*/.pending-*") if not path.name.endswith(".guard"))
++        from bmt_backend.maintenance import retain
++        from bmt_backend.track_models import now
++
++        os.utime(pending, (now() - 100 * 86400,) * 2)
++        result = retain(domain.factory, domain.app.state.blobs, apply=True, online=True)
++        assert result["temporary_files"] == 0 and pending.exists()
++        release.touch()
++        assert child.wait(timeout=10) == 0
++        assert not list(root.glob("*/.pending-*"))
++    finally:
++        release.touch()
++        if child.poll() is None:
++            child.kill()
++        child.wait(timeout=10)
++        child.stderr.close()
++
++
++def test_unguarded_legacy_temporary_requires_offline_cleanup(domain):
++    from bmt_backend.maintenance import retain
++    from bmt_backend.track_models import now
++
++    directory = domain.app.state.blobs.root / "00"
++    directory.mkdir()
++    pending = directory / ".pending-legacy"
++    pending.write_bytes(b"interrupted")
++    os.utime(pending, (now() - 100 * 86400,) * 2)
++    assert retain(domain.factory, domain.app.state.blobs, apply=True, online=True)["temporary_files"] == 0
++    assert pending.exists()
++    assert retain(domain.factory, domain.app.state.blobs, apply=True, offline=True)["temporary_files"] == 1
++    assert not pending.exists()
++
++
++def test_temporary_cleanup_is_bounded_and_keeps_young_uploads(domain):
++    from bmt_backend.maintenance import retain
++    from bmt_backend.track_models import now
++
++    directory = domain.app.state.blobs.root / "00"
++    directory.mkdir()
++    for index in range(11):
++        data = directory / f".pending-old{index:06d}"
++        data.write_bytes(b"saved")
++        data.with_name(data.name + ".guard").write_bytes(b"0")
++        os.utime(data, (now() - 100 * 86400,) * 2)
++    young = directory / ".pending-young000"
++    young.write_bytes(b"active")
++    young.with_name(young.name + ".guard").write_bytes(b"0")
++    cursor, removed = None, 0
++    for _ in range(30):
++        result = retain(
++            domain.factory,
++            domain.app.state.blobs,
++            apply=True,
++            online=True,
++            scan_limit=3,
++            object_cursor=cursor,
++        )
++        assert result["objects_inspected"] <= 3
++        removed += result["temporary_files"]
++        cursor = result["next_object_cursor"]
++        if cursor is None:
++            break
++    assert cursor is None and removed == 22
++    assert young.exists() and young.with_name(young.name + ".guard").exists()
++    assert len(list(directory.iterdir())) == 2
++
++
++def test_unexpected_errors_and_dependency_errors_are_private_and_correlated(auth_app):
++    from bmt_backend.observability import JsonFormatter
++
++    captured = []
++    handler = logging.Handler()
++    handler.emit = lambda record: captured.append(JsonFormatter().format(record))
++    logging.getLogger("bmt").addHandler(handler)
++
++    @auth_app.get("/v1/robustness-unexpected")
++    def unexpected():
++        raise RuntimeError("private credential in an unexpected exception")
++
++    @auth_app.get("/v1/robustness-database")
++    def database():
++        class Cause(Exception):
++            sqlstate = "08006"
++
++        raise OperationalError("private SQL", {}, Cause("private password"))
++
++    try:
++        with TestClient(auth_app, raise_server_exceptions=False) as client:
++            unknown = client.get("/v1/robustness-unexpected")
++            assert unknown.status_code == 500 and unknown.json()["detail"] == "INTERNAL_ERROR"
++            assert unknown.json()["request_id"] == unknown.headers["x-request-id"]
++            database = client.get("/v1/robustness-database")
++            assert database.status_code == 503 and database.headers["retry-after"] == "5"
++            assert database.json()["request_id"] == database.headers["x-request-id"]
++        assert all("private" not in entry for entry in captured)
++        assert any(
++            '"sqlstate":"08006"' in entry and database.headers["x-request-id"] in entry for entry in captured
++        )
++    finally:
++        logging.getLogger("bmt").removeHandler(handler)
++
++
++@pytest.mark.parametrize("failure", ["disk", "size", "database"])
++def test_optional_ghost_storage_failure_preserves_race_proof(domain, monkeypatch, failure):
++    version, _ = public_course(domain)
++    queued = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    actual = domain.app.state.verifier.verify_run
++
++    def with_ghost(*args, **kwargs):
++        result = actual(*args, **kwargs)
++        result["ghost"] = {
++            "ticks": result["time_ticks"],
++            "poses": [[0, 0, 0, 0, 0, 0, 0], [result["time_ticks"], 0, 0, 0, 0, 0, 0]],
++        }
++        return result
++
++    def unavailable(_ghost):
++        if failure == "database":
++            raise OperationalError("synthetic object pin failure", {}, Exception("unavailable"))
++        if failure == "size":
++            raise ValueError("Object exceeds limit")
++        raise OSError("Disk unavailable")
++
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", with_ghost)
++    monkeypatch.setattr(domain.app.state.blobs, "put_json", unavailable)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        run = session.get(Run, queued["run_id"])
++        assert run.status == "verified" and run.time_ticks == 100
++        assert run.ghost_hash is None and run.attempts == 1

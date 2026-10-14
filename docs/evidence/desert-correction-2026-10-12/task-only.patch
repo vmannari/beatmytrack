@@ -1,0 +1,359 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 73faafb..402bfd1 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Desert regression correction override (2026-10-12)
++The owner rejects the first darker-road/low-bank pass for a visible surround border, patchy road wear and crossing flicker. Correct material continuity and reduce wear contrast; ground crossings must have one visible road surface. Retain low banks, approved tire-mark colour, localized dust, canonical handling/surfaces/scoring and camera. See `docs/DESERT_CORRECTION_2026_10_12.md` for actual checks, moving-camera evidence, limitations and remaining owner/phone acceptance.
++
+ ## Garage trophy wall and workshop detail override (2026-10-12)
+ The owner requests clearer premium icons, more workshop detail, recognisable tyres and a visible trophy wall specifically on the right-hand side wall. Garage now has original solid car/palette/car-droplet/wrench/trophy rail glyphs, detailed spare wheels and an empty six-bay illuminated display mounted on that side wall. Selecting Trophy wall eases the camera in; selecting another submenu returns to the car pose and cancels stale movement. Preserve car confirmation, turning/tilt/zoom/washing, local per-car cosmetics and canonical handling/scoring. Future award grants and population are not invented. AAA remains a target requiring owner/device review. See `docs/GARAGE_TROPHY_WALL.md` for actual commands, captures, measured desktop cost and remaining acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 8c236a4..00ee322 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 DS08-DS10/DS01-DS07/V02/V04/V05/G01/R01/Q01: owner rejects desert border/patchiness/crossing flicker. Kit153 matches terrain-skirt-bank diffuse lighting, removes pile pigment multiplier, uses restrained world-space direction-filtered wear; spatially clipped ground-road union eliminates coplanar duplicate faces. Compatibility59/Mobile59 crossing checks: exact union area/25 single-face samples/six material checks/48 camera poses/zero tracked-pixel delta after warmup. Six fresh driving captures each/57060 low-bank vertices/cells-hash exact; Desert88/shoulder71+18+union/cache66/Import pass. Prior broader editor failures retained. Doctor no phone; no device/performance/export/fullValidate/physics merge/backend/deploy. Files/commands/animation/task-only checkpoint/owner review: docs/DESERT_CORRECTION_2026_10_12.md.
++
+ 2026-10-12 garage GC15-GC19/GC06-GC14/CW13/CW15/CW16/V06/G01/R01/Q01: owner right-side trophy wall and workshop/icon/tyre detail. Solid original rail glyphs, shelving/utilities/compressor, profiled spare tyres with tread/spokes/rims/brakes/lugs; illuminated empty six-bay display on right side wall visible from car view. Cancellable eased camera close-up/return preserves car pose, local paint/dirt, washing and confirmation. Compatibility295 incl120motionframes/Mobile175/view59/wash1402/exactmodel80/swipes268/Import pass. Actual stills at three widths/two renderers and lossless camera APNG; cold425.678ms/viewportCPU0.704ms-GPU0.304ms medians are desktop samples only. Doctor no attached phone/no device/export/backend/deploy. No fabricated trophies or award-grant criteria. Files/commands/task-only checkpoint/owner-device visual acceptance: docs/GARAGE_TROPHY_WALL.md.
+ 
+ 2026-10-12 DS01-DS07/V02/V04/V05/G01/R01/Q01: desert reference/table and low-bank/tire-colour clarifications. Kit151 darker dune pigment/readable compacted road/longitudinal wear/soft granular joins; original 13-26cm eroded piles/317 saved-track deposits/600 cap/same shoulder batch. Directional daylight and localized 1.4s translucent wake replace nine-second obstruction; tire-mark colour unchanged. Compatibility+desktopMobile six captures each/57060 pile vertices road-clear and low/cells-hash exact; Desert88/Shoulders71+18+union/Soil163/BridgeDust121/Cache66/Import pass. Biomes107 retains five existing New/unsaved-draft confirmation failures. Doctor no phone; no device performance/export-install/fullValidate/physics merge/backend/deploy. Actual commands/task-only checkpoint/owner-device acceptance: docs/DESERT_REFINEMENT_2026_10_12.md.
+diff --git a/docs/DESERT_CORRECTION_2026_10_12.md b/docs/DESERT_CORRECTION_2026_10_12.md
+new file mode 100644
+index 0000000..5ba7517
+--- /dev/null
++++ b/docs/DESERT_CORRECTION_2026_10_12.md
+@@ -0,0 +1,33 @@
++# Desert border, patchiness and crossing correction
++
++2026-10-12 owner rejection of the first desert refinement. DS08: remove the visible artificial surround border; DS09: reduce patchy road shading; DS10: remove crossing flicker. Preserve DS01–DS07 (low banks, tire-mark colour and localized dust), V02/V04/V05/G01/R01/Q01. The earlier refinement's screenshots and acceptance notes are retained as rejected evidence; its numerical tests did not establish visual acceptance.
++
++The surround/skirt used continuous diffuse lighting while the main terrain still used toon bands. Matching all desert layers to continuous diffuse removes this material discontinuity. Pile faces no longer receive a separate pigment multiplier. The stronger road-axis UV fields introduced patchy bands and phase changes between road pieces; the ground road now uses restrained world-space mineral grain, mildly filtered along its double-angle road direction. The historical `packed_wear` adapter is quieter too. Tire-trail colour/code, low-bank height/spacing, dust, camera, lighting direction, handling, canonical surfaces and scoring are unchanged in this correction.
++
++Previously every road piece emitted its whole polygon at the same height. At crossings, distinct road UVs therefore competed on coplanar triangles. `desert_road_union.gd` clips later source triangles against earlier ones through the existing spatially binned convex subtraction helper. The output covers the union once, retains hole-safe convex fragments and emits road UVs from the owning piece. This is decorative ground-road geometry only; canonical road cells and track hashes do not change. No per-frame sorting, depth bias, new collider, render batch or runtime dependency is introduced. Presentation kit increments 152 → 153, invalidating stale road caches.
++
++Files: `game/track/native_track_visual.gd`, new `desert_road_union.gd` (+UID), `surface_detail.gdshaderinc`, `creator_road.gdshaderinc`, `surface_shader_variants.gd`; new `game/tests/test_desert_crossings.gd` (+UID), and `capture_desert_refinement.gd` (optional evidence destination). Documentation: this report, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Actual commands, pinned Godot `4.7.2.stable.official.ed1daf0bf`, through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Command suffix | Outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_desert_crossings.gd -Graphical` | Final 59 checks, zero failures. Rounded-end polygon-union oracle area 799.442558 m²; 25 interior points have exactly one road face; six material checks; 48 rendered camera poses with maximum tracked-pixel RGB delta 0.0 after warmup. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--folder=res://../docs/evidence/desert-correction-2026-10-12/mobile-crossing/'` | Final 59 checks, zero failures; identical area and zero tracked-pixel delta. Desktop Vulkan, not an Android-device result. |
++| `-Action TestScript -ScriptPath res://tests/capture_desert_refinement.gd -Graphical -TestArgument '--evidence-root=res://../docs/evidence/desert-correction-2026-10-12'` | Six fresh Compatibility driving-height/detail/dust views; 57,060 low-bank vertices checked; cells/hash preserved. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--evidence-root=res://../docs/evidence/desert-correction-2026-10-12/mobile'` | Six fresh desktop Mobile/Vulkan views and the same geometry/canonical checks. |
++| `-Action TestDesert` | 88 checks, zero failures; five-car deterministic replay and packed/loose-sand behavior retained. |
++| `-Action TestShoulders` | Union test plus 71 visual-join and 18 internal-contour checks, zero failures. |
++| `-Action TestRoadCache` | 66 checks, zero failures. |
++| `-Action Import` | Pass. |
++| `-Action Doctor` | Matching engine/templates; no attached Android devices. |
++
++Fixture corrections: bridge constructor requires the track; a new JSON key must be a String (dot assignment initially inserted a StringName); non-road shader parameters can be null; and the independent expected area must include actual rounded/bevelled end caps rather than a guessed rectangle. These fixture mistakes were corrected, not accepted as passing runs. Mobile initially measured its cold renderer lighting before convergence; twelve warmup draws fix this without changing the pixel-delta threshold. A combined `TestArgument` string was parsed as one stage name; the corrected single evidence-root argument produces the intended final folder. All passing outcomes above are actual reruns. The inherited five biome-editor New/unsaved-draft failures from the preceding task were not rerun or modified, and no full-suite pass is claimed.
++
++Inspected evidence: [rejected bend](evidence/desert-refinement-2026-10-12/after/route-35.png), [corrected bend](evidence/desert-correction-2026-10-12/after/route-35.png), [detail](evidence/desert-correction-2026-10-12/after/bank-detail.png), [Mobile bend](evidence/desert-correction-2026-10-12/mobile/after/route-35.png), [crossing](evidence/desert-correction-2026-10-12/crossing/frame-00.png), [crossing camera-pose animation](evidence/desert-correction-2026-10-12/crossing/camera-motion.png). Twenty-four lossless captured frames are encoded as an APNG with 100 ms playback per frame; this is a diagnostic camera-pose sequence, not timed gameplay/performance footage. Encoding uses Python standard-library PNG chunks, with no image resampling. An initial Pillow attempt was unavailable and made no animation; the standard-library encoder succeeded.
++
++The crossing test verifies actual mesh coverage and a fixed interior pixel under camera motion; it does not prove that every possible player track is artifact-free. The saved race fixture is not the exact owner track. Dead-end terrain/cap transitions in the diagnostic fixture remain a visual review item. More complex splines/painted junctions/bridge joins, owner review of road grain and bank appearance, and sustained phone performance remain. No phone test, Android export/install, full Validate/physics merge, backend operation or deployment was performed.
++
++Task-only baseline/fix commits and a binary-capable patch are saved in `build/desert_correction/checkpoint-repo` and `docs/evidence/desert-correction-2026-10-12`. Main Git branch/index and concurrent work are preserved.
++
++A concurrent visual task later increments the live kit to 154. Its later-function changes and version increment remain in the workspace; the desert-only checkpoint retains this correction's kit 153 and excludes that unrelated work.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 022fad3..b74d108 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1831,3 +1831,6 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Garage right-side trophy wall and workshop detail, 2026-10-12
+ 
+ 2026-10-12 garage GC15-GC19/GC06-GC14/CW13/CW15/CW16/V06/G01/R01/Q01: owner right-side trophy wall and workshop/icon/tyre detail. Solid original rail glyphs, shelving/utilities/compressor, profiled spare tyres with tread/spokes/rims/brakes/lugs; illuminated empty six-bay display on right side wall visible from car view. Cancellable eased camera close-up/return preserves car pose, local paint/dirt, washing and confirmation. Compatibility295 incl120motionframes/Mobile175/view59/wash1402/exactmodel80/swipes268/Import pass. Actual stills at three widths/two renderers and lossless camera APNG; cold425.678ms/viewportCPU0.704ms-GPU0.304ms medians are desktop samples only. Doctor no attached phone/no device/export/backend/deploy. No fabricated trophies or award-grant criteria. Files/commands/task-only checkpoint/owner-device visual acceptance: docs/GARAGE_TROPHY_WALL.md.
++
++
++2026-10-12 DS08-DS10 desert correction: owner rejects first border/patchy-road/crossing pass. Matched continuous lighting, quieter world-space wear and non-overlapping ground-road union; preserve low banks/tire colour/dust/canonical contracts. Actual Compatibility59+Mobile59 crossing/pixel checks, six fresh captures each, Desert88/shoulder89+union/cache66/import pass. No attached phone/device-performance/export/backend/deploy; inherited editor failures and owner/complex-junction/phone acceptance remain. See `docs/DESERT_CORRECTION_2026_10_12.md`.
+diff --git a/game/tests/capture_desert_refinement.gd b/game/tests/capture_desert_refinement.gd
+index 34f602e..438073b 100644
+--- a/game/tests/capture_desert_refinement.gd
++++ b/game/tests/capture_desert_refinement.gd
+@@ -10,6 +10,8 @@ func run() -> void:
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--stage="): stage = argument.trim_prefix("--stage=").validate_filename()
+ 	var folder: String = "res://../docs/evidence/desert-refinement-2026-10-12/"+stage+"/"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): folder = argument.trim_prefix("--evidence-root=").trim_suffix("/")+"/"+stage+"/"
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+ 	var doc: Dictionary = TrackLibrary.new().load_document("track_3e26605a8a90165e")
+ 	if doc.is_empty(): doc = TrackDocument.create_default()
+diff --git a/game/tests/test_desert_crossings.gd b/game/tests/test_desert_crossings.gd
+new file mode 100644
+index 0000000..a33fe56
+--- /dev/null
++++ b/game/tests/test_desert_crossings.gd
+@@ -0,0 +1,101 @@
++extends SceneTree
++var failures: int = 0
++var checks: int = 0
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var folder: String = "res://../docs/evidence/desert-correction-2026-10-12/crossing/"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = "desert"
++	doc.objects = []
++	doc["automatic_scenery"] = false
++	doc.pieces = []
++	for entry: Array in [[Vector2(-22,0),0.0],[Vector2(0,-22),90.0]]:
++		var piece: Dictionary = RoadPieces.create("straight",entry[0],entry[1],10.0)
++		piece.length = 44.0
++		doc.pieces.append(piece)
++	print("CROSSING_DOCUMENT_ISSUES: ",TrackDocument.validate(doc))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	check(track != null,"crossing fixture compiles")
++	if track == null: quit(1); return
++	var cells: PackedInt32Array = track.cells.duplicate()
++	var content: String = track.content_hash
++	var visual := NativeTrackVisual.new()
++	visual.cache_road_meshes = false
++	root.add_child(visual)
++	var bridge := BridgePresentation.new(track)
++	await visual.build(track,bridge)
++	var triangles: Array[PackedVector2Array] = []
++	for mesh: Node in visual.get_children():
++		if not mesh is MeshInstance3D or not mesh.material_override is ShaderMaterial: continue
++		var material: ShaderMaterial = mesh.material_override
++		if material.get_shader_parameter("desert_dunes") == true:
++			check(material.shader.code.contains("diffuse_burley") and not material.shader.code.contains("diffuse_toon"),"terrain, skirt and deposits share continuous desert lighting")
++		if material.get_shader_parameter("asphalt_surface") != true or material.get_shader_parameter("edge_fringe") == true: continue
++		for surface: int in range(mesh.mesh.get_surface_count()):
++			var vertices: PackedVector3Array = mesh.mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]
++			for i: int in range(0,vertices.size(),3):
++				triangles.append(PackedVector2Array([Vector2(vertices[i].x,-vertices[i].z),Vector2(vertices[i+1].x,-vertices[i+1].z),Vector2(vertices[i+2].x,-vertices[i+2].z)]))
++	var area: float = 0.0
++	for triangle: PackedVector2Array in triangles: area += absf((triangle[1]-triangle[0]).cross(triangle[2]-triangle[0]))*0.5
++	# Independent polygon-union oracle includes the authored end-cap shapes.
++	var topology: Dictionary = RoadPieces.prepare_endpoints(doc.pieces)
++	var polygons: Array[PackedVector2Array] = []
++	for i: int in range(2):
++		var join: Dictionary = VisualRoadJoin.build(doc.pieces,i,0.0,topology)
++		polygons.append(Geometry2D.offset_polygon(join.contours[0],0.16,Geometry2D.JOIN_ROUND)[0])
++	var merged: Array[PackedVector2Array] = Geometry2D.merge_polygons(polygons[0],polygons[1])
++	var expected_area: float = 0.0
++	for polygon: PackedVector2Array in merged:
++		for i: int in range(polygon.size()): expected_area += polygon[i].cross(polygon[(i+1)%polygon.size()])*0.5
++	expected_area = absf(expected_area)
++	print("CROSSING_AREA: ",area," triangles=",triangles.size())
++	check(absf(area-expected_area) < 0.05,"crossing renders the union area without duplicate coplanar road")
++	for y: float in [-3.731,-1.129,0.327,2.613,4.117]:
++		for x: float in [-4.019,-2.341,0.713,2.137,3.821]:
++			var covered: int = 0
++			for triangle: PackedVector2Array in triangles:
++				if Geometry2D.point_is_inside_triangle(Vector2(x,y),triangle[0],triangle[1],triangle[2]): covered += 1
++			check(covered == 1,"each crossing sample has exactly one visible road face")
++	check(cells == track.cells and content == track.content_hash,"union leaves canonical surfaces and hash unchanged")
++	if DisplayServer.get_name() != "headless":
++		var environment := WorldEnvironment.new()
++		environment.environment = Environment.new()
++		var light := DirectionalLight3D.new()
++		light.shadow_enabled = true
++		TrackTheme.apply_lighting("desert",environment.environment,light)
++		root.add_child(environment); root.add_child(light)
++		var camera := Camera3D.new()
++		camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++		camera.size = 38.0
++		root.add_child(camera)
++		camera.current = true
++		camera.position = Vector3(0,36,24)
++		camera.look_at(Vector3.ZERO)
++		# Warm renderer pipelines/shadows before measuring motion stability.
++		for frame: int in range(12): await RenderingServer.frame_post_draw
++		var samples: Array[Color] = []
++		for frame: int in range(48):
++			camera.position = Vector3(sin(frame*0.21)*0.5,36,24+cos(frame*0.17)*0.5)
++			camera.look_at(Vector3.ZERO)
++			await RenderingServer.frame_post_draw
++			var shot: Image = root.get_texture().get_image()
++			var p: Vector2 = camera.unproject_position(Vector3(0.713,0.012,-0.327))
++			samples.append(shot.get_pixel(roundi(p.x),roundi(p.y)))
++			if frame%2 == 0: check(shot.save_png(folder+"frame-%02d.png"%frame) == OK,"crossing motion frame saved")
++		var maximum_delta: float = 0.0
++		for color: Color in samples: maximum_delta = maxf(maximum_delta,Vector3(color.r-samples[0].r,color.g-samples[0].g,color.b-samples[0].b).length())
++		print("DESERT_CROSSING_PIGMENT_DELTA: ",maximum_delta)
++		check(maximum_delta < 0.025,"fixed crossing point retains pigment during camera motion")
++	visual.queue_free()
++	await process_frame
++	print("DESERT_CROSSINGS: ",checks," checks; ",failures," failures; union area=",area," triangles=",triangles.size())
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_desert_crossings.gd.uid b/game/tests/test_desert_crossings.gd.uid
+new file mode 100644
+index 0000000..3657cc6
+--- /dev/null
++++ b/game/tests/test_desert_crossings.gd.uid
+@@ -0,0 +1 @@
++uid://87cebwxsd5wy
+diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index d521c37..11d37bf 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -57,7 +57,7 @@ void fragment() {
+ 	float relief_weight = grass ? (1.0-sand) : 0.0;
+ 	ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface);
+ 	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0); }
+-	if (asphalt_surface && packed_sand) { ALBEDO = packed_wear(ALBEDO,edge_fringe ? UV2 : UV); }
++	if (asphalt_surface && packed_sand) { ALBEDO = packed_wear_world(ALBEDO,world_position.xz,UV2); }
+ 	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
+ 		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
+ 	}
+@@ -104,7 +104,6 @@ void fragment() {
+ 		if (packed_sand) {
+ 			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
+ 			ALBEDO *= 1.0-contact*0.025;
+-			if (UV.x < -0.5) { ALBEDO *= 1.04-smoothstep(0.02,0.5,bank_slope)*0.12; }
+ 		}
+ 		float fringe;
+ 		if (packed_sand) {
+diff --git a/game/track/desert_road_union.gd b/game/track/desert_road_union.gd
+new file mode 100644
+index 0000000..8145add
+--- /dev/null
++++ b/game/track/desert_road_union.gd
+@@ -0,0 +1,24 @@
++extends RefCounted
++## One visible surface at ground crossings; canonical road data is untouched.
++var clipping := ShoulderMesh.new()
++var points_by_triangle: Array[PackedVector2Array] = []
++
++func add(polygon: PackedVector2Array, points: PackedVector2Array) -> void:
++	var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
++	for i: int in range(0,indices.size(),3):
++		var before: int = clipping.triangles.size()
++		clipping._add_triangle(PackedVector2Array([polygon[indices[i]],polygon[indices[i+1]],polygon[indices[i+2]]]),Vector3.ZERO)
++		if clipping.triangles.size() > before: points_by_triangle.append(points)
++
++func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
++	var count: int = 0
++	var candidates: Dictionary = {}
++	var caches: Dictionary = {}
++	for i: int in range(clipping.triangles.size()):
++		if visual._menu_yield_due():
++			if not await visual._yield_build(): return count
++		var source: Dictionary = clipping.triangles[i]
++		if not caches.has(points_by_triangle[i]): caches[points_by_triangle[i]] = {}
++		for polygon: PackedVector2Array in clipping._fragments(i,source,candidates):
++			count += visual._road_polygon(tool,polygon,0.012,points_by_triangle[i],caches[points_by_triangle[i]])
++	return count
+diff --git a/game/track/desert_road_union.gd.uid b/game/track/desert_road_union.gd.uid
+new file mode 100644
+index 0000000..4544ea6
+--- /dev/null
++++ b/game/track/desert_road_union.gd.uid
+@@ -0,0 +1 @@
++uid://cd06kvgti01nj
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index 4abb1af..ff6155f 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@ class_name NativeTrackVisual
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-152"
++const VERSION: String = "track-kit-153"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -293,6 +293,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
+ 	var counts: Array[int] = [0,0,0]
+ 	var fringe_count: int = 0
+ 	var sand_banks := preload("res://track/desert_sand_banks.gd").new()
++	var desert_road_union := preload("res://track/desert_road_union.gd").new()
+ 	var outlines: Array[Dictionary] = []
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	for index: int in range(pieces.size()):
+@@ -345,7 +346,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
+ 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
+ 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if swept else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in surfaces:
+-			counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
++			if theme_id == "desert": desert_road_union.add(polygon,points)
++			else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 		var dirt: bool = document.get("surface","asphalt") == "dirt"
+ 		var border_contours: Array[PackedVector2Array] = []
+ 		if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
+@@ -402,6 +404,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
+ 					_quad(markings,VisualGeometry.world(p-normal_p*0.085)+Vector3.UP*0.018,VisualGeometry.world(q-normal_q*0.085)+Vector3.UP*0.018,
+ 						VisualGeometry.world(q+normal_q*0.085)+Vector3.UP*0.018,VisualGeometry.world(p+normal_p*0.085)+Vector3.UP*0.018)
+ 					counts[2] += 1
++	if theme_id == "desert": counts[1] = await desert_road_union.emit(self,asphalt)
+ 	if winter_sections > 0:
+ 		_commit_winter_bank(winter_bank,texture,track.half_extent,road_texture)
+ 		set_meta("winter_smooth_sections",winter_sections)
+@@ -587,13 +590,9 @@ func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, se
+ func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}) -> void:
+ 	var vertices: Array[Vector2] = [inner_a,outer_b,inner_b,inner_a,outer_a,outer_b]
+ 	var across: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
+-	if theme_id == "desert" and not axis_cache.has("desert_fringe_uvs"): axis_cache["desert_fringe_uvs"] = {}
+ 	for i: int in range(6):
+ 		tool.set_uv(Vector2(0.0,across[i]))
+-		if theme_id == "desert":
+-			if not axis_cache.desert_fringe_uvs.has(vertices[i]): axis_cache.desert_fringe_uvs[vertices[i]] = _sand_coordinates(vertices[i],points)
+-			tool.set_uv2(axis_cache.desert_fringe_uvs[vertices[i]])
+-		else: tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
++		tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
+ 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
+ 
+ 
+diff --git a/game/track/surface_detail.gdshaderinc b/game/track/surface_detail.gdshaderinc
+index fc0e405..162261e 100644
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -178,7 +178,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
+ 	if (road && packed_sand) {
+ 		float broad = texture(surface_factors,p/64.0).g;
+ 		float grain = texture(surface_factors,p/32.0).r;
+-		return base * (0.94+(broad-0.5)*0.10+(grain-0.54)*0.10);
++		return base * (0.97+(broad-0.5)*0.025+(grain-0.54)*0.035);
+ 	}
+ 	if (road && wet_road) {
+ 		float grain = clamp((texture(surface_factors,p/32.0).r-0.54)*2.0,-0.3,0.3);
+@@ -207,7 +207,17 @@ vec3 packed_wear(vec3 base, vec2 road_uv) {
+  float tracks = texture(surface_factors,road_uv/vec2(45.0,4.0)).g;
+  float broad = texture(surface_factors,road_uv/vec2(140.0,32.0)).g;
+  float grooves = texture(surface_factors,road_uv/vec2(19.0,1.3)).g;
+- return base*(1.0+(tracks-0.5)*0.085+(broad-0.5)*0.12+(grooves-0.5)*0.035);
++ return base*(1.0+(tracks-0.5)*0.015+(broad-0.5)*0.010+(grooves-0.5)*0.008);
++}
++
++// World-space grain avoids phase resets and triangular UV patches at joins.
++vec3 packed_wear_world(vec3 base, vec2 p, vec2 axis) {
++	float angle = atan(axis.y,axis.x+0.000001)*0.5;
++	vec2 direction = vec2(cos(angle),sin(angle));
++	float grain = texture(surface_factors,p/32.0).g*0.50;
++	grain += texture(surface_factors,(p+direction*0.32)/32.0).g*0.25;
++	grain += texture(surface_factors,(p-direction*0.32)/32.0).g*0.25;
++	return base*(1.0+(grain-0.5)*0.05);
+ }
+ 
+ // Short, broken laying/wear grain aligned to the local road tangent. Sample
+diff --git a/game/track/surface_shader_variants.gd b/game/track/surface_shader_variants.gd
+index 803f3f6..461eab4 100644
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -12,8 +12,8 @@ static var cache: Dictionary = {}
+ static func specialize(material: ShaderMaterial) -> void:
+ 	var dynamic: ShaderMaterial = material.duplicate()
+ 	var source: String = material.shader.code
+-	# Snow's shallow sculpting needs continuous light across the drifts.
+-	if bool(material.get_shader_parameter("winter_snow")):
++	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
++	if bool(material.get_shader_parameter("winter_snow")) or bool(material.get_shader_parameter("desert_dunes")):
+ 		source = source.replace("diffuse_toon","diffuse_burley")
+ 	for pass_index: int in range(3):
+ 		for path: String in INCLUDES:

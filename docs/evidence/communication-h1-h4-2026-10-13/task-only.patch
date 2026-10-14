@@ -1,0 +1,1130 @@
+--- a/game/backend/resume_recovery.gd
++++ b/game/backend/resume_recovery.gd
+@@ -7,8 +7,12 @@
+ var _next_msec: int = 0
+ var _serial: int = 0
+ var _deadlines: Dictionary = {}
++var _retry_versions: Dictionary = {}
+ var _cursor: Dictionary = {}
+ var _resolved: Dictionary = {}
++var _scope_lock: RefCounted
++var _instance_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
++static var _process_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
+ var profile_callback_us: int = 0
+ const Files = preload("res://backend/atomic_json.gd")
+ const REQUEST_INTERVAL_SECONDS: int = 5
+@@ -19,14 +23,43 @@
+ 	return base.path_join(origin.sha256_text()).path_join(owner.sha256_text())
+ 
+ func register_race(key: String) -> void:
+-	active[key] = true
++	var owner: String = str(client.player.get("id",""))
++	var origin: String = str(client.base_url())
++	var directory: String = _directory(owner,origin)
++	var lease_directory: String = _active_directory(directory,key)
++	var path: String = lease_directory.path_join("owner.json")
++	var saved: bool = owner.is_empty()
++	if Files.read(path,1024).get("instance_nonce") == _instance_nonce:
++		saved = true
++	elif not owner.is_empty() and _ensure_directory(lease_directory.get_base_dir()):
++		# mkdir is the cross-process claim. A duplicate key cannot overwrite a
++		# live owner's marker, even if two instances register simultaneously.
++		if not DirAccess.dir_exists_absolute(lease_directory) or not _race_is_active(directory,key):
++			if DirAccess.make_dir_absolute(lease_directory) == OK:
++				saved = Files.write(path,{"pid":OS.get_process_id(),"process_nonce":_process_nonce,"instance_nonce":_instance_nonce},1024)
++				if not saved:
++					DirAccess.remove_absolute(path+".tmp")
++					DirAccess.remove_absolute(path)
++					DirAccess.remove_absolute(lease_directory)
++	active[key] = {"path":path,"saved":saved}
+ 
+ func leave_race(key: String) -> void:
++	if active.has(key):
++		var path: String = str(active[key].path)
++		if Files.read(path,1024).get("instance_nonce") == _instance_nonce:
++			DirAccess.remove_absolute(path)
++			DirAccess.remove_absolute(path.get_base_dir())
+ 	active.erase(key)
+ 	_next_msec = 0
+ 
++func _exit_tree() -> void:
++	for key: String in active.keys(): leave_race(key)
++	if _scope_lock != null: _scope_lock.release()
++
+ func save(entry: Dictionary) -> bool:
+ 	if str(entry.get("owner","")).is_empty() or str(entry.get("origin","")).is_empty() or _request_body(entry).is_empty(): return false
++	# A failed ownership journal must stop consumption before any charge.
++	if active.has(str(entry.begin_key)) and not bool(active[str(entry.begin_key)].saved): return false
+ 	var path: String = _directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json")
+ 	return Files.write(path,entry,32768)
+ 
+@@ -51,6 +84,23 @@
+ 	if not _ready_scope(directory):
+ 		busy = false
+ 		return
++	if not _ensure_directory(directory):
++		busy = false
++		return
++	_scope_lock = preload("res://backend/session_rotation_lock.gd").new(directory.path_join(".recovery"))
++	if await _scope_lock.acquire(get_tree()) != OK:
++		_scope_lock = null
++		busy = false
++		return
++	# Re-read after acquiring the shared lock. The preceding instance may have
++	# changed both the retry deadline and a journal while this one waited.
++	if str(client.player.get("id","")) == owner and client.base_url() == origin and _ready_scope(directory):
++		await _reconcile_locked(directory,owner,origin)
++	_scope_lock.release()
++	_scope_lock = null
++	busy = false
++
++func _reconcile_locked(directory: String, owner: String, origin: String) -> void:
+ 	var filenames: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
+ 	var start: int = int(_cursor.get(directory,0)) % maxi(1,filenames.size())
+ 	for offset: int in range(mini(MAX_INSPECTED,filenames.size())):
+@@ -68,14 +118,14 @@
+ 		var key: String = str(entry.get("begin_key",""))
+ 		if filename != str(entry.get("consume_key","")).sha256_text()+".json": continue
+ 		var confirming: bool = entry.get("stage","pending") == "confirm"
+-		if active.has(key) and not confirming: continue
++		if not confirming and (active.has(key) or _race_is_active(directory,key)): continue
+ 		var body: Dictionary = _request_body(entry)
+ 		if body.is_empty():
+ 			_block(path,entry,"INVALID_RECOVERY_JOURNAL")
+ 			continue
+ 		# One background write per interval, including explicit reconcile calls.
+ 		# Persist the wait before delivery so restarts/shared profiles respect it.
+-		_delay_scope(directory,REQUEST_INTERVAL_SECONDS,false,true)
++		if not _delay_scope(directory,REQUEST_INTERVAL_SECONDS,false,true): return
+ 		var response: Dictionary = await client.request_api("/resume-recovery",HTTPClient.METHOD_POST,body,"",true)
+ 		var callback_started: int = Time.get_ticks_usec()
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+@@ -94,7 +144,38 @@
+ 			_delay_scope(directory,maxi(30,int(response.get("retry_after",0))),true)
+ 		profile_callback_us += Time.get_ticks_usec() - callback_started
+ 		break
+-	busy = false
++
++func _race_is_active(directory: String, key: String) -> bool:
++	var lease_directory: String = _active_directory(directory,key)
++	var path: String = lease_directory.path_join("owner.json")
++	if not DirAccess.dir_exists_absolute(lease_directory): return false
++	var lease: Dictionary = Files.read(path,1024)
++	# An unreadable lease is uncertain ownership, never permission to abandon.
++	var raw_pid: Variant = lease.get("pid")
++	if not (raw_pid is int or raw_pid is float) or not is_finite(float(raw_pid)) or float(raw_pid) != float(int(raw_pid)) or int(raw_pid) <= 0: return true
++	for field: String in ["process_nonce","instance_nonce"]:
++		if not lease.get(field) is String or lease[field].length() != 48 or not lease[field].is_valid_hex_number(): return true
++	var pid: int = int(lease.pid)
++	var previous_process: bool = pid == OS.get_process_id() and lease.get("process_nonce") != _process_nonce
++	if not previous_process and OS.is_process_running(pid): return true
++	# Preserve a nonempty tombstone: stale observers cannot rename a newly
++	# acquired lease to the same destination after this owner was retired.
++	var abandoned: String = lease_directory+".abandoned."+str(lease.instance_nonce)
++	if DirAccess.rename_absolute(lease_directory,abandoned) == OK: return false
++	return DirAccess.dir_exists_absolute(lease_directory)
++
++static func _active_directory(directory: String, key: String) -> String:
++	return directory.path_join(".active").path_join(key.sha256_text()+".lease")
++
++static func _ensure_directory(path: String) -> bool:
++	var ancestor: String = path
++	while not ancestor.is_empty():
++		if FileAccess.file_exists(ancestor): return false
++		if DirAccess.dir_exists_absolute(ancestor): break
++		var parent: String = ancestor.get_base_dir()
++		if parent == ancestor: break
++		ancestor = parent
++	return DirAccess.make_dir_recursive_absolute(path) == OK
+ 
+ static func _request_body(entry: Dictionary) -> Dictionary:
+ 	for key: String in ["begin_key","consume_key"]:
+@@ -125,20 +206,26 @@
+ 	Files.write(path,entry,32768)
+ 
+ func _ready_scope(directory: String) -> bool:
+-	if not _deadlines.has(directory):
+-		var saved: Dictionary = Files.read(directory.path_join(".retry.json"),1024)
++	var saved: Dictionary = Files.read(directory.path_join(".retry.json"),1024)
++	if saved.has("_read_error"): return false
++	var revision: String = str(saved.get("retry_id",JSON.stringify(saved)))
++	if not _deadlines.has(directory) or _retry_versions.get(directory) != revision:
+ 		var seconds: int = clampi(int(saved.get("retry_delay",0)),0,3600)
+ 		if client.server_now() > 0 and int(saved.get("retry_server_at",0)) > 0:
+ 			seconds = clampi(int(saved.retry_server_at)-client.server_now(),0,seconds)
+ 		_deadlines[directory] = Time.get_ticks_msec()+seconds*1000
++		_retry_versions[directory] = revision
+ 	return Time.get_ticks_msec() >= int(_deadlines[directory])
+ 
+-func _delay_scope(directory: String, seconds: int, failed: bool, reserve: bool = false) -> void:
++func _delay_scope(directory: String, seconds: int, failed: bool, reserve: bool = false) -> bool:
+ 	var saved: Dictionary = Files.read(directory.path_join(".retry.json"),1024)
++	if saved.has("_read_error"): return false
+ 	var streak: int = mini(6,int(saved.get("retry_streak",0))+1) if failed else 0
+ 	# Keep the previous failure streak while reserving the next delivery.
+ 	if reserve: streak = int(saved.get("retry_streak",0))
+ 	var wait_seconds: int = maxi(seconds,mini(600,30*int(pow(2,streak-1)))) if failed else seconds
+-	saved = {"retry_streak":streak,"retry_delay":wait_seconds,"retry_server_at":client.server_now()+wait_seconds if client.server_now() > 0 else 0}
+-	Files.write(directory.path_join(".retry.json"),saved,1024)
++	saved = {"retry_id":Crypto.new().generate_random_bytes(24).hex_encode(),"retry_streak":streak,"retry_delay":wait_seconds,"retry_server_at":client.server_now()+wait_seconds if client.server_now() > 0 else 0}
++	if not Files.write(directory.path_join(".retry.json"),saved,1024): return false
++	_retry_versions[directory] = saved.retry_id
+ 	_deadlines[directory] = Time.get_ticks_msec()+wait_seconds*1000
++	return true
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -378,7 +378,7 @@
+ 	var packet: Variant = {"body":PackedByteArray(),"compressed":false} if method == HTTPClient.METHOD_GET else await _background(_encode_request.bind(payload,not _disable_gzip and "gzip" in _capabilities.get("upload_encodings",[])))
+ 	_profile_request(path,"encode",profile_start)
+ 	if not packet is Dictionary: return _failure("REQUEST_ENCODING_FAILED")
+-	if packet.get("too_large",false): return _failure("REQUEST_TOO_LARGE")
++	if packet.get("too_large",false): return _failure("REQUEST_TOO_LARGE",413)
+ 	if origin != _base_url or (authorized and generation != _session_generation): return _failure("ACCOUNT_CHANGED")
+ 	# A menu request may finish encoding after the player starts loading a race.
+ 	# Its owner cancellation fence prevents starting network work after that point.
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -935,7 +935,7 @@
+ 			if not response.ok:
+ 				unavailable = unavailable or int(response.get("status",0)) >= 500 or response.get("error") == "NETWORK_ERROR"
+ 				_delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
+-				if int(response.get("status",0)) in [400,403,404,409,410,422]:
++				if int(response.get("status",0)) in [400,403,404,409,410,413,422]:
+ 					job.failure = str(response.error)
+ 					job.rejection_status = int(response.status)
+ 				status = "Score upload pending: "+str(response.get("error","Unavailable"))
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -261,7 +261,7 @@
+ 		if scope() != owner_scope or _archived(str(job.document.id),path.get_base_dir()): return
+ 		if not response.ok:
+ 			last_error = str(response.error)
+-			if int(response.status) in [400,403,409,410,422]: job.failure = "Publication needs attention: "+last_error
++			if int(response.status) in [400,403,409,410,413,422] or str(response.get("error","")) == "REQUEST_TOO_LARGE": job.failure = "Publication needs attention: "+last_error
+ 			else: _delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
+ 			_save(path,job)
+ 			return
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -258,5 +258,28 @@
+ 		flow.free()
+ 		cloud.free()
+ 		api.free()
++	api = fixture("publication-size-client")
++	var size_cloud: Node = cloud_for(api,"publication-size")
++	var size_flow := TrackLifecycle.new()
++	size_flow.cloud = size_cloud
++	size_flow.library = TrackLibrary.new(workspace.path_join("publication-size-library"))
++	root.add_child(size_flow)
++	var size_job: Dictionary = {"schema":"track-lifecycle-1","scope":size_flow.scope(),"library_directory":size_flow.library.directory,"fingerprint":"size-fixture","upload_key":"original-size-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"publishing","created_at":1900000000,"document":{"id":"publication_size_fixture","name":"Size fixture"},"publish_requested":true,"publish_workflow":2,"vehicle":"compact","contract":{},"proof_file":"size.proof.json"}
++	var size_path: String = size_flow._root().path_join("size.job.json")
++	check(size_flow._save(size_path,size_job),"oversize publication job saved")
++	check(Files.write(size_path.get_base_dir().path_join("size.proof.json"),{"input_count":6,"race_proof":{"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0]]}}),"oversize publication evidence saved")
++	api.reply = failure(413,"PAYLOAD_TOO_LARGE")
++	await size_flow.process_jobs()
++	await size_flow.process_jobs()
++	var rejected: Dictionary = size_flow._read(size_path)
++	check(api.paths == ["/publications"] and rejected.has("failure"),"413 stops automatic publication retries")
++	check(rejected.upload_key == size_job.upload_key and FileAccess.file_exists(size_path.get_base_dir().path_join("size.proof.json")),"413 retains the original proof and operation identity")
++	size_flow.free(); size_cloud.free(); api.free()
++	var wire_client := Client.new()
++	root.add_child(wire_client)
++	wire_client.configure("https://oversize-fixture.invalid")
++	var oversize: Dictionary = await wire_client._send("/publications",HTTPClient.METHOD_POST,{"document":"x".repeat(Client.MAX_RESPONSE_BYTES+1)},false)
++	check(int(oversize.status) == 413 and oversize.error == "REQUEST_TOO_LARGE","local encoding limit returns the same terminal size status before any network request")
++	wire_client.free()
+ 	print("RESUME_RECOVERY_BUDGET: %d checks, %d failures"%[checks,failures])
+ 	quit(0 if failures == 0 else 1)
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -1,6 +1,7 @@
+ """Bound requests before parsing; share rate budgets across API replicas."""
+ 
+ import asyncio
++import hashlib
+ import json
+ import logging
+ import math
+@@ -19,6 +20,7 @@
+ from starlette.concurrency import run_in_threadpool
+ from starlette.responses import JSONResponse
+ 
++from .client_address import ClientAddress
+ from .identity_models import RateBucket
+ from .security import digest
+ 
+@@ -125,6 +127,12 @@
+         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
+         self.telemetry_parsers = asyncio.Semaphore(1)
+         self.read_leases = OrderedDict()
++        self.denied_peers = OrderedDict()
++        self.denied_credentials = OrderedDict()
++        # Admission hints only. Every authenticated request still checks the
++        # database, revocation, expiry and its own player's budget.
++        self.known_credentials = OrderedDict()
++        self.client_address = ClientAddress(settings.trusted_proxy_networks)
+ 
+     async def read_budget(self, peer, limit, category="read"):
+         # Reserve small chunks in PostgreSQL, so replicas still share a hard ceiling.
+@@ -136,13 +144,50 @@
+         while len(self.read_leases) > 2048: self.read_leases.popitem(last=False)
+         async with lease[1]:
+             remaining = lease[0]
++            if remaining < 0:
++                return False
+             if not remaining:
+                 batch = min(10, limit)
+                 if not await run_in_threadpool(check_budget, self.session_factory, peer, category, limit, batch):
++                    lease[0] = -1
+                     return False
+                 remaining = batch
+             lease[0] = remaining - 1
+             return True
++
++    async def peer_budget(self, peer, category, limit):
++        key = (peer, category, int(time.time()) // 60)
++        if key in self.denied_peers:
++            return False
++        if category in ("read", "edge"):
++            allowed = await self.read_budget(peer, limit, category)
++        else:
++            allowed = await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
++        if not allowed:
++            self.denied_peers[key] = True
++            self.denied_peers.move_to_end(key)
++            while len(self.denied_peers) > 4096:
++                self.denied_peers.popitem(last=False)
++        return allowed
++
++    def known_credential(self, key):
++        if self.known_credentials.get(key, 0) <= time.monotonic():
++            self.known_credentials.pop(key, None)
++            return False
++        self.known_credentials.move_to_end(key)
++        return True
++
++    def remember_credential(self, key):
++        self.known_credentials[key] = time.monotonic() + 60
++        self.known_credentials.move_to_end(key)
++        while len(self.known_credentials) > 4096:
++            self.known_credentials.popitem(last=False)
++
++    def deny_credential(self, key):
++        self.denied_credentials[key] = True
++        self.denied_credentials.move_to_end(key)
++        while len(self.denied_credentials) > 4096:
++            self.denied_credentials.popitem(last=False)
+ 
+     def validated_identity_budget(self, scope, header):
+         from fastapi import Request
+@@ -213,41 +258,58 @@
+                 return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
+             token_auth = scope["path"] in ("/v1/auth/google/browser/poll", "/v1/auth/refresh")
+             if not health:
+-                peer = (scope.get("client") or ("unknown", 0))[0]
++                peer = self.client_address.resolve(scope)
+                 method = scope["method"]
+                 category = (
+                     "auth_session" if token_auth else "auth"
+                     if scope["path"].startswith("/v1/auth/")
+                     else ("read" if method in ("GET", "HEAD") or scope["path"] in ("/v1/discovery/tracks", "/v1/discovery/random") else "write")
+                 )
+-                # Carrier NATs share only a generous abuse ceiling. Authenticated
+-                # players spend their own budget after session validation.
+-                if b"authorization" in headers and category in ("read", "write"):
+-                    # A supplied header is not an identity. Public and protected
+-                    # traffic receive the larger NAT budget only after validation.
++                credential_key = hashlib.sha256(headers.get(b"authorization", b"")).hexdigest()
++                provided = b"authorization" in headers and category in ("read", "write")
++                denial_key = (peer, credential_key, category, int(time.time()) // 60)
++                if provided and denial_key in self.denied_credentials:
++                    return await error(429, "RATE_LIMITED")
++                # The independent ingress/cold-credential gates run before SQL.
++                # A cold VALID user must not inherit an exhausted anonymous quota
++                # from a different caller behind the same carrier NAT.
++                admission = "edge" if provided else category
++                limit = {"auth": self.settings.auth_limit_per_minute,
++                         "auth_session": self.settings.rate_limit_per_minute,
++                         "read": self.settings.rate_limit_per_minute,
++                         "write": self.settings.write_limit_per_minute,
++                         "edge": self.settings.edge_limit_per_minute}[admission]
++                try:
++                    if not await self.peer_budget(peer, admission, limit):
++                        return await error(429, "RATE_LIMITED")
++                    if (provided and not self.known_credential(credential_key)
++                            and not await self.peer_budget(peer, "credential_admission", self.settings.pre_auth_limit_per_minute)):
++                        return await error(429, "RATE_LIMITED")
++                except SQLAlchemyError:
++                    return await error(503, "DATABASE_UNAVAILABLE")
++                if provided:
+                     try:
+                         if await run_in_threadpool(self.validated_identity_budget, scope, headers[b"authorization"]):
+-                            category = "edge"
++                            self.remember_credential(credential_key)
++                        else:
++                            self.known_credentials.pop(credential_key, None)
++                            anonymous_limit = self.settings.rate_limit_per_minute if category == "read" else self.settings.write_limit_per_minute
++                            if not await self.peer_budget(peer, category, anonymous_limit):
++                                self.deny_credential(denial_key)
++                                return await error(429, "RATE_LIMITED")
+                     except SQLAlchemyError:
+                         return await error(503, "DATABASE_UNAVAILABLE")
+                     except HTTPException as denied:
++                        # Keep a valid credential's NAT admission when only its
++                        # player budget is exhausted; never cache it as an auth grant.
++                        if denied.status_code == 429:
++                            self.remember_credential(credential_key)
++                        else:
++                            self.known_credentials.pop(credential_key, None)
+                         return await error(denied.status_code, denied.detail)
+-                limit = {
+-                    "auth": self.settings.auth_limit_per_minute,
+-                    "auth_session": self.settings.rate_limit_per_minute,
+-                    "read": self.settings.rate_limit_per_minute,
+-                    "write": self.settings.write_limit_per_minute,
+-                    "edge": self.settings.edge_limit_per_minute,
+-                }[category]
+-                try:
+-                    allowed = await self.read_budget(peer, limit, category) if category in ("read", "edge") else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
+-                except SQLAlchemyError:
+-                    return await error(503, "DATABASE_UNAVAILABLE")
+-                if not allowed:
+-                    return await error(429, "RATE_LIMITED")
+             path = scope["path"]
+             limit = min(self.settings.max_body_bytes, 64*1024 if path == "/v1/telemetry/batches" else
+-                        8*1024*1024 if path in ("/v1/runs", "/v1/discovery/tracks", "/v1/discovery/random") else
++                        8*1024*1024 if path in ("/v1/runs", "/v1/publications", "/v1/discovery/tracks", "/v1/discovery/random") else
+                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
+             upload = method in ("POST", "PUT", "PATCH") and limit > 32768
+             encoding = headers.get(b"content-encoding", b"identity")
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -55,6 +55,8 @@
+     database_statement_timeout_ms: int = 10000
+     upload_concurrency: int = 2
+     edge_limit_per_minute: int = 12000
++    pre_auth_limit_per_minute: int = 600
++    trusted_proxy_networks: tuple[str, ...] = field(default_factory=tuple)
+     persistent_verifier: bool = True
+     verifier_recycle_jobs: int = 100
+     allow_sync_track_validation: bool = False
+@@ -71,6 +73,8 @@
+     s3_prefix: str = "bmt/v1"
+ 
+     def __post_init__(self):
++        from .client_address import proxy_networks
++        proxy_networks(self.trusted_proxy_networks)
+         if not self.local_drafts_only and self.environment != "test":
+             raise ValueError("Legacy remote drafts are available only to explicit compatibility test fixtures")
+         if self.client_quality_enabled and not self.telemetry_enabled:
+@@ -107,7 +111,7 @@
+             "readiness_cache_seconds", "readiness_storage_cache_seconds", "readiness_timeout_seconds",
+             "retention_days",
+             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
+-            "upload_concurrency", "edge_limit_per_minute", "verifier_recycle_jobs",
++            "upload_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
+         ):
+             value = getattr(self, name)
+             if type(value) is not int or value <= 0:
+@@ -161,7 +165,7 @@
+             if raw is None:
+                 continue
+             default = getattr(defaults, name)
+-            if name in ("google_client_ids", "android_app_link_certificates"):
++            if name in ("google_client_ids", "android_app_link_certificates", "trusted_proxy_networks"):
+                 values[name] = tuple(x.strip() for x in raw.split(",") if x.strip())
+             elif isinstance(default, bool):
+                 if raw.lower() not in ("true", "false"):
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -3,6 +3,7 @@
+ 
+ import argparse
+ import hashlib
++import ipaddress
+ import json
+ import math
+ import os
+@@ -117,6 +118,18 @@
+         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
+         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
+         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
++    if role == "api":
++        # The direct Cloud Run frontend reaches the container on loopback/link
++        # local addresses. External LB chains must pin their additional hops.
++        values = config.get("trusted_proxy_networks", ["127.0.0.1/32", "169.254.0.0/16"])
++        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
++            raise ValueError("Trusted proxy networks require an explicit CIDR list")
++        networks = tuple(ipaddress.ip_network(value, strict=False) for value in values)
++        for version in (4, 6):
++            if any(network.prefixlen == 0 for network in ipaddress.collapse_addresses(
++                    network for network in networks if network.version == version)):
++                raise ValueError("Trusted proxies must not include the whole internet")
++        result["BMT_TRUSTED_PROXY_NETWORKS"] = ",".join(map(str, networks))
+     if config.get("test_drivers_enabled") is True and role in ("api", "worker"):
+         if config.get("retain_data") is not True or not config.get("test_drivers_secret"):
+             raise ValueError("Cloud test drivers require retained staging and a separate key secret")
+--- a/backend/deploy/compose.yaml
++++ b/backend/deploy/compose.yaml
+@@ -87,7 +87,10 @@
+ 
+   api:
+     <<: *runtime
+-    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --proxy-headers, --forwarded-allow-ips, "${BMT_TRUSTED_PROXY_IPS:-127.0.0.1}", --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
++    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
++    environment:
++      <<: *environment
++      BMT_TRUSTED_PROXY_NETWORKS: ${BMT_TRUSTED_PROXY_NETWORKS:-${BMT_TRUSTED_PROXY_IPS:-127.0.0.1}}
+     restart: unless-stopped
+     stop_grace_period: 100s
+     depends_on:
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -149,19 +149,33 @@
+ 443 only as needed; keep DSM administration, Docker and PostgreSQL off the public
+ internet. The API binds loopback; PostgreSQL has no host port; the verifier has only
+ the internal network. The API also has an egress network to fetch Google's signing
+-certificates. `BMT_TRUSTED_PROXY_IPS` defaults to `127.0.0.1`; set it to the exact
++certificates. `BMT_TRUSTED_PROXY_NETWORKS` defaults to `127.0.0.1` in Compose; set it to the exact
+ immediate DSM proxy address(es) visible inside the API container (often the Docker
+ bridge gateway for a host reverse proxy). Never use `*` or trust the whole internet.
+ Configure DSM to overwrite forwarded client headers and verify spoofed headers from
+-an untrusted peer are ignored. Only Uvicorn's trusted-proxy handling determines the
+-client address used by request limits. Share URLs come from the fixed HTTPS origin.
++an untrusted peer are ignored. The API walks the forwarded chain from the trusted
++socket peer toward the first untrusted client, ignoring earlier supplied addresses.
++Uvicorn does not rewrite the socket peer. Legacy `BMT_TRUSTED_PROXY_IPS` is retained
++as a Compose configuration fallback. Share URLs come from the fixed HTTPS origin.
+ 
+ Configure reverse-proxy request size and read timeouts to cover the API's bounded
+ track/replay payloads and track validation (up to 90 seconds). Apply edge/IP request
+ limits before broad public registration. Until the immediate proxy address is trusted,
+ all proxied requests share the proxy's IP quota; confirm client IP/rate behavior and
+ tune edge/application limits together before public load. The direct-image command
+-ignores forwarded headers, while Compose enables only the configured allowlist.
++uses the same application resolver with an empty allowlist unless configured.
++The Cloud Run deployment template pins only the immediate loopback/link-local
++frontend networks; `trusted_proxy_networks` can explicitly pin additional load
++balancer hops. Before promotion, check the actual proxy chain and compare two
++distinct clients plus a supplied spoofed prefix. No internet-wide trust is allowed.
++
++Unseen bearer credentials share the bounded `BMT_PRE_AUTH_LIMIT_PER_MINUTE`
++admission budget (default 600) before authentication SQL. Previously validated
++credentials may use the existing generous peer ceiling, but are authenticated and
++checked for revocation and per-player limits on every request. Anonymous denial
++does not consume a different valid player's account budget. Rejected peer/token
++budgets are cached only until the next fixed minute window. Tune admission and
++edge limits together after measuring the real carrier-NAT/proxy workload.
+ 
+ The starting resource limits are API 640 MiB/1 CPU, worker 768 MiB/1 CPU, PostgreSQL
+ 768 MiB/1.5 CPU, and migration 256 MiB/0.5 CPU. One replay runs per worker. These are
+--- /dev/null
++++ b/backend/bmt_backend/client_address.py
+@@ -0,0 +1,51 @@
++"""Resolve rate-limit identity only across an explicitly trusted proxy chain."""
++import ipaddress
++
++
++def proxy_networks(values):
++    networks = tuple(ipaddress.ip_network(value, strict=False) for value in values)
++    for version in (4, 6):
++        if any(net.prefixlen == 0 for net in ipaddress.collapse_addresses(
++                net for net in networks if net.version == version)):
++            raise ValueError("Trusted proxies must not include the whole internet")
++    return networks
++
++
++def address(value):
++    try:
++        parsed = ipaddress.ip_address(value)
++        return parsed.ipv4_mapped if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped else parsed
++    except ValueError:
++        return None
++
++
++class ClientAddress:
++    def __init__(self, networks=()):
++        self.networks = proxy_networks(networks)
++
++    def trusted(self, peer):
++        return peer is not None and any(peer in network for network in self.networks)
++
++    def resolve(self, scope):
++        raw_peer = (scope.get("client") or ("unknown", 0))[0]
++        peer = address(raw_peer)
++        fallback = str(peer) if peer is not None else str(raw_peer)
++        if not self.trusted(peer):
++            return fallback
++        values = [value for key, value in scope.get("headers", ()) if key.lower() == b"x-forwarded-for"]
++        if not values or sum(map(len, values)) > 4096:
++            return fallback
++        try:
++            hops = b",".join(values).decode("ascii").split(",")
++        except UnicodeError:
++            return fallback
++        if len(hops) > 32:
++            return fallback
++        current = peer
++        for hop in reversed(hops):
++            if not self.trusted(current):
++                break  # Earlier caller-supplied addresses are outside the trust chain.
++            current = address(hop.strip())
++            if current is None:
++                return fallback
++        return str(current)
+--- /dev/null
++++ b/backend/tests/test_communication_boundary.py
+@@ -0,0 +1,208 @@
++"""H2-H4: real upload bounds, pre-auth admission and trusted proxy identity."""
++import asyncio
++import gzip
++from dataclasses import replace
++
++import httpx
++import pytest
++from fastapi.responses import JSONResponse
++from fastapi.testclient import TestClient
++from sqlalchemy import event, select
++from test_domains import domain as domain_fixture
++from test_domains import headers
++from test_gcp_staging import config as cloud_config
++from test_gcp_staging import staging
++from test_publication_intents import body
++from test_publication_intents import publications as publications_fixture
++
++from bmt_backend.app import create_app
++from bmt_backend.client_address import ClientAddress
++from bmt_backend.config import Settings
++from bmt_backend.identity_models import Player
++from bmt_backend.middleware import RequestBoundary
++from bmt_backend.storage import canonical_json
++
++domain = domain_fixture
++publications = publications_fixture
++
++
++@pytest.mark.parametrize("compressed", [False, True])
++def test_publication_larger_than_old_control_limit_is_durable(publications, compressed):
++    content = body(publications)
++    samples = [[tick, 1.23456789, 2.34567891, 0] for tick in range(0, 12001, 6)]
++    content["replay"]["input_count"] = 12000
++    content["replay"]["race_proof"]["samples"] = samples
++    raw = canonical_json(content)
++    assert 32768 < len(raw) < 8 * 1024 * 1024
++    request_headers = {**headers(publications), "Content-Type": "application/json"}
++    if compressed:
++        request_headers["Content-Encoding"] = "gzip"
++    response = publications.client.post("/v1/publications", content=gzip.compress(raw) if compressed else raw,
++                                        headers=request_headers)
++    assert response.status_code == 202, response.text
++    identity = response.json()["publication_id"]
++    status = publications.client.get("/v1/me/publications/" + identity, headers=headers(publications))
++    assert status.status_code == 200 and status.json()["state"] == "queued"
++
++
++@pytest.mark.parametrize("compressed", [False, True])
++def test_publication_over_global_limit_is_rejected(auth_client, compressed):
++    raw = b'{"document":"' + b"x" * (8 * 1024 * 1024) + b'"}'
++    request_headers = {"Content-Type": "application/json"}
++    if compressed:
++        request_headers["Content-Encoding"] = "gzip"
++    response = auth_client.post("/v1/publications", content=gzip.compress(raw) if compressed else raw,
++                                headers=request_headers)
++    assert response.status_code == 413 and response.json()["detail"] == "PAYLOAD_TOO_LARGE"
++
++
++def test_publication_upload_slots_cover_handler_lifetime(auth_app, monkeypatch):
++    monkeypatch.setattr("bmt_backend.middleware.check_budget", lambda *_a, **_kw: True)
++
++    async def exercise():
++        release, started = asyncio.Event(), asyncio.Event()
++        live = [0]
++
++        async def handler(scope, receive, send):
++            assert "bounded_json" in scope["state"]
++            live[0] += 1
++            if live[0] == 2:
++                started.set()
++            await release.wait()
++            live[0] -= 1
++            await JSONResponse({"ok": True})(scope, receive, send)
++
++        boundary = RequestBoundary(handler, replace(auth_app.state.settings, upload_concurrency=2),
++                                   auth_app.state.session_factory)
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=boundary), base_url="http://test") as client:
++            first = asyncio.create_task(client.post("/v1/publications", json={"document": "x" * 50000}))
++            second = asyncio.create_task(client.post("/v1/publications", json={"document": "x" * 50000}))
++            try:
++                await asyncio.wait_for(started.wait(), 2)
++                busy = await client.post("/v1/publications", json={"document": "x" * 50000})
++                assert busy.status_code == 503 and busy.json()["detail"] == "REQUEST_VALIDATION_BUSY"
++                assert live[0] == 2
++            finally:
++                release.set()
++            assert [reply.status_code for reply in await asyncio.gather(first, second)] == [200, 200]
++            assert (await client.post("/v1/publications", json={})).status_code == 200
++
++    asyncio.run(exercise())
++
++
++def test_exhausted_unknown_credential_budget_precedes_authentication(auth_app):
++    app = create_app(replace(auth_app.state.settings, pre_auth_limit_per_minute=1), engine=auth_app.state.engine)
++    queries = []
++
++    def collect(_connection, _cursor, statement, _parameters, _context, _many):
++        queries.append(statement.lower())
++
++    event.listen(app.state.engine, "before_cursor_execute", collect)
++    try:
++        with TestClient(app) as client:
++            assert client.get("/v1/me", headers={"Authorization": "Bearer " + "a" * 64}).status_code == 401
++            queries.clear()
++            assert client.get("/v1/me", headers={"Authorization": "Bearer " + "b" * 64}).status_code == 429
++            assert not any("session_tokens" in sql for sql in queries)
++            queries.clear()
++            assert client.get("/v1/me", headers={"Authorization": "Bearer " + "c" * 64}).status_code == 429
++            assert queries == []  # Even the exhausted peer's DB counter is now cached.
++    finally:
++        event.remove(app.state.engine, "before_cursor_execute", collect)
++
++
++def test_admission_hint_never_caches_authentication_or_revocation(auth_app, auth_client, sign_in):
++    credentials = sign_in("admission-fixture")
++    request_headers = {"Authorization": "Bearer " + credentials["access_token"]}
++    assert auth_client.get("/v1/me", headers=request_headers).status_code == 200
++    with auth_app.state.session_factory() as session:
++        player = session.scalar(select(Player).where(Player.id == credentials["player"]["id"]))
++        player.disabled = True
++        session.commit()
++    assert auth_client.get("/v1/me", headers=request_headers).status_code == 401
++
++
++def test_invalid_credential_denial_is_peer_scoped_and_does_not_block_a_valid_cold_user(auth_app, sign_in):
++    credentials = sign_in("cold-after-denial")
++    app = create_app(replace(auth_app.state.settings, rate_limit_per_minute=1), engine=auth_app.state.engine)
++
++    async def exercise():
++        garbage = {"Authorization": "Bearer " + "x" * 64}
++        first = httpx.ASGITransport(app=app, client=("192.0.2.10", 1000))
++        second = httpx.ASGITransport(app=app, client=("192.0.2.20", 1000))
++        async with httpx.AsyncClient(transport=first, base_url="http://test") as a:
++            assert (await a.get("/v1/bootstrap", headers=garbage)).status_code == 200
++            assert (await a.get("/v1/bootstrap", headers=garbage)).status_code == 429
++            assert (await a.get("/v1/me", headers={"Authorization": "Bearer " + credentials["access_token"]})).status_code == 200
++        async with httpx.AsyncClient(transport=second, base_url="http://test") as b:
++            assert (await b.get("/v1/bootstrap", headers=garbage)).status_code == 200
++
++    asyncio.run(exercise())
++
++
++def test_peer_denial_expires_at_the_next_budget_window(auth_app, monkeypatch):
++    boundary = RequestBoundary(None, auth_app.state.settings, auth_app.state.session_factory)
++    epoch = [1900000000]
++    monkeypatch.setattr("bmt_backend.middleware.time.time", lambda: epoch[0])
++
++    async def exercise():
++        assert await boundary.peer_budget("192.0.2.30", "credential_admission", 1)
++        assert not await boundary.peer_budget("192.0.2.30", "credential_admission", 1)
++        epoch[0] += 60
++        assert await boundary.peer_budget("192.0.2.30", "credential_admission", 1)
++
++    asyncio.run(exercise())
++
++
++def test_trusted_proxy_clients_have_independent_auth_limits(auth_app):
++    app = create_app(replace(auth_app.state.settings, auth_limit_per_minute=2,
++                             trusted_proxy_networks=("10.0.0.9/32",)), engine=auth_app.state.engine)
++
++    async def exercise():
++        transport = httpx.ASGITransport(app=app, client=("10.0.0.9", 12345))
++        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
++            first = {"X-Forwarded-For": "198.51.100.200, 192.0.2.10"}
++            second = {"X-Forwarded-For": "198.51.100.200, 192.0.2.20"}
++            assert [(await client.post("/v1/auth/google/challenge", headers=first)).status_code
++                    for _ in range(3)] == [201, 201, 429]
++            assert (await client.post("/v1/auth/google/challenge", headers=second)).status_code == 201
++
++    asyncio.run(exercise())
++
++
++@pytest.mark.parametrize("peer,header,networks,expected", [
++    ("192.0.2.8", "203.0.113.9", (), "192.0.2.8"),
++    ("192.0.2.8", "203.0.113.9", ("10.0.0.0/24",), "192.0.2.8"),
++    ("10.0.0.9", "198.51.100.88, 192.0.2.10", ("10.0.0.9/32",), "192.0.2.10"),
++    ("10.0.0.9", "198.51.100.88, 192.0.2.10, 10.0.0.8", ("10.0.0.0/24",), "192.0.2.10"),
++    ("10.0.0.9", "malicious-prefix, 192.0.2.10", ("10.0.0.9/32",), "192.0.2.10"),
++    ("10.0.0.9", "malformed", ("10.0.0.9/32",), "10.0.0.9"),
++    ("2001:db8:ffff::1", "192.0.2.99, 2001:db8:1::2", ("2001:db8:ffff::/64",), "2001:db8:1::2"),
++    ("::ffff:10.0.0.9", "::ffff:192.0.2.10", ("10.0.0.9/32",), "192.0.2.10"),
++])
++def test_only_trusted_chain_suffix_sets_identity(peer, header, networks, expected):
++    scope = {"client": (peer, 12345), "headers": [(b"x-forwarded-for", header.encode())]}
++    assert ClientAddress(networks).resolve(scope) == expected
++
++
++@pytest.mark.parametrize("networks", [("*",), ("0.0.0.0/0",), ("::/0",), ("0.0.0.0/1", "128.0.0.0/1")])
++def test_internet_wide_proxy_trust_is_rejected(networks):
++    with pytest.raises(ValueError):
++        Settings(trusted_proxy_networks=networks)
++
++
++def test_cloud_run_plan_prepares_explicit_proxy_trust_without_weakening_server_command():
++    config = cloud_config()
++    environment = staging.environment(config, "api")
++    assert environment["BMT_TRUSTED_PROXY_NETWORKS"] == "127.0.0.1/32,169.254.0.0/16"
++    config["trusted_proxy_networks"] = ["10.0.0.9/32", "2001:db8:ffff::/64"]
++    assert staging.environment(config, "api")["BMT_TRUSTED_PROXY_NETWORKS"] == "10.0.0.9/32,2001:db8:ffff::/64"
++    assert "BMT_TRUSTED_PROXY_NETWORKS" not in staging.environment(config, "worker")
++
++
++@pytest.mark.parametrize("networks", [["*"], ["0.0.0.0/0"], ["0.0.0.0/1", "128.0.0.0/1"]])
++def test_deployment_plan_rejects_internet_wide_proxy_trust(networks):
++    config = cloud_config()
++    config["trusted_proxy_networks"] = networks
++    with pytest.raises(ValueError):
++        staging.environment(config, "api")
+--- /dev/null
++++ b/game/tests/test_shared_resume_recovery.gd
+@@ -0,0 +1,182 @@
++extends SceneTree
++## Actual shared files and real child processes; every API response is fictional.
++const Recovery = preload("res://backend/resume_recovery.gd")
++const Files = preload("res://backend/atomic_json.gd")
++var workspace: String
++var checks: int = 0
++var failures: int = 0
++
++class API extends Node:
++	var player: Dictionary = {"id":"shared-recovery-fixture"}
++	var _capabilities: Dictionary = {"resume_recovery":true}
++	var session_path: String = ""
++	var bodies: Array[Dictionary] = []
++	var hold_directory: String = ""
++	var reply: Dictionary = {"ok":true,"status":200,"data":{"state":"abandoned"},"error":""}
++	func signed_in() -> bool: return true
++	func base_url() -> String: return "https://shared-recovery-fixture.invalid"
++	func server_now() -> int: return 1900000000
++	func request_api(_path: String, _method: int, body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		bodies.append(body.duplicate(true))
++		if not hold_directory.is_empty():
++			Files.write(hold_directory.path_join("rpc-ready.json"),{"pid":OS.get_process_id()})
++			var deadline: int = Time.get_ticks_msec()+30000
++			while not FileAccess.file_exists(hold_directory.path_join("release.json")) and Time.get_ticks_msec() < deadline:
++				await get_tree().process_frame
++		return reply.duplicate(true)
++
++func _initialize() -> void:
++	Engine.max_fps = 200
++	call_deferred("run")
++
++func check(value: bool, description: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: ",description)
++
++func journal() -> Dictionary:
++	return {"owner":"shared-recovery-fixture","origin":"https://shared-recovery-fixture.invalid","begin_key":"shared-begin-key","consume_key":"shared-consume-key","stage":"pending","race_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","ticket_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","selection":{"ordinal":1,"input_offset":100,"from_tick":100,"to_tick":50,"recovery":"v1"}}
++
++func adapter(api: API, name: String) -> Node:
++	var recovery: Node = Recovery.new()
++	recovery.client = api
++	recovery.root_override = workspace.path_join(name)
++	root.add_child(recovery)
++	recovery.set_process(false)
++	return recovery
++
++func directory(api: API, recovery: Node) -> String:
++	return recovery._directory(str(api.player.id),api.base_url())
++
++func wait_file(path: String, timeout_msec: int = 15000) -> bool:
++	var deadline: int = Time.get_ticks_msec()+timeout_msec
++	while not FileAccess.file_exists(path) and Time.get_ticks_msec() < deadline: await process_frame
++	return FileAccess.file_exists(path)
++
++func wait_done(state: Dictionary) -> void:
++	var deadline: int = Time.get_ticks_msec()+15000
++	while not state.done and Time.get_ticks_msec() < deadline: await process_frame
++	check(state.done,"waiting reconciliation releases its latch")
++
++func finish_reconcile(recovery: Node, state: Dictionary) -> void:
++	await recovery.reconcile()
++	state.done = true
++
++func spawn(role: String, root_path: String) -> int:
++	return OS.create_process(OS.get_executable_path(),PackedStringArray(["--headless","--quiet","--path",ProjectSettings.globalize_path("res://"),"--script","res://tests/test_shared_resume_recovery.gd","--log-file",root_path.path_join(role+".log"),"--","--review-child="+role,"--review-root="+root_path]))
++
++func child(role: String) -> void:
++	var api := API.new()
++	root.add_child(api)
++	var recovery: Node = adapter(api,"profile")
++	var entry: Dictionary = journal()
++	entry.stage = "confirm" if role == "rpc" else "pending"
++	recovery.register_race(str(entry.begin_key))
++	if not recovery.save(entry): quit(2); return
++	if role == "rpc":
++		api.hold_directory = workspace
++		api.reply = {"ok":false,"status":503,"data":{},"error":"TEMPORARY","retry_after":60}
++		await recovery.reconcile()
++		Files.write(workspace.path_join("rpc-finished.json"),{"pid":OS.get_process_id()})
++	else:
++		Files.write(workspace.path_join("owner-ready.json"),{"pid":OS.get_process_id()})
++		var deadline: int = Time.get_ticks_msec()+30000
++		while Time.get_ticks_msec() < deadline: await process_frame
++	quit(0)
++
++func run() -> void:
++	var role: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--review-child="): role = argument.trim_prefix("--review-child=")
++		elif argument.begins_with("--review-root="): workspace = argument.trim_prefix("--review-root=")
++	if not role.is_empty():
++		await child(role)
++		return
++	workspace = ProjectSettings.globalize_path("res://../build/shared-recovery-"+str(OS.get_process_id())+"-"+str(Time.get_ticks_usec()))
++	var api := API.new()
++	var peer := API.new()
++	root.add_child(api)
++	root.add_child(peer)
++	var owner: Node = adapter(api,"nodes")
++	var observer: Node = adapter(peer,"nodes")
++	owner.register_race(journal().begin_key)
++	check(owner.save(journal()),"owner journal is durable")
++	await observer.reconcile()
++	check(peer.bodies.is_empty(),"peer adapter cannot abandon the active owner")
++	observer.register_race(journal().begin_key)
++	check(not observer.save(journal()),"duplicate registration cannot take ownership or charge")
++	observer.leave_race(journal().begin_key)
++	check(owner._race_is_active(directory(api,owner),journal().begin_key),"failed peer registration cannot remove the original lease")
++	owner.leave_race(journal().begin_key)
++	await observer.reconcile()
++	check(peer.bodies.size() == 1 and peer.bodies[0].action == "abandon","released owner can be recovered by a peer")
++	owner.free(); observer.free()
++	api.bodies.clear(); peer.bodies.clear()
++	owner = adapter(api,"invalid-ownership")
++	var damaged_lease: String = Recovery._active_directory(directory(api,owner),journal().begin_key)
++	check(Files.write(damaged_lease.path_join("owner.json"),{"pid":2147483647}),"damaged ownership fixture is preserved")
++	owner.save(journal())
++	await owner.reconcile()
++	check(api.bodies.is_empty(),"incomplete ownership never authorizes abandonment")
++	owner.free()
++	owner = adapter(api,"blocked-storage")
++	Files.write(owner.root_override,{"blocker":true})
++	owner.register_race(journal().begin_key)
++	check(not owner.save(journal()),"failed ownership storage prevents a consumption journal and charge")
++	owner.free()
++	api.bodies.clear(); peer.bodies.clear()
++	owner = adapter(api,"cooldown")
++	observer = adapter(peer,"cooldown")
++	var shared: String = directory(api,owner)
++	observer._ready_scope(shared)
++	var entry: Dictionary = journal()
++	entry.stage = "confirm"
++	owner.save(entry)
++	api.reply = {"ok":false,"status":503,"data":{},"error":"TEMPORARY","retry_after":60}
++	await owner.reconcile()
++	await observer.reconcile()
++	check(api.bodies.size() == 1 and peer.bodies.is_empty(),"already-running peer reloads a changed cooldown")
++	check(int(Files.read(shared.path_join(".retry.json")).retry_delay) == 60,"shared cooldown is persisted")
++	owner.free(); observer.free()
++	api.bodies.clear(); peer.bodies.clear()
++	var actor_root: String = workspace.path_join("owner-process")
++	DirAccess.make_dir_recursive_absolute(actor_root)
++	var pid: int = spawn("owner",actor_root)
++	check(pid > 0 and await wait_file(actor_root.path_join("owner-ready.json")),"real owner process registered its race")
++	var original_workspace: String = workspace
++	workspace = actor_root
++	observer = adapter(peer,"profile")
++	await observer.reconcile()
++	check(peer.bodies.is_empty(),"real live process prevents peer abandonment")
++	if pid > 0 and int(Files.read(actor_root.path_join("owner-ready.json")).get("pid",0)) == pid:
++		check(OS.kill(pid) == OK,"kill only the spawned owner to reproduce a crash")
++		var deadline: int = Time.get_ticks_msec()+15000
++		while OS.is_process_running(pid) and Time.get_ticks_msec() < deadline: await process_frame
++		check(not OS.is_process_running(pid),"spawned owner exited")
++		await observer.reconcile()
++		check(peer.bodies.size() == 1 and peer.bodies[0].action == "abandon","dead process recovers exactly its original operation")
++	observer.free()
++	peer.bodies.clear()
++	workspace = original_workspace.path_join("rpc-process")
++	DirAccess.make_dir_recursive_absolute(workspace)
++	observer = adapter(peer,"profile")
++	shared = directory(peer,observer)
++	observer._ready_scope(shared)
++	pid = spawn("rpc",workspace)
++	check(pid > 0 and await wait_file(workspace.path_join("rpc-ready.json")),"real process holds recovery through delivery")
++	observer._ready_scope(shared)
++	var reservation_end: int = Time.get_ticks_msec()+5100
++	while Time.get_ticks_msec() < reservation_end: await process_frame
++	var state: Dictionary = {"done":false}
++	finish_reconcile(observer,state)
++	await process_frame
++	check(not state.done and peer.bodies.is_empty(),"peer waits for the scope lock after delivery reservation expires")
++	Files.write(workspace.path_join("release.json"),{})
++	await wait_done(state)
++	check(peer.bodies.is_empty(),"waiting peer observes the final owner cooldown instead of duplicating the RPC")
++	check(int(Files.read(shared.path_join(".retry.json")).get("retry_delay",0)) == 60,"network failure wait is intact after handover")
++	check(await wait_file(workspace.path_join("rpc-finished.json")),"delivery owner completed its response")
++	observer.free(); api.free(); peer.free()
++	print("SHARED_RESUME_RECOVERY: %d checks, %d failures"%[checks,failures])
++	quit(0 if failures == 0 else 1)
+--- /dev/null
++++ b/scripts/test_communication_postgres.py
+@@ -0,0 +1,67 @@
++"""Run H1-H4 communication regressions with a task-owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-communication-pg-" + secrets.token_hex(4)
++    label = "communication-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*arguments):
++        return subprocess.run([*docker, *arguments], capture_output=True, text=True, timeout=30, check=False)
++
++    if call("image", "inspect", "postgres:17").returncode:
++        raise RuntimeError("Existing PostgreSQL 17 image unavailable; no image pulled")
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++                   "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=recovery_test",
++                   "-e", "POSTGRES_DB=recovery_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service changed")
++    result = None
++    try:
++        for _ in range(30):
++            if call("exec", name, "pg_isready", "-U", "recovery_test").returncode == 0:
++                break
++            time.sleep(.5)
++        else:
++            raise RuntimeError("Owned PostgreSQL did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://recovery_test:{password}@127.0.0.1:{port}/recovery_test"
++        result = subprocess.run(
++            [sys.executable, "-m", "pytest", "tests/test_resume_recovery_wire.py",
++             "tests/test_exception_recovery.py", "tests/test_auth.py", "tests/test_communication_boundary.py",
++             "tests/test_publication_intents.py", "tests/test_scalability.py", "tests/test_gcp_staging.py",
++             "tests/test_gcp_update.py", "-q", "--tb=short", "--show-capture=no"],
++            cwd=ROOT / "backend", env=env, capture_output=True, text=True, check=False, timeout=300,
++        )
++        output = (result.stdout + result.stderr).replace(password, "[REDACTED]")
++        evidence = ROOT / "docs/evidence/communication-h1-h4-2026-10-13"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "backend-regression.log").write_text(output, encoding="utf-8")
++        print(output[-6000:])
++    finally:
++        owned = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if owned.returncode != 0 or json.loads(owned.stdout).get("bmt.task") != label:
++            raise RuntimeError("Owned database label changed; leaving it untouched")
++        if call("stop", name).returncode:
++            raise RuntimeError("Owned database cleanup failed")
++        print("Owned PostgreSQL removed")
++    return result.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/docs/COMMUNICATION_H1_H4_2026_10_13.md
+@@ -0,0 +1,71 @@
++# Backend communication H1–H4 fixes — 2026-10-13
++
++Owner explicitly requests the four high-priority findings from the communication review. Requirement IDs H1/H2/H3/H4, B01/B05/B07, R01, Q01. This slice fixes shared-profile recovery ownership, publication admission, pre-authentication abuse gating and proxy client identity. No canonical simulation, scoring, trajectory acceptance, lap rules, cosmetics, economy or provider integration changes are included.
++
++## H1: durable ownership and serialized recovery
++
++`game/backend/resume_recovery.gd` claims an active race with an atomic lease directory containing process ID, process nonce and instance nonce. A peer cannot overwrite a live claim or remove another instance's claim. Unreadable/incomplete ownership fails closed. Dead owners are retired into nonempty nonce-bound tombstones, so stale observers cannot move a newly acquired lease. Explicit leave and adapter teardown release only that adapter's claims. Failed ownership storage prevents journal admission before a charge.
++
++A shared per-profile recovery lock covers request reservation, delivery and final retry state. After taking the lock, the adapter rechecks account/origin and rereads the persisted retry revision. Already-running peers therefore observe changed cooldowns; a waiting peer cannot duplicate an in-flight operation after its short reservation expires. Failed wait persistence prevents sending. The existing bounded scan, integer validation, active confirmation, original keys and authoritative resolution remain. Recent hitch callback counters are retained.
++
++The real-process regression launches two pinned headless Godot child roles with mocked API responses. A live owner's pending operation cannot be abandoned; killing only the task-owned child permits exact recovery. A second process waits across an in-flight delivery, then observes its owner's 60-second failure cooldown without sending another request. Corrupt leases and refused storage preserve evidence.
++
++## H2: publication upload boundary and terminal size failures
++
++`backend/bmt_backend/middleware.py` gives `/v1/publications` the existing global 8 MiB upload allowance and the same concurrency semaphore as run uploads. Both compressed wire and decompressed JSON remain bounded; slots cover validation, endpoint and response lifetime.
++
++`game/backend/backend_client.gd` reports local encoding overflow as HTTP 413 before constructing a network request. `track_lifecycle.gd` treats server/local size failures as terminal automatic-publication failures while retaining the draft, proof and operation key. `cloud_tracks.gd` likewise preserves an oversized result as a stopped upload rather than retrying forever. No global body-size increase or lossy evidence trimming is introduced.
++
++## H3: pre-authentication admission without caching permission
++
++The backend adds a separate bounded cold-credential admission budget (`pre_auth_limit_per_minute`, default 600) and checks the existing edge ceiling before database authentication. A 60-second bounded hint cache remembers only that a credential was previously validated; it grants a larger NAT admission ceiling, never authenticated access. Every valid authenticated request still performs expiry, revocation, disabled/development identity and per-player checks. Exhausted peer budgets and peer-scoped invalid-credential rate denials stop repeated requests without further authentication SQL. The next minute window admits requests again.
++
++The first implementation incorrectly put unknown valid credentials behind an already-exhausted anonymous quota. The existing `test_garbage_header_cannot_bypass_public_budget_but_valid_users_have_independent_budgets` caught this (191 passed, one failed in the initial broad run). The implementation was corrected with the independent cold-credential gate; the original assertion is unchanged. Valid cold users and distinct clients remain independent, and garbage headers cannot obtain authenticated budgets.
++
++## H4: explicitly trusted proxy chain
++
++`backend/bmt_backend/client_address.py` resolves client addresses only when the socket peer belongs to the configured allowlist. It walks the bounded forwarded chain from right to left and stops at the first untrusted hop, ignoring caller-supplied prefixes. Untrusted peers cannot select their rate identity through headers. Malformed, excessive or non-ASCII headers fall back to the socket peer. IPv4, IPv6 and IPv4-mapped IPv6 are covered. Wildcards and network lists covering the whole internet are rejected.
++
++`trusted_proxy_networks` / `BMT_TRUSTED_PROXY_NETWORKS` defaults empty in the application. Docker's no-proxy-header behavior remains. Compose uses the same application resolver and preserves the existing `BMT_TRUSTED_PROXY_IPS` setting as a fallback. The Cloud Run template prepares explicit loopback/link-local frontend ranges; its configuration can pin additional actual load-balancer hops. The actual deployed peer chain must be checked during an authorized rollout, especially behind an external load balancer. No wildcard Uvicorn trust is enabled.
++
++## Changed files and review checkpoint
++
++Runtime: `game/backend/resume_recovery.gd`, `backend_client.gd`, `cloud_tracks.gd`, `track_lifecycle.gd`; `backend/bmt_backend/middleware.py`, `config.py`, new `client_address.py`.
++
++Deployment preparation/docs: `backend/deploy/compose.yaml`, `backend/deploy/gcp/staging.py`, `backend/deploy/README.md`; this report, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Regressions: new `game/tests/test_shared_resume_recovery.gd`, expanded `game/tests/test_resume_recovery_budget.gd`; new `backend/tests/test_communication_boundary.py`, new `scripts/test_communication_postgres.py`.
++
++The workspace contains substantial unrelated changes. A task-start source baseline was saved before edits; the [task-only patch](evidence/communication-h1-h4-2026-10-13/task-only.patch) is the review checkpoint and excludes prior work. No broad staging or merge is implied.
++
++## Actual validation
++
++Pinned build: 4.7.2.stable.official.ed1daf0bf from `godot-version.txt`, launched through `scripts/dev.ps1`. Native tests use a task test profile (`APPDATA=build/communication-h1-h4-user`) and fictional/mocked API identities.
++
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/<file>`:
++
++| File | Actual final outcome |
++| --- | --- |
++| `test_shared_resume_recovery.gd` | 21 checks, zero failures; two actual task-owned child-process scenarios |
++| `test_resume_recovery_budget.gd` | 253 checks, zero failures; includes terminal server/local size handling |
++| `test_backend_exception_recovery.gd` | 28 checks, zero failures |
++| `test_local_draft_publication.gd` | 31 checks, zero failures; actual local creator trajectory retained |
++| `test_session_rotation.gd` | 17 checks, zero failures |
++| `test_mission_outbox.gd` | 11 checks, zero failures |
++| `test_refreshed_ticket_priority.gd` | 26 checks, zero failures |
++| `test_rewind.gd` | 61 checks, zero failures |
++| `test_race_hitch_monitor.gd` | 36 checks, zero failures; observer behavior only, not a performance claim |
++
++Total 484 native checks. The initial refused-storage test emitted an engine directory error, which the dev runner correctly treated as a failure. The adapter now detects a blocking ancestor file before mkdir; the ownership/refusal assertions remain and the final shared-process test passes.
++
++`.tools/backend-venv/Scripts/python.exe scripts/test_communication_postgres.py`: final broad matrix **192 passed, six expected platform/concurrency skips**, using SQLite and a newly created, ownership-labelled PostgreSQL 17 container. This covers actual Godot wire, recovery/refunds/idempotency, authentication, publication, scalability, and Cloud Run plan/update tests. The owned database was removed after verifying its label. [Actual backend output](evidence/communication-h1-h4-2026-10-13/backend-regression.log).
++
++`python -m pytest backend/tests/test_communication_boundary.py -k 'not postgres' -q --tb=short --show-capture=no`: final **26 passed, two PostgreSQL cases deselected**, including two additional peer-denial/budget-window checks added after the broad run began. Earlier auth/plan/boundary runs passed 65 and 94 checks; overlap is not added to the final total. New tests cover identity/gzip publications above 32 KiB, global overflow, held upload slots, fresh invalid credentials after exhausted admission, disabled users despite warm hints, proxy-isolated auth quotas, spoofed chains and unsafe configuration rejection.
++
++Ruff on changed Python sources/tests/helper and `git diff --check` pass. Actual Docker Compose JSON rendering with an explicit fictional environment file passes and preserves a configured legacy proxy address. An initial renderer attempt supplied Windows environment variables to the WSL Docker command; they were not forwarded, so interpolation correctly rejected missing `GODOT_SHA256`. The explicit env-file rerun passes without starting services.
++
++## Remaining acceptance
++
++Final Doctor succeeds and reports an attached DN2103 Android phone. No device race, Android export/install, live backend write, deployment, full Validate or physics merge was performed. No visual layout changed; new UI captures are not applicable.
++
++Restart all same-profile game instances together to load H1 and participate in the new ownership protocol; older processes do not write leases. Existing operation records are preserved. H2–H4 require deployment of the updated backend/configuration, separately authorized by the owner. During rollout, verify the actual proxy chain, independent clients and supplied spoofed prefixes before promotion. Local proxy tests and prepared configuration are not a claim that the currently deployed service has changed.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 H1-H4/B01/B05/B07/R01/Q01: owner fixes communication high findings. Atomic PID/process/instance race leases and nonce tombstones, shared recovery lock/versioned persisted waits, dead-owner-only abandon and storage refusal; original evidence/keys/callback counters retained. Publication8MiB/shared full-lifetime slots/gzip bounds/terminal413 preserves proof. Cold-credential600/edge gates before authSQL, bounded rate-denial cache/no auth grant; separate cold valid NAT clients preserved after baseline assertion caught initial design. Trusted proxy chain suffix/IPv4-v6/spoof bounds/no wildcard/Compose legacy fallback/CloudRun explicit template. Native shared21/recovery253/exception28/publication31/session17/outbox11/ticket26/rewind61/hitch36=484pass; SQLite+ownedPG192pass/6skips, final focused26pass/2deselected incl2late isolation-window checks; Ruff/diff/actualCompose pass. Initial storage engine error and WSL env interpolation corrected; assertions retained. Doctor DN2103 attached, no device race/APK/fullValidate/physics merge/backend livewrites/deploy. Task-only patch/commands/proxy rollout and all-instance restart acceptance: docs/COMMUNICATION_H1_H4_2026_10_13.md.
++
+ 2026-10-13 BPERF01-BPERF08/TR01-TR04/WSP04-WSP06/DS23-DS25/V04/V05/G01/R01/Q01: owner physical-phone test. Fresh pinned Android export/import/APP_READY/Driving72/Catalog21/Menus48 pass; install-r Success on DN2103/Mali-G77 GLES. Frozen APK SHA256 0C586B9FEE603ED948DE56D92ED8FADF5E808D8BD627CABE9FBD2D90C8E9AFB8, kit186/spray8/merged ribbons. Benchmark blocked before readiness by Android lock screen; no phone FPS/visual/thermal pass claimed. Original local records/cosmetics hash-exact restored, diagnostic markers removed, normal app relaunched. Scoped runner prepared; owner physical unlock required. Actual commands/evidence/remaining acceptance: docs/BIOME_PHONE_TEST_2026_10_13.md.
+ 
+ 2026-10-13 EPR01-EPR08/R01/T01-T04/V03/V05/Q01: owner track-editor performance review only. Pinned4.7.2/Compatibility/RTX3090 final isolated probe exits0/zero failures. Full authored-batch rebuild gives24containers364-409ms and tyre-placement495ms; unchanged Saves448/452ms. Saved+WIP listing16/64/128 medians201/902/1940ms; main-thread sliced roads96pieces Pine2.541s/Desert9.295s/Winter3.402s (including yields). CompactJSON620819->252155bytes would keep permitted16384-point fixture under512KB; no format/runtime change implemented. Ranked recommendations/current evidence/probe/initial diagnostic limitations: docs/evidence/editor-review-2026-10-13/review.json. No full regression, phone/device test, export/install, physics/backend change or deployment; shared-host timings are not phone FPS.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 H1-H4/B01/B05/B07/R01/Q01: owner fixes communication high findings. Atomic PID/process/instance race leases and nonce tombstones, shared recovery lock/versioned persisted waits, dead-owner-only abandon and storage refusal; original evidence/keys/callback counters retained. Publication8MiB/shared full-lifetime slots/gzip bounds/terminal413 preserves proof. Cold-credential600/edge gates before authSQL, bounded rate-denial cache/no auth grant; separate cold valid NAT clients preserved after baseline assertion caught initial design. Trusted proxy chain suffix/IPv4-v6/spoof bounds/no wildcard/Compose legacy fallback/CloudRun explicit template. Native shared21/recovery253/exception28/publication31/session17/outbox11/ticket26/rewind61/hitch36=484pass; SQLite+ownedPG192pass/6skips, final focused26pass/2deselected incl2late isolation-window checks; Ruff/diff/actualCompose pass. Initial storage engine error and WSL env interpolation corrected; assertions retained. Doctor DN2103 attached, no device race/APK/fullValidate/physics merge/backend livewrites/deploy. Task-only patch/commands/proxy rollout and all-instance restart acceptance: docs/COMMUNICATION_H1_H4_2026_10_13.md.
++
+ 2026-10-13 BPERF01-BPERF08/TR01-TR04/WSP04-WSP06/DS23-DS25/V04/V05/G01/R01/Q01: owner physical-phone test. Fresh pinned Android export/import/APP_READY/Driving72/Catalog21/Menus48 pass; install-r Success on DN2103/Mali-G77 GLES. Frozen APK SHA256 0C586B9FEE603ED948DE56D92ED8FADF5E808D8BD627CABE9FBD2D90C8E9AFB8, kit186/spray8/merged ribbons. Benchmark blocked before readiness by Android lock screen; no phone FPS/visual/thermal pass claimed. Original local records/cosmetics hash-exact restored, diagnostic markers removed, normal app relaunched. Scoped runner prepared; owner physical unlock required. Actual commands/evidence/remaining acceptance: docs/BIOME_PHONE_TEST_2026_10_13.md.
+ 
+ 2026-10-13 EPR01-EPR08/R01/T01-T04/V03/V05/Q01: owner track-editor performance review only. Pinned4.7.2/Compatibility/RTX3090 final isolated probe exits0/zero failures. Full authored-batch rebuild gives24containers364-409ms and tyre-placement495ms; unchanged Saves448/452ms. Saved+WIP listing16/64/128 medians201/902/1940ms; main-thread sliced roads96pieces Pine2.541s/Desert9.295s/Winter3.402s (including yields). CompactJSON620819->252155bytes would keep permitted16384-point fixture under512KB; no format/runtime change implemented. Ranked recommendations/current evidence/probe/initial diagnostic limitations: docs/evidence/editor-review-2026-10-13/review.json. No full regression, phone/device test, export/install, physics/backend change or deployment; shared-host timings are not phone FPS.

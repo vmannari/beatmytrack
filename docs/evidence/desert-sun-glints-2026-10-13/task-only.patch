@@ -1,0 +1,467 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 388a825..013ca01 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Desert sand and pebble sun-reflection override (2026-10-13)
++The owner requests sun-catching glistening on terrain sand and small stones. Use sparse, distance-filtered dielectric mineral highlights from actual lighting/view/shadows, sharing the existing packed texture. Keep broad sand and scrub matte, compacted roads nonreflective, and pebble population/geometry in the original batch. Preserve approved pigments, performance optimizations, original dust, tire marks, camera and canonical driving/scoring. See `docs/DESERT_SUN_GLINTS_2026_10_13.md` for actual paired pixels/motion/GPU cost, files/checkpoint and owner/device acceptance.
++
+ ## Winter and desert performance override (2026-10-13)
+ The owner requests better frame rate while retaining the approved appearance. Use scoped opaque terrain/backdrop ordering, exact four-kind terrain-mask packing with the full eight-kind fallback, shared loose-surface detail and fixed material-role compilation. Keep Winter's original snow-bank branch form; preserve all artwork, detail, dust/snow budgets, camera and canonical driving/scoring. Desktop paired GPU time drops about 5% in Compatibility and 28–36% in Mobile/Vulkan; these are not phone FPS measurements. See `docs/BIOME_PERFORMANCE_2026_10_13.md` for commands, pixel/motion/cache proofs, checkpoint, concurrent trail exclusions and remaining physical-device acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 74b3d03..b4bda91 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS23/DS24/V02/V04/V05/G01/R01/Q01: sparse sun/shadow/view-responsive mineral finish on desert loose sand/banks/pebbles; same texture/draws/triangles, matte scrub/firm road; kit184->185. Native13/Mobile13 exact restored display-pixel/motion checks, disabled-versus-original0/max1of255; sampler60/cache70/Desert87/Import pass. Paired RTX3090 1600x900 mean-median GPU cost +0.0405ms Native/+0.0245ms Mobile; frozen desktop only. Concurrent visibility retained/excluded; original desert generation functions exact. DN2103 attached; no phone/APK/full regression/backend/deploy. Actual commands/initial diagnostic failures/checkpoint/owner acceptance: docs/DESERT_SUN_GLINTS_2026_10_13.md.
++
+ 2026-10-13 BPERF01-BPERF04/V02/V04/V05/G01/R01/Q01: owner performance pass preserving approved winter/desert appearance. Opaque depth ordering/exact four-kind masks with eight-kind fallback/shared loose shading/fixed material roles; kit182->183. Paired RTX3090 4K GPU medians Compatibility Winter2.1615->2.0425ms(-5.51%)/Desert2.2715->2.1505(-5.33%); Mobile/Vulkan Winter2.0585->1.3245(-35.66%)/Desert2.0365->1.4670(-27.96%). 17+17 pixel checks pass, desert exact/winter<=2of255; packing3885/sampler60+60/cache70/driving72/Desert87/parse609/shoulders71+18/bridge656+656/winter motion-reflections109+109 pass. Cached ice-material discovery fixed without weaker assertions; original dust/camera/canonical source exact, concurrent trail revisions preserved/excluded. DN2103 attached; no phone performance/render test/APK/export-install/fullValidate/physics merge/backend/deploy. Actual commands/captures/scoped checkpoint/owner-device acceptance: docs/BIOME_PERFORMANCE_2026_10_13.md.
+ 
+ 2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
+diff --git a/docs/DESERT_SUN_GLINTS_2026_10_13.md b/docs/DESERT_SUN_GLINTS_2026_10_13.md
+new file mode 100644
+index 0000000..7ed02eb
+--- /dev/null
++++ b/docs/DESERT_SUN_GLINTS_2026_10_13.md
+@@ -0,0 +1,37 @@
++# Sun-catching desert sand and pebbles
++
++2026-10-13 DS23/DS24/V02/V04/V05/G01/R01/Q01. The owner requests glistening reflections on terrain sand and stones to suggest sunlight catching grains and small pebbles. This authorizes a restrained mineral finish beyond the earlier fully matte desert presentation. Preserve the approved pigments, artwork, terrain/road geometry, original desert dust generation, tire marks, camera, canonical driving/scoring and performance optimizations.
++
++Sparse mineral coverage comes from the existing packed surface-factor texture. Selected resolved grains receive bounded dielectric GGX highlights from actual scene lighting, view direction and shadows. Broad sand stays rough with zero specular response; the finish has no emission, animation clock, particles, reflection viewport or new texture. Mip bias and a derivative-based distance fade suppress unresolved grains. Loose terrain, sand skirts and banks share the finish; the compacted road retains zero specular response. The original single cover batch receives a two-float vertex tag: stone faces receive the finish while dry scrub stays matte. Existing pebble placement, population, positions, normals, colours and triangle count remain intact.
++
++Changed runtime files: `game/track/native_track_visual.gd` (kit184→185 invalidates disposable visuals), `surface_detail.gdshaderinc`, `terrain.gdshaderinc`, `creator_road.gdshaderinc`, `ground.gdshader`, `desert_road.gdshader`, `surface_shader_variants.gd`; new `desert_sun_finish.gdshaderinc`/UID and `desert_pebbles.gdshader`/UID. New diagnostic `game/tests/test_desert_sun_glints.gd`/UID; this report, agent override, status and phase plan. No image assets, external dependency, canonical contract or schema change. Other-biome finish calls remain disabled. The recent opaque ordering, exact mask packing/fallback and fixed-role compilation are preserved.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned `4.7.2.stable.official.ed1daf0bf`:
++
++| Action / suffix | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_desert_sun_glints.gd -Graphical -TestArgument '--folder=res://../docs/evidence/desert-sun-glints-2026-10-13/final/'` | Final Compatibility 13 checks, zero failures. Two paired views: 608/2,050 visible contribution pixels in the 578,100-pixel inspection region. Restored off-state is pixel-exact. Archived original materials versus disabled finish: zero changed pixels. 24 camera positions: maximum mean channel delta 0.001476, below unchanged 0.01 bound. Canonical state/cells/hash preserved. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | Final desktop Mobile/Vulkan 13 checks, zero failures. 678/1,686 contribution pixels; off-state restoration exact. Disabled finish versus original: maximum 1/255 channel difference, below unchanged 2/255 tolerance. Motion mean delta 0.001009. Same canonical and cover-tag checks. |
++| `TestDesert` | Final 87 checks, zero failures, original nine-second dust and exact five-car packed/loose replay behavior. |
++| `TestRoadCache` | 70 checks, zero failures. |
++| `TestScript -ScriptPath res://tests/test_terrain_sampler_budget.gd` | Final 60 checks, zero failures across all five biomes. The pebble shader binds only the existing surface-factor sampler. |
++| `Import` | Exit zero; registered classes introduced by concurrent visibility work, including `TrailVisibility`, without reverting those changes. |
++| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed. |
++| `git diff --check -- game/track/surface_detail.gdshaderinc game/track/terrain.gdshaderinc game/track/creator_road.gdshaderinc game/track/native_track_visual.gd` | Exit zero; existing CRLF normalization warnings. |
++
++The same frozen 1600×900 RTX 3090 scene alternates archived original materials/new finish/original/new, with one-second warmup and two seconds measured per stage. No records or competitive result are produced; particles/trails are hidden only to isolate material proof. The old shaders are expanded from the task's pre-change source snapshots, including original cover material and original hazard/bridge roles. Material change includes the additional mineral sample and specular lighting work. Both renderers keep 130 draws and 429,372 reported primitives in all four stages.
++
++| Renderer | Original GPU medians, two stages | Finish GPU medians, two stages | Difference of mean medians |
++| --- | --- | --- | --- |
++| Compatibility | 0.950 / 1.036 ms | 1.026 / 1.041 ms | +0.0405 ms |
++| Mobile/Vulkan | 0.465 / 0.466 ms | 0.489 / 0.491 ms | +0.0245 ms |
++
++These are short frozen desktop GPU samples, with visible stage drift in Compatibility; they are not sustained driving, phone FPS or thermal measurements. They do not replace the previous performance report or assert zero cost. Full stage medians/p95/sample counts and pixel/motion reports are saved under `evidence/desert-sun-glints-2026-10-13/final/{gl_compatibility,mobile}/report.json`.
++
++Inspected [Compatibility terrain](evidence/desert-sun-glints-2026-10-13/final/gl_compatibility/after-35.png), [Mobile terrain](evidence/desert-sun-glints-2026-10-13/final/mobile/after-35.png) and the paired before/original/disabled views. Six motion-frame captures per renderer accompany the 24-position check. These use the existing gameplay camera on a different saved local track from the owner's original screenshot. Small minerals respond to scene sunlight and view; no broad wet sheen is added.
++
++Initial failed diagnostics are retained: cached shaders lacked source paths; the baseline needed explicit material roles; the unrelated hazard was initially given terrain specialization; focus-induced pause overlays invalidated image comparisons; HDR images needed conversion to display bytes; a concurrently changing hitch observer raised an invalid `int` call. The final unscored fixture freezes presentation/hides pause overlays and disables its hitch observer, leaving runtime pause/diagnostic behavior untouched. No failing visibility/stability assertion is weakened. A first Mobile motion run exceeded the existing bound; the final rerun passes after the capture handling corrections.
++
++This slice edits no dust/trail files. Concurrent visibility changes are retained and excluded from the checkpoint; whole-file equality is not claimed. `preserved-presentation.json` proves the original desert profile/cloud/alpha/growth/rotation functions remain exact against the pre-task source. Original budgets are checked by `TestDesert`.
++
++Task-only baseline/fix Git checkpoint: `build/desert_sun_glints/checkpoint-repo`; patch/ledger under this evidence tree. Main branch/index and unrelated work remain preserved. No APK export/install, physical-device run, backend operation, deployment, full regression or physics merge. Remaining acceptance: owner glint strength/style review, physical-phone readability/motion/performance/thermal behavior and broader terrain/object layouts. Large placed rock models are outside this small terrain-pebble finish slice.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index f680271..37421cf 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 DS23/DS24/V02/V04/V05/G01/R01/Q01: sparse sun/shadow/view-responsive mineral finish on desert loose sand/banks/pebbles; same texture/draws/triangles, matte scrub/firm road; kit184->185. Native13/Mobile13 exact restored display-pixel/motion checks, disabled-versus-original0/max1of255; sampler60/cache70/Desert87/Import pass. Paired RTX3090 1600x900 mean-median GPU cost +0.0405ms Native/+0.0245ms Mobile; frozen desktop only. Concurrent visibility retained/excluded; original desert generation functions exact. DN2103 attached; no phone/APK/full regression/backend/deploy. Actual commands/initial diagnostic failures/checkpoint/owner acceptance: docs/DESERT_SUN_GLINTS_2026_10_13.md.
++
+ 2026-10-13 BPERF01-BPERF04/V02/V04/V05/G01/R01/Q01: owner performance pass preserving approved winter/desert appearance. Opaque depth ordering/exact four-kind masks with eight-kind fallback/shared loose shading/fixed material roles; kit182->183. Paired RTX3090 4K GPU medians Compatibility Winter2.1615->2.0425ms(-5.51%)/Desert2.2715->2.1505(-5.33%); Mobile/Vulkan Winter2.0585->1.3245(-35.66%)/Desert2.0365->1.4670(-27.96%). 17+17 pixel checks pass, desert exact/winter<=2of255; packing3885/sampler60+60/cache70/driving72/Desert87/parse609/shoulders71+18/bridge656+656/winter motion-reflections109+109 pass. Cached ice-material discovery fixed without weaker assertions; original dust/camera/canonical source exact, concurrent trail revisions preserved/excluded. DN2103 attached; no phone performance/render test/APK/export-install/fullValidate/physics merge/backend/deploy. Actual commands/captures/scoped checkpoint/owner-device acceptance: docs/BIOME_PERFORMANCE_2026_10_13.md.
+ 
+ 2026-10-13 DS22/V02/V04/V05/G01/R01/Q01: owner supersedes approved tire-mark colour, rejects dark/mismatched desert traces. Warm road-derived source-colour pigment/contact-normal lighting/quiet tread/opacity0.28->0.24, faint rolling and bounded strong brake-slip compaction. Final native+Mobile six captures each/bridge8+8 with zero protected roof pixels/Desert87 pass; canonical sampling/placement/styles outside desert and original dust exact preserved. DN2103 attached, no device run/export/install/performance/full regression/backend/deploy. Actual commands/initial failures/scoped checkpoint/owner acceptance: docs/DESERT_TIRE_MARKS_2026_10_13.md.
+diff --git a/game/tests/test_desert_sun_glints.gd b/game/tests/test_desert_sun_glints.gd
+new file mode 100644
+index 0000000..ca78904
+--- /dev/null
++++ b/game/tests/test_desert_sun_glints.gd
+@@ -0,0 +1,187 @@
++extends SceneTree
++var failures: int = 0
++var checks: int = 0
++var materials: Array[ShaderMaterial] = []
++var game: Node
++func freeze_capture() -> void:
++	game.paused = false
++	game.hud.pause_menu.hide()
++	game.set_process(false)
++	game.set_physics_process(false)
++const BEFORE: String = "res://../docs/evidence/desert-sun-glints-2026-10-13/before-source/game/track/"
++func expand_shader(source: String) -> String:
++	var include := RegEx.new()
++	include.compile('#include "([^"]+)"')
++	for pass_index: int in range(4):
++		for match: RegExMatch in include.search_all(source):
++			var path: String = match.get_string(1)
++			var saved: String = BEFORE+path.get_file()
++			var body: String = FileAccess.get_file_as_string(saved if FileAccess.file_exists(saved) else path)
++			source = source.replace(match.get_string(),body)
++	return source
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func finish(value: float) -> void:
++	for material: ShaderMaterial in materials: material.set_shader_parameter("desert_glint_strength",value)
++func shot() -> Image:
++	for frame: int in range(45):
++		freeze_capture()
++		await RenderingServer.frame_post_draw
++	var captured: Image = root.get_texture().get_image()
++	captured.convert(Image.FORMAT_RGBA8)
++	return captured
++func difference(a: Image,b: Image) -> Dictionary:
++	var count: int = 0
++	var peak: float = 0.0
++	var sum: float = 0.0
++	for y: int in range(190,660):
++		for x: int in range(180,1410):
++			var ca: Color = a.get_pixel(x,y)
++			var cb: Color = b.get_pixel(x,y)
++			var d: float = maxf(absf(ca.r-cb.r),maxf(absf(ca.g-cb.g),absf(ca.b-cb.b)))
++			if d > 1.0/255.0: count += 1
++			peak = maxf(peak,d); sum += d
++	return {"pixels":count,"peak":peak,"mean":sum/(470.0*1230.0)}
++func run() -> void:
++	root.size = Vector2i(1600,900)
++	var folder: String = "res://../docs/evidence/desert-sun-glints-2026-10-13/"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=").trim_suffix("/")+"/"
++	folder += RenderingServer.get_current_rendering_method()+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var doc: Dictionary = TrackLibrary.new().load_document("track_3e26605a8a90165e")
++	if doc.is_empty(): doc = TrackDocument.create_default()
++	doc.theme = "desert"
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var cells: PackedInt32Array = track.cells.duplicate()
++	var content: String = track.content_hash
++	game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.production_mode = true
++	game.hitch_diagnostics_enabled = false
++	root.add_child(game)
++	game.set_process(false); game.set_physics_process(false)
++	game.race_cues.hide(); game.sand_dust.hide(); game.trails.hide()
++	game.hud.message_label.hide()
++	game.countdown_ticks = 0
++	var pairs: Array[Dictionary] = []
++	var state_before: Array = game.sim.state.snapshot()
++	for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
++		var material: ShaderMaterial = node.material_override as ShaderMaterial
++		if material == null: continue
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			if uniform.name == "desert_glint_strength":
++				materials.append(material)
++				var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
++				if node.name == "DesertLowCover":
++					var original := VisualGeometry.material(Color.WHITE)
++					original.vertex_color_use_as_albedo = true
++					original.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
++					original.cull_mode = BaseMaterial3D.CULL_DISABLED
++					pairs.append({"node":node,"before":original,"after":material})
++				else:
++					var original: ShaderMaterial = dynamic.duplicate()
++					var shader := Shader.new()
++					# Disposable caches can restore a compiled shader without a
++					# resource path; role uniforms still identify its source.
++					var source_file: String = "desert_road.gdshader"
++					if material.get_shader_parameter("color_0") != null: source_file = "terrain.gdshader"
++					elif material.get_shader_parameter("ground_color") != null: source_file = "ground.gdshader"
++					elif node.name.begins_with("Hazard"): source_file = "hazard.gdshader"
++					elif node.name == "BridgeAsphalt": source_file = "desert_bridge_road.gdshader"
++					var path: String = BEFORE+source_file
++					shader.code = expand_shader(FileAccess.get_file_as_string(path if FileAccess.file_exists(path) else "res://track/"+source_file))
++					original.shader = shader
++					if not node.name.begins_with("Hazard"):
++						game.track_ground.call("_bind_grass",original)
++						SurfaceShaderVariants.specialize(original)
++					pairs.append({"node":node,"before":original,"after":material})
++				break
++	check(materials.size() > 4,"terrain, skirt, banks and pebbles receive scoped mineral finish")
++	var cover: MeshInstance3D = game.track_ground.get_node("DesertLowCover")
++	var arrays: Array = cover.mesh.surface_get_arrays(0)
++	var stones: int = 0
++	var scrub: int = 0
++	for tag: Vector2 in arrays[Mesh.ARRAY_TEX_UV2]:
++		if tag.x > 0.5: stones += 1
++		else: scrub += 1
++	check(stones > 0 and scrub > 0,"existing cover batch separates stone finish from matte scrub")
++	var camera: FollowCamera = game.camera
++	var report: Dictionary = {"renderer":RenderingServer.get_current_rendering_method(),"views":[]}
++	for fraction: float in [0.0,0.35]:
++		var point: Vector2 = track.route[int(track.route.size()*fraction)]
++		camera.follow(point,Vector2.ZERO,0.0,0.0,true)
++		finish(0.0); var before: Image = await shot()
++		finish(1.0); var after: Image = await shot()
++		finish(0.0); var restored: Image = await shot()
++		var delta: Dictionary = difference(before,after)
++		var stability: Dictionary = difference(before,restored)
++		report.views.append({"fraction":fraction,"contribution":delta,"restored":stability})
++		check(stability.peak == 0.0,"on/off comparison preserves base pigment and scene")
++		check(delta.pixels > 100 and delta.peak > 0.01,"real sun produces visible mineral highlights")
++		for entry: Array in [["before",before],["after",after]]:
++			check(entry[1].save_png(folder+str(entry[0])+"-%02d.png"%int(fraction*100)) == OK,"sun-finish capture saved")
++	finish(1.0)
++	var origin: Vector3 = camera.position
++	var baseline: Image = await shot()
++	baseline.save_png(folder+"motion-reference.png")
++	var maximum: float = 0.0
++	# Tiny subpixel camera shifts: stable pigment, bounded physical glint motion.
++	for frame: int in range(24):
++		freeze_capture()
++		camera.position = origin+Vector3(sin(frame*.4)*0.002,0,cos(frame*.3)*0.002)
++		await RenderingServer.frame_post_draw
++		var current: Image = root.get_texture().get_image()
++		current.convert(Image.FORMAT_RGBA8)
++		var delta: Dictionary = difference(baseline,current)
++		maximum = maxf(maximum,float(delta.mean))
++		if delta.mean >= 0.01: print("MOTION_DIAGNOSTIC: ",frame," ",JSON.stringify(delta)," camera=",camera.position)
++		if frame%4 == 0: current.save_png(folder+"motion-%02d.png"%frame)
++	report["motion_mean_max"] = maximum
++	print("GLINT_MOTION_DELTA: ",maximum)
++	check(maximum < 0.01,"subpixel camera movement has bounded highlight/pigment change")
++	camera.position = origin
++	finish(0.0)
++	var disabled: Image = await shot()
++	for pair: Dictionary in pairs: pair.node.material_override = pair.before
++	var original: Image = await shot()
++	var original_delta: Dictionary = difference(original,disabled)
++	print("ORIGINAL_DISABLED_DELTA: ",JSON.stringify(original_delta))
++	original.save_png(folder+"original-materials.png")
++	disabled.save_png(folder+"disabled-materials.png")
++	if original_delta.peak > 2.0/255.0:
++		for pair: Dictionary in pairs: pair.node.material_override = pair.after
++		for pair: Dictionary in pairs:
++			pair.node.material_override = pair.before
++			var diagnostic: Image = await shot()
++			print("MATERIAL_BASELINE: ",pair.node.name," ",JSON.stringify(difference(disabled,diagnostic)))
++			pair.node.material_override = pair.after
++	report["original_disabled_delta"] = original_delta
++	check(original_delta.peak <= 2.0/255.0,"disabled finish retains original diffuse/pigment, including pebbles")
++	# Paired complete material cost, including the new mineral sample and BRDF.
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	var viewport: RID = root.get_viewport_rid()
++	RenderingServer.viewport_set_measure_render_time(viewport,true)
++	var stages: Array[Dictionary] = []
++	for enabled: bool in [false,true,false,true]:
++		for pair: Dictionary in pairs: pair.node.material_override = pair.after if enabled else pair.before
++		finish(1.0)
++		var start: int = Time.get_ticks_usec()
++		while Time.get_ticks_usec()-start < 1000000:
++			freeze_capture(); await process_frame
++		var gpu: Array[float] = []
++		start = Time.get_ticks_usec()
++		while Time.get_ticks_usec()-start < 2000000:
++			freeze_capture()
++			await process_frame
++			gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(viewport))
++		gpu.sort()
++		stages.append({"enabled":enabled,"samples":gpu.size(),"gpu_p50_ms":gpu[gpu.size()/2],"gpu_p95_ms":gpu[int(gpu.size()*.95)],"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"triangles":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)})
++	report["paired_gpu"] = stages
++	check(cells == track.cells and content == track.content_hash and state_before == game.sim.state.snapshot(),"finish preserves canonical cells/hash/state")
++	FileAccess.open(folder+"report.json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("DESERT_SUN_GLINTS: ",checks," checks; ",failures," failures; ",JSON.stringify(report))
++	game.queue_free(); await process_frame
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_desert_sun_glints.gd.uid b/game/tests/test_desert_sun_glints.gd.uid
+new file mode 100644
+index 0000000..dae0dbd
+--- /dev/null
++++ b/game/tests/test_desert_sun_glints.gd.uid
+@@ -0,0 +1 @@
++uid://bm5xch74n3x3l
+diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+index 81fa255..2b38d8f 100644
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -125,6 +125,11 @@ void fragment() {
+ 	}
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
++ if (desert_dunes && (grass || gravel)) {
++  vec2 finish = desert_sand_finish(world_position.xz,1.0);
++  ROUGHNESS = finish.x;
++  SPECULAR = finish.y;
++ }
+  if (icy_road && asphalt_surface && !edge_fringe) {
+   vec2 road_uv = winter_road_uv(UV);
+   vec4 finish = texture(ice_finish,road_uv);
+diff --git a/game/track/desert_pebbles.gdshader b/game/track/desert_pebbles.gdshader
+new file mode 100644
+index 0000000..e8f36b8
+--- /dev/null
++++ b/game/track/desert_pebbles.gdshader
+@@ -0,0 +1,14 @@
++shader_type spatial;
++render_mode diffuse_lambert, specular_schlick_ggx, cull_disabled;
++uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
++#include "res://track/desert_sun_finish.gdshaderinc"
++varying vec3 world_position;
++void vertex() { world_position = (MODEL_MATRIX*vec4(VERTEX,1.0)).xyz; }
++void fragment() {
++	ALBEDO = COLOR.rgb;
++	vec3 mineral = texture(surface_factors,world_position.xz/8.0,0.65).rgb;
++	// Tagged stone faces catch small mineral highlights; scrub stays matte.
++	vec2 finish = mineral_sun_finish(mineral+vec3(0.0,0.0,0.12),length(fwidth(world_position.xz)),UV2.x);
++	ROUGHNESS = finish.x;
++	SPECULAR = finish.y;
++}
+diff --git a/game/track/desert_pebbles.gdshader.uid b/game/track/desert_pebbles.gdshader.uid
+new file mode 100644
+index 0000000..d88cefd
+--- /dev/null
++++ b/game/track/desert_pebbles.gdshader.uid
+@@ -0,0 +1 @@
++uid://c3lrmorpuh7ef
+diff --git a/game/track/desert_road.gdshader b/game/track/desert_road.gdshader
+index 9912ae3..e8d7e27 100644
+--- a/game/track/desert_road.gdshader
++++ b/game/track/desert_road.gdshader
+@@ -1,4 +1,4 @@
+ shader_type spatial;
+ // Continuous light across shallow sand deposits; same shared surface logic.
+-render_mode diffuse_burley, specular_disabled, cull_disabled;
++render_mode diffuse_burley, specular_schlick_ggx, cull_disabled;
+ #include "res://track/creator_road.gdshaderinc"
+diff --git a/game/track/desert_sun_finish.gdshaderinc b/game/track/desert_sun_finish.gdshaderinc
+new file mode 100644
+index 0000000..021c531
+--- /dev/null
++++ b/game/track/desert_sun_finish.gdshaderinc
+@@ -0,0 +1,10 @@
++// Sparse dielectric minerals; the normal lighting pass supplies real sun,
++// shadow and view response. No emission, animation clock or extra texture.
++uniform float desert_glint_strength : hint_range(0.0,1.0) = 1.0;
++vec2 mineral_sun_finish(vec3 mineral, float footprint, float weight) {
++	float grains = smoothstep(0.56,0.61,mineral.r)*smoothstep(0.42,0.50,mineral.b);
++	float resolved = 1.0-smoothstep(0.07,0.20,footprint);
++	float glint = clamp(grains*resolved*weight*desert_glint_strength,0.0,1.0);
++	float facets = smoothstep(0.05,0.20,glint);
++	return vec2(mix(1.0,0.28,facets),glint*0.38);
++}
+diff --git a/game/track/desert_sun_finish.gdshaderinc.uid b/game/track/desert_sun_finish.gdshaderinc.uid
+new file mode 100644
+index 0000000..4008bb3
+--- /dev/null
++++ b/game/track/desert_sun_finish.gdshaderinc.uid
+@@ -0,0 +1 @@
++uid://ccfknljaafxg6
+diff --git a/game/track/ground.gdshader b/game/track/ground.gdshader
+index bfdf412..89ae653 100644
+--- a/game/track/ground.gdshader
++++ b/game/track/ground.gdshader
+@@ -1,5 +1,5 @@
+ shader_type spatial;
+-render_mode diffuse_toon, specular_disabled;
++render_mode diffuse_toon, specular_schlick_ggx;
+ #include "res://track/surface_detail.gdshaderinc"
+ uniform vec4 ground_color : source_color;
+ varying vec3 world_position;
+@@ -9,4 +9,10 @@ void fragment() {
+ 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
+ 	ROUGHNESS = 1.0;
++	SPECULAR = 0.0;
++	if (desert_dunes) {
++		vec2 finish = desert_sand_finish(world_position.xz,1.0);
++		ROUGHNESS = finish.x;
++		SPECULAR = finish.y;
++	}
+ }
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index 7f7b241..aa9e3de 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@ class_name NativeTrackVisual
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-184"
++const VERSION: String = "track-kit-185"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -988,6 +988,7 @@ func _build_low_cover(track: NativeTrack) -> void:
+ 	# Owner rejected standing grass blades; meadow uses the static surface only.
+ 	var scenery := SurfaceTool.new()
+ 	scenery.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if theme_id == "desert": scenery.set_uv2(Vector2.ZERO)
+ 	if theme_id == "desert":
+ 		# Refreshes replace the batch, so its diagnostics describe this build only.
+ 		for key: String in ["desert_stones","desert_large_stones","desert_scrub","desert_roadside_stones"]:
+@@ -1040,6 +1041,11 @@ func _build_low_cover(track: NativeTrack) -> void:
+ 		if theme_id != "desert": VisualGeometry.ink(material)
+ 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 		instance.material_override = material
++		if theme_id == "desert":
++			var mineral := ShaderMaterial.new()
++			mineral.shader = preload("res://track/desert_pebbles.gdshader")
++			mineral.set_shader_parameter("surface_factors",SURFACE_FACTORS)
++			instance.material_override = mineral
+ 		add_child(instance)
+ 
+ 
+@@ -1095,6 +1101,7 @@ func _desert_roadside_cover(tool: SurfaceTool, track: NativeTrack) -> void:
+ 
+ 
+ func _desert_rock(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float, seed_value: int, color: Color) -> void:
++	tool.set_uv2(Vector2(1.0,0.0))
+ 	# Asymmetric, flattened weathered stones with broad worn top planes and
+ 	# irregular bevels; distinct lengths/widths avoid round polygon pellets.
+ 	var lower: Array[Vector3] = []
+@@ -1115,6 +1122,7 @@ func _desert_rock(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn:
+ 		var next: int = (i+1)%8
+ 		_quad(tool,lower[next],lower[i],upper[i],upper[next])
+ 		for vertex: Vector3 in [upper[next],crown,upper[i]]: tool.add_vertex(vertex)
++	tool.set_uv2(Vector2.ZERO)
+ 
+ 
+ func _desert_scrub(tool: SurfaceTool, center: Vector3, size: float, turn: float, seed_value: int) -> void:
+diff --git a/game/track/surface_detail.gdshaderinc b/game/track/surface_detail.gdshaderinc
+index d3bcda7..f2da919 100644
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -18,6 +18,11 @@ vec3 snow_detail(vec2 p) {
+ }
+ // Baked original colour factors, generated by scripts/bake-surface-detail.py.
+ uniform sampler2D surface_factors : filter_linear_mipmap_anisotropic, repeat_enable;
++#include "res://track/desert_sun_finish.gdshaderinc"
++vec2 desert_sand_finish(vec2 p, float weight) {
++	vec3 mineral = texture(surface_factors,p/24.0,0.65).rgb;
++	return mineral_sun_finish(mineral,length(fwidth(p)),weight);
++}
+ uniform bool icy_road = false;
+ uniform bool wet_road = false;
+ global uniform float storm_ripple_time;
+diff --git a/game/track/surface_shader_variants.gd b/game/track/surface_shader_variants.gd
+index 1985e37..1ec0599 100644
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -4,6 +4,7 @@ extends RefCounted
+ const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
+ const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed"]
+ const INCLUDES: Dictionary = {
++	"res://track/desert_sun_finish.gdshaderinc":preload("res://track/desert_sun_finish.gdshaderinc"),
+ 	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
+ 	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
+ 	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
+diff --git a/game/track/terrain.gdshaderinc b/game/track/terrain.gdshaderinc
+index 45ab5f4..c74677a 100644
+--- a/game/track/terrain.gdshaderinc
++++ b/game/track/terrain.gdshaderinc
+@@ -93,6 +93,11 @@ void fragment() {
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
++ if (desert_dunes && low.g+low.b > 0.0) {
++  vec2 finish = desert_sand_finish(world_position.xz,low.g+low.b);
++  ROUGHNESS = finish.x;
++  SPECULAR = finish.y;
++ }
+  if (icy_road && low.r > 0.0) {
+   vec4 finish = texture(ice_finish,world_position.xz/6.0);
+   ROUGHNESS = mix(1.0,max(0.18,finish.a*0.65),low.r);

@@ -1,0 +1,553 @@
+--- a/backend/bmt_backend/storage.py
++++ b/backend/bmt_backend/storage.py
+@@ -13,13 +13,11 @@
+ from pathlib import Path
+ from typing import Protocol
+ 
++from .json_data import parse_json
++
+ MAX_BLOB_BYTES = 8 * 1024 * 1024
+ MAX_STORED_BLOB_BYTES = MAX_BLOB_BYTES + 65536
+ TEMPORARY_NAME = re.compile(r"\.pending-[A-Za-z0-9_-]{6,80}(?:\.guard)?")
+-
+-
+-def reject_stored_constant(_value):
+-    raise ValueError("Nonfinite stored JSON")
+ 
+ 
+ def decode_blob_json(body: bytes, digest: str) -> dict:
+@@ -35,7 +33,9 @@
+     if len(body) > MAX_BLOB_BYTES or hashlib.sha256(body).hexdigest() != digest:
+         raise OSError("Object integrity check failed")
+     try:
+-        data = json.loads(body, parse_constant=reject_stored_constant)
++        # Packed ingress expands into canonical frames before storage. Keep its
++        # byte-bound maximum, while sharing finite/Unicode/key/depth checks.
++        data = parse_json(body, maximum_nodes=MAX_BLOB_BYTES)
+     except (ValueError, UnicodeError, RecursionError) as exc:
+         raise OSError("Invalid stored object") from exc
+     if not isinstance(data, dict):
+@@ -109,6 +109,10 @@
+         path.parent.mkdir(parents=True, exist_ok=True)
+         if path.exists():
+             self.get_json(digest)  # Detect disk corruption instead of silently trusting it.
++            # A previous attempt may have linked the final name but failed its
++            # directory flush. Reuse must finish durability before acknowledging.
++            sync_directory(self.root)
++            sync_directory(path.parent)
+             return digest
+         # Also persists a shard created by a concurrent first publisher.
+         sync_directory(self.root)
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -4,29 +4,35 @@
+ import hashlib
+ import json
+ import logging
+-import math
+ import threading
+ import time
+ import uuid
+ import zlib
+ from collections import OrderedDict
+ from contextlib import nullcontext
++from functools import lru_cache
+ 
+ from fastapi import HTTPException
+-from fastapi.routing import APIRoute
++from fastapi.routing import APIRoute, iter_route_contexts
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ from sqlalchemy.exc import SQLAlchemyError
+ from starlette.concurrency import run_in_threadpool
+ from starlette.responses import JSONResponse
+-from starlette.routing import Match
++from starlette.routing import compile_path, get_route_path
+ 
+ from .client_address import ClientAddress
+ from .identity_models import RateBucket
++from .json_data import parse_json as parse_body
+ from .observability import dependency_failure
+ from .security import digest
+ 
+ log = logging.getLogger("bmt.requests")
++
++
++@lru_cache(maxsize=512)
++def _template_pattern(path):
++    return compile_path(path)[0]
+ 
+ 
+ def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1, *, session=None) -> bool:
+@@ -73,43 +79,6 @@
+             return True
+ 
+ 
+-def strict_object(pairs):
+-    result = {}
+-    for key, value in pairs:
+-        key.encode("utf-8")  # Escaped lone surrogates are not valid Unicode data.
+-        if key in result:
+-            raise ValueError("Duplicate JSON key")
+-        result[key] = value
+-    return result
+-
+-
+-def reject_constant(value):
+-    raise ValueError("Nonfinite JSON value")
+-
+-
+-def parse_body(body):
+-    parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
+-    pending = [(parsed, 0)]
+-    visited = 0
+-    maximum_nodes = 1200000 # Includes a full 216,000-frame four-channel replay.
+-    while pending:
+-        value, depth = pending.pop()
+-        visited += 1
+-        if depth > 32:
+-            raise ValueError("JSON nesting limit")
+-        if isinstance(value, dict):
+-            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
+-            pending.extend((v, depth + 1) for v in value.values())
+-        elif isinstance(value, list):
+-            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
+-            pending.extend((v, depth + 1) for v in value)
+-        elif isinstance(value, float) and not math.isfinite(value):
+-            raise ValueError("Nonfinite JSON number")
+-        elif isinstance(value, str):
+-            value.encode("utf-8")
+-    return parsed
+-
+-
+ class ParsedJSONRoute(APIRoute):
+     def get_route_handler(self):
+         handler = super().get_route_handler()
+@@ -139,17 +108,20 @@
+     @staticmethod
+     def route_template(scope):
+         """Resolve only a declared template, including rejection before routing."""
+-        route = scope.get("route")
+-        if route is not None:
+-            return getattr(route, "path", "unmatched")
+         router = getattr(scope.get("app"), "router", None)
+         partial = "unmatched"
+-        for candidate in getattr(router, "routes", ()):
+-            match, _ = candidate.matches(scope)
+-            if match == Match.FULL:
+-                return getattr(candidate, "path", "unmatched")
+-            if match == Match.PARTIAL and partial == "unmatched":
+-                partial = getattr(candidate, "path", "unmatched")
++        path = get_route_path(scope)
++        # FastAPI's effective contexts retain prefixes through included/nested
++        # routers. Original APIRoute.path omits those prefixes in this version.
++        for context in iter_route_contexts(getattr(router, "routes", ())):
++            template = context.path
++            if template is None or _template_pattern(template).match(path) is None:
++                continue
++            methods = getattr(context.original_route, "methods", None)
++            if not methods or scope["method"] in methods:
++                return template
++            if partial == "unmatched":
++                partial = template
+         return partial
+ 
+     async def read_budget(self, peer, limit, category="read"):
+--- a/backend/bmt_backend/s3_storage.py
++++ b/backend/bmt_backend/s3_storage.py
+@@ -2,8 +2,6 @@
+ import gzip
+ import hashlib
+ import hmac
+-import io
+-import json
+ import re
+ from datetime import datetime, timezone
+ from urllib.parse import quote, urlsplit
+@@ -13,7 +11,7 @@
+ from urllib3.exceptions import HTTPError as StreamError
+ 
+ from .http_transport import PooledTransport
+-from .storage import canonical_json
++from .storage import MAX_STORED_BLOB_BYTES, canonical_json, decode_blob_json
+ 
+ LIMIT = 8*1024*1024
+ 
+@@ -93,21 +91,10 @@
+         raise OSError("Immutable object publication failed")
+ 
+     def get_json(self, digest):
+-        status,body = self._request("GET",self._key(digest))
++        status,body = self._request("GET",self._key(digest),limit=MAX_STORED_BLOB_BYTES)
+         if status != 200:
+             raise OSError("Stored object unavailable")
+-        try:
+-            if body.startswith(b"\x1f\x8b"):
+-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
+-                    body = source.read(LIMIT+1)
+-            if len(body) > LIMIT or hashlib.sha256(body).hexdigest() != digest:
+-                raise OSError("Object integrity check failed")
+-            result = json.loads(body)
+-        except (ValueError,EOFError) as exc:
+-            raise OSError("Invalid stored object") from exc
+-        if type(result) is not dict:
+-            raise OSError("Invalid stored object")
+-        return result
++        return decode_blob_json(body, digest)
+ 
+     def delete(self, digest):
+         status,_ = self._request("DELETE",self._key(digest))
+--- a/backend/bmt_backend/gcs_storage.py
++++ b/backend/bmt_backend/gcs_storage.py
+@@ -2,7 +2,6 @@
+ import base64
+ import gzip
+ import hashlib
+-import io
+ import json
+ import re
+ import threading
+@@ -16,7 +15,7 @@
+ from urllib3.exceptions import HTTPError as StreamError
+ 
+ from .http_transport import PooledTransport
+-from .storage import canonical_json
++from .storage import canonical_json, decode_blob_json
+ 
+ LIMIT = 8 * 1024 * 1024
+ STORED_LIMIT = LIMIT + 65536
+@@ -132,18 +131,7 @@
+         status, body = self._request("GET", self._key(digest), query={"alt": "media"}, limit=STORED_LIMIT)
+         if status != 200:
+             raise OSError("Stored object unavailable")
+-        try:
+-            if body.startswith(b"\x1f\x8b"):
+-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
+-                    body = source.read(LIMIT + 1)
+-            if len(body) > LIMIT or hashlib.sha256(body).hexdigest() != digest:
+-                raise OSError("Object integrity check failed")
+-            value = json.loads(body)
+-            if type(value) is not dict:
+-                raise ValueError("Not an object")
+-            return value
+-        except (ValueError, UnicodeError, EOFError, RecursionError):
+-            raise OSError("Invalid stored object") from None
++        return decode_blob_json(body, digest)
+ 
+     def delete(self, digest):
+         key = self._key(digest)
+--- a/backend/bmt_backend/auth.py
++++ b/backend/bmt_backend/auth.py
+@@ -35,6 +35,8 @@
+         name = name.strip()
+         if not name or any(unicodedata.category(c).startswith("C") for c in name):
+             raise ValueError("Use a visible name without control characters")
++        if len(username_key(name)) > Player.__table__.c.username_key.type.length:
++            raise ValueError("Name expands beyond the supported comparison length")
+         return name
+ 
+ 
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -465,6 +465,7 @@
+     for pose in poses:
+         if (type(pose) is not list or len(pose) != 7
+                 or any(not finite_number(value) for value in pose)
++                or any(abs(value) > 100000 for value in pose[1:])
+                 or not previous < pose[0] <= duration):
+             raise VerifierUnavailable("Canonical ghost has malformed samples")
+         previous = pose[0]
+--- a/backend/deploy/test_operations.py
++++ b/backend/deploy/test_operations.py
+@@ -101,7 +101,8 @@
+             self.assertEqual(LocalBlobStore(str(destination)).get_json(key), {"complete": "object"})
+ 
+     def test_invalid_content_and_decompression_bomb_never_publish_a_file(self):
+-        for raw, compressed in ((b'[]', False), (b'{"x":NaN}', False),
++        for raw, compressed in ((b'[]', False), (b'{"x":NaN}', False), (b'{"x":1e400}', False),
++                (b'{"x":1,"x":2}', True), (b'{"x":"\\ud800"}', True),
+                 (b'{"x":"' + b'x' * MAX_BLOB_BYTES + b'"}', True)):
+             with self.subTest(compressed=compressed), tempfile.TemporaryDirectory() as temp:
+                 key = hashlib.sha256(raw).hexdigest()
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-13 backend second pass BR07-BR10: shared storage integrity checks now reject exponent-overflow numbers (1e400), duplicate keys, invalid Unicode and excessive nesting on every object backend and archive restore. Reusing an existing immutable object repeats directory durability flushes, including recovery after a link succeeded but its flush failed. Names exceeding the normalized database comparison-key limit return validation errors before SQL. Server/client ghost components are bounded before rendering while race proof remains independent. Tests, scope and remaining target-host reboot/restore/blocked-IO acceptance: ../../docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
++
+ 2026-10-13 backend robustness repairs BR01-BR06: numeric validation rejects overflow; optional ghost data/storage failures cannot determine race acceptance. Finalization locks Player before Run, and publication retries commit owner/target-bound idempotency receipts. The app saves an unknown retry key until acknowledgement. Local archives verify the exact bounded gzip/JSON bytes against their SHA256 names before backup/restore publication. New temporary uploads hold OS-released sidecar guards through publication; startup scans at most 1,000 entries, and reference-aware retention continues with its existing cursor. Only files at least 24 hours old and unlocked are candidates. Legacy files without guards require --offline with every writer stopped; do not infer that an old deployed writer is inactive from file age. Maintenance reports temporary_files/temporary_bytes (logical name sizes, which can include a hardlink alias); its reference lookup is one bounded UNION query, retaining publication proofs and the original two-query test ceiling. S3 raw-stream exceptions map to STORAGE_UNAVAILABLE/503, invalidate readiness and keep Retry-After/request IDs. Unknown errors and database SQLSTATE/class diagnostics exclude bodies, credentials and exception text. No new migration or dependency is required by these repairs. Deploy matching backend/client artifacts only through the separately authorized rollout process; production reboot/power-loss and restore drills remain deployment-host acceptance. Tests and task-only checkpoint: ../../docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
+ 
+ 2026-10-05 native GCS and GCP staging: the Google adapter uses existing google-auth/HTTP dependencies, runtime ADC and immutable generation preconditions. Provider archives accept GCS. The [staging runbook](gcp/README.md) targets the owner-supplied `beat-my-track` project with explicit application/migration identities, pinned image digests, bounded replicas/DB pools, expiry and owned cleanup. Local image/contract/SQL tests are verified; Google CLI/ADC are not configured, so live bucket/deployment acceptance and pricing review remain. No credits or existing services were used/changed. [Evidence and limits](../../docs/BACKEND_GCS_STAGING_2026_10_05.md).
+--- a/backend/tests/test_robustness_fixes.py
++++ b/backend/tests/test_robustness_fixes.py
+@@ -72,7 +72,8 @@
+     assert reply.headers["x-request-id"]
+ 
+ 
+-def test_optional_ghost_integer_overflow_preserves_valid_verified_result(domain, monkeypatch):
++@pytest.mark.parametrize("coordinate", [10**400, 1e300, -1e300])
++def test_optional_ghost_integer_overflow_preserves_valid_verified_result(domain, monkeypatch, coordinate):
+     version, _ = public_course(domain)
+     issued = ticket(domain, version, "Alice")
+     geometry = {
+@@ -92,7 +93,7 @@
+         },
+         "ghost": {
+             "ticks": 10,
+-            "poses": [[0, 10**400, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0]],
++            "poses": [[0, coordinate, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0]],
+         },
+     }
+     from bmt_backend.trajectory_verifier import check
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -244,6 +244,8 @@
+ 		if not pose is Array or pose.size() != 7: return {}
+ 		for number: Variant in pose:
+ 			if not (number is float or number is int) or not is_finite(float(number)): return {}
++		for component: int in range(1,7):
++			if absf(float(pose[component])) > 100000.0: return {}
+ 		if float(pose[0]) <= previous: return {}
+ 		previous = float(pose[0])
+ 	if not (recording.ticks is float or recording.ticks is int) or not is_finite(float(recording.ticks)): return {}
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 B01/B05/B07/R01/Q01 BR07-BR10: owner second backend robustness pass found/fixed four additional gaps. Shared bounded strict JSON catches exponent infinity/duplicate keys/invalid Unicode/depth across ingress and Local/S3/GCS/archive; constant-depth traversal keeps canonical expansion allowance. Immutable reuse repeats failed root/shard directory sync before acknowledgement. Normalized username key length checked before SQL (40-char display can expand to720 versus160 column). Broad100000 ghost component bounds protect stored/current presentation; invalid optional ghosts never affect valid timing proof. Focus82/1skip+13subtests, SQLite206/1skip+13subtests, PostgreSQL35/1skip, isolatedLinux86/1skip+21subtests, pinnedGodot20/0, Ruff/diff pass. Fixture restored stopped; no new schema/dependency, production writes/provider calls/deploy, physics/art/APK/device test. Actual reboot/power-loss/failover/restore and fully stalled OS/provider IO remain target-host acceptance. Concurrent communication changes preserved. Commands, evidence, limitations and task-only patch: docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
++
+ 2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
+ 
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser664 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 B01/B05/B07/R01/Q01 BR07-BR10: owner second backend robustness pass found/fixed four additional gaps. Shared bounded strict JSON catches exponent infinity/duplicate keys/invalid Unicode/depth across ingress and Local/S3/GCS/archive; constant-depth traversal keeps canonical expansion allowance. Immutable reuse repeats failed root/shard directory sync before acknowledgement. Normalized username key length checked before SQL (40-char display can expand to720 versus160 column). Broad100000 ghost component bounds protect stored/current presentation; invalid optional ghosts never affect valid timing proof. Focus82/1skip+13subtests, SQLite206/1skip+13subtests, PostgreSQL35/1skip, isolatedLinux86/1skip+21subtests, pinnedGodot20/0, Ruff/diff pass. Fixture restored stopped; no new schema/dependency, production writes/provider calls/deploy, physics/art/APK/device test. Actual reboot/power-loss/failover/restore and fully stalled OS/provider IO remain target-host acceptance. Concurrent communication changes preserved. Commands, evidence, limitations and task-only patch: docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
++
+ 2026-10-13 TLR01-TLR05/Q01/V04/V05/R01/B07: track-loading review only. Twelve+twelve frozen scene probes show large Desert40.5MiB/Winter35.9MiB roads rejected before disk write by32MiB memory gate; exact Desert artifact3.75MB/save90.527/load85.217ms vs12.879s generation. Warm scene Car~227/Ghost~154 despiteOff+zeroPB/particles~100/audio~111ms vsworld~2ms; shader preprocessmedian3.711ms/call, compiled-document duplicates/metadata writes/overlay transitions/main-thread next-track resolve identified. ImmediateRetry already reusesGame. Concurrent kit190 chunk-name failure captured, then default rerun passes after other work adds fallback; original build timings separated and full-array-per-chunk copying flagged without runtime edits. Existing9/review12+12/component/exactartifact/diagnosticparse pass; source/build logs, bounded cache recommendations and scoped patch: docs/TRACK_LOADING_REVIEW_2026_10_13.md. DN2103 attached/no phone test/APK/fullValidate/physics/backend/deploy; implementation and device acceptance pending.
+ 
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser664 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
+--- /dev/null
++++ b/backend/bmt_backend/json_data.py
+@@ -0,0 +1,47 @@
++"""Strict bounded JSON data shared by HTTP ingress and immutable storage."""
++
++import json
++import math
++
++
++def strict_object(pairs):
++    result = {}
++    for key, value in pairs:
++        key.encode("utf-8")
++        if key in result:
++            raise ValueError("Duplicate JSON key")
++        result[key] = value
++    return result
++
++
++def reject_constant(_value):
++    raise ValueError("Nonfinite JSON value")
++
++
++def parse_json(body, *, maximum_nodes=1200000):
++    parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
++    # Iterators keep traversal memory proportional to depth rather than the
++    # number of siblings in a maximum replay or stored list.
++    pending = [(iter((parsed,)), 0)]
++    scheduled = 1
++    while pending:
++        values, depth = pending[-1]
++        try:
++            value = next(values)
++        except StopIteration:
++            pending.pop()
++            continue
++        if depth > 32:
++            raise ValueError("JSON nesting limit")
++        if isinstance(value, (dict, list)):
++            scheduled += len(value)
++            if scheduled > maximum_nodes:
++                raise ValueError("JSON node limit")
++            children = value.values() if isinstance(value, dict) else value
++            pending.append((iter(children), depth + 1))
++        elif isinstance(value, float) and not math.isfinite(value):
++            # parse_constant alone does not catch exponent overflow (1e400).
++            raise ValueError("Nonfinite JSON number")
++        elif isinstance(value, str):
++            value.encode("utf-8")
++    return parsed
+--- /dev/null
++++ b/backend/tests/test_robustness_second_pass.py
+@@ -0,0 +1,141 @@
++"""Additional invalid-data and recovery cases from the second backend pass."""
++
++import gzip
++import hashlib
++from pathlib import Path
++
++import pytest
++from test_auth_postgres import google_request
++from test_auth_postgres import postgres_auth as postgres_auth_fixture
++from test_gcs_storage import Credentials
++
++from bmt_backend.config import Settings
++from bmt_backend.gcs_storage import GCSBlobStore
++from bmt_backend.s3_storage import S3BlobStore
++from bmt_backend.storage import LocalBlobStore, canonical_json
++from bmt_backend.verifier import VerifierUnavailable, validate_ghost
++
++postgres_auth = postgres_auth_fixture
++MALFORMED = [
++    b'{"value":1e400}',
++    b'{"value":-1e400}',
++    b'{"value":1,"value":2}',
++    b'{"value":"\\ud800"}',
++    b'{"value":' + b"[" * 33 + b"0" + b"]" * 33 + b"}",
++]
++
++
++def stored_adapter(provider, tmp_path, monkeypatch, body, digest):
++    if provider == "local":
++        adapter = LocalBlobStore(str(tmp_path / "objects"))
++        path = adapter._path(digest)
++        path.parent.mkdir(parents=True)
++        path.write_bytes(body)
++    elif provider == "s3":
++        adapter = S3BlobStore(
++            Settings(
++                object_backend="s3",
++                s3_endpoint="https://objects.invalid",
++                s3_bucket="review-fixture",
++                s3_access_key="synthetic",
++                s3_secret_key="synthetic",
++            )
++        )
++        monkeypatch.setattr(adapter, "_request", lambda *_args, **_kwargs: (200, body))
++    else:
++        adapter = GCSBlobStore(
++            Settings(object_backend="gcs", gcs_bucket="review-fixture"), credentials=Credentials()
++        )
++        monkeypatch.setattr(adapter, "_request", lambda *_args, **_kwargs: (200, body))
++    return adapter
++
++
++@pytest.mark.parametrize("provider", ["local", "s3", "gcs"])
++@pytest.mark.parametrize("compressed", [False, True])
++@pytest.mark.parametrize("raw", MALFORMED)
++def test_stored_json_rejects_invalid_data_even_with_matching_hash(
++    provider, compressed, raw, tmp_path, monkeypatch
++):
++    digest = hashlib.sha256(raw).hexdigest()
++    body = gzip.compress(raw) if compressed else raw
++    adapter = stored_adapter(provider, tmp_path, monkeypatch, body, digest)
++    try:
++        with pytest.raises(OSError, match="Invalid stored object"):
++            adapter.get_json(digest)
++    finally:
++        if hasattr(adapter, "close"):
++            adapter.close()
++
++
++@pytest.mark.parametrize("provider", ["local", "s3", "gcs"])
++def test_shared_storage_validation_keeps_finite_values_and_unicode(provider, tmp_path, monkeypatch):
++    expected = {"name": "Caf\u00e9", "finite": 1e308, "integer": 10**400}
++    raw = canonical_json(expected)
++    digest = hashlib.sha256(raw).hexdigest()
++    adapter = stored_adapter(provider, tmp_path, monkeypatch, gzip.compress(raw), digest)
++    try:
++        assert adapter.get_json(digest) == expected
++    finally:
++        if hasattr(adapter, "close"):
++            adapter.close()
++
++
++def test_reused_publication_retries_failed_directory_flush(tmp_path, monkeypatch):
++    from bmt_backend import storage
++
++    adapter = LocalBlobStore(str(tmp_path / "objects"))
++    actual = storage.sync_directory
++    failing = [True]
++
++    def sync(path):
++        if Path(path) != adapter.root and failing[0]:
++            raise OSError("Synthetic directory sync unavailable")
++        actual(path)
++
++    monkeypatch.setattr(storage, "sync_directory", sync)
++    value = {"proof": "immutable"}
++    digest = hashlib.sha256(canonical_json(value)).hexdigest()
++    with pytest.raises(OSError, match="directory sync"):
++        adapter.put_json(value)
++    assert adapter.get_json(digest) == value
++    with pytest.raises(OSError, match="directory sync"):
++        adapter.put_json(value)
++    failing[0] = False
++    assert adapter.put_json(value) == digest
++    assert len(list(adapter.root.glob("*/*.json"))) == 1
++    assert not list(adapter.root.glob("*/.pending-*"))
++
++
++def test_expanding_unicode_name_is_rejected_without_changing_profile(auth_client, sign_in):
++    signed = sign_in()
++    auth = {"Authorization": "Bearer " + signed["access_token"]}
++    response = auth_client.patch("/v1/me", json={"display_name": "\ufdfa" * 40}, headers=auth)
++    assert response.status_code == 422 and response.json()["detail"] == "INVALID_INPUT"
++    assert auth_client.get("/v1/me", headers=auth).json()["display_name"] == "alice"
++
++
++@pytest.mark.postgres
++def test_expanding_unicode_names_never_reach_postgres_write(postgres_auth):
++    app, client = postgres_auth
++    signed = client.post("/v1/auth/google", json=google_request(app, client, "normal-name")).json()
++    auth = {"Authorization": "Bearer " + signed["access_token"]}
++    before = client.get("/v1/me", headers=auth).json()
++    renamed = client.patch("/v1/me", json={"display_name": "\ufdfa" * 40}, headers=auth)
++    assert renamed.status_code == 422
++    assert client.get("/v1/me", headers=auth).json() == before
++    fresh = google_request(app, client, "expanding-new-player")
++    fresh["display_name"] = "\ufdfa" * 40
++    assert client.post("/v1/auth/google", json=fresh).status_code == 422
++
++
++@pytest.mark.parametrize("coordinate", [1e300, -1e300, 100001.0])
++def test_finite_but_unrenderable_ghost_is_invalid_optional_data(coordinate):
++    recording = {"ticks": 10, "poses": [[0, coordinate, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0, 0]]}
++    with pytest.raises(VerifierUnavailable, match="malformed"):
++        validate_ghost(recording, 10)
++
++
++def test_ghost_presentation_bound_is_inclusive():
++    validate_ghost(
++        {"ticks": 10, "poses": [[0, -100000, 100000, 0, 0, 0, 0], [10, 100000, -100000, 0, 0, 0, 0]]}, 10
++    )
+--- /dev/null
++++ b/game/tests/test_backend_second_pass.gd
+@@ -0,0 +1,29 @@
++extends SceneTree
++## Old stored ghosts also pass this guard before Vector3 conversion.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(condition: bool, label: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: "+label)
++
++func run() -> void:
++	var valid: Dictionary = {"ticks":10,"poses":[[0,0,0,0,0,0,0],[10,1,2,0,0,0,0]]}
++	check(not Adapter._validate_ghost(valid).is_empty(),"normal ghost remains available")
++	for coordinate: float in [1.0e300,-1.0e300,100001.0]:
++		for component: int in range(1,7):
++			var invalid: Dictionary = valid.duplicate(true)
++			invalid.poses[0][component] = coordinate
++			check(Adapter._validate_ghost(invalid).is_empty(),"unrenderable component %d is rejected"%component)
++	var edge: Dictionary = valid.duplicate(true)
++	edge.poses[0][1] = -100000.0
++	edge.poses[0][2] = 100000.0
++	check(not Adapter._validate_ghost(edge).is_empty(),"presentation bound remains inclusive")
++	print("BACKEND_SECOND_PASS: %d checks, %d failures"%[checks,failures])
++	quit(0 if failures == 0 else 1)

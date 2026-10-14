@@ -1,0 +1,1154 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 94acce1..5edfd74 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Hay bales and breakable crates override (2026-10-12)
++The owner adds movable hay bales that progressively lose shape and shed harmless hay, with smaller remaining cores becoming lighter. Existing wooden crates move under gentle contact, accumulate damage under heavier distinct crashes, and break into wood pieces that slightly affect driving. Preserve run-owned state across laps, exact replay/rewind, immediate intact reset for new attempts, canonical pinned contracts, five ordinary laps and local track persistence. Loose hay must not affect collision, grip or contamination. Shared original damage meshes/icons and bounded debris are required; mass/damage/wood response remain owner/device acceptance values. See `docs/BREAKABLE_PROPS.md` for actual commands, tests/captures, contract updates and remaining acceptance. Production deployment remains separately authorised.
++
+ ## Detailed workshop variety and materials override (2026-10-12)
+ The owner marks the workbench/tyre-rack/compressor and rear shelf/cabinet areas for car-quality detail, then rejects repeated stock/tools and requests material finishes throughout the garage. Use fabricated hardware, shaped hand tools/vice/socket rail, smooth domed compressor with gauge/pump/hose, ribbed cases and detailed drawer/rack/wheel construction. Each shelf has a different collection and spacing; the toolboard mixes spanners, ratchet, pliers, hammer, square and screwdrivers. Original cached opaque finishes distinguish painted walls, brushed/cast metal, polymer, rubber, cloth, timber and dielectric concrete. Preserve roof cutaway, fixed turntable/framing, retained zoom/light sweeps, local cosmetics and canonical handling/scoring. See `docs/GARAGE_WORKSHOP_DETAIL.md` for actual files, tests/captures, desktop cost and remaining owner/device-quality acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 65982c4..cff7e9e 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,8 @@
+ 
+ 2026-10-12 KB01-KB03/V03/V05/G01/Q01: shared embedded-dialog keyboard avoidance for Save draft/Rename/Challenge code; physical-pixel inverse-screen-transform mapping, compact Save form, keyboard submit/close cleanup. Graphical keyboard21 and editor71 checks pass; inspected simulated-keyboard screenshot. Doctor attached DN2103; no native-phone keyboard test/APK/export/install. Commands/scoped review checkpoint/acceptance: docs/PHONE_KEYBOARD.md.
+ 
++2026-10-12 BP01-BP06/G01/R01/T01-T04/V04-V06/Q01: owner hay bales and breakable wooden crates. Remaining hay volume controls actual mass/core radius, frayed shared meshes and harmless capped loose hay; light crate movement/distinct heavy-hit damage/six persistent planks with small dissipative speed/yaw effects. Canonical state24/schema12/compiler26; physics55 then shared56 preserved; exact rewind/restart/cache restoration. Breakables46/headless-Mobile, contract2219/raster8, objects71/hazards160/kerb31/suspension59/rewind61/driving72/handling88/tracks167/creator113/bump9045/meshes594/parse596/App99; local verifier69 incl historical and standalone pass. Actual both-renderer stages/close-ups/palette captures; max704 fragment stress~0.737ms per canonical step desktop only. Initial fixture/packaging/concurrent import-shader failures corrected/retained. Final Doctor DN2103 attached; no device play/performance test/APK install/export/live writes/production deploy/physics merge. Pinned rollout/owner feel-device acceptance remain. Files/commands/scoped checkpoint: docs/BREAKABLE_PROPS.md.
++
+ 2026-10-12 V04/V05/G01/R01/Q01: phone white terrain traced on attached DN2103/Mali-G77 GLES to 17 fragment samplers exceeding 16. Inactive-biome sampler aliases plus road specialization/kit172 cache invalidation; Grass15/Desert87/Grasscapture29/cache70/all-biome budget57+graphical57 pass. Android export twice blocked by Windows ~bmt_windows_audio_v3.dll import error; no fixed APK installed/physical corrected-build test. Files, actual commands, captures and remaining acceptance: docs/TERRAIN_PHONE_TEXTURES.md.
+ 
+ 2026-10-12 WE41/V04/V05/G01/R01/Q01: owner finds Winter reflections excessive. Reduced cloud energy/blend/specular/normal slope and increased roughness/scrape damping; frost/pigment/scuffs/camera/canonical retained;kit172->173. Compatibility103 checks pass;184278 contribution pixels,0 unstable;capture inspected. Owner device appearance/performance acceptance open. Commands/files/checkpoint: docs/WINTER_REFLECTIONS_BALANCED.md.
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+index 74a998d..661b069 100644
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -45,6 +45,7 @@ SCRIPTS = {
+         "rally_handbrake",
+         "launch_start",
+         "light_props",
++        "breakable_props",
+         "loose_tyres",
+         "track_hazards",
+         "speed_bumps",
+@@ -71,7 +72,7 @@ def stage(repo: Path, destination: Path) -> None:
+     runners = [source / "backend" / name for name in ("runner.gd", "verification_track.gd", "race_proof.gd", "generate_fixture.gd", "generate_test_driver.gd")]
+     files.extend(runners)
+     # TrackTheme preloads this resource even in the headless canonical project.
+-    files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))
++    files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader", "winter_reflection_sky.gdshader"))
+     files.extend(source / "resources" / (name + ".tres") for name in PROFILES)
+     files.extend(sorted((source / "resources" / "cars").glob("*.tres")))
+     files.extend(
+diff --git a/backend/tests/fixtures/verified_oval.json b/backend/tests/fixtures/verified_oval.json
+index d427541..d8c079e 100644
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64409,16 +64409,16 @@
+   "time_ticks": 12757,
+   "vehicle_id": "compact",
+   "expected_manifest": {
+-    "compiler_version": "creator-compiler-25",
++    "compiler_version": "creator-compiler-26",
+     "engine_version": "4.7.2.stable.official.ed1daf0bf",
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.54",
++    "physics_version": "arcade-planar-0.56",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+     "rules_key": "standing-5-road-gates-v20",
+     "tick_rate": 120,
+-    "track_content_hash": "aa621f41aa007385424494d930867985f772d3db2f5e04baae983a7b464fe439",
++    "track_content_hash": "bb556ec5e5a749941c47825b0300412ecc019e3976103a0245f2e3b63626fe8e",
+     "track_schema": "creator-track-v5",
+     "vehicles": {
+       "classic": {
+diff --git a/backend/tests/test_verifier.py b/backend/tests/test_verifier.py
+index ffe1244..f3ce243 100644
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -68,7 +68,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
+     fixtures = ROOT / "game/tests/fixtures"
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.54"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.56"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+ 
+@@ -81,7 +81,7 @@ def test_variable_width_route_survives_json_without_relaxing_geometry(real_verif
+     # the original constant-width oval whose integer widths round-trip exactly.
+     assert any(width != struct.unpack("f", struct.pack("f", width))[0] for width in document["widths"])
+     manifest = real_verifier.validate_track(document)
+-    assert manifest["track_content_hash"] == "ca5ba7853b4e7fb244ba179d3c62744855e944181bca7aa83ba35ce9bcef29d8"
++    assert manifest["track_content_hash"] == "03e203c128bf45516d23d61ecd4896a53b0870b2c0bfde0f5e053f9e838d24e0"
+     altered = copy.deepcopy(document)
+     altered["widths"][1] += 0.00001
+     with pytest.raises(VerificationError, match="Regenerate the automatic route"):
+@@ -143,14 +143,14 @@ def test_validated_saved_route_is_compiled_without_regeneration(real_verifier, r
+ def test_server_accepts_overlapping_bridge_decks(real_verifier):
+     document = json.loads((Path(__file__).parent / "fixtures" / "bridge_junction.json").read_text())
+     result = real_verifier.validate_track(document)
+-    assert result["compiler_version"] == "creator-compiler-25"
++    assert result["compiler_version"] == "creator-compiler-26"
+     assert result["laps"] == 5 and result["track_content_hash"]
+ 
+ 
+ def test_server_accepts_five_point_spline(real_verifier):
+     document = json.loads((ROOT / "game/tests/fixtures/spline_circuit.json").read_text())
+     manifest = real_verifier.validate_track(document)
+-    assert manifest["compiler_version"] == "creator-compiler-25"
++    assert manifest["compiler_version"] == "creator-compiler-26"
+     assert manifest["laps"] == 5 and manifest["track_content_hash"]
+     assert manifest == real_verifier.validate_track(copy.deepcopy(document))
+ 
+diff --git a/docs/BREAKABLE_PROPS.md b/docs/BREAKABLE_PROPS.md
+new file mode 100644
+index 0000000..8520595
+--- /dev/null
++++ b/docs/BREAKABLE_PROPS.md
+@@ -0,0 +1,52 @@
++# Hay bales and breakable wooden crates
++
++Owner request, 2026-10-12. BP01: hay bales lose shape and shed harmless hay. BP02: their remaining core becomes smaller and lighter. BP03: wooden crates move under light contact and accumulate damage under heavier crashes. BP04: broken crates leave movable wood pieces with small driving effects. BP05: exact replay/rewind, per-attempt reset, five ordinary laps, local storage and pinned contracts. BP06: original shared models/icons, actual captures and bounded cost. Preserve G01/R01/T01-T04/V04-V06/Q01.
++
++## Behaviour
++
++Choose **Objects → Props → Hay bale** or **Wooden crate**. The existing `crate` identifier is retained, so saved crates receive the new behaviour. Both support the established place/move/rotate/size/duplicate/delete/undo/save flow and are available in all five biomes. Neither is baked into an impassable native wall. No transient destruction state is saved into a track document.
++
++A hay bale starts as a tied 2 × 1.2 m bundle. Contacts at at least 1 m/s shed material and expose progressively frayed, uneven shapes. The remaining fraction controls actual mass (85 kg at standard size, proportional to remaining volume) and the core's linear scale/radius (cube root of the remaining fraction). Object size scales mass by volume. A worn bale is easier to push and causes less car speed loss. After the final small remainder disperses, the core has no collision. Loose hay has **zero mass and zero car, collision, grip or tyre-contamination effect**; its short outward movement and eventual ground scatter are presentation carried in the deterministic state.
++
++A standard wooden crate has a 22 kg effective mass. Gentle contacts move/turn it without reducing integrity. Relative impacts above 4 m/s accumulate damage; repeated heavier crashes open/split boards, then remove the crate core and release six planks. Distinct impacts are latched until separation: sustained contact or following an already-moving crate at the same speed does not count as a new crash every tick. Reverse contacts push in the actual direction of travel. Wood pieces slide, rotate and settle, remain across laps, and can be pushed again. Their oriented planar contact produces a small momentum-based speed loss (at most 0.035 m/s per piece/contact tick) and slight off-centre yaw response. Wood does not become an oil-like grip patch or an impassable wall. Ground objects do not contact an airborne or elevated car.
++
++Damage and scatter persist across laps. New attempts reset them completely, including immediate intact visual restoration during the countdown before the first driving tick. Rewind restores integrity, impact latches, core positions/velocities, individual fragments and their motion; resumed physics reproduces the exact later branch. Existing collision observer output supplies crash feedback without introducing an external audio dependency. Mass/damage thresholds and the small wood response remain owner-review balance values.
++
++## Implementation and contracts
++
++`BreakableProps` extends the existing canonical light-prop path using only ordered numeric arrays and the fixed 120 Hz step. Other light props retain their exact previous path. There is no 3D rigid-body solver, runtime random generator, wall clock, network or file operation in the simulation. Up to 96 authored crates can produce 576 physical planks. Cosmetic loose hay is capped at 128 clumps; replacing old hay never discards physical wood. The conservative combined stress bound is 704 fragments. Moving pieces check native solid scenery; settled pieces avoid world queries. Fragment-to-fragment and crate-to-crate rigid-body collisions, punctures and structural vehicle damage are outside this slice.
++
++Three original prepared damage meshes per kind are shared across instances, with one shared matte sRGB material. Loose hay and wood use two MultiMesh batches with original fibre/plank geometry. The existing one-shot palette renderer uses the same intact models. Rendering changes visibility, scale, transforms and buffers only; it does not mutate canonical state. Prepared scenery clones preserve object bindings and isolate mutable MultiMesh buffers.
++
++Physics was advanced from `arcade-planar-0.54` to the breakable slice's `0.55`; the shared tree subsequently advanced to `0.56`, which is preserved. Compiler is `creator-compiler-26`. Creator documents remain `creator-track-v5`, adding `hay_bale` to the allowed object enum. Recorder schema 12 preserves snapshot fields 0–22 and appends `[prop_destruction, prop_fragments]` at field 23 (24 total fields). Input replay remains `bmt-replay-v1`, ordinary races remain five laps, and rules remain `standing-5-road-gates-v20`. Historical records, completed-ticket results and recorded inputs are retained; new PB/track contracts have their new pinned keys. Old documents/files were not deleted.
++
++Before updating golden identities, the contract audit checked all eight exact compiler-25 raster fingerprints and identical prepared geometry after normalising the version, 1,800 full no-breakable physics snapshots in all five biomes, and 400 exact legacy cone/board/barrel states. The new starter hash is `d73eb5e758e96a7333e3da9c2a4ad238b3d57718ad9acb62867d7965898c7dd4`. The local backend test fixture updates only its measured manifest pins; its document, inputs, timing and vehicle configuration hashes remain unchanged. Standalone verifier staging includes the new canonical script and TrackTheme's required winter-sky preload. Race acceptance remains trajectory-only; full replay is used only by the explicitly invoked offline diagnostics/tests.
++
++Changed runtime files: `game/vehicle/breakable_props.gd` (+UID), `light_props.gd`, `vehicle_state.gd`, the physics version in `vehicle_simulation.gd`, `game/persistence/handling_recorder.gd`, `game/editor/creator_catalog.gd`, `creator_objects.gd`, the compiler version in `track_compiler.gd`, `game/track/breakable_prop_visual.gd` (+UID), `prop_equipment.gd`, the prop-cache version in `creator_prop_visual.gd`, and placed-object/presentation sections of `native_track_visual.gd`. Contract/test files: creator schema, raster fixture, `test_creator.gd`, `test_tracks.gd`, `test_kerbs.gd`, `test_winter_compiler_contract.gd`, new `test_breakable_props.gd`, `test_breakable_contract.gd`, `capture_breakable_props.gd` (+UIDs), `scripts/dev.ps1` validation wiring, `backend/deploy/stage_verifier.py`, `backend/tests/test_verifier.py`, and its measured `verified_oval.json` manifest. Documentation: this file, AGENTS/status/phase entries and evidence.
++
++## Actual verification
++
++Commands use pinned `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Tests use isolated local records; no live account or backend write is involved.
++
++| Arguments / command | Actual outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_breakable_props.gd` and Mobile with `-Graphical -RenderingMethod mobile -RenderingDriver vulkan` | Final 46 checks: progressive mass/size, harmless hay, gentle/heavy/reverse crate contact, small dissipative wood response, bridge/flight isolation, five actual driven input replays, exact restored branch, immediate visual reset and conservative maximum debris bounds. |
++| `-Action TestScript -ScriptPath res://tests/test_breakable_contract.gd -TestArgument '--refresh-breakable-golden'` | 2,219 checks, zero failures before writing new raster identities; final non-writing repeat also 2,219/0. |
++| `-Action TestScript -ScriptPath res://tests/capture_breakable_props.gd -Graphical` and Mobile equivalent | 22 checks per renderer, zero failures: actual canonically generated intact/deformed/broken/scattered states, close-ups, prepared-cache rewind restoration, 1280/960 editor palette and real-file save/reload. |
++| `-Action TestObjects`, `TestHazards`, `TestKerbs`, `TestSuspension`, `TestRewind` | Respectively 71, 160, 31, 59 and 61 checks, zero failures. |
++| `-Action TestDriving`, `TestHandling`, `TestTracks`, `TestCreator` | 72, 88, 167 and 113 checks, zero failures, including complete historical diagnostic races and exact JSON replay at multiple render batch sizes. |
++| `-Action TestScript -ScriptPath res://tests/test_speed_bumps.gd` | 9,045 checks, zero failures; existing timed suspension advantage, energy bounds and all-car replay retained. |
++| `-Action TestScript -ScriptPath res://tests/test_prop_refinement.gd` | 594 checks, zero failures across all five biomes and the additional hay model/prepared damage geometry. |
++| `-Action TestApp` | Final corrected smoke run: 99 checks, zero failures. |
++| `-Action Doctor` | Exact engine/templates found; DN2103 attached at the final check. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | Actual complete parse: 596 scripts, zero failures. |
++| `.tools/backend-venv/Scripts/python.exe build/breakable_props/refresh_backend_fixture.py` | Actual canonical manifests measured; recorded document/input/timing fields preserved. |
++| `.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q` | 69 passed, including historical physics-0.50 exact rejected-input replay and standalone canonical packaging. Existing Starlette/httpx deprecation warning remains; no dependency installed. |
++
++The 704-fragment synthetic upper-bound test took 176.827 ms for 240 canonical steps on the desktop Mobile run (about 0.737 ms/step), and an earlier headless run took 205.303 ms. This isolates the prop routine; it is not a whole-game/phone frame budget or thermal measurement. Shared meshes avoid creating separate damage geometry for every placed object. Physical-phone cost and dense authored layouts remain unmeasured.
++
++Captures: [editor palette](evidence/breakable-props-2026-10-12/gl_compatibility/editor-palette-960.png), [deformed/cracked objects](evidence/breakable-props-2026-10-12/gl_compatibility/deformed-and-cracked.png), [worn bale](evidence/breakable-props-2026-10-12/gl_compatibility/worn-bale-detail.png), [wood pieces](evidence/breakable-props-2026-10-12/gl_compatibility/wood-debris-detail.png), [fully scattered material](evidence/breakable-props-2026-10-12/mobile/loose-hay-and-wood.png), [rewind restored](evidence/breakable-props-2026-10-12/mobile/rewind-restored.png). Stage photos show contacts and settling generated by canonical stepping with diagnostic positioning between distinct impacts; they do not claim a continuous race recording. Five actual driving approaches are separately tested for exact input replay. Before sources, old fixtures, actual logs, final test reports, scoped patch and hash ledger are retained in `docs/evidence/breakable-props-2026-10-12`; the isolated two-commit Git checkpoint is `build/breakable_props/checkpoint-repo`. Main branch/index and unrelated concurrent edits are preserved.
++
++Initial failures are retained: fixture callable/catalog API declarations and optional three-field input decoding were corrected; repeated-impact tests now wait for outgoing objects to settle rather than misclassifying equal-speed following as another crash. A negative diagnostic rotation was replaced by its valid 345° equivalent, and capture framing now includes projected debris bounds. Standalone verifier failures exposed omitted canonical/sky dependencies, which are now packaged without weakening failure checks; all 69 verifier tests then passed. A full editor import encountered the concurrently locked Windows audio extension. A later app smoke attempt encountered an in-progress surface-shader null-flag error; its corrected rerun passed all 99 app checks. No failure was made green by removing an invariant.
++
++The final Doctor check detected a DN2103 Android phone. No physical-device play/performance test was performed for this task. No Android export/install, production deployment, live data migration or physics merge was performed for this task. Matching backend/compiler/catalog rollout remains necessary before this new client contract can be used for live competitive starts or track publication; deployment remains separately authorised. Owner acceptance remains for damage thresholds, movement/wood feel, material density/appearance and icon recognition; device acceptance remains for touch placement, bright-light readability, sustained frame pacing, memory and thermals. Restart the client to load the new kit.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index c8d545d..98da896 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2,6 +2,8 @@
+ 
+ 2026-10-12 KB01-KB03/V03/V05/G01/Q01: shared embedded-dialog keyboard avoidance for Save draft/Rename/Challenge code; physical-pixel inverse-screen-transform mapping, compact Save form, keyboard submit/close cleanup. Graphical keyboard21 and editor71 checks pass; inspected simulated-keyboard screenshot. Doctor attached DN2103; no native-phone keyboard test/APK/export/install. Commands/scoped review checkpoint/acceptance: docs/PHONE_KEYBOARD.md.
+ 
++2026-10-12 BP01-BP06/G01/R01/T01-T04/V04-V06/Q01: owner hay bales and breakable wooden crates. Remaining hay volume controls actual mass/core radius, frayed shared meshes and harmless capped loose hay; light crate movement/distinct heavy-hit damage/six persistent planks with small dissipative speed/yaw effects. Canonical state24/schema12/compiler26; physics55 then shared56 preserved; exact rewind/restart/cache restoration. Breakables46/headless-Mobile, contract2219/raster8, objects71/hazards160/kerb31/suspension59/rewind61/driving72/handling88/tracks167/creator113/bump9045/meshes594/parse596/App99; local verifier69 incl historical and standalone pass. Actual both-renderer stages/close-ups/palette captures; max704 fragment stress~0.737ms per canonical step desktop only. Initial fixture/packaging/concurrent import-shader failures corrected/retained. Final Doctor DN2103 attached; no device play/performance test/APK install/export/live writes/production deploy/physics merge. Pinned rollout/owner feel-device acceptance remain. Files/commands/scoped checkpoint: docs/BREAKABLE_PROPS.md.
++
+ 2026-10-12 V04/V05/G01/R01/Q01: phone white terrain traced on attached DN2103/Mali-G77 GLES to 17 fragment samplers exceeding 16. Inactive-biome sampler aliases plus road specialization/kit172 cache invalidation; Grass15/Desert87/Grasscapture29/cache70/all-biome budget57+graphical57 pass. Android export twice blocked by Windows ~bmt_windows_audio_v3.dll import error; no fixed APK installed/physical corrected-build test. Files, actual commands, captures and remaining acceptance: docs/TERRAIN_PHONE_TEXTURES.md.
+ 
+ 2026-10-12 WE41/V04/V05/G01/R01/Q01: owner finds Winter reflections excessive. Reduced cloud energy/blend/specular/normal slope and increased roughness/scrape damping; frost/pigment/scuffs/camera/canonical retained;kit172->173. Compatibility103 checks pass;184278 contribution pixels,0 unstable;capture inspected. Owner device appearance/performance acceptance open. Commands/files/checkpoint: docs/WINTER_REFLECTIONS_BALANCED.md.
+diff --git a/docs/schemas/creator-track-v5.schema.json b/docs/schemas/creator-track-v5.schema.json
+index a569f5a..1c66cd3 100644
+--- a/docs/schemas/creator-track-v5.schema.json
++++ b/docs/schemas/creator-track-v5.schema.json
+@@ -142,6 +142,7 @@
+               "light",
+               "gantry",
+               "crate",
++              "hay_bale",
+               "barrel",
+               "pallet",
+               "parked_car",
+diff --git a/game/editor/creator_catalog.gd b/game/editor/creator_catalog.gd
+index 5f987f0..8a523fe 100644
+--- a/game/editor/creator_catalog.gd
++++ b/game/editor/creator_catalog.gd
+@@ -35,7 +35,8 @@ const ASSETS: Array = [
+  ["jump","Jump","Props",["jump"]],
+  ["speed_bump","Speed bump","Props",["speed_bump"]],
+  ["oil","Oil spill","Props",["oil"]],
+- ["crate","Crate","Props",["crate"]],
++ ["hay_bale","Hay bale","Props",["hay_bale"]],
++ ["crate","Wooden crate","Props",["crate"]],
+  ["barrel","Barrel","Props",["barrel"]],
+  ["pallet","Pallet","Props",["pallet"]],
+  ["parked_car","Parked vehicle","Props",["parked_car","van"]],
+@@ -46,7 +47,7 @@ const ASSETS: Array = [
+  ["grandstand","Grandstand","Buildings",["grandstand"]]
+ ]
+ const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet"]
+-const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel"]
++const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale"]
+ const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
+ 
+ static func family(kind: String) -> Array:
+@@ -58,6 +59,8 @@ static func label(kind: String) -> String:
+ 	return {"oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+ 
+ static func behavior(kind: String) -> String:
++	if kind == "hay_bale": return "Sheds harmless hay; becomes smaller and lighter"
++	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
+ 	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
+ 	if kind == "oil": return "Oil spill / slippery; coats tyres and reduces grip"
+ 	if kind == "jump": return "Ramp / launches the car in its facing direction"
+diff --git a/game/editor/creator_objects.gd b/game/editor/creator_objects.gd
+index 3dc9db7..b0d7ac7 100644
+--- a/game/editor/creator_objects.gd
++++ b/game/editor/creator_objects.gd
+@@ -2,10 +2,11 @@ class_name CreatorObjects
+ extends RefCounted
+ ## Original scalable stamps; the same footprint is used in plans and native cells.
+ 
+-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand"]
++const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale"]
+ 
+ static func dimensions(kind: String) -> Vector2:
+ 	match kind:
++		"hay_bale": return Vector2(2.0,1.2)
+ 		"speed_bump": return Vector2(2.0,8.0)
+ 		"tyre_stack": return Vector2(1,1)
+ 		"broadleaf": return Vector2(4,4)
+diff --git a/game/editor/track_compiler.gd b/game/editor/track_compiler.gd
+index e5fb924..af74a99 100644
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -2,7 +2,7 @@ class_name TrackCompiler
+ extends RefCounted
+ ## Pure bounded compiler; native surface cells drive both simulation and art.
+ 
+-const VERSION: String = "creator-compiler-25"
++const VERSION: String = "creator-compiler-26"
+ const CELL_SIZE: float = 0.5
+ static var bases: Dictionary = {}
+ 
+diff --git a/game/persistence/handling_recorder.gd b/game/persistence/handling_recorder.gd
+index 0d0bb72..a969ea9 100644
+--- a/game/persistence/handling_recorder.gd
++++ b/game/persistence/handling_recorder.gd
+@@ -12,7 +12,7 @@ var header: Dictionary = {}
+ func start(sim: VehicleSimulation, yard: PlaygroundData) -> void:
+ 	frames.clear()
+ 	checkpoints.clear()
+-	header = {"schema_version": 11, "physics_version": VehicleSimulation.PHYSICS_VERSION,
++	header = {"schema_version": 12, "physics_version": VehicleSimulation.PHYSICS_VERSION,
+ 		"tick_rate": VehicleSimulation.TICK_RATE, "engine": Engine.get_version_info().string,
+ 		"handling": sim.config.snapshot(), "yard": yard.identity, "initial_state": sim.state.snapshot()}
+ 	if yard is NativeTrack:
+diff --git a/game/tests/capture_breakable_props.gd b/game/tests/capture_breakable_props.gd
+new file mode 100644
+index 0000000..507b1d8
+--- /dev/null
++++ b/game/tests/capture_breakable_props.gd
+@@ -0,0 +1,114 @@
++extends SceneTree
++## Diagnostic stages generated by canonical contacts, plus the actual editor palette.
++const OUTPUT: String = "res://../docs/evidence/breakable-props-2026-10-12/"
++var folder: String
++var checks: int = 0
++var failures: int = 0
++var config: HandlingConfig
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func clear(_p: Vector2, _radius: float, _deck: bool) -> Vector3: return Vector3.ZERO
++func step(state: VehicleState, objects: Array) -> void:
++	LightProps.step(state,objects,clear,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++	state.tick += 1
++func settle(state: VehicleState, objects: Array) -> void:
++	state.position = Vector2(100,100); state.velocity = Vector2.ZERO
++	for i: int in range(400): step(state,objects)
++func hit(state: VehicleState, objects: Array, index: int, speed: float) -> void:
++	var p := Vector2(state.light_props[index][0],state.light_props[index][1])
++	state.position = p-Vector2(0.30,0); state.velocity = Vector2(speed,0); state.heading = PI*0.5
++	step(state,objects); settle(state,objects)
++func frames(count: int) -> void:
++	for i: int in range(count): await RenderingServer.frame_post_draw
++func capture(name: String) -> void:
++	await frames(4)
++	check(root.get_texture().get_image().save_png(folder+"/"+name+".png") == OK,"capture "+name)
++func run() -> void:
++	if DisplayServer.get_name() == "headless": push_error("Use TestScript -Graphical"); quit(1); return
++	folder = ProjectSettings.globalize_path(OUTPUT+RenderingServer.get_current_rendering_method()); DirAccess.make_dir_recursive_absolute(folder)
++	root.size = Vector2i(1280,720); config = VehicleCatalog.config("compact")
++	var document: Dictionary = TrackDocument.create_default(); document["automatic_scenery"] = false
++	document.name = "Hay and crate practice"
++	document.objects = [{"kind":"hay_bale","position":[-3,0],"rotation":15},{"kind":"crate","position":[3,0],"rotation":345}]
++	var track: NativeTrack = TrackCompiler.compile(document)
++	check(track != null,"capture document validates: "+str(TrackDocument.validate(document)))
++	if track == null: quit(1); return
++	var objects: Array = track.hazard_objects
++	var state := VehicleState.new(); state.position = Vector2(100,100); step(state,objects)
++	var intact: Dictionary = RewindHistory.properties(state)
++	var stage := Node3D.new(); root.add_child(stage)
++	var visual := NativeTrackVisual.new(); stage.add_child(visual); visual._build_placed_objects(track)
++	VisualGeometry.box(stage,Vector3(80,0.08,60),Vector3(0,-0.08,0),VisualGeometry.material(Color("636b5b")))
++	var car := CarVisual.new(); car.position = Vector3(0,0,5); car.rotation.y = PI*0.5; stage.add_child(car)
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-48,-32,0); light.light_color = Color("fff0d9"); light.shadow_enabled = true; stage.add_child(light)
++	var environment := WorldEnvironment.new(); environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR; environment.environment.background_color = Color("1b2b32")
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; environment.environment.ambient_light_energy = 0.45; environment.environment.ambient_light_color = Color("c6d6df"); stage.add_child(environment)
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 14; stage.add_child(camera)
++	camera.look_at_from_position(Vector3(9,14,19),Vector3(3,0,0)); camera.current = true
++	visual.update_light_props(state); fit(camera,visual,car); await capture("intact")
++	hit(state,objects,0,10); hit(state,objects,1,9)
++	var snapshot: Array = state.snapshot(); visual.update_light_props(state)
++	check(state.snapshot() == snapshot,"deformed/cracked presentation leaves canonical state exact")
++	fit(camera,visual,car); await capture("deformed-and-cracked")
++	hit(state,objects,0,20); hit(state,objects,1,12)
++	visual.update_light_props(state); fit(camera,visual,car); await capture("shrinking-hay-broken-wood")
++	check(float(state.prop_destruction[0][0]) > 0 and state.prop_destruction[1][0] == 0,"captures contain shrunken bale and canonically broken crate")
++	detail(camera,visual.light_instances[0]); await capture("worn-bale-detail")
++	detail(camera,visual.get_node("WoodFragments")); await capture("wood-debris-detail")
++	hit(state,objects,0,20); visual.update_light_props(state); fit(camera,visual,car); await capture("loose-hay-and-wood")
++	check(not visual.light_instances[0].visible and not visual.light_instances[1].visible,"fully destroyed cores are hidden")
++	check((visual.get_node("LooseHayFragments") as MultiMeshInstance3D).multimesh.instance_count > 0 and (visual.get_node("WoodFragments") as MultiMeshInstance3D).multimesh.instance_count == 6,"canonical scatter renders in two exact debris batches")
++	# Rehydrate a prepared scene containing damaged meshes and both batch buffers.
++	var cache = preload("res://track/prepared_world_cache.gd")
++	var key: Array = ["breakable-capture",track.content_hash]
++	cache.remember(key,visual,track)
++	var restored := NativeTrackVisual.new(); stage.add_child(restored)
++	check(cache.restore(key,restored),"prepared scenery includes breakable bindings")
++	visual.hide(); RewindHistory.restore(state,intact); restored.update_light_props(state)
++	check(restored.light_instances[0].visible and restored.light_instances[1].visible,"cached damaged cores restore intact after rewind")
++	check((restored.get_node("WoodFragments") as MultiMeshInstance3D).multimesh.instance_count == 0,"cached wood buffers clear for intact state")
++	fit(camera,restored,car); await capture("rewind-restored")
++	stage.queue_free(); await process_frame
++	var app: Node = load("res://core/app.gd").new()
++	var local: String = "user://breakable_capture_"+TrackLibrary.unique_id()
++	app.set("library",TrackLibrary.new(local)); app.set("records",LocalRecords.new(local+"/records.json"))
++	root.add_child(app); await process_frame
++	app.set("document",document); app.call("_show_screen","create"); await process_frame; app.call("_editor_category","objects")
++	var browser: ObjectBrowser = app.get("object_browser"); browser.category = "Props"; browser.page = 0; browser.choose("hay_bale")
++	for width: int in [1280,960]:
++		root.size = Vector2i(width,width*9/16); await frames(5); await capture("editor-palette-"+str(width))
++		check(root.get_visible_rect().encloses(browser.get_global_rect()),"new palette fits "+str(width))
++	var library: TrackLibrary = app.get("library")
++	check(library.save_document(document) == OK and library.load_document(document.id).objects == JSON.parse_string(JSON.stringify(document.objects)),"hay and existing crate kind save/reload exactly")
++	app.queue_free(); await process_frame
++	print("BREAKABLE_CAPTURE: %d checks, %d failures; %s" % [checks,failures,folder])
++	quit(1 if failures else 0)
++
++func fit(camera: Camera3D, visual: NativeTrackVisual, car: CarVisual) -> void:
++	var bounds: AABB = ObjectThumbnail._mesh_bounds(visual).merge(ObjectThumbnail._mesh_bounds(car))
++	var center: Vector3 = bounds.get_center()
++	camera.look_at_from_position(center+Vector3(9,14,19),center)
++	var low := Vector3(INF,INF,INF); var high := Vector3(-INF,-INF,-INF)
++	for i: int in range(8):
++		var point: Vector3 = camera.basis.transposed()*(bounds.get_endpoint(i)-center)
++		low = low.min(point); high = high.max(point)
++	var extent: Vector3 = high-low
++	camera.size = maxf(extent.y,extent.x/(1280.0/720))*1.25
++
++func detail(camera: Camera3D, node: Node3D) -> void:
++	var bounds: AABB = ObjectThumbnail._mesh_bounds(node)
++	var center: Vector3 = bounds.get_center()
++	camera.look_at_from_position(center+Vector3(9,14,19),center)
++	var low := Vector3(INF,INF,INF); var high := Vector3(-INF,-INF,-INF)
++	for i: int in range(8):
++		var point: Vector3 = camera.basis.transposed()*(bounds.get_endpoint(i)-center)
++		low = low.min(point); high = high.max(point)
++	var extent: Vector3 = high-low
++	camera.size = maxf(2.7,maxf(extent.y,extent.x/(1280.0/720))*1.22)
++	var in_frame: bool = true
++	for i: int in range(8):
++		if not root.get_visible_rect().has_point(camera.unproject_position(bounds.get_endpoint(i))): in_frame = false
++	check(in_frame,"actual projected detail bounds stay inside the captured viewport")
+diff --git a/game/tests/capture_breakable_props.gd.uid b/game/tests/capture_breakable_props.gd.uid
+new file mode 100644
+index 0000000..54089ae
+--- /dev/null
++++ b/game/tests/capture_breakable_props.gd.uid
+@@ -0,0 +1 @@
++uid://cmsotadcbxbdg
+diff --git a/game/tests/fixtures/compiler_raster.json b/game/tests/fixtures/compiler_raster.json
+index c118ce2..972b779 100644
+--- a/game/tests/fixtures/compiler_raster.json
++++ b/game/tests/fixtures/compiler_raster.json
+@@ -1,10 +1,10 @@
+ {
+-	"asphalt0": "d1d620ddbe9ec1a40eacfca2c6bf73b1fc579f9ce8cf39d2271665483235c1d3",
+-	"asphalt1": "de444d173f7e90637278f23dc64b113346f156bfc70fa062c74627ab2d934731",
+-	"asphalt2": "3905747c8ffbd123067d8c4874852d72102af530b0bb8b955ae0d688dd55776f",
+-	"asphalt3": "2216c213c50ab6c054a01c19e029d282318616010dc306be0d0064aaf0585b7f",
+-	"dirt0": "7784f5e852bbe5c9f5fdf239d582ecb785cba3dcf81ed2c97c9a0ff94b89892c",
+-	"dirt1": "b03bb7e8a8b6b3cfbed8e18839e7fc54250f5159485c6abb291260ecb887de4e",
+-	"dirt2": "afd3b75fd270cde057e94727b8d05642ea8ff2132842b503866f1478bdd41e07",
+-	"dirt3": "2216c213c50ab6c054a01c19e029d282318616010dc306be0d0064aaf0585b7f"
++	"asphalt0": "25b63da36e41fca867213554bfd34fdd61d55596bd8b36509fe2801965bfed8d",
++	"asphalt1": "e1416512fbeafb1a94f4f39d69f70ad5ed16cde843eaeba4a6043d7f82b999d2",
++	"asphalt2": "e9dd82d02bb0f49a0055d40a45fefd2f29b735b13321b20c7cfc278e954159f9",
++	"asphalt3": "9d10021756d42ce6c1049d0ead8c5f986e51c3741fc6b4842b689b4c9f64a5b2",
++	"dirt0": "168181adf5bbe77726ffb6e7e10d7945d797ef9a87574d1dabb6130c057322f8",
++	"dirt1": "f3831b11bbbfbd922063f8b71cc52f8b3e20d642e5f4b38bdbcd1adb201dfcac",
++	"dirt2": "6370d684d6d67d900ac7139a371c5fdc6e239f4f4a729706f7d9cb94bdfb3199",
++	"dirt3": "9d10021756d42ce6c1049d0ead8c5f986e51c3741fc6b4842b689b4c9f64a5b2"
+ }
+diff --git a/game/tests/test_breakable_contract.gd b/game/tests/test_breakable_contract.gd
+new file mode 100644
+index 0000000..ff8fa23
+--- /dev/null
++++ b/game/tests/test_breakable_contract.gd
+@@ -0,0 +1,65 @@
++extends SceneTree
++## Verify prior geometry and untouched driving before refreshing new contract identities.
++const BEFORE: String = "res://../docs/evidence/breakable-props-2026-10-12/before/"
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func load_before(filename: String, class_line: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string(BEFORE+filename).replace("\r\n","\n").replace(class_line+"\n","")
++	check(script.reload() == OK,"load preserved baseline "+filename)
++	return script
++func fingerprint(track: NativeTrack) -> String:
++	var hash := HashingContext.new(); hash.start(HashingContext.HASH_SHA256)
++	hash.update(var_to_bytes([track.metadata,track.cells,track.deck_cells,track.route,track.route_widths,track.route_radii,track.route_cut_radii,track.kerbs.triangles,track.kerbs.blocked,track.snow_banks.triangles,track.content_hash]))
++	return hash.finish().hex_encode()
++func run() -> void:
++	var compiler: GDScript = load_before("game__editor__track_compiler.gd","class_name TrackCompiler")
++	var old_light: GDScript = load_before("game__vehicle__light_props.gd","class_name LightProps")
++	var old_physics: GDScript = load_before("game__vehicle__vehicle_simulation.gd","class_name VehicleSimulation")
++	var prior: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(BEFORE+"game__tests__fixtures__compiler_raster.json"))
++	var updated: Dictionary = {}
++	for surface: String in ["asphalt","dirt"]:
++		for variant: int in range(4):
++			var doc: Dictionary = TrackDocument.create_default(); doc.surface = surface; doc.layout.surface = surface
++			doc.pieces = [RoadPieces.create("straight",Vector2(-25,0),0,12),RoadPieces.create("straight",Vector2(0,-25),90,8),RoadPieces.create("taper",Vector2(-20,-15),20,14),RoadPieces.create("curve",Vector2(10,-10),75,10)]
++			doc.objects = [{"kind":"water","position":[4,0],"rotation":0},{"kind":"dirt","position":[-5,-8],"rotation":0}]
++			if variant == 1: doc.layout = {}
++			if variant >= 2: doc.paint = [{"surface":1,"width":14.0,"shape":"round","points":[[-30,0],[30,0]],"protect_road":true},{"surface":2,"width":8.0,"shape":"square","points":[[0,-25],[0,25]]}]
++			if variant == 3: doc.theme = "desert"
++			var old: NativeTrack = compiler.compile(doc); var current: NativeTrack = TrackCompiler.compile(doc)
++			var key: String = surface+str(variant)
++			check(fingerprint(old) == prior[key],"preserved compiler-25 raster golden remains exact: "+key)
++			var metadata: Dictionary = current.metadata.duplicate(true); metadata.version = old.metadata.version
++			check(metadata == old.metadata and current.cells == old.cells and current.deck_cells == old.deck_cells and current.route == old.route and current.route_widths == old.route_widths and current.kerbs.triangles == old.kerbs.triangles and current.snow_banks.triangles == old.snow_banks.triangles,"all prepared geometry remains exact apart from compiler identity: "+key)
++			updated[key] = fingerprint(current)
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	for biome: String in TrackTheme.IDS:
++		var doc: Dictionary = TrackDocument.create_default(); doc.theme = biome
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var old: RefCounted = old_physics.new(config); var current := VehicleSimulation.new(config)
++		old.reset(track.spawn,track.spawn_heading); current.reset(track.spawn,track.spawn_heading)
++		for tick: int in range(360):
++			var frame := DriveFrame.new(); frame.throttle = 255 if tick%100 < 75 else 0; frame.brake = 128 if tick%100 >= 75 else 0; frame.steer = 30 if tick%180 < 90 else -30
++			old.step(frame,track); current.step(frame,track)
++			check(old.state.snapshot() == current.state.snapshot() and current.state.snapshot()[23] == [[],[]],biome+" unchanged no-breakable full physics state")
++	for kind: String in ["cone","chevron","braking_board","barrel"]:
++		var props: Array = [{"kind":kind,"position":[0,0],"rotation":0}]
++		var old := VehicleState.new(); var current := VehicleState.new()
++		old.position = Vector2(0,-0.8); old.velocity = Vector2(0,12)
++		current.position = old.position; current.velocity = old.velocity
++		for tick: int in range(100):
++			old_light.step(old,props,clear,old.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			LightProps.step(current,props,clear,current.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			check(old.snapshot() == current.snapshot(),kind+" keeps exact legacy movable behavior")
++	var starter: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	print("BREAKABLE_STARTER_HASH: ",starter.content_hash)
++	if failures == 0 and "--refresh-breakable-golden" in OS.get_cmdline_user_args():
++		var file := FileAccess.open("res://tests/fixtures/compiler_raster.json",FileAccess.WRITE)
++		file.store_string(JSON.stringify(updated,"\t",true)+"\n"); file.close()
++	print("BREAKABLE_CONTRACT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++func clear(_p: Vector2, _radius: float, _deck: bool) -> Vector3: return Vector3.ZERO
+diff --git a/game/tests/test_breakable_contract.gd.uid b/game/tests/test_breakable_contract.gd.uid
+new file mode 100644
+index 0000000..d09f2b8
+--- /dev/null
++++ b/game/tests/test_breakable_contract.gd.uid
+@@ -0,0 +1 @@
++uid://dhwxhd52owswa
+diff --git a/game/tests/test_breakable_props.gd b/game/tests/test_breakable_props.gd
+new file mode 100644
+index 0000000..9e0ae24
+--- /dev/null
++++ b/game/tests/test_breakable_props.gd
+@@ -0,0 +1,152 @@
++extends SceneTree
++## Real canonical contacts, replay/rewind, bounded debris and shared rendering.
++var checks: int = 0
++var failures: int = 0
++var config: HandlingConfig
++var CLEAR: Callable = _clear
++
++static func _clear(_p: Vector2, _radius: float, _deck: bool) -> Vector3: return Vector3.ZERO
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func object(kind: String, scale: float = 1.0) -> Dictionary:
++	return {"kind":kind,"position":[0,0],"rotation":25,"scale":scale}
++
++func step(state: VehicleState, objects: Array, from: Vector2) -> void:
++	LightProps.step(state,objects,CLEAR,from,VehicleSimulation.STEP,config.mass,config.collision_radius)
++	state.tick += 1
++
++func impact(state: VehicleState, objects: Array, speed: float) -> void:
++	var p: Vector2 = Vector2.ZERO if state.light_props.is_empty() else Vector2(state.light_props[0][0],state.light_props[0][1])
++	state.position = p-Vector2(0.25,0); state.velocity = Vector2(speed,0); state.heading = PI*0.5
++	step(state,objects,p-Vector2(0.65,0))
++
++func separate(state: VehicleState, objects: Array) -> void:
++	state.position = Vector2(100,100); state.velocity = Vector2.ZERO
++	# Let the outgoing object settle before striking it again. A car following
++	# an already moving crate at equal speed is not another heavy impact.
++	for tick: int in range(400): step(state,objects,state.position)
++
++func run() -> void:
++	config = VehicleCatalog.config("compact")
++	for biome: String in TrackTheme.IDS:
++		check(not CreatorCatalog.filtered("Props","Hay bale",[],biome).is_empty(),"hay available in "+biome)
++	var doc: Dictionary = TrackDocument.create_default(); doc["automatic_scenery"] = false
++	doc.objects = [object("hay_bale"),object("crate")]
++	check(TrackDocument.validate(doc).is_empty(),"both bounded object documents validate")
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	check(track != null and track.cell_at(Vector2.ZERO) != 4,"movable breakables never become baked walls")
++	var hay := VehicleState.new(); var hay_objects: Array = [object("hay_bale")]
++	impact(hay,hay_objects,10)
++	check(float(hay.prop_destruction[0][0]) < 1.0 and hay.prop_fragments.size() == 2,"first hay impact sheds visible loose hay")
++	var initial_fraction: float = hay.prop_destruction[0][0]
++	var initial_hits: int = hay.prop_destruction[0][2]
++	# Stay in contact; high relative speed alone cannot count as multiple crashes.
++	impact(hay,hay_objects,10)
++	check(hay.prop_destruction[0][0] == initial_fraction and hay.prop_destruction[0][2] == initial_hits,"sustained contact is latched")
++	separate(hay,hay_objects); impact(hay,hay_objects,10)
++	check(float(hay.prop_destruction[0][0]) < initial_fraction,"separate later impact progressively deforms the bale")
++	for fraction: float in [1.0,0.5,0.15]:
++		check(BreakableProps.mass("hay_bale",1,fraction) == BreakableProps.HAY_MASS*fraction,"remaining hay controls actual mass")
++	var full := VehicleState.new(); var small := VehicleState.new()
++	step(small,hay_objects,Vector2(100,100)); small.prop_destruction[0][0] = 0.15
++	impact(full,hay_objects,8); impact(small,hay_objects,8)
++	check(small.velocity.x > full.velocity.x and float(small.light_props[0][2]) > float(full.light_props[0][2]),"smaller bale causes less car speed loss and is pushed faster")
++	for hit: int in range(8): separate(hay,hay_objects); impact(hay,hay_objects,22)
++	check(hay.prop_destruction[0][0] == 0.0,"repeated strong hits completely disperse the hay core")
++	var before: Array = hay.snapshot().slice(0,23)
++	hay.position = Vector2.ZERO; hay.velocity = Vector2(10,1)
++	before = hay.snapshot().slice(0,23)
++	BreakableProps.step_fragments(hay,CLEAR,Vector2(-1,0),VehicleSimulation.STEP,config.mass,config.collision_radius)
++	check(hay.snapshot().slice(0,23) == before,"all loose hay has zero car/collision/grip/contamination effect")
++	var crate := VehicleState.new(); var crates: Array = [object("crate")]
++	impact(crate,crates,2)
++	check(crate.prop_destruction[0][0] == 1.0 and float(crate.light_props[0][2]) > 0,"light contact moves an intact crate without damaging it")
++	var reverse := VehicleState.new(); reverse.heading = PI*0.5; reverse.velocity = Vector2(-2,0)
++	step(reverse,crates,Vector2.ZERO)
++	check(float(reverse.light_props[0][2]) < 0 and reverse.prop_destruction[0][0] == 1.0,"centred reverse contact pushes the crate in the actual travel direction")
++	for hit: int in range(6): separate(crate,crates); impact(crate,crates,2)
++	check(crate.prop_destruction[0][0] == 1.0 and crate.prop_fragments.is_empty(),"repeated gentle contacts do not eventually destroy crates")
++	separate(crate,crates); impact(crate,crates,12)
++	check(float(crate.prop_destruction[0][0]) > 0 and float(crate.prop_destruction[0][0]) < 1,"first heavy crash visibly damages crate")
++	separate(crate,crates); impact(crate,crates,12)
++	check(crate.prop_destruction[0][0] == 0.0 and crate.prop_fragments.size() == BreakableProps.WOOD_PIECES,"repeated heavy crashes break crate into six persistent planks")
++	var fragment_count: int = crate.prop_fragments.size()
++	separate(crate,crates); impact(crate,crates,24)
++	check(crate.prop_fragments.size() == fragment_count,"broken crates cannot produce duplicate wood")
++	var wood := VehicleState.new(); wood.position = Vector2(-0.60,0); wood.velocity = Vector2(10,0); wood.heading = PI*0.5
++	wood.prop_fragments = [[BreakableProps.WOOD,0,0.0,0.0,0.0,0.0,0.0,0.0,0.8,0.13,3.6,1.0]]
++	BreakableProps.step_fragments(wood,CLEAR,Vector2(-0.95,0),VehicleSimulation.STEP,config.mass,config.collision_radius)
++	check(wood.velocity.x < 10 and wood.velocity.x > 9.96 and float(wood.prop_fragments[0][4]) > 0,"loose wood gives a small dissipative bump and is movable")
++	var glancing := VehicleState.new(); glancing.position = Vector2(-0.43,-0.13); glancing.velocity = Vector2(10,2); glancing.heading = PI*0.5
++	glancing.prop_fragments = [[BreakableProps.WOOD,0,0.0,0.0,0.0,0.0,0.0,0.0,0.8,0.13,3.6,1.0]]
++	BreakableProps.step_fragments(glancing,CLEAR,Vector2(-0.80,-0.2),VehicleSimulation.STEP,config.mass,config.collision_radius)
++	check(glancing.yaw_rate != 0 and glancing.velocity.length() < Vector2(10,2).length(),"off-centre wood contact slightly deflects the car without a speed boost")
++	for elevated: bool in [false,true]:
++		var airborne := VehicleState.new(); airborne.track_elevated = elevated; airborne.jump_height = 0 if elevated else 1
++		impact(airborne,crates,24)
++		check(airborne.prop_destruction[0][0] == 1.0,"ground crate does not damage under bridge/airborne car")
++	# Exact canonical rewind restores loose fragments and contact latches too.
++	var saved: Dictionary = RewindHistory.properties(crate)
++	var saved_snapshot: Array = crate.snapshot()
++	for tick: int in range(40): step(crate,crates,crate.position)
++	var final: Array = crate.snapshot()
++	RewindHistory.restore(crate,saved)
++	check(crate.snapshot() == saved_snapshot,"rewind restores exact damage, fragments and contact state")
++	for tick: int in range(40): step(crate,crates,crate.position)
++	check(crate.snapshot() == final,"restored destruction branch reproduces exact later fragment state")
++	var sim := VehicleSimulation.new(config); sim.state = crate; sim.reset(Vector2.ZERO)
++	check(sim.state.prop_destruction.is_empty() and sim.state.prop_fragments.is_empty() and sim.state.light_props.is_empty(),"new attempt restores intact props and removes loose material")
++	for car: String in VehicleCatalog.IDS: await replay_drive(car)
++	var visual := NativeTrackVisual.new(); root.add_child(visual); visual._build_placed_objects(track)
++	var snapshot: Array = hay.snapshot(); visual.update_light_props(hay)
++	check(not visual.light_instances[0].visible and hay.snapshot() == snapshot,"dispersed bale is invisible and presentation cannot change physics")
++	visual.update_light_props(VehicleState.new())
++	check(visual.light_instances[0].visible and visual.light_instances[1].visible,"new attempt immediately restores intact visible objects before first simulation tick")
++	# Earlier state with valid light rows restores intact prepared meshes.
++	var intact := VehicleState.new(); intact.light_props = [[0,0,0,0,0],[0,0,0,0,0]]; intact.prop_destruction = [[1,false,0],[1,false,0]]
++	visual.update_light_props(intact)
++	check(visual.light_instances[0].visible and visual.light_instances[1].visible,"intact snapshot restores both previously damaged visual cores")
++	visual.queue_free(); await process_frame
++	var dense: Array = []
++	for i: int in range(96): dense.append({"kind":"crate","position":[-33+(i%12)*6,-21+(i/12)*6],"rotation":0})
++	var maximum := VehicleState.new(); maximum.position = Vector2(100,100)
++	step(maximum,dense,maximum.position)
++	for i: int in range(dense.size()):
++		var p := Vector2(maximum.light_props[i][0],maximum.light_props[i][1])
++		maximum.position = p-Vector2(0.25,0); maximum.velocity = Vector2(24,0)
++		BreakableProps.step_one(maximum,dense,i,CLEAR,maximum.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++	check(maximum.prop_fragments.size() == 576,"maximum 96 authored crates have a bounded six-piece expansion")
++	for i: int in range(80): BreakableProps._shed_hay(maximum,0,Vector2.ZERO,Vector2.ZERO,Vector2.RIGHT,1,0.1,i)
++	check(maximum.prop_fragments.size() == 704,"cosmetic hay cap retains every physical wood fragment")
++	var wood_count: int = 0
++	for row: Array in maximum.prop_fragments:
++		if int(row[0]) == BreakableProps.WOOD: wood_count += 1
++	check(wood_count == 576,"hay replacement never discards driving-affecting debris")
++	maximum.position = Vector2(100,100); maximum.velocity = Vector2.ZERO
++	var start: int = Time.get_ticks_usec()
++	for tick: int in range(240): step(maximum,dense,maximum.position)
++	print("BREAKABLE_STRESS_MS: ",(Time.get_ticks_usec()-start)/1000.0," total for 240 canonical steps / 704 fragments; desktop only")
++	check(maximum.prop_fragments.size() == 704,"settled material persists through later race ticks")
++	print("BREAKABLE_PROPS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func replay_drive(car: String) -> void:
++	var document: Dictionary = TrackDocument.create_default(); document["automatic_scenery"] = false
++	document.paint = [{"surface":0,"width":30.0,"shape":"square","points":[[-20,0],[20,0]]}]
++	document.objects = [{"kind":"hay_bale","position":[-3,0],"rotation":0},{"kind":"crate","position":[3,0],"rotation":0}]
++	var track: NativeTrack = TrackCompiler.compile(document)
++	var first := VehicleSimulation.new(VehicleCatalog.config(car)); first.reset(Vector2(-14,0),PI*0.5)
++	var second := VehicleSimulation.new(VehicleCatalog.config(car)); second.reset(Vector2(-14,0),PI*0.5)
++	var frames: Array = []
++	for tick: int in range(480):
++		var frame := DriveFrame.new(); frame.throttle = 255
++		frames.append(frame.packed()); first.step(frame,track)
++	var decoded: Array = JSON.parse_string(JSON.stringify(frames))
++	for values: Array in decoded:
++		var frame := DriveFrame.new(); frame.steer = values[0]; frame.throttle = values[1]; frame.brake = values[2]; frame.handbrake = values[3] if values.size() > 3 else 0
++		second.step(frame,track)
++	check(first.state.snapshot() == second.state.snapshot(),car+" full approach input JSON replay exactly reproduces destruction/debris")
++	check(not first.state.prop_fragments.is_empty(),car+" actual driven approach sheds hay or breaks wood")
+diff --git a/game/tests/test_breakable_props.gd.uid b/game/tests/test_breakable_props.gd.uid
+new file mode 100644
+index 0000000..c302c25
+--- /dev/null
++++ b/game/tests/test_breakable_props.gd.uid
+@@ -0,0 +1 @@
++uid://ugah2bl3wjuh
+diff --git a/game/tests/test_creator.gd b/game/tests/test_creator.gd
+index 3480910..1bb2f81 100644
+--- a/game/tests/test_creator.gd
++++ b/game/tests/test_creator.gd
+@@ -39,7 +39,7 @@ func run() -> void:
+ 		print("CREATOR_GEOMETRY ",theme," hash=",track.content_hash," grid=",track.grid_width,"x",track.grid_height," route_points=",track.route.size()," road_cells=",track.cells.count(expected))
+ 		check(track.grid_width == 228 and track.grid_height == 188 and track.route.size() == 219 and track.cells.count(expected) == 8715,theme+" native geometry matches compiler-v1 golden dimensions and road area")
+ 		if theme == "pine":
+-			check(track.content_hash == "bfd44ace20db1ca0319b04378b05ce78ae711f1b50654707408ea0cf8a47633a","compiler-v25 canonical identity matches golden hash; original geometry remains pinned")
++			check(track.content_hash == "d73eb5e758e96a7333e3da9c2a4ad238b3d57718ad9acb62867d7965898c7dd4","compiler-v26 canonical identity matches golden hash; original geometry remains pinned")
+ 		var route_on_road: bool = true
+ 		for point: Vector2 in track.route:
+ 			route_on_road = route_on_road and track.cell_at(point) == expected
+diff --git a/game/tests/test_kerbs.gd b/game/tests/test_kerbs.gd
+index 3b85ba4..aae0c74 100644
+--- a/game/tests/test_kerbs.gd
++++ b/game/tests/test_kerbs.gd
+@@ -89,7 +89,7 @@ func run() -> void:
+ 	check(fast.state.kerb_offset.x > 0.001,"top-speed swept tyres detect the narrow kerb")
+ 	var recorder := HandlingRecorder.new()
+ 	recorder.start(one_side,yard)
+-	check(recorder.header.schema_version == 11 and recorder.header.initial_state.size() == 23 and recorder.header.initial_state[21] == [false,"",0,0,0.0] and recorder.header.initial_state[20] == 0.0 and recorder.header.initial_state[22] == [0.0,0.0],"schema 11 retains spring/handbrake fields and retains launch state at 21 and appends bump transfer at 22")
++	check(recorder.header.schema_version == 12 and recorder.header.initial_state.size() == 24 and recorder.header.initial_state[23] == [[],[]] and recorder.header.initial_state[21] == [false,"",0,0,0.0] and recorder.header.initial_state[20] == 0.0 and recorder.header.initial_state[22] == [0.0,0.0],"schema 12 preserves spring/handbrake/launch/bump fields and appends run-owned destruction at 23")
+ 	check(recorder.header.physics_version == VehicleSimulation.PHYSICS_VERSION,"kerb replay manifest pins new physics")
+ 	_geometry()
+ 	for argument: String in OS.get_cmdline_user_args():
+diff --git a/game/tests/test_tracks.gd b/game/tests/test_tracks.gd
+index 0a053e7..085bfed 100644
+--- a/game/tests/test_tracks.gd
++++ b/game/tests/test_tracks.gd
+@@ -463,7 +463,7 @@ func _check_tire_dirt() -> void:
+ 			track.cells.fill(2 if tick < 120 else 0)
+ 			sim.step(throttle, track)
+ 		states.append(sim.state.snapshot())
+-	check(states[0] == states[1] and states[0].size() == 23 and states[0][22] == [0.0,0.0] and states[0][21] == [false,"",0,0,0.0] and states[0][20] == 0.0 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
++	check(states[0] == states[1] and states[0].size() == 24 and states[0][23] == [[],[]] and states[0][22] == [0.0,0.0] and states[0][21] == [false,"",0,0,0.0] and states[0][20] == 0.0 and states[0][14] == [] and states[0][15] == [0.0,0.0,0] and states[0][16] == [] and states[0][18] == [0.0,0.0,0.0,0.0,0.0,0.0], "exposure and recovery replay exactly with contamination in state snapshot")
+ 
+ 
+ func _check_blocked_speed() -> void:
+diff --git a/game/tests/test_winter_compiler_contract.gd b/game/tests/test_winter_compiler_contract.gd
+index 3d5e407..fc828be 100644
+--- a/game/tests/test_winter_compiler_contract.gd
++++ b/game/tests/test_winter_compiler_contract.gd
+@@ -48,7 +48,7 @@ func run() -> void:
+ 	var old_winter: NativeTrack = baseline.compile(winter)
+ 	var new_winter: NativeTrack = TrackCompiler.compile(winter)
+ 	check(old_winter.route == new_winter.route and old_winter.snow_banks.triangles == new_winter.snow_banks.triangles,"Winter route and prepared bank contacts remain exact")
+-	check(old_winter.content_hash != new_winter.content_hash and new_winter.metadata.version == "creator-compiler-25","new solid scenery has a distinct pinned contract")
++	check(old_winter.content_hash != new_winter.content_hash and new_winter.metadata.version == "creator-compiler-26","new solid scenery has a distinct pinned contract")
+ 	check(old_winter.metadata.scenery_objects.is_empty() and not new_winter.metadata.scenery_objects.is_empty(),"Winter compiler change adds explicit scenery objects")
+ 	if failures == 0 and "--refresh-contract-fixtures" in OS.get_cmdline_user_args():
+ 		var file := FileAccess.open("res://tests/fixtures/compiler_raster.json",FileAccess.WRITE)
+diff --git a/game/track/breakable_prop_visual.gd b/game/track/breakable_prop_visual.gd
+new file mode 100644
+index 0000000..9c0b126
+--- /dev/null
++++ b/game/track/breakable_prop_visual.gd
+@@ -0,0 +1,100 @@
++class_name BreakablePropVisual
++extends RefCounted
++## Prepared damage meshes and two debris batches; never changes canonical state.
++static var debris_meshes: Dictionary = {}
++static var damage_meshes: Dictionary = {}
++static var shared_material: StandardMaterial3D
++
++static func build(node: Node3D, kit: Node, kind: String, scale: float) -> void:
++	node.set_meta("breakable_kind",kind)
++	node.set_meta("authored_yaw",node.rotation.y)
++	for phase: int in range(3):
++		var key: String = CreatorPropVisual.VERSION+"/"+kind+"/"+str(phase)
++		if not damage_meshes.has(key):
++			var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++			if phase == 0: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1,0)
++			elif kind == "hay_bale": PropEquipment.hay(tool,phase)
++			else: _damaged_crate(tool,phase)
++			tool.generate_normals(); tool.index()
++			if damage_meshes.size() >= 12: damage_meshes.erase(damage_meshes.keys()[0])
++			damage_meshes[key] = tool.commit()
++		var mesh := MeshInstance3D.new()
++		mesh.name = "DamagePhase"+str(phase); mesh.mesh = damage_meshes[key]
++		mesh.material_override = material(); mesh.scale = Vector3.ONE*scale
++		mesh.visible = phase == 0
++		node.add_child(mesh)
++
++static func material() -> StandardMaterial3D:
++	if shared_material == null:
++		shared_material = VisualGeometry.material(Color.WHITE)
++		shared_material.vertex_color_use_as_albedo = true; shared_material.vertex_color_is_srgb = true
++		shared_material.cull_mode = BaseMaterial3D.CULL_DISABLED
++	return shared_material
++
++static func present(node: Node3D, row: Array, integrity: float) -> void:
++	var kind: String = node.get_meta("breakable_kind")
++	node.visible = integrity > 0
++	node.scale = Vector3.ONE*BreakableProps.size_fraction(kind,integrity)
++	node.rotation.y = float(node.get_meta("authored_yaw"))+float(row[4])
++	node.rotation.z = clampf(float(row[2])*0.012,-0.12,0.12)
++	node.rotation.x = clampf(float(row[3])*0.012,-0.12,0.12)
++	var phase: int = 0 if integrity > 0.96 else 1 if integrity > 0.38 else 2
++	for child: MeshInstance3D in node.get_children(): child.visible = child.name == "DamagePhase"+str(phase)
++
++static func _damaged_crate(tool: SurfaceTool, phase: int) -> void:
++	var wood := PropEquipment.WOOD
++	# Open interior, missing/split boards and broken diagonal braces.
++	for i: int in range(5): PropGeometry.box(tool,Vector3(-0.43+i*0.215,0.055,0),Vector3(0.195,0.07,1.06),wood.darkened(0.16),0.008)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(5):
++			if i == 1 or (phase == 2 and i == 3): continue
++			var height: float = 0.92 if i%2 == 0 else 0.56
++			PropGeometry.box(tool,Vector3(-0.43+i*0.215,height*0.5+0.06,side*0.525),Vector3(0.196,height,0.04),wood.lightened((i%3)*0.03),0.008)
++			PropGeometry.box(tool,Vector3(side*0.525,height*0.5+0.06,-0.43+i*0.215),Vector3(0.04,height,0.196),wood,0.008)
++		PropGeometry.box(tool,Vector3(0,0.14,side*0.56),Vector3(1.10,0.13,0.07),wood.lightened(0.10),0.012)
++		PropGeometry.beam(tool,Vector3(-0.42,0.27,side*0.56),Vector3(-0.05,0.47,side*0.56),0.12,0.06,wood.lightened(0.08))
++		PropGeometry.beam(tool,Vector3(0.18,0.62,side*0.56),Vector3(0.41,0.81,side*0.56),0.12,0.06,wood.lightened(0.08))
++	for i: int in [0,2,4]:
++		if phase == 2 and i == 2: continue
++		PropGeometry.box(tool,Vector3(-0.43+i*0.215,0.93-i*0.025,0.17),Vector3(0.196,0.055,0.71),wood.lightened(0.05),0.009)
++
++static func ensure_debris(parent: Node3D) -> void:
++	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
++		var name: String = "LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments"
++		if parent.has_node(name): continue
++		var node := MultiMeshInstance3D.new(); node.name = name
++		node.multimesh = MultiMesh.new(); node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++		node.multimesh.mesh = _debris_mesh(kind); node.material_override = material()
++		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		parent.add_child(node)
++
++static func _debris_mesh(kind: int) -> ArrayMesh:
++	if debris_meshes.has(kind): return debris_meshes[kind]
++	var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if kind == BreakableProps.WOOD:
++		PropGeometry.box(tool,Vector3(0,0.03,0),Vector3(1,0.06,1),PropEquipment.WOOD,0.012)
++		for side: float in [-1.0,1.0]:
++			PropGeometry.face(tool,[Vector3(side*0.50,0.004,-0.46),Vector3(side*0.56,0.031,0.15),Vector3(side*0.50,0.058,0.46)],PropEquipment.WOOD.lightened(0.18))
++	else:
++		for i: int in range(40):
++			var a: float = i*2.4
++			var p := Vector3(cos(a)*0.35,0.01,sin(a)*0.35)
++			var reach := Vector3(cos(a+0.8)*0.32,0.012+(i%3)*0.012,sin(a+0.8)*0.32)
++			var side := Vector3(-sin(a)*0.026,0,cos(a)*0.026)
++			PropGeometry.face(tool,[p-side,p+reach,p+side],Color("a68c55").lightened((i%3)*0.055))
++	tool.generate_normals(); tool.index(); debris_meshes[kind] = tool.commit()
++	return debris_meshes[kind]
++
++static func update_debris(parent: Node3D, state: VehicleState) -> void:
++	if not parent.has_node("WoodFragments"): return
++	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
++		var node: MultiMeshInstance3D = parent.get_node("LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments")
++		var pieces: Array = []
++		for row: Array in state.prop_fragments:
++			if int(row[0]) == kind: pieces.append(row)
++		if node.multimesh.instance_count != pieces.size(): node.multimesh.instance_count = pieces.size()
++		for i: int in range(pieces.size()):
++			var row: Array = pieces[i]
++			var size := Vector3(float(row[8]),1,float(row[9]))
++			var pose := Transform3D(Basis(Vector3.UP,float(row[6])).scaled(size),Vector3(row[2],0.023,-float(row[3])))
++			node.multimesh.set_instance_transform(i,pose)
+diff --git a/game/track/breakable_prop_visual.gd.uid b/game/track/breakable_prop_visual.gd.uid
+new file mode 100644
+index 0000000..2940765
+--- /dev/null
++++ b/game/track/breakable_prop_visual.gd.uid
+@@ -0,0 +1 @@
++uid://w3n53ru8jqr8
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+index f2bec7d..9f8fb69 100644
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,7 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-1"
++const VERSION: String = "authored-props-2"
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+ static var pine_meshes: Dictionary = {}
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index bc16a86..9f95d0f 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@ class_name NativeTrackVisual
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-172"
++const VERSION: String = "track-kit-173"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -1200,10 +1200,16 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 			add_child(node)
+ 			node.position = center
+ 			node.rotation.y = deg_to_rad(float(object.rotation))
+-			var prop_tool := SurfaceTool.new()
+-			prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-			CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
+-			_finish_prop_mesh(prop_tool,node)
++			node.set_meta("prop_origin",center)
++			node.set_meta("prop_yaw",node.rotation.y)
++			if object.kind in BreakableProps.KINDS:
++				BreakablePropVisual.build(node,self,object.kind,object_scale)
++				BreakablePropVisual.ensure_debris(self)
++			else:
++				var prop_tool := SurfaceTool.new()
++				prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++				CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
++				_finish_prop_mesh(prop_tool,node)
+ 			light_instances.append(node)
+ 			continue
+ 		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
+@@ -1446,11 +1452,16 @@ func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
+ 	parent.add_child(mesh)
+ 
+ func update_light_props(state: VehicleState) -> void:
+-	for index: int in range(mini(light_instances.size(),state.light_props.size())):
+-		var row: Array = state.light_props[index]
++	for index: int in range(light_instances.size()):
++		var origin: Vector3 = light_instances[index].get_meta("prop_origin",light_instances[index].position)
++		var row: Array = state.light_props[index] if index < state.light_props.size() else [origin.x,-origin.z,0.0,0.0,0.0]
+ 		light_instances[index].position.x = row[0]
+ 		light_instances[index].position.z = -float(row[1])
+-		light_instances[index].rotation.z = float(row[4])*0.9
++		if light_instances[index].has_meta("breakable_kind"):
++			var integrity: float = float(state.prop_destruction[index][0]) if index < state.prop_destruction.size() else 1.0
++			BreakablePropVisual.present(light_instances[index],row,integrity)
++		else: light_instances[index].rotation.z = float(row[4])*0.9
++	BreakablePropVisual.update_debris(self,state)
+ 
+ 
+ func _build_kerbs(track: NativeTrack) -> void:
+diff --git a/game/track/prop_equipment.gd b/game/track/prop_equipment.gd
+index 7f12111..c7d21b7 100644
+--- a/game/track/prop_equipment.gd
++++ b/game/track/prop_equipment.gd
+@@ -6,10 +6,11 @@ const DARK := Color("354442")
+ const WOOD := Color("8b7453")
+ 
+ static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float) -> bool:
+-	if kind not in ["barrier","fence","guardrail","wire_fence","cone","chevron","braking_board","banner","flag","light","gantry","crate","barrel","pallet","container"]: return false
++	if kind not in ["barrier","fence","guardrail","wire_fence","cone","chevron","braking_board","banner","flag","light","gantry","crate","barrel","pallet","container","hay_bale"]: return false
+ 	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var span: float = length/scale if length >= 0 else 6.0
+ 	match kind:
++		"hay_bale": hay(local,0)
+ 		"barrier": _barrier(local,span)
+ 		"fence", "guardrail", "wire_fence": _fence(local,kind,span,length >= 0)
+ 		"cone":
+@@ -172,6 +173,38 @@ static func _crate(tool: SurfaceTool) -> void:
+ 			for h: float in [0.12,0.88]: PropGeometry.tube(tool,Vector3(x,h,side*0.60),Vector3(x,h,side*0.605),0.019,0.019,DARK,6)
+ 	for i: int in range(5): PropGeometry.box(tool,Vector3(-0.43+i*0.215,0.99,0),Vector3(0.197,0.055,1.05),WOOD.lightened(0.06),0.008)
+ 
++static func hay(tool: SurfaceTool, phase: int) -> void:
++	var straw := Color("a68c55")
++	if phase < 2:
++		PropGeometry.box(tool,Vector3(0,0.49,0),Vector3(1.96,0.98,1.16),straw,0.16 if phase == 0 else 0.23)
++	else:
++		for i: int in range(3): PropGeometry.box(tool,Vector3(-0.55+i*0.52,0.37+(i%2)*0.11,0.035*sin(i*2.4)),Vector3(0.88,0.73+(i%2)*0.18,1.06),straw.lightened(i*0.035),0.19)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(15):
++			var x: float = -0.82+i*0.116
++			var low: float = 0.11+(i%3)*0.026
++			var high: float = 0.85-(i%4)*0.031
++			if phase > 0: high -= 0.11*(i%3)
++			PropGeometry.beam(tool,Vector3(x,low,side*0.586),Vector3(x+0.035*sin(i*1.7),high,side*0.586),0.012+(i%2)*0.006,0.008,straw.lightened((i%3)*0.07).darkened(0.08 if i%4 == 0 else 0))
++		for i: int in range(9):
++			var z: float = -0.43+i*0.10
++			PropGeometry.beam(tool,Vector3(side*0.986,0.16,z),Vector3(side*0.986,0.81-(i%3)*0.05,z+0.025),0.015,0.008,straw.darkened(0.11+(i%3)*0.03))
++	for x: float in [-0.56,0.56]:
++		if phase == 2: continue
++		var twine := Color("655f42")
++		for side: float in [-1.0,1.0]: PropGeometry.beam(tool,Vector3(x,0.12,side*0.593),Vector3(x,0.86,side*0.593),0.018,0.014,twine)
++		PropGeometry.beam(tool,Vector3(x,0.985,-0.43),Vector3(x,0.985,0.43),0.021,0.014,twine)
++	for i: int in range(20):
++		var x: float = -0.84+i*0.087
++		var part: int = clampi(roundi((x+0.55)/0.52),0,2)
++		var y: float = 0.986 if phase < 2 else 0.37+(part%2)*0.11+(0.73+(part%2)*0.18)*0.5+0.006
++		PropGeometry.beam(tool,Vector3(x,y,-0.42),Vector3(x+0.021*sin(i*1.7),y+0.003,0.42),0.012+(i%3)*0.003,0.007,straw.lightened(0.04 if i%3 == 0 else 0).darkened(0.11 if i%4 == 0 else 0.035))
++	if phase > 0:
++		for i: int in range(20):
++			var a: float = i*2.4
++			var p := Vector3(cos(a)*0.83,0.12+(i%4)*0.20,sin(a)*0.48)
++			PropGeometry.face(tool,[p,p+Vector3(cos(a)*0.14,0.05,sin(a)*0.10),p+Vector3(-sin(a)*0.026,0.018,cos(a)*0.026)],straw.lightened((i%3)*0.05))
++
+ static func _barrel(tool: SurfaceTool, kit: Node) -> void:
+ 	var paint := Color("6e7f70")
+ 	CreatorPropVisual._lathe(tool,kit,Vector3.ZERO,1,0,[Vector2(0.47,0.02),Vector2(0.51,0.08),Vector2(0.51,0.15),Vector2(0.48,0.18),Vector2(0.48,0.31),Vector2(0.51,0.34),Vector2(0.51,0.39),Vector2(0.48,0.42),Vector2(0.48,0.72),Vector2(0.51,0.75),Vector2(0.51,0.80),Vector2(0.48,0.83),Vector2(0.48,0.99),Vector2(0.51,1.03),Vector2(0.51,1.08),Vector2(0.46,1.08),Vector2(0.46,1.055),Vector2(0,1.055)],
+diff --git a/game/vehicle/breakable_props.gd b/game/vehicle/breakable_props.gd
+new file mode 100644
+index 0000000..f5261ec
+--- /dev/null
++++ b/game/vehicle/breakable_props.gd
+@@ -0,0 +1,126 @@
++class_name BreakableProps
++extends RefCounted
++## Canonical run-owned damage/debris; fixed order, no scene physics or randomness.
++const KINDS: Array[String] = ["hay_bale","crate"]
++const HAY: int = 0
++const WOOD: int = 1
++const HAY_MASS: float = 85.0
++const CRATE_MASS: float = 22.0
++const WOOD_PIECES: int = 6
++const MAX_HAY_CLUMPS: int = 128
++const MIN_HAY_FRACTION: float = 0.025
++const CRATE_DAMAGE_SPEED: float = 4.0
++# Damage: integrity, contact latch, distinct hit count.
++# Fragment: type, source, x,y, vx,vy, yaw, spin, length,width, mass, amount.
++
++static func prepare(state: VehicleState, props: Array) -> void:
++	if not state.prop_destruction.is_empty(): return
++	for object: Dictionary in props:
++		if object.kind in KINDS:
++			for item: Dictionary in props: state.prop_destruction.append([1.0,false,0])
++			return
++
++static func mass(kind: String, scale: float, integrity: float) -> float:
++	return (HAY_MASS*integrity if kind == "hay_bale" else CRATE_MASS)*scale*scale*scale
++
++static func size_fraction(kind: String, integrity: float) -> float:
++	return pow(maxf(0.0,integrity),1.0/3.0) if kind == "hay_bale" else 1.0
++
++static func step_one(state: VehicleState, props: Array, index: int, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	var object: Dictionary = props[index]
++	var damage: Array = state.prop_destruction[index]
++	var row: Array = state.light_props[index]
++	var integrity: float = float(damage[0])
++	if integrity <= 0.0: return
++	var scale: float = float(object.get("scale",1.0))
++	var p := Vector2(row[0],row[1]); var velocity := Vector2(row[2],row[3])
++	var radius: float = CreatorObjects.size_of(object).x*0.35*size_fraction(object.kind,integrity)
++	var touching: bool = false
++	if not state.track_elevated and state.jump_height <= 0:
++		var delta: Vector2 = p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++		touching = delta.length_squared() < pow(car_radius+radius,2.0)
++		if touching:
++			var relative: Vector2 = state.velocity-velocity
++			var normal: Vector2 = delta.normalized() if delta.length_squared() > 0.000001 else (relative.normalized() if relative.length_squared() > 0.000001 else state.forward())
++			var approach: float = (state.velocity-velocity).dot(normal)
++			if approach > 0:
++				var weight: float = mass(object.kind,scale,integrity)
++				var impulse: float = minf(approach/(1.0/car_mass+1.0/weight),car_mass*1.2)
++				var change: Vector2 = normal*impulse/car_mass
++				state.velocity -= change; state.collision_impulse -= change
++				velocity += normal*impulse/weight
++				if not bool(damage[1]):
++					damage[2] = int(damage[2])+1
++					if object.kind == "hay_bale" and approach >= 1.0:
++						var shed: float = minf(integrity,minf(0.45,0.02+0.022*(approach-1.0)))
++						if integrity-shed <= MIN_HAY_FRACTION: shed = integrity
++						integrity -= shed
++						_shed_hay(state,index,p,velocity,normal,scale,shed,int(damage[2]))
++					elif object.kind == "crate" and approach > CRATE_DAMAGE_SPEED:
++						integrity = maxf(0.0,integrity-minf(1.0,0.03+(approach-CRATE_DAMAGE_SPEED)*0.09))
++						if integrity <= 0.000001:
++							integrity = 0.0
++							_break_crate(state,index,object,p,velocity,normal,scale)
++					if approach >= CRATE_DAMAGE_SPEED: state.collision_count += 1
++				row[4] = float(row[4])+normal.dot(state.right())*minf(approach,12.0)*dt*0.7
++	# Latch one impact until separation; sustained contact cannot shred each tick.
++	damage[0] = integrity; damage[1] = touching
++	velocity = velocity.limit_length(16).move_toward(Vector2.ZERO,(6.0 if object.kind == "hay_bale" else 5.0)*dt)
++	if velocity != Vector2.ZERO and integrity > 0.0:
++		var next: Vector2 = p+velocity*dt
++		if Vector3(contact.call(next,radius,false)).z <= 0: p = next
++		else: velocity = Vector2.ZERO
++	row[0] = p.x; row[1] = p.y; row[2] = velocity.x; row[3] = velocity.y
++
++static func _shed_hay(state: VehicleState, source: int, p: Vector2, velocity: Vector2, normal: Vector2, scale: float, amount: float, impact: int) -> void:
++	for piece: int in range(2):
++		var count: int = 0; var oldest: int = -1
++		for i: int in range(state.prop_fragments.size()):
++			if int(state.prop_fragments[i][0]) != HAY: continue
++			count += 1
++			if oldest < 0: oldest = i
++		if count >= MAX_HAY_CLUMPS: state.prop_fragments.remove_at(oldest)
++		var angle: float = source*1.7+impact*2.4+piece*PI
++		var outward := Vector2(cos(angle),sin(angle))
++		var site: Vector2 = p+outward*scale*0.40
++		var motion: Vector2 = velocity*0.16+normal*0.8+outward*0.55
++		state.prop_fragments.append([HAY,source,site.x,site.y,motion.x,motion.y,angle,0.0,scale*(0.45+amount),scale*(0.35+amount),0.0,amount*0.5])
++
++static func _break_crate(state: VehicleState, source: int, object: Dictionary, p: Vector2, velocity: Vector2, normal: Vector2, scale: float) -> void:
++	var heading: float = deg_to_rad(float(object.rotation))+float(state.light_props[source][4])
++	for piece: int in range(WOOD_PIECES):
++		var angle: float = heading+piece*2.4+source*0.13
++		var outward := Vector2(cos(angle),sin(angle))
++		var site: Vector2 = p+outward*scale*(0.24+(piece%3)*0.11)
++		var motion: Vector2 = velocity*0.65+normal*0.45+outward*0.55
++		state.prop_fragments.append([WOOD,source,site.x,site.y,motion.x,motion.y,angle,(piece%2*2-1)*1.4,scale*(0.64+(piece%3)*0.12),scale*(0.11+(piece%2)*0.035),CRATE_MASS*scale*scale*scale/WOOD_PIECES,1.0])
++
++static func step_fragments(state: VehicleState, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	for row: Array in state.prop_fragments:
++		var p := Vector2(row[2],row[3]); var velocity := Vector2(row[4],row[5])
++		if int(row[0]) == WOOD and not state.track_elevated and state.jump_height <= 0:
++			var probe: Vector2 = Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++			if probe.distance_squared_to(p) < pow(car_radius+float(row[8])*0.5,2.0):
++				var local: Vector2 = (probe-p).rotated(-float(row[6]))
++				var half := Vector2(float(row[8]),float(row[9]))*0.5
++				var offset: Vector2 = local.clamp(-half,half)-local
++				if offset.length_squared() < car_radius*car_radius:
++					var relative: Vector2 = state.velocity-velocity
++					var normal: Vector2 = offset.normalized().rotated(float(row[6])) if offset.length_squared() > 0.000001 else (relative.normalized() if relative.length_squared() > 0.000001 else state.forward())
++					var approach: float = (state.velocity-velocity).dot(normal)
++					if approach > 0:
++						var impulse: float = minf(approach/(1.0/car_mass+1.0/float(row[10])),car_mass*0.035)
++						var change: Vector2 = normal*impulse/car_mass
++						state.velocity -= change; state.collision_impulse -= change
++						velocity += normal*impulse/float(row[10])
++						if absf(state.yaw_rate) < 0.8: state.yaw_rate = clampf(state.yaw_rate+normal.dot(state.right())*change.length()*0.22,-0.8,0.8)
++						row[7] = float(row[7])+normal.dot(state.right())*minf(approach,8.0)*0.08
++		velocity = velocity.limit_length(12).move_toward(Vector2.ZERO,(7.0 if int(row[0]) == WOOD else 5.5)*dt)
++		if velocity != Vector2.ZERO:
++			var next: Vector2 = p+velocity*dt
++			# Loose hay never queries collision or changes the car, surfaces or grip.
++			if int(row[0]) == HAY or Vector3(contact.call(next,float(row[9])*0.5,false)).z <= 0: p = next
++			else: velocity = Vector2.ZERO
++		row[2] = p.x; row[3] = p.y; row[4] = velocity.x; row[5] = velocity.y
++		row[6] = fposmod(float(row[6])+float(row[7])*dt,TAU)
++		row[7] = move_toward(float(row[7]),0.0,3.0*dt)
+diff --git a/game/vehicle/breakable_props.gd.uid b/game/vehicle/breakable_props.gd.uid
+new file mode 100644
+index 0000000..f9351a9
+--- /dev/null
++++ b/game/vehicle/breakable_props.gd.uid
+@@ -0,0 +1 @@
++uid://bqelfjshdyprn
+diff --git a/game/vehicle/light_props.gd b/game/vehicle/light_props.gd
+index 66a72f5..36be582 100644
+--- a/game/vehicle/light_props.gd
++++ b/game/vehicle/light_props.gd
+@@ -7,7 +7,11 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
+ 		if object.kind in CreatorCatalog.SOFT: props.append(object)
+ 	if state.light_props.is_empty():
+ 		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
++	BreakableProps.prepare(state,props)
+ 	for index: int in range(props.size()):
++		if props[index].kind in BreakableProps.KINDS:
++			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
++			continue
+ 		var row: Array = state.light_props[index]
+ 		var p := Vector2(row[0],row[1])
+ 		var velocity := Vector2(row[2],row[3])
+@@ -29,3 +33,4 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
+ 		if collision.z<=0: p=next
+ 		else: velocity=Vector2.ZERO
+ 		row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
++	BreakableProps.step_fragments(state,contact,previous,dt,car_mass,car_radius)
+diff --git a/game/vehicle/vehicle_simulation.gd b/game/vehicle/vehicle_simulation.gd
+index af6a71d..3e7ce05 100644
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -4,7 +4,7 @@ extends RefCounted
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.54"
++const PHYSICS_VERSION: String = "arcade-planar-0.56"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+ const TICK_RATE: int = 120
+diff --git a/game/vehicle/vehicle_state.gd b/game/vehicle/vehicle_state.gd
+index 0764402..6b1b32a 100644
+--- a/game/vehicle/vehicle_state.gd
++++ b/game/vehicle/vehicle_state.gd
+@@ -10,6 +10,8 @@ var jump_velocity: float = 0.0
+ var jump_cooldown: int = 0
+ var loose_tyres: Array = []
+ var light_props: Array = []
++var prop_destruction: Array = []
++var prop_fragments: Array = []
+ var position: Vector2 = Vector2.ZERO
+ var velocity: Vector2 = Vector2.ZERO
+ var heading: float = 0.0
+@@ -67,4 +69,5 @@ func snapshot() -> Array:
+ 	result.append(handbrake_pressure)
+ 	result.append([launch_pending,launch_result,launch_end_tick,launch_delay_until,launch_gain])
+ 	result.append([bump_transfer.x,bump_transfer.y])
++	result.append([prop_destruction.duplicate(true),prop_fragments.duplicate(true)])
+ 	return result
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+index 86704d2..99b6eef 100644
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -189,6 +189,8 @@ function Invoke-Validation {
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_grid_contact_equivalence.gd') 'grid-contact-equivalence-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_pile_contact_equivalence.gd') 'pile-contact-equivalence-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_hazards.gd') 'hazards-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_breakable_props.gd') 'breakable-props-tests.log'
++    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_breakable_contract.gd') 'breakable-props-contract.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bumps.gd') 'speed-bump-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bump_width.gd') 'speed-bump-width-tests.log'
+     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bump_contract.gd') 'speed-bump-contract.log'

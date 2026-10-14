@@ -1,0 +1,167 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "R01",
+    "Q01"
+  ],
+  "scope": "Owner-requested fixes for all six backend review findings; matching local backend and application retry journal. No production deployment.",
+  "fixes": [
+    {
+      "id": "BR01",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/verifier.py",
+        "backend/bmt_backend/worker.py"
+      ],
+      "behavior": "Overflow-safe finite-number validation returns HTTP 422 for oversized legacy movement numbers. Malformed optional ghosts and disk, size or database failures while storing a ghost cannot turn valid timing proof into a failed run.",
+      "tests": [
+        "test_large_integer_movement_proof_is_invalid_input",
+        "test_optional_ghost_integer_overflow_preserves_valid_verified_result",
+        "test_optional_ghost_storage_failure_preserves_race_proof"
+      ]
+    },
+    {
+      "id": "BR02",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/worker.py"
+      ],
+      "behavior": "Finalization reads immutable run ownership without a lock, then locks Player before Run, matching retry and account writers. The existing token/status/lease fence and atomic scoring projections remain.",
+      "tests": [
+        "test_retry_and_finalize_complete_concurrently_without_deadlock",
+        "test_failed_worker_is_recovered_by_another_process",
+        "test_dead_or_stale_worker_cannot_duplicate_or_overwrite_verified_result"
+      ]
+    },
+    {
+      "id": "BR03",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/publications.py",
+        "game/backend/track_lifecycle.gd"
+      ],
+      "behavior": "Publication retries atomically save the response with a player/key/publication-bound request hash. A second check after the owner lock resolves concurrent first retries. Replaying an acknowledged retry does not reset attempts. The application saves its retry key before transmission, reuses it after an unknown reply/restart, and retires it only with an acknowledgement; a later explicit retry receives a fresh key while the original publication identity stays unchanged.",
+      "tests": [
+        "test_publication_retry_saves_identity_without_reexecuting",
+        "test_publication_retry_key_cannot_target_another_intent",
+        "test_concurrent_publication_retry_has_one_durable_receipt",
+        "test_resume_recovery_budget.gd: saved retry key, restart, acknowledgement and new explicit retry"
+      ]
+    },
+    {
+      "id": "BR04",
+      "status": "fixed",
+      "files": [
+        "backend/deploy/object_archive.py",
+        "backend/bmt_backend/storage.py"
+      ],
+      "behavior": "Local archives validate bounded decompressed JSON and SHA256 names before archiving the exact verified bytes. Restore accepts only valid shard/hash paths, verifies each bounded member before creating its destination, rejects corrupt/nonfinite/nonobject/oversized objects, and retains exclusive creation, traversal/link and duplicate-entry rejection. Restored writes and directories are flushed.",
+      "tests": [
+        "test_local_archive_and_restore_refuse_corrupt_content",
+        "ArchiveTests",
+        "test_provider_archive_roundtrips_into_local_storage"
+      ]
+    },
+    {
+      "id": "BR05",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/storage.py",
+        "backend/bmt_backend/maintenance.py"
+      ],
+      "behavior": "Uploads hold an OS-released sidecar guard through immutable publication. Startup inspects at most 1,000 directory entries; retention reclaims aged unlocked groups within its existing bounded cursor and keeps fresh/active uploads. Reference queries are batched into one UNION without dropping track, run, ghost or publication evidence. New shard names are directory-synced before publication.",
+      "tests": [
+        "test_interrupted_local_publication_temporary_is_reclaimed_by_retention",
+        "test_store_restart_reclaims_an_aged_interrupted_upload",
+        "test_retention_preserves_an_aged_active_upload",
+        "test_unguarded_legacy_temporary_requires_offline_cleanup",
+        "test_temporary_cleanup_is_bounded_and_keeps_young_uploads"
+      ],
+      "operational_limit": "Legacy temporary files without a guard cannot prove that an older deployed writer is idle; reclaim them only with --offline and every writer stopped. Startup performs one bounded pass; retention's cursor reaches later entries. Reported byte sizes are logical names, not guaranteed physical freed blocks."
+    },
+    {
+      "id": "BR06",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/s3_storage.py",
+        "backend/bmt_backend/app.py",
+        "backend/bmt_backend/middleware.py",
+        "backend/bmt_backend/observability.py"
+      ],
+      "behavior": "Raw urllib3 timeout/protocol exceptions become storage errors. HTTP 503 retains request ID and Retry-After and invalidates storage readiness. Unknown exceptions return correlated JSON 500 when no response has started. Database and storage diagnostics log class/validated SQLSTATE/request ID, never request bodies, SQL parameters, credentials or exception text.",
+      "tests": [
+        "test_s3_stream_timeout_is_normalized_to_storage_failure",
+        "test_unexpected_errors_and_dependency_errors_are_private_and_correlated"
+      ]
+    }
+  ],
+  "tests": {
+    "sqlite_regression": {
+      "passed": 203,
+      "skipped": 12,
+      "subtests_passed": 10,
+      "evidence": "regression-sqlite-verified.xml"
+    },
+    "focused_sqlite": {
+      "passed": 28,
+      "skipped": 1,
+      "subtests_passed": 10,
+      "evidence": "final-focused-sqlite.xml"
+    },
+    "postgres_regression": {
+      "passed": 66,
+      "skipped": 3,
+      "evidence": "postgres-verified.xml"
+    },
+    "linux_recovery": {
+      "passed": 45,
+      "skipped": 1,
+      "subtests_passed": 18,
+      "evidence": "linux-recovery-final.xml",
+      "environment": "Existing bmt-backend:local image, current read-only backend source, isolated --network none container, removed on completion. Covers POSIX guard locking and real SIGTERM/SIGINT/SIGKILL recovery; dependencies are those already installed in that image."
+    },
+    "native_wire": {
+      "passed": 5,
+      "evidence": "native-wire-final.xml",
+      "native_checks": 260,
+      "native_failures": 0,
+      "engine": "Pinned Godot 4.7.2.stable.official.ed1daf0bf through scripts/dev.ps1 -Action TestScript",
+      "native_evidence": "native-recovery-budget.log"
+    },
+    "lint": "Ruff passed for every touched Python runtime/test file",
+    "whitespace": "Scoped git diff --check passed; Git emitted CRLF conversion notices.",
+    "counting": "Suite counts are per command and overlap. Subtests are reported separately; do not add these figures as unique tests.",
+    "initial_failures_and_resolution": [
+      "An initial concurrency test used SQLite's shared in-memory StaticPool, which cannot supply independent simultaneous request transactions. The same assertions now run through real API processes with a file-backed SQLite database and PostgreSQL; no assertion was relaxed.",
+      "Sandboxed Godot could not read the Windows root certificate store. The native fixture was rerun with approved host access and a temporary workspace profile.",
+      "The native cooldown fixture expired the job wait but left its shared 429 wait active. It now expires both only after asserting they block requests; its original recovery assertion remains.",
+      "The telemetry fault test expected an escaped RuntimeError. It now asserts the correlated JSON 500 and retains every original slot, version and outbox rollback/retry assertion.",
+      "Loaded PostgreSQL process/probe checks hit their original ten/five-second deadlines with the documented localhost URL. A direct measurement showed fresh localhost connection 3.063s versus explicit IPv4 0.023s, consistent with the local IPv6 fallback delay. Verification used the same disposable DB/port via 127.0.0.1; every original process/HTTP/SQL deadline stayed unchanged and the final full selected PostgreSQL run passed.",
+      "Original review failures were repaired: maintenance still passes its <=2 query ceiling by using a bounded UNION, and replica setup now uses explicit publication. The POSIX historical signal fixture explicitly enables test-only legacy drafting while retaining its original PB/lease assertions."
+    ]
+  },
+  "commands": [
+    ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_exception_recovery.py backend/tests/test_communication_boundary.py backend/tests/test_worker_lifecycle.py backend/tests/test_readiness.py backend/tests/test_review_reliability.py backend/tests/test_review_followups.py backend/tests/test_publication_intents.py backend/tests/test_mission_reliability.py backend/tests/test_maintenance.py backend/tests/test_storage.py backend/tests/test_s3_storage.py backend/tests/test_gcs_storage.py backend/tests/test_product_domain_events.py backend/deploy/test_operations.py backend/deploy/test_backup_wrapper.py -q -x -k 'not postgres' --junitxml=.tools/backend-robustness-fixes-20261013/regression-sqlite-verified.xml",
+    ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_robustness_fixes.py backend/tests/test_product_domain_events.py backend/deploy/test_operations.py -q -x -k 'not postgres' --junitxml=.tools/backend-robustness-fixes-20261013/final-focused-sqlite.xml",
+    "Using BMT_TEST_DATABASE_URL loaded privately from the documented disposable fixture with host set to 127.0.0.1: python -m pytest backend/tests/test_robustness_fixes.py backend/tests/test_replica_failures.py backend/tests/test_exception_recovery.py backend/tests/test_worker_lifecycle.py backend/tests/test_publication_intents.py backend/tests/test_product_domain_events.py -q -x -k postgres --junitxml=.tools/backend-robustness-fixes-20261013/postgres-verified.xml",
+    "wsl -d Ubuntu -- docker run --rm --name bmt-robustness-linux-final-20261013 --network none --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/backend,target=/workspace/backend,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-robustness-fixes-20261013,target=/evidence' --workdir /workspace/backend --env PYTHONPATH=/workspace/backend --env BMT_GODOT_BIN= bmt-backend:local python -m pytest tests/test_robustness_fixes.py tests/test_worker_lifecycle.py deploy/test_operations.py deploy/test_backup_wrapper.py -q -x -k 'not postgres' -p no:cacheprovider --junitxml=/evidence/linux-recovery-final.xml",
+    ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_resume_recovery_wire.py -q -x -k 'not postgres' --junitxml=.tools/backend-robustness-fixes-20261013/native-wire-final.xml",
+    "Native fixture invokes powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_resume_recovery_budget.gd, with temporary APPDATA and BMT_RECOVERY_WIRE_PATH under build/.",
+    "wsl -d Ubuntu -- docker stop bmt-backend-test: exited 0, fixture returned to its original stopped state."
+  ],
+  "invariant_preservation": [
+    "No canonical driving/scoring/handling, vehicle/surface/art, lap count, resource promises or development/public isolation change.",
+    "No schema migration or dependency added by this task.",
+    "Existing concurrent workspace edits, including publication batch-wait validation, are preserved and excluded from the task-only patch."
+  ],
+  "checkpoint": "task-only.patch; uncommitted scoped patch against saved starting versions. Test-result artifacts are adjacent.",
+  "remaining_acceptance": [
+    "Separately authorized deployment of matching backend and client artifacts.",
+    "Actual deployment-host reboot/power-loss, long failover and production database/object restore drill.",
+    "Target NAS/shared filesystem guard semantics and physical-device acceptance; no phone/device test or APK export/install was performed."
+  ],
+  "deployment": "No production database writes/migrations, production service changes, provider calls, or deployment. Only the documented disposable PostgreSQL fixture was temporarily started and then stopped."
+}

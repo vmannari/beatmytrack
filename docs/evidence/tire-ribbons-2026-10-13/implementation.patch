@@ -1,0 +1,570 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-13 TR01-TR04/V04/V05/G01/R01/Q01: owner alternate tire-mark appearance/drawing-effort request. Four-vertex/two-triangle joined ribbons replace thirty vertices/ten triangles; immutable shared wheel endpoints, pressure taper and analytic rounded grooves. Same16384 slots/four wheels/0.32m spacing/approved desert pigment/intensity/bridge guards/canonical/camera/dust. Both-renderer ribbon19+19, headless14, soil163+166, Desert87, bridge8+8 and six desert views each pass. Full-budget desktop GPU0.299-0.340->0.151-0.152ms Compatibility/0.252-0.254->0.119ms Mobile, triangle work80% lower; small CPU join overhead reported. Concurrent visibility/hitch work preserved and excluded from scoped patch. DN2103 attached, no device test/APK/full regression/deploy. Commands/captures/checkpoint/acceptance: docs/TIRE_RIBBONS.md.
++
+ 2026-10-13 GVP01-GVP03/GC27-GC29/GWR01/GRD01-GRD03/V06/G01/R01/Q01: trophy final visual pass. Smooth backing/folded leaf normals/rounded stems/shallow raised lettering/quiet satin edging/softer warm light/source-colour stone pigments; original composition/empty six slots/reflections/local cosmetics retained. Compatibility32/Mobile32/transition23/floor-deck25=112pass/0fail; four-size captures. DN2103 attached, no phone test/export-install/performance claim. Files/commands/scoped checkpoint/owner-device acceptance: docs/TROPHY_WALL_VISUAL_PASS.md.
+ 
+ 2026-10-13 GWR01/V06/G01/R01/Q01: trophy stone polished lighting reflections; Compatibility28/Mobile28 pass, on/off54231/38010pixels. DN2103 attached; no phone test or performance claim. docs/TROPHY_WALL_REFLECTIONS.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-13 TR01-TR04/V04/V05/G01/R01/Q01: owner alternate tire-mark appearance/drawing-effort request. Four-vertex/two-triangle joined ribbons replace thirty vertices/ten triangles; immutable shared wheel endpoints, pressure taper and analytic rounded grooves. Same16384 slots/four wheels/0.32m spacing/approved desert pigment/intensity/bridge guards/canonical/camera/dust. Both-renderer ribbon19+19, headless14, soil163+166, Desert87, bridge8+8 and six desert views each pass. Full-budget desktop GPU0.299-0.340->0.151-0.152ms Compatibility/0.252-0.254->0.119ms Mobile, triangle work80% lower; small CPU join overhead reported. Concurrent visibility/hitch work preserved and excluded from scoped patch. DN2103 attached, no device test/APK/full regression/deploy. Commands/captures/checkpoint/acceptance: docs/TIRE_RIBBONS.md.
++
+ 2026-10-13 GVP01-GVP03/GC27-GC29/GWR01/GRD01-GRD03/V06/G01/R01/Q01: trophy final visual pass. Smooth backing/folded leaf normals/rounded stems/shallow raised lettering/quiet satin edging/softer warm light/source-colour stone pigments; original composition/empty six slots/reflections/local cosmetics retained. Compatibility32/Mobile32/transition23/floor-deck25=112pass/0fail; four-size captures. DN2103 attached, no phone test/export-install/performance claim. Files/commands/scoped checkpoint/owner-device acceptance: docs/TROPHY_WALL_VISUAL_PASS.md.
+ 
+ 2026-10-13 GWR01/V06/G01/R01/Q01: trophy stone polished lighting reflections; Compatibility28/Mobile28 pass, on/off54231/38010pixels. DN2103 attached; no phone test or performance claim. docs/TROPHY_WALL_REFLECTIONS.md.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Joined two-triangle tire-ribbon override (2026-10-13)
++The owner requests a different tire-mark approach that improves looks and reduces drawing effort. Use four indexed vertices/two triangles with shared immutable per-wheel endpoints, smooth pressure and width changes and analytic rounded groove shading. This supersedes the thirty-vertex faceted mark profile and old cosmetic instance-data layout. Keep the 16384-slot/four-wheel/0.32m sampling budget, approved warm desert pigment, style/intensity functions, original dust, bridge guards, camera and canonical driving/scoring. Preserve concurrent visibility work. See `docs/TIRE_RIBBONS.md` for actual paired desktop drawing costs, scene captures, scoped checkpoint and remaining owner/physical-device acceptance.
+ 
+ ## Trophy wall final visual pass override (2026-10-13)
+ The owner requests one more review/refinement of the trophy wall. Retain the alcove composition and laurel silhouette while using smooth charcoal backing, correctly shaded folded relief leaves/rounded stems, shallow raised brand lettering, satin champagne edging and softer warm gallery wash. Bind stone pigments as source colours on both renderers; preserve the requested wall sheen and floor/deck captures, empty award spaces, local cosmetics and canonical handling/scoring. See `docs/TROPHY_WALL_VISUAL_PASS.md` for actual captures/checks, scoped checkpoint and owner/device AAA acceptance.
+diff --git a/game/vehicle/skid_trails.gd b/game/vehicle/skid_trails.gd
+--- a/game/vehicle/skid_trails.gd
++++ b/game/vehicle/skid_trails.gd
+@@ -12,6 +12,10 @@
+ var mark_colors := PackedColorArray()
+ var mark_custom := PackedColorArray()
+ var mark_transforms: Array[Transform3D] = []
++var _previous_marks := PackedInt32Array([-1,-1,-1,-1])
++var _previous_sides := PackedVector3Array([Vector3.ZERO,Vector3.ZERO,Vector3.ZERO,Vector3.ZERO])
++var _previous_ends := PackedVector3Array([Vector3.ZERO,Vector3.ZERO,Vector3.ZERO,Vector3.ZERO])
++var _previous_types := PackedInt32Array([-1,-1,-1,-1])
+ var wheelbase: float = 2.56 * HandlingConfig.BODY_SCALE
+ var track_width: float = 1.52 * HandlingConfig.BODY_SCALE
+ var cursor: int = 0
+@@ -68,7 +72,7 @@
+ 	var shader := Shader.new()
+ 	shader.code = """
+ shader_type spatial;
+-render_mode blend_mix, depth_draw_opaque, cull_disabled;
++render_mode blend_mix, depth_draw_opaque, cull_disabled, world_vertex_coords;
+ #include "res://vehicle/dust_bridge_clip.gdshaderinc"
+ uniform bool desert_sand_trails = false;
+ uniform vec4 desert_sand_pigment : source_color = vec4(0.60,0.48,0.31,1.0);
+@@ -77,6 +81,9 @@
+ varying float sand_pressure;
+ varying float ice_scuff;
+ varying vec3 ice_contact_normal;
++varying vec3 trail_lateral_normal;
++varying float rut_ratio;
++varying float pressure_alpha;
+ varying highp vec3 trail_world;
+ 
+ float hash21(vec2 p) {
+@@ -87,12 +94,27 @@
+ 
+ void vertex() {
+ 	loose_surface = INSTANCE_CUSTOM.b;
+-	sand_pressure = INSTANCE_CUSTOM.g;
++	sand_pressure = mix(INSTANCE_CUSTOM.g,INSTANCE_CUSTOM.a,UV.y);
+ 	ice_scuff = 1.0-smoothstep(0.005,0.015,abs(INSTANCE_CUSTOM.r-0.8));
+-	// The instance follows the contact slope, including bridge ramps. Avoid
+-	// the shared groove normals and their almost-flat nonuniform scale.
+-	ice_contact_normal = normalize((MODEL_MATRIX * vec4(0.0,1.0,0.0,0.0)).xyz);
+-	trail_world = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
++	// The two side columns carry the start/end cross-sections, not a rigid
++	// pose. Shared endpoint vectors produce an actual joined four-vertex ribbon.
++	vec3 start_side = vec3(MODEL_MATRIX[0].x,0.0,MODEL_MATRIX[0].z);
++	vec3 end_side = vec3(MODEL_MATRIX[1].x,0.0,MODEL_MATRIX[1].z);
++	vec3 side = mix(start_side,end_side,UV.y);
++	vec3 contact = normalize(cross(MODEL_MATRIX[2].xyz,side));
++	ice_contact_normal = normalize((VIEW_MATRIX * vec4(contact,0.0)).xyz);
++	trail_lateral_normal = normalize((VIEW_MATRIX * vec4(normalize(side),0.0)).xyz);
++	rut_ratio = MODEL_MATRIX[1].y / max(length(side),0.001);
++	trail_world = MODEL_MATRIX[3].xyz + MODEL_MATRIX[2].xyz * (UV.y-0.5) + side * (UV.x-0.5);
++	VERTEX = trail_world;
++	NORMAL = contact;
++	// Smooth deposited opacity through each contact; pow runs at four vertices,
++	// rather than per fragment. COLOR.a retains the approved average pigment.
++	float mean_pressure = (INSTANCE_CUSTOM.g+INSTANCE_CUSTOM.a)*0.5;
++	float hard = float(abs(INSTANCE_CUSTOM.r)<0.015 || abs(INSTANCE_CUSTOM.r-0.5)<0.015 || abs(INSTANCE_CUSTOM.r-0.8)<0.015 || abs(INSTANCE_CUSTOM.r-0.9)<0.015);
++	float endpoint_opacity = mix(mix(0.12,1.0,sand_pressure),0.02+0.98*pow(sand_pressure,1.7),hard);
++	float mean_opacity = mix(mix(0.12,1.0,mean_pressure),0.02+0.98*pow(mean_pressure,1.7),hard);
++	pressure_alpha = endpoint_opacity / max(mean_opacity,0.001);
+ }
+ 
+ void fragment() {
+@@ -110,6 +132,12 @@
+ 	float asphalt_streaks = 0.82 + 0.18 * smoothstep(0.15, 0.85, sin(UV.x * 21.99) * 0.5 + 0.5);
+ 	float asphalt_tone = asphalt_streaks * mix(0.88, 1.08, asphalt_grain);
+ 	float tone = mix(asphalt_tone, loose_tone, loose_surface);
++	// Analytic rounded groove replaces ten faceted triangles. The contact normal
++	// still follows the bridge slope; sand and ice retain their approved lighting.
++	float rise = clamp((across-0.20)/0.45,0.0,1.0);
++	float fall = clamp((across-0.65)/0.35,0.0,1.0);
++	float rut_slope = sign(UV.x-0.5)*rut_ratio*9.84*(rise*(1.0-rise)/0.45-fall*(1.0-fall)/0.35);
++	NORMAL = normalize(ice_contact_normal-trail_lateral_normal*rut_slope);
+ 	if (desert_sand_trails && loose_surface > 0.5) {
+ 		// Pressed sand has quiet tread values, rather than dark rubber ribs.
+ 		tone = mix(0.95,1.01,tread)-center_press*0.02+shoulder*0.025;
+@@ -117,7 +145,7 @@
+ 		tone *= mix(1.0,0.82,smoothstep(0.45,0.95,sand_pressure));
+ 		// Match the road/contact light response. The narrow rut's angled
+ 		// faces otherwise become dark lines under the desert sun.
+-		NORMAL = normalize((VIEW_MATRIX * vec4(ice_contact_normal,0.0)).xyz);
++		NORMAL = ice_contact_normal;
+ 		SPECULAR = 0.0;
+ 	}
+ 	float chipped_edge = mix(1.0, smoothstep(0.18, 0.62, grain + (1.0 - across) * 0.72), loose_surface * smoothstep(0.76, 1.0, across));
+@@ -126,12 +154,12 @@
+ 	if (desert_sand_trails && loose_surface > 0.5) { ALBEDO = desert_sand_pigment.rgb * tone; }
+ 	ROUGHNESS = 1.0;
+ 	if (ice_scuff > 0.5) {
+-		NORMAL = normalize((VIEW_MATRIX * vec4(ice_contact_normal,0.0)).xyz);
++		NORMAL = ice_contact_normal;
+ 		ROUGHNESS = 0.7;
+ 	}
+ 	vec3 camera_ray = PROJECTION_MATRIX[3].w>0.5 ? INV_VIEW_MATRIX[2].xyz : normalize(INV_VIEW_MATRIX[3].xyz-trail_world);
+ 	float bridge_visibility = dust_bridge_projected_visibility(trail_world,camera_ray,trail_world.y);
+-	ALPHA = COLOR.a * chipped_edge * feather * bridge_visibility;
++	ALPHA = COLOR.a * pressure_alpha * chipped_edge * feather * bridge_visibility;
+ }
+ """
+ 	var material := ShaderMaterial.new()
+@@ -142,28 +170,20 @@
+ 
+ 
+ func _trail_mesh(surface: Material) -> ArrayMesh:
+-	# A low-poly concave tread section catches the directional light in discrete
+-	# planes. Loose surfaces scale this profile up into a readable cel-shaded rut;
+-	# hard-surface rubber keeps it almost flat.
+-	var builder := SurfaceTool.new()
+-	builder.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	builder.set_material(surface)
+-	var across := PackedFloat32Array([-0.5, -0.36, -0.12, 0.12, 0.36, 0.5])
+-	# Broad low centre plus angular shoulders reads as a pressed groove rather
+-	# than a raised ribbon from the overhead camera.
+-	var heights := PackedFloat32Array([0.0, 0.82, 0.06, 0.06, 0.82, 0.0])
+-	for side: int in range(across.size()-1):
+-		var x0: float = across[side]
+-		var x1: float = across[side+1]
+-		var y0: float = heights[side]
+-		var y1: float = heights[side+1]
+-		var vertices: Array[Vector3] = [Vector3(x0,y0,-0.5),Vector3(x1,y1,0.5),Vector3(x1,y1,-0.5), Vector3(x0,y0,-0.5),Vector3(x0,y0,0.5),Vector3(x1,y1,0.5)]
+-		for vertex: Vector3 in vertices:
+-			builder.set_color(Color.WHITE)
+-			builder.set_uv(Vector2(vertex.x+0.5,vertex.z+0.5))
+-			builder.add_vertex(vertex)
+-	builder.generate_normals()
+-	return builder.commit()
++	var arrays: Array = []
++	arrays.resize(Mesh.ARRAY_MAX)
++	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(-0.5,0,-0.5),Vector3(0.5,0,-0.5),Vector3(-0.5,0,0.5),Vector3(0.5,0,0.5)])
++	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.UP,Vector3.UP,Vector3.UP,Vector3.UP])
++	arrays[Mesh.ARRAY_COLOR] = PackedColorArray([Color.WHITE,Color.WHITE,Color.WHITE,Color.WHITE])
++	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([Vector2(0,0),Vector2(1,0),Vector2(0,1),Vector2(1,1)])
++	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0,3,1,0,2,3])
++	var mesh := ArrayMesh.new()
++	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	mesh.surface_set_material(0,surface)
++	# The shader interpolates both side columns; include the second column in
++	# CPU bounds even though the authored quad has zero local Y.
++	mesh.custom_aabb = AABB(Vector3(-0.5,-0.5,-0.5),Vector3.ONE)
++	return mesh
+ 
+ 
+ func clear() -> void:
+@@ -171,6 +191,7 @@
+ 	cursor = 0
+ 	instances.visible_instance_count = 0
+ 	trail_visibility.clear()
++	_previous_marks.fill(-1)
+ 
+ 
+ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null, track: NativeTrack = null) -> void:
+@@ -214,6 +235,7 @@
+ 	var strongest: float = maxf(maxf(left_strength,right_strength),maxf(front_left_strength,front_right_strength))
+ 	if not active and strongest < 0.035: return
+ 	if not active:
++		_previous_marks.fill(-1)
+ 		previous_left = left
+ 		previous_right = right
+ 		previous_front_left = front_left
+@@ -233,10 +255,12 @@
+ 		front_left_strength = lerpf(previous_front_left_strength,front_left_strength,blend)
+ 		front_right_strength = lerpf(previous_front_right_strength,front_right_strength,blend)
+ 		if distance <= MAX_SEGMENT_LENGTH:
+-			_mark(previous_left, left, state.tire_dirt, surface_at(track, previous_left, state.track_elevated), (previous_left_strength+left_strength)*0.5)
+-			_mark(previous_right, right, state.tire_dirt, surface_at(track, previous_right, state.track_elevated), (previous_right_strength+right_strength)*0.5)
+-			_mark(previous_front_left, front_left, state.tire_dirt, surface_at(track, previous_front_left, state.track_elevated), (previous_front_left_strength+front_left_strength)*0.5)
+-			_mark(previous_front_right, front_right, state.tire_dirt, surface_at(track, previous_front_right, state.track_elevated), (previous_front_right_strength+front_right_strength)*0.5)
++			_mark(previous_left,left,state.tire_dirt,surface_at(track,previous_left,state.track_elevated),(previous_left_strength+left_strength)*0.5,0,previous_left_strength,left_strength)
++			_mark(previous_right,right,state.tire_dirt,surface_at(track,previous_right,state.track_elevated),(previous_right_strength+right_strength)*0.5,1,previous_right_strength,right_strength)
++			_mark(previous_front_left,front_left,state.tire_dirt,surface_at(track,previous_front_left,state.track_elevated),(previous_front_left_strength+front_left_strength)*0.5,2,previous_front_left_strength,front_left_strength)
++			_mark(previous_front_right,front_right,state.tire_dirt,surface_at(track,previous_front_right,state.track_elevated),(previous_front_right_strength+front_right_strength)*0.5,3,previous_front_right_strength,front_right_strength)
++		else:
++			_previous_marks.fill(-1)
+ 	previous_left = left
+ 	previous_right = right
+ 	previous_front_left = front_left
+@@ -313,20 +337,33 @@
+ 	return clampf(strength * load_bias, 0.0, 1.0)
+ 
+ 
+-func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength: float = 1.0) -> void:
++func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength: float = 1.0, wheel: int = -1, start_strength: float = -1.0, end_strength: float = -1.0) -> void:
+ 	var style: Vector4 = _surface_style(surface_kind, dirt, strength, desert_sand)
+ 	var tint := Color(style.x, style.y, style.z, style.w)
+ 	var width: float = _surface_width(surface_kind, strength)
+ 	var relief: float = _surface_relief(surface_kind, strength)
+-	var rotation := Vector3(-atan2(b.y-a.y,Vector2(b.x-a.x,b.z-a.z).length()),atan2(b.x-a.x,b.z-a.z),0)
+-	# Butt joins avoid double-blended dark bands at every sample. The former
+-	# six-centimetre overlap was almost a fifth of a normal segment's length.
+-	var basis: Basis = Basis.from_euler(rotation).scaled_local(Vector3(width,relief,a.distance_to(b)))
++	var delta: Vector3 = b-a
++	if delta.x*delta.x+delta.z*delta.z < 0.000001: return
++	var side := Vector3(delta.z,0,-delta.x).normalized()
++	var start_side: Vector3 = side*width
++	if wheel >= 0:
++		# Reuse the deposited endpoint directly. Each new segment owns its end;
++		# the next consumes it, with no uploads or edits to older ring entries.
++		var material_type: int = surface_kind*4+int(dirt>0.025)+(2 if desert_sand else 0)
++		var old_side: Vector3 = _previous_sides[wheel]
++		if _previous_marks[wheel] >= 0 and _previous_marks[wheel] != cursor and _previous_types[wheel] == material_type and _previous_ends[wheel].distance_squared_to(a) < 0.000001 and old_side.dot(side) > old_side.length()*0.25:
++			start_side = old_side
++		_previous_marks[wheel] = cursor
++		_previous_sides[wheel] = side*width
++		_previous_ends[wheel] = b
++		_previous_types[wheel] = material_type
++	# Columns X/Y hold the two shared cross-sections. Y.y stores analytic relief;
++	# the shader supplies explicit contact normals and ignores it for position.
++	var basis := Basis(start_side,Vector3(side.x*width,relief,side.z*width),delta)
+ 	mark_transforms[cursor] = Transform3D(basis,(a+b)*0.5)
+ 	mark_colors[cursor] = tint
+ 	var loose: float = 1.0 if surface_kind in [1,2,7,10] else 0.0
+-	var phase: float = fposmod(a.x*0.173+a.z*0.271,1.0)
+-	mark_custom[cursor] = Color(clampf(float(surface_kind)/10.0,0.0,1.0),strength,loose,phase)
++	mark_custom[cursor] = Color(float(surface_kind)/10.0,strength if start_strength < 0.0 else start_strength,loose,strength if end_strength < 0.0 else end_strength)
+ 	trail_visibility.record(cursor,mark_colors,mark_custom)
+ 	cursor = (cursor + 1) % CAPACITY
+ 
+diff --git a/game/tests/test_tire_mark_seams.gd b/game/tests/test_tire_mark_seams.gd
+--- a/game/tests/test_tire_mark_seams.gd
++++ b/game/tests/test_tire_mark_seams.gd
+@@ -48,11 +48,15 @@
+ 		cpu["before" if effect == before else "after"] = quantiles(times)
+ 	check(after.instances.visible_instance_count == after.CAPACITY,"ring saturates at existing capacity")
+ 	if before != null:
+-		check(before.cursor == after.cursor and before.mark_colors == after.mark_colors and before.mark_custom == after.mark_custom,"mark count, approved pigment and surface data preserved")
++		check(before.cursor == after.cursor and before.mark_colors == after.mark_colors,"mark count and approved average pigment preserved")
++		var pressure_preserved: bool = true
++		for i: int in range(after.CAPACITY):
++			pressure_preserved = pressure_preserved and is_equal_approx((after.mark_custom[i].g+after.mark_custom[i].a)*0.5,before.mark_custom[i].g)
++		check(pressure_preserved,"ribbon endpoint pressures retain each original average physics intensity")
+ 	after.clear()
+ 	after._mark(Vector3(0,0.028,0),Vector3(0,0.028,0.4),0,0,0.8)
+ 	check(is_equal_approx(after.mark_transforms[0].basis.z.length(),0.4),"straight segments meet without six-centimetre opacity overlap")
+-	check(after.instances.mesh.surface_get_array_len(0) == 30,"same thirty shared mesh vertices")
++	check(after.instances.mesh.surface_get_array_len(0) == 4 and after.instances.mesh.surface_get_array_index_len(0) == 6,"joined ribbon uses four indexed vertices and two triangles")
+ 	print("TIRE_MARK_SAMPLE_US: ",JSON.stringify(cpu))
+ 	if DisplayServer.get_name() == "headless":
+ 		for effect: Node3D in effects: effect.free()
+diff --git a/game/tests/capture_desert_tire_marks.gd b/game/tests/capture_desert_tire_marks.gd
+--- a/game/tests/capture_desert_tire_marks.gd
++++ b/game/tests/capture_desert_tire_marks.gd
+@@ -21,6 +21,8 @@
+ 	var race: Node = load("res://core/game.tscn").instantiate()
+ 	race.initial_track = track
+ 	race.production_mode = true
++	# Frozen screenshots are not live race pacing samples.
++	race.hitch_diagnostics_enabled = false
+ 	root.add_child(race)
+ 	race.set_physics_process(false)
+ 	race.set_process(false)
+diff --git a/game/tests/test_tire_ribbons.gd b/game/tests/test_tire_ribbons.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_tire_ribbons.gd
+@@ -0,0 +1,221 @@
++extends SceneTree
++## Paired visual and saturated-batch cost diagnostic; never races or uploads.
++const OUTPUT: String = "res://../docs/evidence/tire-ribbons-2026-10-13"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(label)
++
++func quantiles(values: Array[float]) -> Dictionary:
++	values.sort()
++	return {"median":values[values.size()/2],"p95":values[int(values.size()*0.95)]}
++
++func draw_mark(effect: Node3D, a: Vector3, b: Vector3, dirt: float, kind: int, strength: float, wheel: int = 0) -> void:
++	if effect is SkidTrails: effect._mark(a,b,dirt,kind,strength,wheel)
++	else: effect._mark(a,b,dirt,kind,strength)
++
++func ribbon_contract(after: SkidTrails) -> void:
++	after.clear()
++	after._mark(Vector3(0,0.028,0),Vector3(0,0.028,0.4),0,0,0.4,0,0.2,0.6)
++	after._mark(Vector3(0,0.028,0.4),Vector3(0.1,0.07,0.8),0,0,0.8,0,0.6,1.0)
++	var old: Transform3D = after.mark_transforms[0]
++	var fresh: Transform3D = after.mark_transforms[1]
++	var old_side := Vector3(old.basis.y.x,0,old.basis.y.z)
++	check(old_side.is_equal_approx(fresh.basis.x),"curve and width-change joins share their exact cross-section")
++	for edge: float in [-0.5,0.5]:
++		check((old.origin+old.basis.z*0.5+old_side*edge).is_equal_approx(fresh.origin-fresh.basis.z*0.5+fresh.basis.x*edge),"both shared corners meet on a slope without overlapping bands")
++	check(after.mark_custom[0].a == after.mark_custom[1].g,"pressure and opacity have a shared contact value")
++	after._mark(Vector3(0.1,0.07,0.8),Vector3(0.2,0.07,1.2),0,2,0.8,0)
++	var changed: Transform3D = after.mark_transforms[2]
++	check(not changed.basis.x.is_equal_approx(Vector3(fresh.basis.y.x,0,fresh.basis.y.z)),"surface change starts its own ribbon width")
++	after.clear()
++	after._mark(Vector3.ZERO,Vector3(0.4,0,0),0,0,1.0,0)
++	check(after.cursor == 1 and after.instances.visible_instance_count == 1,"reset restores an empty independent ribbon ring")
++	var immutable: Transform3D = after.mark_transforms[0]
++	after._mark(Vector3(0.4,0,0),Vector3(0.8,0,0.1),0,0,1.0,0)
++	check(after.mark_transforms[0] == immutable,"appending never edits or reuploads the previous segment")
++	after._mark(Vector3(5,0,5),Vector3(5,0,5),0,0,1.0,0)
++	after._mark(Vector3(5,0,5),Vector3(5,1,5),0,0,1.0,0)
++	check(after.cursor == 2,"degenerate contacts do not create invalid transforms")
++
++func surfaces(effect: Node3D) -> void:
++	effect.clear()
++	for row: int in range(5):
++		var kind: int = [0,1,2,7,8][row]
++		for i: int in range(80):
++			var a: float = float(i)/80.0*PI
++			var b: float = float(i+1)/80.0*PI
++			draw_mark(effect,Vector3(-7+14.0*i/80,0.028,-7+row*3.5+sin(a)),Vector3(-7+14.0*(i+1)/80,0.028,-7+row*3.5+sin(b)),0,kind,0.85)
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var after := SkidTrails.new()
++	root.add_child(after)
++	ribbon_contract(after)
++	var effects: Array[Node3D] = [after]
++	var before: Node3D
++	var baseline: String = OUTPUT+"/skid_trails-before.gd.txt"
++	if FileAccess.file_exists(baseline):
++		var script := GDScript.new()
++		script.source_code = FileAccess.get_file_as_string(baseline).replace("\r\n","\n").replace("class_name SkidTrails\n","")
++		check(script.reload() == OK,"session baseline compiles")
++		before = script.new()
++		root.add_child(before)
++		effects.push_front(before)
++	var state := VehicleState.new()
++	var input := DriveFrame.sample(0,0,1)
++	var cpu: Dictionary = {}
++	var cpu_samples: Dictionary = {"before":[],"after":[]}
++	for repeat: int in range(9):
++		var order: Array[Node3D] = effects.duplicate()
++		if repeat%2 == 1: order.reverse()
++		for effect: Node3D in order:
++			effect.clear()
++			var started: int = Time.get_ticks_usec()
++			for i: int in range(6000):
++				var angle: float = i*0.02
++				state.position = Vector2(sin(angle),cos(angle))*22.0
++				state.heading = angle+PI*0.5
++				state.velocity = state.forward()*25.0+state.right()*8.0
++				effect.sample(state,input)
++			cpu_samples["before" if effect == before else "after"].append(float(Time.get_ticks_usec()-started)/6000.0)
++	for tag: String in cpu_samples:
++		if cpu_samples[tag].is_empty(): continue
++		var times: Array[float] = []
++		times.assign(cpu_samples[tag])
++		cpu[tag] = quantiles(times)
++	check(after.instances.visible_instance_count == after.CAPACITY,"ring saturates at existing capacity")
++	if before != null:
++		check(before.cursor == after.cursor and before.mark_colors == after.mark_colors,"mark count and approved average pigment preserved")
++		var pressure_preserved: bool = true
++		for i: int in range(after.CAPACITY):
++			pressure_preserved = pressure_preserved and is_equal_approx((after.mark_custom[i].g+after.mark_custom[i].a)*0.5,before.mark_custom[i].g)
++		check(pressure_preserved,"ribbon endpoint pressures retain each original average physics intensity")
++	after.clear()
++	after._mark(Vector3(0,0.028,0),Vector3(0,0.028,0.4),0,0,0.8)
++	check(is_equal_approx(after.mark_transforms[0].basis.z.length(),0.4),"straight segments meet without six-centimetre opacity overlap")
++	check(after.instances.mesh.surface_get_array_len(0) == 4 and after.instances.mesh.surface_get_array_index_len(0) == 6,"joined ribbon uses four indexed vertices and two triangles")
++	print("TIRE_MARK_SAMPLE_US: ",JSON.stringify(cpu))
++	if DisplayServer.get_name() == "headless":
++		for effect: Node3D in effects: effect.free()
++		print("TIRE_RIBBON_TESTS: ",checks," checks, ",failures," failures")
++		quit(1 if failures else 0)
++		return
++	root.size = Vector2i(1600,900)
++	root.content_scale_size = root.size
++	root.msaa_3d = Viewport.MSAA_2X
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	var environment := WorldEnvironment.new()
++	var settings := Environment.new()
++	settings.background_mode = Environment.BG_COLOR
++	settings.background_color = Color(0.2,0.2,0.2)
++	settings.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	settings.ambient_light_color = Color.WHITE
++	settings.ambient_light_energy = 0.65
++	environment.environment = settings
++	root.add_child(environment)
++	var light := DirectionalLight3D.new()
++	light.rotation_degrees = Vector3(-58,-25,0)
++	light.light_energy = 0.8
++	root.add_child(light)
++	var ground := MeshInstance3D.new()
++	var plane := PlaneMesh.new()
++	plane.size = Vector2(100,100)
++	var material := StandardMaterial3D.new()
++	material.albedo_color = Color(0.29,0.29,0.27)
++	material.roughness = 1.0
++	ground.mesh = plane
++	ground.material_override = material
++	root.add_child(ground)
++	var camera := Camera3D.new()
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 26
++	root.add_child(camera)
++	camera.position = Vector3(0,25,16)
++	camera.look_at(Vector3.ZERO)
++	for effect: Node3D in effects:
++		effect.clear()
++		for ring: int in range(8):
++			var radius: float = 5.0+ring*0.8
++			var count: int = int(TAU*radius/0.32)
++			for i: int in range(count):
++				var a: float = TAU*i/count
++				var b: float = TAU*(i+1)/count
++				draw_mark(effect,Vector3(sin(a)*radius,0.028,cos(a)*radius),Vector3(sin(b)*radius,0.028,cos(b)*radius),0.7 if ring%3 == 0 else 0.0,0,0.75)
++		# Straight control at normal spacing is measurable independent of curvature.
++		for i: int in range(60):
++			draw_mark(effect,Vector3(-9.6+i*0.32,0.028,0),Vector3(-9.6+(i+1)*0.32,0.028,0),0,0,0.85)
++		effect.hide()
++	var viewport: RID = root.get_viewport_rid()
++	RenderingServer.viewport_set_measure_render_time(viewport,true)
++	var reports: Array[Dictionary] = []
++	var seam_contrast: Dictionary = {}
++	for pass_index: int in range(3):
++		var order: Array[Node3D] = effects.duplicate()
++		if pass_index%2 == 1: order.reverse()
++		for effect: Node3D in order:
++			var tag: String = "before" if effect == before else "after"
++			effect.show()
++			for i: int in range(60): await process_frame
++			if pass_index == 0:
++				await RenderingServer.frame_post_draw
++				var picture: Image = root.get_texture().get_image()
++				check(picture.save_png(OUTPUT+"/"+RenderingServer.get_current_rendering_method()+"-"+tag+".png") == OK,"actual tire-mark screenshot saved")
++				var density: Array[float] = []
++				var seam_total: float = 0.0
++				var middle_total: float = 0.0
++				for i: int in range(15,45):
++					for fraction: float in [0.0,0.5]:
++						var pixel: Vector2 = camera.unproject_position(Vector3(-9.6+(i+fraction)*0.32,0.028,0))
++						var darkest: float = 1.0
++						for dy: int in range(-2,3):
++							var c: Color = picture.get_pixel(roundi(pixel.x),roundi(pixel.y)+dy)
++							darkest = minf(darkest,(c.r+c.g+c.b)/3.0)
++						density.append(darkest)
++						if fraction == 0.0: seam_total += darkest
++						else: middle_total += darkest
++				seam_contrast[tag] = absf(seam_total-middle_total)/30.0
++				print("TIRE_RIBBON_DENSITY ",tag,": ",JSON.stringify(quantiles(density)))
++				# Measure the existing full race budget, with identical visible overdraw.
++				for i: int in range(effect.instances.visible_instance_count,SkidTrails.CAPACITY):
++					var radius: float = 5.0+float(i%8)*0.8
++					var a: float = float(i)*0.32/radius
++					var b: float = a+0.32/radius
++					draw_mark(effect,Vector3(sin(a)*radius,0.028,cos(a)*radius),Vector3(sin(b)*radius,0.028,cos(b)*radius),0.7 if i%3 == 0 else 0.0,0,0.75)
++				for i: int in range(60): await process_frame
++			var frame: Array[float] = []
++			var gpu: Array[float] = []
++			var render: Array[float] = []
++			var last: int = Time.get_ticks_usec()
++			for i: int in range(240):
++				await process_frame
++				var now: int = Time.get_ticks_usec()
++				frame.append(float(now-last)/1000.0)
++				last = now
++				gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(viewport))
++				render.append(RenderingServer.viewport_get_measured_render_time_cpu(viewport))
++			reports.append({"stage":tag,"pass":pass_index,"frame_ms":quantiles(frame),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(render),"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),"marks":effect.instances.visible_instance_count})
++			effect.hide()
++	var file := FileAccess.open(OUTPUT+"/"+RenderingServer.get_current_rendering_method()+"-profile.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"cpu_sample_us":cpu,"cpu_samples_us":cpu_samples,"seam_contrast":seam_contrast,"stages":reports},"\t"))
++	file.close()
++	print("TIRE_RIBBON_CONTRAST: ",JSON.stringify(seam_contrast))
++	if before != null: check(float(seam_contrast.after) <= float(seam_contrast.before)+0.002,"straight ribbon does not add repeated opacity seams")
++	print("TIRE_RIBBON_PROFILE: ",JSON.stringify(reports))
++	for effect: Node3D in effects:
++		surfaces(effect)
++		effect.show()
++		for i: int in range(8): await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(OUTPUT+"/"+RenderingServer.get_current_rendering_method()+"-surfaces-"+("before" if effect == before else "after")+".png") == OK,"rubber, grass, dirt, snow and ice comparison saved")
++		effect.hide()
++	for effect: Node3D in effects: effect.free()
++	print("TIRE_RIBBON_TESTS: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_tire_ribbons.gd.uid b/game/tests/test_tire_ribbons.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_tire_ribbons.gd.uid
+@@ -0,0 +1 @@
++uid://dc074h1fr238w
+diff --git a/docs/TIRE_RIBBONS.md b/docs/TIRE_RIBBONS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TIRE_RIBBONS.md
+@@ -0,0 +1,51 @@
++# Joined tire ribbons, 2026-10-13
++
++The owner asks for a different tire-mark method that improves appearance while reducing drawing effort. Requirements: TR01 shared curve joins; TR02 smooth pressure/width changes; TR03 reduced geometry and measured drawing cost; TR04 retained surfaces, warm desert pigment, bridge guards and four-wheel persistence; V04/V05/G01/R01/Q01 presentation, cost, canonical isolation and actual evidence.
++
++Each segment is now a four-vertex indexed ribbon with two triangles, replacing thirty vertices and ten triangles. Start/end cross-sections are carried in the existing instance transform. Each wheel reuses its previous deposited end as the next start; both edge corners meet exactly, including changes in width and contact height. Appending leaves the old instance untouched. Sharp reversals, material changes, discontinuities, airborne/rolled states, independent bridge layers and resets break the join safely. Four tiny per-wheel caches are added; no race-scale geometry reconstruction, new textures, passes or extra instance uploads are introduced.
++
++The shader interpolates endpoint pressure and opacity, while the existing world-space grain/tread remains continuous. Smooth analytic groove normals replace the faceted raised profile; the geometry follows the sampled contact surface. Desert and ice use their approved contact-normal treatments. Desert source-colour pigment, compaction response and alpha constants remain exact. The 16,384 retained slots, four wheel contacts, 0.32m spacing, 1.5m discontinuity bound and surface style/width/relief/intensity functions remain. Camera, original dust, canonical handling/scoring and local per-car condition are unchanged by this slice. The cosmetic transform/custom-data layout changes; it is not a canonical simulation or save contract.
++
++Shader positions use Godot's world-coordinate vertex mode; normals are explicitly derived from the contact and cross-section vectors, avoiding interpreting the packed transform as an ordinary rigid pose. The authored mesh has conservative custom bounds that include both cross-section columns. See the [Godot spatial shader reference](https://docs.godotengine.org/en/stable/tutorials/shaders/shader_reference/spatial_shader.html).
++
++Changed files: `game/vehicle/skid_trails.gd`; new `game/tests/test_tire_ribbons.gd`/UID; existing `game/tests/test_tire_mark_seams.gd` now asserts the four-vertex/six-index representation and preservation of average endpoint pressure; `game/tests/capture_desert_tire_marks.gd` disables the live-race hitch observer for its deliberately frozen screenshots; this report, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and the evidence folder. Existing soil invariants were retained. No backend, physics/rules/content version, export or deployment change.
++
++Concurrent visibility and hitch-monitor work was detected in this shared workspace and preserved. It is not included in this geometry slice's patch. The first frozen source contained a provisional `TrailInstancePages` wrapper that was subsequently removed by that work. `entry-source-with-pages.gd.txt` retains the original snapshot. The runnable geometry control in `skid_trails-before.gd.txt` retains the original thirty-vertex mesh, shader and deposition algorithm, with the same final `TrailVisibility` integration as the revised side. Consequently the paired comparison changes the ribbon geometry/pressure treatment while using the same visibility code. Early provisional 33-draw/page-wrapper measurements are superseded by the final two-draw comparisons below. The final static fixture keeps all 16,384 marks visible; no offscreen-culling benefit is claimed here.
++
++Actual commands use pinned Godot `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`:
++
++| Action / suffix | Actual outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_tire_ribbons.gd` | 14 checks, zero failures; exact shared corners on a slope, pressure, material change, reset, no old-segment mutation, zero-length/vertical-contact rejection, ring capacity and approved average deposits. |
++| Same with `-Graphical -RenderingMethod gl_compatibility` | 19 checks, zero failures; actual curved/straight and five-surface before/after images plus three paired full-budget rendering stages. |
++| Same with `-Graphical -RenderingMethod mobile` | 19 checks, zero failures; same renderer-specific captures and checks. |
++| `TestSoil` | 163 checks, zero failures; canonical surface/contact/intensity/persistence checks. |
++| `TestScript -ScriptPath res://tests/test_soil.gd -Graphical -RenderingMethod gl_compatibility` | 166 checks, zero failures, including GPU transform/colour/custom-data checks after visibility integration. |
++| `TestDesert` | 87 checks, zero failures; original dust and exact five-car packed/loose-sand replay behavior. |
++| `TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--folder=res://../docs/evidence/tire-ribbons-2026-10-13/bridge-compatibility/'` | Eight checks, zero failures; 9,740 unprotected roof pixels become zero with the retained geometric guard. Ground/deck separation and legitimate deck marks pass. |
++| Same with Mobile and `bridge-mobile/` | Eight checks, zero failures; 9,533 unprotected roof pixels become zero; same unchanged assertions pass. |
++| `TestScript -ScriptPath res://tests/capture_desert_tire_marks.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--folder=res://../docs/evidence/tire-ribbons-2026-10-13/desert-compatibility/'` | Six actual scene views: rolling/braking/loose sand, each with a matching surface-only view; 396 segments per marked view. Canonical snapshot, cells and content hash unchanged. |
++| Same with Mobile and `desert-mobile/` | Six matching Mobile scene views; 396 segments each, same warm pigment/first rolling alpha 0.0647/braking alpha 0.1045 and preservation assertions. |
++| `Import` | Passed; registered the concurrently added visibility class. |
++| `Doctor` | Matching engine/templates; OnePlus DN2103 attached. No physical-phone test performed. |
++
++Desktop RTX 3090, 1600x900, 2x MSAA, VSync disabled, all 16,384 marks visible. Three alternating rendering pairs each have sixty warm-up and 240 measured frames; emission sampling has nine alternating before/after repeats of 6,000 calls. Results include the simple ground:
++
++| Measurement | Original geometry | Joined ribbons |
++| --- | --- | --- |
++| Tire triangles | 163,840 | 32,768 (80% fewer) |
++| Vertices per instance | 30 | 4 (86.7% fewer) |
++| Total visible primitives including ground | 163,842 | 32,770 |
++| Total draws, both renderers | 2 | 2 |
++| Compatibility GPU medians, ms | 0.340 / 0.302 / 0.299 | 0.151 / 0.151 / 0.152 |
++| Mobile GPU medians, ms | 0.252 / 0.254 / 0.254 | 0.119 / 0.119 / 0.119 |
++| Compatibility emission median, microseconds/sample | 44.82 | 46.96 |
++| Mobile emission median, microseconds/sample | 51.38 | 51.66 |
++
++The static fixture's median GPU work falls about 50% in Compatibility and 53% in Mobile. The vertex/triangle counts are exact; GPU figures are desktop measurements, not whole-game or phone FPS. The new shared-contact bookkeeping adds a small emission cost in the paired runs, approximately 2.14 and 0.28 microseconds/sample. Frame/render-CPU tails vary with other local processes; no general frame-pacing improvement is asserted. The final horizontal-degeneracy guard was also checked headless: 42.02 -> 45.01 microseconds/sample in that run. The same fixed draw budget and sampling remain.
++
++Known intermediate issues are retained in runner logs: first prototype rewrote previous transforms and increased CPU cost; it was replaced with immutable endpoint reuse. Concurrent visibility class creation required Import; concurrent game creation temporarily referenced a missing hitch-monitor source. Mobile frozen-scene capture then encountered that observer reading an unavailable dust property; only the deliberately frozen screenshot fixture disables it, while normal game diagnostics remain as authored by the other task. Paired pixel tests compare banding with the already improved exact-length baseline; their tolerance preserves low seam contrast, rather than claiming another percentage reduction from the original overlap pass. An early historical seam diagnostic wrote to its prior evidence folder; the original control images/report were restored from the matching saved control and retained run output.
++
++Evidence lives under `docs/evidence/tire-ribbons-2026-10-13/`: `*-before.png`, `*-after.png`, five-surface comparisons, renderer-specific `*-profile.json`, actual desert/bridge scene views, preserved source/control and runner logs. `preserved-functions.json` checks exact style/width/relief/intensity functions and constants. `implementation.patch` is the task-only Git-format checkpoint, checked against the current files. The real workspace/branch/index and unrelated edits are preserved.
++
++Remaining acceptance: owner review of pressure transitions, grass/snow groove shading, very sharp turns, dense overlapping laps, and physical-phone appearance/performance. No phone execution, APK export/install, whole-game performance run, full regression or production/backend deployment was performed for this slice.

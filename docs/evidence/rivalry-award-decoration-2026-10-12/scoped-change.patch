@@ -1,0 +1,532 @@
+diff --git a/game/ui/rivalry_award_art.gd b/game/ui/rivalry_award_art.gd
+--- a/game/ui/rivalry_award_art.gd
++++ b/game/ui/rivalry_award_art.gd
+@@ -3,6 +3,9 @@
+ var tier: int = 0
+ var badge: bool = false
+ var elapsed: float = 0.0
++var crown_center_y: float = 0.0
++const LAUREL: Texture2D = preload("res://assets/ui/awards/laurel_left.svg")
++const CROWN: Texture2D = preload("res://assets/ui/awards/crown.svg")
+ const GOLD := Color("e7b83d")
+ const LIGHT := Color("fff1b0")
+ 
+@@ -16,33 +19,27 @@
+ 	queue_redraw()
+ 	if elapsed >= 6.0: set_process(false)
+ 
++func laurel_geometry() -> Dictionary:
++	var branch_width: float = 18 if badge else minf(44,size.y*0.5625)
++	var top: float = 16 if badge else 0
++	var height: float = size.y-top
++	return {"left_rect":Rect2(0,top,branch_width,height),"right_rect":Rect2(size.x-branch_width,top,branch_width,height)}
++
++func crown_rect() -> Rect2:
++	return Rect2(size.x*0.5-13,1,26,17.3333) if badge else Rect2(size.x*0.5-24,crown_center_y-12,48,32)
++
++func crown_geometry() -> PackedVector2Array:
++	var rect: Rect2 = crown_rect()
++	return PackedVector2Array([rect.position,Vector2(rect.end.x,rect.position.y),rect.end,Vector2(rect.position.x,rect.end.y)])
++
+ func _draw() -> void:
+ 	if tier == 0: return
+-	var center := Vector2(size.x*0.5,0)
+-	var span: float = size.x*0.49
+-	for side: int in [-1,1]:
+-		var stem := PackedVector2Array()
+-		for step: int in range(17):
+-			var phase: float = step/16.0
+-			stem.append(center+Vector2(side*span*(0.99-0.04*sin(phase*PI)),size.y*lerpf(0.89,0.20,phase)))
+-		draw_polyline(stem,Color(GOLD,0.65),1.7,true)
+-		for step: int in range(9):
+-			var phase: float = step/8.0
+-			var point: Vector2 = center+Vector2(side*span*(0.99-0.04*sin(phase*PI)),size.y*lerpf(0.89,0.20,phase))
+-			var leaf := PackedVector2Array()
+-			var length: float = 6 if badge else minf(17,size.y*0.13)
+-			var axis := Vector2(side*0.66,-0.74).rotated(side*(phase-0.5)*0.5)
+-			for corner: int in range(14):
+-				var leaf_phase: float = corner*TAU/14.0
+-				leaf.append(point+axis*length*cos(leaf_phase)+axis.orthogonal()*length*0.3*sin(leaf_phase))
+-			draw_colored_polygon(leaf,LIGHT.lerp(GOLD,step/10.0))
+-	if tier >= 2:
+-		var crown_center := Vector2(size.x*0.5,6 if badge else 0)
+-		var width: float = 19 if badge else 23
+-		var crown := PackedVector2Array([Vector2(-width,-2),Vector2(-width*0.68,14),Vector2(width*0.68,14),Vector2(width,-2),Vector2(width*0.40,4),Vector2(0,-12),Vector2(-width*0.40,4)])
+-		for index: int in range(crown.size()): crown[index] += crown_center
+-		draw_colored_polygon(crown,LIGHT)
+-		draw_line(crown_center+Vector2(-width*0.62,18),crown_center+Vector2(width*0.62,18),GOLD,3,true)
++	var geometry: Dictionary = laurel_geometry()
++	draw_texture_rect(LAUREL,geometry.left_rect,false)
++	draw_set_transform(Vector2(size.x,0),0,Vector2(-1,1))
++	draw_texture_rect(LAUREL,geometry.left_rect,false)
++	draw_set_transform(Vector2.ZERO)
++	if tier >= 2: draw_texture_rect(CROWN,crown_rect(),false)
+ 	if not badge and tier >= 2:
+ 		var count: int = 34 if tier == 3 else 16
+ 		for index: int in range(count):
+@@ -52,3 +49,4 @@
+ 			draw_set_transform(Vector2(x,y),index*0.7+elapsed*0.3)
+ 			draw_rect(Rect2(-2,-4,3,6),color)
+ 		draw_set_transform(Vector2.ZERO)
++
+diff --git a/game/ui/weekly_rivalry_finale.gd b/game/ui/weekly_rivalry_finale.gd
+--- a/game/ui/weekly_rivalry_finale.gd
++++ b/game/ui/weekly_rivalry_finale.gd
+@@ -54,8 +54,16 @@
+ 	var columns := HBoxContainer.new()
+ 	columns.name = "RivalryAwardsColumns"
+ 	columns.add_theme_constant_override("separation",14)
++	columns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	add_child(columns)
++	# The content can scroll if its minimum height exceeds the available space;
++	# the action row remains a visible sibling outside this clipping viewport.
++	var body_slot := ScrollContainer.new()
++	body_slot.name = "RivalryFinaleBody"
++	body_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	body_slot.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	add_child(body_slot)
++	body_slot.add_child(columns)
+ 	_build_tracks(columns)
+ 	var right := VBoxContainer.new()
+ 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -129,6 +137,7 @@
+ 	hero_copy.add_theme_constant_override("separation",3)
+ 	hero.add_child(hero_copy)
+ 	title = _label(hero_copy,summary.title,52,Color("ffe49a") if summary.tier > 0 else MenuStyle.TEXT)
++	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	title.name = "RivalryAwardTitle"
+ 	title.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	title.add_theme_color_override("font_outline_color",Color("583b12") if summary.tier > 0 else MenuStyle.INK)
+@@ -136,10 +145,13 @@
+ 	title.add_theme_color_override("font_shadow_color",Color("080d15"))
+ 	title.add_theme_constant_override("shadow_offset_y",3)
+ 	var subtitle: String = "FIVE TRACKS. FIVE VICTORIES." if summary.perfect else "YOUR CHAMPIONSHIP, CELEBRATED." if summary.champion else "YOUR WEEK ON THE TRACK."
+-	_label(hero_copy,subtitle,17,MenuStyle.TEXT).add_theme_font_override("font",MenuStyle.DISPLAY)
++	var subtitle_label: Label = _label(hero_copy,subtitle,17,MenuStyle.TEXT)
++	subtitle_label.add_theme_font_override("font",MenuStyle.DISPLAY)
++	subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	var context: String = "%d points ahead of %s." % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else "%d of five tracks completed." % summary.completed
+ 	if not error.is_empty(): context = error
+ 	var message: Label = _label(hero_copy,context,14,MenuStyle.MUTED)
++	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	message.name = "RivalryStatusMessage"
+ 	message.tooltip_text = context
+ 	metrics = HBoxContainer.new()
+@@ -167,13 +179,19 @@
+ 	var width: float = size.x
+ 	var height: float = clampf(size.y*0.23,112,180)
+ 	hero.custom_minimum_size.y = height
+-	ornament.position = Vector2(0,8)
+-	ornament.size = Vector2(width*0.53,height-10)
+ 	hero_copy.position = Vector2(56,14 if height < 140 else 22)
+ 	hero_copy.size = Vector2(width*0.53-110,height-hero_copy.position.y)
+ 	var font_size: int = (46 if height < 140 else 56) if not summary.title.begins_with("JOINT") else 40
+ 	while font_size > 28 and MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > hero_copy.size.x: font_size -= 1
+ 	title.add_theme_font_size_override("font_size",font_size)
++	# Center the crown on the rendered words, and fit botanical branches around
++	# them rather than using the whole hero column as a decorative frame.
++	var text_width: float = MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
++	var ornament_width: float = minf(width*0.53-16,text_width+112)
++	ornament.position = Vector2(hero_copy.position.x+hero_copy.size.x*0.5-ornament_width*0.5,8)
++	ornament.size = Vector2(ornament_width,minf(height-36,MenuStyle.DISPLAY.get_height(font_size)+MenuStyle.DISPLAY.get_height(17)+6))
++	ornament.crown_center_y = hero_copy.position.y-ornament.position.y-26
++	ornament.queue_redraw()
+ 	vehicle.position = Vector2(width*0.65,-58)
+ 	vehicle.size = Vector2(width*0.33,height+20)
+ 	metrics.position = Vector2(width*0.55,height-68)
+@@ -253,6 +271,8 @@
+ 
+ func _build_standings(parent: Control) -> void:
+ 	var box: VBoxContainer = _panel(parent,"RivalryDriversPanel")
++	box.add_theme_constant_override("separation",2)
++	box.get_parent().get_theme_stylebox("panel").set_content_margin_all(6)
+ 	var heading := HBoxContainer.new()
+ 	box.add_child(heading)
+ 	_label(heading,"FINAL STANDINGS",25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -292,28 +312,32 @@
+ 
+ func _build_highlights(parent: Control) -> void:
+ 	var box: VBoxContainer = _panel(parent,"RivalryWeeklyHighlights")
++	box.add_theme_constant_override("separation",2)
++	box.get_parent().get_theme_stylebox("panel").set_content_margin_all(6)
+ 	box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_END
+ 	_label(box,"YOUR WEEK HIGHLIGHTS",23)
+ 	var line := HBoxContainer.new()
+ 	box.add_child(line)
+ 	var copy := VBoxContainer.new()
+ 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	copy.add_theme_constant_override("separation",3)
++	copy.add_theme_constant_override("separation",2)
+ 	line.add_child(copy)
+ 	for text: String in summary.highlights:
+ 		_label(copy,"✓  "+text,15,MenuStyle.POSITIVE)
+ 	if summary.perfect:
+ 		var badge := Control.new()
+ 		badge.name = "RivalryPerfectWeekBadge"
+-		badge.custom_minimum_size = Vector2(100,72)
++		badge.custom_minimum_size = Vector2(112,72)
+ 		line.add_child(badge)
+ 		var art := AwardArt.new()
++		art.name = "RivalryPerfectWeekArt"
+ 		art.tier = 3
+ 		art.badge = true
+ 		badge.add_child(art)
+ 		MenuStyle.fill(art)
+ 		var label: Label = _label(badge,"PERFECT\nWEEK",20,MenuStyle.ACCENT)
++		label.name = "RivalryPerfectWeekText"
+ 		label.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 		MenuStyle.fill(label)
+-		label.offset_top = 20
++		label.offset_top = 22
+diff --git a/game/tests/test_rivalry_awards.gd b/game/tests/test_rivalry_awards.gd
+--- a/game/tests/test_rivalry_awards.gd
++++ b/game/tests/test_rivalry_awards.gd
+@@ -43,7 +43,8 @@
+ 	return value
+ 
+ func run() -> void:
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-awards-2026-10-12/ui")
++	evidence = OS.get_environment("BMT_RIVALRY_AWARDS_CAPTURE_DIR")
++	if evidence.is_empty(): evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-awards-2026-10-12/ui")
+ 	if RenderingServer.get_current_rendering_method() == "mobile": evidence += "/mobile"
+ 	DirAccess.make_dir_recursive_absolute(evidence)
+ 	for kind: String in ["perfect","champion","podium","middle","unranked","tied"]:
+@@ -89,7 +90,9 @@
+ 			check(not art.is_processing() and art.elapsed == 6.0,"confetti stops after its bounded six-second flourish")
+ 		art.queue_free()
+ 	await process_frame
+-	if DisplayServer.get_name() != "headless": await visuals_awards()
++	if DisplayServer.get_name() != "headless":
++		await check_rendered_laurel_symmetry()
++		await visuals_awards()
+ 	print("RIVALRY_AWARDS: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
+ 
+@@ -120,15 +123,20 @@
+ 			check(not next.disabled and not share.disabled,"completed authoritative ceremony enables sharing and Continue")
+ 			check(next.get_global_rect().end.y <= app.root_ui.size.y+1,"Continue remains inside the visible screen")
+ 			check(share.get_global_rect().end.y <= app.root_ui.size.y+1,"sharing remains inside the visible screen")
++			check(next.get_global_rect().end.y <= app.content.get_global_rect().end.y+0.5,"Continue is fully inside the page clipping boundary")
++			check(share.get_global_rect().end.y <= app.content.get_global_rect().end.y+0.5,"Share is fully inside the page clipping boundary")
+ 			check(absf(share.size.x-next.size.x) < 2,"outside-card bottom actions have equal width")
+ 			check(ceremony.track_buttons.size() == 5,"all five pinned tracks have a thumbnail/detail action")
+ 			var track_scroll: ScrollContainer = ceremony.find_child("RivalryFinalTrackScroll",true,false)
+ 			for row: Button in ceremony.track_buttons:
+ 				check(row.get_global_rect().end.y <= track_scroll.get_global_rect().end.y+1,"all five track rows remain visible in the initial ceremony")
++				check(row.get_global_rect().end.y <= ceremony.find_child("RivalryFinaleBody",true,false).get_global_rect().end.y+1,"track rows fit inside the actual body clipping viewport")
+ 				for child: Node in row.find_children("*","Label",true,false):
+ 					check(child.get_global_rect().end.x <= row.get_global_rect().end.x+1,"track names, times, gaps and points stay inside their row")
+ 			check(ceremony.find_child("RivalryChampionLaurels",true,false).tier == ceremony.summary.tier,"award ornament receives the performance intensity")
++			if kind in ["perfect","champion","tied"]: check_decoration_alignment(ceremony,kind)
+ 			check((ceremony.find_child("RivalryPerfectWeekBadge",true,false) != null) == (kind == "perfect"),"Perfect Week badge matches the actual five-win condition")
++			if kind == "perfect": check_perfect_badge_alignment(ceremony)
+ 			check(ceremony.find_child("FinalDriver_you",true,false) != null,"compact final standings always include the highlighted player")
+ 			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("FinalDriver_*","",true,false).size() <= 5,"compact standings contain at most five actual competitors")
+ 			var car: Control = ceremony.find_child("RivalryVictoryCar",true,false)
+@@ -177,3 +185,79 @@
+ 	check(JSON.stringify(app.records.settings) == saved_settings,"ceremony and sharing never alter local paint, condition or profile settings")
+ 	app.queue_free()
+ 	await process_frame
++
++func check_decoration_alignment(ceremony: Control, kind: String) -> void:
++	var heading: Label = ceremony.title
++	var art: Control = ceremony.ornament
++	var font: Font = heading.get_theme_font("font")
++	var font_size: int = heading.get_theme_font_size("font_size")
++	var words_width: float = font.get_string_size(heading.text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
++	var heading_rect: Rect2 = heading.get_global_rect()
++	var words_left: float = heading_rect.position.x+(heading_rect.size.x-words_width)*0.5 if heading.horizontal_alignment == HORIZONTAL_ALIGNMENT_CENTER else heading_rect.position.x
++	var words := Rect2(Vector2(words_left,heading_rect.position.y),Vector2(words_width,heading_rect.size.y))
++	var crown: PackedVector2Array = art.crown_geometry()
++	var global_crown := PackedVector2Array()
++	for point: Vector2 in crown: global_crown.append(art.get_global_transform()*point)
++	var crown_bounds := Rect2(global_crown[0],Vector2.ZERO)
++	for point: Vector2 in global_crown: crown_bounds = crown_bounds.expand(point)
++	check(absf(crown_bounds.get_center().x-words.get_center().x) <= 1.0,kind+" crown is centered over the actual rendered words")
++	check(crown_bounds.end.y+6 <= words.position.y,kind+" crown and its underline stay above the heading")
++	check(crown_bounds.position.y >= app.content.get_global_rect().position.y,kind+" crown stays within the rivalry page")
++	check(art.size.x >= words_width+100 and art.size.x <= words_width+120,kind+" wreath fits the heading with symmetric text clearance")
++	var geometry: Dictionary = art.laurel_geometry()
++	var left: Rect2 = geometry.left_rect
++	var right: Rect2 = geometry.right_rect
++	check(absf(left.get_center().x+right.get_center().x-art.size.x) < 0.01 and left.size == right.size,kind+" curved botanical branches mirror around the heading")
++	var left_end: Vector2 = art.get_global_transform()*left.end
++	var right_start: Vector2 = art.get_global_transform()*right.position
++	check(left_end.x <= words.position.x-6 and right_start.x >= words.end.x+6,kind+" both laurel branches remain clear of the rendered heading")
++
++func check_rendered_laurel_symmetry() -> void:
++	for badge: bool in [false,true]: await check_rendered_branches(badge)
++
++func check_rendered_branches(badge: bool) -> void:
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(112,72) if badge else Vector2i(480,128)
++	viewport.transparent_bg = true
++	viewport.disable_3d = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++	root.add_child(viewport)
++	var art: Control = preload("res://ui/rivalry_award_art.gd").new()
++	art.tier = 1
++	art.badge = badge
++	art.size = Vector2(viewport.size)
++	viewport.add_child(art)
++	await settle()
++	await RenderingServer.frame_post_draw
++	var pixels: Image = viewport.get_texture().get_image()
++	var visible: int = 0
++	var mismatched: int = 0
++	for y: int in range(pixels.get_height()):
++		for x: int in range(18 if badge else 44):
++			var left: Color = pixels.get_pixel(x,y)
++			var right: Color = pixels.get_pixel(pixels.get_width()-1-x,y)
++			if left.a > 0.05: visible += 1
++			if absf(left.r-right.r) > 0.02 or absf(left.g-right.g) > 0.02 or absf(left.b-right.b) > 0.02 or absf(left.a-right.a) > 0.02: mismatched += 1
++	check(visible > (100 if badge else 500),"native render contains actual laurel leaves in the expected left branch")
++	check(mismatched == 0,"actual laurel pixels mirror within their intended branch rectangles")
++	viewport.queue_free()
++	await process_frame
++
++func check_perfect_badge_alignment(ceremony: Control) -> void:
++	var badge: Control = ceremony.find_child("RivalryPerfectWeekBadge",true,false)
++	var art: Control = badge.find_child("RivalryPerfectWeekArt",true,false)
++	var label: Label = badge.find_child("RivalryPerfectWeekText",true,false)
++	var font: Font = label.get_theme_font("font")
++	var font_size: int = label.get_theme_font_size("font_size")
++	var width: float = maxf(font.get_string_size("PERFECT",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x,font.get_string_size("WEEK",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x)
++	var rect: Rect2 = label.get_global_rect()
++	var words := Rect2(Vector2(rect.get_center().x-width*0.5,rect.position.y),Vector2(width,font.get_height(font_size)*2))
++	var crown: Rect2 = art.get_global_transform()*art.crown_rect()
++	var branches: Dictionary = art.laurel_geometry()
++	var left: Rect2 = art.get_global_transform()*branches.left_rect
++	var right: Rect2 = art.get_global_transform()*branches.right_rect
++	check(absf(crown.get_center().x-words.get_center().x) <= 1,"Perfect Week crown centers over both title lines")
++	check(crown.end.y <= words.position.y-2,"Perfect Week crown stays above its lettering")
++	check(left.end.x <= words.position.x-4 and right.position.x >= words.end.x+4,"Perfect Week branches stay clear of both words")
++	check(words.end.y <= badge.get_global_rect().end.y+0.5,"Perfect Week lettering fits inside the badge")
++	check(left.position.y >= badge.get_global_rect().position.y and right.end.y <= badge.get_global_rect().end.y+0.5,"Perfect Week laurels fit inside their badge")
+diff --git a/docs/RIVALRY_AWARDS.md b/docs/RIVALRY_AWARDS.md
+--- a/docs/RIVALRY_AWARDS.md
++++ b/docs/RIVALRY_AWARDS.md
+@@ -1,4 +1,6 @@
+ # Weekly Rivalry awards ceremony, 2026-10-12
++
++The owner subsequently corrected the champion/joint decorations, Perfect Week badge and footer clipping. See [the actual correction and fresh evidence](RIVALRY_AWARD_DECORATION.md); its matching original SVG ornaments and page-contained footer supersede the initial decorative leaf stacks and window-only bounds checks below.
+ 
+ The owner's supplied championship reference supersedes the old completed-week podium/track-list presentation. The completed Overview now becomes an awards ceremony; the active hub, track detail, normal race results and single-press next-week transition remain separate.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 AD01-AD04/AR01/AR02/AR08/AR10/WC01-WC04/V03-V05/R01/Q01: owner corrects champion/joint/Perfect Week ornaments and clipped footer. Centered actual word-width framing; original shaded SVG crown/curved botanical laurels/explicit mirrored draw; compact 112x72 Perfect Week text-clearance; body-only overflow with outside 52-unit actions and tighter right-card spacing. Final Compatibility1970/MobileVulkan1970/66 fresh captures, weekly1115/Continue38/Import pass; real page/body clipping and transparent-viewport pixel symmetry. Intermediate558 leaf-clearance failures replaced; unrelated Garage typed-array transient corrected elsewhere; assertions retained. Doctor no phone/device test/APK/backend/fullValidate/livewrites/deploy. Actual files/commands/owner-phone limits/task-only checkpoint: docs/RIVALRY_AWARD_DECORATION.md.
++
+ 2026-10-12 GC25-GC26/GC15-GC24/V06/G01/R01/Q01: trophy decoration refined with curved relief laurel/stems/midribs, inset reveals/layered empty bases/softer light and curved foliage. Compatibility25/Mobile25/transition23 pass. Doctor no phone; AAA+ owner/device acceptance open. Files/commands/captures/limitations: docs/TROPHY_WALL_POLISH.md.
+ 
+ 2026-10-12 RATE-RETRY-01/RATE-RIVALRY-02/B05/R01/Q01: finish vote suppresses duplicate same-account/origin/version prompts while verification/PUT is pending; Rivalry verified result wakes selected vote directly. Headless30/Compatibility33 checks pass; three captures. Doctor no phone; no APK/backend/deploy/livewrites. Actual files/commands/limitations: docs/RATING_RETRY_FIX.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-12 AD01-AD04/AR01/AR02/AR08/AR10/WC01-WC04/V03-V05/R01/Q01: owner corrects champion/joint/Perfect Week ornaments and clipped footer. Centered actual word-width framing; original shaded SVG crown/curved botanical laurels/explicit mirrored draw; compact 112x72 Perfect Week text-clearance; body-only overflow with outside 52-unit actions and tighter right-card spacing. Final Compatibility1970/MobileVulkan1970/66 fresh captures, weekly1115/Continue38/Import pass; real page/body clipping and transparent-viewport pixel symmetry. Intermediate558 leaf-clearance failures replaced; unrelated Garage typed-array transient corrected elsewhere; assertions retained. Doctor no phone/device test/APK/backend/fullValidate/livewrites/deploy. Actual files/commands/owner-phone limits/task-only checkpoint: docs/RIVALRY_AWARD_DECORATION.md.
++
+ 2026-10-12 GC25-GC26/GC15-GC24/V06/G01/R01/Q01: trophy decoration refined with curved relief laurel/stems/midribs, inset reveals/layered empty bases/softer light and curved foliage. Compatibility25/Mobile25/transition23 pass. Doctor no phone; AAA+ owner/device acceptance open. Files/commands/captures/limitations: docs/TROPHY_WALL_POLISH.md.
+ 
+ 2026-10-12 WE33-WE34/V04/V05/G01/R01/Q01: owner asks less synchronized powder movement/direction. Winter-wind8 shared prevailing24m/s plus vertex-evaluated spatial shear/local gust phases/pinned meandering plumes/smaller airborne variation; same49ground36bank24air/3draw578tri ceiling/texture samples/CPU placement/shape-depth guards/terrain-camera-canonical unchanged. Native51/MobileVulkan51=102pass/0fail; actual GPU motion variation/pixel-exact pause/opaque roofs and sim exact;120unique motionframes each. RTX3090 Slippery4K active20s per stage2400-2401ticks/wind20s/fullmedian3.266-3.318ms/p954.827-4.986ms/0 >16.667ms; wholewindGPUmedian~0.27-0.31ms vs hidden, not incremental or phone claim. Diagnostic wind-focus resume/clock fence excludes earlier unverified sample; ordinary pause unchanged. Doctor empty ADB/no phone/export-install/fullValidate/physics/backend/deploy/livewrites. Files/commands/motion/scoped checkpoint/owner-device acceptance: docs/WINTER_LOCAL_FLOW.md.
+diff --git a/game/assets/ui/awards/crown.svg b/game/assets/ui/awards/crown.svg
+new file mode 100644
+--- /dev/null
++++ b/game/assets/ui/awards/crown.svg
+@@ -0,0 +1,19 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="96" height="64" viewBox="0 0 96 64">
++  <defs>
++    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
++      <stop offset="0" stop-color="#fff5c5"/>
++      <stop offset=".45" stop-color="#f2cf70"/>
++      <stop offset="1" stop-color="#bd8730"/>
++    </linearGradient>
++  </defs>
++  <path d="M18 46L10 21L31 31L48 10L65 31L86 21L78 46Z" fill="url(#gold)" stroke="#9c6e2a" stroke-width="1.2" stroke-linejoin="round"/>
++  <path d="M21 43L17 30L33 37L48 18L63 37L79 30L75 43" fill="none" stroke="#fff1b8" stroke-width="1.4" stroke-linecap="round"/>
++  <rect x="20" y="47" width="56" height="10" rx="3" fill="url(#gold)" stroke="#a47329" stroke-width="1"/>
++  <path d="M24 51H72" stroke="#fff0ad" stroke-width="1.4" stroke-linecap="round"/>
++  <g fill="#f3d47d" stroke="#a47329" stroke-width=".8">
++    <circle cx="10" cy="19" r="3.2"/>
++    <circle cx="48" cy="8" r="3.5"/>
++    <circle cx="86" cy="19" r="3.2"/>
++  </g>
++  <path d="M45 38L48 34L51 38L48 42Z" fill="#fdf2be"/>
++</svg>
+diff --git a/game/assets/ui/awards/crown.svg.import b/game/assets/ui/awards/crown.svg.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/ui/awards/crown.svg.import
+@@ -0,0 +1,43 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://c4y3obd7v8da4"
++path="res://.godot/imported/crown.svg-3a21a974da44778f73c6ed6bacdca813.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/ui/awards/crown.svg"
++dest_files=["res://.godot/imported/crown.svg-3a21a974da44778f73c6ed6bacdca813.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=false
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=0
++detect_3d/compress_to=1
++svg/scale=1.0
++editor/scale_with_editor_scale=false
++editor/convert_colors_with_editor_theme=false
+diff --git a/game/assets/ui/awards/laurel_left.svg b/game/assets/ui/awards/laurel_left.svg
+new file mode 100644
+--- /dev/null
++++ b/game/assets/ui/awards/laurel_left.svg
+@@ -0,0 +1,25 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="72" height="128" viewBox="0 0 72 128">
++  <defs>
++    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
++      <stop offset="0" stop-color="#fff0b0"/>
++      <stop offset=".46" stop-color="#e8bc55"/>
++      <stop offset="1" stop-color="#aa742b"/>
++    </linearGradient>
++  </defs>
++  <path d="M65 122C31 114 13 89 14 60C14 37 23 17 36 5" fill="none" stroke="#d1a044" stroke-width="2.4" stroke-linecap="round"/>
++  <g fill="url(#gold)" stroke="#b88739" stroke-width=".6" stroke-linejoin="round">
++    <path d="M54 117C36 121 23 114 18 103C34 101 47 107 54 117Z"/>
++    <path d="M50 113C40 103 39 93 45 83C55 92 58 104 50 113Z"/>
++    <path d="M36 103C20 105 9 97 5 84C21 85 31 91 36 103Z"/>
++    <path d="M35 100C28 87 30 77 39 69C45 82 44 93 35 100Z"/>
++    <path d="M23 85C8 83 2 74 3 62C16 66 24 73 23 85Z"/>
++    <path d="M24 83C22 69 28 60 38 56C41 69 36 79 24 83Z"/>
++    <path d="M16 65C4 59 1 50 6 39C18 46 23 55 16 65Z"/>
++    <path d="M17 65C18 52 25 45 37 44C36 56 30 64 17 65Z"/>
++    <path d="M17 45C7 36 8 27 16 19C24 30 25 38 17 45Z"/>
++    <path d="M20 45C24 33 33 28 44 30C38 40 32 46 20 45Z"/>
++    <path d="M26 27C19 17 23 8 33 3C38 14 35 22 26 27Z"/>
++    <path d="M29 25C35 15 43 13 52 17C46 26 38 29 29 25Z"/>
++    <path d="M36 12C38 5 44 1 51 2C48 10 43 14 36 12Z"/>
++  </g>
++</svg>
+diff --git a/game/assets/ui/awards/laurel_left.svg.import b/game/assets/ui/awards/laurel_left.svg.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/ui/awards/laurel_left.svg.import
+@@ -0,0 +1,43 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://cssmc4ds0p8oc"
++path="res://.godot/imported/laurel_left.svg-785a893270ea895d80a06bb7d3f37e8b.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/ui/awards/laurel_left.svg"
++dest_files=["res://.godot/imported/laurel_left.svg-785a893270ea895d80a06bb7d3f37e8b.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=false
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=0
++detect_3d/compress_to=1
++svg/scale=1.0
++editor/scale_with_editor_scale=false
++editor/convert_colors_with_editor_theme=false
+diff --git a/docs/RIVALRY_AWARD_DECORATION.md b/docs/RIVALRY_AWARD_DECORATION.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_AWARD_DECORATION.md
+@@ -0,0 +1,42 @@
++# Rivalry decorations and footer correction, 2026-10-12
++
++AD01–AD04 / AR01/AR02/AR08/AR10 / WC01–WC04 / V03–V05 / R01 / Q01: the owner reports misplaced/poor-looking Weekly Champion and Joint Weekly Champion decorations, then requests an unclipped bottom action row and a corrected Perfect Week badge.
++
++- **AD01:** center the heading, subtitle and context as one award block. Fit the wreath around the actual heading width, so the longer joint-champion title gets the same balanced clearance. Place the crown above the words, clear of their bounds.
++- **AD02:** replace the hand-drawn feather-like leaf stacks and flat hero crown with original editable SVG artwork: a curved botanical laurel with pointed paired leaves and restrained gold shading, plus a matching detailed crown. Mirror one branch using a drawing transform, avoiding the negative-width rectangle offset found during capture review.
++- **AD03:** use that same artwork in the earned Perfect Week badge. The two-line editable lettering has its own space; the smaller crown sits above it and the side branches stay clear. Increase badge width from 100 to 112 logical units, retaining its 72-unit height.
++- **AD04:** keep the 52-unit Share/Continue row outside the body clipping viewport. If content cannot fit, only the body can scroll. Compact right-card spacing so all five track rows remain visible at the tested sizes, including the four-highlight joint-champion view.
++
++Previously the crown centered on the whole hero while the heading was left-aligned. Laurels used nearly the entire hero width and looked like isolated vertical leaf stacks. The previous footer checks compared against the full root/window; the page's bottom clipping inset could still cut the actions, particularly in a joint championship. New checks use both the actual page boundary and body clipping viewport.
++
++New assets are original repo-native SVGs authored for this correction. They reuse no pixels from the owner's reference and add no generated raster, third-party dependency or runtime API. Their Godot import metadata is included. No race, score, achievement eligibility, car/condition, backend, save or canonical camera contract changes were made.
++
++## Changed files
++
++- `game/ui/rivalry_award_art.gd` — shared SVG crown/branches, exact mirrored drawing and decoration bounds.
++- `game/ui/weekly_rivalry_finale.gd` — centered/fitted title group, fixed footer/body containment, compact right cards and badge spacing.
++- `game/assets/ui/awards/crown.svg`, `laurel_left.svg` and their `.import` metadata — original editable artwork.
++- `game/tests/test_rivalry_awards.gd` — crown/heading alignment, branch clearance, Perfect Week bounds, native pixel symmetry/nonempty artwork, page/body/footer clipping checks and configurable capture destination.
++- This document, the follow-up in `docs/RIVALRY_AWARDS.md`, status/plan entries and scoped evidence/checkpoint.
++
++## Actual verification
++
++All engine commands used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned **4.7.2.stable.official.ed1daf0bf**. Set `BMT_RIVALRY_AWARDS_CAPTURE_DIR` to the absolute path of `docs/evidence/rivalry-award-decoration-2026-10-12/ui` for new captures; historical ceremony evidence was preserved.
++
++| Actual action/arguments | Outcome |
++| --- | --- |
++| `-Action Import -CommandTimeoutSeconds 120` | Passed; imported both SVGs. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_awards.gd -Graphical -CommandTimeoutSeconds 180` | Final **1,970 checks / 0 failures**, **33 captures**. Champion/joint/Perfect Week alignment, native branch-pixel symmetry, four sizes, five actual cars, all five initially visible tracks, sharing/Continue and page clipping checks. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | Final **1,970 checks / 0 failures**, **33 captures**, desktop Vulkan only. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 120` | **1,115 checks / 0 failures**; active hub, touch targets, finished detail and navigation retained. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_week_completion.gd -CommandTimeoutSeconds 120` | **38 checks / 0 failures**; actual Continue flow unchanged. Also passed at the initial correction stage. |
++| `-Action Doctor` | Exact prerequisites found; **empty ADB device list**. |
++| Targeted whitespace and reverse-checkpoint applicability | Recorded by final checkpoint validation. |
++
++The intermediate pointed-leaf attempt failed clearance checks (**558 failures**) and was replaced with bounded SVG branch artwork. Capture review then revealed the negative-width drawing offset; explicit mirrored drawing and actual transparent-viewport pixel comparison verify its correction. Both branch pixels and geometry now align; checks were not relaxed to permit overlap. One native rerun encountered a concurrent unrelated Garage typed-array error; that source was corrected by the other ongoing workspace work, and this task's final reruns passed without editing Garage files.
++
++Inspected fixture evidence: [champion and Perfect Week](evidence/rivalry-award-decoration-2026-10-12/ui/perfect-1280x720.png), [joint champion with full footer](evidence/rivalry-award-decoration-2026-10-12/ui/tied-1280x720.png), [small-screen Perfect Week](evidence/rivalry-award-decoration-2026-10-12/ui/perfect-960x540.png), and [small-screen joint winner](evidence/rivalry-award-decoration-2026-10-12/ui/tied-960x540.png). Equivalent Vulkan captures are under `ui/mobile/`. These show synthetic fixture standings, not live player results.
++
++No phone was attached, and no physical-device test, Android export/install, backend/full physics regression, live account mutation or deployment was performed. Remaining acceptance is the owner's visual review and phone readability/native sharing; existing PB-rollout and permanent-trophy/collision-evidence limitations are unchanged. Restart the game to load the correction.
++
++The [task-only checkpoint](evidence/rivalry-award-decoration-2026-10-12/scoped-change.patch) and [manifest](evidence/rivalry-award-decoration-2026-10-12/checkpoint.json) preserve unrelated work. No mixed working-tree commit was created.

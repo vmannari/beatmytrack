@@ -1,0 +1,56 @@
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-177"
++const VERSION: String = "track-kit-179"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -1539,7 +1539,9 @@
+ 	mesh.name = "WinterSnowBanks"
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/winter_bank.gdshader")
+-	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
++	_bind_grass(material)
++	material.set_shader_parameter("icy_road",true)
++	SurfaceShaderVariants.specialize(material)
+ 	mesh.material_override = material
+ 	tool.index()
+ 	tool.generate_normals()
+@@ -1675,12 +1677,13 @@
+ 	mesh.mesh = tool.commit()
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/winter_bank.gdshader")
+-	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
+-	material.set_shader_parameter("ice_albedo",WINTER_ICE)
++	_bind_grass(material)
++	material.set_shader_parameter("icy_road",true)
+ 	material.set_shader_parameter("smooth_road_bank",true)
+ 	material.set_shader_parameter("overlay_mask",mask)
+ 	material.set_shader_parameter("road_mask",road_mask)
+ 	material.set_shader_parameter("map_extent",extent)
++	SurfaceShaderVariants.specialize(material)
+ 	mesh.material_override = material
+ 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+ 	add_child(mesh)
+--- a/game/tests/test_terrain_sampler_budget.gd
++++ b/game/tests/test_terrain_sampler_budget.gd
+@@ -30,6 +30,15 @@
+ 		for node: Node in visual.get_children():
+ 			if not node is MeshInstance3D: continue
+ 			var material: ShaderMaterial = node.material_override as ShaderMaterial
++			if node.name.begins_with("WinterSnowBanks"):
++				checks += 1
++				if material == null or material.get_shader_parameter("surface_factors") != NativeTrackVisual.SURFACE_FACTORS:
++					failures += 1
++					push_error("Winter banks need the real shared detail texture")
++				checks += 1
++				if not material.has_meta("surface_dynamic_material"):
++					failures += 1
++					push_error("Winter bank shader must obey the phone sampler budget")
+ 			if material == null or not material.has_meta("surface_dynamic_material"): continue
+ 			var count: int = sampler.search_all(material.shader.code).size()
+ 			checks += 1

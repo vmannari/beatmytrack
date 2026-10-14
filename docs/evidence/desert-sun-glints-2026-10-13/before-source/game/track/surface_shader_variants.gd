@@ -1,0 +1,88 @@
+class_name SurfaceShaderVariants
+extends RefCounted
+## Fixed visual-material flags become constants; samples and lighting stay intact.
+const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
+const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed"]
+const INCLUDES: Dictionary = {
+	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
+	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
+	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
+	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
+	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
+}
+static var cache: Dictionary = {}
+
+static func specialize(material: ShaderMaterial) -> void:
+	var dynamic: ShaderMaterial = material.duplicate()
+	var source: String = material.shader.code
+	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
+	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
+		source = source.replace("diffuse_toon","diffuse_burley")
+	for pass_index: int in range(3):
+		for path: String in INCLUDES:
+			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
+	for flag: String in FLAGS:
+		var pattern := RegEx.new()
+		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
+		var found: RegExMatch = pattern.search(source)
+		if found == null: continue
+		var value: Variant = material.get_shader_parameter(flag)
+		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
+		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
+	# These roles are immutable for a built surface. Keep their public uniforms
+	# for material inspection/cache serialization, but compile their reads away.
+	for flag: String in MATERIAL_FLAGS:
+		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
+		# lighting when constant-folded, changing a sparse MSAA edge pixel.
+		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
+		var declaration := RegEx.new()
+		declaration.compile("uniform bool " + flag + "\\s*=\\s*(true|false)\\s*;")
+		var found: RegExMatch = declaration.search(source)
+		if found == null: continue
+		var value: Variant = material.get_shader_parameter(flag)
+		var enabled: bool = found.get_string(1) == "true" if value == null else bool(value)
+		var reads := RegEx.new()
+		reads.compile("\\b" + flag + "\\b")
+		source = reads.sub(source,"fixed_" + flag,true)
+		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
+	if material.get_shader_parameter("terrain_packed") == true:
+		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
+		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
+		var channels: Array[String] = ["r","g","b","a"]
+		for channel: int in range(4):
+			var kind: int = slots[channel]
+			if kind < 0: continue
+			assignments += "\n\t%s.%s = packed.%s;" % ["low" if kind < 4 else "high",channels[kind % 4],channels[channel]]
+		var remap := RegEx.new()
+		remap.compile("(?s)// packed_terrain_begin.*?// packed_terrain_end")
+		source = remap.sub(source,assignments,true)
+	# GLES drivers count declared samplers even in constant-disabled branches.
+	# Alias unreachable biome samples to the shared factor sampler so those
+	# declarations cannot consume phone texture units. Active artwork is untouched.
+	var inactive: Array[String] = []
+	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
+		inactive.append_array(["snow_albedo","ice_albedo","ice_finish"])
+	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
+		inactive.append_array(["desert_apron","desert_road_albedo","dune_factors","dune_albedo"])
+	if not (material.get_shader_parameter("hybrid_grass") == true):
+		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
+	for sampler: String in inactive:
+		var declaration := RegEx.new()
+		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
+		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
+	# Aliases in early helper bodies require the shared sampler declared first.
+	var factors := RegEx.new()
+	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
+	var factor_declaration: RegExMatch = factors.search(source)
+	if factor_declaration != null:
+		source = factors.sub(source,"",true)
+		var header_end: int = source.find(";",source.find("render_mode")) + 1
+		source = source.insert(header_end,"\n" + factor_declaration.get_string())
+	var key: String = source.sha256_text()
+	if not cache.has(key):
+		var shader := Shader.new()
+		shader.code = source
+		if cache.size()>=64: cache.erase(cache.keys()[0])
+		cache[key] = shader
+	material.set_meta("surface_dynamic_material",dynamic)
+	material.shader = cache[key] as Shader

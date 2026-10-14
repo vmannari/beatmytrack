@@ -1,0 +1,50 @@
+--- a/scripts/bake-surface-detail.py
++++ b/scripts/bake-surface-detail.py
+@@ -43,10 +43,15 @@
+ # Rounded fine minerals, shallow compacted hollows and quiet settled variation.
+ # Avoid the old isolated dark grit blobs; grain reads as sand rather than gravel.
+ old_sand = .965+(noise(.65,8.3,21.7)-.5)*.045+(noise(4.3,19.2,3.8)-.5)*.045+(noise(19.)-.5)*.12+smooth(.58,.82,noise(19.))*.04-smooth(.685,.885,grit)*.16
+-fine = noise(29.,13.1,4.7)
+-settled = noise(11.4,7.3,22.1)
+-sand = (noise(.22,8.3,21.7)-.5)*.022+(settled-.5)*.045+(fine-.5)*.105
+-sand += smooth(.60,.82,fine)*.018-(1-smooth(.20,.40,settled))*.016
++fine = noise(19.,13.1,4.7)
++settled = noise(7.4,7.3,22.1)
++# 10–20cm mineral groups survive the actual overhead camera's mip selection.
++# Soft, warped wind crests sit above this grain, never in two dominant ruts.
++wind_phase = 2*np.pi*(52*x+20*y)/TILE+(noise(.6,4.2,17.8)-.5)*5.0
++wind = np.sin(wind_phase)+.25*np.sin(wind_phase*2.0+.6)
++wind *= .5+noise(.3,9.2,3.4)*.5
++sand = (noise(.22,8.3,21.7)-.5)*.035+(settled-.5)*.19+(fine-.5)*.12
++sand += wind*.027+smooth(.60,.82,fine)*.025-(1-smooth(.20,.40,settled))*.022
+ # Preserve the approved pigment's average brightness exactly before encoding.
+ sand += old_sand.mean()-sand.mean()
+ pixels = np.stack(((asphalt-.8)/.4,noise(2.8),(sand-.8)/.4),axis=-1)
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -96,9 +96,11 @@
+ 	if (desert_dunes) return dune_sand(p);
+ 	// Two independent mineral scales suppress obvious repeated clusters. Both
+ 	// reuse the existing packed map, keeping the Android sampler budget intact.
+-	float grain = texture(surface_factors,p/16.0).b;
+-	float settled = texture(surface_factors,vec2(-p.y,p.x)/27.0+vec2(0.37,0.61)).b;
+-	float mineral = mix(grain,settled,0.28);
++	// Full authored scale keeps mineral groups and shallow wind crests visible
++	// at gameplay distance; the earlier half-scale grains vanished into mips.
++	float grain = texture(surface_factors,p/32.0).b;
++	float settled = texture(surface_factors,vec2(-p.y,p.x)/43.0+vec2(0.37,0.61)).b;
++	float mineral = mix(grain,settled,0.15);
+ 	return base * (0.8 + mineral * 0.4);
+ }
+ 
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-180"
++const VERSION: String = "track-kit-181"
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]

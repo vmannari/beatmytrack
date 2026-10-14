@@ -1,0 +1,1162 @@
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -10,6 +10,7 @@
+ signal join_requested
+ signal refresh_requested
+ signal continue_requested
++signal share_requested
+ signal retry_requested
+ var model: WeeklyRivalry
+ var section: String = "overview"
+@@ -28,6 +29,8 @@
+ var track_rows: Array[Button] = []
+ var track_markers: Array[ColorRect] = []
+ var detail_route: LapRouteView
++var finale_livery: Dictionary = {}
++var finale_condition: Dictionary = {}
+ const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
+ const STANDINGS_GUTTER: int = 12
+ const QUIET_BORDER := Color("2e495a88")
+@@ -51,7 +54,8 @@
+ 	var main := VBoxContainer.new()
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(main)
+-	main.add_theme_constant_override("separation",12)
++	var awards: bool = section == "overview" and model.completed
++	main.add_theme_constant_override("separation",6 if awards else 12)
+ 	var header := HBoxContainer.new()
+ 	header.name = "RivalrySectionNavigation"
+ 	header.add_theme_constant_override("separation",24)
+@@ -73,7 +77,7 @@
+ 	identity.add_theme_constant_override("separation",4)
+ 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	header.add_child(identity)
+-	var heading := MenuStyle.label("WEEKLY RIVALRY",38)
++	var heading := MenuStyle.label("WEEKLY RIVALRY",30 if awards else 38)
+ 	heading.add_theme_color_override("font_shadow_color",Color("061320"))
+ 	heading.add_theme_constant_override("shadow_offset_y",2)
+ 	identity.add_child(heading)
+@@ -667,4 +671,13 @@
+ 	parent.add_child(result_view)
+ 
+ func _finale(parent: Control) -> void:
+-	_championship(parent,true)
++	var ceremony := preload("res://ui/weekly_rivalry_finale.gd").new()
++	ceremony.model = model
++	ceremony.busy = busy
++	ceremony.error = error
++	ceremony.livery = finale_livery
++	ceremony.condition = finale_condition
++	ceremony.track_requested.connect(func(index: int) -> void: track_requested.emit(index))
++	ceremony.continue_requested.connect(func() -> void: continue_requested.emit())
++	ceremony.share_requested.connect(func() -> void: share_requested.emit())
++	parent.add_child(ceremony)
+diff --git a/game/race/weekly_rivalry.gd b/game/race/weekly_rivalry.gd
+--- a/game/race/weekly_rivalry.gd
++++ b/game/race/weekly_rivalry.gd
+@@ -25,6 +25,7 @@
+ var forming: bool = false
+ var vehicle_id: String = "compact"
+ var source_self: String = ""
++var personal_best_slots: Array[int] = []
+ 
+ func _init(use_sample: bool = false) -> void:
+ 	sample = use_sample
+@@ -47,6 +48,9 @@
+ 	forming = bool(value.get("group_forming",false))
+ 	vehicle_id = str(value.get("vehicle_id",VehicleCatalog.selected))
+ 	source_self = str(value.get("self_id",""))
++	personal_best_slots.clear()
++	for slot: Variant in value.get("personal_best_slots",[]):
++		if (slot is int or slot is float) and is_finite(float(slot)) and float(slot) == floor(float(slot)) and slot >= 0 and slot < 5 and not personal_best_slots.has(int(slot)): personal_best_slots.append(int(slot))
+ 	if value.get("points_policy") is Array: points_policy.assign(value.points_policy)
+ 	tracks.clear()
+ 	server_standings.clear()
+@@ -218,6 +222,72 @@
+ 	week += 1
+ 	completed = false
+ 	_seed()
++	personal_best_slots.clear()
++
++func finale_summary() -> Dictionary:
++	var standings: Array[Dictionary] = standing()
++	var own: Dictionary = self_row(standings)
++	var wins: int = 0
++	var shared: int = 0
++	var finishes: int = 0
++	var results: Array[Dictionary] = []
++	for slot: int in range(tracks.size()):
++		var rows: Array[Dictionary] = board(slot)
++		var driver: Dictionary = self_row(rows)
++		var finishers: Array[Dictionary] = []
++		for row: Dictionary in rows:
++			if row.get("ms") != null: finishers.append(row)
++		finishers.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return _result_order(a) < _result_order(b))
++		var finished: bool = driver.get("ms") != null
++		if finished: finishes += 1
++		var victory: bool = finished and driver.get("rank") == 1 and finishers.size() > 1
++		var tied: bool = victory and _result_order(finishers[0]) == _result_order(finishers[1])
++		if victory: wins += 1
++		if tied: shared += 1
++		var second: Dictionary = finishers[1] if finishers.size() > 1 else {}
++		var gap: Variant = int(driver.ms)-int(second.ms) if finished and not second.is_empty() else null
++		results.append({"slot":slot,"own":driver,"victory":victory,"shared":tied,"gap_to_second_ms":gap})
++	var leaders: int = 0
++	for driver: Dictionary in standings:
++		if driver.get("rank") == 1: leaders += 1
++	var contested: bool = standings.size() > 1
++	var champion: bool = completed and own.get("rank") == 1 and finishes > 0 and contested
++	var perfect: bool = champion and wins == 5 and shared == 0
++	var tier: int = 3 if perfect else 2 if champion else 1 if completed and own.get("rank") != null and int(own.rank) <= 3 and contested else 0
++	var title: String = "JOINT WEEKLY CHAMPION" if champion and leaders > 1 else "WEEKLY CHAMPION" if champion else "PODIUM FINISH" if tier == 1 else "WEEK COMPLETE"
++	var margin: int = 0
++	var rival: String = ""
++	if champion:
++		for driver: Dictionary in standings:
++			if driver.id != SELF:
++				margin = int(own.get("points",0))-int(driver.points)
++				rival = str(driver.name)
++				break
++	var highlights: Array[String] = []
++	if perfect: highlights.append("Victory on every track")
++	elif wins > 0: highlights.append("%d track %s" % [wins,"victory" if wins == 1 else "victories"])
++	if champion and margin > 0: highlights.append("%d-point winning margin" % margin)
++	elif champion and leaders > 1: highlights.append("Shared championship lead")
++	elif tier == 1: highlights.append("Championship podium")
++	if not personal_best_slots.is_empty(): highlights.append("Personal bests on %d %s" % [personal_best_slots.size(),"track" if personal_best_slots.size() == 1 else "tracks"])
++	if finishes == 5 and not perfect: highlights.append("All five tracks completed")
++	if highlights.is_empty(): highlights.append("%d of five tracks completed" % finishes)
++	return {"title":title,"tier":tier,"champion":champion,"perfect":perfect,"wins":wins,"shared_wins":shared,
++		"completed":finishes,"rank":own.get("rank"),"points":int(own.get("points",0)),"drivers":standings.size(),
++		"margin":margin,"rival":rival,"results":results,"highlights":highlights}
++
++func finale_share_text() -> String:
++	if not completed: return ""
++	var summary: Dictionary = finale_summary()
++	var position: String = "Unranked" if summary.rank == null else "#%d / %d" % [int(summary.rank),int(summary.drivers)]
++	var lines: Array[String] = ["Beat my track - Weekly Rivalry - Week %02d" % week,
++		summary.title.capitalize(),"%s | %d points | %d/5 track victories" % [position,summary.points,summary.wins],VehicleCatalog.title(vehicle_id)]
++	for result: Dictionary in summary.results:
++		var driver: Dictionary = result.own
++		lines.append("%s: %s | %s | %d points" % [str(tracks[result.slot].name),"--" if driver.get("rank") == null else "#%d" % int(driver.rank),
++			"No time" if driver.get("ms") == null else MenuStyle.time_text(float(driver.ms)/1000.0),int(driver.get("points",0))])
++	if summary.perfect: lines.append("Perfect Week - five tracks, five outright victories")
++	return "\n".join(lines)
+ 
+ func board(index: int) -> Array[Dictionary]:
+ 	var rows: Array[Dictionary] = []
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1487,6 +1487,8 @@
+ 		child.queue_free()
+ 	var page := WeeklyRivalryPage.new()
+ 	page.model = rivalry.model
++	page.finale_livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
++	page.finale_condition = VehicleCondition.read(records,rivalry.model.vehicle_id)
+ 	page.standings_identity = rivalry.scope()+"/"+rivalry.model.group_id+"/"+str(rivalry.model.week)
+ 	if rivalry_standings_view.get("key","") == page.standings_identity:
+ 		page.standings_scroll_offset = int(rivalry_standings_view.offset)
+@@ -1530,11 +1532,24 @@
+ 			rivalry.model.next_week()
+ 			_rivalry()
+ 		else: rivalry.continue_week())
++	page.share_requested.connect(_share_rivalry_results)
+ 	page.retry_requested.connect(_retry_race)
+ 	parent.add_child(page)
+ 	_keep_race_mode_rail_fixed(page)
+ 	if page.section == "detail" and not rivalry.model.sample and not rivalry.model.tracks.is_empty():
+ 		_prepare_rivalry_track_preview(page,rivalry_track)
++
++func _share_rivalry_results() -> void:
++	if rivalry.busy or rivalry.cached_snapshot or not rivalry.model.completed: return
++	if not rivalry.model.sample and rivalry.snapshot_scope != rivalry.scope(): return
++	var text: String = rivalry.model.finale_share_text()
++	if text.is_empty(): return
++	if challenge_links.share(text): return
++	var dialog := AcceptDialog.new()
++	dialog.title = "Championship results copied"
++	dialog.dialog_text = text
++	_own_dialog(dialog)
++	dialog.popup_centered(Vector2i(620,360))
+ 
+ func _remember_rivalry_standings(parent: Control) -> void:
+ 	if not is_instance_valid(parent): return
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -86,6 +86,12 @@
+ 	_continue_key = ""
+ 
+ static func valid_snapshot(value: Dictionary) -> bool:
++	if value.has("personal_best_slots"):
++		if not value.personal_best_slots is Array or value.personal_best_slots.size() > 5: return false
++		var seen: Array[int] = []
++		for slot: Variant in value.personal_best_slots:
++			if not (slot is int or slot is float) or not is_finite(float(slot)) or float(slot) != floor(float(slot)) or slot < 0 or slot >= 5 or seen.has(int(slot)): return false
++			seen.append(int(slot))
+ 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
+ 	if value.has("test_population") and not value.test_population is bool: return false
+ 	if value.has("automatic_test_drivers") and not value.automatic_test_drivers is bool: return false
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -224,6 +224,11 @@
+     pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
+         .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
+     state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
++    personal_best_slots = []
++    if state == "complete":
++        personal_best_slots = sorted(session.scalars(select(RivalryTicket.slot).join(Run, Run.ticket_id == RivalryTicket.ticket_id)
++            .where(RivalryTicket.group_id == group.id, Run.player_id == player_id, Run.status == "verified",
++                   RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()).all())
+     iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
+     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
+               "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
+@@ -231,7 +236,7 @@
+               "test_population": group.test_population,
+               "automatic_test_drivers": bool(group.tracks[0].get("automatic_test_drivers", False)),
+               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
+-              "points_policy": list(POINTS), "pending_runs": pending}
++              "points_policy": list(POINTS), "pending_runs": pending, "personal_best_slots": personal_best_slots}
+     availability = dict(session.execute(select(TrackVersion.id,
+         (TrackVersion.state == "published") & Track.hidden.is_(False) & Player.disabled.is_(False))
+         .join(Track).join(Player, Player.id == Track.owner_id)
+@@ -421,6 +426,8 @@
+         return
+     before_tracks, before_overall = standings_data(session, group)
+     prior = next(row for row in before_tracks[binding.slot] if row["id"] == run.player_id)
++    personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
++    new_personal_best = personal_best is None or run.time_ticks < personal_best.time_ticks
+     best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
+     improved = best is None or run.time_ticks < best.time_ticks
+     if improved:
+@@ -433,7 +440,7 @@
+     after = next(row for row in after_tracks[binding.slot] if row["id"] == run.player_id)
+     beaten = [row for row in before_tracks[binding.slot] if row["id"] != run.player_id and row["ticks"] is not None
+               and run.time_ticks < row["ticks"] and (prior["ticks"] is None or row["ticks"] < prior["ticks"])] if improved else []
+-    binding.outcome = {"improved": improved, "before": prior, "after": after,
++    binding.outcome = {"improved": improved, "personal_best": new_personal_best, "before": prior, "after": after,
+                        "points_delta": after["points"] - prior["points"], "beaten": beaten,
+                        "ms": round(run.time_ticks * 1000 / group.tracks[binding.slot]["tick_rate"]),
+                        "overall_before": next(row for row in before_overall if row["id"] == run.player_id),
+diff --git a/docs/schemas/weekly-rivalry-v1.schema.json b/docs/schemas/weekly-rivalry-v1.schema.json
+--- a/docs/schemas/weekly-rivalry-v1.schema.json
++++ b/docs/schemas/weekly-rivalry-v1.schema.json
+@@ -36,6 +36,7 @@
+         "group_forming": {"type": "boolean"},
+         "placement": {"type": "boolean"},
+         "pending_runs": {"type": "integer", "minimum": 0},
++        "personal_best_slots": {"type": "array", "maxItems": 5, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 4}},
+         "points_policy": {"type": "array", "minItems": 20, "maxItems": 20, "items": {"type": "integer", "minimum": 0}},
+         "standings": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"$ref": "#/$defs/driver"}},
+         "tracks": {
+diff --git a/game/tests/test_weekly_rivalry.gd b/game/tests/test_weekly_rivalry.gd
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -202,7 +202,7 @@
+ 		await settle()
+ 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+ 		await capture("weekly-finale",dimensions)
+-		check(app.root_ui.find_child("RivalryPodium",true,false) != null,"weekly finale is an Overview state")
++		check(app.rivalry_section == "overview" and app.root_ui.find_child("WeeklyRivalryFinale",true,false) != null,"completed overview becomes the championship awards ceremony")
+ 		(app.root_ui.find_child("SelectRivalryTrack_2",true,false) as Button).pressed.emit()
+ 		await settle()
+ 		check(app.rivalry_section == "detail" and (app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"completed-week rows open details but cannot start another race")
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-12 STUDIO-LOCAL-DRAFTS-01/STUDIO-CATALOGUE-01/STUDIO-RACE-PACKAGE-01/STUDIO-MONITOR-01/B05/B07/Q01: owner deploy backend completed17:38:57Helsinki. Frozen35backend overlay preserves deployed gameplay/compiler; revision00044-kin100%, schema27->30, backup1791815457222;408players/4311runs/2883PBs and durable hashes preserved. ExactimageSQLite217/PG335 (8skips each), maintenance53/browser27; live native-storage-schema/oneworker/14assets/GET-onlybrowser18 pass, temporarytagsremoved/writegate3m12s. No phone test/client export/install/compiler or unrelated rivalry rollout. Actual commands/evidence/limitations: docs/BACKEND_DEPLOY_2026_10_12.md.
++
++2026-10-12 AR01-AR10/WR01/WR03/WR08/WC01-WC04/B05/B07/R01/V03-V05/Q01: reference-led Weekly Rivalry awards. Earned champion/joint/podium/week-complete tiers, gold crown-laurels/bounded confetti, actual pinned car/local paint-condition, three facts/five route thumbnails/rank-time-signed second-gap-points, compact player-neighbour field, verified PB facts/strict JSON and earned Perfect Week; native text sharing/desktop copy, existing single-press Continue. Final Compatibility1706/MobileVulkan1706/66 captures; weekly1115/Continue38/App99/entry66/automatic7/parser559/Import, SQLite14/ownedPostgreSQL13/Ruff pass. No phone attached/device test/APK/fullValidate/livewrites/deploy/permanent trophies; clean-driving evidence and server PB rollout remain. Actual commands/files/limits/scoped checkpoint/owner-device review: docs/RIVALRY_AWARDS.md.
+ 
+ 2026-10-12 WE27-WE29/V04/V05/G01/R01/Q01: owner requests higher banks/visible snow blocks/white snow with blue shadows, then rejects separate block construction. Final kit148 restores connected kit142 geometry and original sculpted detail; crown0.60->0.74m, embedded fragment radius base0.16->0.19m/height0.12->0.16m; neutral raised-snow luminance lift/elevation blend to original terrain, same texture samples/indexed caches/80-patch240-fragment cap/road-poles-camera-physics untouched. Final Native101/MobileVulkan100/wind47 pass; RTX3090 Slippery4K full20s2400ticks median3.646ms/p956.735ms/GPU2.440ms/0 >16.667ms; same draws/indices, no speedup claim. Rejected prototypes archived; owner reference-quality acceptance remains. Doctor empty ADB/no phone test/export-install/fullValidate/physics/backend/deploy/livewrites. Files/actual commands/captures/scoped checkpoint/limits: docs/WINTER_BANK_CORRECTION.md.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-12 STUDIO-LOCAL-DRAFTS-01/STUDIO-CATALOGUE-01/STUDIO-RACE-PACKAGE-01/STUDIO-MONITOR-01/B05/B07/Q01: owner deploy backend completed17:38:57Helsinki. Frozen35backend overlay preserves deployed gameplay/compiler; revision00044-kin100%, schema27->30, backup1791815457222;408players/4311runs/2883PBs and durable hashes preserved. ExactimageSQLite217/PG335 (8skips each), maintenance53/browser27; live native-storage-schema/oneworker/14assets/GET-onlybrowser18 pass, temporarytagsremoved/writegate3m12s. No phone test/client export/install/compiler or unrelated rivalry rollout. Actual commands/evidence/limitations: docs/BACKEND_DEPLOY_2026_10_12.md.
++
++2026-10-12 AR01-AR10/WR01/WR03/WR08/WC01-WC04/B05/B07/R01/V03-V05/Q01: reference-led Weekly Rivalry awards. Earned champion/joint/podium/week-complete tiers, gold crown-laurels/bounded confetti, actual pinned car/local paint-condition, three facts/five route thumbnails/rank-time-signed second-gap-points, compact player-neighbour field, verified PB facts/strict JSON and earned Perfect Week; native text sharing/desktop copy, existing single-press Continue. Final Compatibility1706/MobileVulkan1706/66 captures; weekly1115/Continue38/App99/entry66/automatic7/parser559/Import, SQLite14/ownedPostgreSQL13/Ruff pass. No phone attached/device test/APK/fullValidate/livewrites/deploy/permanent trophies; clean-driving evidence and server PB rollout remain. Actual commands/files/limits/scoped checkpoint/owner-device review: docs/RIVALRY_AWARDS.md.
+ 
+ 2026-10-12 WE27-WE29/V04/V05/G01/R01/Q01: owner requests higher banks/visible snow blocks/white snow with blue shadows, then rejects separate block construction. Final kit148 restores connected kit142 geometry and original sculpted detail; crown0.60->0.74m, embedded fragment radius base0.16->0.19m/height0.12->0.16m; neutral raised-snow luminance lift/elevation blend to original terrain, same texture samples/indexed caches/80-patch240-fragment cap/road-poles-camera-physics untouched. Final Native101/MobileVulkan100/wind47 pass; RTX3090 Slippery4K full20s2400ticks median3.646ms/p956.735ms/GPU2.440ms/0 >16.667ms; same draws/indices, no speedup claim. Rejected prototypes archived; owner reference-quality acceptance remains. Doctor empty ADB/no phone test/export-install/fullValidate/physics/backend/deploy/livewrites. Files/actual commands/captures/scoped checkpoint/limits: docs/WINTER_BANK_CORRECTION.md.
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,8 @@
+ # Project agent instructions
++
++## Weekly Rivalry awards override (2026-10-12)
++
++The owner requests a championship awards ceremony for completed Weekly Rivalry: performance-scaled champion/joint/podium/completion presentation, actual pinned car and local cosmetics, factual summary cards, five individual route thumbnails and rank/time/signed second-place gap/points, compact player-neighbour standings, earned highlights/Perfect Week badge, result sharing and prominent Continue. This supersedes the old completed Overview podium/list only; active hub/detail and normal race results remain unchanged. Clean-driving claims require collision evidence; permanent profile trophies are a potential future extension, not granted by this presentation. Preserve single-press current-week enrollment, five laps, verified best-only scoring, pinned contracts and public/development isolation. See `docs/RIVALRY_AWARDS.md` for actual files, commands, captures and remaining owner/device/PB-rollout acceptance. Production deployment remains separately authorized.
+ 
+ ## Garage shared background and rail icons override (2026-10-12)
+ The owner removes Garage's opaque page background so the general menu background picture shows through the page surround, and requests improved side-menu icons. Use the original Garage car/paintbrush/droplet-bubbles/wrench vector glyphs with the Race rail's optical weight; keep the central turnable-pedestal showroom and existing Select car/Customise/Care/Tuning flow. See `docs/GARAGE_BACKGROUND_ICONS.md` for actual files, tests, captures and remaining owner/phone readability acceptance.
+diff --git a/game/ui/weekly_rivalry_finale.gd b/game/ui/weekly_rivalry_finale.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/weekly_rivalry_finale.gd
+@@ -0,0 +1,319 @@
++extends VBoxContainer
++## Championship awards with verified facts and unchanged detail/continue actions.
++signal track_requested(index: int)
++signal continue_requested
++signal share_requested
++const AwardArt = preload("res://ui/rivalry_award_art.gd")
++const VictoryCar = preload("res://ui/rivalry_victory_car.gd")
++const Badge = preload("res://ui/biome_badge.gd")
++var model: WeeklyRivalry
++var busy: bool = false
++var error: String = ""
++var livery: Dictionary = {}
++var condition: Dictionary = {}
++var summary: Dictionary
++var hero: Control
++var hero_copy: VBoxContainer
++var ornament: Control
++var vehicle: Control
++var metrics: HBoxContainer
++var title: Label
++var track_buttons: Array[Button] = []
++
++class RouteThumbnail extends Control:
++	var entry: Dictionary = {}
++	var route := PackedVector2Array()
++	var bounds: Rect2
++	func _ready() -> void:
++		clip_contents = true
++		custom_minimum_size = Vector2(70,44)
++		mouse_filter = Control.MOUSE_FILTER_IGNORE
++		for point: Array in entry.get("points",[]): route.append(Vector2(point[0],point[1]))
++		if not route.is_empty():
++			bounds = Rect2(route[0],Vector2.ZERO)
++			for point: Vector2 in route: bounds = bounds.expand(point)
++		resized.connect(queue_redraw)
++	func _draw() -> void:
++		draw_texture_rect(TrackTile.scenery_texture(str(entry.get("theme","pine"))),Rect2(Vector2.ZERO,size),false)
++		if route.size() < 2: return
++		var scale_value: float = minf((size.x-12)/maxf(1,bounds.size.x),(size.y-12)/maxf(1,bounds.size.y))
++		var points := PackedVector2Array()
++		for point: Vector2 in route: points.append(size*0.5+(point-bounds.get_center())*scale_value)
++		points.append(points[0])
++		draw_polyline(points,Color("101b27"),4,true)
++		draw_polyline(points,Color("f1f0d9"),1.5,true)
++		draw_circle(points[0],2,MenuStyle.ACCENT)
++
++func _ready() -> void:
++	name = "WeeklyRivalryFinale"
++	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",8)
++	summary = model.finale_summary()
++	_build_hero()
++	var columns := HBoxContainer.new()
++	columns.name = "RivalryAwardsColumns"
++	columns.add_theme_constant_override("separation",14)
++	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_child(columns)
++	_build_tracks(columns)
++	var right := VBoxContainer.new()
++	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	right.size_flags_stretch_ratio = 0.82
++	right.add_theme_constant_override("separation",8)
++	columns.add_child(right)
++	_build_standings(right)
++	_build_highlights(right)
++	var actions := HBoxContainer.new()
++	actions.name = "RivalryFinaleActions"
++	actions.add_theme_constant_override("separation",14)
++	add_child(actions)
++	var share := MenuStyle.button("SHARE RESULTS",func() -> void: share_requested.emit())
++	share.name = "RivalryShareResults"
++	share.icon = MenuIcon.texture("share")
++	share.expand_icon = true
++	share.add_theme_constant_override("icon_max_width",25)
++	share.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	share.custom_minimum_size.y = 52
++	share.disabled = busy
++	actions.add_child(share)
++	var next := MenuStyle.button("CONTINUE TO NEXT WEEK   →",func() -> void: continue_requested.emit(),true)
++	next.name = "RivalryNextWeek"
++	next.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	next.custom_minimum_size.y = 52
++	next.disabled = busy
++	actions.add_child(next)
++	resized.connect(_layout_hero)
++	_layout_hero()
++
++func _label(parent: Control, text: String, font_size: int, color: Color = MenuStyle.TEXT) -> Label:
++	var value := MenuStyle.label(text,font_size)
++	value.add_theme_color_override("font_color",color)
++	value.autowrap_mode = TextServer.AUTOWRAP_OFF
++	value.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	value.clip_text = true
++	parent.add_child(value)
++	return value
++
++func _panel(parent: Control, id: String) -> VBoxContainer:
++	var panel := PanelContainer.new()
++	panel.name = id
++	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	var style: StyleBoxFlat = MenuStyle.card(8)
++	style.border_color = Color("526577")
++	style.shadow_size = 2
++	panel.add_theme_stylebox_override("panel",style)
++	parent.add_child(panel)
++	var box := VBoxContainer.new()
++	box.add_theme_constant_override("separation",4)
++	panel.add_child(box)
++	return box
++
++func _build_hero() -> void:
++	hero = Control.new()
++	hero.name = "RivalryAwardsHero"
++	hero.custom_minimum_size.y = 112
++	add_child(hero)
++	ornament = AwardArt.new()
++	ornament.name = "RivalryChampionLaurels"
++	ornament.tier = summary.tier
++	hero.add_child(ornament)
++	vehicle = VictoryCar.new()
++	vehicle.name = "RivalryVictoryCar"
++	vehicle.vehicle_id = model.vehicle_id
++	vehicle.livery = livery
++	vehicle.condition = condition
++	hero.add_child(vehicle)
++	hero_copy = VBoxContainer.new()
++	hero_copy.add_theme_constant_override("separation",3)
++	hero.add_child(hero_copy)
++	title = _label(hero_copy,summary.title,52,Color("ffe49a") if summary.tier > 0 else MenuStyle.TEXT)
++	title.name = "RivalryAwardTitle"
++	title.add_theme_font_override("font",MenuStyle.DISPLAY)
++	title.add_theme_color_override("font_outline_color",Color("583b12") if summary.tier > 0 else MenuStyle.INK)
++	title.add_theme_constant_override("outline_size",2)
++	title.add_theme_color_override("font_shadow_color",Color("080d15"))
++	title.add_theme_constant_override("shadow_offset_y",3)
++	var subtitle: String = "FIVE TRACKS. FIVE VICTORIES." if summary.perfect else "YOUR CHAMPIONSHIP, CELEBRATED." if summary.champion else "YOUR WEEK ON THE TRACK."
++	_label(hero_copy,subtitle,17,MenuStyle.TEXT).add_theme_font_override("font",MenuStyle.DISPLAY)
++	var context: String = "%d points ahead of %s." % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else "%d of five tracks completed." % summary.completed
++	if not error.is_empty(): context = error
++	var message: Label = _label(hero_copy,context,14,MenuStyle.MUTED)
++	message.name = "RivalryStatusMessage"
++	message.tooltip_text = context
++	metrics = HBoxContainer.new()
++	metrics.name = "RivalryFinalSummary"
++	metrics.add_theme_constant_override("separation",8)
++	hero.add_child(metrics)
++	for fact: Array in [["FINAL POSITION","—" if summary.rank == null else "%d / %d" % [int(summary.rank),summary.drivers],"trophy"],
++		["TOTAL POINTS",str(summary.points),"star"],["TRACK VICTORIES","%d / 5" % summary.wins,"flag"]]:
++		var card: VBoxContainer = _panel(metrics,"RivalrySummary_"+str(fact[0]).replace(" ","_"))
++		var number := HBoxContainer.new()
++		number.add_theme_constant_override("separation",8)
++		card.add_child(number)
++		var icon := TextureRect.new()
++		icon.texture = MenuIcon.texture(str(fact[2]))
++		icon.modulate = MenuStyle.ACCENT
++		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		icon.custom_minimum_size = Vector2(23,23)
++		number.add_child(icon)
++		_label(number,str(fact[1]),26,MenuStyle.ACCENT).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		_label(card,str(fact[0]),12,MenuStyle.MUTED)
++
++func _layout_hero() -> void:
++	if not is_instance_valid(hero): return
++	var width: float = size.x
++	var height: float = clampf(size.y*0.23,112,180)
++	hero.custom_minimum_size.y = height
++	ornament.position = Vector2(0,8)
++	ornament.size = Vector2(width*0.53,height-10)
++	hero_copy.position = Vector2(56,14 if height < 140 else 22)
++	hero_copy.size = Vector2(width*0.53-110,height-hero_copy.position.y)
++	var font_size: int = (46 if height < 140 else 56) if not summary.title.begins_with("JOINT") else 40
++	while font_size > 28 and MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > hero_copy.size.x: font_size -= 1
++	title.add_theme_font_size_override("font_size",font_size)
++	vehicle.position = Vector2(width*0.65,-58)
++	vehicle.size = Vector2(width*0.33,height+20)
++	metrics.position = Vector2(width*0.55,height-68)
++	metrics.size = Vector2(width*0.45,68)
++
++func _build_tracks(parent: Control) -> void:
++	var list: VBoxContainer = _panel(parent,"RivalryTracksPanel")
++	list.get_parent().size_flags_stretch_ratio = 1.30
++	var heading := HBoxContainer.new()
++	list.add_child(heading)
++	_label(heading,"YOUR TRACK RESULTS",25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_label(heading,"%d / 5 WON" % summary.wins,13,MenuStyle.MUTED)
++	var scroll := ScrollContainer.new()
++	scroll.name = "RivalryFinalTrackScroll"
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	list.add_child(scroll)
++	var rows := VBoxContainer.new()
++	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	rows.add_theme_constant_override("separation",4)
++	scroll.add_child(rows)
++	for result: Dictionary in summary.results:
++		var slot: int = result.slot
++		var track: Dictionary = model.tracks[slot]
++		var own: Dictionary = result.own
++		var row := MenuStyle.button("",func() -> void: track_requested.emit(slot))
++		row.name = "SelectRivalryTrack_"+str(slot)
++		row.tooltip_text = "View "+str(track.name)
++		row.custom_minimum_size.y = 52
++		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		var style := MenuStyle.box(Color("182c37"),0)
++		style.set_border_width_all(1)
++		style.border_color = Color("977b30") if result.victory else Color("344e5d")
++		row.add_theme_stylebox_override("normal",style)
++		rows.add_child(row)
++		track_buttons.append(row)
++		var line := HBoxContainer.new()
++		line.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		line.add_theme_constant_override("separation",9)
++		row.add_child(line)
++		MenuStyle.fill(line)
++		line.offset_left = 8; line.offset_right = -8; line.offset_top = 3; line.offset_bottom = -3
++		var rank: Label = _label(line,"—" if own.get("rank") == null else str(int(own.rank)),25,MenuStyle.ACCENT if result.victory else MenuStyle.TEXT)
++		rank.custom_minimum_size.x = 25
++		rank.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		var tile := RouteThumbnail.new()
++		tile.name = "RivalryFinalThumbnail_"+str(slot)
++		tile.entry = track.get("entry",track.document).duplicate(true)
++		tile.entry.theme = track.theme
++		tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		tile.custom_minimum_size.x = 70
++		line.add_child(tile)
++		var identity := VBoxContainer.new()
++		identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		identity.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		identity.add_theme_constant_override("separation",0)
++		line.add_child(identity)
++		_label(identity,str(track.name),20).add_theme_font_override("font",MenuStyle.DISPLAY)
++		_label(identity,TrackTheme.title(str(track.theme)),12,Badge.color(str(track.theme)))
++		for column: Array in [["TIME","—" if own.get("ms") == null else MenuStyle.time_text(float(own.ms)/1000.0),84],
++			["GAP TO 2ND","—" if result.gap_to_second_ms == null else "%+.3f" % (float(result.gap_to_second_ms)/1000.0),80],
++			["POINTS",str(int(own.get("points",0))),45]]:
++			var field := VBoxContainer.new()
++			field.custom_minimum_size.x = column[2]
++			field.add_theme_constant_override("separation",0)
++			field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++			line.add_child(field)
++			_label(field,str(column[0]),11,MenuStyle.MUTED)
++			_label(field,str(column[1]),20,MenuStyle.TEXT).add_theme_font_override("font",MenuStyle.DISPLAY)
++		_label(line,"›",26,MenuStyle.MUTED).size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		_ignore_children(line)
++
++func _ignore_children(node: Node) -> void:
++	for child: Node in node.get_children():
++		if child is Control: child.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		_ignore_children(child)
++
++func _build_standings(parent: Control) -> void:
++	var box: VBoxContainer = _panel(parent,"RivalryDriversPanel")
++	var heading := HBoxContainer.new()
++	box.add_child(heading)
++	_label(heading,"FINAL STANDINGS",25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_label(heading,"%d DRIVERS" % summary.drivers,13,MenuStyle.MUTED)
++	var standings: Array[Dictionary] = model.standing()
++	var own_index: int = 0
++	for index: int in range(standings.size()):
++		if standings[index].id == WeeklyRivalry.SELF: own_index = index
++	var indexes: Array[int] = [0]
++	var start: int = clampi(own_index-2,0,maxi(0,standings.size()-5))
++	for index: int in range(start,mini(standings.size(),start+5)):
++		if not indexes.has(index): indexes.append(index)
++	while indexes.size() > 5:
++		var remove_at: int = 1 if absi(indexes[1]-own_index) > absi(indexes[-1]-own_index) else indexes.size()-1
++		indexes.remove_at(remove_at)
++	indexes.sort()
++	for index: int in indexes:
++		var driver: Dictionary = standings[index]
++		var panel := PanelContainer.new()
++		panel.name = "FinalDriver_"+str(driver.id)
++		var own: bool = driver.id == WeeklyRivalry.SELF
++		var style: StyleBoxFlat = MenuStyle.box(Color("57481d88") if own else Color("0a172280"),2)
++		style.border_color = MenuStyle.ACCENT if own else Color("314755")
++		style.set_border_width_all(1 if own else 0)
++		panel.add_theme_stylebox_override("panel",style)
++		box.add_child(panel)
++		var line := HBoxContainer.new()
++		line.add_theme_constant_override("separation",7)
++		panel.add_child(line)
++		var color: Color = MenuStyle.ACCENT if own else MenuStyle.TEXT
++		_label(line,"—" if driver.get("rank") == null else str(int(driver.rank)),17,color).custom_minimum_size.x = 23
++		line.add_child(PlayerCountry.flag(str(driver.get("country_code","")),23))
++		_label(line,str(driver.name),17,color).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		_label(line,str(int(driver.points)),17,color).custom_minimum_size.x = 36
++		var gap: int = int(driver.points)-summary.points
++		_label(line,"—" if own or driver.get("rank") == null else "%+d" % gap,16,color if own else MenuStyle.MUTED).custom_minimum_size.x = 35
++
++func _build_highlights(parent: Control) -> void:
++	var box: VBoxContainer = _panel(parent,"RivalryWeeklyHighlights")
++	box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_END
++	_label(box,"YOUR WEEK HIGHLIGHTS",23)
++	var line := HBoxContainer.new()
++	box.add_child(line)
++	var copy := VBoxContainer.new()
++	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	copy.add_theme_constant_override("separation",3)
++	line.add_child(copy)
++	for text: String in summary.highlights:
++		_label(copy,"✓  "+text,15,MenuStyle.POSITIVE)
++	if summary.perfect:
++		var badge := Control.new()
++		badge.name = "RivalryPerfectWeekBadge"
++		badge.custom_minimum_size = Vector2(100,72)
++		line.add_child(badge)
++		var art := AwardArt.new()
++		art.tier = 3
++		art.badge = true
++		badge.add_child(art)
++		MenuStyle.fill(art)
++		var label: Label = _label(badge,"PERFECT\nWEEK",20,MenuStyle.ACCENT)
++		label.add_theme_font_override("font",MenuStyle.DISPLAY)
++		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		MenuStyle.fill(label)
++		label.offset_top = 20
+diff --git a/game/ui/weekly_rivalry_finale.gd.uid b/game/ui/weekly_rivalry_finale.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/weekly_rivalry_finale.gd.uid
+@@ -0,0 +1 @@
++uid://bi12sxlwa2li1
+diff --git a/game/ui/rivalry_award_art.gd b/game/ui/rivalry_award_art.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_award_art.gd
+@@ -0,0 +1,54 @@
++extends Control
++## Original vector laurels and crown, with a bounded menu-only confetti flourish.
++var tier: int = 0
++var badge: bool = false
++var elapsed: float = 0.0
++const GOLD := Color("e7b83d")
++const LIGHT := Color("fff1b0")
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	resized.connect(queue_redraw)
++	set_process(tier >= 2 and not badge)
++
++func _process(delta: float) -> void:
++	elapsed = minf(6.0,elapsed+delta)
++	queue_redraw()
++	if elapsed >= 6.0: set_process(false)
++
++func _draw() -> void:
++	if tier == 0: return
++	var center := Vector2(size.x*0.5,0)
++	var span: float = size.x*0.49
++	for side: int in [-1,1]:
++		var stem := PackedVector2Array()
++		for step: int in range(17):
++			var phase: float = step/16.0
++			stem.append(center+Vector2(side*span*(0.99-0.04*sin(phase*PI)),size.y*lerpf(0.89,0.20,phase)))
++		draw_polyline(stem,Color(GOLD,0.65),1.7,true)
++		for step: int in range(9):
++			var phase: float = step/8.0
++			var point: Vector2 = center+Vector2(side*span*(0.99-0.04*sin(phase*PI)),size.y*lerpf(0.89,0.20,phase))
++			var leaf := PackedVector2Array()
++			var length: float = 6 if badge else minf(17,size.y*0.13)
++			var axis := Vector2(side*0.66,-0.74).rotated(side*(phase-0.5)*0.5)
++			for corner: int in range(14):
++				var leaf_phase: float = corner*TAU/14.0
++				leaf.append(point+axis*length*cos(leaf_phase)+axis.orthogonal()*length*0.3*sin(leaf_phase))
++			draw_colored_polygon(leaf,LIGHT.lerp(GOLD,step/10.0))
++	if tier >= 2:
++		var crown_center := Vector2(size.x*0.5,6 if badge else 0)
++		var width: float = 19 if badge else 23
++		var crown := PackedVector2Array([Vector2(-width,-2),Vector2(-width*0.68,14),Vector2(width*0.68,14),Vector2(width,-2),Vector2(width*0.40,4),Vector2(0,-12),Vector2(-width*0.40,4)])
++		for index: int in range(crown.size()): crown[index] += crown_center
++		draw_colored_polygon(crown,LIGHT)
++		draw_line(crown_center+Vector2(-width*0.62,18),crown_center+Vector2(width*0.62,18),GOLD,3,true)
++	if not badge and tier >= 2:
++		var count: int = 34 if tier == 3 else 16
++		for index: int in range(count):
++			var x: float = fposmod(index*73.71+sin(index*3.3+elapsed)*8,size.x)
++			var y: float = fposmod(index*37.23+elapsed*(7+index%8),size.y)
++			var color := Color(LIGHT if index%3 == 0 else GOLD,0.25+float(index%4)*0.08)
++			draw_set_transform(Vector2(x,y),index*0.7+elapsed*0.3)
++			draw_rect(Rect2(-2,-4,3,6),color)
++		draw_set_transform(Vector2.ZERO)
+diff --git a/game/ui/rivalry_award_art.gd.uid b/game/ui/rivalry_award_art.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_award_art.gd.uid
+@@ -0,0 +1 @@
++uid://btpnuj7iwa1jp
+diff --git a/game/ui/rivalry_victory_car.gd b/game/ui/rivalry_victory_car.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_victory_car.gd
+@@ -0,0 +1,62 @@
++extends Control
++## Static transparent render of the player's actual car and local cosmetics.
++var vehicle_id: String = "compact"
++var livery: Dictionary = {}
++var condition: Dictionary = {}
++var viewport: SubViewport
++var car: CarVisual
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	viewport = SubViewport.new()
++	viewport.transparent_bg = true
++	viewport.own_world_3d = true
++	viewport.msaa_3d = Viewport.MSAA_2X
++	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++	add_child(viewport)
++	var world := Node3D.new()
++	viewport.add_child(world)
++	car = CarVisual.new()
++	car.vehicle_id = vehicle_id
++	car.livery = livery
++	world.add_child(car)
++	var weathering := VehicleWeathering.new()
++	weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
++	weathering.restore(condition)
++	for wheel: Vector3 in car.wheel_rest_positions:
++		ShowroomStudio._contact(world,Vector3(wheel.x*HandlingConfig.BODY_SCALE,0.007,wheel.z*HandlingConfig.BODY_SCALE),Vector2(0.60,0.8),0.55)
++	var environment := WorldEnvironment.new()
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color.TRANSPARENT
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_color = Color("c0cbe1")
++	environment.environment.ambient_light_energy = 0.65
++	world.add_child(environment)
++	for light_data: Array in [[Vector3(-32,-55,0),Color("ffdfa5"),1.0],[Vector3(-25,125,0),Color("c0d7ee"),0.45]]:
++		var light := DirectionalLight3D.new()
++		light.rotation_degrees = light_data[0]
++		light.light_color = light_data[1]
++		light.light_energy = light_data[2]
++		world.add_child(light)
++	var camera := Camera3D.new()
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 2.8 if vehicle_id == "pickup" else 1.9 if vehicle_id == "kart" else 2.4
++	camera.position = Vector3(-5,2.5,6)
++	world.add_child(camera)
++	camera.look_at(Vector3(0,0.65,0))
++	camera.current = true
++	var render := TextureRect.new()
++	render.name = "VictoryCarRender"
++	render.texture = viewport.get_texture()
++	render.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	render.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(render)
++	MenuStyle.fill(render)
++	resized.connect(_refresh)
++	visibility_changed.connect(_refresh)
++	_refresh()
++
++func _refresh() -> void:
++	viewport.size = Vector2i(maxi(1,roundi(size.x)),maxi(1,roundi(size.y)))
++	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+diff --git a/game/ui/rivalry_victory_car.gd.uid b/game/ui/rivalry_victory_car.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/rivalry_victory_car.gd.uid
+@@ -0,0 +1 @@
++uid://bxultmavdq5br
+diff --git a/game/tests/test_rivalry_awards.gd b/game/tests/test_rivalry_awards.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_rivalry_awards.gd
+@@ -0,0 +1,179 @@
++extends "res://tests/test_rivalry_result.gd"
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++
++func awarded_snapshot(kind: String) -> Dictionary:
++	var value: Dictionary = fixture()
++	value.state = "complete"
++	value.personal_best_slots = [0,2,4]
++	for slot: int in range(5):
++		var track: Dictionary = value.tracks[slot]
++		for row: Dictionary in track.entries:
++			row.ticks = 12000+int(str(row.id).get_slice("_",1))*120
++			if row.id == value.self_id:
++				row.ticks = 11640 if kind == "perfect" or (kind == "champion" and slot < 4) else 12180 if kind in ["podium","champion"] else 12900
++			if kind == "tied" and row.id in [value.self_id,"driver_0"]: row.ticks = 11640
++			if kind == "unranked" and row.id == value.self_id: row.ticks = null
++			row.ms = null if row.ticks == null else roundi(float(row.ticks)*1000/120)
++		track.entries.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return b.ticks == null or (a.ticks != null and int(a.ticks) < int(b.ticks)))
++		var rank: int = 0
++		var previous: int = -1
++		for position: int in range(track.entries.size()):
++			var row: Dictionary = track.entries[position]
++			if row.ticks == null: row.rank = null; row.points = 0; continue
++			if int(row.ticks) != previous: rank = position+1
++			previous = int(row.ticks)
++			row.rank = rank
++			row.points = value.points_policy[rank-1]
++	for driver: Dictionary in value.standings:
++		driver.points = 0; driver.completed = 0
++		for track: Dictionary in value.tracks:
++			for row: Dictionary in track.entries:
++				if row.id == driver.id:
++					driver.points += int(row.points)
++					if row.ms != null: driver.completed += 1
++	value.standings.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.points) > int(b.points))
++	var rank: int = 0
++	var previous: int = -1
++	for index: int in range(value.standings.size()):
++		var driver: Dictionary = value.standings[index]
++		if int(driver.points) != previous: rank = index+1
++		previous = int(driver.points)
++		driver.rank = rank if driver.completed > 0 else null
++	if kind == "unranked": value.personal_best_slots = []
++	return value
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-awards-2026-10-12/ui")
++	if RenderingServer.get_current_rendering_method() == "mobile": evidence += "/mobile"
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for kind: String in ["perfect","champion","podium","middle","unranked","tied"]:
++		var model := WeeklyRivalry.new()
++		var value: Dictionary = awarded_snapshot(kind)
++		check(Adapter.valid_snapshot(value),kind+" fixture is a valid server-shaped snapshot")
++		var before: String = JSON.stringify(value)
++		model.apply_snapshot(value)
++		var summary: Dictionary = model.finale_summary()
++		check(JSON.stringify(value) == before,kind+" awards never mutate scores or pinned tracks")
++		check(summary.perfect == (kind == "perfect"),kind+" Perfect Week requires five outright competitive wins")
++		check(summary.tier == {"perfect":3,"champion":2,"podium":1,"middle":0,"unranked":0,"tied":2}[kind],kind+" celebration scales with verified achievement")
++		check(summary.title == "JOINT WEEKLY CHAMPION" if kind == "tied" else true,"ties cannot claim an exclusive championship")
++		check(not "clean" in " ".join(summary.highlights).to_lower(),"no clean-driving claim without collision evidence")
++		if kind == "perfect":
++			check(summary.wins == 5 and summary.points == 150 and summary.rank == 1,"perfect championship derives all five victories and actual points")
++			check(summary.results[0].gap_to_second_ms == -3000,"gap to second is signed from actual finishing times")
++		if kind == "unranked":
++			check(summary.rank == null and summary.wins == 0 and summary.points == 0,"no finish cannot invent a position, victory or award")
++		check(model.finale_share_text().contains("Week 41") and model.finale_share_text().contains("Frostbite"),"share includes the actual week and named tracks")
++		model.completed = false
++		check(model.finale_summary().tier == 0 and model.finale_share_text().is_empty(),"unsettled/active snapshots cannot share championship awards")
++	var one: Dictionary = awarded_snapshot("perfect")
++	one.standings = one.standings.filter(func(row: Dictionary) -> bool: return row.id == one.self_id)
++	for track: Dictionary in one.tracks: track.entries = track.entries.filter(func(row: Dictionary) -> bool: return row.id == one.self_id)
++	var solo := WeeklyRivalry.new()
++	solo.apply_snapshot(one)
++	check(not solo.finale_summary().perfect and solo.finale_summary().wins == 0 and solo.finale_summary().tier == 0,"a field with no opponent earns no contested victories")
++	var parsed: Dictionary = JSON.parse_string(JSON.stringify(awarded_snapshot("perfect")))
++	check(Adapter.valid_snapshot(parsed),"PB slots accept integral JSON numbers from the real decoder")
++	solo.apply_snapshot(parsed)
++	check(solo.personal_best_slots == [0,2,4],"PB slots survive a JSON response round trip")
++	for bad: Array in [[0,0],[5],[0.5],["1"]]:
++		parsed.personal_best_slots = bad
++		check(not Adapter.valid_snapshot(parsed),"malformed PB slots cannot enter an awards snapshot")
++	for tier: int in range(4):
++		var art: Control = preload("res://ui/rivalry_award_art.gd").new()
++		art.tier = tier
++		root.add_child(art)
++		check(art.is_processing() == (tier >= 2),"confetti motion is reserved for an earned championship")
++		if tier >= 2:
++			art._process(6.1)
++			check(not art.is_processing() and art.elapsed == 6.0,"confetti stops after its bounded six-second flourish")
++		art.queue_free()
++	await process_frame
++	if DisplayServer.get_name() != "headless": await visuals_awards()
++	print("RIVALRY_AWARDS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func visuals_awards() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var folder: String = "user://rivalry_awards_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.records.settings.vehicle_liveries = {"compact":{"version":1,"colors":{"body":"993d3d","accent":"e4ba59"}}}
++	var saved_settings: String = JSON.stringify(app.records.settings)
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1536,1024),Vector2i(1600,720)]:
++		root.size = dimensions
++		for kind: String in ["perfect","champion","podium","middle","unranked","tied"]:
++			app.rivalry.model.apply_snapshot(awarded_snapshot(kind))
++			app.rivalry.snapshot_scope = app.rivalry.scope()
++			app.rivalry.busy = false
++			app.rivalry_section = "overview"
++			app._show_screen("rivalry")
++			await settle()
++			var ceremony: Control = app.content.find_child("WeeklyRivalryFinale",true,false)
++			check(ceremony != null,"completed overview mounts the awards ceremony")
++			var next: Button = ceremony.find_child("RivalryNextWeek",true,false)
++			var share: Button = ceremony.find_child("RivalryShareResults",true,false)
++			check(not next.disabled and not share.disabled,"completed authoritative ceremony enables sharing and Continue")
++			check(next.get_global_rect().end.y <= app.root_ui.size.y+1,"Continue remains inside the visible screen")
++			check(share.get_global_rect().end.y <= app.root_ui.size.y+1,"sharing remains inside the visible screen")
++			check(absf(share.size.x-next.size.x) < 2,"outside-card bottom actions have equal width")
++			check(ceremony.track_buttons.size() == 5,"all five pinned tracks have a thumbnail/detail action")
++			var track_scroll: ScrollContainer = ceremony.find_child("RivalryFinalTrackScroll",true,false)
++			for row: Button in ceremony.track_buttons:
++				check(row.get_global_rect().end.y <= track_scroll.get_global_rect().end.y+1,"all five track rows remain visible in the initial ceremony")
++				for child: Node in row.find_children("*","Label",true,false):
++					check(child.get_global_rect().end.x <= row.get_global_rect().end.x+1,"track names, times, gaps and points stay inside their row")
++			check(ceremony.find_child("RivalryChampionLaurels",true,false).tier == ceremony.summary.tier,"award ornament receives the performance intensity")
++			check((ceremony.find_child("RivalryPerfectWeekBadge",true,false) != null) == (kind == "perfect"),"Perfect Week badge matches the actual five-win condition")
++			check(ceremony.find_child("FinalDriver_you",true,false) != null,"compact final standings always include the highlighted player")
++			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("FinalDriver_*","",true,false).size() <= 5,"compact standings contain at most five actual competitors")
++			var car: Control = ceremony.find_child("RivalryVictoryCar",true,false)
++			check(car.car.vehicle_id == app.rivalry.model.vehicle_id and car.viewport.transparent_bg,"scenic hero renders the actual pinned car with a transparent background")
++			await capture(kind,dimensions)
++		var page: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)
++		var ceremony: Control = page.find_child("WeeklyRivalryFinale",true,false)
++		ceremony.track_buttons[2].pressed.emit()
++		await settle()
++		check(app.rivalry_section == "detail" and app.rivalry_track == 2,"award track rows open their original completed-week detail")
++		app.rivalry_section = "overview"
++		app.rivalry.busy = true
++		app.rivalry.error = "Could not continue. Try again."
++		app._rivalry()
++		await settle()
++		var next: Button = app.content.find_child("RivalryNextWeek",true,false)
++		var share: Button = app.content.find_child("RivalryShareResults",true,false)
++		check(next.disabled and share.disabled,"ceremony guards both actions while Continue is in flight")
++		check(app.content.find_child("RivalryStatusMessage",true,false).text == app.rivalry.error,"failed Continue remains actionable in the original ceremony")
++		await capture("continuing",dimensions)
++		app.rivalry.busy = false
++		app.rivalry.error = ""
++	for id: String in VehicleCatalog.IDS:
++		var snapshot: Dictionary = awarded_snapshot("perfect")
++		snapshot.vehicle_id = id
++		app.rivalry.model.apply_snapshot(snapshot)
++		app.rivalry_section = "overview"
++		app._rivalry()
++		await settle()
++		var car: Control = app.content.find_child("RivalryVictoryCar",true,false)
++		check(car.car.vehicle_id == id and car.car.livery == VehicleLivery.for_car(app.records.settings,id),"ceremony uses each actual car and its local livery")
++		var pixels: Image = car.viewport.get_texture().get_image()
++		var clipped: bool = false
++		for x: int in range(pixels.get_width()):
++			if pixels.get_pixel(x,0).a > 0.1 or pixels.get_pixel(x,pixels.get_height()-1).a > 0.1: clipped = true
++		check(not clipped,"actual "+id+" car fits the transparent viewport without vertical clipping")
++		await capture("car-"+id,Vector2i(1600,720))
++	var share: Button = app.content.find_child("RivalryShareResults",true,false)
++	share.pressed.emit()
++	await settle()
++	check(DisplayServer.clipboard_get().replace("\r\n","\n") == app.rivalry.model.finale_share_text(),"desktop Share copies the exact championship summary with Windows clipboard newline normalization")
++	var copied: String = DisplayServer.clipboard_get()
++	app.rivalry.snapshot_scope = "different-player-or-car"
++	app._share_rivalry_results()
++	check(DisplayServer.clipboard_get() == copied,"sharing cannot expose an out-of-scope finale after account/car changes")
++	check(JSON.stringify(app.records.settings) == saved_settings,"ceremony and sharing never alter local paint, condition or profile settings")
++	app.queue_free()
++	await process_frame
+diff --git a/game/tests/test_rivalry_awards.gd.uid b/game/tests/test_rivalry_awards.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_rivalry_awards.gd.uid
+@@ -0,0 +1 @@
++uid://daqj2euwhynf1
+diff --git a/backend/tests/test_rivalry_awards.py b/backend/tests/test_rivalry_awards.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_rivalry_awards.py
+@@ -0,0 +1,56 @@
++"""PB ceremony facts come from verification and remain scoped to player/week."""
++from sqlalchemy import select
++from test_domains import domain as _domain_fixture
++from test_domains import headers, submit
++from test_rivalry import join, rivalry_ticket, seed
++
++from bmt_backend.rivalry_models import RivalryTicket
++from bmt_backend.worker import process_one
++
++rivalry_domain = _domain_fixture
++
++
++def test_finale_personal_bests_verified_distinct_and_player_scoped(rivalry_domain, monkeypatch):
++    seed(rivalry_domain)
++    original = join(rivalry_domain)
++    group = original["group_id"]
++    join(rivalry_domain, "Bob")
++    for frames, expected in [(20, True), (20, False), (25, False), (19, True)]:
++        issued = rivalry_ticket(rivalry_domain, group)
++        submit(rivalry_domain, issued, "Alice", frames=frames)
++        queued = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
++        assert queued["personal_best_slots"] == []
++        assert process_one(rivalry_domain.app)
++        outcome = rivalry_domain.client.get(f"/v1/rivalry/tickets/{issued['ticket_id']}/result", headers=headers(rivalry_domain, "Alice")).json()["outcome"]
++        assert outcome["personal_best"] is expected
++    issued = rivalry_ticket(rivalry_domain, group, "Bob", slot=1)
++    submit(rivalry_domain, issued, "Bob", frames=15)
++    assert process_one(rivalry_domain.app)
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
++    alice = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
++    bob = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Bob")).json()
++    assert alice["state"] == "complete" and alice["personal_best_slots"] == [0]
++    assert bob["personal_best_slots"] == [1]
++    # Repeated reads never mint achievements or alter any stored race outcome.
++    assert rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json() == alice
++    assert "clean_driving" not in alice
++
++
++def test_historical_missing_pb_evidence_is_not_invented(rivalry_domain, monkeypatch):
++    seed(rivalry_domain)
++    original = join(rivalry_domain)
++    group = original["group_id"]
++    issued = rivalry_ticket(rivalry_domain, group)
++    submit(rivalry_domain, issued, "Alice", frames=20)
++    assert process_one(rivalry_domain.app)
++    with rivalry_domain.factory() as session:
++        ticket = session.get(RivalryTicket, issued["ticket_id"])
++        ticket.outcome = {key: value for key, value in ticket.outcome.items() if key != "personal_best"}
++        session.commit()
++        before = session.scalars(select(RivalryTicket.outcome).where(RivalryTicket.group_id == group)).all()
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
++    value = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
++    assert value["state"] == "complete" and value["personal_best_slots"] == []
++    assert value["standings"][0]["points"] == 30
++    with rivalry_domain.factory() as session:
++        assert session.scalars(select(RivalryTicket.outcome).where(RivalryTicket.group_id == group)).all() == before
+diff --git a/scripts/test_rivalry_awards_postgres.py b/scripts/test_rivalry_awards_postgres.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_rivalry_awards_postgres.py
+@@ -0,0 +1,63 @@
++"""Rivalry awards and rollover regressions against an owned disposable PostgreSQL 17."""
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-rivalry-awards-pg-" + secrets.token_hex(4)
++    label = "rivalry-awards-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*arguments):
++        return subprocess.run([*docker, *arguments], capture_output=True, text=True, timeout=30, check=False)
++
++    if call("image", "inspect", "postgres:17").returncode:
++        raise RuntimeError("Existing PostgreSQL 17 image unavailable; no image pulled")
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++        "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=rivalry_test",
++        "-e", "POSTGRES_DB=rivalry_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service changed")
++    try:
++        for _ in range(30):
++            if call("exec", name, "pg_isready", "-U", "rivalry_test").returncode == 0:
++                break
++            time.sleep(.5)
++        else:
++            raise RuntimeError("Owned PostgreSQL did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://rivalry_test:{password}@127.0.0.1:{port}/rivalry_test"
++        result = subprocess.run([sys.executable, "-m", "pytest", "tests/test_rivalry_week_completion.py",
++            "tests/test_rivalry.py", "tests/test_rivalry_awards.py", "-k", "postgres", "-q", "--tb=short", "--show-capture=no"],
++            cwd=ROOT / "backend", env=env, capture_output=True, text=True, check=False, timeout=180)
++        output = (result.stdout + result.stderr).replace(password, "[REDACTED]")
++        evidence = ROOT / "docs/evidence/rivalry-awards-2026-10-12"
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "postgres-regression.log").write_text(output, encoding="utf-8")
++        print(output[-8500:])
++    finally:
++        check = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if check.returncode == 0 and json.loads(check.stdout).get("bmt.task") == label:
++            if call("stop", name).returncode:
++                raise RuntimeError("Owned database cleanup failed")
++            print("Owned PostgreSQL removed")
++        else:
++            raise RuntimeError("Owned database label changed; leaving it untouched")
++    return result.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/docs/RIVALRY_AWARDS.md b/docs/RIVALRY_AWARDS.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_AWARDS.md
+@@ -0,0 +1,72 @@
++# Weekly Rivalry awards ceremony, 2026-10-12
++
++The owner's supplied championship reference supersedes the old completed-week podium/track-list presentation. The completed Overview now becomes an awards ceremony; the active hub, track detail, normal race results and single-press next-week transition remain separate.
++
++## Requirements and delivered behavior
++
++AR01–AR10 / WR01/WR03/WR08 / WC01–WC04 / B05/B07 / R01 / V03–V05 / Q01:
++
++| ID | Behavior |
++| --- | --- |
++| AR01 | Large gold Weekly Champion title, crown, original vector laurels and trophy icon. Tied overall winners explicitly receive **Joint Weekly Champion**. |
++| AR02 | Existing cleared scenic rivalry landscape with a transparent render of the actual pinned car, its local livery/condition, warm menu lights and wheel-contact shadows. Champions receive a bounded six-second confetti flourish; perfect winners receive more confetti. Podium finishes use restrained laurels; other finishes use a quiet Week Complete view. |
++| AR03 | Prominent final position/field size, actual total points and track-victory cards. Unranked remains unranked; a solo field cannot manufacture competitive victories. |
++| AR04 | Five track rows show the player's actual rank, time, signed gap to the second finisher and earned points. Missing times/gaps remain dashes. The same gap column is used for all positions: positive is slower than the second finisher; negative is faster. Track rows open the existing completed detail with racing disabled. |
++| AR05 | Each thumbnail combines the existing original biome scenery with that track's actual saved route outline and start marker. They are decorative Controls inside the full-width track buttons, with no separate favorite/action overlay. |
++| AR06 | Compact five-row final field includes the leader, player and nearest competitors. The player retains the yellow highlight; signed points gaps are relative to the player. The active hub's full scrolling field remains unchanged. |
++| AR07 | Facts generate highlights: track wins, winning margin/shared championship/podium, five completed tracks, and distinct verified PB tracks. Unsupported clean-driving and historical PB claims are omitted. |
++| AR08 | Perfect Week requires five **outright** competitive track victories and the completed championship. Tied track wins do not earn Perfect Week. This is a finale badge; no permanent profile trophy or reward ledger was added. |
++| AR09 | Share Results uses the existing Android native text share sheet. Desktop copies the actual week, vehicle, final place/points/victories and each track's rank/time/points, with a confirmation. It does not send a message automatically or generate a public results URL/image. Account/car scope, cached snapshot and busy guards apply. |
++| AR10 | Equal-width Share/Continue actions sit outside the cards. Continue uses the existing tested acknowledgement/current-week enrollment flow; both actions disable during the transition, and an actionable failure stays on the ceremony. |
++
++The attached image guides composition only. Its player identities, track names, race times, rank/points, population and stated achievements are not inserted into live data. All new artwork is original repo-native vector drawing; no reference raster was shipped. The landscape, font, biome imagery, car meshes, local cosmetics and contact-shadow assets reuse their existing provenance.
++
++## Evidence and data limits
++
++`WeeklyRivalry.finale_summary()` is a read-only projection of the downloaded final field. It neither simulates nor rewrites races. Ties use canonical ticks when available. Competitive victories require another recorded finisher; a missing race never borrows the leader's time.
++
++The backend now records optional `personal_best` in the existing verified ticket outcome **before** updating the pinned board's PB. It is true for a first PB or a strictly faster result, false for ties/slower attempts. Complete snapshots expose at most five distinct `personal_best_slots` for that player and group. The query is bounded to five output slots and uses existing ticket/run indexes. It adds no tables/migrations or scoring writes. Real/development board contracts remain isolated.
++
++Old outcomes without that field cannot establish a PB achievement and are not backfilled. Older deployed servers remain usable: the client treats the optional field as absent and displays the other verified highlights. The PB addition requires separate server rollout and subsequently verified races. Historical retention may remove underlying evidence; permanent trophy history would need its own approved storage policy.
++
++Trajectory-only verification does not establish collision-free driving. The old result `clean` flag means an eligible completed timing attempt, not collision-free driving; it is deliberately not reused for an achievement. No unsupported “clean driving” highlight or source/diagnostic caption is shown in ordinary UI. A reliable collision-evidence contract and permanent account trophies remain future work.
++
++The player car is rendered once per preparation/resize/visibility change in a transparent 2× MSAA viewport. It has no orbit controls, washing writes or live simulation. Confetti redraws are reserved for champions and stop at six seconds; no display-time effect changes canonical driving or score eligibility. Desktop renderer checks do not establish phone performance or AAA acceptance.
++
++## Changed files
++
++- `game/ui/weekly_rivalry_finale.gd`, `rivalry_award_art.gd`, `rivalry_victory_car.gd` and generated UIDs — ceremony layout, original vector effects and actual car render.
++- `game/ui/weekly_rivalry_page.gd`, `game/core/app.gd` — completed-state mounting, local cosmetics, track/Continue wiring and platform sharing.
++- `game/race/weekly_rivalry.gd`, `game/backend/weekly_rivalry_client.gd` — facts/share projection, optional PB slots and strict integral JSON validation.
++- `backend/bmt_backend/rivalry.py`, `docs/schemas/weekly-rivalry-v1.schema.json` — verified PB fact and optional snapshot contract.
++- `game/tests/test_rivalry_awards.gd` and UID, `backend/tests/test_rivalry_awards.py`, `scripts/test_rivalry_awards_postgres.py` — earned celebration, layout/action/car/cosmetic/sharing checks and real SQLite/PostgreSQL route regressions.
++- `game/tests/test_weekly_rivalry.gd` — replace only the superseded finale-podium assertion with the new ceremony assertion; retain touch targets, bounds, active hub/detail, scoring and completed-race guards.
++- This document, AGENTS override, status/plan entries and scoped evidence/checkpoint.
++
++## Actual commands and outcomes
++
++Godot used `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, pinned **4.7.2.stable.official.ed1daf0bf** and matching templates. Python used `.tools/backend-venv/Scripts/python.exe`.
++
++| Actual command/arguments | Result |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_awards.gd -Graphical -CommandTimeoutSeconds 180` | **1,706 checks / 0 failures**. Covers perfect/champion/podium/midfield/unranked/tied and solo fields, JSON/PB contracts, bounded effects, actual four-width layout and all five cars, clipboard/share scope, local settings and action guards. **33 captures**. |
++| Same with `-RenderingMethod mobile -RenderingDriver vulkan` | **1,706 checks / 0 failures / 33 captures**; desktop Vulkan only. |
++| `-m pytest backend/tests/test_rivalry_awards.py backend/tests/test_rivalry_week_completion.py backend/tests/test_rivalry.py -k 'not postgres' -q --tb=short --show-capture=no` | **14 passed / 13 deselected**. |
++| `scripts/test_rivalry_awards_postgres.py` | **13 passed / 14 deselected**. Newly owned PostgreSQL 17 with isolated schemas; container removed after verification. [Log](evidence/rivalry-awards-2026-10-12/postgres-regression.log). |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -CommandTimeoutSeconds 120` | **1,115 checks / 0 failures**. Active podium/scrolling field, completed details and all real button touch targets retained. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_week_completion.gd -CommandTimeoutSeconds 120` | **38 checks / 0 failures** on the new ceremony, including delayed/repeated Continue and account/result fences. |
++| `-Action TestApp -CommandTimeoutSeconds 120` | **99 checks / 0 failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_entry.gd -CommandTimeoutSeconds 90` | **66 checks / 0 failures**. |
++| `-Action TestScript -ScriptPath res://tests/test_automatic_rivalry_flow.gd -CommandTimeoutSeconds 60` | **7 checks / 0 failures**. |
++| `-Action Import -CommandTimeoutSeconds 120` | Passed; registered new scripts/UIDs and the concurrently added Garage helper. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90` | **559 scripts / 0 failures**. |
++| Ruff on changed backend/new Python tests/runner | Passed. |
++| `-Action Doctor` | Pinned prerequisites found; **empty ADB device list**. |
++
++Initial native checks found short-screen footer overflow, default gallery-thumbnail minima/action overlays, a champion fixture whose fifth-track points actually lost the championship, and Windows clipboard CRLF normalization. Corrected layout/thumbnail controls, made the fixture's score truthful and normalized only platform line endings in the exact-text check. A temporary duplicate vector-art local variable caused a parse error and was fixed. Concurrent workspace Garage changes needed a Godot class-registry Import; unrelated Garage/creator work was preserved. No touch-target, scoring, race-completion or bounds assertion was weakened. FastAPI/httpx deprecation warnings remain.
++
++Native captures are synthetic fixtures at 1280×720, 960×540, 1536×1024 and 1600×720, with all five actual car models and pending/error actions. They are not the owner's live account. Inspect [perfect week](evidence/rivalry-awards-2026-10-12/ui/perfect-1536x1024.png), [short-screen ceremony](evidence/rivalry-awards-2026-10-12/ui/perfect-960x540.png), [midfield finish](evidence/rivalry-awards-2026-10-12/ui/middle-960x540.png), and [shared championship](evidence/rivalry-awards-2026-10-12/ui/tied-1280x720.png). Vulkan captures live under the evidence `ui/mobile/` directory. Test logs and the task-only checkpoint accompany this document.
++
++No phone was attached. No physical-device rendering/performance or Android share-sheet test, Android export/install, full physics regression, production deployment, live account/race write or permanent trophy grant was performed. Remaining acceptance: owner review of the ceremony/wording, phone readability and native sharing, actual account week rollover, and authorized server rollout for PB facts. Restart/rebuild the client to see the ceremony.
++
++The [task-only checkpoint](evidence/rivalry-awards-2026-10-12/scoped-change.patch) preserves unrelated work, including concurrent creator changes in `app.gd` and other status entries. Its [manifest](evidence/rivalry-awards-2026-10-12/checkpoint.json) records the exact before/after content hashes. Reverse applicability and whitespace checks are part of the recorded final validation; no mixed working-tree commit was created.

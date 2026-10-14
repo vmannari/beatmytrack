@@ -1,0 +1,774 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 8091422..1c65b91 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Garage workshop and pedestal override (2026-10-12)
++The owner requests the actual car on a turnable pedestal, a garage-style background and a substantially more polished application-consistent layout. Horizontal dragging turns the car and pedestal while the garage/camera stay fixed; keep tilt, zoom, paint and manual washing usable. Use the central showroom, actual 3D carousel, bottom Select car and left Customise/Care/Tuning flow. This supersedes the seamless Garage studio backdrop. Preserve local per-car cosmetics and canonical handling/scoring; AAA remains a quality target requiring owner and physical-device review. See `docs/GARAGE_PEDESTAL.md` for actual implementation, captures, commands, measured desktop cost and remaining acceptance.
++
+ ## Garage Free Race layout override (2026-10-11)
+ The owner rejects the first Garage carousel presentation and supplies the Free Race menu reference. Garage uses a central actual showroom, a carousel of the actual 3D car models and a bottom Select car action. Car cards preview; Select car confirms and opens the left-side Customise/Care/Tuning icon rail. Customise selects liveries and colours, Care contains optional local washing, and Tuning remains a placeholder. This supersedes illustrated Garage cards, the right-hand Garage panel, immediate confirmation on card tap and Garage race/circuit actions. Preserve local per-car paint/condition, free racing and canonical handling/scoring. See `docs/GARAGE_FREE_RACE_LAYOUT.md` for actual files, tests, captures and remaining owner/phone acceptance.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 0398ea0..cebe5cf 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-12 GC10-GC12/GC06-GC09/CW13/CW15/CW16/V06/G01/R01/Q01: owner turnable pedestal/garage background/presentation quality. Original batched bevelled workshop/door-tools-storage-tyres/concrete, stepped rim-lit deck; car+deck turn with fixed camera/room, tilt/pinch/zoom/reset retained. Integrated title/controls and display-font cards; two prepared architecture caches/static 3D cards/local paint-dirt untouched. Native277 incl120motionframes/Mobile157/livery115/wash1402/view59/swipes268/exactmodel80/App99/Import pass. CPU0.724msmedian/GPU0.766msmedian-2.193p95/cold380.98ms desktop only; native64mesh104558tri exact.32stills+4sactual APNG. Parse/framing/light/coordinate/2sheld-pixel fixture corrections/all original geometry/mask/contrast assertions retained. Doctor no attached phone/no device test/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device-quality acceptance: docs/GARAGE_PEDESTAL.md.
++
+ 2026-10-11 WE20-WE24/V04/V05/G01/R01/Q01: owner irregular reference snowbanks/Grass-style transition/icy edges and PC performance check. Kit132 varies actual toe/connected buried clusters, width-aware frost on roads/tapers/splines/batched bridges; original artwork/poles/terrain/camera/physics retained. Indexed bank buffers ~81% fewer vertices, snow-only shader and exact per-piece UV/row reuse. Slippery 4K RTX3090 full20s samples median2.74ms/p95 3.69-3.77ms/no >16.667ms frames; reported sustained slowdown not reproduced. Cold roads7.7s->3.4s (-55.7%), all mesh buffers byte-identical. FreshNative101/Mobile100/wind47 each/App99/bridge captures pass. No phone performance test/export-install/fullValidate/backend/deploy/livewrites. Commands/evidence/task-only checkpoint/owner acceptance: docs/WINTER_FROST_FRINGE.md and docs/WINTER_PERFORMANCE.md.
+ 
+ 2026-10-11 STUDIO-EXPANSION-DEPLOY/BMT-018/030/033/034/036/070: owner authorizes backend deploy. Exactparent98cf→e6d5 scoped18backend files preserves114game/105other backend; schema25→26→27, revisionbmt-stg-e7a444ab-api-00038-van100%. Backup1791748011386/stoppedwriter395players4311runs2883PBs/race-purchase-entitlement-resume hashes exact/empty newtables; runtimegrants/non-superuser/eightassets/native-storage-schema/oneworker unchangedCPU-mem/nice19/100event batch; exactimageSQLite116+PG180/6skips/maintenance53/browser11/liveGET8 pass. Optional challenge-limit field unavailable on deployed ORM; fixed inspector without changing gameplay. Quality signed-in enabled/guest unavailable; no seeded records; tagsremoved/5m48s writegate; billing-revenue-reversalledger-recovery-compensation/enhancedcapture remain unavailable. No client export-install/device test/compiler rollout. Commands/receipts/captures/scopedcheckpoint: docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md.
+diff --git a/docs/GARAGE_PEDESTAL.md b/docs/GARAGE_PEDESTAL.md
+new file mode 100644
+index 0000000..e61e592
+--- /dev/null
++++ b/docs/GARAGE_PEDESTAL.md
+@@ -0,0 +1,38 @@
++# Garage workshop and turnable pedestal
++
++Owner request, 2026-10-12. Requirements: GC10 (turnable car pedestal), GC11 (garage environment), GC12 (more finished application-consistent presentation), preserving GC06-GC09/CW13/CW15/CW16/GL01-GL06/V06/G01/R01/Q01. This replaces the seamless studio only in Garage; standalone studio/model diagnostic tools retain their original builder.
++
++Garage now displays the actual car on a stepped steel turntable with an inset perimeter light, rim trim and deck markings. Horizontal dragging turns the car and deck together; the camera and workshop stay fixed. Vertical dragging adjusts viewing elevation, and wheel/pinch/zoom/reset controls remain. Washing still targets only the actual car. The deck's 0.22 m presentation elevation and car pose do not enter handling, collision, replay, score or PB contracts.
++
++The original workshop contains a recessed sectional door, tracks/gasket/handle, structural bays, ceiling luminaires, a timber workbench, pegboard tools and vice, drawer storage with handles/casters, a tyre rack, concrete expansion joints and a drain. Authored bevelled panels are prepared into material batches; full and thumbnail architecture use two shared PackedScene caches. Cards retain real 3D models and one-shot rendering. Only the interactive car has live directional shadows; warm key/cool fill/rim light and cached studio radiance support the existing satin/cel-shaded vehicles. All new geometry/shader code is original; existing fictional cars, fonts and menu backdrop retain their established provenance. No external media, image generation, new dependency, vendor or runtime AI is added.
++
++The showroom fills its panel, with the title and view controls integrated over it. Title/footer regions retain menu navigation ownership while the car region owns turning and washing. Card footers use the application's condensed display font, left alignment and gold selection outline. Bottom Select car and the left Customise/Care/Tuning rail remain; no progression/commerce/repair mechanic is added. Per-car paint and accumulated dirt remain local and independent.
++
++## Actual files and verification
++
++Runtime: `game/ui/garage_environment.gd` (+UID), `garage_floor.gdshader` (+UID), `car_showroom.gd`, `garage_page.gd`, `menu_page_swipe.gd`. Tests: `test_garage_carousel.gd`, `test_garage_studio.gd`, `test_garage_livery.gd`, `test_car_wash.gd`. Documentation: this file, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`. Source, task-only patch and hash ledger are retained under `docs/evidence/garage-pedestal-2026-10-12`; the isolated two-commit Git checkpoint is `build/garage_pedestal/checkpoint-repo`. Concurrent changes and the main branch/index are preserved.
++
++Pinned `4.7.2.stable.official.ed1daf0bf`; actual commands use `scripts/dev.ps1` and isolated local records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -TestArgument --capture-turntable
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_carousel.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument --mobile-evidence
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_livery.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_view_controls.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_studio.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
++python build/encode_garage_turntable.py
++python build/checkpoint_garage_pedestal.py
++```
++
++Final passes: carousel/turntable **277 Compatibility checks including 120 saved motion frames**, **157 Mobile/Vulkan**, livery **115**, washing **1,402**, view controls **59**, swipes **268**, exact model/glass/render regression **80**, app **99**; zero failures. Import passes. Actual native car remains 64 meshes/104,558 triangles/68,996 UV vertices; the regression retains all baked/source mesh and glazing byte comparisons. Desktop RTX 3090 Compatibility viewport measurements: CPU median 0.724 ms/p95 0.960 ms, GPU median 0.766 ms/p95 2.193 ms, with 380.98 ms cold page construction including the five model cards. These are desktop samples, not phone proof.
++
++Initial typed-material and diagnostic-name parse errors were corrected. The first render had cropped deck framing and over-bright paint; lighting/framing/composition were revised after inspection. A one-second visible-door wash fixture missed its original 0.02 blue-channel contrast threshold under the new lighting. The fixed two-second scrub retains that threshold and all mask/storage assertions; final blue channel is 0.0431 to 0.2392. Runtime wash rate and dirt resistance are unchanged. The livery fixture now supplies a real central touch coordinate because the hero header is an excluded input region. The studio fixture explicitly replaces only superseded cove/shadow-scene assertions with garage/pedestal/live-shadow assertions; all exact car geometry, glass independence and handling boundaries remain. No failing invariant was removed or weakened.
++
++Actual previews: [Garage](evidence/garage-pedestal-2026-10-12/cars-1280.png), [turned pedestal](evidence/garage-pedestal-2026-10-12/pedestal-turned.png), [Customise](evidence/garage-pedestal-2026-10-12/customise-1280.png), [Care](evidence/garage-pedestal-2026-10-12/care-1280.png), [Mobile](evidence/garage-pedestal-2026-10-12/mobile/cars-1280.png), [full-turn motion](evidence/garage-pedestal-2026-10-12/turntable-motion.png). Thirty-two main stills cover three window sizes/two renderers and the changed pose; additional native model regression views are under `model-regression/`. Motion is a lossless 120-frame APNG at 960x540, played at 30 FPS for a four-second review; it is assembled directly from actual Godot renders using Python stdlib, with raw frames under `build/garage-pedestal-motion-2026-10-12`. Playback rate is not a performance measurement. The motion PNG is approximately 36 MB.
++
++Doctor found no attached Android device. No phone input/performance test, Android export/install, full Validate, physics regression/merge, backend operation or deployment was performed. Owner visual acceptance and physical-device review remain open: check composition across all five cars, turn/tilt/zoom/reset, header/footer page gestures, the colour popup, washing after rotation, and sustained performance/memory. This is a substantial local presentation pass; it is not a claim that the entire application has achieved AAA quality or device certification.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index fafac59..9cd9c70 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1797,3 +1797,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ ## Authorized Studio backend rollout (2026-10-11)
+ 
+ 2026-10-11 STUDIO-EXPANSION-DEPLOY/BMT-018/030/033/034/036/070: owner authorizes backend deploy. Exactparent98cf→e6d5 scoped18backend files preserves114game/105other backend; schema25→26→27, revisionbmt-stg-e7a444ab-api-00038-van100%. Backup1791748011386/stoppedwriter395players4311runs2883PBs/race-purchase-entitlement-resume hashes exact/empty newtables; runtimegrants/non-superuser/eightassets/native-storage-schema/oneworker unchangedCPU-mem/nice19/100event batch; exactimageSQLite116+PG180/6skips/maintenance53/browser11/liveGET8 pass. Optional challenge-limit field unavailable on deployed ORM; fixed inspector without changing gameplay. Quality signed-in enabled/guest unavailable; no seeded records; tagsremoved/5m48s writegate; billing-revenue-reversalledger-recovery-compensation/enhancedcapture remain unavailable. No client export-install/device test/compiler rollout. Commands/receipts/captures/scopedcheckpoint: docs/STUDIO_EXPANSION_DEPLOY_2026_10_11.md.
++
++
++## Garage workshop and turnable pedestal, 2026-10-12
++
++2026-10-12 GC10-GC12/GC06-GC09/CW13/CW15/CW16/V06/G01/R01/Q01: owner turnable pedestal/garage background/presentation quality. Original batched bevelled workshop/door-tools-storage-tyres/concrete, stepped rim-lit deck; car+deck turn with fixed camera/room, tilt/pinch/zoom/reset retained. Integrated title/controls and display-font cards; two prepared architecture caches/static 3D cards/local paint-dirt untouched. Native277 incl120motionframes/Mobile157/livery115/wash1402/view59/swipes268/exactmodel80/App99/Import pass. CPU0.724msmedian/GPU0.766msmedian-2.193p95/cold380.98ms desktop only; native64mesh104558tri exact.32stills+4sactual APNG. Parse/framing/light/coordinate/2sheld-pixel fixture corrections/all original geometry/mask/contrast assertions retained. Doctor no attached phone/no device test/export-install/fullValidate/backend/deploy. Files/commands/scoped checkpoint/owner-device-quality acceptance: docs/GARAGE_PEDESTAL.md.
+diff --git a/game/tests/test_car_wash.gd b/game/tests/test_car_wash.gd
+index 781f4f7..10d4eaf 100644
+--- a/game/tests/test_car_wash.gd
++++ b/game/tests/test_car_wash.gd
+@@ -165,7 +165,7 @@ func garage() -> void:
+ 	press.position = pixel
+ 	press.pressed = true
+ 	view.gui_input.emit(press)
+-	for i: int in range(20): view._process(0.05)
++	for i: int in range(40): view._process(0.05)
+ 	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
+ 	if DisplayServer.get_name() != "headless":
+ 		view.wash_pointer_valid = false
+diff --git a/game/tests/test_garage_carousel.gd b/game/tests/test_garage_carousel.gd
+index 90fdf85..d31dcc6 100644
+--- a/game/tests/test_garage_carousel.gd
++++ b/game/tests/test_garage_carousel.gd
+@@ -4,7 +4,7 @@ var checks: int = 0
+ var failures: int = 0
+ var app: Node
+ var page: GaragePage
+-var output: String = "res://../docs/evidence/garage-free-race-layout-2026-10-11"
++var output: String = "res://../docs/evidence/garage-pedestal-2026-10-12"
+ 
+ func _initialize() -> void: _run.call_deferred()
+ 
+@@ -102,6 +102,26 @@ func _run() -> void:
+ 			model.car.rotation.y = 0.0
+ 			model.refresh_thumbnail()
+ 		await settle()
++	check(page.showroom.garage_mode and page.showroom.turntable.is_ancestor_of(page.showroom.car), "actual car is supported by the turnable pedestal")
++	var room: Node3D = page.showroom.showroom_viewport.find_child("GarageArchitecture", true, false)
++	check(room != null and room.find_child("GarageWorkbench", true, false) != null and room.find_child("GarageToolStorage", true, false) != null, "actual workshop contains prepared architecture and furniture")
++	var camera_pose: Transform3D = page.showroom.camera.transform
++	var room_pose: Transform3D = room.transform
++	var clean_state: Dictionary = page.showroom.weathering.snapshot()
++	var deck_pose: Transform3D = page.showroom.turntable.transform
++	var backdrop: PackedByteArray
++	if DisplayServer.get_name() != "headless":
++		backdrop = page.showroom.showroom_viewport.get_texture().get_image().get_region(Rect2i(8,90,80,40)).get_data()
++	page.showroom.rotate_view(Vector2(60,0))
++	await settle()
++	check(page.showroom.turntable.transform != deck_pose and page.showroom.camera.transform == camera_pose and room.transform == room_pose, "horizontal drag turns car and pedestal while camera and garage stay fixed")
++	check(page.showroom.weathering.snapshot() == clean_state, "pedestal rotation does not change cosmetic condition")
++	if DisplayServer.get_name() != "headless":
++		check(page.showroom.showroom_viewport.get_texture().get_image().get_region(Rect2i(8,90,80,40)).get_data() == backdrop, "garage backdrop remains pixel-exact during turntable rotation")
++	await capture("pedestal-turned")
++	page.showroom.reset_view()
++	await settle()
++	check(is_equal_approx(page.showroom.turntable.rotation.y, CarShowroom.DEFAULT_YAW - CarShowroom.GARAGE_CAMERA_YAW), "Reset restores pedestal pose")
+ 	check(page.rail.position.x < page.preview.get_global_rect().position.x and page.rail.size.x == 60, "Garage uses the Free Race left rail width")
+ 	check(page.cards.get_child_count() == 5 and page.find_child("VehicleSelector", true, false) == null, "all five cars replace the old dropdown")
+ 	check(page.find_child("GarageWash", true, false) == null and page.pickers.is_empty(), "overview exposes car selection before care/customise")
+@@ -120,6 +140,17 @@ func _run() -> void:
+ 	await settle()
+ 	check(page.gallery.get_global_rect().encloses((page.cards.get_child(4) as Control).get_global_rect()), "keyboard focus reveals the last car")
+ 	page.gallery.scroll_horizontal = 0
++	if "--capture-turntable" in OS.get_cmdline_user_args():
++		root.size = Vector2i(960,540)
++		await settle()
++		var frames: String = ProjectSettings.globalize_path("res://../build/garage-pedestal-motion-2026-10-12")
++		DirAccess.make_dir_recursive_absolute(frames)
++		for frame: int in range(120):
++			page.showroom.rotate_view(Vector2(TAU / (120.0 * 0.012),0))
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(frames.path_join("turntable-%03d.png" % frame)) == OK, "actual turntable frame " + str(frame))
++		page.showroom.reset_view()
++		await settle()
+ 	for dimensions: Vector2i in [Vector2i(960,540), Vector2i(1280,720), Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		await settle()
+diff --git a/game/tests/test_garage_livery.gd b/game/tests/test_garage_livery.gd
+index 2d24164..dc4d3cb 100644
+--- a/game/tests/test_garage_livery.gd
++++ b/game/tests/test_garage_livery.gd
+@@ -70,6 +70,7 @@ func _run() -> void:
+ 		check(page.showroom.yaw != old_yaw, id + " mouse orbit")
+ 		var touch := InputEventScreenTouch.new()
+ 		touch.index = 0
++		touch.position = page.showroom.size * 0.5
+ 		touch.pressed = true
+ 		page.showroom.gui_input.emit(touch)
+ 		var drag := InputEventScreenDrag.new()
+diff --git a/game/tests/test_garage_studio.gd b/game/tests/test_garage_studio.gd
+index dae4875..d8d4463 100644
+--- a/game/tests/test_garage_studio.gd
++++ b/game/tests/test_garage_studio.gd
+@@ -2,7 +2,7 @@ extends SceneTree
+ ## Native studio/model inspection. Isolated records; no account, backend or race writes.
+ var failures: int = 0
+ var checks: int = 0
+-var output: String = "res://../docs/evidence/garage-studio-2026-10-10"
++var output: String = "res://../docs/evidence/garage-pedestal-2026-10-12/model-regression"
+ 
+ func _initialize() -> void: _run.call_deferred()
+ func check(ok: bool, label: String) -> void:
+@@ -46,6 +46,7 @@ func _run() -> void:
+ 	page.circuit_title = "STARTER CIRCUIT"
+ 	var build_began: int = Time.get_ticks_usec()
+ 	holder.add_child(page)
++	page._show_section("customise")
+ 	print("STUDIO_BUILD_MS ",(Time.get_ticks_usec()-build_began)/1000.0)
+ 	await capture("compact-default-1280")
+ 	var view: CarShowroom = page.showroom
+@@ -53,10 +54,11 @@ func _run() -> void:
+ 	check(view.camera.projection == Camera3D.PROJECTION_PERSPECTIVE,"perspective preserved")
+ 	check(view.showroom_viewport.own_world_3d,"studio world isolated")
+ 	check(view.showroom_viewport.msaa_3d == Viewport.MSAA_4X,"menu antialiasing")
+-	check(view.showroom_viewport.find_child("SeamlessStudioCove",true,false) != null,"continuous cove replaces platform")
+-	var env: WorldEnvironment = view.showroom_viewport.find_child("StudioEnvironment",true,false)
++	check(view.showroom_viewport.find_child("GarageArchitecture",true,false) != null and view.turntable.is_ancestor_of(view.car),"owner-requested garage and turntable replace seamless cove")
++	var env: WorldEnvironment = view.showroom_viewport.find_child("GarageEnvironment",true,false)
+ 	check(env.environment.sky == ShowroomStudio.cached_sky,"cached studio radiance")
+-	check(view.showroom_viewport.find_child("PreparedStudioShadow",true,false)!=null,"mesh-derived soft ground shadow")
++	var garage_key: DirectionalLight3D = view.showroom_viewport.find_child("GarageKey",true,false)
++	check(garage_key != null and garage_key.shadow_enabled,"parked car has actual directional shadows on the pedestal")
+ 	var body: StandardMaterial3D = view.car.paint_materials.body
+ 	check(body.roughness < 0.5 and body.specular_mode != BaseMaterial3D.SPECULAR_DISABLED,"satin automotive finish")
+ 	var before: Dictionary = {"meshes":0,"triangles":0,"uv_vertices":0,"vertices":0,"finite":true}
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index c95fe85..34d6601 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -13,6 +13,10 @@ var wash_elapsed: float = 0.0
+ var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
+ var read_only: bool = false
++var garage_mode: bool = false
++var turntable: Node3D
++var interaction_inset_top: float = 0.0
++var interaction_inset_bottom: float = 0.0
+ var framing_scale: float = 1.0
+ var livery: Dictionary = {}
+ var car: CarVisual
+@@ -26,12 +30,14 @@ var touches: Dictionary = {}
+ var pinch_distance: float = 0.0
+ var resume_orbit: bool = false
+ const DEFAULT_YAW: float = 0.70
++const GARAGE_CAMERA_YAW: float = 0.12
+ const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
+ const MAX_ELEVATION: float = PI * 4.0 / 9.0 # 80 degrees.
+ const MIN_ZOOM: float = 0.48
+ const MAX_ZOOM: float = 1.80
+ 
+ func _ready() -> void:
++	if garage_mode: elevation = atan(0.42)
+ 	stretch = true
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE if read_only else Control.MOUSE_FILTER_STOP
+ 	var viewport := SubViewport.new()
+@@ -60,7 +66,8 @@ func _ready() -> void:
+ 	car.vehicle_id = vehicle_id
+ 	car.livery = livery
+ 	world.add_child(car)
+-	ShowroomStudio.build(world,car)
++	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only)
++	else: ShowroomStudio.build(world,car)
+ 	weathering.configure(car, "pine", VehicleCatalog.config(vehicle_id))
+ 	weathering.restore(condition)
+ 	camera = Camera3D.new()
+@@ -86,10 +93,19 @@ func refresh_thumbnail() -> void:
+ func _orbit() -> void:
+ 	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * zoom * framing_scale
+ 	var horizontal: float = cos(elevation) * distance
+-	camera.position = Vector3(sin(yaw)*horizontal, 0.55 + sin(elevation)*distance, -cos(yaw)*horizontal)
+-	camera.look_at(Vector3(0, 0.55, 0))
++	var angle: float = GARAGE_CAMERA_YAW if garage_mode else yaw
++	var target_height: float = 0.55 + (GarageEnvironment.DECK_HEIGHT if garage_mode else 0.0)
++	if garage_mode and is_instance_valid(turntable): turntable.rotation.y = yaw - GARAGE_CAMERA_YAW
++	camera.position = Vector3(sin(angle)*horizontal, target_height + sin(elevation)*distance, -cos(angle)*horizontal)
++	camera.look_at(Vector3(0, target_height, 0))
++
++func owns_gesture(location: Vector2) -> bool:
++	var rect: Rect2 = get_global_rect()
++	return rect.has_point(location) and location.y >= rect.position.y + interaction_inset_top and location.y <= rect.end.y - interaction_inset_bottom
+ 
+ func _drag(event: InputEvent) -> void:
++	if (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT):
++		if touches.is_empty() and not owns_gesture(get_global_rect().position + event.position): return
+ 	if wash_mode and _wash_input(event):
+ 		accept_event()
+ 		return
+@@ -139,7 +155,7 @@ func zoom_by(factor: float) -> void:
+ 
+ func reset_view() -> void:
+ 	yaw = DEFAULT_YAW
+-	elevation = atan(0.32)
++	elevation = atan(0.42) if garage_mode else atan(0.32)
+ 	zoom = 1.0
+ 	_clear_gesture()
+ 	_orbit()
+diff --git a/game/ui/garage_environment.gd b/game/ui/garage_environment.gd
+new file mode 100644
+index 0000000..57fe655
+--- /dev/null
++++ b/game/ui/garage_environment.gd
+@@ -0,0 +1,311 @@
++class_name GarageEnvironment
++extends RefCounted
++## Original authored workshop and motorised display deck. Menu-only geometry.
++const DECK_HEIGHT: float = 0.22
++static var surfaces: Dictionary = {}
++static var architecture_scenes: Dictionary = {}
++static var cabinet_meshes: Dictionary = {}
++
++static func surface(id: String, color: String, metal: float = 0.0, roughness: float = 0.8, glow: float = 0.0) -> StandardMaterial3D:
++	if surfaces.has(id): return surfaces[id]
++	var result := StandardMaterial3D.new()
++	result.albedo_color = Color(color)
++	result.metallic = metal
++	result.roughness = roughness
++	result.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
++	if glow > 0:
++		result.emission_enabled = true
++		result.emission = Color(color)
++		result.emission_energy_multiplier = glow
++	surfaces[id] = result
++	return result
++
++static func box(parent: Node3D, at: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
++	var node := MeshInstance3D.new()
++	node.mesh = bevel_box(size)
++	node.position = at
++	node.material_override = material
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	parent.add_child(node)
++	return node
++
++static func cylinder(parent: Node3D, at: Vector3, radius: float, height: float, material: Material) -> MeshInstance3D:
++	var node := MeshInstance3D.new()
++	var mesh := CylinderMesh.new()
++	mesh.top_radius = radius
++	mesh.bottom_radius = radius
++	mesh.height = height
++	mesh.radial_segments = 96
++	node.mesh = mesh
++	node.position = at
++	node.material_override = material
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	parent.add_child(node)
++	return node
++
++static func ring(parent: Node3D, radius: float, y: float, thickness: float, material: Material) -> void:
++	var node := MeshInstance3D.new()
++	var mesh := TorusMesh.new()
++	mesh.inner_radius = radius - thickness
++	mesh.outer_radius = radius + thickness
++	mesh.rings = 96
++	mesh.ring_segments = 8
++	node.mesh = mesh
++	node.position.y = y
++	node.material_override = material
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	parent.add_child(node)
++
++static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
++	var shell := Node3D.new()
++	shell.name = "GarageArchitecture"
++	world.add_child(shell)
++	var wall := surface("wall", "26323b")
++	var inset := surface("inset", "141e27")
++	var steel := surface("steel", "414d54", 0.4, 0.7)
++	var edges := surface("edges", "657079", 0.5, 0.6)
++	var yellow := surface("yellow", "b49445", 0.1)
++	var lamp := surface("lamp", "f0dfbd", 0, 0.8, 1.2)
++	var floor := MeshInstance3D.new()
++	floor.name = "GarageConcrete"
++	var floor_mesh := PlaneMesh.new()
++	floor_mesh.size = Vector2(48, 44)
++	floor.mesh = floor_mesh
++	var finish := ShaderMaterial.new()
++	finish.shader = preload("res://ui/garage_floor.gdshader")
++	floor.material_override = finish
++	floor.position.y = -0.025
++	floor.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	world.add_child(floor)
++	if architecture_scenes.has(thumbnail):
++		shell.add_child((architecture_scenes[thumbnail] as PackedScene).instantiate())
++	else:
++		box(shell, Vector3(0, 3.1, 9), Vector3(27, 6.2, 0.3), wall)
++		box(shell, Vector3(-13.4, 3.1, 0), Vector3(0.3, 6.2, 18), wall)
++		box(shell, Vector3(13.4, 3.1, 0), Vector3(0.3, 6.2, 18), wall)
++		# Recessed sectional door, inset reveals, runners, bottom gasket and handle.
++		box(shell, Vector3(0, 2.4, 8.79), Vector3(8.8, 4.8, 0.12), inset)
++		for index: int in range(20):
++			box(shell, Vector3(0, 0.12 + index * 0.225, 8.67), Vector3(8.25, 0.203, 0.08), steel)
++			box(shell, Vector3(0, 0.195 + index * 0.225, 8.615), Vector3(8.25, 0.016, 0.012), edges)
++		for x: float in [-4.3, 4.3]:
++			box(shell, Vector3(x, 2.4, 8.55), Vector3(0.10, 4.8, 0.22), edges)
++		box(shell, Vector3(0, 0.055, 8.57), Vector3(8.25, 0.11, 0.12), inset)
++		box(shell, Vector3(0, 0.8, 8.48), Vector3(0.62, 0.045, 0.10), edges)
++		box(shell, Vector3(0, 4.85, 8.43), Vector3(8.9, 0.24, 0.42), inset)
++		# Repeating structural bays and a quiet warm dado line unify the room.
++		for x: float in [-11.2, -5.25, 5.25, 11.2]:
++			box(shell, Vector3(x, 2.8, 8.55), Vector3(0.26, 5.6, 0.46), steel)
++			box(shell, Vector3(x, 0.38, 8.27), Vector3(0.39, 0.76, 0.12), yellow)
++		for x: float in [-9.0, 9.0]:
++			box(shell, Vector3(x, 1.35, 8.80), Vector3(7.0, 0.05, 0.10), yellow)
++		for z: float in [1.0, 5.5, 8.3]:
++			box(shell, Vector3(0, 5.65, z), Vector3(27, 0.24, 0.25), steel)
++			box(shell, Vector3(0, 5.48, z), Vector3(6.5, 0.05, 0.34), lamp)
++		if not thumbnail:
++			_workbench(shell, Vector3(-6.6, 0, 6.2))
++			_cabinet(shell, Vector3(6.8, 0, 6.2))
++			_tyre_rack(shell, Vector3(9.3, 0, 4.8))
++			# Recessed floor drain beyond the vehicle inspection area.
++			for index: int in range(22):
++				box(shell, Vector3(-6.5, 0.004, -3.0 + index * 0.14), Vector3(0.62, 0.012, 0.032), inset)
++		_batch(shell)
++		_set_owner(shell, shell)
++		var prepared := PackedScene.new()
++		if prepared.pack(shell) == OK: architecture_scenes[thumbnail] = prepared
++	var environment := WorldEnvironment.new()
++	environment.name = "GarageEnvironment"
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color("101923")
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_color = Color("b6c5d0")
++	environment.environment.ambient_light_energy = 0.30
++	if ShowroomStudio.cached_sky == null:
++		ShowroomStudio.cached_sky = Sky.new()
++		ShowroomStudio.cached_sky.radiance_size = Sky.RADIANCE_SIZE_128
++		var sky_finish := ShaderMaterial.new()
++		sky_finish.shader = preload("res://ui/studio_sky.gdshader")
++		ShowroomStudio.cached_sky.sky_material = sky_finish
++	environment.environment.sky = ShowroomStudio.cached_sky
++	environment.environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
++	world.add_child(environment)
++	var key := DirectionalLight3D.new()
++	key.name = "GarageKey"
++	key.rotation_degrees = Vector3(-65, -38, 0)
++	key.light_color = Color("f7e8cf")
++	key.light_energy = 0.62
++	key.shadow_enabled = not thumbnail
++	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
++	key.directional_shadow_max_distance = 12.0
++	world.add_child(key)
++	var fill := DirectionalLight3D.new()
++	fill.name = "GarageFill"
++	fill.rotation_degrees = Vector3(-30, 135, 0)
++	fill.light_color = Color("96b3ce")
++	fill.light_energy = 0.18
++	world.add_child(fill)
++	var rim := SpotLight3D.new()
++	rim.name = "GarageRim"
++	rim.position = Vector3(-4, 5.2, 5)
++	rim.light_color = Color("d6e6f0")
++	rim.light_energy = 1.05
++	rim.spot_range = 16
++	rim.spot_angle = 54
++	world.add_child(rim)
++	rim.look_at(Vector3(0, 0.8, 0))
++	var stage := Node3D.new()
++	stage.name = "Turntable"
++	world.add_child(stage)
++	var radius: float = 3.65 if car.vehicle_id == "pickup" else 2.85 if car.vehicle_id != "kart" else 2.3
++	cylinder(stage, Vector3(0, 0.035, 0), radius + 0.13, 0.07, inset)
++	cylinder(stage, Vector3(0, 0.11, 0), radius, 0.17, steel)
++	cylinder(stage, Vector3(0, 0.205, 0), radius - 0.055, 0.03, surface("deck", "596166", 0.55, 0.75))
++	ring(stage, radius + 0.018, 0.085, 0.014, surface("rimlight", "d8ba64", 0.1, 0.65, 0.45))
++	ring(stage, radius - 0.04, 0.216, 0.015, edges)
++	for index: int in range(24):
++		var angle: float = index * TAU / 24.0
++		var mark := box(stage, Vector3(sin(angle) * (radius - 0.2), 0.222, cos(angle) * (radius - 0.2)), Vector3(0.035, 0.003, 0.11), inset)
++		mark.rotation.y = angle
++	for x: float in [-0.92, 0.92]:
++		box(stage, Vector3(x, 0.224, 0), Vector3(0.035, 0.004, radius * 1.45), inset)
++	_batch(stage)
++	car.reparent(stage)
++	car.position.y = DECK_HEIGHT
++	ShowroomStudio._studio_glass(car, {})
++	ShowroomStudio._contact(stage, Vector3(0, DECK_HEIGHT + 0.003, 0), Vector2(2.4, 4.7) * HandlingConfig.BODY_SCALE, 0.40)
++	for wheel: Vector3 in car.wheel_rest_positions:
++		ShowroomStudio._contact(stage, Vector3(wheel.x * HandlingConfig.BODY_SCALE, DECK_HEIGHT + 0.006, wheel.z * HandlingConfig.BODY_SCALE), Vector2(0.6, 0.8), 0.65)
++	ShowroomStudio._contact(world, Vector3(0, 0.002, 0), Vector2.ONE * (radius * 2.2), 0.52)
++	return stage
++
++static func _workbench(root: Node3D, position: Vector3) -> void:
++	var bench := Node3D.new()
++	bench.name = "GarageWorkbench"
++	bench.position = position
++	root.add_child(bench)
++	var frame := surface("benchframe", "1c2932", 0.35)
++	var wood := surface("worktop", "846e54", 0, 0.85)
++	box(bench, Vector3(0, 1.15, 0), Vector3(4.4, 0.16, 1.3), wood)
++	box(bench, Vector3(0, 0.13, 0), Vector3(4.25, 0.13, 1.1), frame)
++	for x: float in [-2.0, 2.0]:
++		for z: float in [-0.46, 0.46]: box(bench, Vector3(x, 0.61, z), Vector3(0.08, 1.12, 0.08), frame)
++	box(bench, Vector3(0, 2.1, 0.6), Vector3(4.2, 1.3, 0.06), surface("pegboard", "48535c", 0.2))
++	for row: int in range(5):
++		for col: int in range(19): box(bench, Vector3(-1.95 + col * 0.21, 1.55 + row * 0.24, 0.562), Vector3(0.025, 0.025, 0.006), frame)
++	for index: int in range(9):
++		var x: float = -1.6 + index * 0.38
++		var length: float = 0.24 + (index % 3) * 0.07
++		box(bench, Vector3(x, 1.97, 0.51), Vector3(0.045, length, 0.04), surface("tools", "9ba3a4", 0.6))
++		box(bench, Vector3(x, 2.11, 0.51), Vector3(0.11, 0.08, 0.04), surfaces.tools)
++	box(bench, Vector3(-1.42, 1.35, -0.15), Vector3(0.40, 0.24, 0.34), frame)
++	box(bench, Vector3(-1.42, 1.53, -0.15), Vector3(0.6, 0.08, 0.25), surfaces.tools)
++
++static func _cabinet(root: Node3D, position: Vector3) -> void:
++	var cabinet := Node3D.new()
++	cabinet.name = "GarageToolStorage"
++	cabinet.position = position
++	root.add_child(cabinet)
++	var navy := surface("cabinet", "294350", 0.15)
++	var dark: Material = surfaces.inset
++	box(cabinet, Vector3(0, 0.86, 0), Vector3(3.9, 1.55, 0.98), dark)
++	box(cabinet, Vector3(0, 1.69, 0), Vector3(4.0, 0.14, 1.08), surfaces.steel)
++	for col: int in range(3):
++		var x: float = (col - 1) * 1.29
++		for row: int in range(5):
++			var y: float = 0.28 + row * 0.29
++			box(cabinet, Vector3(x, y, -0.51), Vector3(1.22, 0.25, 0.06), navy)
++			box(cabinet, Vector3(x, y + 0.07, -0.56), Vector3(0.75, 0.035, 0.06), surfaces.edges)
++	for x: float in [-1.65, 1.65]:
++		for z: float in [-0.35, 0.35]:
++			var wheel := cylinder(cabinet, Vector3(x, 0.095, z), 0.10, 0.09, dark)
++			wheel.rotation.z = PI * 0.5
++	box(cabinet, Vector3(0.9, 2.25, 0.5), Vector3(1.8, 0.93, 0.65), navy)
++	box(cabinet, Vector3(0.9, 2.25, 0.14), Vector3(1.62, 0.80, 0.06), dark)
++
++static func _tyre_rack(root: Node3D, position: Vector3) -> void:
++	var rack := Node3D.new()
++	rack.name = "GarageTyreRack"
++	rack.position = position
++	root.add_child(rack)
++	var metal: Material = surfaces.steel
++	for x: float in [-0.8, 0.8]:
++		box(rack, Vector3(x, 1.13, 0), Vector3(0.07, 2.25, 0.7), metal)
++	for y: float in [0.30, 1.40]:
++		box(rack, Vector3(0, y, 0), Vector3(1.75, 0.06, 0.70), metal)
++		for x: float in [-0.52, 0.0, 0.52]:
++			var tire := MeshInstance3D.new()
++			var shape := TorusMesh.new()
++			shape.inner_radius = 0.22
++			shape.outer_radius = 0.45
++			shape.rings = 32
++			shape.ring_segments = 12
++			tire.mesh = shape
++			tire.position = Vector3(x, y + 0.45, 0)
++			tire.rotation.z = PI * 0.5
++			tire.material_override = surface("rubber", "1b1e21")
++			tire.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++			rack.add_child(tire)
++
++static func _batch(root: Node3D) -> void:
++	var groups: Dictionary = {}
++	_collect(root, Transform3D.IDENTITY, groups)
++	for source: Material in groups:
++		var merged := MeshInstance3D.new()
++		merged.name = "PreparedGarageMesh"
++		merged.mesh = (groups[source] as SurfaceTool).commit()
++		merged.material_override = source
++		merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		root.add_child(merged)
++
++static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary) -> void:
++	for child: Node in node.get_children():
++		if not child is Node3D: continue
++		var local: Transform3D = transform * child.transform
++		if child is MeshInstance3D:
++			var material: Material = child.material_override
++			if not groups.has(material):
++				var tool := SurfaceTool.new()
++				tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++				groups[material] = tool
++			(groups[material] as SurfaceTool).append_from(child.mesh, 0, local)
++			node.remove_child(child)
++			child.queue_free()
++		else: _collect(child, local, groups)
++
++static func _set_owner(node: Node, owner: Node) -> void:
++	for child: Node in node.get_children():
++		child.owner = owner
++		_set_owner(child, owner)
++
++static func bevel_box(dimensions: Vector3) -> ArrayMesh:
++	if cabinet_meshes.has(dimensions): return cabinet_meshes[dimensions]
++	var half: Vector3 = dimensions * 0.5
++	var bevel: float = minf(0.025, minf(half.x, minf(half.y, half.z)) * 0.18)
++	var core: Vector3 = half - Vector3.ONE * bevel
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for sign_axis: float in [-1.0, 1.0]:
++		_polygon(tool, [Vector3(sign_axis*half.x,-core.y,-core.z),Vector3(sign_axis*half.x,core.y,-core.z),Vector3(sign_axis*half.x,core.y,core.z),Vector3(sign_axis*half.x,-core.y,core.z)], Vector3(sign_axis,0,0))
++		_polygon(tool, [Vector3(-core.x,sign_axis*half.y,-core.z),Vector3(core.x,sign_axis*half.y,-core.z),Vector3(core.x,sign_axis*half.y,core.z),Vector3(-core.x,sign_axis*half.y,core.z)], Vector3(0,sign_axis,0))
++		_polygon(tool, [Vector3(-core.x,-core.y,sign_axis*half.z),Vector3(core.x,-core.y,sign_axis*half.z),Vector3(core.x,core.y,sign_axis*half.z),Vector3(-core.x,core.y,sign_axis*half.z)], Vector3(0,0,sign_axis))
++	for a: float in [-1.0,1.0]:
++		for b: float in [-1.0,1.0]:
++			_polygon(tool,[Vector3(-core.x,a*half.y,b*core.z),Vector3(core.x,a*half.y,b*core.z),Vector3(core.x,a*core.y,b*half.z),Vector3(-core.x,a*core.y,b*half.z)],Vector3(0,a,b))
++			_polygon(tool,[Vector3(a*half.x,-core.y,b*core.z),Vector3(a*half.x,core.y,b*core.z),Vector3(a*core.x,core.y,b*half.z),Vector3(a*core.x,-core.y,b*half.z)],Vector3(a,0,b))
++			_polygon(tool,[Vector3(a*half.x,b*core.y,-core.z),Vector3(a*half.x,b*core.y,core.z),Vector3(a*core.x,b*half.y,core.z),Vector3(a*core.x,b*half.y,-core.z)],Vector3(a,b,0))
++			for c: float in [-1.0,1.0]:
++				_polygon(tool,[Vector3(a*half.x,b*core.y,c*core.z),Vector3(a*core.x,b*half.y,c*core.z),Vector3(a*core.x,b*core.y,c*half.z)],Vector3(a,b,c))
++	tool.index()
++	var result: ArrayMesh = tool.commit()
++	cabinet_meshes[dimensions] = result
++	return result
++
++static func _polygon(tool: SurfaceTool, points: Array[Vector3], outward: Vector3) -> void:
++	var normal: Vector3 = outward.normalized()
++	var reverse: bool = (points[1]-points[0]).cross(points[2]-points[0]).dot(normal) > 0.0
++	for triangle: int in range(1, points.size()-1):
++		for index: int in ([0,triangle+1,triangle] if reverse else [0,triangle,triangle+1]):
++			tool.set_normal(normal)
++			tool.set_uv(Vector2(points[index].x, points[index].z))
++			tool.add_vertex(points[index])
+diff --git a/game/ui/garage_environment.gd.uid b/game/ui/garage_environment.gd.uid
+new file mode 100644
+index 0000000..a0439ea
+--- /dev/null
++++ b/game/ui/garage_environment.gd.uid
+@@ -0,0 +1 @@
++uid://c8tr3kfsu1ew2
+diff --git a/game/ui/garage_floor.gdshader b/game/ui/garage_floor.gdshader
+new file mode 100644
+index 0000000..136288c
+--- /dev/null
++++ b/game/ui/garage_floor.gdshader
+@@ -0,0 +1,15 @@
++shader_type spatial;
++render_mode diffuse_toon, specular_schlick_ggx;
++varying vec3 position_world;
++float grain(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
++void vertex() { position_world = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz; }
++void fragment() {
++	vec2 p = position_world.xz;
++	float g = grain(floor(p*120.0));
++	vec2 panel = abs(fract((p+vec2(2.0,0.0))/4.0)-0.5);
++	float join = smoothstep(0.497,0.499,max(panel.x,panel.y));
++	float apron = 1.0-smoothstep(4.2,9.0,length(p));
++	ALBEDO = mix(vec3(0.075,0.09,0.10),vec3(0.15,0.17,0.18),apron)*(0.994+g*0.012)*(1.0-join*0.22);
++	ROUGHNESS = 0.83;
++	METALLIC = 0.12;
++}
+diff --git a/game/ui/garage_floor.gdshader.uid b/game/ui/garage_floor.gdshader.uid
+new file mode 100644
+index 0000000..730b9ed
+--- /dev/null
++++ b/game/ui/garage_floor.gdshader.uid
+@@ -0,0 +1 @@
++uid://bgy0uukyems17
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index e738fa1..f07450a 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -24,7 +24,7 @@ var gallery: ScrollContainer
+ var gallery_slot: Control
+ var gallery_content: Control
+ var cards: HBoxContainer
+-var preview: VBoxContainer
++var preview: Control
+ var heading: Label
+ var tools: VBoxContainer
+ var rail: VBoxContainer
+@@ -53,14 +53,32 @@ func _ready() -> void:
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation", 8)
+ 	add_child(main)
+-	preview = VBoxContainer.new()
++	preview = Control.new()
+ 	preview.name = "GaragePreview"
+ 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	preview.add_theme_constant_override("separation", 8)
++	preview.custom_minimum_size.y = 250
++	preview.clip_contents = true
+ 	main.add_child(preview)
++	_create_showroom()
++	var shade := TextureRect.new()
++	shade.name = "ShowroomHeaderShade"
++	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var gradient := Gradient.new()
++	gradient.colors = PackedColorArray([Color(0.025,0.055,0.075,0.9), Color(0.025,0.055,0.075,0)])
++	var shading := GradientTexture2D.new()
++	shading.gradient = gradient
++	shading.fill_from = Vector2(0,0)
++	shading.fill_to = Vector2(0,1)
++	shade.texture = shading
++	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	preview.add_child(shade)
++	shade.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
++	shade.offset_bottom = 100
+ 	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
++	heading.name = "GarageCarTitle"
+ 	preview.add_child(heading)
+-	_create_showroom()
++	heading.position = Vector2(24, 14)
++	heading.size = Vector2(520, 46)
+ 	_build_view_controls()
+ 	tools_panel = PanelContainer.new()
+ 	tools_panel.name = "GarageTools"
+@@ -105,21 +123,30 @@ func _create_showroom() -> void:
+ 	showroom = CarShowroom.new()
+ 	showroom.name = "GarageShowroom"
+ 	showroom.vehicle_id = vehicle_id
+-	showroom.framing_scale = 0.76
++	showroom.garage_mode = true
++	showroom.interaction_inset_top = 68
++	showroom.interaction_inset_bottom = 58
++	showroom.framing_scale = 0.96
+ 	showroom.livery = draft
+ 	showroom.condition = VehicleCondition.read(records, vehicle_id)
+ 	_condition_saved = showroom.condition.duplicate(true)
+ 	showroom.condition_changed.connect(_save_condition)
+ 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.add_child(showroom)
+-	preview.move_child(showroom, 1)
++	preview.move_child(showroom, 0)
++	MenuStyle.fill(showroom)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 
+ func _build_view_controls() -> void:
+ 	var row := HBoxContainer.new()
+ 	row.name = "GarageViewControls"
+ 	preview.add_child(row)
+-	view_hint = MenuStyle.label("Drag to rotate", 16, true)
++	row.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
++	row.offset_left = 24
++	row.offset_right = -16
++	row.offset_top = -60
++	row.offset_bottom = -12
++	view_hint = MenuStyle.label("Drag to turn", 16, true)
+ 	view_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	view_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(view_hint)
+@@ -176,15 +203,22 @@ func _build_carousel() -> void:
+ 		model.livery = VehicleLivery.for_car(records.settings, id)
+ 		model.condition = VehicleCondition.read(records, id)
+ 		model.read_only = true
+-		model.framing_scale = 0.70
++		model.garage_mode = true
++		model.framing_scale = 0.94
+ 		model.custom_minimum_size.y = 104
+ 		model.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		column.add_child(model)
+ 		thumbnails[id] = model
+-		var caption := MenuStyle.label(VehicleCatalog.title(id), 20)
+-		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-		caption.custom_minimum_size.y = 36
+-		column.add_child(caption)
++		var footer := MarginContainer.new()
++		footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		footer.add_theme_constant_override("margin_left", 14)
++		footer.add_theme_constant_override("margin_right", 14)
++		footer.custom_minimum_size.y = 36
++		column.add_child(footer)
++		var caption := MenuStyle.label(VehicleCatalog.title(id), 22)
++		caption.name = "CarCardTitle_" + id
++		caption.add_theme_font_override("font", MenuStyle.DISPLAY)
++		footer.add_child(caption)
+ 	_update_cards()
+ 
+ func _layout_gallery() -> void:
+@@ -221,7 +255,7 @@ func _update_cards() -> void:
+ 		style.border_color = MenuStyle.ACCENT if chosen else MenuStyle.BORDER
+ 		style.set_border_width_all(2 if chosen else 1)
+ 		card.add_theme_stylebox_override("normal", style)
+-		(card.get_child(0).get_child(1) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
++		(card.find_child("CarCardTitle_" + VehicleCatalog.IDS[index], true, false) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
+ 
+ func preview_car(index: int) -> void:
+ 	if index < 0 or index >= VehicleCatalog.IDS.size(): return
+@@ -388,7 +422,7 @@ func _finish_tools() -> void:
+ 	for picker: ColorPickerButton in pickers.values():
+ 		if picker.get_popup().visible: picker.get_popup().hide()
+ 	_save_condition()
+-	if view_hint != null: view_hint.text = "Drag to rotate"
++	if view_hint != null: view_hint.text = "Drag to turn"
+ 
+ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree(): _finish_tools()
+@@ -439,7 +473,7 @@ func _toggle_wash() -> void:
+ 	if section != "care": return
+ 	showroom.set_wash_mode(not showroom.wash_mode)
+ 	wash_button.text = "Done" if showroom.wash_mode else "Wash"
+-	view_hint.text = "Drag to wash / Two fingers to rotate" if showroom.wash_mode else "Drag to rotate"
++	view_hint.text = "Drag to wash / Two fingers to turn" if showroom.wash_mode else "Drag to turn"
+ 	if not showroom.wash_mode: _save_condition()
+ 
+ func _save_condition() -> void:
+diff --git a/game/ui/menu_page_swipe.gd b/game/ui/menu_page_swipe.gd
+index 1acc800..d2abc8c 100644
+--- a/game/ui/menu_page_swipe.gd
++++ b/game/ui/menu_page_swipe.gd
+@@ -126,7 +126,8 @@ func _owns_gesture(node: Node, location: Vector2) -> bool:
+ 		if control.mouse_behavior_recursive == Control.MOUSE_BEHAVIOR_DISABLED: return false
+ 		if not control.is_visible_in_tree(): return false
+ 		if control.clip_contents and not control.get_global_rect().has_point(location): return false
+-		if control.get_global_rect().has_point(location) and (control is CarShowroom or control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
++		if control is CarShowroom and control.owns_gesture(location): return true
++		if control.get_global_rect().has_point(location) and (control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
+ 			return true
+ 	for child: Node in node.get_children():
+ 		if _owns_gesture(child, location): return true

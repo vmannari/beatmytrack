@@ -1,0 +1,48 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1268,6 +1268,7 @@
+ 		challenge_invitation = ChallengesClient.code_from(field.text)
+ 		challenges.open(field.text))
+ 	dialog.popup_centered(Vector2i(500,150))
++	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
+ 	field.grab_focus()
+ 
+ func _share_challenge() -> void:
+@@ -3500,7 +3501,7 @@
+ 	var dialog := ConfirmationDialog.new()
+ 	dialog.name = "SaveChangesDialog"
+ 	dialog.title = "Save this draft?"
+-	dialog.dialog_text = "Enter a name to keep this draft. Discard removes the autosaved recovery copy."
++	dialog.dialog_text = ""
+ 	dialog.ok_button_text = "Save"
+ 	dialog.cancel_button_text = "Cancel"
+ 	var discard := dialog.add_button("Discard", true, "discard")
+@@ -3535,7 +3536,10 @@
+ 		if after.is_valid(): after.call())
+ 	root_ui.add_child(dialog)
+ 	dialog.canceled.connect(dialog.queue_free)
+-	dialog.popup_centered_clamped(Vector2i(520, 250))
++	dialog.popup_centered_clamped(Vector2i(520, 180))
++	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
++	field.text_submitted.connect(func(_value: String) -> void:
++		if not dialog.get_ok_button().disabled: dialog.confirmed.emit())
+ 	field.grab_focus()
+ 
+ func _open_saved_tracks() -> void:
+@@ -4101,15 +4105,7 @@
+ 		dialog.queue_free())
+ 	root_ui.add_child(dialog)
+ 	dialog.popup_centered_clamped(Vector2i(500,220))
+-	var keyboard_timer := Timer.new()
+-	keyboard_timer.wait_time=0.1
+-	dialog.add_child(keyboard_timer)
+-	keyboard_timer.timeout.connect(func() -> void:
+-		var visible_size: Vector2=get_viewport().get_visible_rect().size
+-		var keyboard: float=0
+-		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): keyboard=DisplayServer.virtual_keyboard_get_height()*visible_size.y/maxf(1.0,DisplayServer.window_get_size().y)
+-		dialog.position=Vector2i(_rename_dialog_position(visible_size,Vector2(dialog.size),keyboard)))
+-	keyboard_timer.start()
++	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
+ 	field.grab_focus()
+ 	field.select_all()
+ 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):

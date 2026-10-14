@@ -1,0 +1,1042 @@
+--- /dev/null
++++ b/scripts/trace-desert-phone.ps1
+@@ -0,0 +1,182 @@
++param(
++    [string]$DeviceSerial = 'PRQKU4U4PREQNRWG',
++    [ValidateSet('Warm','ColdPair')][string]$Mode = 'Warm',
++    [ValidatePattern('^[a-z0-9-]+$')][string]$RunName = 'warm-01',
++    [ValidateRange(30,90)][int]$Seconds = 60,
++    [string[]]$Features = @('baseline'),
++    [switch]$NoCpuStacks
++)
++$ErrorActionPreference = 'Stop'
++$root = Split-Path -Parent $PSScriptRoot
++$evidence = Join-Path $root "docs/evidence/desert-hitch-2026-10-13/$RunName"
++$rawRoot = Join-Path $root "build/desert-hitch-2026-10-13/$RunName"
++$adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
++$package = 'org.circuit01.handlinglab'
++$cacheBackup = "files/diagnostics/desert-hitch-cache-before-$RunName"
++$cacheGenerated = "files/diagnostics/desert-hitch-cache-generated-$RunName"
++New-Item -ItemType Directory -Force -Path $evidence,$rawRoot | Out-Null
++function Adb([string[]]$Arguments) {
++    $result = & $adb -s $DeviceSerial @Arguments
++    if ($LASTEXITCODE -ne 0) { throw "adb failed: $Arguments" }
++    return $result
++}
++$lockState = (Adb @('shell','dumpsys','window','policy')) -join "`n"
++if ($lockState -match 'mIsShowing=true') { throw 'Phone is locked; physical owner unlock is required before starting a trace.' }
++$files = @(Adb @('shell','run-as',$package,'ls','files'))
++foreach ($marker in @('mobile_probe.json','mobile_probe_results.json','hitch_ready.json')) {
++    if ($files -contains $marker) { throw "Preserve the existing diagnostic $marker before tracing." }
++}
++$diagnosticFiles = @(Adb @('shell','run-as',$package,'ls','files/diagnostics'))
++foreach ($owned in @("desert-hitch-cache-before-$RunName","desert-hitch-cache-generated-$RunName","desert-hitch-record-before-$RunName.json","desert-hitch-record-before-$RunName.bak")) {
++    if ($diagnosticFiles -contains $owned) { throw "Preserve existing task backup $owned before tracing." }
++}
++$cacheMoved = $false
++$recordsSaved = $false
++try {
++    Adb @('shell','am','force-stop',$package) | Out-Null
++    Adb @('shell','run-as',$package,'cp','files/local_records.json',"files/diagnostics/desert-hitch-record-before-$RunName.json") | Out-Null
++    Adb @('shell','run-as',$package,'cp','files/local_records.json.bak',"files/diagnostics/desert-hitch-record-before-$RunName.bak") | Out-Null
++    $recordsSaved = $true
++    Adb @('shell','run-as',$package,'sha256sum','files/local_records.json','files/local_records.json.bak') | Set-Content "$evidence/records-before.txt"
++    $apkPath = ((Adb @('shell','pm','path',$package)) -replace '^package:','').Trim()
++    Adb @('shell','sha256sum',$apkPath) | Set-Content "$evidence/installed-apk.txt"
++    if ($Mode -eq 'ColdPair') {
++        # Exact known app-private paths; original cache is moved, never deleted.
++        Adb @('shell','run-as',$package,'du','-s','files/shader_cache') | Set-Content "$evidence/cache-before.txt"
++        Adb @('shell','run-as',$package,'mv','files/shader_cache',$cacheBackup) | Out-Null
++        $cacheMoved = $true
++    }
++    $stages = @('warm')
++    if ($Mode -eq 'ColdPair') { $stages = @('cold','primed') }
++    foreach ($stage in $stages) {
++        $traceRemote = "/data/misc/perfetto-traces/bmt-hitch-$RunName-$stage.pftrace"
++        $traceFile = "$rawRoot/$stage.pftrace"
++        $cpuSource = ''
++        if (-not $NoCpuStacks) {
++            $cpuSource = @'
++data_sources { config {
++  name: "linux.perf"
++  target_buffer: 0
++  perf_event_config {
++    timebase { frequency: 99 }
++    callstack_sampling {
++      scope { target_cmdline: "org.circuit01.handlinglab" }
++      kernel_frames: false
++    }
++  }
++} }
++'@
++        }
++        $traceConfig = @"
++buffers { size_kb: 65536 fill_policy: RING_BUFFER }
++duration_ms: 120000
++data_sources { config {
++  name: "linux.ftrace"
++  target_buffer: 0
++  ftrace_config {
++    ftrace_events: "sched/sched_switch"
++    ftrace_events: "sched/sched_waking"
++    ftrace_events: "power/cpu_frequency"
++    ftrace_events: "power/cpu_idle"
++    ftrace_events: "task/task_newtask"
++    ftrace_events: "task/task_rename"
++    ftrace_events: "block/block_rq_issue"
++    ftrace_events: "block/block_rq_complete"
++    atrace_categories: "gfx"
++    atrace_categories: "view"
++    atrace_categories: "sync"
++    atrace_apps: "org.circuit01.handlinglab"
++    buffer_size_kb: 4096
++    drain_period_ms: 250
++  }
++} }
++data_sources { config {
++  name: "linux.process_stats"
++  target_buffer: 0
++  process_stats_config { scan_all_processes_on_start: true }
++} }
++data_sources { config {
++  name: "android.log"
++  target_buffer: 0
++  android_log_config { min_prio: PRIO_INFO filter_tags: "godot" log_ids: LID_DEFAULT }
++} }
++data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 0 } }
++$cpuSource
++"@
++        $traceConfig.TrimEnd() | Set-Content "$evidence/$stage-trace.pbtxt" -Encoding ASCII
++        $config = @{track_id='track_3e26605a8a90165e';seconds=$Seconds;sustained=$true;use_game_scale=$true;feature_profile=$true;touch_stress=$false;features=$Features;state_path='user://hitch_ready.json'}
++        $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$stage-probe-config.json" -Encoding ASCII
++        Adb @('shell','am','force-stop',$package) | Out-Null
++        Adb @('push',"$evidence/$stage-probe-config.json",'/data/local/tmp/bmt-hitch-probe.json') | Out-Null
++        Adb @('push',"$evidence/$stage-trace.pbtxt",'/data/local/tmp/bmt-hitch-trace.pbtxt') | Out-Null
++        Adb @('shell','run-as',$package,'cp','/data/local/tmp/bmt-hitch-probe.json','files/mobile_probe.json') | Out-Null
++        Adb @('shell','run-as',$package,'rm','-f','files/mobile_probe_results.json','files/hitch_ready.json') | Out-Null
++        Adb @('shell','dumpsys','thermalservice') | Set-Content "$evidence/$stage-thermal-before.txt"
++        # Perfetto drops privileges; stdin avoids SELinux denying the pushed file.
++        Adb @('shell','input','keyevent','KEYCODE_WAKEUP') | Out-Null
++        Adb @('shell','wm','dismiss-keyguard') | Out-Null
++        Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package) | Set-Content "$evidence/$stage-launch.txt"
++        $readyDeadline = (Get-Date).AddSeconds(90)
++        do {
++            $files = @(Adb @('shell','run-as',$package,'ls','files'))
++            if ($files -contains 'hitch_ready.json') { break }
++            Start-Sleep -Seconds 1
++        } while ((Get-Date) -lt $readyDeadline)
++        if ($files -notcontains 'hitch_ready.json') { throw 'Race never reached readiness; system trace not started.' }
++        $appPid = (Adb @('shell','pidof',$package)) -join ''
++        @{pid=$appPid;phase=$stage;native_stack_scope=$package} | ConvertTo-Json | Set-Content "$evidence/$stage-process.json"
++        Adb @('shell',"cat /data/local/tmp/bmt-hitch-trace.pbtxt | perfetto --txt -c - -o $traceRemote --background-wait") | Set-Content "$evidence/$stage-trace-start.txt"
++        $traceTimer = [System.Diagnostics.Stopwatch]::StartNew()
++        $deadline = (Get-Date).AddSeconds(120)
++        $lastProgress = -1
++        do {
++            $files = @(Adb @('shell','run-as',$package,'ls','files'))
++            if ($files -contains 'mobile_probe_results.json') { break }
++            $progress = [int][math]::Floor($traceTimer.Elapsed.TotalSeconds/15)
++            if ($progress -gt $lastProgress) {
++                Write-Host "$RunName/$stage elapsed=$([int]$traceTimer.Elapsed.TotalSeconds)s ready=$($files -contains 'hitch_ready.json')"
++                $lastProgress = $progress
++            }
++            Start-Sleep -Seconds 2
++        } while ((Get-Date) -lt $deadline)
++        if ($files -notcontains 'mobile_probe_results.json') { throw 'Trace workload did not complete; preserve the trace and check foreground/readiness.' }
++        $raw = Adb @('shell','run-as',$package,'cat','files/mobile_probe_results.json')
++        $raw | Set-Content "$evidence/$stage-probe.json" -Encoding UTF8
++        $reports = @(($raw -join "`n") | ConvertFrom-Json)
++        foreach ($report in $reports) { Write-Host "$RunName/$stage $($report.disabled_feature) max=$($report.frame_max_ms)ms p99=$($report.frame_p99_ms)ms paused=$($report.paused_frames) distance=$($report.driven_metres)m" }
++        $log = @(Adb @('logcat','-d',"--pid=$appPid",'-v','threadtime'))
++        $log | Set-Content "$rawRoot/$stage-logcat.txt" -Encoding UTF8
++        $godot = @($log | Where-Object { $_ -match ' [IEW] godot ' })
++        $godot | ForEach-Object { $_.TrimEnd() } | Set-Content "$evidence/$stage-godot-log.txt" -Encoding UTF8
++        $hitchPaths = @($godot | Select-String 'local_log=user://diagnostics/race_hitches/([^\s]+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique)
++        foreach ($hitchName in $hitchPaths) {
++            Adb @('shell','run-as',$package,'cat',"files/diagnostics/race_hitches/$hitchName") | Set-Content "$evidence/$stage-$hitchName" -Encoding UTF8
++        }
++        Adb @('shell','dumpsys','thermalservice') | Set-Content "$evidence/$stage-thermal-after.txt"
++        while ($traceTimer.Elapsed.TotalSeconds -lt 123) { Start-Sleep -Seconds 2 }
++        Adb @('pull',$traceRemote,$traceFile) | Out-Null
++        Adb @('shell','rm','-f',$traceRemote) | Out-Null
++        Get-FileHash $traceFile | Select-Object Hash,Path | ConvertTo-Json | Set-Content "$evidence/$stage-trace-hash.json"
++        Write-Host "$RunName/$stage trace saved locally ($((Get-Item $traceFile).Length) bytes)."
++    }
++} finally {
++    Adb @('shell','am','force-stop',$package) | Out-Null
++    Adb @('shell','run-as',$package,'rm','-f','files/mobile_probe.json','files/mobile_probe_results.json','files/hitch_ready.json') | Out-Null
++    if ($cacheMoved) {
++        $currentFiles = @(Adb @('shell','run-as',$package,'ls','files'))
++        if ($currentFiles -contains 'shader_cache') {
++            Adb @('shell','run-as',$package,'mv','files/shader_cache',$cacheGenerated) | Out-Null
++        }
++        Adb @('shell','run-as',$package,'mv',$cacheBackup,'files/shader_cache') | Out-Null
++        Adb @('shell','run-as',$package,'du','-s','files/shader_cache') | Set-Content "$evidence/cache-restored.txt"
++    }
++    if ($recordsSaved) {
++        Adb @('shell','run-as',$package,'cp',"files/diagnostics/desert-hitch-record-before-$RunName.json",'files/local_records.json') | Out-Null
++        Adb @('shell','run-as',$package,'cp',"files/diagnostics/desert-hitch-record-before-$RunName.bak",'files/local_records.json.bak') | Out-Null
++        Adb @('shell','run-as',$package,'rm','-f',"files/diagnostics/desert-hitch-record-before-$RunName.json","files/diagnostics/desert-hitch-record-before-$RunName.bak") | Out-Null
++        Adb @('shell','run-as',$package,'sha256sum','files/local_records.json','files/local_records.json.bak') | Set-Content "$evidence/records-restored.txt"
++    }
++    Adb @('shell','rm','-f','/data/local/tmp/bmt-hitch-probe.json','/data/local/tmp/bmt-hitch-trace.pbtxt') | Out-Null
++    Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package) | Set-Content "$evidence/normal-launch.txt"
++    Write-Host 'Original records/cache and normal launch restored; private trace files remain local.'
++}
+--- /dev/null
++++ b/game/tests/inspect_desert_hitch.gd
+@@ -0,0 +1,23 @@
++extends SceneTree
++## Read-only exact-track geometry around the captured phone event; no player records.
++func _initialize() -> void:
++	var file: String = ProjectSettings.globalize_path("res://../build/desert-hitch-2026-10-13/original-desert-document.json")
++	var document: Dictionary = TrackLibrary.new().import_document(file)
++	if document.is_empty():
++		push_error("Original desert fixture is invalid")
++		quit(1)
++		return
++	var track: NativeTrack = TrackCompiler.compile(document)
++	var nearby: Array[Dictionary] = []
++	for index: int in range(160,171):
++		var point: Vector2 = track.route[index]
++		var layer: Array[Dictionary] = []
++		for bridge: Dictionary in track.creator_bridges:
++			layer.append({"height":CreatorBridges.height(bridge,point),"contains":CreatorBridges.contains(bridge,point)})
++		nearby.append({"index":index,"position":[point.x,point.y],"bridges":layer})
++	var kinds: Dictionary = {}
++	for object: Dictionary in document.get("objects",[]):
++		var kind: String = str(object.get("kind","unknown"))
++		kinds[kind] = int(kinds.get(kind,0))+1
++	print("DESERT_HITCH_GEOMETRY ",JSON.stringify({"track_hash":track.content_hash,"matches_captured_phone":track.content_hash=="3c4040753a9955a17cab387bd18b5a1bb0912d361e6a1d7501ce71d95cfcbe75","route_count":track.route.size(),"bridge_count":track.creator_bridges.size(),"object_kinds":kinds,"nearby":nearby}))
++	quit()
+--- /dev/null
++++ b/docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md
+@@ -0,0 +1,44 @@
++# Phone desert hitch investigation — 2026-10-13
++
++Owner request: investigate the real first-desert hitch from [the physical-phone performance test](BIOME_PHONE_TEST_2026_10_13.md). Requirements RH08 exact phone attribution, RH09 bounded offline system tracing, RH10 preserve records/cache/approved rendering and parallel tire work; Q01/V05/G01/R01. **Cause and fix remain unconfirmed. A valid new driving trace is waiting for physical phone unlock.**
++
++## Evidence narrowed so far
++
++The frozen installed APK is unchanged: SHA-256 `0C586B9FEE603ED948DE56D92ED8FADF5E808D8BD627CABE9FBD2D90C8E9AFB8`, pinned Godot4.7.2, DN2103/Mali-G77 GLES Compatibility. The original event independently records791.423ms actual presentation,808.617ms between game observations,787.983ms between render signals and1.840ms current process callbacks. This is render-boundary wall time, not GPU execution time.
++
++- Synchronous condition save, recovery callback and cloud local IO do not account for this event; their measured times are zero and the surrounding condition-save count stays5.
++- All64 retained preceding frames already have `weathering_installed=true`, over1,056.532ms of retained prehistory. It is not the immediate first weathering-material bind seen in the separate owner's PC capture. The concurrent RH05–RH07 covered material-preparation fix is preserved, but not asserted to fix this phone event; it is not in the frozen APK.
++- Scene resources stay428 across the retained before/event/after frames. Draw calls rise187→188 around the event. This is a first-visible-rendering lead, not identification of a particular shader, effect, buffer upload or UI draw; monitors can lag.
++- The exact phone document was read privately and compiled with the pinned engine. Its canonical hash exactly matches `3c4040753a9955a17cab387bd18b5a1bb0912d361e6a1d7501ce71d95cfcbe75`. Route points160–170, including the event's164→166 transition, are outside its one bridge with zero bridge height. There are three authored jump objects. A bridge-layer crossing does not explain this location. The track document and startup screenshot remain private build artifacts, not checkpoint content.
++- Desert's occasional rattlesnake cue uses preloaded audio, not a newly appearing snake mesh. Its4–10s first cue and later12–24s gaps are presentation-only timing; no event-time audio/native stack was captured, so this does not exclude an audio/OS wait.
++
++The new structured [original-event analysis](evidence/desert-hitch-2026-10-13/original-event-analysis.json) records these facts. First-use shader/driver work remains plausible, as do GPU/driver waits and OS scheduling; none is proven. Compatibility's zero pipeline counters cannot exclude shader compilation. [Godot documents the Compatibility first-visible-frame preparation approach](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html); its modern renderer precompilation system does not apply to GLES Compatibility.
++
++## Prepared trace and actual blockers
++
++`scripts/trace-desert-phone.ps1` runs the same explicit unscored local debug probe with original graphics/camera/dust/tire budgets. It captures bounded Perfetto CPU scheduling/frequency/idle, graphics/view/synchronization annotations, frame timeline and Godot-tag logs. Optional99Hz native stack sampling is scoped to the game package. Analysis uses the official local trace processor; no trace is uploaded to a website/service and no runtime dependency is added. System trace binaries/raw logcat remain in `build/desert-hitch-2026-10-13`, outside the source checkpoint. [Perfetto configuration/CLI](https://perfetto.dev/docs/reference/perfetto-cli), [local analysis](https://perfetto.dev/docs/getting-started/command-line-analysis) and [v25 CPU sampling schema](https://raw.githubusercontent.com/google/perfetto/v25.0/protos/perfetto/config/profiling/perf_event_config.proto) support this workflow.
++
++The phone rebooted since the prior successful test: its uptime is minutes instead of the earlier long uptime, its clock now reads2026-10-13 rather than2025-01-26, and it is behind the keyguard again. No reboot/clock/security change was issued by this task. Normal Power/Wake/dismiss commands did not clear `mIsShowing=true`/`mInputRestricted=true`; the owner was asked to physically unlock it.
++
++A later device query reported `device still authorizing` and `run-as: unknown package` during another device-state change. Further device writes were stopped. This does not identify who changed the device or a cause for the original driving hitch. The three successful before/after record-restoration comparisons precede that change; current package/marker availability cannot be certified until the phone is usable again.
++
++Actual attempts:
++
++1. `-Mode Warm -RunName warm-01 -Seconds 60`: Perfetto could not read a pushed `/data/local/tmp` config after dropping privileges (Android permission error13). Original records restored. The config now uses supported stdin delivery; no Android security setting was changed.
++2. `warm-02`: system trace started, but the race never reached readiness; deadline ended the attempt. A roughly67MB startup-only trace was retained, not treated as a driving/hitch sample. Its app CPU sample count was zero; `android_log_num_failed=1` limits the logs. This does not establish that native sampling is unavailable during an actual race.
++3. `warm-03 -NoCpuStacks`: likewise no race readiness behind the lock screen. Startup/locked trace retained separately; log failure1 and nine negative timestamps were reported by the parser. No driving/root-cause result is claimed.
++
++The final helper refuses a locked-phone start before touching backups, waits for actual race readiness before starting the system trace, records the exact app PID, and preserves original local records. `ColdPair` is prepared to move only the known app-private disposable shader-cache directory aside, run cold and newly primed samples, and restore the original directory. This cold comparison has **not been executed**. Generated cache is retained under a task-owned diagnostic name; original cache is never deleted. No cache movement occurred in the warm attempts.
++
++## Actual verification and outstanding work
++
++Commands use `powershell -NoProfile -ExecutionPolicy Bypass`, pinned `scripts/dev.ps1` for engine work and permitted ADB/normal tool-cache access.
++
++- `scripts/dev.ps1 TestScript -ScriptPath res://tests/inspect_desert_hitch.gd`: completed; exact original hash/route geometry/bridge check printed. Read-only track analysis, not a full gameplay regression.
++- PowerShell parser for `scripts/trace-desert-phone.ps1`: zero errors. The final readiness guard/cold restoration paths remain to be exercised on an unlocked phone.
++- All three attempted trace groups restored both original local-record files with identical before/after SHA-256 hashes. Diagnostic markers were removed and normal app launch requested. No new APK, runtime renderer/physics, tire geometry/sampling, condition values, backend deployment or competitive request was changed.
++- On-device Perfetto v25.0; official Windows trace processor v58.2 `add693d8b338ba9599dbcbc3e300b1ab8c000897`, downloaded solely as a development analysis tool. Source/license stays with its official launcher under task-owned build tools; its verified native download cache is outside the export root.
++
++Remaining: physical unlock, valid same-build warm/cold/primed traces, correlate a recovered event with its render thread scheduling/native stack and first-visible effect/buffer context, then make and validate an attributable fix. The existing PC material-preparation fix requires its separate owner/device acceptance and is not overwritten. No new phone performance/root-cause pass, full Validate, speculative visual quality reduction, live score write or production deployment is claimed.
++
++Scoped checkpoint/evidence: `build/desert-hitch-2026-10-13/checkpoint-repo` and `docs/evidence/desert-hitch-2026-10-13/{checkpoint.json,task-only.patch}`. It includes only this task's trace/geometry helpers, report, scoped status notes and nonprivate evidence; shared runtime/parallel work, raw system traces, private fixture/menu image and downloaded binaries are excluded. Main Git index/HEAD remain unchanged.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser651 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
++
++2026-10-13 RH08-RH10/Q01/V05/G01/R01: phone desert hitch investigated, cause/fix still unconfirmed. Original791ms display/809ms game has788ms render-signal wall/1.84ms callbacks, zero measured condition/recovery/cloud IO; all64 preceding finish-installed flags true (1.056s), distinct from parallel PC first-bind event. Exact phone track hash compiled/route160-170 outside bridge; resources428 stable/draw187->188, first-visible lead only. Scoped offline Perfetto25/traceprocessor58.2 prepared; first SELinux config refusal fixed via stdin, two traces lack race readiness after phone reboot/relock, no driving/root-cause pass. Three record restorations hash-exact/cache untouched/markers removed. Final locked-phone guard/readiness-first/native stacks/cold-primed cache comparison prepared but unexecuted pending owner physical unlock. No runtime/tire/canonical/fullValidate/APK/backend/deploy change. Commands/evidence/scoped checkpoint/limits: docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md.
+ 
+ 2026-10-13 B01/B05/B07/R01/Q01 BR01-BR06: owner fixes all six backend review findings. Overflow-safe validation/optional-ghost isolation, Player-before-Run finalization, durable target-bound publication retry receipts and saved app retry keys, exact-byte SHA256/JSON/gzip archive/restore checks, OS-guarded aged temporary cleanup (bounded startup and resumable retention), and normalized S3 failures/private correlated server diagnostics. Original retention query ceiling retained via one UNION; replica fixtures use current publication, original deadline/rollback/fencing assertions preserved. SQLite203 pass/12skip +10subtests, focused28/1skip +10subtests, PostgreSQL66/3skip, Linux45/1skip +18subtests, native260/0 plus strict wire5 pass; Ruff/diff pass. Localhost fresh DB connection3.063s versus explicit IPv4 0.023s explained test delays; final PG uses the same disposable DB with unchanged deadlines. Fixture restored stopped; matching rollout, legacy unguarded temporary cleanup with all writers stopped, physical host reboot/power-loss/restore and device acceptance remain. No new schema/dependency, production writes/migration/deploy, APK/device test or canonical physics change. Concurrent batch-wait edits preserved/excluded. Commands, evidence and task-only checkpoint: docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-13 LM01-LM05/LV01-LV06/V03-V05/G01/R01/Q01: owner rejects clumsy livery menu. Retained larger live-car pane/right Patterns-Colours-Stickers workbench; named actual-model cards120 offline320x200 PNGs7082787bytes/mipmaps, selected-role15-colour chips/native picker, unobstructed separate panel placement/percent-degree values/remove/back, explicit Top view retains zoom-yaw. Tools retain car/viewport/camera/condition/body kits; other sections restore layout, no per-pattern live viewport/canonical/save-contract change. Compatibility355/MobileVulkan355/garage115/transition23/carousel178/parser651 pass; final three-size captures reviewed. Initial draft photo framing/footer sizing corrected; two retained-tool carousel assertions corrected by explicit Patterns navigation without removing checks. No phone commands/device test/APK/fullValidate/backend/deploy/onlinewrites/phoneFPS claim. Actual files/commands/before-after/scoped Git checkpoint/owner acceptance: docs/LIVERY_MENU_REFINEMENT.md.
++
++2026-10-13 RH08-RH10/Q01/V05/G01/R01: phone desert hitch investigated, cause/fix still unconfirmed. Original791ms display/809ms game has788ms render-signal wall/1.84ms callbacks, zero measured condition/recovery/cloud IO; all64 preceding finish-installed flags true (1.056s), distinct from parallel PC first-bind event. Exact phone track hash compiled/route160-170 outside bridge; resources428 stable/draw187->188, first-visible lead only. Scoped offline Perfetto25/traceprocessor58.2 prepared; first SELinux config refusal fixed via stdin, two traces lack race readiness after phone reboot/relock, no driving/root-cause pass. Three record restorations hash-exact/cache untouched/markers removed. Final locked-phone guard/readiness-first/native stacks/cold-primed cache comparison prepared but unexecuted pending owner physical unlock. No runtime/tire/canonical/fullValidate/APK/backend/deploy change. Commands/evidence/scoped checkpoint/limits: docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md.
+ 
+ 2026-10-13 B01/B05/B07/R01/Q01 BR01-BR06: owner fixes all six backend review findings. Overflow-safe validation/optional-ghost isolation, Player-before-Run finalization, durable target-bound publication retry receipts and saved app retry keys, exact-byte SHA256/JSON/gzip archive/restore checks, OS-guarded aged temporary cleanup (bounded startup and resumable retention), and normalized S3 failures/private correlated server diagnostics. Original retention query ceiling retained via one UNION; replica fixtures use current publication, original deadline/rollback/fencing assertions preserved. SQLite203 pass/12skip +10subtests, focused28/1skip +10subtests, PostgreSQL66/3skip, Linux45/1skip +18subtests, native260/0 plus strict wire5 pass; Ruff/diff pass. Localhost fresh DB connection3.063s versus explicit IPv4 0.023s explained test delays; final PG uses the same disposable DB with unchanged deadlines. Fixture restored stopped; matching rollout, legacy unguarded temporary cleanup with all writers stopped, physical host reboot/power-loss/restore and device acceptance remain. No new schema/dependency, production writes/migration/deploy, APK/device test or canonical physics change. Concurrent batch-wait edits preserved/excluded. Commands, evidence and task-only checkpoint: docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
+ 
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/attempt-proof.json
+@@ -0,0 +1,29 @@
++{
++  "restoration": [
++    {
++      "run": "warm-01",
++      "records_exact": true
++    },
++    {
++      "run": "warm-02",
++      "records_exact": true
++    },
++    {
++      "run": "warm-03",
++      "records_exact": true
++    }
++  ],
++  "startup_only_traces": [
++    {
++      "path": "build\\desert-hitch-2026-10-13\\warm-02\\warm.pftrace",
++      "bytes": 66942706,
++      "sha256": "dcd22d7648ae84fbaa2ccaebb05b05a0966b5346deea1da6d744c2e08de4b788"
++    },
++    {
++      "path": "build\\desert-hitch-2026-10-13\\warm-03\\warm.pftrace",
++      "bytes": 66963091,
++      "sha256": "9c2153e1cffd8bb9e86df60dbbf7b0e1c06cfacb950b0e0c749158b05a51b1b5"
++    }
++  ],
++  "driving_trace_succeeded": false
++}
+\ No newline at end of file
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/geometry-inspection.txt
+@@ -0,0 +1,5 @@
++Godot: 4.7.2.stable.official.ed1daf0bf (C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe)
++Client build: 0.3.0-creator.d2031fed64be5bb13ebc366bd9c08a67
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++DESERT_HITCH_GEOMETRY {"bridge_count":1,"matches_captured_phone":true,"nearby":[{"bridges":[{"contains":false,"height":0.0}],"index":160,"position":[38.812614440918,-24.9903335571289]},{"bridges":[{"contains":false,"height":0.0}],"index":161,"position":[37.8181915283203,-25.0878067016602]},{"bridges":[{"contains":false,"height":0.0}],"index":162,"position":[36.8237686157227,-25.1852836608887]},{"bridges":[{"contains":false,"height":0.0}],"index":163,"position":[35.829345703125,-25.2827568054199]},{"bridges":[{"contains":false,"height":0.0}],"index":164,"position":[34.8349227905273,-25.3802318572998]},{"bridges":[{"contains":false,"height":0.0}],"index":165,"position":[33.871223449707,-25.4746932983398]},{"bridges":[{"contains":false,"height":0.0}],"index":166,"position":[33.8403511047363,-25.4748363494873]},{"bridges":[{"contains":false,"height":0.0}],"index":167,"position":[32.8411712646484,-25.4794597625732]},{"bridges":[{"contains":false,"height":0.0}],"index":168,"position":[31.8419933319092,-25.4840831756592]},{"bridges":[{"contains":false,"height":0.0}],"index":169,"position":[30.8428153991699,-25.4887065887451]},{"bridges":[{"contains":false,"height":0.0}],"index":170,"position":[29.843635559082,-25.4933280944824]}],"object_kinds":{"jump":3},"route_count":676,"track_hash":"3c4040753a9955a17cab387bd18b5a1bb0912d361e6a1d7501ce71d95cfcbe75"}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/original-event-analysis.json
+@@ -0,0 +1,16 @@
++{
++  "source": "previously captured physical-phone event; no new successful driving trace yet",
++  "frame_ms": 808.617,
++  "draw_boundary_wall_ms": 787.983,
++  "current_callbacks_ms": 1.84,
++  "before_frames": 64,
++  "all_before_weathering_installed": true,
++  "before_span_ms": 1056.5319999999992,
++  "resource_count_unchanged": true,
++  "draw_calls_before": 187.0,
++  "draw_calls_hitch": 188.0,
++  "geometry_hash_matches": true,
++  "bridge_transition_at_route_160_170": false,
++  "phone_rebooted_and_relocked": true,
++  "cause": "unconfirmed"
++}
+\ No newline at end of file
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01-run.txt
+@@ -0,0 +1 @@
++Original records/cache and normal launch restored; private trace files remain local.
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02-run.txt
+@@ -0,0 +1,10 @@
++warm-02/warm elapsed=1s ready=False
++warm-02/warm elapsed=16s ready=False
++warm-02/warm elapsed=31s ready=False
++warm-02/warm elapsed=46s ready=False
++warm-02/warm elapsed=60s ready=False
++warm-02/warm elapsed=77s ready=False
++warm-02/warm elapsed=92s ready=False
++warm-02/warm elapsed=106s ready=False
++warm-02/warm elapsed=121s ready=False
++Original records/cache and normal launch restored; private trace files remain local.
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03-run.txt
+@@ -0,0 +1,10 @@
++warm-03/warm elapsed=4s ready=False
++warm-03/warm elapsed=16s ready=False
++warm-03/warm elapsed=31s ready=False
++warm-03/warm elapsed=46s ready=False
++warm-03/warm elapsed=60s ready=False
++warm-03/warm elapsed=77s ready=False
++warm-03/warm elapsed=92s ready=False
++warm-03/warm elapsed=106s ready=False
++warm-03/warm elapsed=121s ready=False
++Original records/cache and normal launch restored; private trace files remain local.
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/installed-apk.txt
+@@ -0,0 +1 @@
++0c586b9fee603ed948de56d92ed8fadf5e808d8bd627cabe9fbd2d90c8e9afb8  /data/app/~~bqVtcmHhYieGpsDZi1o-sQ==/org.circuit01.handlinglab-Wp-yGCOpZi2EzjJgAyqneg==/base.apk
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/normal-launch.txt
+@@ -0,0 +1,7 @@
++Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=org.circuit01.handlinglab }
++Status: ok
++LaunchState: COLD
++Activity: org.circuit01.handlinglab/com.godot.game.GodotApp
++TotalTime: 904
++WaitTime: 911
++Complete
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/records-before.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/records-restored.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/warm-probe-config.json
+@@ -0,0 +1,12 @@
++{
++    "use_game_scale":  true,
++    "seconds":  60,
++    "feature_profile":  true,
++    "features":  [
++                     "baseline"
++                 ],
++    "touch_stress":  false,
++    "track_id":  "track_3e26605a8a90165e",
++    "state_path":  "user://hitch_ready.json",
++    "sustained":  true
++}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/warm-thermal-before.txt
+@@ -0,0 +1,131 @@
++IsStatusOverride: false
++ThermalEventListeners:
++	callbacks: 2
++	killed: false
++	broadcasts count: -1
++ThermalStatusListeners:
++	callbacks: 7
++	killed: false
++	broadcasts count: -1
++Thermal Status: 3
++Cached temperatures:
++	Temperature{mValue=72.905, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=72.905, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=72.905, mType=9, mName=NPU, mStatus=0}
++	Temperature{mValue=52.432, mType=3, mName=SKIN, mStatus=3}
++	Temperature{mValue=42.8, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=50.703, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++HAL Ready: true
++HAL connection:
++	ThermalHAL 2.0 connected: yes
++Current temperatures from HAL:
++	Temperature{mValue=54.565, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=54.565, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=42.7, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=50.411, mType=3, mName=SKIN, mStatus=3}
++	Temperature{mValue=50.044, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++	Temperature{mValue=54.565, mType=9, mName=NPU, mStatus=0}
++Current cooling devices from HAL:
++	CoolingDevice{mValue=1, mType=2, mName=cpu_adaptive_0}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_1}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_2}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight03}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct00}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct01}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct02}
++	CoolingDevice{mValue=0, mType=1, mName=abcct_lcmoff}
++	CoolingDevice{mValue=1, mType=1, mName=abcct}
++	CoolingDevice{mValue=1, mType=6, mName=mtk-cl-cam00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam-urgent}
++	CoolingDevice{mValue=0, mType=2, mName=cpu00}
++	CoolingDevice{mValue=0, mType=2, mName=cpu01}
++	CoolingDevice{mValue=0, mType=2, mName=cpu02}
++	CoolingDevice{mValue=0, mType=2, mName=cpu03}
++	CoolingDevice{mValue=0, mType=2, mName=cpu04}
++	CoolingDevice{mValue=0, mType=2, mName=cpu05}
++	CoolingDevice{mValue=0, mType=2, mName=cpu06}
++	CoolingDevice{mValue=0, mType=2, mName=cpu07}
++	CoolingDevice{mValue=0, mType=2, mName=cpu08}
++	CoolingDevice{mValue=0, mType=2, mName=cpu09}
++	CoolingDevice{mValue=0, mType=2, mName=cpu10}
++	CoolingDevice{mValue=0, mType=2, mName=cpu11}
++	CoolingDevice{mValue=0, mType=2, mName=cpu12}
++	CoolingDevice{mValue=0, mType=2, mName=cpu13}
++	CoolingDevice{mValue=0, mType=2, mName=cpu14}
++	CoolingDevice{mValue=0, mType=2, mName=cpu15}
++	CoolingDevice{mValue=0, mType=2, mName=cpu16}
++	CoolingDevice{mValue=0, mType=2, mName=cpu17}
++	CoolingDevice{mValue=0, mType=2, mName=cpu18}
++	CoolingDevice{mValue=0, mType=2, mName=cpu19}
++	CoolingDevice{mValue=0, mType=2, mName=cpu20}
++	CoolingDevice{mValue=0, mType=2, mName=cpu21}
++	CoolingDevice{mValue=0, mType=2, mName=cpu22}
++	CoolingDevice{mValue=0, mType=2, mName=cpu23}
++	CoolingDevice{mValue=0, mType=2, mName=cpu24}
++	CoolingDevice{mValue=0, mType=2, mName=cpu25}
++	CoolingDevice{mValue=0, mType=2, mName=cpu26}
++	CoolingDevice{mValue=0, mType=2, mName=cpu27}
++	CoolingDevice{mValue=0, mType=2, mName=cpu28}
++	CoolingDevice{mValue=0, mType=2, mName=cpu29}
++	CoolingDevice{mValue=0, mType=2, mName=cpu30}
++	CoolingDevice{mValue=0, mType=2, mName=cpu31}
++	CoolingDevice{mValue=0, mType=2, mName=cpu32}
++	CoolingDevice{mValue=0, mType=2, mName=cpu33}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown03}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown04}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown05}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown06}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt00}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt01}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt02}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt03}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt04}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt05}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt06}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-noIMS}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mdoff}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-adp-mutt}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr00-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr01-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr02-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-scg-off}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown02}
++	CoolingDevice{mValue=0, mType=2, mName=mtktscpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsbuck-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsAP-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359dcxo-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359tsx-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vcore-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vgpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vproc-sysrst}
++	CoolingDevice{mValue=0, mType=1, mName=mtktsbattery-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktscharger-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs0-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs1-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs2-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs3-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs4-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs5-sysrst}
++	CoolingDevice{mValue=0, mType=4, mName=mtktspa-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktspmic-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa1}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa2}
++Temperature static thresholds from HAL:
++	{.type = CPU, .name = CPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = GPU, .name = GPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = BATTERY, .name = BATTERY, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 55.0, 59.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = SKIN, .name = SKIN, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 70.0, 80.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = POWER_AMPLIFIER, .name = POWER_AMPLIFIER, .hotThrottlingThresholds = [NaN, NaN, NaN, 68.0, 90.0, 100.0, 110.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
++	{.type = NPU, .name = NPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-01/warm-trace.pbtxt
+@@ -0,0 +1,44 @@
++buffers { size_kb: 65536 fill_policy: RING_BUFFER }
++duration_ms: 120000
++data_sources { config {
++  name: "linux.ftrace"
++  target_buffer: 0
++  ftrace_config {
++    ftrace_events: "sched/sched_switch"
++    ftrace_events: "sched/sched_waking"
++    ftrace_events: "power/cpu_frequency"
++    ftrace_events: "power/cpu_idle"
++    ftrace_events: "task/task_newtask"
++    ftrace_events: "task/task_rename"
++    ftrace_events: "block/block_rq_issue"
++    ftrace_events: "block/block_rq_complete"
++    atrace_categories: "gfx"
++    atrace_categories: "view"
++    atrace_categories: "sync"
++    atrace_apps: "org.circuit01.handlinglab"
++    buffer_size_kb: 4096
++    drain_period_ms: 250
++  }
++} }
++data_sources { config {
++  name: "linux.process_stats"
++  target_buffer: 0
++  process_stats_config { scan_all_processes_on_start: true }
++} }
++data_sources { config {
++  name: "android.log"
++  target_buffer: 0
++  android_log_config { min_prio: PRIO_INFO filter_tags: "godot" log_ids: LID_DEFAULT }
++} }
++data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 0 } }
++data_sources { config {
++  name: "linux.perf"
++  target_buffer: 0
++  perf_event_config {
++    timebase { frequency: 99 }
++    callstack_sampling {
++      scope { target_cmdline: "org.circuit01.handlinglab" }
++      kernel_frames: false
++    }
++  }
++} }
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/installed-apk.txt
+@@ -0,0 +1 @@
++0c586b9fee603ed948de56d92ed8fadf5e808d8bd627cabe9fbd2d90c8e9afb8  /data/app/~~bqVtcmHhYieGpsDZi1o-sQ==/org.circuit01.handlinglab-Wp-yGCOpZi2EzjJgAyqneg==/base.apk
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/normal-launch.txt
+@@ -0,0 +1,7 @@
++Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=org.circuit01.handlinglab }
++Status: ok
++LaunchState: COLD
++Activity: org.circuit01.handlinglab/com.godot.game.GodotApp
++TotalTime: 873
++WaitTime: 879
++Complete
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/records-before.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/records-restored.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/warm-launch.txt
+@@ -0,0 +1,7 @@
++Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=org.circuit01.handlinglab }
++Status: ok
++LaunchState: COLD
++Activity: org.circuit01.handlinglab/com.godot.game.GodotApp
++TotalTime: 748
++WaitTime: 756
++Complete
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/warm-probe-config.json
+@@ -0,0 +1,12 @@
++{
++    "use_game_scale":  true,
++    "seconds":  60,
++    "feature_profile":  true,
++    "features":  [
++                     "baseline"
++                 ],
++    "touch_stress":  false,
++    "track_id":  "track_3e26605a8a90165e",
++    "state_path":  "user://hitch_ready.json",
++    "sustained":  true
++}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/warm-thermal-before.txt
+@@ -0,0 +1,131 @@
++IsStatusOverride: false
++ThermalEventListeners:
++	callbacks: 2
++	killed: false
++	broadcasts count: -1
++ThermalStatusListeners:
++	callbacks: 7
++	killed: false
++	broadcasts count: -1
++Thermal Status: 3
++Cached temperatures:
++	Temperature{mValue=72.905, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=72.905, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=72.905, mType=9, mName=NPU, mStatus=0}
++	Temperature{mValue=52.432, mType=3, mName=SKIN, mStatus=3}
++	Temperature{mValue=42.8, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=50.703, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++HAL Ready: true
++HAL connection:
++	ThermalHAL 2.0 connected: yes
++Current temperatures from HAL:
++	Temperature{mValue=51.914, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=51.914, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=42.2, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=48.976, mType=3, mName=SKIN, mStatus=0}
++	Temperature{mValue=49.547, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++	Temperature{mValue=51.914, mType=9, mName=NPU, mStatus=0}
++Current cooling devices from HAL:
++	CoolingDevice{mValue=1, mType=2, mName=cpu_adaptive_0}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_1}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_2}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight03}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct00}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct01}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct02}
++	CoolingDevice{mValue=0, mType=1, mName=abcct_lcmoff}
++	CoolingDevice{mValue=1, mType=1, mName=abcct}
++	CoolingDevice{mValue=1, mType=6, mName=mtk-cl-cam00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam-urgent}
++	CoolingDevice{mValue=0, mType=2, mName=cpu00}
++	CoolingDevice{mValue=0, mType=2, mName=cpu01}
++	CoolingDevice{mValue=0, mType=2, mName=cpu02}
++	CoolingDevice{mValue=0, mType=2, mName=cpu03}
++	CoolingDevice{mValue=0, mType=2, mName=cpu04}
++	CoolingDevice{mValue=0, mType=2, mName=cpu05}
++	CoolingDevice{mValue=0, mType=2, mName=cpu06}
++	CoolingDevice{mValue=0, mType=2, mName=cpu07}
++	CoolingDevice{mValue=0, mType=2, mName=cpu08}
++	CoolingDevice{mValue=0, mType=2, mName=cpu09}
++	CoolingDevice{mValue=0, mType=2, mName=cpu10}
++	CoolingDevice{mValue=0, mType=2, mName=cpu11}
++	CoolingDevice{mValue=0, mType=2, mName=cpu12}
++	CoolingDevice{mValue=0, mType=2, mName=cpu13}
++	CoolingDevice{mValue=0, mType=2, mName=cpu14}
++	CoolingDevice{mValue=0, mType=2, mName=cpu15}
++	CoolingDevice{mValue=0, mType=2, mName=cpu16}
++	CoolingDevice{mValue=0, mType=2, mName=cpu17}
++	CoolingDevice{mValue=0, mType=2, mName=cpu18}
++	CoolingDevice{mValue=0, mType=2, mName=cpu19}
++	CoolingDevice{mValue=0, mType=2, mName=cpu20}
++	CoolingDevice{mValue=0, mType=2, mName=cpu21}
++	CoolingDevice{mValue=0, mType=2, mName=cpu22}
++	CoolingDevice{mValue=0, mType=2, mName=cpu23}
++	CoolingDevice{mValue=0, mType=2, mName=cpu24}
++	CoolingDevice{mValue=0, mType=2, mName=cpu25}
++	CoolingDevice{mValue=0, mType=2, mName=cpu26}
++	CoolingDevice{mValue=0, mType=2, mName=cpu27}
++	CoolingDevice{mValue=0, mType=2, mName=cpu28}
++	CoolingDevice{mValue=0, mType=2, mName=cpu29}
++	CoolingDevice{mValue=0, mType=2, mName=cpu30}
++	CoolingDevice{mValue=0, mType=2, mName=cpu31}
++	CoolingDevice{mValue=0, mType=2, mName=cpu32}
++	CoolingDevice{mValue=0, mType=2, mName=cpu33}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown03}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown04}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown05}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown06}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt00}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt01}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt02}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt03}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt04}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt05}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt06}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-noIMS}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mdoff}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-adp-mutt}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr00-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr01-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr02-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-scg-off}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown02}
++	CoolingDevice{mValue=0, mType=2, mName=mtktscpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsbuck-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsAP-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359dcxo-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359tsx-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vcore-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vgpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vproc-sysrst}
++	CoolingDevice{mValue=0, mType=1, mName=mtktsbattery-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktscharger-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs0-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs1-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs2-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs3-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs4-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs5-sysrst}
++	CoolingDevice{mValue=0, mType=4, mName=mtktspa-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktspmic-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa1}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa2}
++Temperature static thresholds from HAL:
++	{.type = CPU, .name = CPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = GPU, .name = GPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = BATTERY, .name = BATTERY, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 55.0, 59.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = SKIN, .name = SKIN, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 70.0, 80.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = POWER_AMPLIFIER, .name = POWER_AMPLIFIER, .hotThrottlingThresholds = [NaN, NaN, NaN, 68.0, 90.0, 100.0, 110.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
++	{.type = NPU, .name = NPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/warm-trace-start.txt
+@@ -0,0 +1 @@
++10416
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-02/warm-trace.pbtxt
+@@ -0,0 +1,44 @@
++buffers { size_kb: 65536 fill_policy: RING_BUFFER }
++duration_ms: 120000
++data_sources { config {
++  name: "linux.ftrace"
++  target_buffer: 0
++  ftrace_config {
++    ftrace_events: "sched/sched_switch"
++    ftrace_events: "sched/sched_waking"
++    ftrace_events: "power/cpu_frequency"
++    ftrace_events: "power/cpu_idle"
++    ftrace_events: "task/task_newtask"
++    ftrace_events: "task/task_rename"
++    ftrace_events: "block/block_rq_issue"
++    ftrace_events: "block/block_rq_complete"
++    atrace_categories: "gfx"
++    atrace_categories: "view"
++    atrace_categories: "sync"
++    atrace_apps: "org.circuit01.handlinglab"
++    buffer_size_kb: 4096
++    drain_period_ms: 250
++  }
++} }
++data_sources { config {
++  name: "linux.process_stats"
++  target_buffer: 0
++  process_stats_config { scan_all_processes_on_start: true }
++} }
++data_sources { config {
++  name: "android.log"
++  target_buffer: 0
++  android_log_config { min_prio: PRIO_INFO filter_tags: "godot" log_ids: LID_DEFAULT }
++} }
++data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 0 } }
++data_sources { config {
++  name: "linux.perf"
++  target_buffer: 0
++  perf_event_config {
++    timebase { frequency: 99 }
++    callstack_sampling {
++      scope { target_cmdline: "org.circuit01.handlinglab" }
++      kernel_frames: false
++    }
++  }
++} }
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/installed-apk.txt
+@@ -0,0 +1 @@
++0c586b9fee603ed948de56d92ed8fadf5e808d8bd627cabe9fbd2d90c8e9afb8  /data/app/~~bqVtcmHhYieGpsDZi1o-sQ==/org.circuit01.handlinglab-Wp-yGCOpZi2EzjJgAyqneg==/base.apk
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/normal-launch.txt
+@@ -0,0 +1,6 @@
++Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=org.circuit01.handlinglab }
++Status: ok
++LaunchState: UNKNOWN (0)
++Activity: org.circuit01.handlinglab/com.godot.game.GodotApp
++WaitTime: 3022
++Complete
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/records-before.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/records-restored.txt
+@@ -0,0 +1,2 @@
++a2ebf72a26f6cacda98caa17b15c3126e620e849b0858e2b1add8fea2b518b04  files/local_records.json
++527c6886bf0dc59b437ebc0525b4d2619101572653887f28b4a954c53b2ad2fc  files/local_records.json.bak
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/warm-launch.txt
+@@ -0,0 +1,6 @@
++Starting: Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] pkg=org.circuit01.handlinglab }
++Status: ok
++LaunchState: UNKNOWN (0)
++Activity: org.circuit01.handlinglab/com.godot.game.GodotApp
++WaitTime: 3024
++Complete
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/warm-probe-config.json
+@@ -0,0 +1,12 @@
++{
++    "use_game_scale":  true,
++    "seconds":  60,
++    "feature_profile":  true,
++    "features":  [
++                     "baseline"
++                 ],
++    "touch_stress":  false,
++    "track_id":  "track_3e26605a8a90165e",
++    "state_path":  "user://hitch_ready.json",
++    "sustained":  true
++}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/warm-thermal-before.txt
+@@ -0,0 +1,131 @@
++IsStatusOverride: false
++ThermalEventListeners:
++	callbacks: 2
++	killed: false
++	broadcasts count: -1
++ThermalStatusListeners:
++	callbacks: 5
++	killed: false
++	broadcasts count: -1
++Thermal Status: 3
++Cached temperatures:
++	Temperature{mValue=72.905, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=72.905, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=72.905, mType=9, mName=NPU, mStatus=0}
++	Temperature{mValue=52.432, mType=3, mName=SKIN, mStatus=3}
++	Temperature{mValue=42.8, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=50.703, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++HAL Ready: true
++HAL connection:
++	ThermalHAL 2.0 connected: yes
++Current temperatures from HAL:
++	Temperature{mValue=41.281, mType=0, mName=CPU, mStatus=0}
++	Temperature{mValue=41.281, mType=1, mName=GPU, mStatus=0}
++	Temperature{mValue=36.725, mType=2, mName=BATTERY, mStatus=0}
++	Temperature{mValue=39.562, mType=3, mName=SKIN, mStatus=0}
++	Temperature{mValue=40.547, mType=5, mName=POWER_AMPLIFIER, mStatus=0}
++	Temperature{mValue=41.281, mType=9, mName=NPU, mStatus=0}
++Current cooling devices from HAL:
++	CoolingDevice{mValue=1, mType=2, mName=cpu_adaptive_0}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_1}
++	CoolingDevice{mValue=0, mType=2, mName=cpu_adaptive_2}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-backlight03}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct00}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct01}
++	CoolingDevice{mValue=0, mType=1, mName=mtk-cl-bcct02}
++	CoolingDevice{mValue=0, mType=1, mName=abcct_lcmoff}
++	CoolingDevice{mValue=1, mType=1, mName=abcct}
++	CoolingDevice{mValue=1, mType=6, mName=mtk-cl-cam00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-cam-urgent}
++	CoolingDevice{mValue=0, mType=2, mName=cpu00}
++	CoolingDevice{mValue=0, mType=2, mName=cpu01}
++	CoolingDevice{mValue=0, mType=2, mName=cpu02}
++	CoolingDevice{mValue=0, mType=2, mName=cpu03}
++	CoolingDevice{mValue=0, mType=2, mName=cpu04}
++	CoolingDevice{mValue=0, mType=2, mName=cpu05}
++	CoolingDevice{mValue=0, mType=2, mName=cpu06}
++	CoolingDevice{mValue=0, mType=2, mName=cpu07}
++	CoolingDevice{mValue=0, mType=2, mName=cpu08}
++	CoolingDevice{mValue=0, mType=2, mName=cpu09}
++	CoolingDevice{mValue=0, mType=2, mName=cpu10}
++	CoolingDevice{mValue=0, mType=2, mName=cpu11}
++	CoolingDevice{mValue=0, mType=2, mName=cpu12}
++	CoolingDevice{mValue=0, mType=2, mName=cpu13}
++	CoolingDevice{mValue=0, mType=2, mName=cpu14}
++	CoolingDevice{mValue=0, mType=2, mName=cpu15}
++	CoolingDevice{mValue=0, mType=2, mName=cpu16}
++	CoolingDevice{mValue=0, mType=2, mName=cpu17}
++	CoolingDevice{mValue=0, mType=2, mName=cpu18}
++	CoolingDevice{mValue=0, mType=2, mName=cpu19}
++	CoolingDevice{mValue=0, mType=2, mName=cpu20}
++	CoolingDevice{mValue=0, mType=2, mName=cpu21}
++	CoolingDevice{mValue=0, mType=2, mName=cpu22}
++	CoolingDevice{mValue=0, mType=2, mName=cpu23}
++	CoolingDevice{mValue=0, mType=2, mName=cpu24}
++	CoolingDevice{mValue=0, mType=2, mName=cpu25}
++	CoolingDevice{mValue=0, mType=2, mName=cpu26}
++	CoolingDevice{mValue=0, mType=2, mName=cpu27}
++	CoolingDevice{mValue=0, mType=2, mName=cpu28}
++	CoolingDevice{mValue=0, mType=2, mName=cpu29}
++	CoolingDevice{mValue=0, mType=2, mName=cpu30}
++	CoolingDevice{mValue=0, mType=2, mName=cpu31}
++	CoolingDevice{mValue=0, mType=2, mName=cpu32}
++	CoolingDevice{mValue=0, mType=2, mName=cpu33}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown02}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown03}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown04}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown05}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown06}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-kshutdown07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt00}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt01}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt02}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt03}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt04}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt05}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt06}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mutt07}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-noIMS}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-mdoff}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-adp-mutt}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr00-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr01-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-tx-pwr02-nr}
++	CoolingDevice{mValue=0, mType=4, mName=mtk-cl-scg-off}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown00}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown01}
++	CoolingDevice{mValue=0, mType=6, mName=mtk-cl-shutdown02}
++	CoolingDevice{mValue=0, mType=2, mName=mtktscpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsbuck-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktsAP-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359dcxo-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359tsx-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vcore-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vgpu-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mt6359vproc-sysrst}
++	CoolingDevice{mValue=0, mType=1, mName=mtktsbattery-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktscharger-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs0-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs1-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs2-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs3-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs4-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=tzimgs5-sysrst}
++	CoolingDevice{mValue=0, mType=4, mName=mtktspa-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktspmic-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-sysrst}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa1}
++	CoolingDevice{mValue=0, mType=6, mName=mtktswmt-pa2}
++Temperature static thresholds from HAL:
++	{.type = CPU, .name = CPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = GPU, .name = GPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 85.0}
++	{.type = BATTERY, .name = BATTERY, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 55.0, 59.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = SKIN, .name = SKIN, .hotThrottlingThresholds = [NaN, NaN, NaN, 50.0, 70.0, 80.0, 90.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = 50.0}
++	{.type = POWER_AMPLIFIER, .name = POWER_AMPLIFIER, .hotThrottlingThresholds = [NaN, NaN, NaN, 68.0, 90.0, 100.0, 110.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
++	{.type = NPU, .name = NPU, .hotThrottlingThresholds = [NaN, NaN, NaN, 85.0, 90.0, 100.0, 117.0], .coldThrottlingThresholds = [NaN, NaN, NaN, NaN, NaN, NaN, NaN], .vrThrottlingThreshold = NaN}
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/warm-trace-start.txt
+@@ -0,0 +1 @@
++14886
+--- /dev/null
++++ b/docs/evidence/desert-hitch-2026-10-13/warm-03/warm-trace.pbtxt
+@@ -0,0 +1,33 @@
++buffers { size_kb: 65536 fill_policy: RING_BUFFER }
++duration_ms: 120000
++data_sources { config {
++  name: "linux.ftrace"
++  target_buffer: 0
++  ftrace_config {
++    ftrace_events: "sched/sched_switch"
++    ftrace_events: "sched/sched_waking"
++    ftrace_events: "power/cpu_frequency"
++    ftrace_events: "power/cpu_idle"
++    ftrace_events: "task/task_newtask"
++    ftrace_events: "task/task_rename"
++    ftrace_events: "block/block_rq_issue"
++    ftrace_events: "block/block_rq_complete"
++    atrace_categories: "gfx"
++    atrace_categories: "view"
++    atrace_categories: "sync"
++    atrace_apps: "org.circuit01.handlinglab"
++    buffer_size_kb: 4096
++    drain_period_ms: 250
++  }
++} }
++data_sources { config {
++  name: "linux.process_stats"
++  target_buffer: 0
++  process_stats_config { scan_all_processes_on_start: true }
++} }
++data_sources { config {
++  name: "android.log"
++  target_buffer: 0
++  android_log_config { min_prio: PRIO_INFO filter_tags: "godot" log_ids: LID_DEFAULT }
++} }
++data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 0 } }

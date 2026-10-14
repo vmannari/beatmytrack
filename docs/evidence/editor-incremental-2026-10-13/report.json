@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-13",
+  "requirements": [
+    "R01",
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "V03",
+    "V04",
+    "V05",
+    "Q01"
+  ],
+  "scope": "Fix chat-review items 1 (object placement) and 2 (unchanged saves). Editor-only authored geometry, local save receipts and regression evidence.",
+  "files": [
+    "game/editor/placed_object_batches.gd",
+    "game/editor/placed_object_batches.gd.uid",
+    "game/track/native_track_visual.gd",
+    "game/core/app.gd",
+    "game/tests/test_editor_incremental_objects.gd",
+    "game/tests/test_editor_incremental_objects.gd.uid",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md"
+  ],
+  "implementation": [
+    "Retain the authored layer, prepared per-object streams, unchanged baked mesh groups, contact-shadow groups and tyre buffers. Rebuild only changed groups. Standalone baked props use groups of up to eight; overlapping props remain connected to preserve triangle order. Shared vertices retain original joined normal generation.",
+    "Capture pre-upload vertex streams so reused normals are compressed only once. Both renderers reproduce every tested original triangle position, normal, pigment and pixel exactly, including shared endpoints, intersections and coincident differently painted containers.",
+    "Retain original instanced Winter meshes, contact shadows and the single authored-tyre MultiMesh. Lamps, hazards, movable and breakable props retain their original construction and remain individually addressable. Race geometry and simulation are unchanged.",
+    "Prepared history is capped at 96 models/16 MiB and shared-vertex pair results at 1 MiB, in addition to the bounded active document's live geometry. Existing road and prepared-world cache budgets remain unchanged.",
+    "Skip WIP/original writes and preview work for unchanged acknowledged copies. Receipts belong to the exact library, authoring snapshot and file SHA256; missing or externally altered primaries force the real atomic recovery path. Failed WIP/original saves remain retryable. A recovered saved original must be committed before it receives a durable receipt.",
+    "Use the existing saved-state feedback for an already saved document. Changed and failed saves retain their existing confirmation/error paths. Reuse matching prepared selected-track data rather than recompiling it after every Save."
+  ],
+  "measurements": {
+    "environment": "Windows, Godot 4.7.2.stable.official.ed1daf0bf, RTX3090, 1280x720. Shared host with other editor/game processes; handler observations, not controlled same-binary A/B or physical-phone FPS.",
+    "fixture": "Actual editor with 96 connected road pieces and 24 containers. The placement probe includes WIP persistence and selection/control refresh. Conservative original comparison comes from the prior review's same-sized fixture.",
+    "baseline": {
+      "tyre_placement_handler_ms": 495.36,
+      "unchanged_save_handler_ms": [
+        447.975,
+        452.176
+      ]
+    },
+    "compatibility": {
+      "tyre_placement_handler_ms": 112.675,
+      "unchanged_save_handler_ms": 7.908,
+      "move_container_handler_ms": 138.554
+    },
+    "mobile_vulkan_desktop": {
+      "tyre_placement_handler_ms": 96.683,
+      "unchanged_save_handler_ms": 8.346,
+      "move_container_handler_ms": 128.326
+    },
+    "interpretation": "About 77% shorter Compatibility placement handler and 98% shorter unchanged Save handler than the prior review observations. These are desktop handler observations; they do not establish input-to-photon timing or device frame rate."
+  },
+  "checks": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -CommandTimeoutSeconds 240",
+      "result": "Final Compatibility: 51 checks, 0 failures; four biome paired images exact and triangle attribute/multiplicity equivalence exact."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
+      "result": "Final desktop Mobile/Vulkan: 51 checks, 0 failures; four biome paired images exact and triangle attribute/multiplicity equivalence exact."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_review_fixes.gd -CommandTimeoutSeconds 180",
+      "result": "51 checks, 0 failures; existing save failures, retries and retained-preview workflows."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestWorkflow -CommandTimeoutSeconds 180",
+      "result": "252 checks, 0 failures."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCreator -CommandTimeoutSeconds 120",
+      "result": "113 checks, 0 failures. Historical three-lap diagnostic fixture retained; ordinary five-lap rules unchanged."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestPlacement -CommandTimeoutSeconds 120",
+      "result": "26 checks, 0 failures."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 90",
+      "result": "646 scripts, 0 failures."
+    },
+    {
+      "command": "git diff --check -- game/core/app.gd game/track/native_track_visual.gd DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md",
+      "result": "Passed at scoped completion."
+    }
+  ],
+  "initial_diagnostic_outcomes": [
+    "Newly added car dependencies in concurrent work initially needed class registration. Import succeeded once; a later Import was stopped by the already open editor's locked temporary Windows audio DLL. Subsequent script and graphical runs passed. No Import-wide final green claim.",
+    "A concurrent build-identity helper briefly failed on an empty-file ComputeHash overload; its concurrent owner corrected it. No build-identity source change belongs to this task.",
+    "Broad static instancing introduced small numerical/raster differences, so that approach was replaced by retained original baked streams. Decoding and re-encoding packed normals introduced a second quantization step; capturing pre-upload streams removed it.",
+    "Initial quantized-key comparisons incorrectly treated values on opposite rounding boundaries as outside numeric tolerance. Replaced by actual attribute-distance checks, then strengthened the final checks to exact positions/normals/pigments and exact pixels.",
+    "Overlapping and joined props initially exposed cross-object normal and ordering differences. Conservative connected groups preserve the original result; the final expanded assertions pass without relaxing visual bounds.",
+    "The save-failure probe initially attempted to open a success notice while a prior exclusive failure dialog was still visible. The fixture now dismisses each dialog before the next action, matching normal user interaction."
+  ],
+  "limitations": [
+    "No physical-phone test, phone attachment check, Android export/install or deployment.",
+    "No full Validate run or physics/backend change. Concurrent car, wind and other work is preserved and excluded from the scoped patch.",
+    "Road/scenery compilation still follows the existing asynchronous/sliced flow. This task does not resolve every editor loading hitch.",
+    "Overlapping groups may exceed eight props when required for exact original normals and opaque ordering; adding or moving geometry within such a group rebuilds that connected group. Unchanged groups are retained."
+  ],
+  "remaining_acceptance": "Review ordinary placement, drag, undo/redo and save/exit on the physical phone; verify input-to-photon response, sustained frame intervals and memory on supported large documents.",
+  "checkpoint": "docs/evidence/editor-incremental-2026-10-13/implementation.patch"
+}

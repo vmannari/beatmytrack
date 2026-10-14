@@ -27,7 +27,11 @@ def save(name, pixels):
         return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
     raw = b''.join(b'\0'+row.tobytes() for row in pixels)
     png = b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!2I5B',N,N,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw,9))+chunk(b'IEND',b'')
-    (OUT / name).write_bytes(png)
+    destination = OUT / name
+    if name == 'grass_albedo.png':
+        destination = OUT.parents[2] / 'archive/artwork/retired-2026-10-12/textures' / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(png)
     print(name, len(png), 'bytes')
 
 macro = np.clip(.5 + (noise(5)-.5)*1.15 + (noise(9)-.5)*.65 + (noise(17)-.5)*.22,0,1)

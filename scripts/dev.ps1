@@ -65,7 +65,7 @@ function Find-Godot {
 }
 
 function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogName) {
-    if ($EngineVerbose -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) { $Arguments += '--verbose' }
+    if ($EngineVerbose -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) { $Arguments = @('--verbose') + $Arguments }
     if ([System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)) {
         if ($RenderingMethod) { $Arguments = @('--rendering-method', $RenderingMethod) + $Arguments }
         if ($RenderingDriver) { $Arguments = @('--rendering-driver', $RenderingDriver) + $Arguments }
@@ -189,8 +189,16 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_grid_contact_equivalence.gd') 'grid-contact-equivalence-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_pile_contact_equivalence.gd') 'pile-contact-equivalence-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_hazards.gd') 'hazards-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_breakable_props.gd') 'breakable-props-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_breakable_contract.gd') 'breakable-props-contract.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_container_refinement.gd') 'container-refinement-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_container_contract.gd') 'container-contract-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bumps.gd') 'speed-bump-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bump_width.gd') 'speed-bump-width-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_speed_bump_contract.gd') 'speed-bump-contract.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_kerbs.gd') 'kerbs-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_ice.gd') 'ice-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_snow_bank_behaviour.gd') 'snow-bank-behaviour-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_desert.gd') 'desert-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_storm.gd') 'storm-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_soil.gd') 'soil-tests.log'
@@ -440,11 +448,21 @@ try {
     $version = (@(& $script:godot --version 2>&1 | ForEach-Object { "$_" }) -join "`n").Trim()
     if ($LASTEXITCODE -ne 0 -or $version -ne $expectedVersion) { throw "Engine mismatch: expected $expectedVersion; got '$version' from $script:godot." }
     Write-Host "Godot: $version ($script:godot)"
+    if (-not $Action.StartsWith('Backend') -and $Action -notin @('Doctor','InstallAndroid','LaunchAndroid')) {
+        . (Join-Path $PSScriptRoot 'build_identity.ps1')
+        $clientBuildId = Write-ClientBuildIdentity $repoRoot $commandLogRoot
+        Write-Host "Client build: $clientBuildId"
+    }
     if ($Action.StartsWith('Backend')) {
         $backendPython = Join-Path $repoRoot '.tools/backend-venv/Scripts/python.exe'
+        $secureBackendPython = Join-Path $repoRoot '.tools/backend-secure-venv/Scripts/python.exe'
+        if (Test-Path -LiteralPath $secureBackendPython) { $backendPython = $secureBackendPython }
+        if ($env:BMT_BACKEND_PYTHON) { $backendPython = $env:BMT_BACKEND_PYTHON }
         if (-not (Test-Path -LiteralPath $backendPython)) {
             throw 'Set up .tools/backend-venv using backend/README.md first.'
         }
+        & $backendPython -c 'import ssl,sys,pathlib,cryptography; pins=dict(line.split()[0].split(''=='',1) for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if ''=='' in line and not line.startswith(''#'')); sys.exit(0 if ssl.OPENSSL_VERSION_INFO >= (3, 5, 0) and cryptography.__version__ == pins[''cryptography''] else 1)' (Join-Path $repoRoot 'backend/requirements.lock')
+        if ($LASTEXITCODE -ne 0) { throw 'Local backend Python needs supported OpenSSL 3.5+ and the pinned cryptography library. Set up .tools/backend-secure-venv using backend/README.md.' }
         $env:BMT_GODOT_BIN = $script:godot
         $env:BMT_GAME_PROJECT = $projectRoot
         if ($Action.StartsWith('BackendDrivers')) {

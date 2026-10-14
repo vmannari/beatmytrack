@@ -58,7 +58,7 @@ def console():
 
 @router.get("/admin/assets/{name}", include_in_schema=False)
 def asset(name: str):
-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css"):
+    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
@@ -86,6 +86,7 @@ def record(kind, row):
 
 @router.get("/v1/admin/overview")
 def overview(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
+    from .publication_models import PublicationIntent
     window = window or calendar_range(days)
     with request.app.state.session_factory() as db:
         count = lambda model, *where: db.scalar(select(func.count()).select_from(model).where(*where))
@@ -98,6 +99,8 @@ def overview(request: Request, role: Access, window: Window, days: int = Query(7
         daily = db.execute(
             select(utc_day, func.count()).where(*during(Run.created_at, window)).group_by(utc_day)
         ).all()
+        publication_failed = db.scalar(select(func.count()).select_from(select(PublicationIntent.id)
+            .where(PublicationIntent.status == "failed").limit(5001).subquery()))
         return {
             "role": role,
             "environment": request.app.state.settings.environment,
@@ -106,14 +109,17 @@ def overview(request: Request, role: Access, window: Window, days: int = Query(7
             "since": window[0],
             "until": window[1],
             "players": count(Player),
-            "tracks": count(Track),
-            "versions": count(TrackVersion),
+            "tracks": count(Track, select(TrackVersion.id).where(TrackVersion.track_id == Track.id,
+                TrackVersion.state == "published").exists()) if request.app.state.settings.local_drafts_only else count(Track),
+            "versions": count(TrackVersion, TrackVersion.state == "published") if request.app.state.settings.local_drafts_only else count(TrackVersion),
             "racers": db.scalar(
                 select(func.count(func.distinct(Run.player_id))).where(*during(Run.created_at, window))
             ),
             "states": states,
             "daily": [{"day": int(day), "count": n} for day, n in daily],
             "pending": count(Run, Run.status.in_(["queued", "verifying"])),
+            "publications": {"pending": count(PublicationIntent, PublicationIntent.status.in_(("queued", "verifying"))),
+                "failed": min(publication_failed, 5000), "failed_count_capped": publication_failed > 5000},
             "disabled": count(Player, Player.disabled.is_(True)),
             "database": "reachable",
             "schema": SCHEMA_HEAD,
@@ -135,6 +141,8 @@ def entities(
         raise HTTPException(404)
     model, fields = FIELDS[kind]
     conditions = during(model.created_at, window)
+    if kind == "tracks" and request.app.state.settings.local_drafts_only:
+        conditions.append(TrackVersion.state == "published")
     if q:
         search_fields = [
             getattr(model, key)
@@ -176,6 +184,8 @@ def detail(kind: str, entity_id: str, request: Request, role: Access):
     with request.app.state.session_factory() as db:
         row = db.get(FIELDS[kind][0], entity_id)
         if row is None:
+            raise HTTPException(404, "ENTITY_NOT_FOUND")
+        if kind == "tracks" and request.app.state.settings.local_drafts_only and row.state != "published":
             raise HTTPException(404, "ENTITY_NOT_FOUND")
         result = record(kind, row)
         if kind == "players":

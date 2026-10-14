@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .contracts import build_contract, current_manifest
+from .publication_models import PublicationIntent
 from .track_models import OperationState, Run, TrackValidation, now
 
 
@@ -85,9 +86,11 @@ def competition_health(app) -> dict:
         failures = dict(session.execute(select(Run.failure_code, func.count()).where(Run.finished_at >= current - 300, Run.failure_code.is_not(None)).group_by(Run.failure_code)).all())
         arrivals = session.scalar(select(func.count()).select_from(Run).where(Run.created_at >= current - 300))
         validations, validation_oldest = session.execute(select(func.count(), func.min(TrackValidation.created_at)).where(TrackValidation.status.in_(("queued", "validating")))).one()
-        total_depth = depth + validations
+        publications, publication_oldest = session.execute(select(func.count(), func.min(PublicationIntent.created_at))
+            .where(PublicationIntent.status.in_(("queued", "verifying")))).one()
+        total_depth = depth + validations + publications
         guard = session.get(OperationState,"object-maintenance")
-        oldest = min(value for value in (oldest, validation_oldest) if value is not None) if total_depth else None
+        oldest = min(value for value in (oldest, validation_oldest, publication_oldest) if value is not None) if total_depth else None
         marker = app.state.settings.backup_marker_path
         backup = {"status":"not_configured", "age_seconds":None}
         if marker:
@@ -126,10 +129,10 @@ def competition_health(app) -> dict:
                 "completion_latency_seconds_last_5_minutes": {"mean": round(float(latency_avg), 3) if latency_avg is not None else None, "max": latency_max},
                 "worker_queue_wait_seconds": {w.id.removeprefix("worker:"): w.details.get("last_queue_wait_seconds") for w in workers},
                 "worker_verification_seconds": {w.id.removeprefix("worker:"): w.details.get("last_verification_seconds") for w in workers},
-                "arrivals_last_5_minutes":arrivals, "pending_track_validations":validations,
+                "arrivals_last_5_minutes":arrivals, "pending_track_validations":validations, "pending_publications":publications,
                 "worker_builds":[w.details.get("build", {}) for w in workers],
                 "failures_last_5_minutes": failures,
-                "estimated_wait_seconds": round(300 * depth / completions) if completions and not validations else None,
+                "estimated_wait_seconds": round(300 * depth / completions) if completions and not validations and not publications else None,
                 "storage_backend":app.state.settings.object_backend,
                 "storage_free_bytes": shutil.disk_usage(app.state.settings.object_dir).free if app.state.settings.object_backend=="local" else None,
                 "object_gc_paused": bool(guard and guard.updated_at > current),

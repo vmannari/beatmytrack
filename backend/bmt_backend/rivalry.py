@@ -224,6 +224,11 @@ def snapshot(session, group, player_id, timestamp=None):
     pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
         .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
     state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
+    personal_best_slots = []
+    if state == "complete":
+        personal_best_slots = sorted(session.scalars(select(RivalryTicket.slot).join(Run, Run.ticket_id == RivalryTicket.ticket_id)
+            .where(RivalryTicket.group_id == group.id, Run.player_id == player_id, Run.status == "verified",
+                   RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()).all())
     iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
               "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
@@ -231,7 +236,7 @@ def snapshot(session, group, player_id, timestamp=None):
               "test_population": group.test_population,
               "automatic_test_drivers": bool(group.tracks[0].get("automatic_test_drivers", False)),
               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
-              "points_policy": list(POINTS), "pending_runs": pending}
+              "points_policy": list(POINTS), "pending_runs": pending, "personal_best_slots": personal_best_slots}
     availability = dict(session.execute(select(TrackVersion.id,
         (TrackVersion.state == "published") & Track.hidden.is_(False) & Player.disabled.is_(False))
         .join(Track).join(Player, Player.id == Track.owner_id)
@@ -421,6 +426,8 @@ def accept_verified(session, run):
         return
     before_tracks, before_overall = standings_data(session, group)
     prior = next(row for row in before_tracks[binding.slot] if row["id"] == run.player_id)
+    personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
+    new_personal_best = personal_best is None or run.time_ticks < personal_best.time_ticks
     best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
     improved = best is None or run.time_ticks < best.time_ticks
     if improved:
@@ -433,7 +440,7 @@ def accept_verified(session, run):
     after = next(row for row in after_tracks[binding.slot] if row["id"] == run.player_id)
     beaten = [row for row in before_tracks[binding.slot] if row["id"] != run.player_id and row["ticks"] is not None
               and run.time_ticks < row["ticks"] and (prior["ticks"] is None or row["ticks"] < prior["ticks"])] if improved else []
-    binding.outcome = {"improved": improved, "before": prior, "after": after,
+    binding.outcome = {"improved": improved, "personal_best": new_personal_best, "before": prior, "after": after,
                        "points_delta": after["points"] - prior["points"], "beaten": beaten,
                        "ms": round(run.time_ticks * 1000 / group.tracks[binding.slot]["tick_rate"]),
                        "overall_before": next(row for row in before_overall if row["id"] == run.player_id),
@@ -461,10 +468,23 @@ def acknowledge(group_id: str, request: Request, session: DB, player: Auth, key:
     old = replay_response(session, player.id, scope, key, {})
     if old is not None:
         return old
-    group, member = require_member(session, group_id, player.id, request)
+    group, _ = require_member(session, group_id, player.id, request)
     if snapshot(session, group, player.id)["state"] != "complete":
         raise HTTPException(409, "RIVALRY_NOT_COMPLETE")
-    member.acknowledged = True
+    # Continue leaves the reviewed finale and any older history in this car's
+    # population. Otherwise /current walks the unacknowledged weeks backwards
+    # and makes the player press Continue once for every missed finale.
+    ended_groups = select(RivalryGroup.id).where(
+        RivalryGroup.vehicle_id == group.vehicle_id,
+        RivalryGroup.test_population.is_(group.test_population),
+        RivalryGroup.week_start <= group.week_start,
+        RivalryGroup.ends_at <= now(),
+    )
+    session.execute(update(RivalryMember).where(
+        RivalryMember.player_id == player.id,
+        RivalryMember.group_id.in_(ended_groups),
+        RivalryMember.acknowledged.is_(False),
+    ).values(acknowledged=True))
     return commit_response(session, player.id, scope, key, {}, {"acknowledged": True})
 
 

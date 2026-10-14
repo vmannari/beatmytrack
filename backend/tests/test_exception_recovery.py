@@ -102,7 +102,7 @@ def test_all_responses_have_server_time_and_legacy_fleet_floor(auth_app):
         assert client.get("/v1/me").headers["x-server-time"]
 
 
-def resume_operation(domain, *, bank=0):
+def resume_operation(domain, *, bank=0, selection=None):
     version, _ = public_course(domain)
     issued = ticket(domain, version, "Alice")
     if bank:
@@ -112,7 +112,7 @@ def resume_operation(domain, *, bank=0):
     beginning_key, consume_key = "recover-begin-key", "recover-consume-key"
     beginning = domain.client.post("/v1/resume-races", json={"ticket_id": issued["ticket_id"]},
                                    headers=headers(domain, "Alice", beginning_key)).json()
-    selection = {"ordinal": 1, "input_offset": 10, "from_tick": 10, "to_tick": 0, "recovery": "v1"}
+    selection = selection or {"ordinal": 1, "input_offset": 10, "from_tick": 10, "to_tick": 0, "recovery": "v1"}
     response = domain.client.post("/v1/resume-races/" + beginning["race_id"] + "/resumes", json=selection,
                                   headers=headers(domain, "Alice", consume_key))
     assert response.status_code == 200

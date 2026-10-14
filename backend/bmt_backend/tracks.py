@@ -110,6 +110,11 @@ def discovery_projection(document: dict) -> dict:
             "points": [points[i * len(points) // count] for i in range(count)]}
 
 
+def _legacy_authoring(request: Request) -> None:
+    if request.app.state.settings.local_drafts_only:
+        raise HTTPException(410, "LOCAL_DRAFTS_ONLY: keep drafts on this device; use an explicit verified publication request")
+
+
 def _validate_revision(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
     if player.needs_username:
         raise HTTPException(409, "USERNAME_REQUIRED")
@@ -145,6 +150,7 @@ def _validate_revision(request: Request, payload: UploadTrack, player: Player) -
 
 @router.post("/tracks", status_code=201)
 def create_track(payload: UploadTrack, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    _legacy_authoring(request)
     body = payload.model_dump(exclude_unset=True)
     old = replay_response(session, player.id, "create_track", key, body)
     if old is not None:
@@ -290,6 +296,7 @@ def _check_revision(session, track, payload):
 def create_version(
     track_id: str, payload: UploadTrack, request: Request, session: DB, player: Auth, key: Key
 ) -> dict:
+    _legacy_authoring(request)
     scope, body = f"version:{track_id}", payload.model_dump(exclude_unset=True)
     old = replay_response(session, player.id, scope, key, body)
     if old is not None:
@@ -337,6 +344,7 @@ def revision_status(version_id: str, request: Request, session: DB, player: Auth
 
 @router.post("/me/track-versions/{version_id}/retry-validation")
 def retry_validation(version_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    _legacy_authoring(request)
     scope = f"retry_validation:{version_id}"
     old = replay_response(session, player.id, scope, key, {})
     if old is not None:
@@ -354,6 +362,7 @@ def retry_validation(version_id: str, request: Request, session: DB, player: Aut
 
 @router.post("/track-versions/{version_id}/publish")
 def publish(version_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    _legacy_authoring(request)
     from .commerce import consume_publication_slot, lock_entitlements
     entitlement = lock_entitlements(session, player.id)
     scope = f"publish:{version_id}"
@@ -412,6 +421,7 @@ def hide(track_id: str, session: DB, player: Auth, key: Key) -> dict:
 
 @router.post("/me/drafts/{authoring_id}/archive")
 def archive_draft(authoring_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+    _legacy_authoring(request)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", authoring_id):
         raise HTTPException(422, "INVALID_AUTHORING_ID")
     scope = f"archive_draft:{authoring_id}"
@@ -439,6 +449,7 @@ def archive_draft(authoring_id: str, request: Request, session: DB, player: Auth
 @router.get("/me/drafts/{authoring_id}/head")
 def draft_head(authoring_id: str, request: Request, session: DB, player: Auth,
                upload_key: str = Query("", max_length=128)) -> dict:
+    _legacy_authoring(request)
     version = session.scalar(select(TrackVersion).join(Track).where(
         Track.owner_id == player.id, Track.authoring_id == authoring_id, Track.archived.is_(False),
     ).order_by(TrackVersion.number.desc()).limit(1))
@@ -458,8 +469,13 @@ def my_tracks(
     limit: int = Query(20, ge=1, le=100),
     heads: bool = False,
 ) -> dict:
-    latest = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number")).group_by(TrackVersion.track_id).subquery()
+    latest_query = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number"))
+    if request.app.state.settings.local_drafts_only:
+        latest_query = latest_query.where(TrackVersion.state == "published")
+    latest = latest_query.group_by(TrackVersion.track_id).subquery()
     query = select(TrackVersion).join(Track).where(Track.owner_id == player.id)
+    if request.app.state.settings.local_drafts_only:
+        query = query.where(TrackVersion.state == "published")
     if heads:
         query = query.where(Track.archived.is_(False))
         query = query.join(latest, (latest.c.track_id == TrackVersion.track_id) & (latest.c.number == TrackVersion.number))

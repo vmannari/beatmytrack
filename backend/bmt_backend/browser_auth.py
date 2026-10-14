@@ -99,17 +99,21 @@ def prepare(body: HandoffToken, request: Request, session: Session = Depends(get
 def complete(body: BrowserCredential, request: Request, session: Session = Depends(get_session)):
     configured(request)
     row = browser_row(body, session)
+    row_id, nonce = row.id, row.nonce
+    # Provider IO must not occupy a connection or idle DB transaction.
+    session.rollback()
     claims = request.app.state.identity_verifier.verify(body.id_token)
     if claims.get("aud") != request.app.state.settings.google_web_client_id:
         raise HTTPException(401, "INVALID_GOOGLE_TOKEN")
     if not isinstance(claims.get("nonce"), str) or not secrets.compare_digest(
-        claims["nonce"].encode(), row.nonce.encode()
+        claims["nonce"].encode(), nonce.encode()
     ):
         raise HTTPException(401, "INVALID_LOGIN_CHALLENGE")
     result = session.execute(
         update(BrowserLogin)
         .where(
-            BrowserLogin.id == row.id,
+            BrowserLogin.id == row_id,
+            BrowserLogin.nonce == nonce,
             BrowserLogin.subject.is_(None),
             BrowserLogin.consumed.is_(False),
             BrowserLogin.expires_at > now(),

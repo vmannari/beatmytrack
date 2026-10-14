@@ -92,8 +92,11 @@ def test_publication_outbox_failure_preserves_slot_and_version(domain, monkeypat
         raise RuntimeError("Injected publication outbox failure")
 
     monkeypatch.setattr(telemetry, "append_server_event", unavailable)
-    with pytest.raises(RuntimeError, match="Injected publication outbox failure"):
-        publish(domain, version)
+    unavailable_response = domain.client.post(
+        f"/v1/track-versions/{version['version_id']}/publish", headers=headers(domain))
+    assert unavailable_response.status_code == 500
+    assert unavailable_response.json()["detail"] == "INTERNAL_ERROR"
+    assert unavailable_response.json()["request_id"] == unavailable_response.headers["x-request-id"]
     with domain.factory() as session:
         assert session.get(TrackVersion, version["version_id"]).state == "tested"
         assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 0

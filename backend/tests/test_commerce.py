@@ -7,12 +7,14 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
-from test_domains import domain, headers, race, upload  # noqa: F401
+from test_domains import domain, headers  # noqa: F401
 
 from bmt_backend.commerce import add_month, lock_entitlements
 from bmt_backend.commerce_models import Entitlements, PublicationSlot, Purchase
 from bmt_backend.config import Settings
 from bmt_backend.identity_models import Identity
+from bmt_backend.publications import CONTRACT_FIELDS
+from bmt_backend.publications import process_one as publish_one
 from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
 from bmt_backend.resumes import grant_verified
 
@@ -20,7 +22,8 @@ from bmt_backend.resumes import grant_verified
 @pytest.fixture
 def lab(domain):
     domain.app.state.settings = replace(domain.app.state.settings, environment="development",
-        dev_auth_enabled=True, dev_auth_key="test-lab-key-" * 4, purchase_simulation_enabled=True)
+        dev_auth_enabled=True, dev_auth_key="test-lab-key-" * 4, purchase_simulation_enabled=True,
+        local_drafts_only=True)
     with domain.factory() as session:
         session.add(Identity(player_id=domain.players["Creator"], provider="development", subject="developer"))
         session.commit()
@@ -38,6 +41,29 @@ def entitlement(lab):
     return response.json()
 
 
+def publication_body(lab, identity="commerce_local", shape="oval"):
+    document = {"schema": "creator-track-v5", "id": identity, "name": "Commerce loop", "shape": shape,
+                "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+    manifest = lab.app.state.verifier.validate_track(document)
+    contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
+    contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
+    return {"name": document["name"], "document": document, "vehicle_id": "compact", "contract": contract,
+        "replay": {"schema": "bmt-trajectory-v1", "input_count": 120,
+            "race_proof": {"schema": "bmt-race-path-v1", "samples": [[0, 0, 0, 0], [120, 0, 0, 0]]}}}
+
+
+def request_publication(lab, content=None, key=None):
+    response = lab.client.post("/v1/publications", json=content or publication_body(lab), headers=headers(lab, key=key))
+    assert response.status_code == 202, response.text
+    return response.json()
+
+
+def publication_status(lab, identity):
+    response = lab.client.get(f"/v1/me/publications/{identity}", headers=headers(lab))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_catalog_and_initial_allowance_only_once(lab):
     for _ in range(3):
         assert entitlement(lab)["publishing_slots"] == 1
@@ -51,10 +77,9 @@ def test_catalog_and_initial_allowance_only_once(lab):
 def test_consumed_initial_allowance_does_not_refill_monthly(lab, monkeypatch):
     clock = int(datetime(2026, 9, 12, 10, 23, 45, tzinfo=timezone.utc).timestamp())
     monkeypatch.setattr("bmt_backend.commerce.now", lambda: clock)
-    version = upload(lab)
-    race(lab, version)
-    assert lab.client.post(f"/v1/track-versions/{version['version_id']}/publish",
-        headers=headers(lab)).status_code == 200
+    intent = request_publication(lab)
+    assert publish_one(lab.app)
+    assert publication_status(lab, intent["publication_id"])["state"] == "published"
     assert entitlement(lab)["publishing_slots"] == 0
     for later in [(2026, 10, 12), (2027, 1, 12)]:
         clock = int(datetime(*later, 10, 23, 45, tzinfo=timezone.utc).timestamp())
@@ -205,20 +230,26 @@ def test_ad_free_rewinds_preserve_banked_daily_and_maximum(lab):
 
 
 def test_publication_consumes_once_and_failure_keeps_allowance(lab):
-    version = upload(lab)
-    path = f"/v1/track-versions/{version['version_id']}/publish"
-    assert lab.client.post(path, headers=headers(lab)).status_code == 409
+    content = publication_body(lab)
+    bad = {**content, "replay": {"schema": "bmt-trajectory-v1", "input_count": 0, "race_proof": {}}}
+    assert lab.client.post("/v1/publications", json=bad, headers=headers(lab)).status_code == 422
     assert entitlement(lab)["publishing_slots"] == 1
-    race(lab, version)
+    key = str(uuid4())
+    intent = request_publication(lab, content, key)
+    assert publish_one(lab.app)
+    version = publication_status(lab, intent["publication_id"])["receipt"]
     for _ in range(3):
-        assert lab.client.post(path, headers=headers(lab)).status_code == 200
+        repeated = request_publication(lab, content, key)
+        assert repeated["state"] == "published" and repeated["receipt"]["version_id"] == version["version_id"]
     assert entitlement(lab)["publishing_slots"] == 0
-    second = upload(lab, document={"shape": "second"})
-    race(lab, second)
-    second_path = f"/v1/track-versions/{second['version_id']}/publish"
-    assert lab.client.post(second_path, headers=headers(lab)).status_code == 409
+    second = request_publication(lab, publication_body(lab, "commerce_second", "second"))
+    assert publish_one(lab.app)
+    failed = publication_status(lab, second["publication_id"])
+    assert failed["state"] == "failed" and failed["failure_code"] == "NO_PUBLISHING_SLOTS"
     assert buy(lab, "creator_slot_1").status_code == 200
-    assert lab.client.post(second_path, headers=headers(lab)).status_code == 200
+    assert lab.client.post(f"/v1/me/publications/{second['publication_id']}/retry", headers=headers(lab)).status_code == 200
+    assert publish_one(lab.app)
+    assert publication_status(lab, second["publication_id"])["state"] == "published"
     assert lab.client.get(f"/v1/track-versions/{version['version_id']}/document").status_code == 200
     assert entitlement(lab)["publishing_slots"] == 0
 
@@ -226,13 +257,12 @@ def test_publication_consumes_once_and_failure_keeps_allowance(lab):
 def test_concurrent_last_slot_cannot_publish_twice(lab):
     if not lab.postgres:
         pytest.skip("Production row-lock admission is tested on PostgreSQL")
-    versions = [upload(lab, document={"shape": f"course-{n}"}) for n in range(2)]
-    for version in versions:
-        race(lab, version)
+    intents = [request_publication(lab, publication_body(lab, "commerce_course_"+str(n), "course-"+str(n))) for n in range(2)]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        codes = list(pool.map(lambda v: lab.client.post(f"/v1/track-versions/{v['version_id']}/publish",
-            headers=headers(lab)).status_code, versions))
-    assert sorted(codes) == [200, 409]
+        assert all(pool.map(lambda _: publish_one(lab.app), intents))
+    outcomes = [publication_status(lab, intent["publication_id"]) for intent in intents]
+    assert sorted(row["state"] for row in outcomes) == ["failed", "published"]
+    assert [row["failure_code"] for row in outcomes if row["state"] == "failed"] == ["NO_PUBLISHING_SLOTS"]
     assert entitlement(lab)["publishing_slots"] == 0
     with lab.factory() as session:
         assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 1

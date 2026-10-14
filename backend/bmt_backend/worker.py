@@ -9,6 +9,7 @@ import time
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 
 from .contracts import BUILD_FIELDS, build_contract
 from .identity_models import Player
@@ -57,10 +58,16 @@ def process_one(app, *, refresh_histograms=False) -> bool:
     if stopping(app):
         return False
     heartbeat(app, worker_id, phase="claiming", build=build, coalesce=True)
+    # Foreground races take priority. An explicit publication is verified before
+    # artificial races/background generation; editor saves never enter a queue.
+    from .publications import process_one as publish_one
     from .track_validation import process_one as validate_one
-    # Alternate queues, keeping creator saves and race proofs from starving each other.
-    app.state.prefer_track_validation = not getattr(app.state, "prefer_track_validation", False)
-    if app.state.prefer_track_validation and validate_one(app):
+    with app.state.session_factory() as session:
+        foreground = session.scalar(select(Run.id).join(Board, Board.id == Run.board_id)
+            .join(Player, Player.id == Run.player_id).where(Player.is_test_driver.is_(False),
+                pinned_filter(Board.manifest, manifest), Run.status.in_(("queued", "verifying")),
+                Run.lease_until <= now()).limit(1))
+    if foreground is None and publish_one(app):
         return True
     lease_seconds = settings.job_lease_seconds
     maximum_attempts = settings.max_job_attempts
@@ -85,6 +92,8 @@ def process_one(app, *, refresh_histograms=False) -> bool:
         if run is None:
             session.rollback()
             if expire_unserviceable(app):
+                return True
+            if publish_one(app):
                 return True
             if validate_one(app):
                 return True
@@ -166,13 +175,13 @@ def process_one(app, *, refresh_histograms=False) -> bool:
             from .verifier import validate_ghost
             try:
                 validate_ghost(result["ghost"], ticks)
-            except RuntimeError:
+            except (RuntimeError, ValueError, OverflowError):
                 result.pop("ghost",None)  # Bad presentation cannot invalidate a proper race.
         if needs_ghost and result.get("ghost"):
             # Durability and fsync must not hold Run/Group/PB/queue locks.
             try:
                 ghost_hash = app.state.blobs.put_json(result["ghost"])
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError, SQLAlchemyError):
                 logger.warning("ghost_storage_unavailable",extra={"run_id":run_id})
     except VerifierStopping:
         # Keep the durable lease; a replacement can recover it after expiry.
@@ -231,6 +240,11 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
     settings = app.state.settings
     maximum_attempts = settings.max_job_attempts
     with app.state.session_factory() as session:
+        # Run ownership is immutable. Discover it without a row lock, then use
+        # the same Player -> Run order as retry/admission/account writers.
+        player_id = session.scalar(select(Run.player_id).where(Run.id == run_id))
+        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
+            .execution_options(populate_existing=True)) if player_id is not None else None
         run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
         if run is None or run.status != "verifying" or run.lease_token != token or run.lease_until <= now():
             logger.warning("verification_lease_lost", extra={"run_id": run_id, "worker_id": worker_id})
@@ -249,7 +263,6 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
             return True
         # Serialize PB projections with account restriction/test-identity changes.
         # Both writers lock Player before touching board visibility counters.
-        player = session.scalar(select(Player).where(Player.id == run.player_id).with_for_update())
         test_disabled = (player.is_test_driver or pinned_manifest.get("test_population")) and not settings.test_drivers_enabled
         if player.disabled or test_disabled:
             run.status, run.failure_code, run.finished_at, run.lease_token = (

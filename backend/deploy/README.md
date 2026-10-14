@@ -1,3 +1,7 @@
+2026-10-13 backend second pass BR07-BR10: shared storage integrity checks now reject exponent-overflow numbers (1e400), duplicate keys, invalid Unicode and excessive nesting on every object backend and archive restore. Reusing an existing immutable object repeats directory durability flushes, including recovery after a link succeeded but its flush failed. Names exceeding the normalized database comparison-key limit return validation errors before SQL. Server/client ghost components are bounded before rendering while race proof remains independent. Tests, scope and remaining target-host reboot/restore/blocked-IO acceptance: ../../docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.
+
+2026-10-13 backend robustness repairs BR01-BR06: numeric validation rejects overflow; optional ghost data/storage failures cannot determine race acceptance. Finalization locks Player before Run, and publication retries commit owner/target-bound idempotency receipts. The app saves an unknown retry key until acknowledgement. Local archives verify the exact bounded gzip/JSON bytes against their SHA256 names before backup/restore publication. New temporary uploads hold OS-released sidecar guards through publication; startup scans at most 1,000 entries, and reference-aware retention continues with its existing cursor. Only files at least 24 hours old and unlocked are candidates. Legacy files without guards require --offline with every writer stopped; do not infer that an old deployed writer is inactive from file age. Maintenance reports temporary_files/temporary_bytes (logical name sizes, which can include a hardlink alias); its reference lookup is one bounded UNION query, retaining publication proofs and the original two-query test ceiling. S3 raw-stream exceptions map to STORAGE_UNAVAILABLE/503, invalidate readiness and keep Retry-After/request IDs. Unknown errors and database SQLSTATE/class diagnostics exclude bodies, credentials and exception text. No new migration or dependency is required by these repairs. Deploy matching backend/client artifacts only through the separately authorized rollout process; production reboot/power-loss and restore drills remain deployment-host acceptance. Tests and task-only checkpoint: ../../docs/evidence/backend-robustness-fixes-2026-10-13/fixes.json.
+
 2026-10-05 native GCS and GCP staging: the Google adapter uses existing google-auth/HTTP dependencies, runtime ADC and immutable generation preconditions. Provider archives accept GCS. The [staging runbook](gcp/README.md) targets the owner-supplied `beat-my-track` project with explicit application/migration identities, pinned image digests, bounded replicas/DB pools, expiry and owned cleanup. Local image/contract/SQL tests are verified; Google CLI/ADC are not configured, so live bucket/deployment acceptance and pricing review remain. No credits or existing services were used/changed. [Evidence and limits](../../docs/BACKEND_GCS_STAGING_2026_10_05.md).
 
 2026-10-05 readiness/replica failures: `/healthz` performs no dependency IO; `/readyz` coalesces requests with a two-second HTTP deadline, two-second success cache and 30-second on-demand deep-storage interval. API storage errors invalidate caches immediately. `BMT_READINESS_CACHE_SECONDS`, `BMT_READINESS_STORAGE_CACHE_SECONDS` and `BMT_READINESS_TIMEOUT_SECONDS` configure these bounded defaults. Keep external probe timeouts above the application's deadline. Synthetic separate-process tests cover shared sessions, concurrent retries/resource consumption, storage faults, killed/stale workers and SQL finalization recovery. No existing services were restarted/migrated. [Actual checks and limits](../../docs/BACKEND_READINESS_REPLICAS_2026_10_05.md).
@@ -149,19 +153,33 @@ Set up a DSM reverse proxy rule: HTTPS on the chosen public hostname and port 44
 443 only as needed; keep DSM administration, Docker and PostgreSQL off the public
 internet. The API binds loopback; PostgreSQL has no host port; the verifier has only
 the internal network. The API also has an egress network to fetch Google's signing
-certificates. `BMT_TRUSTED_PROXY_IPS` defaults to `127.0.0.1`; set it to the exact
+certificates. `BMT_TRUSTED_PROXY_NETWORKS` defaults to `127.0.0.1` in Compose; set it to the exact
 immediate DSM proxy address(es) visible inside the API container (often the Docker
 bridge gateway for a host reverse proxy). Never use `*` or trust the whole internet.
 Configure DSM to overwrite forwarded client headers and verify spoofed headers from
-an untrusted peer are ignored. Only Uvicorn's trusted-proxy handling determines the
-client address used by request limits. Share URLs come from the fixed HTTPS origin.
+an untrusted peer are ignored. The API walks the forwarded chain from the trusted
+socket peer toward the first untrusted client, ignoring earlier supplied addresses.
+Uvicorn does not rewrite the socket peer. Legacy `BMT_TRUSTED_PROXY_IPS` is retained
+as a Compose configuration fallback. Share URLs come from the fixed HTTPS origin.
 
 Configure reverse-proxy request size and read timeouts to cover the API's bounded
 track/replay payloads and track validation (up to 90 seconds). Apply edge/IP request
 limits before broad public registration. Until the immediate proxy address is trusted,
 all proxied requests share the proxy's IP quota; confirm client IP/rate behavior and
 tune edge/application limits together before public load. The direct-image command
-ignores forwarded headers, while Compose enables only the configured allowlist.
+uses the same application resolver with an empty allowlist unless configured.
+The Cloud Run deployment template pins only the immediate loopback/link-local
+frontend networks; `trusted_proxy_networks` can explicitly pin additional load
+balancer hops. Before promotion, check the actual proxy chain and compare two
+distinct clients plus a supplied spoofed prefix. No internet-wide trust is allowed.
+
+Unseen bearer credentials share the bounded `BMT_PRE_AUTH_LIMIT_PER_MINUTE`
+admission budget (default 600) before authentication SQL. Previously validated
+credentials may use the existing generous peer ceiling, but are authenticated and
+checked for revocation and per-player limits on every request. Anonymous denial
+does not consume a different valid player's account budget. Rejected peer/token
+budgets are cached only until the next fixed minute window. Tune admission and
+edge limits together after measuring the real carrier-NAT/proxy workload.
 
 The starting resource limits are API 640 MiB/1 CPU, worker 768 MiB/1 CPU, PostgreSQL
 768 MiB/1.5 CPU, and migration 256 MiB/0.5 CPU. One replay runs per worker. These are

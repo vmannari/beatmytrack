@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import delete, false, func, select, text, tuple_, update
 
+from . import network_health, race_statistics
 from . import quality as client_quality
 from .admin import Access, Window
 from .admin_ranges import calendar_range
@@ -30,6 +31,7 @@ ACTIVE = {"session_started", "session_foregrounded", "session_heartbeat", "menu_
     "editor_opened", "race_accepted", "creator_validated", "track_published"}
 FIRST_RACE = ("app_first_open", "menu_ready", "race_attempt", "race_started", "race_finished", "second_voluntary_race")
 CREATOR = ("editor_opened", "draft_saved", "publish_requested", "track_published")
+PUBLICATION_REQUEST = ("publish_requested", "track_published")
 MILESTONES = set(FIRST_RACE[:-1] + CREATOR)
 PENDING_PROBE_LIMIT = 5000
 
@@ -74,16 +76,23 @@ def bounded_frontiers(values):
     """Keep earliest relevant per-step frontiers rather than all later replays."""
     values = [milestone(value) for value in values]
     result, truncated = [], set()
-    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
+    protected, selected_by_prefix = set(), {}
+    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY), ("publication_request", PUBLICATION_REQUEST, 7 * DAY)):
         anchors = [value[1] for value in values if value[0] == steps[0]]
         anchor = min(anchors) if anchors else None
         frontier = ordered_journey(values, steps, horizon)
+        # Keep every already proved ordered step, including completed mature
+        # journeys, before allocating space to alternate incomplete candidates.
+        protected.update(tuple(value) for value in frontier)
+        selected_by_prefix[prefix] = set()
         # Once the ordered journey is proved, repeats carry no new funnel fact.
         if len(frontier) == len(steps):
             result.extend(frontier)
+            selected_by_prefix[prefix].update(tuple(value) for value in frontier)
             continue
         if steps == FIRST_RACE and len(frontier) == len(steps) - 1:
             result.extend(frontier)
+            selected_by_prefix[prefix].update(tuple(value) for value in frontier)
             continue
         for name in steps:
             if name == "second_voluntary_race":
@@ -95,9 +104,20 @@ def bounded_frontiers(values):
             if prefix == "first_race" and name == "race_started" and len(candidates) > cap:
                 selected = candidates[:1] + candidates[-(cap - 1):]
             result.extend(list(value) for value in selected)
+            selected_by_prefix[prefix].update(selected)
             if len(candidates) > cap:
                 truncated.add(prefix)
-    return sorted(result, key=order), truncated
+    retained = protected | {tuple(value) for value in result}
+    if len(retained) > MILESTONE_LIMIT:
+        # Three overlapping journeys can have different earliest anchors. The
+        # union has a hard bound; losing alternatives creates explicit scoped
+        # uncertainty, never loss of a proved conversion or a false zero.
+        alternatives = sorted(retained-protected, key=order)
+        retained = protected | set(alternatives[:max(0, MILESTONE_LIMIT-len(protected))])
+        for prefix, selected in selected_by_prefix.items():
+            if selected-retained:
+                truncated.add(prefix)
+    return sorted([list(value) for value in retained], key=order), truncated
 
 
 def bounded_milestones(values):
@@ -111,7 +131,7 @@ def journey_projection(profile):
     """Ordered first-observed journeys; late arrivals restate only this projection."""
     result = {}
     milestones = [milestone(value) for value in profile.milestones or []]
-    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
+    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY), ("publication_request", PUBLICATION_REQUEST, 7 * DAY)):
         frontier = ordered_journey(milestones, steps, horizon)
         if not frontier:
             continue
@@ -138,6 +158,8 @@ def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
             .order_by(ProductEvent.received_at, ProductEvent.id).limit(limit)).all()
         players = {event.player_id for event in events}
         client_quality.project(session, events, insert_for)
+        race_statistics.project(session, events)
+        network_health.project(session, events)
         profiles = {profile.player_id: profile for profile in session.scalars(
             select(ProductProfile).where(ProductProfile.player_id.in_(players)))} if players else {}
         missing_flags = {event.player_id for event in events if event.is_test_driver is None}
@@ -172,7 +194,7 @@ def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
                 if value not in values:
                     profile.milestones, truncated = bounded_frontiers([*values, value])
                     truncations = dict(profile.truncations or {})
-                    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY)):
+                    for prefix, steps, horizon in (("first_race", FIRST_RACE, DAY), ("creator", CREATOR, 7 * DAY), ("publication_request", PUBLICATION_REQUEST, 7 * DAY)):
                         if prefix in truncated:
                             truncations[prefix] = True
                         elif len(ordered_journey(profile.milestones, steps, horizon)) == len(steps):
@@ -295,6 +317,8 @@ def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
                 .order_by(*columns).limit(limit)).all()
             if expired_keys:
                 session.execute(delete(model).where(tuple_(*columns).in_(expired_keys)))
+        race_statistics.cleanup(session, at, limit, fact_days)
+        network_health.cleanup(session, at, limit, fact_days)
         expired_publications = session.scalars(select(ProductPublication.version_id)
             .where(ProductPublication.published_at < (at // DAY - fact_days) * DAY).limit(limit)).all()
         if expired_publications:
@@ -344,7 +368,7 @@ def prepared_report(session, since, until, at):
                 "returned": count(day, f"retention_d{offset}_returned") if mature else None}
         retention.append(row)
     funnels = {}
-    for prefix, steps, horizon in (("first_race", FIRST_RACE, 1), ("creator", CREATOR, 7)):
+    for prefix, steps, horizon in (("first_race", FIRST_RACE, 1), ("creator", CREATOR, 7), ("publication_request", PUBLICATION_REQUEST, 7)):
         mature_days = [day for day in range(start, last + 1) if observed(day)
             and watermark is not None and (day + horizon + 1) * DAY + (600 if prefix == "first_race" else 0) <= min(at, watermark)]
         counts = [{"name": name, "count": sum(values.get((day, prefix + "_" + name, ""), 0)
@@ -364,6 +388,8 @@ def prepared_report(session, since, until, at):
     mature_publication_days = [day for day in range(start, last + 1) if observed(day)
         and watermark is not None and (day + 8) * DAY <= min(at, watermark) and not state.pending_events]
     return {"schema": "bmt-product-analytics-v1", "as_of": at, "since": since, "until": until,
+        "local_draft_metrics": {"available": False,
+            "reason": "Draft editing, saves and creator tests stay on devices; only explicit publication requests are observed."},
         "days": last - start + 1, "weekly_since": weekly_start * DAY, "weekly_until": until,
         "coverage": {"collection_started_at": begun, "processed_through": watermark,
             "latest_receipt_at": state.latest_receipt_at if state else None,
@@ -411,4 +437,6 @@ def analytics(request: Request, role: Access, window: Window, days: int = Query(
         result = prepared_report(session, since, until, now())
         result.update(role=role, environment=request.app.state.settings.environment,
             telemetry_enabled=request.app.state.settings.telemetry_enabled)
+        result["funnels"]["creator"]["historical_only"] = True
+        result["funnels"]["creator"]["coverage_note"] = "Local draft edits/saves/tests are no longer collected. Use the explicit publication-request journey; historical creator facts retain their original definition."
         return result

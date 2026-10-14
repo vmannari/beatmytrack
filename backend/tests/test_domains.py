@@ -49,6 +49,12 @@ class FakeVerifier:
         }
 
     def verify_run(self, document, replay, vehicle_id, *, creator_test=False):
+        if replay.get("schema") == "bmt-trajectory-v1":
+            from bmt_backend.trajectory_verifier import validate_envelope
+            validate_envelope(replay)
+            ticks = replay["input_count"]
+            return {"time_ticks": ticks, "lap_ticks": [ticks] if creator_test else [ticks//5]*5,
+                    "manifest": self.validate_track(document)}
         if replay["frames"][0][0] == -127:
             raise VerificationError("Incomplete race")
         if replay["frames"][0][0] == -126:
@@ -85,7 +91,7 @@ def domain(tmp_path, request):
             },
         )
     settings = Settings(
-        environment="test", allow_sync_track_validation=True,
+        environment="test", allow_sync_track_validation=True, local_drafts_only=False,
         database_url=database_url,
         object_dir=str(tmp_path / "objects"),
         rate_limit_per_minute=10000,

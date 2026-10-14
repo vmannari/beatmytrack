@@ -9,7 +9,7 @@ from .worker_lifecycle import aborting, stopping
 
 
 def process_one(app) -> bool:
-    if stopping(app):
+    if stopping(app) or app.state.settings.local_drafts_only:
         return False
     settings = app.state.settings
     token = new_id()

@@ -5,13 +5,14 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
-from test_commerce import buy, entitlement, lab  # noqa: F401
-from test_domains import domain, headers, public_course, race  # noqa: F401
+from test_commerce import buy, entitlement, lab, publication_status, request_publication  # noqa: F401
+from test_domains import domain, headers  # noqa: F401
 from test_store_admin import ANALYST, OWNER, configure, store  # noqa: F401
 
 from bmt_backend.admin_models import AdminAudit
 from bmt_backend.commerce_models import Entitlements, PublicationSlot, Purchase
 from bmt_backend.identity_models import Player
+from bmt_backend.publications import process_one as publish_one
 from bmt_backend.track_models import now
 
 
@@ -126,7 +127,11 @@ def test_preview_binds_the_exact_action_and_amount(store):
 
 
 def test_slot_and_access_adjustments_preserve_real_access_and_consumption(store):
-    version, _board = public_course(store)
+    intent = request_publication(store)
+    assert publish_one(store.app)
+    published = publication_status(store, intent["publication_id"])
+    assert published["state"] == "published"
+    version = published["receipt"]
     assert buy(store, "ad_free_month").status_code == 200
     with store.factory() as session:
         row = session.get(Entitlements, store.players["Creator"])

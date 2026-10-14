@@ -54,11 +54,11 @@ def test_transport_is_bounded_and_never_redirects(monkeypatch):
         def __exit__(self,*_args):pass
     def peer(*args,**kwargs):
         calls.append((args,kwargs));return Response()
-    monkeypatch.setattr(requests,"request",peer)
+    monkeypatch.setattr(requests.Session,"request",lambda _self,*a,**kw:peer(*a,**kw))
     with pytest.raises(OSError,match="limit"):store()._request("GET",limit=1024)
     assert calls[0][1]["allow_redirects"] is False and calls[0][1]["timeout"]==(3,10)
     def timeout(*_a,**_kw):raise requests.Timeout()
-    monkeypatch.setattr(requests,"request",timeout)
+    monkeypatch.setattr(requests.Session,"request",lambda _self,*a,**kw:timeout(*a,**kw))
     with pytest.raises(OSError,match="unavailable"):store().get_json("a"*64)
 
 

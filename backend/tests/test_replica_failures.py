@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from sqlalchemy import create_engine, select
+from test_domains import FakeVerifier
 
 from bmt_backend.config import Settings
 from bmt_backend.db import make_engine, make_session_factory
@@ -148,18 +149,23 @@ def worker(replicas, **options):
 
 def published(replicas):
     creator = sign_in(replicas, "Creator")
-    uploaded = replicas.a.client.post("/v1/tracks", json={"name": "Fixture loop", "document": {"shape": "oval"}},
+    document = {"schema": "creator-track-v5", "id": "replica_fixture", "shape": "oval",
+                "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+    from bmt_backend.publications import CONTRACT_FIELDS
+    manifest = FakeVerifier().validate_track(document)
+    contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
+    contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
+    uploaded = replicas.a.client.post("/v1/publications", json={"name": "Fixture loop",
+        "document": document, "vehicle_id": "compact", "contract": contract,
+        "replay": {"schema": "bmt-trajectory-v1", "input_count": 120,
+            "race_proof": {"schema": "bmt-race-path-v1", "samples": [[0, 0, 0, 0], [120, 0, 0, 0]]}}},
         headers=auth(creator, "creator-upload"))
-    assert uploaded.status_code == 201
-    version = uploaded.json()
-    issued = race_ticket(replicas, version, creator)
-    result = replicas.b.client.post("/v1/runs", json=payload(issued), headers=auth(creator, "creator-proof"))
-    assert result.status_code == 202
+    assert uploaded.status_code == 202, uploaded.text
     worker(replicas)
-    assert replicas.a.client.get(f"/v1/runs/{result.json()['run_id']}", headers=auth(creator)).json()["status"] == "verified"
-    assert replicas.b.client.post(f"/v1/track-versions/{version['version_id']}/publish",
-        headers=auth(creator, "fixture-publish")).status_code == 200
-    return version
+    result = replicas.b.client.get("/v1/me/publications/" + uploaded.json()["publication_id"],
+        headers=auth(creator))
+    assert result.status_code == 200 and result.json()["state"] == "published", result.text
+    return result.json()["receipt"]
 
 
 def race_ticket(replicas, version, token):

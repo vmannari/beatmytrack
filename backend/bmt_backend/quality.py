@@ -19,6 +19,8 @@ FIELDS = {"quality_summary": {"device_class", "scene", "samples", "slow", *("b" 
 
 
 def validate(name, props):
+    if name == "segment_summary" or name == "quality_summary" and props.get("scene") == "race":
+        raise ValueError("RACE_PACKAGE_REQUIRED")
     if set(props) != FIELDS[name]:
         raise ValueError("INVALID_EVENT")
     for key, value in props.items():
@@ -82,7 +84,7 @@ def report(request: Request, role: Access, window: Window, kind: str = "quality_
             "coverage": {"enabled": request.app.state.settings.client_quality_enabled,
                 "guest": "unavailable", "crash_stack": "unavailable", "play_vitals": "unavailable",
                 "spatial": "Client 1 Hz observations in 20 m cells; sampled presence, never verified race evidence.",
-                "sampling": "Lowest-hash 16 cells per 10-minute window, 32 route segments. Inclusion probability unavailable; capped coverage cannot estimate total dwell time or distinct drivers.",
+                "sampling": "Historical schema-1 segment facts only. Current race capture is one schema-2 package with at most 128 cells and 32 segments; use /race-statistics for current device/OS evidence.",
                 "exit": "Android API 30+ OS process exits; previous process, not proven current-player crash/ANR.",
                 "capture": "Fixed counters only; no arbitrary logs, coordinates, credentials or control-input captures."}}
 
@@ -91,6 +93,7 @@ def report(request: Request, role: Access, window: Window, kind: str = "quality_
 def creator_health(request: Request, role: Access, limit: int = Query(100, ge=1, le=100)):
     with request.app.state.session_factory() as session:
         rows = session.execute(select(TrackVersion, Track).join(Track)
+            .where(TrackVersion.state == "published")
             .order_by(TrackVersion.created_at.desc(), TrackVersion.id).limit(limit + 1)).all()
         return {"items": [{"version_id": version.id, "track_id": track.id, "creator_id": track.owner_id,
             "name": version.name, "state": version.state, "created_at": version.created_at,

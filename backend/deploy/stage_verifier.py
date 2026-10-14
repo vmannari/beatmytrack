@@ -14,6 +14,7 @@ SCRIPTS = {
     "editor": (
         "creator_catalog",
         "creator_objects",
+        "container_paint",
         "creator_scenery",
         "object_runs",
         "road_pieces",
@@ -45,8 +46,10 @@ SCRIPTS = {
         "rally_handbrake",
         "launch_start",
         "light_props",
+        "breakable_props",
         "loose_tyres",
         "track_hazards",
+        "speed_bumps",
         "vehicle_catalog",
         "vehicle_simulation",
         "vehicle_state",
@@ -70,7 +73,7 @@ def stage(repo: Path, destination: Path) -> None:
     runners = [source / "backend" / name for name in ("runner.gd", "verification_track.gd", "race_proof.gd", "generate_fixture.gd", "generate_test_driver.gd")]
     files.extend(runners)
     # TrackTheme preloads this resource even in the headless canonical project.
-    files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader"))
+    files.extend(source / "track" / name for name in ("storm_sky.tres", "storm_sky.gdshader", "winter_reflection_sky.gdshader"))
     files.extend(source / "resources" / (name + ".tres") for name in PROFILES)
     files.extend(sorted((source / "resources" / "cars").glob("*.tres")))
     files.extend(

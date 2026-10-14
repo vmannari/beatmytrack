@@ -85,12 +85,14 @@ async function render(){
  try{
   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
-  const d=await api((['quality','cases','competitions'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+  const d=await api((['quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
   role=d.role;reporting=d;params=rangeParams(params);
   let html='';
-  if(['quality','competitions','cases'].includes(section))html=await operationsView(section,id,params);
+  if(section==='quality')html=await monitorQualityView(params);
+  else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
+  else if(['competitions','cases','publications'].includes(section))html=await operationsView(section,id,params);
   else if(section==='product')html=productAnalyticsView(d);
-  else if(section==='overview')html=await overview(d);
+  else if(section==='overview')html=await monitorPulse(d,params);
   else if(section==='studio')html=await studioCoverage();
   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
    html=id?await inspect(section,id,params):intro(titles[section]||section,'Server records · search, filter and inspect stable identities')+await listing(section,params);
@@ -98,10 +100,10 @@ async function render(){
    html=intro('System & access','Operational visibility and accountable changes.','CONTROL')+tabs([['system','Health'],['system/jobs','Background jobs'],['system/audit','Audit history'],['system/access','Access']],path);
    if(id==='jobs'||id==='audit')html+=await listing(id,params);
    else if(id==='access')html+=card('Administrative access',kv({current_role:role,owner:'Read records and purchases; restrict / restore accounts; hide / show tracks; configure test products and audited development purchases',analyst:'Read-only inspection',authentication:'Separate configured credentials; held in tab memory',audit_actor:'Credential role. Individual administrator SSO / MFA not configured.'}));
-   else html+=card('Current observation',kv({api:'responding',database:d.database,schema:d.schema,environment:d.environment,observed_at:d.as_of,pending_verifications:d.pending}))+await systemHealth();
+   else html=monitorReliability(d,await api('competition-health'));
   }else if(section==='economy')html=await commercePage(params);
   else if(section==='live')html=intro('Live operations','Compatibility is pinned per race contract.','CONTROL')+card('Configuration boundaries',kv({track_schema:'creator-track-v5',replay_schemas:'bmt-replay-v1 / bmt-replay-v2',resume_policy:'rewind-1',race_configuration:'Inspect a race for its exact immutable manifest'}))+unavailable('Remote configuration','There is no mutable configuration registry, activation service or retained rollback snapshots.');
-  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+card('Observed product activity','<p class="console-note">Submitted attempts and observed product activity answer different questions. <a href="'+scopedHref('product',params)+'">Open Product analytics</a> for signed-in activity, ordered journeys and exact-day return cohorts. Device and crash diagnostics are not collected.</p>');
+  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+card('Observed product activity','<p class="console-note">Submitted attempts and observed product activity answer different questions. <a href="'+scopedHref('product',params)+'">Open Product analytics</a> for signed-in activity, ordered journeys and exact-day return cohorts. Client quality provides bounded race frame summaries, device/OS comparisons and observed process exits.</p>');
   else html=intro('Page not found','Use the navigation to choose a workspace.');
   if(ticket!==generation)return;
   $('#main').innerHTML=html;
@@ -120,7 +122,7 @@ async function render(){
   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
 }
-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();}
+function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();}
 function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
 function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
 function modal(html){
@@ -181,5 +183,5 @@ $('#date-range').onclick=reportingDates;
 $('#logout').onclick=()=>{clearAccess();setNavigation(false);login();};
 $('#search').onclick=search;
 window.addEventListener('hashchange',()=>{setNavigation(false);render();});
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();search();}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#sidebar').classList.contains('open')&&!$('#dialog').open){e.preventDefault();setNavigation(false);$('#menu').focus();return;}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();search();}});
 render();

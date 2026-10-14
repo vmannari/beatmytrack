@@ -86,6 +86,7 @@ class TrackValidation(Base):
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    legacy_workflow_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 

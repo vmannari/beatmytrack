@@ -68,7 +68,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
     fixtures = ROOT / "game/tests/fixtures"
     document = json.loads((fixtures / "over_and_under.json").read_text())
     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.53"
+    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.56"
     with pytest.raises(VerificationError, match="required laps"):
         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
 
@@ -81,7 +81,7 @@ def test_variable_width_route_survives_json_without_relaxing_geometry(real_verif
     # the original constant-width oval whose integer widths round-trip exactly.
     assert any(width != struct.unpack("f", struct.pack("f", width))[0] for width in document["widths"])
     manifest = real_verifier.validate_track(document)
-    assert manifest["track_content_hash"] == "17c464132446b9e19f79c16fa7dc69c67a6e5eef4d54db90145f8f31ed53959d"
+    assert manifest["track_content_hash"] == "b10b6b5d0b531d595b836b30050ffd41fa92c348ddc5b34346ca7ec7ec40d21a"
     altered = copy.deepcopy(document)
     altered["widths"][1] += 0.00001
     with pytest.raises(VerificationError, match="Regenerate the automatic route"):
@@ -91,6 +91,23 @@ def test_variable_width_route_survives_json_without_relaxing_geometry(real_verif
 @pytest.fixture(scope="module")
 def race_fixture():
     return json.loads((Path(__file__).parent / "fixtures" / "verified_oval.json").read_text())
+
+
+def test_container_paint_is_cosmetic_and_strict(real_verifier, race_fixture):
+    document = copy.deepcopy(race_fixture["document"])
+    document["objects"] = [{"kind": "container", "position": [0, 0], "rotation": 0}]
+    plain = real_verifier.validate_track(document)
+    document["objects"][0]["color"] = "#8b4134"
+    painted = real_verifier.validate_track(document)
+    assert painted["compiler_version"] == "creator-compiler-27"
+    assert painted["track_content_hash"] != plain["track_content_hash"]
+    for color in ("#abc", "#12345678", "red", 42):
+        document["objects"][0]["color"] = color
+        with pytest.raises(VerificationError, match="container colour"):
+            real_verifier.validate_track(document)
+    document["objects"][0].update(kind="crate", color="#426878")
+    with pytest.raises(VerificationError, match="container colour"):
+        real_verifier.validate_track(document)
 
 
 def test_spline_gate_rules_do_not_relabel_historical_boards(race_fixture):
@@ -143,14 +160,14 @@ def test_validated_saved_route_is_compiled_without_regeneration(real_verifier, r
 def test_server_accepts_overlapping_bridge_decks(real_verifier):
     document = json.loads((Path(__file__).parent / "fixtures" / "bridge_junction.json").read_text())
     result = real_verifier.validate_track(document)
-    assert result["compiler_version"] == "creator-compiler-23"
+    assert result["compiler_version"] == "creator-compiler-27"
     assert result["laps"] == 5 and result["track_content_hash"]
 
 
 def test_server_accepts_five_point_spline(real_verifier):
     document = json.loads((ROOT / "game/tests/fixtures/spline_circuit.json").read_text())
     manifest = real_verifier.validate_track(document)
-    assert manifest["compiler_version"] == "creator-compiler-23"
+    assert manifest["compiler_version"] == "creator-compiler-27"
     assert manifest["laps"] == 5 and manifest["track_content_hash"]
     assert manifest == real_verifier.validate_track(copy.deepcopy(document))
 
@@ -369,7 +386,7 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
                     200,
                     {"access_token": "new-token", "refresh_token": "refresh-two", "player": {"id": "player"}},
                 )
-            elif self.path == "/v1/tracks":
+            elif self.path == "/v1/adapter-mutation":
                 if self.headers.get("Authorization") == "Bearer old-token":
                     self.reply(401, {"detail": "EXPIRED"})
                 else:
@@ -425,10 +442,11 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
         server.server_close()
         thread.join(timeout=2)
     assert process.returncode == 0, process.stdout + process.stderr
-    assert "13 checks, 0 failures" in process.stdout
+    assert "14 checks, 0 failures" in process.stdout
     assert "SCRIPT ERROR" not in process.stderr
-    mutations = [call for call in calls if call[0] == "/v1/tracks"]
+    mutations = [call for call in calls if call[0] == "/v1/adapter-mutation"]
     assert len(mutations) == 2 and mutations[0][2:] == mutations[1][2:]
+    assert not any(call[0] == "/v1/tracks" for call in calls)
     assert not any(call[0] == "/leaked-credentials" for call in calls)
 
 

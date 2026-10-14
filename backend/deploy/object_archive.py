@@ -6,10 +6,20 @@ import argparse
 import gzip
 import io
 import os
-import shutil
+import re
 import sys
 import tarfile
 from pathlib import Path, PurePosixPath
+
+from bmt_backend.storage import MAX_STORED_BLOB_BYTES, decode_blob_json, sync_directory
+
+
+def object_digest(relative):
+    parts = relative.parts
+    if (len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{2}", parts[0])
+            or not re.fullmatch(r"[0-9a-f]{64}\.json", parts[1]) or not parts[1].startswith(parts[0])):
+        raise ValueError("Invalid content-addressed object path")
+    return parts[1][:64]
 
 
 def require_empty(root: Path) -> None:
@@ -32,6 +42,8 @@ def archive(root: Path) -> None:
             store = S3BlobStore(settings)
         archive_objects(store)
         return
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("Object root must be a regular directory")
     # An interrupted atomic publish can leave the temporary and final names linked.
     # Serialize both as regular data; restoring archive link entries is forbidden.
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", dereference=True) as output:
@@ -43,7 +55,23 @@ def archive(root: Path) -> None:
                 source = Path(directory) / name
                 if source.is_symlink() or not (source.is_file() or source.is_dir()):
                     raise ValueError("Only regular object files and directories can be backed up")
-                output.add(source, arcname=source.relative_to(root).as_posix(), recursive=False)
+                relative = source.relative_to(root)
+                if source.is_dir():
+                    if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", name):
+                        raise ValueError("Invalid object shard")
+                    output.add(source, arcname=relative.as_posix(), recursive=False)
+                else:
+                    key = object_digest(relative)
+                    with source.open("rb") as stream:
+                        body = stream.read(MAX_STORED_BLOB_BYTES + 1)
+                        entry = output.gettarinfo(fileobj=stream, arcname=relative.as_posix())
+                    if not entry.isfile():
+                        raise ValueError("Object must be a regular file")
+                    decode_blob_json(body, key)
+                    # Verify and archive the same bounded bytes, rather than
+                    # reopening a file after its integrity check.
+                    entry.size = len(body)
+                    output.addfile(entry, io.BytesIO(body))
 
 
 def archive_objects(store) -> None:
@@ -75,15 +103,29 @@ def restore(root: Path) -> None:
                 raise ValueError("Archive links and special files are forbidden")
             destination = root.joinpath(*relative.parts)
             if member.isdir():
+                if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", relative.parts[0]):
+                    raise ValueError("Invalid object shard")
                 destination.mkdir(parents=True, exist_ok=True)
             else:
-                destination.parent.mkdir(parents=True, exist_ok=True)
+                key = object_digest(relative)
+                if not 0 <= member.size <= MAX_STORED_BLOB_BYTES:
+                    raise ValueError("Stored object exceeds limit")
                 payload = source.extractfile(member)
                 if payload is None:
                     raise ValueError("Object archive file has no content")
+                with payload:
+                    body = payload.read(MAX_STORED_BLOB_BYTES + 1)
+                if len(body) != member.size:
+                    raise ValueError("Truncated object archive")
+                decode_blob_json(body, key)
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 # Exclusive create rejects duplicate file entries and never overwrites.
-                with payload, destination.open("xb") as output:
-                    shutil.copyfileobj(payload, output)
+                with destination.open("xb") as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+                sync_directory(destination.parent)
+        sync_directory(root)
 
 
 if __name__ == "__main__":

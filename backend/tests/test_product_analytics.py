@@ -54,6 +54,197 @@ def report(product, *, since=AT // DAY * DAY, until=AT + 1, at=AT):
         return prepared_report(session, since, until, at)
 
 
+def published_version(product):
+    """A fixture publication reference; no raw document/replay is sent/stored."""
+    from bmt_backend.track_models import Track, TrackVersion
+    app, _client, _headers, player = product
+    with app.state.session_factory() as session:
+        track = Track(owner_id=player)
+        session.add(track)
+        session.flush()
+        version = TrackVersion(track_id=track.id, number=1, name="Published fixture", content_hash="a"*64,
+            manifest={}, state="published", published_at=AT)
+        session.add(version)
+        session.commit()
+        return version.id
+
+
+def test_publication_request_journey_requires_order_and_waits_exact_seven_day_cohort_maturity(product, monkeypatch):
+    app, _client, _headers, player = product
+    first = AT - 9*DAY
+    cohort = first//DAY
+    boundary = (cohort+8)*DAY
+    monkeypatch.setattr("bmt_backend.telemetry.now", lambda: first+10)
+    request_event = observed("publish_requested", first, properties={"biome": "pine", "reason": "publish"})
+    assert send(product, [request_event, request_event]).status_code == 200
+    with app.state.session_factory() as session:
+        # An earlier publication cannot turn a later request into conversion.
+        append_server_event(session, "track_published", str(uuid4()), player, {}, occurred_at=first-1)
+        session.commit()
+    project_pending(app.state.session_factory, at=boundary-1)
+    before = report(product, since=cohort*DAY, until=(cohort+1)*DAY, at=boundary-1)
+    assert before["funnels"]["publication_request"]["cohort_players"] is None
+    assert not before["funnels"]["publication_request"]["mature"]
+    project_pending(app.state.session_factory, at=boundary)
+    mature = report(product, since=cohort*DAY, until=(cohort+1)*DAY, at=boundary)
+    assert mature["funnels"]["publication_request"]["followup_days"] == 7
+    assert [row["count"] for row in mature["funnels"]["publication_request"]["steps"]] == [1, 0]
+    with app.state.session_factory() as session:
+        # The exact seven-day endpoint is allowed; a later-arriving source
+        # must restate the already mature prepared cohort once, not append it.
+        source_id = str(uuid4())
+        append_server_event(session, "track_published", source_id, player, {}, occurred_at=first+7*DAY)
+        session.commit()
+    project_pending(app.state.session_factory, at=boundary)
+    assert [row["count"] for row in report(product, since=cohort*DAY, until=(cohort+1)*DAY, at=boundary)
+        ["funnels"]["publication_request"]["steps"]] == [1, 1]
+    project_pending(app.state.session_factory, at=boundary)
+    with app.state.session_factory() as session:
+        assert session.get(ProductMetric, {"day": cohort, "key": "publication_request_track_published", "dimension": ""}).value == 1
+        session.get(ProductState, 1).processed_through = boundary-1
+        session.commit()
+    assert (report(product, since=cohort*DAY, until=(cohort+1)*DAY, at=boundary)
+        ["funnels"]["publication_request"]["cohort_players"] is None)
+
+
+def test_publication_after_seven_day_horizon_is_not_a_request_conversion(product, monkeypatch):
+    app, _client, _headers, player = product
+    first = AT-9*DAY
+    monkeypatch.setattr("bmt_backend.telemetry.now", lambda: first+10)
+    assert send(product, [observed("publish_requested", first)]).status_code == 200
+    with app.state.session_factory() as session:
+        append_server_event(session, "track_published", str(uuid4()), player, {}, occurred_at=first+7*DAY+1)
+        session.commit()
+    project_pending(app.state.session_factory, at=AT)
+    result = report(product, since=first//DAY*DAY)
+    assert [row["count"] for row in result["funnels"]["publication_request"]["steps"]] == [1, 0]
+    assert result["local_draft_metrics"]["available"] is False
+
+
+def test_retired_local_draft_observations_are_rejected_without_context_or_history_loss(product, monkeypatch):
+    app, client, _headers, player = product
+    historical = AT-9*DAY
+    app.state.settings = replace(app.state.settings, environment="test", local_drafts_only=False)
+    monkeypatch.setattr("bmt_backend.telemetry.now", lambda: historical+10)
+    old = [observed(name, historical+index, properties={"biome": "winter"})
+        for index, name in enumerate(("editor_opened", "draft_saved", "publish_requested"))]
+    assert send(product, old).status_code == 200
+    with app.state.session_factory() as session:
+        append_server_event(session, "track_published", str(uuid4()), player, {}, occurred_at=historical+5)
+        session.commit()
+    project_pending(app.state.session_factory, at=AT)
+    initial = report(product, since=historical//DAY*DAY)
+    assert [step["count"] for step in initial["funnels"]["creator"]["steps"]] == [1]*4
+    app.state.settings = replace(app.state.settings, local_drafts_only=True)
+    monkeypatch.setattr("bmt_backend.telemetry.now", lambda: AT)
+    current = [observed(name, properties={"biome": "desert", "reason": "edit"})
+        for name in ("editor_opened", "draft_saved")]
+    rejected = send(product, current)
+    assert [row["status"] for row in rejected.json()["events"]] == ["rejected", "rejected"]
+    project_pending(app.state.session_factory, at=AT)
+    final = report(product, since=historical//DAY*DAY)
+    assert final["funnels"]["creator"] == initial["funnels"]["creator"]
+    assert final["local_draft_metrics"]["available"] is False
+    with app.state.session_factory() as session:
+        retained = session.scalars(select(ProductEvent).where(ProductEvent.client_id.in_([row["id"] for row in current]))).all()
+        assert all(row.name == "collection_rejected" and row.properties == {"reason": "INVALID_EVENT"} for row in retained)
+        assert session.get(ProductMetric, {"day": historical//DAY, "key": "creator_draft_saved", "dimension": ""}).value == 1
+    response = client.get("/v1/admin/product-analytics", headers={"Authorization": "Bearer "+"a"*40})
+    assert response.status_code == 200
+    assert response.json()["funnels"]["creator"]["historical_only"] is True
+    assert response.json()["local_draft_metrics"]["available"] is False
+
+
+def test_track_observations_require_actual_published_sources_and_generic_races_keep_no_local_context(product):
+    from bmt_backend.track_models import Track, TrackVersion
+    app, _client, _headers, player = product
+    public_id = published_version(product)
+    with app.state.session_factory() as session:
+        track = Track(owner_id=player)
+        session.add(track)
+        session.flush()
+        version = TrackVersion(track_id=track.id, number=1, name="Legacy private", content_hash="b"*64,
+            manifest={}, state="draft")
+        session.add(version)
+        session.commit()
+        private_id = version.id
+    events = [observed("track_exposed", properties={"track_version_id": public_id, "biome": "pine"}),
+        observed("track_exposed", properties={"track_version_id": private_id, "biome": "desert"}),
+        observed("track_selected", properties={"track_version_id": str(uuid4()), "biome": "storm"}),
+        observed("track_selected", properties={"biome": "winter"}),
+        observed("race_started", properties={"car_id": "kart", "biome": "desert", "mode": "creator", "ticket_id": str(uuid4())}),
+        observed("race_finished", properties={"track_version_id": private_id, "biome": "night_city", "reason": "finished"})]
+    responses = send(product, events).json()["events"]
+    assert [row["status"] for row in responses] == ["accepted", "rejected", "rejected", "rejected", "accepted", "rejected"]
+    with app.state.session_factory() as session:
+        generic = session.get(ProductEvent, events[4]["id"])
+        assert generic.name == "race_started" and generic.properties == {}
+        for index in (1, 2, 3, 5):
+            assert session.get(ProductEvent, events[index]["id"]).properties == {"reason": "INVALID_EVENT"}
+    project_pending(app.state.session_factory, at=AT)
+    result = report(product)
+    assert result["preferences"]["biomes"] == [{"id": "pine", "exposures": 1, "selections": 0}]
+    with app.state.session_factory() as session:
+        assert session.get(ProductMetric, {"day": AT//DAY, "key": "event_race_started", "dimension": ""}).value == 1
+
+
+def test_three_journey_frontiers_have_hard_128_bound_and_scoped_uncertainty():
+    from bmt_backend.product_analytics import MILESTONE_LIMIT, bounded_frontiers, ordered_journey
+    # Neither the race nor historical creator journey is complete. Their
+    # original 73+55 candidates fill128; the separate earlier publication
+    # request adds a129th protected anchor and must surface scoped uncertainty.
+    values = [["app_first_open", 0]]
+    values += [["menu_ready", 100+index] for index in range(18)]
+    values += [["race_attempt", 200+index] for index in range(18)]
+    values += [["race_started", 400+index] for index in range(18)]
+    values += [["race_finished", 300+index] for index in range(18)]
+    creator = 100*DAY
+    values += [["editor_opened", creator]]
+    values += [["draft_saved", creator+1000+index] for index in range(18)]
+    values += [["publish_requested", creator+100+index] for index in range(18)]
+    values += [["track_published", creator+50+index] for index in range(18)]
+    values += [["publish_requested", creator-10*DAY]]
+    assert len(values) == 129
+    retained, truncated = bounded_frontiers(values)
+    assert len(retained) == MILESTONE_LIMIT == 128
+    assert truncated == {"creator"}
+    assert ["publish_requested", creator-10*DAY, "", 0, 0] in retained
+    for steps, horizon in ((["app_first_open", "menu_ready", "race_attempt", "race_started", "race_finished", "second_voluntary_race"], DAY),
+        (["editor_opened", "draft_saved", "publish_requested", "track_published"], 7*DAY),
+        (["publish_requested", "track_published"], 7*DAY)):
+        normalized = [[value[0], value[1], "", 0, 0] for value in values]
+        assert ordered_journey(retained, steps, horizon) == ordered_journey(normalized, steps, horizon)
+    # Completion recovers scoped uncertainty; all actual completed proofs are
+    # retained even with hundreds of unrelated/replayed milestone candidates.
+    completed = [*values, ["race_finished", 500], ["race_started", 550],
+        ["publish_requested", creator+2000], ["track_published", creator+3000],
+        ["track_published", creator-10*DAY+1000]]
+    completed += [["track_published", creator+index] for index in range(5000, 5300)]
+    result, _truncated = bounded_frontiers(completed)
+    assert len(result) <= MILESTONE_LIMIT
+    from bmt_backend.product_analytics import CREATOR, FIRST_RACE, PUBLICATION_REQUEST
+    for steps, horizon in ((FIRST_RACE, DAY), (CREATOR, 7*DAY), (PUBLICATION_REQUEST, 7*DAY)):
+        original = [[value[0], value[1], "", 0, 0] for value in completed]
+        assert len(ordered_journey(original, steps, horizon)) == len(steps)
+        assert ordered_journey(result, steps, horizon) == ordered_journey(original, steps, horizon)
+
+
+def test_partial_ordered_step_survives_candidate_cap_before_global_storage_limit():
+    from bmt_backend.product_analytics import CREATOR, MILESTONE_LIMIT, bounded_frontiers, ordered_journey
+    values = [["editor_opened", 0], ["draft_saved", 200]]
+    values += [["publish_requested", 100+index] for index in range(18)]
+    values += [["publish_requested", 201]]
+    normalized = [[value[0], value[1], "", 0, 0] for value in values]
+    original = ordered_journey(normalized, CREATOR, 7*DAY)
+    assert len(original) == 3 and original[-1][1] == 201
+    retained, truncated = bounded_frontiers(values)
+    assert len(retained) == len(values) < MILESTONE_LIMIT
+    assert ordered_journey(retained, CREATOR, 7*DAY) == original
+    # Existing per-journey alternate/anchor candidate caps remain explicit;
+    # this regression asserts proof retention, without clearing uncertainty.
+    assert truncated == {"creator", "publication_request"}
+
+
 def test_no_collection_is_unknown_and_signed_in_only(product):
     app, client, headers, _player = product
     initial = report(product)
@@ -68,7 +259,7 @@ def test_no_collection_is_unknown_and_signed_in_only(product):
 
 def test_partial_batch_ack_commit_duplicate_conflict_and_redacted_rejection(product):
     app, _client, _headers, player = product
-    good = observed("race_started", properties={"car_id": "compact", "biome": "pine"})
+    good = observed("race_started", properties={"car_id": "compact", "biome": "pine", "track_version_id": published_version(product)})
     bad = observed("unknown_event", properties={"email": "private@example.invalid"})
     response = send(product, [good, bad])
     assert response.status_code == 200
@@ -128,9 +319,10 @@ def test_server_outbox_rollback_and_deduplication_never_client_acceptance(produc
 
 def test_distinct_activity_prefers_actual_car_offers_and_is_replay_safe(product):
     app, _client, _headers, _player = product
+    version_id = published_version(product)
     events = [observed("menu_ready"), observed("session_heartbeat", properties={"foreground_ms": 60000}),
-        observed("track_exposed", properties={"car_id": "compact", "biome": "pine"}),
-        observed("track_selected", properties={"biome": "pine"}), observed("car_selected", properties={"car_id": "kart"})]
+        observed("track_exposed", properties={"car_id": "compact", "biome": "pine", "track_version_id": version_id}),
+        observed("track_selected", properties={"biome": "pine", "track_version_id": version_id}), observed("car_selected", properties={"car_id": "kart"})]
     assert send(product, events).status_code == 200
     project_pending(app.state.session_factory, at=AT)
     result = report(product)
@@ -162,6 +354,9 @@ def test_exact_retention_waits_full_target_and_watermark_and_late_events_restate
 
 def test_ordered_first_race_and_creator_mature_funnels(product, monkeypatch):
     app, _client, _headers, player = product
+    # Exercise retained historical creator definitions explicitly; production
+    # ingress never accepts draft events under the new local-only policy.
+    app.state.settings = replace(app.state.settings, environment="test", local_drafts_only=False)
     initial = AT - 9 * DAY
     monkeypatch.setattr("bmt_backend.telemetry.now", lambda: initial + 20)
     names = ["app_first_open", "menu_ready", "race_attempt", "race_started", "race_finished",

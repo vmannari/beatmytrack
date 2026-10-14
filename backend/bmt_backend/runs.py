@@ -151,6 +151,8 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         raise HTTPException(404, "Track version not found")
     if session.get(Player, track.owner_id).disabled:
         raise HTTPException(404, "Track version not found")
+    if request.app.state.settings.local_drafts_only and (payload.purpose == "creator_test" or version.state != "published"):
+        raise HTTPException(410, "LOCAL_DRAFTS_ONLY: creator laps remain local until an explicit publication request")
     if payload.purpose == "creator_test" and track.owner_id != player.id:
         raise HTTPException(403, "Only the creator can test this draft")
     if version.state == "validating":
@@ -202,6 +204,15 @@ def validate_replay(replay: dict) -> None:
         raise HTTPException(422, str(exc)) from None
 
 
+def require_published_admission(request: Request, session: Session, board: Board) -> None:
+    """Admission only; durable outcomes from old tickets remain recoverable."""
+    if not request.app.state.settings.local_drafts_only:
+        return
+    version = session.get(TrackVersion, board.version_id)
+    if board.manifest.get("purpose") == "creator_test" or version is None or version.state != "published":
+        raise HTTPException(410, "LOCAL_DRAFTS_ONLY: use an explicit publication request for saved creator evidence")
+
+
 @router.post("/runs", status_code=202)
 def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key: Key) -> dict:
     from .replay_wire import unpack_replay
@@ -222,6 +233,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
         if existing.replay_hash != body["replay_hash"]:
             raise HTTPException(409, "Ticket already submitted with different replay content")
         return commit_response(session, player.id, "submit_run", key, body, run_payload(existing))
+    require_published_admission(request, session, board)
     # Expiry prevents first admission, never recovery of an already accepted
     # immutable submission after a lost response or prolonged network outage.
     if ticket.expires_at <= now():
@@ -251,6 +263,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
         raise HTTPException(410, "Run ticket expired")
     board = session.get(Board, ticket.board_id)
     check_scope(request, bool(board.manifest.get("test_population")), player)
+    require_published_admission(request, session, board)
     if board.manifest.get("purpose") == "creator_test":
         repeated = session.scalar(select(Run).where(Run.player_id == player.id,
             Run.board_id == ticket.board_id, Run.replay_hash == body["replay_hash"])
@@ -299,6 +312,7 @@ def retry_run(run_id: str, request: Request, session: DB, player: Auth, key: Key
     check_scope(request, bool(session.get(Board, run.board_id).manifest.get("test_population")), player)
     if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"):
         board = session.get(Board, run.board_id)
+        require_published_admission(request, session, board)
         try:
             active = request.app.state.verifier.manifest()
         except RuntimeError:

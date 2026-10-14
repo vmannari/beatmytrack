@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -117,6 +118,18 @@ def environment(config, role, public_url="https://staging.invalid"):
         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
+    if role == "api":
+        # The direct Cloud Run frontend reaches the container on loopback/link
+        # local addresses. External LB chains must pin their additional hops.
+        values = config.get("trusted_proxy_networks", ["127.0.0.1/32", "169.254.0.0/16"])
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("Trusted proxy networks require an explicit CIDR list")
+        networks = tuple(ipaddress.ip_network(value, strict=False) for value in values)
+        for version in (4, 6):
+            if any(network.prefixlen == 0 for network in ipaddress.collapse_addresses(
+                    network for network in networks if network.version == version)):
+                raise ValueError("Trusted proxies must not include the whole internet")
+        result["BMT_TRUSTED_PROXY_NETWORKS"] = ",".join(map(str, networks))
     if config.get("test_drivers_enabled") is True and role in ("api", "worker"):
         if config.get("retain_data") is not True or not config.get("test_drivers_secret"):
             raise ValueError("Cloud test drivers require retained staging and a separate key secret")

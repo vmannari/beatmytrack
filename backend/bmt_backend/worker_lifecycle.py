@@ -108,7 +108,11 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
             logger.exception("worker_verifier_cleanup_failed", extra={"worker_id": worker_id})
         finally:
             try:
-                app.state.engine.dispose()
+                try:
+                    if hasattr(app.state, "blobs") and hasattr(app.state.blobs, "close"):
+                        app.state.blobs.close()
+                finally:
+                    app.state.engine.dispose()
             finally:
                 for signum, handler in previous.items():
                     signal.signal(signum, handler)

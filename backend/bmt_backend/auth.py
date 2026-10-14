@@ -6,6 +6,7 @@ import secrets
 import unicodedata
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +16,7 @@ from .countries import COUNTRY_CODES
 from .db import get_session
 from .identity_models import Identity, LoginChallenge, Player, SessionFamily, SessionToken, now
 from .middleware import ParsedJSONRoute
-from .security import current_player, development_session_disabled, digest
+from .security import bearer, current_player, development_session_disabled, digest
 from .usernames import DEVELOPER_NAME, DEVELOPER_NAME_KEY, username_key
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["identity"])
@@ -34,6 +35,8 @@ class ProfileBody(StrictBody):
         name = name.strip()
         if not name or any(unicodedata.category(c).startswith("C") for c in name):
             raise ValueError("Use a visible name without control characters")
+        if len(username_key(name)) > Player.__table__.c.username_key.type.length:
+            raise ValueError("Name expands beyond the supported comparison length")
         return name
 
 
@@ -338,12 +341,30 @@ def recovered_credentials(previous_refresh: str, request_id: str, nonce: str) ->
                  .decode().rstrip("=") for label in (b"access", b"refresh"))
 
 
+class LogoutBody(StrictBody):
+    refresh_token: str | None = Field(default=None, min_length=20, max_length=256)
+
+
 @router.post("/auth/logout", status_code=204)
 def logout(
-    request: Request, player: Player = Depends(current_player), session: Session = Depends(get_session)
+    body: LogoutBody | None = None,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    session: Session = Depends(get_session),
 ):
+    # Revocation needs possession, not a currently usable access credential.
+    # A captured token can have expired or been consumed by a concurrent refresh.
+    # Retaining old token hashes also makes a repeated logout idempotent.
+    if body and body.refresh_token:
+        predicate = SessionToken.refresh_hash == digest(body.refresh_token)
+    elif credentials and credentials.scheme.lower() == "bearer" and len(credentials.credentials) <= 256:
+        predicate = SessionToken.access_hash == digest(credentials.credentials)
+    else:
+        raise HTTPException(401, "AUTH_REQUIRED")
+    family_id = session.scalar(select(SessionToken.family_id).where(predicate))
+    if family_id is None:
+        raise HTTPException(401, "INVALID_SESSION")
     session.execute(
-        update(SessionFamily).where(SessionFamily.id == request.state.session_family_id).values(revoked=True)
+        update(SessionFamily).where(SessionFamily.id == family_id).values(revoked=True)
     )
     session.commit()
 

@@ -27,6 +27,10 @@ def test_cloud_library_against_http(tmp_path):
             methods.append(result.get("verification_method", "canonical-replay"))
             if args[1].get("race_proof"):
                 print("NATIVE_PROOF_RECEIVED", len(args[1]["race_proof"]["samples"]))
+            # This fixture compresses many races into seconds. Rebuild only
+            # after the worker commits, using the explicit diagnostic helper;
+            # production snapshots intentionally wait at least sixty seconds.
+            app.state.test_rebuild_comparison_after_commit = True
             return result
         app.state.verifier.verify_run = verify
     run_client(tmp_path, "res://tests/test_cloud_tracks.gd", prepare=observe)
@@ -35,7 +39,7 @@ def test_cloud_library_against_http(tmp_path):
 
 @pytest.mark.godot
 def test_durable_track_lifecycle_against_http(tmp_path):
-    run_client(tmp_path, "res://tests/test_track_lifecycle.gd", settings_overrides={"purchase_simulation_enabled": True})
+    run_client(tmp_path, "res://tests/test_published_only_lifecycle.gd", settings_overrides={"purchase_simulation_enabled": True})
 
 
 def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_env=None):
@@ -66,7 +70,11 @@ def run_client(tmp_path, script, prepare=None, settings_overrides=None, extra_en
     def work():
         while not stop.wait(0.1):
             try:
-                process_one(app)
+                worked = process_one(app, refresh_histograms=True)
+                if worked and getattr(app.state, "test_rebuild_comparison_after_commit", False):
+                    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
+                    app.state.test_rebuild_comparison_after_commit = False
+                    refresh_all_for_diagnostics(app)
             except Exception as exc:  # noqa: BLE001 - surface background test failures in the parent
                 errors.append(str(exc))
                 return

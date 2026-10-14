@@ -2,16 +2,16 @@
 import gzip
 import hashlib
 import hmac
-import io
-import json
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
 import requests
+from urllib3.exceptions import HTTPError as StreamError
 
-from .storage import canonical_json
+from .http_transport import PooledTransport
+from .storage import MAX_STORED_BLOB_BYTES, canonical_json, decode_blob_json
 
 LIMIT = 8*1024*1024
 
@@ -39,7 +39,7 @@ def signing_headers(method, url, query, body, region, access, secret, token="", 
 
 
 class S3BlobStore:
-    def __init__(self, settings):
+    def __init__(self, settings, *, transport=None):
         self.settings = settings
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]",settings.s3_bucket):
             raise ValueError("Invalid object bucket")
@@ -47,6 +47,12 @@ class S3BlobStore:
             raise ValueError("Invalid object prefix")
         self.base = settings.s3_endpoint.rstrip("/")+"/"+settings.s3_bucket
         self.prefix = settings.s3_prefix.strip("/")+"/"
+        self.transport = transport if transport is not None else PooledTransport()
+        self.owns_transport = transport is None
+
+    def close(self):
+        if self.owns_transport:
+            self.transport.close()
 
     def _key(self, digest):
         if not re.fullmatch(r"[0-9a-f]{64}",digest):
@@ -58,14 +64,14 @@ class S3BlobStore:
         headers, encoded = signing_headers(method,url,query or {},body,self.settings.s3_region,
             self.settings.s3_access_key,self.settings.s3_secret_key,self.settings.s3_session_token,extra)
         try:
-            with requests.request(method,url+("?"+encoded if encoded else ""),headers=headers,data=body,
+            with self.transport(method,url+("?"+encoded if encoded else ""),headers=headers,data=body,
                     timeout=(3,10),stream=True,allow_redirects=False) as response:
                 data = response.raw.read(limit+1,decode_content=False)
                 if len(data) > limit:
                     raise OSError("Object response exceeds limit")
                 return response.status_code,data
-        except requests.RequestException as exc:
-            raise OSError("Object service unavailable") from exc
+        except (requests.RequestException, StreamError):
+            raise OSError("Object service unavailable") from None
 
     def put_json(self, data):
         body = canonical_json(data)
@@ -85,21 +91,10 @@ class S3BlobStore:
         raise OSError("Immutable object publication failed")
 
     def get_json(self, digest):
-        status,body = self._request("GET",self._key(digest))
+        status,body = self._request("GET",self._key(digest),limit=MAX_STORED_BLOB_BYTES)
         if status != 200:
             raise OSError("Stored object unavailable")
-        try:
-            if body.startswith(b"\x1f\x8b"):
-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
-                    body = source.read(LIMIT+1)
-            if len(body) > LIMIT or hashlib.sha256(body).hexdigest() != digest:
-                raise OSError("Object integrity check failed")
-            result = json.loads(body)
-        except (ValueError,EOFError) as exc:
-            raise OSError("Invalid stored object") from exc
-        if type(result) is not dict:
-            raise OSError("Invalid stored object")
-        return result
+        return decode_blob_json(body, digest)
 
     def delete(self, digest):
         status,_ = self._request("DELETE",self._key(digest))

@@ -46,7 +46,7 @@ def capabilities(request: Request, role: Access):
     if request.app.state.settings.client_quality_enabled:
         for source in sources:
             if source["key"] == "client_quality":
-                source.update(status="partial", description="Prepared build/device-class frame buckets, bounded sampled segments and Android API 30+ process-exit reasons. Crash stacks, Play vitals and consented enhanced captures remain unavailable.")
+                source.update(status="partial", description="One bounded statistics package per signed-in timed race; actual device/OS filters, sampled track/segment presence and frame buckets. Old streamed race summaries are retired. Crash stacks, Play vitals and consented enhanced captures remain unavailable.")
     sources.extend([
         {"key": "competition_inspection", "title": "Competition provenance", "status": "partial",
             "description": "Bounded rivalry/challenge roster, pinned contracts, accepted-run checks, ranks/points and exact target; archived runs and reward delivery may be unavailable.", "requirement_ids": ["BMT-034"]},

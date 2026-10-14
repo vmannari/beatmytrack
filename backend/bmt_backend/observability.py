@@ -2,6 +2,15 @@
 
 import json
 import logging
+import re
+
+
+def dependency_failure(logger, error, request_id, dependency):
+    fields = {"request_id": request_id, "exception_type": type(error).__name__}
+    sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+    if isinstance(sqlstate, str) and re.fullmatch(r"[A-Z0-9]{5}", sqlstate):
+        fields["sqlstate"] = sqlstate
+    logger.error(dependency + "_unavailable", extra=fields)
 
 
 class JsonFormatter(logging.Formatter):
@@ -14,7 +23,7 @@ class JsonFormatter(logging.Formatter):
         if not isinstance(value, dict):
             value = {"event": message}
         value["level"] = record.levelname.lower()
-        for field in ("run_id", "time_ticks", "failure_code", "worker_id",
+        for field in ("run_id", "time_ticks", "failure_code", "worker_id", "request_id", "exception_type", "sqlstate",
                       "verification_seconds", "verification_compute_ms", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal"):
             if hasattr(record, field):
                 value[field] = getattr(record, field)

@@ -10,12 +10,12 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from . import quality
+from . import network_health, quality, race_statistics
 from .db import get_session
 from .middleware import ParsedJSONRoute
 from .security import current_player
 from .telemetry_models import ProductEvent, ProductState
-from .track_models import digest, now
+from .track_models import TrackVersion, digest, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["product telemetry"])
 DB = Annotated[object, Depends(get_session)]
@@ -29,6 +29,8 @@ BIOMES = {"pine", "desert", "night_city", "winter", "storm"}
 PRODUCTS = {"creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"}
 SERVER_NAMES = {"race_accepted", "creator_validated", "track_published", "challenge_created", "challenge_joined"}
 TRACK_FIELDS = {"track_version_id", "ticket_id", "car_id", "biome", "mode", "position"}
+RACE_NAMES = {"race_attempt", "race_started", "race_finished", "race_abandoned", "race_retried"}
+LOCAL_AUTHORING_NAMES = {"editor_opened", "draft_saved"}
 ALLOWED = {
     "app_first_open": set(), "session_started": {"reason"}, "session_foregrounded": {"reason"},
     "session_backgrounded": {"foreground_ms"}, "session_heartbeat": {"foreground_ms"}, "menu_ready": set(),
@@ -45,6 +47,8 @@ ALLOWED = {
     "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
 }
 ALLOWED.update(quality.FIELDS)
+ALLOWED.update(network_health.FIELDS)
+ALLOWED["race_statistics"] = race_statistics.REQUIRED | race_statistics.OPTIONAL
 REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
     "save", "publish", "edit", "test", "open", "join", "create", "share"}
 
@@ -69,6 +73,10 @@ def integer(value, low=0, high=86400000):
 
 
 def properties(name, value):
+    if name in network_health.NAMES:
+        return network_health.validate(name, value)
+    if name == "race_statistics":
+        return race_statistics.validate(value)
     if not isinstance(value, dict) or not set(value) <= ALLOWED[name]:
         raise ValueError("INVALID_EVENT")
     if name in ("offer_exposed", "purchase_requested") and "product_id" not in value:
@@ -179,7 +187,9 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
             name = raw["name"]
             if not isinstance(name, str) or name not in ALLOWED:
                 raise ValueError("INVALID_EVENT")
-            if name in quality.NAMES and not request.app.state.settings.client_quality_enabled:
+            if request.app.state.settings.local_drafts_only and name in LOCAL_AUTHORING_NAMES:
+                raise ValueError("INVALID_EVENT")
+            if name in quality.NAMES | network_health.NAMES | {"race_statistics"} and not request.app.state.settings.client_quality_enabled:
                 raise ValueError("INVALID_EVENT")
             occurred = integer(raw["occurred_at"], high=4102444800)
             if occurred < at - MAX_AGE or occurred > at + FUTURE_ALLOWANCE:
@@ -192,6 +202,12 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
                 "monotonic_ms": integer(raw["monotonic_ms"], high=2147483647),
                 "build_id": batch.build_id, "platform": batch.platform, "clock_quality": batch.clock_quality,
                 "properties": properties(name, raw["properties"])}
+            if (request.app.state.settings.local_drafts_only and name in RACE_NAMES
+                    and not event["properties"].get("track_version_id")):
+                # Generic journey counters remain useful without carrying any
+                # unverified local track/car/biome/ticket/creator context.
+                reason = event["properties"].get("reason")
+                event["properties"] = {"reason": reason} if reason else {}
             event["payload_hash"] = digest({key: value for key, value in event.items()
                 if key not in ("received_at", "is_test_driver")})
             if event_id in parsed and parsed[event_id]["payload_hash"] != event["payload_hash"]:
@@ -213,10 +229,34 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
                     "properties": {"reason": acknowledgement["reason"]}}
                 rejected["payload_hash"] = digest({key: rejected[key] for key in ("player_id", "name", "properties")})
                 parsed[safe_id] = rejected
+    if parsed and request.app.state.settings.local_drafts_only:
+        references = {row["properties"].get("track_version_id") for row in parsed.values()
+            if row["name"] in RACE_NAMES | {"track_exposed", "track_selected"}}
+        references.discard(None)
+        published = set(session.scalars(select(TrackVersion.id).where(TrackVersion.id.in_(references),
+            TrackVersion.state == "published"))) if references else set()
+        for event_id, event in parsed.items():
+            if event["name"] not in RACE_NAMES | {"track_exposed", "track_selected"}:
+                continue
+            reference = event["properties"].get("track_version_id")
+            if reference in published or event["name"] in RACE_NAMES and reference is None:
+                continue
+            # A rejected local/unknown/private reference retains a redacted
+            # tombstone. Its raw ID/biome/track context never becomes a fact.
+            event.update(name="collection_rejected", occurred_at=at, clock_quality="server",
+                session_id=None, seq=None, monotonic_ms=None, properties={"reason": "INVALID_EVENT"})
+            event["payload_hash"] = digest({key: event[key] for key in ("player_id", "name", "properties")})
+            for acknowledgement in acknowledgements:
+                if acknowledgement["id"] == event_id and acknowledgement["status"] == "pending":
+                    acknowledgement.update(status="rejected", reason="INVALID_EVENT")
     if parsed:
         if session.bind.dialect.name == "sqlite":
             session.execute(text("BEGIN IMMEDIATE"))
         state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
+        race_statistics.admit(session, parsed, acknowledgements, insert_for)
+        if not parsed:
+            session.commit()
+            return {"schema": "bmt-product-acks-v1", "events": acknowledgements}
         existing = set(session.scalars(select(ProductEvent.id).where(ProductEvent.id.in_(parsed))))
         if state.pending_clients + len(set(parsed) - existing) > request.app.state.settings.telemetry_client_backlog:
             raise HTTPException(503, "TELEMETRY_BACKLOG_FULL")

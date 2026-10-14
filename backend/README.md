@@ -24,7 +24,7 @@ object archives. [GCP staging](deploy/gcp/README.md) prepares bounded, explicitl
 applied Cloud Run/worker/Cloud SQL resources; [actual verification and remaining
 live acceptance](../docs/BACKEND_GCS_STAGING_2026_10_05.md) records the tested scope.
 
-Local API development (Python 3.10+; deployment image uses 3.12):
+Local API development (use a maintained Python runtime; deployment image uses 3.12):
 
 For this Windows PC, use `scripts/dev.ps1 -Action BackendStart`. It starts the
 isolated WSL Docker stack at `http://127.0.0.1:18181` and saves the game's connection
@@ -34,9 +34,11 @@ See [PC setup and Google client-ID steps](../docs/ACCOUNT_SIGN_IN.md).
 The generic manual API setup below is for other separately configured environments.
 
 ```powershell
-python -m venv .tools/backend-venv
-.tools/backend-venv/Scripts/python -m pip install -r backend/requirements.lock
-.tools/backend-venv/Scripts/python -m pip install --no-deps -e backend
+# Windows: use Python linked to supported OpenSSL 3.5+ (for example Python 3.14).
+# Do not reuse the old Python 3.10 / OpenSSL 1.1.1 test environment.
+python -m venv .tools/backend-secure-venv
+.tools/backend-secure-venv/Scripts/python -m pip install --require-hashes --only-binary=:all: -r backend/requirements.lock
+.tools/backend-secure-venv/Scripts/python -m pip install --no-deps --no-build-isolation -e backend
 # Set BMT_DATABASE_URL to a disposable PostgreSQL 17 database.
 # Set BMT_OBJECT_DIR to an ignored development directory.
 # Set BMT_GODOT_BIN to the exact binary from godot-version.txt.
@@ -44,6 +46,16 @@ python -m venv .tools/backend-venv
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendMigrate
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendRun
 ```
+
+`scripts/dev.ps1` prefers `.tools/backend-secure-venv` and accepts an explicit
+`BMT_BACKEND_PYTHON` path. It rejects the old local TLS runtime before backend
+operations. Use a standard Python distribution for new environments; the Cloud
+SDK interpreter includes vendored libraries which can override venv packages.
+
+The Python image and setuptools builder are pinned; package installs verify the
+checked-in SHA256 wheel hashes. To refresh hashes, use
+`python backend/deploy/lock_dependencies.py --add name==version --receipt build/dependency-wheels.json`.
+Review the version and artifact changes before committing the new lockfile.
 
 Start `scripts/dev.ps1 -Action BackendWorker` in a second PowerShell process using
 the same configuration. The script enforces the pinned engine; on a Linux host the

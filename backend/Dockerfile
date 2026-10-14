@@ -1,16 +1,15 @@
-# syntax=docker/dockerfile:1
 # Build context is the repository root. Supply the exact Linux binary; no fallback.
-FROM python:3.12-slim-bookworm AS python-runtime
+FROM python:3.12.15-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 COPY backend/requirements.lock /app/requirements.lock
-RUN pip install --no-cache-dir -r requirements.lock
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock
 COPY backend/pyproject.toml /app/pyproject.toml
 COPY backend/bmt_backend /app/bmt_backend
 COPY backend/README.md /app/README.md
 COPY backend/deploy/object_archive.py /app/deploy/object_archive.py
 COPY backend/deploy/check_godot.py /app/deploy/check_godot.py
-RUN pip install --no-cache-dir --no-deps . \
+RUN pip install --no-cache-dir --no-deps --no-build-isolation . \
     && groupadd --gid 10001 bmt \
     && useradd --uid 10001 --gid 10001 --home-dir /tmp/bmt --no-create-home bmt \
     && mkdir -p /var/lib/bmt/objects \

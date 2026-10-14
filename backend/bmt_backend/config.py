@@ -55,9 +55,12 @@ class Settings:
     database_statement_timeout_ms: int = 10000
     upload_concurrency: int = 2
     edge_limit_per_minute: int = 12000
+    pre_auth_limit_per_minute: int = 600
+    trusted_proxy_networks: tuple[str, ...] = field(default_factory=tuple)
     persistent_verifier: bool = True
     verifier_recycle_jobs: int = 100
     allow_sync_track_validation: bool = False
+    local_drafts_only: bool = True
     object_backend: str = "local"
     gcs_bucket: str = ""
     gcs_prefix: str = "bmt/v1"
@@ -70,6 +73,10 @@ class Settings:
     s3_prefix: str = "bmt/v1"
 
     def __post_init__(self):
+        from .client_address import proxy_networks
+        proxy_networks(self.trusted_proxy_networks)
+        if not self.local_drafts_only and self.environment != "test":
+            raise ValueError("Legacy remote drafts are available only to explicit compatibility test fixtures")
         if self.client_quality_enabled and not self.telemetry_enabled:
             raise ValueError("Client quality requires bounded product telemetry transport")
         if (not 50 <= self.telemetry_client_backlog <= 1000000
@@ -104,7 +111,7 @@ class Settings:
             "readiness_cache_seconds", "readiness_storage_cache_seconds", "readiness_timeout_seconds",
             "retention_days",
             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
-            "upload_concurrency", "edge_limit_per_minute", "verifier_recycle_jobs",
+            "upload_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
@@ -158,7 +165,7 @@ class Settings:
             if raw is None:
                 continue
             default = getattr(defaults, name)
-            if name in ("google_client_ids", "android_app_link_certificates"):
+            if name in ("google_client_ids", "android_app_link_certificates", "trusted_proxy_networks"):
                 values[name] = tuple(x.strip() for x in raw.split(",") if x.strip())
             elif isinstance(default, bool):
                 if raw.lower() not in ("true", "false"):

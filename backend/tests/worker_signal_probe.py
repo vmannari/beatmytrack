@@ -51,7 +51,7 @@ def probe(folder, mode):
             return super().verify_run(*args, **kwargs)
 
     verifier = ProbeVerifier()
-    app = create_app(Settings(environment="test", allow_sync_track_validation=True,
+    app = create_app(Settings(environment="test", allow_sync_track_validation=True, local_drafts_only=False,
         database_url=f"sqlite:///{(folder / 'db.sqlite').as_posix()}", object_dir=str(folder / "objects"),
         worker_shutdown_grace_seconds=1, rate_limit_per_minute=10000, write_limit_per_minute=10000),
         verifier=verifier)

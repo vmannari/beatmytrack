@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,7 +12,7 @@ from . import auth
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .middleware import IdentityBudgets, RequestBoundary
-from .observability import configure_logging
+from .observability import configure_logging, dependency_failure
 from .readiness import DependencyFailure, ReadinessProbe
 from .security import GoogleIdentityVerifier
 from .storage import make_blob_store
@@ -27,13 +28,17 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         challenges,
         commerce,
         discovery,
+        network_health,
         product_analytics,
+        publications,
         quality,
+        race_statistics,
         resumes,
         rivalry,
         runs,
         studio,
         studio_cases,
+        studio_catalogue,
         studio_competitions,
         telemetry,
         test_drivers,
@@ -50,14 +55,20 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         # Warm the pinned, immutable contract before accepting concurrent races.
         # Auth-only isolated tests may omit an engine; deployed APIs configure it.
         adapter = application.state.verifier
-        if isinstance(adapter, GodotVerifier) and settings.godot_bin:
-            await run_in_threadpool(adapter.manifest)
         try:
+            if isinstance(adapter, GodotVerifier) and settings.godot_bin:
+                await run_in_threadpool(adapter.manifest)
             yield
         finally:
-            await application.state.readiness.close()
-            if hasattr(adapter, "close"):
-                await run_in_threadpool(adapter.close)
+            try:
+                await application.state.readiness.close()
+            finally:
+                try:
+                    if hasattr(application.state.blobs, "close"):
+                        await run_in_threadpool(application.state.blobs.close)
+                finally:
+                    if hasattr(adapter, "close"):
+                        await run_in_threadpool(adapter.close)
 
     app = FastAPI(title="Beat my track API", version="0.1.0", docs_url="/docs", redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
@@ -79,9 +90,12 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.include_router(studio.router)
     app.include_router(studio_cases.router)
     app.include_router(studio_competitions.router)
+    app.include_router(studio_catalogue.router)
     app.include_router(telemetry.router)
     app.include_router(product_analytics.router)
     app.include_router(quality.router)
+    app.include_router(network_health.router)
+    app.include_router(race_statistics.router)
     app.include_router(auth.router, prefix="/v1")
     app.include_router(browser_auth.router, prefix="/v1")
     app.include_router(tracks.router, prefix="/v1")
@@ -91,6 +105,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.include_router(runs.router, prefix="/v1")
     app.include_router(resumes.router, prefix="/v1")
     app.include_router(commerce.router, prefix="/v1")
+    app.include_router(publications.router, prefix="/v1")
     app.include_router(rivalry.router, prefix="/v1")
     app.include_router(challenges.router, prefix="/v1")
     app.include_router(challenges.preview_router)
@@ -106,6 +121,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
 
     @app.exception_handler(SQLAlchemyError)
     async def unavailable(request: Request, _error):
+        dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "database")
         app.state.readiness.invalidate()
         return JSONResponse(
             {"detail": "DATABASE_UNAVAILABLE", "request_id": request.state.request_id}, status_code=503
@@ -113,6 +129,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
 
     @app.exception_handler(OSError)
     async def storage_unavailable(request: Request, _error):
+        dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "storage")
         app.state.readiness.invalidate(storage=True)
         return JSONResponse({"detail":"STORAGE_UNAVAILABLE","request_id":request.state.request_id},status_code=503)
 
@@ -154,9 +171,13 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
                 "idle_flush_seconds": 300,
                 "response_limit_bytes": 16384,
                 "guest_coverage": False,
-                "quality_schema_version": 1 if settings.client_quality_enabled else 0,
+                "quality_schema_version": 2 if settings.client_quality_enabled else 0,
+                "quality_schema_versions": [2, 3] if settings.client_quality_enabled else [],
+                "network_schema_version": 1 if settings.client_quality_enabled else 0,
             },
             "track_schema": "creator-track-v5",
+            "publication_workflow_version": 2,
+            "local_drafts_only": settings.local_drafts_only,
             "replay_schema": "bmt-replay-v1",
             "supported_replay_schemas": ["bmt-replay-v1", "bmt-replay-v2", "bmt-trajectory-v1"],
             "trajectory_schema": "bmt-trajectory-v1",

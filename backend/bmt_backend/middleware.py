@@ -1,28 +1,38 @@
 """Bound requests before parsing; share rate budgets across API replicas."""
 
 import asyncio
+import hashlib
 import json
 import logging
-import math
 import threading
 import time
 import uuid
 import zlib
 from collections import OrderedDict
 from contextlib import nullcontext
+from functools import lru_cache
 
 from fastapi import HTTPException
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
+from starlette.routing import compile_path, get_route_path
 
+from .client_address import ClientAddress
 from .identity_models import RateBucket
+from .json_data import parse_json as parse_body
+from .observability import dependency_failure
 from .security import digest
 
 log = logging.getLogger("bmt.requests")
+
+
+@lru_cache(maxsize=512)
+def _template_pattern(path):
+    return compile_path(path)[0]
 
 
 def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1, *, session=None) -> bool:
@@ -69,43 +79,6 @@ class IdentityBudgets:
             return True
 
 
-def strict_object(pairs):
-    result = {}
-    for key, value in pairs:
-        key.encode("utf-8")  # Escaped lone surrogates are not valid Unicode data.
-        if key in result:
-            raise ValueError("Duplicate JSON key")
-        result[key] = value
-    return result
-
-
-def reject_constant(value):
-    raise ValueError("Nonfinite JSON value")
-
-
-def parse_body(body):
-    parsed = json.loads(body, object_pairs_hook=strict_object, parse_constant=reject_constant)
-    pending = [(parsed, 0)]
-    visited = 0
-    maximum_nodes = 1200000 # Includes a full 216,000-frame four-channel replay.
-    while pending:
-        value, depth = pending.pop()
-        visited += 1
-        if depth > 32:
-            raise ValueError("JSON nesting limit")
-        if isinstance(value, dict):
-            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
-            pending.extend((v, depth + 1) for v in value.values())
-        elif isinstance(value, list):
-            if visited + len(pending) + len(value) > maximum_nodes: raise ValueError("JSON node limit")
-            pending.extend((v, depth + 1) for v in value)
-        elif isinstance(value, float) and not math.isfinite(value):
-            raise ValueError("Nonfinite JSON number")
-        elif isinstance(value, str):
-            value.encode("utf-8")
-    return parsed
-
-
 class ParsedJSONRoute(APIRoute):
     def get_route_handler(self):
         handler = super().get_route_handler()
@@ -125,6 +98,31 @@ class RequestBoundary:
         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
         self.telemetry_parsers = asyncio.Semaphore(1)
         self.read_leases = OrderedDict()
+        self.denied_peers = OrderedDict()
+        self.denied_credentials = OrderedDict()
+        # Admission hints only. Every authenticated request still checks the
+        # database, revocation, expiry and its own player's budget.
+        self.known_credentials = OrderedDict()
+        self.client_address = ClientAddress(settings.trusted_proxy_networks)
+
+    @staticmethod
+    def route_template(scope):
+        """Resolve only a declared template, including rejection before routing."""
+        router = getattr(scope.get("app"), "router", None)
+        partial = "unmatched"
+        path = get_route_path(scope)
+        # FastAPI's effective contexts retain prefixes through included/nested
+        # routers. Original APIRoute.path omits those prefixes in this version.
+        for context in iter_route_contexts(getattr(router, "routes", ())):
+            template = context.path
+            if template is None or _template_pattern(template).match(path) is None:
+                continue
+            methods = getattr(context.original_route, "methods", None)
+            if not methods or scope["method"] in methods:
+                return template
+            if partial == "unmatched":
+                partial = template
+        return partial
 
     async def read_budget(self, peer, limit, category="read"):
         # Reserve small chunks in PostgreSQL, so replicas still share a hard ceiling.
@@ -136,13 +134,50 @@ class RequestBoundary:
         while len(self.read_leases) > 2048: self.read_leases.popitem(last=False)
         async with lease[1]:
             remaining = lease[0]
+            if remaining < 0:
+                return False
             if not remaining:
                 batch = min(10, limit)
                 if not await run_in_threadpool(check_budget, self.session_factory, peer, category, limit, batch):
+                    lease[0] = -1
                     return False
                 remaining = batch
             lease[0] = remaining - 1
             return True
+
+    async def peer_budget(self, peer, category, limit):
+        key = (peer, category, int(time.time()) // 60)
+        if key in self.denied_peers:
+            return False
+        if category in ("read", "edge"):
+            allowed = await self.read_budget(peer, limit, category)
+        else:
+            allowed = await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
+        if not allowed:
+            self.denied_peers[key] = True
+            self.denied_peers.move_to_end(key)
+            while len(self.denied_peers) > 4096:
+                self.denied_peers.popitem(last=False)
+        return allowed
+
+    def known_credential(self, key):
+        if self.known_credentials.get(key, 0) <= time.monotonic():
+            self.known_credentials.pop(key, None)
+            return False
+        self.known_credentials.move_to_end(key)
+        return True
+
+    def remember_credential(self, key):
+        self.known_credentials[key] = time.monotonic() + 60
+        self.known_credentials.move_to_end(key)
+        while len(self.known_credentials) > 4096:
+            self.known_credentials.popitem(last=False)
+
+    def deny_credential(self, key):
+        self.denied_credentials[key] = True
+        self.denied_credentials.move_to_end(key)
+        while len(self.denied_credentials) > 4096:
+            self.denied_credentials.popitem(last=False)
 
     def validated_identity_budget(self, scope, header):
         from fastapi import Request
@@ -176,13 +211,15 @@ class RequestBoundary:
         request_id = str(uuid.uuid4())
         scope.setdefault("state", {})["request_id"] = request_id
         status = 500
+        response_started = False
         acquired = False
         acquired_pool = None
         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
 
         async def response_send(message):
-            nonlocal status, response_bytes
+            nonlocal status, response_bytes, response_started
             if message["type"] == "http.response.start":
+                response_started = True
                 status = message["status"]
                 message["headers"] += [
                     (b"x-request-id", request_id.encode()),
@@ -203,6 +240,13 @@ class RequestBoundary:
                 scope, receive, response_send
             )
 
+        async def database_error(exc):
+            dependency_failure(log, exc, request_id, "database")
+            probe = getattr(getattr(scope.get("app"), "state", None), "readiness", None)
+            if probe is not None:
+                probe.invalidate()
+            return await error(503, "DATABASE_UNAVAILABLE")
+
         try:
             method = scope["method"]
             headers = dict(scope["headers"])
@@ -213,41 +257,58 @@ class RequestBoundary:
                 return await error(400, "HEALTH_REQUEST_BODY_NOT_ALLOWED")
             token_auth = scope["path"] in ("/v1/auth/google/browser/poll", "/v1/auth/refresh")
             if not health:
-                peer = (scope.get("client") or ("unknown", 0))[0]
+                peer = self.client_address.resolve(scope)
                 method = scope["method"]
                 category = (
                     "auth_session" if token_auth else "auth"
                     if scope["path"].startswith("/v1/auth/")
                     else ("read" if method in ("GET", "HEAD") or scope["path"] in ("/v1/discovery/tracks", "/v1/discovery/random") else "write")
                 )
-                # Carrier NATs share only a generous abuse ceiling. Authenticated
-                # players spend their own budget after session validation.
-                if b"authorization" in headers and category in ("read", "write"):
-                    # A supplied header is not an identity. Public and protected
-                    # traffic receive the larger NAT budget only after validation.
+                credential_key = hashlib.sha256(headers.get(b"authorization", b"")).hexdigest()
+                provided = b"authorization" in headers and category in ("read", "write")
+                denial_key = (peer, credential_key, category, int(time.time()) // 60)
+                if provided and denial_key in self.denied_credentials:
+                    return await error(429, "RATE_LIMITED")
+                # The independent ingress/cold-credential gates run before SQL.
+                # A cold VALID user must not inherit an exhausted anonymous quota
+                # from a different caller behind the same carrier NAT.
+                admission = "edge" if provided else category
+                limit = {"auth": self.settings.auth_limit_per_minute,
+                         "auth_session": self.settings.rate_limit_per_minute,
+                         "read": self.settings.rate_limit_per_minute,
+                         "write": self.settings.write_limit_per_minute,
+                         "edge": self.settings.edge_limit_per_minute}[admission]
+                try:
+                    if not await self.peer_budget(peer, admission, limit):
+                        return await error(429, "RATE_LIMITED")
+                    if (provided and not self.known_credential(credential_key)
+                            and not await self.peer_budget(peer, "credential_admission", self.settings.pre_auth_limit_per_minute)):
+                        return await error(429, "RATE_LIMITED")
+                except SQLAlchemyError as exc:
+                    return await database_error(exc)
+                if provided:
                     try:
                         if await run_in_threadpool(self.validated_identity_budget, scope, headers[b"authorization"]):
-                            category = "edge"
-                    except SQLAlchemyError:
-                        return await error(503, "DATABASE_UNAVAILABLE")
+                            self.remember_credential(credential_key)
+                        else:
+                            self.known_credentials.pop(credential_key, None)
+                            anonymous_limit = self.settings.rate_limit_per_minute if category == "read" else self.settings.write_limit_per_minute
+                            if not await self.peer_budget(peer, category, anonymous_limit):
+                                self.deny_credential(denial_key)
+                                return await error(429, "RATE_LIMITED")
+                    except SQLAlchemyError as exc:
+                        return await database_error(exc)
                     except HTTPException as denied:
+                        # Keep a valid credential's NAT admission when only its
+                        # player budget is exhausted; never cache it as an auth grant.
+                        if denied.status_code == 429:
+                            self.remember_credential(credential_key)
+                        else:
+                            self.known_credentials.pop(credential_key, None)
                         return await error(denied.status_code, denied.detail)
-                limit = {
-                    "auth": self.settings.auth_limit_per_minute,
-                    "auth_session": self.settings.rate_limit_per_minute,
-                    "read": self.settings.rate_limit_per_minute,
-                    "write": self.settings.write_limit_per_minute,
-                    "edge": self.settings.edge_limit_per_minute,
-                }[category]
-                try:
-                    allowed = await self.read_budget(peer, limit, category) if category in ("read", "edge") else await run_in_threadpool(check_budget, self.session_factory, peer, category, limit)
-                except SQLAlchemyError:
-                    return await error(503, "DATABASE_UNAVAILABLE")
-                if not allowed:
-                    return await error(429, "RATE_LIMITED")
             path = scope["path"]
             limit = min(self.settings.max_body_bytes, 64*1024 if path == "/v1/telemetry/batches" else
-                        8*1024*1024 if path in ("/v1/runs", "/v1/discovery/tracks", "/v1/discovery/random") else
+                        8*1024*1024 if path in ("/v1/runs", "/v1/publications", "/v1/discovery/tracks", "/v1/discovery/random") else
                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
             upload = method in ("POST", "PUT", "PATCH") and limit > 32768
             encoding = headers.get(b"content-encoding", b"identity")
@@ -312,8 +373,8 @@ class RequestBoundary:
                     token = parsed.get("token" if scope["path"].endswith("/poll") else "refresh_token", "") if isinstance(parsed, dict) else ""
                     try:
                         allowed = await run_in_threadpool(check_budget, self.session_factory, digest(str(token)), scope["path"], 60)
-                    except SQLAlchemyError:
-                        return await error(503, "DATABASE_UNAVAILABLE")
+                    except SQLAlchemyError as exc:
+                        return await database_error(exc)
                     if not allowed:
                         return await error(429, "RATE_LIMITED")
             sent = False
@@ -326,13 +387,19 @@ class RequestBoundary:
                 return await receive()
 
             await self.app(scope, buffered_receive, response_send)
+        except Exception as exc:
+            # Exception text/traceback can contain credentials or submitted
+            # values. The structured logger keeps only its type and request ID.
+            log.error("request_failed", extra={"request_id": request_id, "exception_type": type(exc).__name__})
+            if response_started:
+                raise
+            return await error(500, "INTERNAL_ERROR")
         finally:
             # Include Pydantic validation, the endpoint, storage and response
             # serialization: releasing after json.loads did not bound live trees.
             scope.get("state", {}).pop("bounded_json", None)
             if acquired:
                 acquired_pool.release()
-            route = scope.get("route")
             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
             log.info(
                 json.dumps(
@@ -340,7 +407,7 @@ class RequestBoundary:
                         "event": "http_request",
                         "request_id": request_id,
                         "method": scope["method"],
-                        "route": getattr(route, "path", "unmatched"),
+                        "route": self.route_template(scope),
                         "status": status,
                         "duration_ms": round((time.monotonic() - started) * 1000, 2),
                         "request_wire_bytes":wire_bytes,

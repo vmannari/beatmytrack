@@ -2,7 +2,6 @@
 import base64
 import gzip
 import hashlib
-import io
 import json
 import re
 import threading
@@ -15,7 +14,8 @@ from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request as AuthRequest
 from urllib3.exceptions import HTTPError as StreamError
 
-from .storage import canonical_json
+from .http_transport import PooledTransport
+from .storage import canonical_json, decode_blob_json
 
 LIMIT = 8 * 1024 * 1024
 STORED_LIMIT = LIMIT + 65536
@@ -31,9 +31,17 @@ class GCSBlobStore:
                 or len(settings.gcs_prefix) > 256):
             raise ValueError("Invalid GCS prefix")
         self.bucket, self.prefix = settings.gcs_bucket, settings.gcs_prefix + "/"
-        self.credentials, self.transport = credentials, transport or requests.request
+        self.credentials = credentials
+        self.transport = transport if transport is not None else PooledTransport()
+        self.owns_transport = transport is None
         self.auth_lock = threading.Lock()
         self.auth_request = None
+
+    def close(self):
+        if self.owns_transport:
+            self.transport.close()
+        if self.auth_request is not None:
+            self.auth_request.session.close()
 
     def _authentication(self, *args, **kwargs):
         if self.auth_request is None:
@@ -123,18 +131,7 @@ class GCSBlobStore:
         status, body = self._request("GET", self._key(digest), query={"alt": "media"}, limit=STORED_LIMIT)
         if status != 200:
             raise OSError("Stored object unavailable")
-        try:
-            if body.startswith(b"\x1f\x8b"):
-                with gzip.GzipFile(fileobj=io.BytesIO(body)) as source:
-                    body = source.read(LIMIT + 1)
-            if len(body) > LIMIT or hashlib.sha256(body).hexdigest() != digest:
-                raise OSError("Object integrity check failed")
-            value = json.loads(body)
-            if type(value) is not dict:
-                raise ValueError("Not an object")
-            return value
-        except (ValueError, UnicodeError, EOFError, RecursionError):
-            raise OSError("Invalid stored object") from None
+        return decode_blob_json(body, digest)
 
     def delete(self, digest):
         key = self._key(digest)

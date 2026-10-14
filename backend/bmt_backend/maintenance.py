@@ -3,13 +3,14 @@
 import argparse
 import json
 
-from sqlalchemy import String, cast, delete, or_, select, update
+from sqlalchemy import String, cast, delete, or_, select, union_all, update
 
 from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
 from .object_models import ObjectPin
+from .publication_models import PublicationIntent
 from .resume_models import ResumeRace, ResumeReceipt
 from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryTicket
 from .storage import LocalBlobStore, PinnedBlobStore, make_blob_store
@@ -71,13 +72,26 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         races.update(session.scalars(select(ResumeRace.id).where(~ResumeRace.id.in_(unsettled), ResumeRace.expires_at < cutoff,
             ResumeRace.ticket_id.is_(None)).order_by(ResumeRace.expires_at, ResumeRace.id).limit(1000)))
         receipts = set(session.scalars(select(ResumeReceipt.id).where(ResumeReceipt.race_id.in_(races))))
-        rows, next_cursor = blobs.list_objects(cursor, scan_limit)
+        rows, next_cursor = blobs.list_objects(cursor, scan_limit, True) if local else blobs.list_objects(cursor, scan_limit)
+        temporary_files, temporary_bytes, temporary_removed = 0, 0, []
+        for row in rows:
+            if "temporary" in row:
+                names, size = blobs.cleanup_temporary(row, now()-86400, apply=apply, offline=offline)
+                temporary_files += len(names)
+                temporary_bytes += size
+                temporary_removed.extend((row["shard"], name) for name in names)
+        objects_inspected = len(rows)
+        rows = [row for row in rows if "temporary" not in row]
         eligible = [row for row in rows if row["modified"] < now()-86400]
         hashes = [row["digest"] for row in eligible]
-        referenced = set(session.scalars(select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes))))
         keep = [] if online else [~Run.id.in_(run_ids)]
-        referenced.update(session.scalars(select(Run.replay_hash).where(Run.replay_hash.in_(hashes), *keep)))
-        referenced.update(session.scalars(select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), *keep)))
+        referenced = set(session.scalars(union_all(
+            select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes)),
+            select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes)),
+            select(PublicationIntent.replay_hash).where(PublicationIntent.replay_hash.in_(hashes)),
+            select(Run.replay_hash).where(Run.replay_hash.in_(hashes), *keep),
+            select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), *keep),
+        )))
         orphaned = [row for row in eligible if row["digest"] not in referenced]
         if online and apply:
             from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -94,16 +108,21 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 # Newly-pruned run objects are collected in a later committed batch.
                 key = row["digest"]
                 if (session.scalar(select(TrackVersion.id).where(TrackVersion.content_hash==key).limit(1))
-                        or session.scalar(select(Run.id).where(or_(Run.replay_hash==key,Run.ghost_hash==key)).limit(1))):
+                        or session.scalar(select(Run.id).where(or_(Run.replay_hash==key,Run.ghost_hash==key)).limit(1))
+                        or session.scalar(select(PublicationIntent.id).where(or_(PublicationIntent.content_hash==key,
+                            PublicationIntent.replay_hash==key)).limit(1))):
                     continue
                 blobs.delete(key)
                 safe.append(row)
             orphaned = safe
         if apply and next_cursor is not None and "shard" in next_cursor:
-            next_cursor["offset"] = max(0, next_cursor["offset"]-sum(row["digest"].startswith(f"{next_cursor['shard']:02x}") for row in orphaned))
+            removed = sum(row["digest"].startswith(f"{next_cursor['shard']:02x}") for row in orphaned)
+            removed += sum(shard == f"{next_cursor['shard']:02x}" for shard, _name in temporary_removed)
+            next_cursor["offset"] = max(0, next_cursor["offset"]-removed)
         result = {"runs": len(run_ids), "tickets": len(tickets), "resume_races": len(races),
                   "orphaned_objects": len(orphaned), "orphaned_bytes": sum(row["bytes"] for row in orphaned), "applied": apply,
-                  "archived_weeks": archived, "objects_inspected":len(rows), "object_scan_limit": scan_limit,
+                  "temporary_files": temporary_files, "temporary_bytes": temporary_bytes,
+                  "archived_weeks": archived, "objects_inspected":objects_inspected, "object_scan_limit": scan_limit,
                   "objects_deferred": next_cursor is not None, "next_object_cursor": next_cursor}
         if apply:
             session.execute(delete(ResumeReceipt).where(ResumeReceipt.race_id.in_(races)))

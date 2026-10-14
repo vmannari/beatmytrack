@@ -12,7 +12,7 @@ from bmt_backend.quality_models import QualityFact
 
 
 def frames(**changes):
-    return {"device_class": "android_arm64", "scene": "race", "samples": 100, "slow": 10,
+    return {"device_class": "android_arm64", "scene": "menu", "samples": 100, "slow": 10,
         **{f"b{i}": 90 if i == 2 else 10 if i == 5 else 0 for i in range(8)}, **changes}
 
 
@@ -42,14 +42,15 @@ def test_spatial_and_exit_contracts_are_typed_bounded_not_arbitrary_capture(prod
     app.state.settings = replace(app.state.settings, client_quality_enabled=True)
     cell = {"track_version_id": str(uuid4()), "segment": 2, "cell_x": -3, "cell_y": 4, "samples": 15, "slow": 1}
     for props in (cell, {**cell, 'segment': 31}):
-        assert send(product, [observed('segment_summary', properties=props)]).json()['events'][0]['status'] == 'accepted'
+        assert send(product, [observed('segment_summary', properties=props)]).json()['events'][0]['status'] == 'rejected'
+    assert send(product, [observed('quality_summary', properties=frames(scene='race'))]).json()['events'][0]['status'] == 'rejected'
     for props in ({**cell, 'segment': 32}, {**cell, 'cell_x': 5001}, {**cell, 'slow': 16}, {**cell, 'track_version_id': 'invalid'}):
         assert send(product, [observed('segment_summary', properties=props)]).json()['events'][0]['status'] == 'rejected'
     assert send(product, [observed('process_exit', properties={'device_class':'android_arm64','exit_reason':6})]).json()['events'][0]['status'] == 'accepted'
     assert send(product, [observed('process_exit', properties={'device_class':'android_arm64','exit_reason':2,'stack':'secret'})]).json()['events'][0]['status'] == 'rejected'
     project_pending(app.state.session_factory, at=AT)
     with app.state.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(QualityFact)) == 3
+        assert session.scalar(select(func.count()).select_from(QualityFact)) == 1
 
 
 def test_quality_requires_telemetry_transport():

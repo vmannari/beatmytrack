@@ -12,6 +12,7 @@ import json
 import math
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -425,6 +426,14 @@ class GodotVerifier:
         return result
 
 
+def finite_number(value):
+    # JSON integers are unbounded. math.isfinite converts them to a float and
+    # can raise OverflowError before a malformed sample reaches its bounds.
+    if type(value) is int:
+        return -sys.float_info.max <= value <= sys.float_info.max
+    return type(value) is float and math.isfinite(value)
+
+
 def validate_race_proof(proof, frames):
     if (type(proof) is not dict or set(proof) != {"schema", "samples"}
             or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
@@ -433,7 +442,7 @@ def validate_race_proof(proof, frames):
     previous = -1
     for sample in proof["samples"]:
         if (type(sample) is not list or len(sample) != 8
-                or any(type(value) not in (int, float) or not math.isfinite(value) for value in sample)
+                or any(not finite_number(value) for value in sample)
                 or type(sample[0]) is not int or not previous < sample[0] <= frames
                 or type(sample[6]) is not int or sample[6] not in (0, 1)
                 or not 0 <= sample[7] <= 32
@@ -449,13 +458,14 @@ def validate_ghost(recording, race_ticks):
     if type(recording) is not dict or set(recording) != {"ticks", "poses"}:
         raise VerifierUnavailable("Canonical ghost is missing")
     duration, poses = recording["ticks"], recording["poses"]
-    if (type(duration) not in (int, float) or not math.isfinite(duration) or not 0 < duration <= race_ticks
+    if (not finite_number(duration) or not 0 < duration <= race_ticks
             or type(poses) is not list or not 2 <= len(poses) <= MAX_FRAMES // 6 + 7):
         raise VerifierUnavailable("Canonical ghost exceeds recording bounds")
     previous = -1
     for pose in poses:
         if (type(pose) is not list or len(pose) != 7
-                or any(type(value) not in (int, float) or not math.isfinite(value) for value in pose)
+                or any(not finite_number(value) for value in pose)
+                or any(abs(value) > 100000 for value in pose[1:])
                 or not previous < pose[0] <= duration):
             raise VerifierUnavailable("Canonical ghost has malformed samples")
         previous = pose[0]

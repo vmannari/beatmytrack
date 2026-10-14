@@ -3,7 +3,7 @@
   "$id": "bmt-product-events-v1",
   "title": "Authenticated product-observation batch",
   "description": "Valid client batches for POST /v1/telemetry/batches. Bearer authentication supplies player identity and artificial classification; client observations cannot authorize game results, purchases or grants. This strict authoring schema validates every event. Runtime ingress intentionally validates event rows separately and returns accepted/duplicate/rejected acknowledgements instead of rejecting all valid siblings.",
-  "$comment": "The server enforces at most 50 events and a 65536-byte compact UTF-8 serialization of the normalized batch model, including defaults; JSON Schema cannot express that encoded-size limit. Wire integer values must be integer JSON tokens: the Python event parser rejects booleans and floating-point values, including 1.0. The relative timestamp window and persisted event-ID conflicts require server context and are not JSON Schema checks. UUID patterns specify canonical representations; the parser normalizes UUIDs. No authentication key or identity subject belongs in this payload. Quality events require quality_schema_version=1 and BMT_CLIENT_QUALITY_ENABLED. Runtime also enforces histogram sum=samples, slow=b5+b6+b7 and segment slow<=samples. Process exits describe prior process, not current player attribution.",
+  "$comment": "The server enforces at most 50 events and a 65536-byte compact UTF-8 serialization of the normalized batch model, including defaults; JSON Schema cannot express that encoded-size limit. Wire integer values must be integer JSON tokens: the Python event parser rejects booleans and floating-point values, including 1.0. The relative timestamp window and persisted event-ID conflicts require server context and are not JSON Schema checks. UUID patterns specify canonical representations; the parser normalizes UUIDs. No authentication key or identity subject belongs in this payload. Quality events require quality_schema_version=1 and BMT_CLIENT_QUALITY_ENABLED. Runtime also enforces histogram sum=samples, slow=b5+b6+b7 and segment slow<=samples. Process exits describe prior process, not current player attribution. Race statistics require quality_schema_version=2, exactly one event with id=race_id, at most16KiB properties, actor/race receipt dedupe, published-version spatial data, unique cells/segments and reconciled sampled/dropped counts. Race frame/cell streaming is retired. Current shipping authoring excludes editor_opened, draft_saved and segment_summary; their historical prepared facts remain readable. Local unpublished races carry generic frame counters only. Version references must resolve to published catalogue entries, and a provided ticket must belong to the authenticated actor on that version.",
   "x-max-canonical-bytes": 65536,
   "x-max-event-age-seconds": 604800,
   "x-future-allowance-seconds": 300,
@@ -121,8 +121,6 @@
             "race_finished",
             "race_abandoned",
             "race_retried",
-            "editor_opened",
-            "draft_saved",
             "publish_requested",
             "challenge_opened",
             "challenge_joined",
@@ -133,8 +131,8 @@
             "offer_exposed",
             "purchase_requested",
             "quality_summary",
-            "segment_summary",
-            "process_exit"
+            "process_exit",
+            "race_statistics"
           ]
         },
         "occurred_at": {
@@ -851,102 +849,6 @@
           "if": {
             "properties": {
               "name": {
-                "const": "editor_opened"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "properties": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "biome": {
-                    "enum": [
-                      "desert",
-                      "night_city",
-                      "pine",
-                      "storm",
-                      "winter"
-                    ]
-                  },
-                  "reason": {
-                    "enum": [
-                      "background",
-                      "create",
-                      "edit",
-                      "exit",
-                      "finished",
-                      "inactivity",
-                      "join",
-                      "launch",
-                      "open",
-                      "publish",
-                      "restart",
-                      "resume",
-                      "save",
-                      "share",
-                      "test",
-                      "unknown"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "name": {
-                "const": "draft_saved"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "properties": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "biome": {
-                    "enum": [
-                      "desert",
-                      "night_city",
-                      "pine",
-                      "storm",
-                      "winter"
-                    ]
-                  },
-                  "reason": {
-                    "enum": [
-                      "background",
-                      "create",
-                      "edit",
-                      "exit",
-                      "finished",
-                      "inactivity",
-                      "join",
-                      "launch",
-                      "open",
-                      "publish",
-                      "restart",
-                      "resume",
-                      "save",
-                      "share",
-                      "test",
-                      "unknown"
-                    ]
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "name": {
                 "const": "publish_requested"
               }
             }
@@ -1311,7 +1213,6 @@
                   },
                   "scene": {
                     "enum": [
-                      "race",
                       "menu",
                       "editor"
                     ]
@@ -1375,61 +1276,6 @@
           "if": {
             "properties": {
               "name": {
-                "const": "segment_summary"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "properties": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "track_version_id",
-                  "segment",
-                  "cell_x",
-                  "cell_y",
-                  "samples",
-                  "slow"
-                ],
-                "properties": {
-                  "track_version_id": {
-                    "$ref": "#/$defs/uuid"
-                  },
-                  "segment": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 31
-                  },
-                  "cell_x": {
-                    "type": "integer",
-                    "minimum": -5000,
-                    "maximum": 5000
-                  },
-                  "cell_y": {
-                    "type": "integer",
-                    "minimum": -5000,
-                    "maximum": 5000
-                  },
-                  "samples": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000
-                  },
-                  "slow": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 1000000
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "name": {
                 "const": "process_exit"
               }
             }
@@ -1460,6 +1306,160 @@
                     ]
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "name": {
+                "const": "race_statistics"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "schema_version": {
+                    "const": 2
+                  },
+                  "race_id": {
+                    "$ref": "#/$defs/uuid4"
+                  },
+                  "track_version_id": {
+                    "$ref": "#/$defs/uuid4"
+                  },
+                  "ticket_id": {
+                    "$ref": "#/$defs/uuid4"
+                  },
+                  "outcome": {
+                    "enum": [
+                      "finished",
+                      "abandoned",
+                      "restarted"
+                    ]
+                  },
+                  "elapsed_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600000
+                  },
+                  "device_class": {
+                    "enum": [
+                      "android_arm64",
+                      "android_other",
+                      "desktop",
+                      "other"
+                    ]
+                  },
+                  "device_model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "os_version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "frame_buckets": {
+                    "type": "array",
+                    "minItems": 8,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000
+                    }
+                  },
+                  "cells": {
+                    "type": "array",
+                    "maxItems": 128,
+                    "items": {
+                      "type": "array",
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "prefixItems": [
+                        {
+                          "type": "integer",
+                          "minimum": -5000,
+                          "maximum": 5000
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": -5000,
+                          "maximum": 5000
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 3600
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 3600
+                        }
+                      ],
+                      "items": false
+                    }
+                  },
+                  "segments": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "prefixItems": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 31
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 3600
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 3600
+                        }
+                      ],
+                      "items": false
+                    }
+                  },
+                  "position_samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600
+                  },
+                  "dropped_samples": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "race_id",
+                  "outcome",
+                  "elapsed_ms",
+                  "device_class",
+                  "device_model",
+                  "os_version",
+                  "frame_buckets",
+                  "cells",
+                  "segments",
+                  "position_samples",
+                  "dropped_samples"
+                ]
               }
             }
           }

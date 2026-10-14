@@ -168,6 +168,8 @@ def inspect_competition(kind: str, identity: UUID, request: Request, role: Acces
             if entity.mode == "beat" and run and run.time_ticks != entity.target_ticks:
                 target["problems"].append("STORED_TARGET_DIFFERS_FROM_SOURCE")
         return {"kind": kind, "definition": definition, "roster": list(roster.values()), "results": results,
+            "slot_count": len(slots), "slots": [{"slot": index, **{field: value for field, value in slot.items()
+                if field in ("version_id", "board_id", "tick_rate", "name") and type(value) in (str, int)}} for index, slot in enumerate(slots)],
             "target": target, "points_policy": list(POINTS) if kind == "rivalry" else None,
             "attempt_states": counts, "attempts_truncated": len(attempts) > 500,
             "as_of": now(), "role": role, "read_only": True,

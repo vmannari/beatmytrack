@@ -16,7 +16,10 @@ class ProductEvent(Base):
             postgresql_where=text("source='client' AND processed_at IS NOT NULL")),
         Index("ix_product_server_compact", "received_at", "id",
             sqlite_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false"),
-            postgresql_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false")))
+            postgresql_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false")),
+        Index("ix_product_network_failures", "occurred_at", "id",
+            sqlite_where=text("source='client' AND name='network_failure'"),
+            postgresql_where=text("source='client' AND name='network_failure'")))
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     client_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

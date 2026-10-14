@@ -4,11 +4,14 @@ extends RefCounted
 
 var kerb_offset := Vector3.ZERO # heave metres, pitch radians, roll radians
 var kerb_velocity := Vector3.ZERO
+var bump_transfer := Vector2.ZERO # canonical nose pitch and pitch velocity
 var jump_height: float = 0.0
 var jump_velocity: float = 0.0
 var jump_cooldown: int = 0
 var loose_tyres: Array = []
 var light_props: Array = []
+var prop_destruction: Array = []
+var prop_fragments: Array = []
 var position: Vector2 = Vector2.ZERO
 var velocity: Vector2 = Vector2.ZERO
 var heading: float = 0.0
@@ -65,4 +68,6 @@ func snapshot() -> Array:
 	result.append([roll_ticks, roll_direction, roll_cooldown])
 	result.append(handbrake_pressure)
 	result.append([launch_pending,launch_result,launch_end_tick,launch_delay_until,launch_gain])
+	result.append([bump_transfer.x,bump_transfer.y])
+	result.append([prop_destruction.duplicate(true),prop_fragments.duplicate(true)])
 	return result

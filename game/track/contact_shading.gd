@@ -35,16 +35,24 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 		if not state.track_elevated:
 			front += TrackHazards.ramp_height(point+axle,track.hazard_objects)
 			rear += TrackHazards.ramp_height(point-axle,track.hazard_objects)
+			front += SpeedBumps.height(point+axle,track.speed_bump_objects)
+			rear += SpeedBumps.height(point-axle,track.speed_bump_objects)
 		support = (front+rear)*0.5
 		slope = atan2(front-rear,axle.length()*2.0)
-	shadow.position = VisualGeometry.world(point)+Vector3.UP*(support+0.03)
-	shadow.rotation = Vector3(slope,-heading,0)
+	var at: Vector3 = VisualGeometry.world(point)+Vector3.UP*(support+0.03)
+	var turn := Vector3(slope,-heading,0)
+	if shadow.position != at: shadow.position = at
+	if shadow.rotation != turn: shadow.rotation = turn
 	var air: float = maxf(state.jump_height,car.ramp_lift)
 	var spread: float = 1.0+minf(air,2.0)*0.10
-	shadow.scale = Vector3(dimensions.x*spread,0.55,dimensions.y*spread)
-	shadow.visible = track == null or track.water_depth(point) <= 0.0
+	var extent := Vector3(dimensions.x*spread,0.55,dimensions.y*spread)
+	if shadow.scale != extent: shadow.scale = extent
+	var shown: bool = track == null or track.water_depth(point) <= 0.0
+	if shadow.visible != shown: shadow.visible = shown
 	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
-	(shadow.material_override as ShaderMaterial).set_shader_parameter("strength",(0.43 if winter else 0.34)/(1.0+air*1.8))
+	var strength: float = (0.43 if winter else 0.34)/(1.0+air*1.8)
+	var surface: ShaderMaterial = shadow.material_override as ShaderMaterial
+	if surface.get_shader_parameter("strength") != strength: surface.set_shader_parameter("strength",strength)
 
 static func build_props(parent: Node3D, track: NativeTrack) -> void:
 	# Spatial batches bound draw calls and let the renderer cull distant groups.

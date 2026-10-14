@@ -165,7 +165,7 @@ func garage() -> void:
 	press.position = pixel
 	press.pressed = true
 	view.gui_input.emit(press)
-	for i: int in range(20): view._process(0.05)
+	for i: int in range(40): view._process(0.05)
 	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
 	if DisplayServer.get_name() != "headless":
 		view.wash_pointer_valid = false

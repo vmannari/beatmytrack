@@ -26,7 +26,7 @@ static func mesh_for(car: CarVisual) -> ArrayMesh:
 	return tool.commit()
 
 static func _append_meshes(node: Node, inverse: Transform3D, tool: SurfaceTool) -> void:
-	if node is MeshInstance3D and node.is_visible_in_tree() and node.mesh != null:
+	if node is MeshInstance3D and node.is_visible_in_tree() and node.mesh != null and node.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
 		for surface: int in range(node.mesh.get_surface_count()):
 			var arrays: Array = node.mesh.surface_get_arrays(surface)
 			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]

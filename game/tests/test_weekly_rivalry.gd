@@ -202,7 +202,7 @@ func run() -> void:
 		await settle()
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
 		await capture("weekly-finale",dimensions)
-		check(app.root_ui.find_child("RivalryPodium",true,false) != null,"weekly finale is an Overview state")
+		check(app.rivalry_section == "overview" and app.root_ui.find_child("WeeklyRivalryFinale",true,false) != null,"completed overview becomes the championship awards ceremony")
 		(app.root_ui.find_child("SelectRivalryTrack_2",true,false) as Button).pressed.emit()
 		await settle()
 		check(app.rivalry_section == "detail" and (app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"completed-week rows open details but cannot start another race")

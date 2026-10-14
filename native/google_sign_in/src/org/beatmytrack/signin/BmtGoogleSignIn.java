@@ -17,6 +17,8 @@ public final class BmtGoogleSignIn extends GodotPlugin {
     private CancellationSignal cancellation;
     public BmtGoogleSignIn(Godot godot) { super(godot); }
     @NonNull @Override public String getPluginName() { return "BmtGoogleSignIn"; }
+    @UsedByGodot public byte[] sealSession(String value, String context) { return BmtSecureSession.seal(value, context); }
+    @UsedByGodot public String openSession(byte[] value, String context) { return BmtSecureSession.open(value, context); }
 
     /** OS evidence only; no stack traces, PIDs, package/device IDs or credentials. */
     @UsedByGodot public String getProcessExits() {

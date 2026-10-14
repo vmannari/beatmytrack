@@ -35,10 +35,10 @@ func run() -> void:
 	nature.rng.seed = 4159
 	nature.configure("pine")
 	check(nature.get_child_count() == 2 and nature.insects.bus == "Vehicle" and nature.leaves.bus == "Vehicle", "two bounded nature voices follow sound volume")
-	var loop: AudioStreamWAV = nature.insects.stream
+	var loop: AudioStreamOggVorbis = nature.insects.stream
 	var leaf: AudioStreamWAV = nature.leaves.stream
-	check(loop.loop_mode == AudioStreamWAV.LOOP_FORWARD and loop.loop_end == 40 * 44100, "insect loop retains long natural development")
-	check(loop.data.slice(loop.data.size() - 2) == loop.data.slice(0, 2), "cyclic interpolation guard retained")
+	check(loop.loop and absf(loop.get_length() - 40.0) < 1.0 / 44100.0, "insect loop retains long natural development")
+	check(loop.loop_offset == 0.0, "full-file native Vorbis loop")
 	check(leaf.loop_mode == AudioStreamWAV.LOOP_DISABLED and leaf.format == AudioStreamWAV.FORMAT_16_BITS and leaf.mix_rate == 44100, "leaf one-shot lossless import")
 	check(leaf.data.slice(0, 2) == PackedByteArray([0, 0]) and leaf.data.slice(leaf.data.size() - 2) == PackedByteArray([0, 0]), "soft leaf endpoints")
 	var offsets: Array[float] = []

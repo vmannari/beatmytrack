@@ -1,12 +1,15 @@
 class_name SnowBanks
 extends RoadKerbs
-## Soft snow ridges along smoothed exposed road contours. Shared contact mesh.
+## Packed snow ridges along exposed road contours. Shared deterministic contact mesh.
 const BANK_HEIGHT: float = 0.32
 const WIDTH: float = 1.25
+const CONTACT_BUCKET: float = 0.5
+var _contact_buckets: Dictionary = {}
 
 func build(track: NativeTrack) -> void:
 	triangles.clear()
 	buckets.clear()
+	_contact_buckets.clear()
 	extent = track.half_extent
 	cell_size = track.cell_size
 	grid = Vector2i(track.grid_width,track.grid_height)
@@ -84,6 +87,34 @@ func build(track: NativeTrack) -> void:
 				var t: Vector2 = b+nb*offsets[band+1]
 				_add(p,q,t,heights[band],heights[band],heights[band+1],Vector2.ZERO,Vector2.ZERO,Vector2.ZERO)
 				_add(p,t,r,heights[band],heights[band+1],heights[band+1],Vector2.ZERO,Vector2.ZERO,Vector2.ZERO)
+	# Preserve the prepared triangles and their order; a finer index avoids
+	# scanning hundreds of unrelated triangles at every body/wheel contact.
+	for index: int in range(triangles.size()):
+		var points: PackedVector2Array = triangles[index].points
+		var lo := Vector2i(((points[0].min(points[1]).min(points[2])-Vector2.ONE*0.001)/CONTACT_BUCKET).floor())
+		var hi := Vector2i(((points[0].max(points[1]).max(points[2])+Vector2.ONE*0.001)/CONTACT_BUCKET).floor())
+		for y: int in range(lo.y,hi.y+1):
+			for x: int in range(lo.x,hi.x+1):
+				var key := Vector2i(x,y)
+				if not _contact_buckets.has(key): _contact_buckets[key] = []
+				_contact_buckets[key].append(index)
+
+func height_at(point: Vector2) -> float:
+	if triangles.is_empty(): return 0.0
+	# Old prepared snapshots may lack the derived index; retain exact contacts.
+	if _contact_buckets.is_empty(): return super.height_at(point)
+	var cell := Vector2i(floori((point.x+extent.x)/cell_size),floori((extent.y-point.y)/cell_size))
+	if cell.x < 0 or cell.y < 0 or cell.x >= grid.x or cell.y >= grid.y or blocked[cell.y*grid.x+cell.x] != 0: return 0.0
+	var height: float = 0.0
+	for index: int in _contact_buckets.get(Vector2i((point/CONTACT_BUCKET).floor()),[]):
+		var triangle: Dictionary = triangles[index]
+		var p: PackedVector2Array = triangle.points
+		var d: float = (p[1]-p[0]).cross(p[2]-p[0])
+		var b: float = (point-p[0]).cross(p[2]-p[0])/d
+		var c: float = (p[1]-p[0]).cross(point-p[0])/d
+		if b >= -0.00001 and c >= -0.00001 and b+c <= 1.00001:
+			height = maxf(height,clampf((1.0-b-c)*triangle.heights[0]+b*triangle.heights[1]+c*triangle.heights[2],0.0,maximum_height))
+	return height
 
 func _normal(polygon: PackedVector2Array, index: int) -> Vector2:
 	var a: Vector2 = (polygon[index]-polygon[(index-1+polygon.size())%polygon.size()]).normalized()
@@ -93,13 +124,24 @@ func _normal(polygon: PackedVector2Array, index: int) -> Vector2:
 
 func slow_car(state: VehicleState, previous: Vector2, config: HandlingConfig, seconds: float) -> void:
 	if triangles.is_empty() or state.track_elevated or state.jump_height > 0.0: return
-	var axle: Vector2 = state.forward()*config.wheelbase*0.5
-	var side: Vector2 = state.right()*config.track_width*0.5
+	var forward: Vector2 = state.forward()
+	var right: Vector2 = state.right()
 	var contact: float = 0.0
-	var steps: int = maxi(1,ceili(previous.distance_to(state.position)/0.25))
+	var steps: int = clampi(ceili(previous.distance_to(state.position)/0.25),1,8)
 	for i: int in range(steps+1):
 		var point: Vector2 = previous.lerp(state.position,float(i)/steps)
-		var height: float = maxf(maxf(height_at(point+axle-side),height_at(point+axle+side)),maxf(height_at(point-axle-side),height_at(point-axle+side)))
-		contact += clampf(height/BANK_HEIGHT,0.0,1.0)/(steps+1)
-	# Resist all travel directions, including a sideways slide, without bounce.
-	state.velocity = state.velocity.move_toward(Vector2.ZERO,(8.0+state.velocity.length()*1.8)*contact*seconds)
+		contact += contact_at(point,forward,right,config)/(steps+1)
+	# Packed snow ploughs against the bumper/body, including broadside travel.
+	# Speed-dependent resistance makes a fast entry costly; the smaller crawl
+	# term still lets every car work forward or reverse out under its own power.
+	var speed: float = state.velocity.length()
+	var resistance: float = 2.0+speed*10.0+22.0*smoothstep(2.0,12.0,speed)
+	state.velocity = state.velocity.move_toward(Vector2.ZERO,resistance*contact*seconds)
+
+func contact_at(center: Vector2, forward: Vector2, right: Vector2, config: HandlingConfig) -> float:
+	var axle: Vector2 = forward*config.wheelbase*0.5
+	var side: Vector2 = right*config.track_width*0.5
+	var bumper: Vector2 = forward*maxf(config.collision_radius,config.wheelbase*0.5+0.80*HandlingConfig.BODY_SCALE)
+	var height: float = maxf(maxf(height_at(center+axle-side),height_at(center+axle+side)),maxf(height_at(center-axle-side),height_at(center-axle+side)))
+	height = maxf(height,maxf(height_at(center),maxf(height_at(center+bumper),height_at(center-bumper))))
+	return clampf(height/BANK_HEIGHT,0.0,1.0)

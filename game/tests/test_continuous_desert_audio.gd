@@ -25,6 +25,8 @@ func run() -> void:
 	state.position = track.spawn
 	state.velocity = Vector2(0,25)
 	var audio := VehicleAudio.new()
+	# Explicit dummy output exercises actual playback assertions in headless mode.
+	audio.output_enabled = true
 	root.add_child(audio)
 	audio.configure("compact",VehicleCatalog.config("compact"))
 	var layer: AudioStreamPlayer = audio.layers.sand_debris
@@ -89,5 +91,6 @@ func run() -> void:
 	audio.free()
 	await process_frame
 	await process_frame
+	await create_timer(.05).timeout
 	print("CONTINUOUS_DESERT_AUDIO: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures>0 else 0)

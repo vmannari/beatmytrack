@@ -35,8 +35,13 @@ var lens_drops: Array[ColorRect] = []
 var wet_glass_material: ShaderMaterial
 const TRAIL_STEP: float = 0.02
 const TRAIL_SLOTS: int = 72
+const LENS_PARAMETERS: Array[String] = ["stretch","radius_px","shape_seed"]
 var trail_samples: Array[PackedVector4Array] = []
 var trail_tick: int = -1
+var _lens_parameters: Array[Array] = []
+var _lens_material_ids := PackedInt64Array()
+var _lens_current: Array[Vector4] = []
+var _lens_elapsed: float = INF
 
 func _ready() -> void:
 	RenderingServer.global_shader_parameter_set("storm_ripple_time",0.0)
@@ -61,6 +66,10 @@ func _ready() -> void:
 		drop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		var lens_material := ShaderMaterial.new()
 		lens_material.shader = preload("res://track/storm_lens.gdshader")
+		lens_material.set_shader_parameter("fade",1.0)
+		_lens_parameters.append([NAN,NAN,NAN])
+		_lens_material_ids.append(lens_material.get_instance_id())
+		_lens_current.append(Vector4.ZERO)
 		drop.material = lens_material
 		add_child(drop)
 		lens_drops.append(drop)
@@ -71,14 +80,14 @@ func _ready() -> void:
 	rain_audio.name = "BackgroundRain"
 	rain_audio.bus = "Vehicle"
 	rain_audio.volume_linear = 0.0
-	var rain_stream: AudioStreamWAV = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/storm_rain_recorded.wav"))
+	var rain_stream: AudioStream = AudioLoop.prepare(preload("res://assets/audio/ambience/storm_rain_recorded.ogg"))
 	rain_audio.stream = rain_stream
 	add_child(rain_audio)
 	rumble_audio = AudioStreamPlayer.new()
 	rumble_audio.name = "DistantThunder"
 	rumble_audio.bus = "Vehicle"
 	rumble_audio.volume_linear = 0.0
-	rumble_audio.stream = PcmAudioLoop.prepare(preload("res://assets/audio/storm_rumble.wav"))
+	rumble_audio.stream = AudioLoop.prepare(preload("res://assets/audio/storm_rumble.ogg"))
 	add_child(rumble_audio)
 	thunder_audio = AudioStreamPlayer.new()
 	thunder_audio.name = "Thunder"
@@ -128,7 +137,9 @@ func advance(delta: float, paused: bool, finished: bool = false) -> void:
 		strikes += 1
 		until_lightning = rng.randf_range(MIN_INTERVAL,MAX_INTERVAL)
 		until_thunder = rng.randf_range(1.2,2.8)
-	if light != null: light.light_energy = base_light_energy+flash_strength()*FLASH_LIGHT_ENERGY
+	if light != null:
+		var energy: float = base_light_energy+flash_strength()*FLASH_LIGHT_ENERGY
+		if light.light_energy != energy: light.light_energy = energy
 	_update_lens()
 	queue_redraw()
 
@@ -234,18 +245,28 @@ func lens_sample(index: int, time: float) -> Vector4:
 func _update_lens() -> void:
 	if lens_drops.size() != DROP_COUNT: return
 	_update_trail_history()
-	wet_glass_material.set_shader_parameter("lightning",flash_strength())
+	var lightning: float = flash_strength()
+	if wet_glass_material.get_shader_parameter("lightning") != lightning: wet_glass_material.set_shader_parameter("lightning",lightning)
 	for i: int in range(DROP_COUNT):
 		var sample: Vector4 = lens_sample(i,elapsed)
+		_lens_current[i] = sample
 		var radius: float = maxf(0.01,sample.z*size.y/720.0)
 		var drop: ColorRect = lens_drops[i]
-		drop.size = Vector2(radius*2.4,radius*3.2)
-		drop.position = Vector2(sample.x,sample.y)*size-drop.size*0.5
+		var extent := Vector2(radius*2.4,radius*3.2)
+		var at: Vector2 = Vector2(sample.x,sample.y)*size-extent*0.5
+		if drop.size != extent: drop.size = extent
+		if drop.position != at: drop.position = at
 		var lens_material: ShaderMaterial = drop.material as ShaderMaterial
-		lens_material.set_shader_parameter("fade",1.0)
-		lens_material.set_shader_parameter("stretch",sample.w)
-		lens_material.set_shader_parameter("radius_px",radius)
-		lens_material.set_shader_parameter("shape_seed",float(i)*1.73+floor((elapsed+float(i)*1.71)/12.0)*2.91)
+		if _lens_material_ids[i] != lens_material.get_instance_id():
+			_lens_material_ids[i] = lens_material.get_instance_id()
+			_lens_parameters[i] = [NAN,NAN,NAN]
+			lens_material.set_shader_parameter("fade",1.0)
+		var values: Array = [sample.w,radius,float(i)*1.73+floor((elapsed+float(i)*1.71)/12.0)*2.91]
+		for field: int in range(3):
+			if _lens_parameters[i][field] == values[field]: continue
+			_lens_parameters[i][field] = values[field]
+			lens_material.set_shader_parameter(LENS_PARAMETERS[field],values[field])
+	_lens_elapsed = elapsed
 
 func _update_trail_history() -> void:
 	var current_tick: int = int(floor(elapsed/TRAIL_STEP))
@@ -260,7 +281,7 @@ func _draw_lens_trails() -> void:
 	# Keep the same history/duration, joining fewer subpixel segments on phones.
 	var stride: int = 3 if OS.has_feature("mobile") else 1
 	for i: int in range(DROP_COUNT):
-		var newer: Vector4 = lens_sample(i,elapsed)
+		var newer: Vector4 = _lens_current[i] if _lens_elapsed == elapsed else lens_sample(i,elapsed)
 		for step: int in range(0,71,stride):
 			var tick: int = trail_tick-step
 			if tick < 0: break

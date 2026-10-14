@@ -39,6 +39,10 @@ class RaceCloud extends Cloud:
 class FailedRecords extends LocalRecords:
 	func save_records() -> Error: return ERR_CANT_CREATE
 
+class RivalrySync extends Node:
+	signal changed
+	var result_state: String = ""
+
 func _initialize() -> void: call_deferred("run")
 func check(value: bool, message: String) -> void:
 	checks += 1
@@ -126,6 +130,10 @@ func run() -> void:
 	var game: Node = app.game
 	await frames()
 	var vote: Node = game.cloud_rating
+	var rivalry_sync := RivalrySync.new()
+	cloud.add_child(rivalry_sync)
+	vote.rivalry_sync = rivalry_sync
+	rivalry_sync.changed.connect(vote._rivalry_changed)
 	check(is_instance_valid(vote) and vote.should_prompt() and not vote.eligible,"actual race start prefetches an unrated first completion without waiting for eligibility")
 	drive(game)
 	await frames()
@@ -149,8 +157,8 @@ func run() -> void:
 	await capture("immediate-normal-results")
 	check(app.root_ui.find_child("TrackRatingPrompt",true,false) == null,"results have no relocated rating popup")
 	client.eligible = true
-	cloud.status = "Race verified"
-	cloud.changed.emit()
+	rivalry_sync.result_state = "verified"
+	rivalry_sync.changed.emit()
 	await frames()
 	check(client.saves == 1 and not client.last_key.is_empty() and app.root_ui.visible,"verified upload starts one idempotent vote while player stays in results")
 	# Navigation/race nodes are not required for a selected vote to finish.
@@ -163,6 +171,7 @@ func run() -> void:
 	await frames()
 	check(client.saves == 1,"failed vote is not retried from later verification events")
 	client.fail_save = false
+	cloud.status = "Race verified"
 	await app._retry_race()
 	game.set_physics_process(false)
 	await frames()
@@ -176,6 +185,10 @@ func run() -> void:
 	check(game.paused and app.root_ui.visible,"already-qualified vote also leaves finish view immediately despite slow PUT")
 	await frames()
 	check(client.saves == 2 and client.score == 0,"slow PUT keeps last server score unchanged")
+	await app._retry_race()
+	game.set_physics_process(false)
+	await frames()
+	check(not game.cloud_rating.should_prompt(),"retry suppresses prompt while same account/version vote is still saving")
 	client.hold_save = false
 	await frames()
 	check(client.score == 3 and not is_instance_valid(vote),"successful best-effort vote stores server stars without confirmation UI")

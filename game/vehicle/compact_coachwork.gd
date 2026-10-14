@@ -201,6 +201,15 @@ static func hood_point(u: float,v: float) -> Vector3:
 	return Vector3(x,lerpf(base,plane,folded*ends),z)
 
 static func build_hood(car: CarVisual, paint: Material, accent: Material) -> void:
+	var original: Node3D = car.body
+	if car.editable_kits: car.body = car.new_kit_frame("hood",car.body)
+	_build_hood_surfaces(car,paint,accent)
+	car.body = original
+
+static func _build_hood_surfaces(car: CarVisual, paint: Material, accent: Material) -> void:
+	if CompactKits.choice(car,"hood") != "stock":
+		CompactKits.build_hood(car,paint,accent)
+		return
 	# 24 + 40 + 24 stations exactly match the two corners and front face.
 	_patch(car,"CrownedHood",88,24,func(u: float,v: float) -> Vector3:
 		return hood_point(lerpf(-1,1,u),v),paint,Vector3.UP,Rect2(0.5,0,0.25,0.5))
@@ -416,8 +425,15 @@ static func build_bumper(car: CarVisual,rear: bool,rubber: Material) -> void:
 
 static func _patch(car: CarVisual, label: String, columns: int, rows: int, sample: Callable, surface: Material, normal_hint: Vector3, uv_region: Rect2, closed_profile: bool = false) -> void:
 	var key: String = label.to_snake_case()+ ("_left" if normal_hint.x < 0 else "_right" if normal_hint.x > 0 else "")
-	if not meshes.has(key) and use_baked and ResourceLoader.exists(ASSET_ROOT.path_join(key+".res")):
-		meshes[key] = load(ASSET_ROOT.path_join(key+".res")) as ArrayMesh
+	var path: String = ASSET_ROOT.path_join(key+".res")
+	var original_path: String = path
+	if car.simple_model:
+		key += "_simple"
+		path = RacingCarModels.COACH_ROOT.path_join(key+".res")
+		columns = maxi(2,columns/2)
+		rows = maxi(1,rows/2)
+	if not meshes.has(key) and use_baked and ResourceLoader.exists(path):
+		meshes[key] = load(path) as ArrayMesh
 	if meshes.has(key):
 		_attach(car,label,meshes[key],surface)
 		return
@@ -461,6 +477,7 @@ static func _patch(car: CarVisual, label: String, columns: int, rows: int, sampl
 	tool.index()
 	tool.generate_tangents()
 	var resource: ArrayMesh = tool.commit()
+	if car.simple_model and ResourceLoader.exists(original_path): resource.custom_aabb = (load(original_path) as ArrayMesh).get_aabb()
 	meshes[key] = resource
 	_attach(car,label,resource,surface)
 

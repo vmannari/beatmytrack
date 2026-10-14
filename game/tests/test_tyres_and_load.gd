@@ -100,6 +100,7 @@ func _load_ui() -> void:
 	(app.get("root_ui") as Node).find_child("LoadTrack",true,false).pressed.emit()
 	await process_frame
 	var browser: Node = app.get("root_ui").find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
 	check(app.get("screen")=="drafts" and browser!=null,"Create Load opens editing gallery")
 	check(browser.get("entries").size()==6,"gallery includes autosave-only tracks")
 	var gallery: Node = browser.get("gallery")
@@ -140,6 +141,7 @@ func _load_ui() -> void:
 	await process_frame
 	check(app.get("screen")=="drafts","editor Load uses the same gallery")
 	browser = app.get("root_ui").find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
 	browser.emit_signal("back_requested")
 	await process_frame
 	check(app.get("screen")=="create" and app.get("document").pieces[0].width==14.0,"Back from editor browser restores work")
@@ -162,6 +164,7 @@ func _load_ui() -> void:
 	check(app.get("document").is_empty(),"deleting current draft prevents later autosave resurrection")
 	check(library.delete_editable("../invalid")==ERR_INVALID_PARAMETER,"deletion rejects path traversal")
 	browser = app.get("root_ui").find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
 	search = browser.find_child("DraftSearch",true,false)
 	search.text = "Storm valley"; search.text_changed.emit(search.text)
 	browser.find_child("ContinueEditing",true,false).pressed.emit()
@@ -217,6 +220,11 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	# this verifies workflow, not human driving acceptance.
 	for step: int in range(ceili(track.route_length*2.0)+6):
 		var to: Vector2 = track._race_route_point(origin+float(step)*0.5)
+		# Timestamp the synthetic movement too: creator completion now retains trajectory evidence.
+		var simulation: VehicleSimulation = game.get("sim")
+		simulation.state.tick += 6
+		simulation.state.position = to
+		simulation.state.velocity = (to-from)*20.0
 		game.call("_advance_practice_validation",from,to,track.nearest_route(to))
 		from = to
 	check(game.get("practice_validation").finished,"one complete ordered lap satisfies practice witness")
@@ -230,9 +238,10 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 		if child is AcceptDialog: child.hide(); child.queue_free()
 	await process_frame
 	var browser: Node = app.get("root_ui").find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser),"draft gallery completes preparation")
 	var search: LineEdit = browser.find_child("DraftSearch",true,false)
 	search.text="Tested oval"; search.text_changed.emit(search.text)
-	check(browser.find_child("PublishDraft",true,false).disabled,"a local completion alone cannot bypass backend-verified publication")
+	check(not browser.find_child("PublishDraft",true,false).disabled and not library.is_published(doc.id),"completed local evidence enables explicit Publish without minting a publication")
 	if "--capture" in OS.get_cmdline_user_args():
 		for i: int in range(3): await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../docs/evidence/draft-browser/tested.png"))

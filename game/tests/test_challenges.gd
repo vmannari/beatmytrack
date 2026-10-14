@@ -131,6 +131,23 @@ func _adapter_tests(sample: Dictionary) -> void:
 	requests = client.calls
 	await adapter.poll_result()
 	check(client.calls == requests and adapter.result_state == "upload_pending","connection failure backs off without inventing results")
+	adapter._next_poll = 0
+	client.answer = {"ok":false,"status":429,"retry_after":60,"error":"RATE_LIMITED"}
+	var before_poll: int = Time.get_ticks_msec()
+	await adapter.poll_result()
+	check(adapter._next_poll >= before_poll+60000 and adapter._next_poll <= Time.get_ticks_msec()+62550,"rate limit honors the complete server wait plus bounded jitter")
+	adapter._next_poll = 0
+	client.answer = {"ok":true,"data":{"status":"queued","poll_after_ms":2500,"challenge":sample}}
+	await adapter.poll_result()
+	check(adapter._failures == 0 and adapter.result_state == "queued","valid pending response resets consecutive transport failures")
+	adapter._next_poll = 0
+	client.answer = {"ok":false,"status":503,"error":"UNAVAILABLE"}
+	await adapter.poll_result()
+	check(adapter._failures == 1 and adapter._next_poll <= Time.get_ticks_msec()+7550,"failure after successful recovery returns to the initial backoff")
+	adapter._next_poll = 0
+	client.answer = {"ok":true,"data":{"status":"queued","challenge":{}}}
+	await adapter.poll_result()
+	check(adapter._failures == 2 and adapter.result_state == "queued","malformed success retains evidence and backs off")
 	adapter.queue_free()
 	cloud.queue_free()
 	client.queue_free()

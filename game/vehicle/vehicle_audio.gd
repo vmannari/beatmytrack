@@ -2,6 +2,7 @@ class_name VehicleAudio
 extends Node
 ## Recorded local sound bank. All state is presentation-only and scoped to this race.
 const BANK: String = "res://assets/audio/vehicles/"
+const COMPRESSED_LOOPS: Array[String] = ["road", "wind", "water", "sand_roll", "sand", "sand_debris", "kerb_roll", "loose", "grass"]
 const IMPACTS: Array[String] = ["impact_0","impact_1","impact_2"]
 const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis"]
 const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
@@ -16,6 +17,7 @@ var debris_events: Array[AudioStreamPlayer] = []
 var streams: Dictionary = {}
 var levels: Dictionary = {}
 var active: bool = false
+var output_enabled: bool = DisplayServer.get_name() != "headless"
 var impact_cooldown: float = 0.0
 var chassis_cooldown: float = 0.0
 var event_index: int = 0
@@ -70,11 +72,17 @@ func _ready() -> void:
 	for clip: String in IMPACTS+GRIT+ ["chassis"]: _stream(clip,false)
 	if use_windows_impacts:
 		var impact_samples: Array[AudioStreamWAV] = []
-		for clip: String in BODY_CLIPS: impact_samples.append(_stream(clip,false))
+		for clip: String in BODY_CLIPS: impact_samples.append(_stream(clip,false) as AudioStreamWAV)
 		windows_impacts.configure(impact_samples)
 
 func _exit_tree() -> void:
 	windows_impacts.close()
+	for child: Node in get_children():
+		if child is AudioStreamPlayer:
+			var player: AudioStreamPlayer = child as AudioStreamPlayer
+			player.stop()
+			player.stream = null
+	streams.clear()
 
 func _player(label: String, target_bus: String) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
@@ -84,10 +92,11 @@ func _player(label: String, target_bus: String) -> AudioStreamPlayer:
 	add_child(player)
 	return player
 
-func _stream(clip: String, looping: bool) -> AudioStreamWAV:
-	if streams.has(clip): return streams[clip] as AudioStreamWAV
-	var source: AudioStreamWAV = load(BANK+clip+".wav") as AudioStreamWAV
-	var sample: AudioStreamWAV = PcmAudioLoop.prepare(source) if looping else source.duplicate() as AudioStreamWAV
+func _stream(clip: String, looping: bool) -> AudioStream:
+	if streams.has(clip): return streams[clip] as AudioStream
+	var suffix: String = ".ogg" if clip in COMPRESSED_LOOPS else ".wav"
+	var source: AudioStream = load(BANK+clip+suffix) as AudioStream
+	var sample: AudioStream = AudioLoop.prepare(source) if looping else source.duplicate() as AudioStream
 	streams[clip] = sample
 	return sample
 
@@ -146,14 +155,14 @@ func reset() -> void:
 			# All recorded orders represent one engine. Start even muted voices
 			# at that engine's idle frequency, rather than their native bank RPM.
 			player.pitch_scale = model.rpm/model.anchors[i]
-			player.play()
+			if output_enabled: player.play()
 	for layer: String in layers:
 		var player: AudioStreamPlayer = layers[layer]
 		player.stop()
 		player.volume_linear = 0.0
 		player.stream_paused = false
 		levels[layer] = 0.0
-		player.play()
+		if output_enabled: player.play()
 	for player: AudioStreamPlayer in events+debris_events: player.stop()
 
 func begin_physics_feedback() -> void:
@@ -305,7 +314,7 @@ func _event(clip: String, amplitude: float, pitch: float = 1.0, debris: bool = f
 	if clip in IMPACTS and collision_trace_enabled: last_impact_route = "windows_raw" if native_played else "godot"
 	if native_played:
 		player.stop() # One playback path per event; no delayed second copy.
-	else: player.play()
+	elif output_enabled: player.play()
 	event_count += 1
 
 func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false) -> void:

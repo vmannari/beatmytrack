@@ -9,6 +9,12 @@ var use_ad: bool = true
 var race_remaining: int = 3
 var free_rewinds: bool = false
 
+func set_race_state(unavailable: bool, remaining: int) -> void:
+	if disabled == unavailable and race_remaining == remaining: return
+	disabled = unavailable
+	race_remaining = remaining
+	queue_redraw()
+
 func _init() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	add_theme_stylebox_override("disabled",StyleBoxEmpty.new())

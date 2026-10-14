@@ -10,6 +10,7 @@ signal challenges_requested
 signal join_requested
 signal refresh_requested
 signal continue_requested
+signal share_requested
 signal retry_requested
 var model: WeeklyRivalry
 var section: String = "overview"
@@ -28,6 +29,9 @@ var standings_ready: bool = false
 var track_rows: Array[Button] = []
 var track_markers: Array[ColorRect] = []
 var detail_route: LapRouteView
+var finale_livery: Dictionary = {}
+var finale_customisation: Dictionary = {}
+var finale_condition: Dictionary = {}
 const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
 const STANDINGS_GUTTER: int = 12
 const QUIET_BORDER := Color("2e495a88")
@@ -51,7 +55,8 @@ func _ready() -> void:
 	var main := VBoxContainer.new()
 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(main)
-	main.add_theme_constant_override("separation",12)
+	var awards: bool = section == "overview" and model.completed
+	main.add_theme_constant_override("separation",6 if awards else 12)
 	var header := HBoxContainer.new()
 	header.name = "RivalrySectionNavigation"
 	header.add_theme_constant_override("separation",24)
@@ -73,7 +78,7 @@ func _ready() -> void:
 	identity.add_theme_constant_override("separation",4)
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(identity)
-	var heading := MenuStyle.label("WEEKLY RIVALRY",38)
+	var heading := MenuStyle.label("WEEKLY RIVALRY",30 if awards else 38)
 	heading.add_theme_color_override("font_shadow_color",Color("061320"))
 	heading.add_theme_constant_override("shadow_offset_y",2)
 	identity.add_child(heading)
@@ -667,4 +672,14 @@ func _result(parent: Control) -> void:
 	parent.add_child(result_view)
 
 func _finale(parent: Control) -> void:
-	_championship(parent,true)
+	var ceremony := preload("res://ui/weekly_rivalry_finale.gd").new()
+	ceremony.model = model
+	ceremony.busy = busy
+	ceremony.error = error
+	ceremony.livery = finale_livery
+	ceremony.customisation = finale_customisation
+	ceremony.condition = finale_condition
+	ceremony.track_requested.connect(func(index: int) -> void: track_requested.emit(index))
+	ceremony.continue_requested.connect(func() -> void: continue_requested.emit())
+	ceremony.share_requested.connect(func() -> void: share_requested.emit())
+	parent.add_child(ceremony)

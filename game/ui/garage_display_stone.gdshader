@@ -1,0 +1,57 @@
+shader_type spatial;
+render_mode diffuse_burley, specular_schlick_ggx;
+varying vec3 stone_position;
+varying vec3 stone_normal;
+uniform bool wall_reflections_enabled = true;
+uniform vec4 stone_dark : source_color = vec4(0.20,0.225,0.23,1.0);
+uniform vec4 stone_light : source_color = vec4(0.29,0.31,0.30,1.0);
+uniform vec4 stone_vein : source_color = vec4(0.45,0.42,0.35,1.0);
+float stone_noise(vec3 p) {
+ return sin(p.x*1.7+sin(p.z*2.1))*sin(p.y*2.3+p.z*0.6)*0.5+0.5;
+}
+void vertex() { stone_position = (MODEL_MATRIX*vec4(VERTEX,1.0)).xyz; stone_normal = normalize(MODEL_NORMAL_MATRIX*NORMAL); }
+void fragment() {
+ vec3 p=stone_position;
+ float bend=sin(p.x*2.7+p.z*1.8+sin(p.y*1.7))*0.35+sin(p.y*4.3+p.z*3.1)*0.16+sin(p.z*9.0+p.y*7.1)*0.035;
+ float vein=abs(sin((p.z*0.73+p.y*0.86+p.x*0.31+bend)*4.0));
+ float aa=max(fwidth(vein),0.012);
+ float line=1.0-smoothstep(0.025,0.025+aa*1.7,vein);
+ float cloud=stone_noise(p*1.6);
+ ALBEDO=mix(stone_dark.rgb,stone_light.rgb,cloud);
+ ALBEDO=mix(ALBEDO,stone_vein.rgb,line*0.30);
+ ROUGHNESS=wall_reflections_enabled ? 0.18+cloud*0.07 : 0.32+cloud*0.10;
+ METALLIC=0.0;
+ SPECULAR=0.48;
+ // Bounded analytic reflections of the actual alcove and roof light layout.
+ // Environment radiance remains the broader native material reflection.
+ if (wall_reflections_enabled) {
+  vec3 eye=normalize(INV_VIEW_MATRIX[3].xyz-p);
+  vec3 n=normalize(stone_normal);
+  vec3 ray=reflect(-eye,n);
+  float sheen=0.045+0.20*pow(1.0-clamp(dot(n,eye),0.0,1.0),5.0);
+  float highlights=0.0;
+  if (ray.y>0.001) {
+   float distance=(3.485-p.y)/ray.y;
+   if (distance>0.0) {
+    vec3 hit=p+ray*distance;
+    for (int i=0;i<3;i++) {
+     vec2 delta=hit.xz-vec2(-9.72,0.1+float(i)*2.7);
+     float radius=0.065+distance*0.025;
+     highlights+=exp(-dot(delta,delta)/(radius*radius))*0.85;
+    }
+   }
+   distance=(5.48-p.y)/ray.y;
+   if (distance>0.0) {
+    vec3 hit=p+ray*distance;
+    for (int i=0;i<3;i++) {
+     float z=i==0 ? 1.0 : (i==1 ? 5.5 : 8.3);
+     vec2 delta=abs(hit.xz-vec2(0.0,z));
+     vec2 blur=vec2(0.10+distance*0.035);
+     vec2 band=1.0-smoothstep(vec2(3.25,0.17),vec2(3.25,0.17)+blur,delta);
+     highlights+=band.x*band.y*0.6;
+    }
+   }
+  }
+  EMISSION=vec3(1.0,0.88,0.65)*min(highlights,1.5)*sheen;
+ }
+}

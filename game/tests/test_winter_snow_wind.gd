@@ -38,7 +38,7 @@ func run() -> void:
 	var wind := WinterSnowWind.new()
 	root.add_child(wind)
 	wind.configure(track)
-	check(wind.get_child_count() == 3 and wind.anchors.size() > 0 and wind.airborne.multimesh.instance_count == 24, "two drift batches, 24 sparse airborne grains and prepared exposed bank anchors")
+	check(wind.get_child_count() == 3 and wind.anchors.size() > 0 and wind.airborne.multimesh.instance_count == 48, "two drift batches, bounded 48 airborne grains and prepared exposed bank anchors")
 	wind.present(2.0, Vector2(0, -18), 1.0, false, false)
 	check(wind.ground.multimesh.instance_count == 49 and wind.powder.multimesh.instance_count == 36, "bounded 49 long ground / 36 bank layers independent of track size")
 	check(wind.powder.multimesh.mesh is PlaneMesh and (wind.powder.multimesh.mesh as PlaneMesh).subdivide_width == 5, "six-span reference bank-to-road layers")
@@ -59,7 +59,7 @@ func run() -> void:
 	var strong: float = wind.intensity
 	var gust_start: float = wind.travel
 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
-	check(is_equal_approx(wind.travel - gust_start, 24.0), "harsh gust carries powder 24 world metres per second")
+	check(is_equal_approx(wind.travel - gust_start, 21.6), "shared gust advection slows to 21.6 world metres per second")
 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 0.0, false, false)
 	check(strong > 0.95 and is_equal_approx(wind.intensity, 0.24), "smooth gust strengthens both effects with light calm floor")
 	var pinned: Transform3D = wind.ground.multimesh.get_instance_transform(24)
@@ -311,7 +311,7 @@ func driving_preview(game: Node, fx: WinterSnowWind) -> void:
 		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.92)))
 		if frame == 60: check(root.get_texture().get_image().save_png(OUT + "/driving.png") == OK, "actual moving-car wind screenshot")
 	var output := FileAccess.open(OUT + "/driving-motion.html", FileAccess.WRITE)
-	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference-flow driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference-flow driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 4 seconds at 30 fps · reference-led powder flow at 24 m/s</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
+	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference-flow driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference-flow driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 4 seconds at 30 fps · reference-led powder flow at 21.6 m/s</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
 	output.close()
 	game.paused = true
 	game.sim = original_sim

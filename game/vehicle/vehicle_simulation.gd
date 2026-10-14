@@ -4,7 +4,7 @@ extends RefCounted
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.53"
+const PHYSICS_VERSION: String = "arcade-planar-0.56"
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -39,6 +39,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		(30.0 if requested_handbrake > state.handbrake_pressure else 3.0) * STEP)
 	var old_position: Vector2 = state.position
 	var old_heading: float = state.heading
+	var old_velocity: Vector2 = state.velocity
 	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
 	if state.roll_ticks > 0:
 		state.roll_ticks -= 1
@@ -250,6 +251,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.tire_oil = clampf(state.tire_oil + (distance / 3.0 if fluids.x > 0.0 else -distance / 180.0), 0.0, 1.0)
 	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
 	_step_kerbs(old_position,old_heading,ground)
+	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
 	state.tick += 1
 
 

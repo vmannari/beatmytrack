@@ -1,6 +1,6 @@
 extends SceneTree
 ## Native Music-bus wrap/pause/mute evidence for the owner-selected menu recording.
-const OUT: String = "res://../docs/evidence/menu-exploration-2026-10-11"
+const OUT: String = "res://../docs/evidence/media-compression-2026-10-12/menu-native"
 var checks: int = 0
 var failures: int = 0
 var keep_active: bool = false
@@ -26,6 +26,7 @@ func run() -> void:
 		push_error("Native capture requires -Graphical")
 		quit(1)
 		return
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var world: GameSoundtrack = GameSoundtrack.instance()
 	world.app_suspended = false
 	world.apply_settings({})
@@ -39,7 +40,7 @@ func run() -> void:
 	for pass_id: int in range(2):
 		world.app_suspended = false
 		world.menu_player.stream_paused = false
-		world.menu_player.seek(world.menu_player.stream.loop_end / 44100.0 - 3.0)
+		world.menu_player.seek(world.menu_player.stream.get_length() - 3.0)
 		await create_timer(.15).timeout
 		record.set_recording_active(true)
 		var previous: float = world.menu_player.get_playback_position()
@@ -52,7 +53,7 @@ func run() -> void:
 			var position: float = world.menu_player.get_playback_position()
 			if position < previous - 1.0: wrapped = true
 			previous = position
-		check(wrapped and world.menu_player.playing, "native PCM loop wraps continuously: %d" % pass_id)
+		check(wrapped and world.menu_player.playing, "native compressed loop wraps continuously: %d" % pass_id)
 		record.set_recording_active(false)
 		check(record.get_recording().save_to_wav(OUT.path_join("godot-wrap-%d.wav" % pass_id)) == OK, "saved native wrap capture")
 	keep_active = false
@@ -77,5 +78,10 @@ func run() -> void:
 	AudioServer.remove_bus_effect(0, AudioServer.get_bus_effect_count(0) - 1)
 	world.menu_player.stop()
 	world.apply_settings({})
+	world.menu_player.stop()
+	world.menu_player.stream = null
+	record = null
+	await process_frame
+	await process_frame
 	print("MENU_EXPLORATION_CAPTURE: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures > 0 else 0)

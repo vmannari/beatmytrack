@@ -1,7 +1,11 @@
 class_name HUDRoadMap
 extends Control
 ## Only placed road-piece geometry. No waypoint, painted-surface or legacy fallback.
-var player := Vector2.ZERO
+var player := Vector2.ZERO:
+	set(value):
+		var previous: Vector2 = _marker_position()
+		player = value
+		if not outlines.is_empty() and _marker_position() != previous: queue_redraw()
 var outlines: Array[PackedVector2Array] = []
 var world_bounds := Rect2()
 
@@ -48,10 +52,13 @@ func _rebuild_roads() -> void:
 
 func _draw() -> void:
 	if outlines.is_empty(): return
-	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
-	var marker: Vector2 = (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
+	var marker: Vector2 = _marker_position()
 	draw_circle(marker,5,Color("f1eee3"))
 	draw_circle(marker,3.5,Color("55a9d9"))
+
+func _marker_position() -> Vector2:
+	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
+	return (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
 
 func configure(track: NativeTrack, authored: bool) -> void:
 	outlines.clear()

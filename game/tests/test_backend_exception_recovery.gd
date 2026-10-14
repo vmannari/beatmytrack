@@ -126,6 +126,7 @@ func run() -> void:
 	check(int(job.get("retry_delay",0)) > 0,"protocol failure backs off")
 	malformed.mode = "normal"
 	cloud._retry_deadlines[TICKET] = 0
+	cloud._write_deadlines.clear() # Advance the independent background-write interval.
 	await cloud.flush_outbox()
 	check(cloud.upload_job(TICKET).get("run_id") == "recovered-run","corrected response recovers without restart")
 	cloud.queue_free(); malformed.queue_free()
@@ -159,7 +160,7 @@ func run() -> void:
 	response = await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
 	check(not response.ok and first.signed_in(),"unknown refresh response does not sign out recoverable session")
 	var config := ConfigFile.new()
-	config.load(first.session_path)
+	first._load_saved_config(config)
 	check(not str(config.get_value("session","refresh_request_id","")).is_empty(),"refresh operation persisted before delivery")
 	var restart: API = api("refresh")
 	restart._capabilities = {"refresh_recovery_seconds":120}
@@ -170,7 +171,7 @@ func run() -> void:
 	response = await restart.restore_session()
 	check(response.ok and restart.signed_in(),"same refresh operation recovers after client restart")
 	config = ConfigFile.new()
-	config.load(restart.session_path)
+	restart._load_saved_config(config)
 	check(str(config.get_value("session","refresh_request_id","")).is_empty(),"successful rotation retires recovery secret")
 	first.queue_free(); restart.queue_free()
 
@@ -188,7 +189,7 @@ func run() -> void:
 	credits.free()
 	await funder.resume_recovery.reconcile()
 	check(funder.consumptions == 1 and funder.balance == 2,"abandoned recovery returns resource without replaying charge")
-	check(DirAccess.get_files_at(directory).is_empty(),"authoritatively resolved operation is retired")
+	check(DirAccess.get_files_at(directory) == PackedStringArray([".retry.json"]),"authoritatively resolved operation is retired, leaving only pacing metadata")
 	funder.queue_free()
 
 	check(not Client.valid_response("/runs",HTTPClient.METHOD_POST,{}),"missing run id is invalid protocol")

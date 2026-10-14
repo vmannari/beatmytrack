@@ -5,13 +5,17 @@ func _initialize() -> void:
 
 func run() -> void:
 	var path: String = ""
+	var baseline: String = "res://../docs/evidence/winter-performance-2026-10-11/before-uv-cache.gd"
+	var output_path: String = "res://../docs/evidence/winter-performance-2026-10-11/road-build-slippery.json"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--document="): path = argument.trim_prefix("--document=")
+		if argument.begins_with("--baseline="): baseline = argument.trim_prefix("--baseline=")
+		if argument.begins_with("--output="): output_path = argument.trim_prefix("--output=")
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
 	document.theme = "winter"
 	var track: NativeTrack = TrackCompiler.compile(document)
 	var before := GDScript.new()
-	before.source_code = FileAccess.get_file_as_string("res://../docs/evidence/winter-performance-2026-10-11/before-uv-cache.gd").replace("class_name NativeTrackVisual\n", "").replace("class_name NativeTrackVisual\r\n", "")
+	before.source_code = FileAccess.get_file_as_string(baseline).replace("class_name NativeTrackVisual\n", "").replace("class_name NativeTrackVisual\r\n", "")
 	# Anonymous archived scripts cannot satisfy this unrelated named-class
 	# scenery API. Fail explicitly if the road-only probe ever enters it.
 	before.source_code = before.source_code.replace("WinterScenery.build_cover(self,track)",'assert(false,"Road-only probe cannot build cover")')
@@ -44,8 +48,8 @@ func run() -> void:
 		await process_frame
 	var exact: bool = true
 	for result: Dictionary in results: if result.mesh_sha256 != results[0].mesh_sha256: exact = false
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../docs/evidence/winter-performance-2026-10-11"))
-	var output := FileAccess.open("res://../docs/evidence/winter-performance-2026-10-11/road-build-slippery.json",FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_path.get_base_dir()))
+	var output := FileAccess.open(output_path,FileAccess.WRITE)
 	output.store_string(JSON.stringify({"track_hash":track.content_hash,"visual_version":NativeTrackVisual.VERSION,"exact_mesh_parity":exact,"results":results},"\t"))
 	print("WINTER_ROAD_BUILD_PARITY: ",exact)
 	quit(0 if exact else 1)

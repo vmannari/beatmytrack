@@ -45,6 +45,9 @@ var profile_label: Label
 var debug_enabled: bool = true
 var hud_elapsed: float = 0.0
 var title: Label
+var _display_laps := Vector2i(-1,-1)
+var _race_centiseconds: int = -1
+var _lap_centiseconds: int = -1
 
 
 func _ready() -> void:
@@ -311,14 +314,14 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 		return
 	hud_elapsed = 0.0
 	road_map.player = state.position
-	road_map.queue_redraw()
 	instrument.speed_fraction = clampf(state.velocity.length()*3.6/180.0,0,1)
 	speed_label.text = "%d" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
-	debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
-		state.velocity.dot(state.forward()), state.velocity.dot(state.right()), rad_to_deg(state.slip_angle()),
-		frame.steer / 127.0, frame.throttle / 255.0, frame.brake / 255.0, rad_to_deg(state.yaw_rate),
-		"SLIP" if state.grip < 0.95 else "GRIP", state.grip, Engine.get_frames_per_second(), state.tick, state.collision_count]
+	if debug_label.visible:
+		debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
+			state.velocity.dot(state.forward()), state.velocity.dot(state.right()), rad_to_deg(state.slip_angle()),
+			frame.steer / 127.0, frame.throttle / 255.0, frame.brake / 255.0, rad_to_deg(state.yaw_rate),
+			"SLIP" if state.grip < 0.95 else "GRIP", state.grip, Engine.get_frames_per_second(), state.tick, state.collision_count]
 	if paused:
 		message_label.text = "PAUSED · press Esc or Resume to continue"
 	elif recording:
@@ -374,12 +377,22 @@ func _round_button(button: Button) -> void:
 
 
 func show_session(session: TrackSession) -> void:
-	lap_label.text = str(mini(session.target_laps,session.completed_laps + 1))
-	lap_total.text = "/ %d" % session.target_laps
-	race_timer.text = _time_text(session.race_time_seconds())
+	var laps := Vector2i(mini(session.target_laps,session.completed_laps + 1),session.target_laps)
+	if laps != _display_laps:
+		_display_laps = laps
+		lap_label.text = str(laps.x)
+		lap_total.text = "/ %d" % laps.y
+	var race_seconds: float = session.race_time_seconds()
+	var race_centiseconds: int = floori(race_seconds*100.0+0.00001)
+	if race_centiseconds != _race_centiseconds:
+		_race_centiseconds = race_centiseconds
+		race_timer.text = _time_text(race_seconds)
 	var current: float = maxf(0.0,float(session.elapsed_ticks)/session.tick_rate-session.lap_start_time)
 	if session.finished and not session.lap_times.is_empty(): current = session.lap_times[-1]
-	lap_timer.text = _time_text(current)
+	var lap_centiseconds: int = floori(current*100.0+0.00001)
+	if lap_centiseconds != _lap_centiseconds:
+		_lap_centiseconds = lap_centiseconds
+		lap_timer.text = _time_text(current)
 	shortcut_penalty_label.visible = session.shortcut_count > 0
 
 

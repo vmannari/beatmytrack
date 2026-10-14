@@ -27,7 +27,7 @@ func _prepare() -> void:
 	if DisplayServer.get_name() == "headless":
 		ready_for_display = true
 		return
-	var key: String = track.content_hash+":"+str(Vector2i(size))
+	var key: String = track.content_hash+":"+NativeTrackVisual.VERSION+":"+str(Vector2i(size))
 	if _images.has(key):
 		_show_image(_images[key])
 		return
@@ -53,6 +53,7 @@ func _prepare() -> void:
 	light.directional_shadow_max_distance = 160
 	world.add_child(light)
 	var visual := NativeTrackVisual.new()
+	visual.cache_race_world = true
 	world.add_child(visual)
 	await visual.build(track,BridgePresentation.new(track),true)
 	if not is_inside_tree(): return

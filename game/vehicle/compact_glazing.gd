@@ -22,15 +22,20 @@ static func sheet(car: CarVisual, front: bool, trim: Material) -> void:
 	for glass: bool in [false,true]:
 		var key: String=("front" if front else "rear")+("_glass" if glass else "_seal")
 		var path: String=CompactCoachwork.ASSET_ROOT.path_join(key+".res")
+		if car.simple_model:
+			key += "_simple"
+			path = RacingCarModels.COACH_ROOT.path_join(key+".res")
 		if not sheets.has(key) and use_baked and ResourceLoader.exists(path):sheets[key]=load(path) as ArrayMesh
 		if sheets.has(key):
 			_attach_sheet(car,front,glass,sheets[key],trim)
 			continue
 		var tool := SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-		for row: int in range(20):
-			for column: int in range(36):
-				var uv: Array[Vector2] = [Vector2(column/36.0,row/20.0),Vector2((column+1)/36.0,row/20.0),Vector2((column+1)/36.0,(row+1)/20.0),Vector2(column/36.0,(row+1)/20.0)]
+		var rows: int = 10 if car.simple_model else 20
+		var columns: int = 18 if car.simple_model else 36
+		for row: int in range(rows):
+			for column: int in range(columns):
+				var uv: Array[Vector2] = [Vector2(float(column)/columns,float(row)/rows),Vector2(float(column+1)/columns,float(row)/rows),Vector2(float(column+1)/columns,float(row+1)/rows),Vector2(float(column)/columns,float(row+1)/rows)]
 				var points: Array[Vector3] = []
 				for t: Vector2 in uv: points.append(_sheet_point(front,t.x,t.y,glass))
 				var order: Array[int]=[0,1,2,0,2,3]

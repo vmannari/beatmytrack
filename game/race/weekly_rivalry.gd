@@ -25,6 +25,7 @@ var placement: bool = false
 var forming: bool = false
 var vehicle_id: String = "compact"
 var source_self: String = ""
+var personal_best_slots: Array[int] = []
 
 func _init(use_sample: bool = false) -> void:
 	sample = use_sample
@@ -47,6 +48,9 @@ func apply_snapshot(value: Dictionary) -> void:
 	forming = bool(value.get("group_forming",false))
 	vehicle_id = str(value.get("vehicle_id",VehicleCatalog.selected))
 	source_self = str(value.get("self_id",""))
+	personal_best_slots.clear()
+	for slot: Variant in value.get("personal_best_slots",[]):
+		if (slot is int or slot is float) and is_finite(float(slot)) and float(slot) == floor(float(slot)) and slot >= 0 and slot < 5 and not personal_best_slots.has(int(slot)): personal_best_slots.append(int(slot))
 	if value.get("points_policy") is Array: points_policy.assign(value.points_policy)
 	tracks.clear()
 	server_standings.clear()
@@ -218,6 +222,72 @@ func next_week() -> void:
 	week += 1
 	completed = false
 	_seed()
+	personal_best_slots.clear()
+
+func finale_summary() -> Dictionary:
+	var standings: Array[Dictionary] = standing()
+	var own: Dictionary = self_row(standings)
+	var wins: int = 0
+	var shared: int = 0
+	var finishes: int = 0
+	var results: Array[Dictionary] = []
+	for slot: int in range(tracks.size()):
+		var rows: Array[Dictionary] = board(slot)
+		var driver: Dictionary = self_row(rows)
+		var finishers: Array[Dictionary] = []
+		for row: Dictionary in rows:
+			if row.get("ms") != null: finishers.append(row)
+		finishers.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return _result_order(a) < _result_order(b))
+		var finished: bool = driver.get("ms") != null
+		if finished: finishes += 1
+		var victory: bool = finished and driver.get("rank") == 1 and finishers.size() > 1
+		var tied: bool = victory and _result_order(finishers[0]) == _result_order(finishers[1])
+		if victory: wins += 1
+		if tied: shared += 1
+		var second: Dictionary = finishers[1] if finishers.size() > 1 else {}
+		var gap: Variant = int(driver.ms)-int(second.ms) if finished and not second.is_empty() else null
+		results.append({"slot":slot,"own":driver,"victory":victory,"shared":tied,"gap_to_second_ms":gap})
+	var leaders: int = 0
+	for driver: Dictionary in standings:
+		if driver.get("rank") == 1: leaders += 1
+	var contested: bool = standings.size() > 1
+	var champion: bool = completed and own.get("rank") == 1 and finishes > 0 and contested
+	var perfect: bool = champion and wins == 5 and shared == 0
+	var tier: int = 3 if perfect else 2 if champion else 1 if completed and own.get("rank") != null and int(own.rank) <= 3 and contested else 0
+	var title: String = "JOINT WEEKLY CHAMPION" if champion and leaders > 1 else "WEEKLY CHAMPION" if champion else "PODIUM FINISH" if tier == 1 else "WEEK COMPLETE"
+	var margin: int = 0
+	var rival: String = ""
+	if champion:
+		for driver: Dictionary in standings:
+			if driver.id != SELF:
+				margin = int(own.get("points",0))-int(driver.points)
+				rival = str(driver.name)
+				break
+	var highlights: Array[String] = []
+	if perfect: highlights.append("Victory on every track")
+	elif wins > 0: highlights.append("%d track %s" % [wins,"victory" if wins == 1 else "victories"])
+	if champion and margin > 0: highlights.append("%d-point winning margin" % margin)
+	elif champion and leaders > 1: highlights.append("Shared championship lead")
+	elif tier == 1: highlights.append("Championship podium")
+	if not personal_best_slots.is_empty(): highlights.append("Personal bests on %d %s" % [personal_best_slots.size(),"track" if personal_best_slots.size() == 1 else "tracks"])
+	if finishes == 5 and not perfect: highlights.append("All five tracks completed")
+	if highlights.is_empty(): highlights.append("%d of five tracks completed" % finishes)
+	return {"title":title,"tier":tier,"champion":champion,"perfect":perfect,"wins":wins,"shared_wins":shared,
+		"completed":finishes,"rank":own.get("rank"),"points":int(own.get("points",0)),"drivers":standings.size(),
+		"margin":margin,"rival":rival,"results":results,"highlights":highlights}
+
+func finale_share_text() -> String:
+	if not completed: return ""
+	var summary: Dictionary = finale_summary()
+	var position: String = "Unranked" if summary.rank == null else "#%d / %d" % [int(summary.rank),int(summary.drivers)]
+	var lines: Array[String] = ["Beat my track - Weekly Rivalry - Week %02d" % week,
+		summary.title.capitalize(),"%s | %d points | %d/5 track victories" % [position,summary.points,summary.wins],VehicleCatalog.title(vehicle_id)]
+	for result: Dictionary in summary.results:
+		var driver: Dictionary = result.own
+		lines.append("%s: %s | %s | %d points" % [str(tracks[result.slot].name),"--" if driver.get("rank") == null else "#%d" % int(driver.rank),
+			"No time" if driver.get("ms") == null else MenuStyle.time_text(float(driver.ms)/1000.0),int(driver.get("points",0))])
+	if summary.perfect: lines.append("Perfect Week - five tracks, five outright victories")
+	return "\n".join(lines)
 
 func board(index: int) -> Array[Dictionary]:
 	var rows: Array[Dictionary] = []

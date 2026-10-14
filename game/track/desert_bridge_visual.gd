@@ -5,7 +5,7 @@ const REVISION: String = "desert-bridge-2"
 const STONE: Color = Color("a89b83")
 const CAP: Color = Color(0.74,0.69,0.59,0.0)
 
-static func append(tool: SurfaceTool, deck: SurfaceTool, span: Dictionary, bridges: Array = []) -> void:
+static func append(tool: SurfaceTool, deck: SurfaceTool, span: Dictionary, bridges: Array = [], road_phase: Dictionary = {}) -> void:
 	# Coping is cut stone: do not average normals across its top and bevels.
 	tool.set_smooth_group(-1)
 	var rails: Dictionary = {}
@@ -16,7 +16,7 @@ static func append(tool: SurfaceTool, deck: SurfaceTool, span: Dictionary, bridg
 	for i: int in range(count):
 		var a: float = length*i/count
 		var b: float = length*(i+1)/count
-		CreatorBridgeVisual.strip(deck,span,a,b,-half,half,0.025,Color.WHITE)
+		CreatorBridgeVisual.strip(deck,span,a,b,-half,half,0.025,Color.WHITE,road_phase)
 		for side: float in [-1.0,1.0]:
 			for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
 				var inner: float = (half+0.04)*side

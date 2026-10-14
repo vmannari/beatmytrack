@@ -5,12 +5,17 @@ extends Node3D
 var underside_material: StandardMaterial3D = VisualGeometry.material(Color.BLACK)
 var vehicle_id: String = "compact"
 var livery: Dictionary = {}
+var customisation: Dictionary = {}
 var paint_materials: Dictionary = {}
 var paint_variants: Array[Dictionary] = []
 var accent_roof: StandardMaterial3D
+var simple_model: bool = false
+var editable_kits: bool = false
+var kit_frames: Dictionary = {}
+var graphics := LiveryGraphics.new()
 
 func apply_livery(value: Dictionary) -> void:
-	livery = value.duplicate(true) if VehicleLivery.valid(value) else VehicleLivery.defaults(vehicle_id)
+	livery = VehicleLivery.normalize(value,vehicle_id)
 	for slot: String in VehicleLivery.SLOTS:
 		if paint_materials.has(slot):
 			(paint_materials[slot] as StandardMaterial3D).albedo_color = Color(str(livery.colors[slot]))
@@ -19,6 +24,7 @@ func apply_livery(value: Dictionary) -> void:
 	for variant: Dictionary in paint_variants:
 		var color: Color = Color(str(livery.colors[variant.slot]))
 		(variant.material as StandardMaterial3D).albedo_color = color.darkened(float(variant.get("darken",0.0)))
+	graphics.apply()
 var headlights: Node3D
 var road_headlight: SpotLight3D
 var night_lights_enabled: bool = false
@@ -82,7 +88,8 @@ func set_headlight_bridge_occlusion(enabled: bool) -> void:
 		# procedural deck from shading its top face. Bridge meshes use visual layer
 		# 2, so exclude that layer throughout ground-level travel (including the
 		# approach and exit) and restore it only when driving on the deck.
-		road_headlight.light_cull_mask = 1 if enabled else 3
+		var mask: int = 1 if enabled else 3
+		if road_headlight.light_cull_mask != mask: road_headlight.light_cull_mask = mask
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
 var rolling_wheels: Array[Node3D] = []
@@ -187,11 +194,12 @@ func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bo
 
 func _ready() -> void:
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
 	if vehicle_id != "compact":
 		VehicleModels.build(self, vehicle_id)
 		if not livery.is_empty(): apply_livery(livery)
 		_update_rear_lights()
-		if batch_parts: VisualGeometry.batch_static_parts(self)
+		_finish_render_model()
 		return
 	var paint := CompactFinish.paint(Color("e0d5b5"))
 	var blue := CompactFinish.paint(Color("30627d"))
@@ -210,19 +218,87 @@ func _ready() -> void:
 			var pivot := Node3D.new()
 			pivot.position = Vector3(side * 0.83, 0.37, axle)
 			add_child(pivot)
-			CompactDetail.tire(pivot, trim)
-			var hub := VisualGeometry.cylinder(pivot, 0.228, 0.16, Vector3.ZERO, trim,true)
-			hub.rotation.z = PI * 0.5
-			for spoke: int in range(8):
-				var a: float = spoke*TAU/8.0
-				_seam(pivot,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
+			CompactDetail.tire(pivot, trim, simple_model)
+			var rim_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
+			if CompactKits.choice(self,"rims") == "stock":
+				var hub := VisualGeometry.cylinder(rim_parent, 0.228, 0.16, Vector3.ZERO, trim,true)
+				hub.rotation.z = PI * 0.5
+				for spoke: int in range(8):
+					var a: float = spoke*TAU/8.0
+					_seam(rim_parent,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,rim)
+			else: CompactKits.build_wheel(self,rim_parent,side)
 			if axle < 0:
 				front_wheels.append(pivot)
 			register_rolling_wheel(pivot, 0.37)
+			var brake_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
+			if CompactKits.choice(self,"rims") != "stock": CompactKits.build_caliper(brake_parent,side)
 	CompactDetail.build(self, blue, paint, trim, rim)
+	CompactKits.build_aero(self)
+	CompactKits.build_body(self)
 	if not livery.is_empty(): apply_livery(livery)
 	_update_rear_lights()
-	if batch_parts: VisualGeometry.batch_static_parts(self)
+	_finish_render_model()
+
+
+func _finish_render_model() -> void:
+	if simple_model: RacingCarModels.prepare(self)
+	if batch_parts:
+		VisualGeometry.batch_static_parts(self)
+		VisualGeometry.batch_car_parts(self)
+	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+	graphics.configure(self)
+
+func new_kit_frame(category: String, parent: Node3D) -> Node3D:
+	var frame := Node3D.new()
+	frame.name = "EditableKit_"+category
+	parent.add_child(frame)
+	register_kit_frame(category,frame)
+	return frame
+
+func register_kit_frame(category: String, frame: Node3D) -> void:
+	if not editable_kits: return
+	if not kit_frames.has(category): kit_frames[category] = []
+	kit_frames[category].append(frame)
+
+func wheel_kit_frame(rotor: Node3D) -> Node3D:
+	if editable_kits:
+		for frame: Node3D in kit_frames.get("rims",[]):
+			if frame.get_parent()==rotor: return frame
+	return rotor
+
+func change_kit_parts(value: Dictionary) -> void:
+	var previous: Dictionary = customisation
+	customisation = value.duplicate(true)
+	for category: String in VehicleCustomisation.CATEGORIES:
+		if previous[category]==value[category]: continue
+		for frame: Node3D in kit_frames.get(category,[]):
+			frame.get_parent().remove_child(frame)
+			frame.queue_free()
+		kit_frames[category] = []
+		match category:
+			"hood": CompactCoachwork.build_hood(self,paint_materials.body,paint_materials.accent)
+			"aero": CompactKits.build_aero(self)
+			"body": CompactKits.build_body(self)
+			"rims":
+				var trim: Material = CompactFinish.rubber(Color("171e21"))
+				var alloy: Material = CompactFinish.alloy(Color("657177"))
+				var bright: Material = CompactFinish.alloy(Color("b5b8ae"))
+				for rotor: Node3D in rolling_wheels:
+					var side: float = signf((rotor.get_parent() as Node3D).position.x)
+					var frame: Node3D = new_kit_frame("rims",rotor)
+					if value.rims=="stock":
+						var hub := VisualGeometry.cylinder(frame,0.228,0.16,Vector3.ZERO,trim,true)
+						hub.rotation.z = PI*0.5
+						for spoke: int in range(8):
+							var a: float = spoke*TAU/8.0
+							_seam(frame,Vector3(side*0.085,sin(a)*0.08,cos(a)*0.08),Vector3(side*0.148,sin(a)*0.222,cos(a)*0.222),0.032,alloy)
+						CompactDetail.rim_detail(frame,side,alloy,trim,bright)
+					else: CompactKits.build_wheel(self,frame,side)
+					var brake: Node3D = new_kit_frame("rims",rotor.get_parent())
+					if value.rims!="stock": CompactKits.build_caliper(brake,side)
+		for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+	graphics = LiveryGraphics.new()
+	graphics.configure(self)
 
 
 func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFrame) -> void:
@@ -272,7 +348,7 @@ func register_rolling_wheel(pivot: Node3D, radius: float) -> void:
 	wheel_rest_positions.append(pivot.position)
 
 
-func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0, kerb_heights: Vector4 = Vector4.ZERO) -> void:
+func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0, kerb_heights: Vector4 = Vector4.ZERO, bump_heights: Vector4 = Vector4.ZERO, bump_track: bool = false, bump_pose: Vector3 = Vector3.ZERO) -> void:
 	# Consume snapshots once, independent of display rate; never write to simulation.
 	if last_tick < 0 or state.tick < last_tick or state.tick - last_tick > 30:
 		suspension = Vector3.ZERO
@@ -337,7 +413,8 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 	var surface_heave: float = (sin(phase * 55.0) + sin(phase * 31.0) * 0.35) * MAX_SURFACE_HEAVE * rumble
 	var surface_roll: float = (sin(phase * 43.0) + cos(phase * 29.0) * 0.30) * MAX_SURFACE_ROLL * rumble
 	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE + surface_heave
-	body.rotation.x = (suspension.y + ramp_body_pitch) * compliance
+	var body_pitch: float = state.bump_transfer.x if bump_track and state.jump_height == 0.0 and state.roll_ticks == 0 else suspension.y
+	body.rotation.x = (body_pitch + ramp_body_pitch) * compliance
 	body.rotation.z = suspension.z * compliance + surface_roll
 	# The canonical spring moves the chassis; each tyre follows its own contact
 	# instead of inheriting that rigid plane. Keep diagonal/single-wheel contact.
@@ -353,6 +430,13 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 	# axle. The kart retains its stiffer chassis; canonical handling is untouched.
 	body.rotation.x += kerb_pose.y * 0.70 * compliance
 	body.rotation.z += kerb_pose.z * 0.70 * compliance
+	if bump_heights != Vector4.ZERO:
+		var basis := Basis.from_euler(Vector3(bump_pose.y,0,bump_pose.z))
+		for i: int in range(rolling_wheels.size()):
+			var rest: Vector3 = wheel_rest_positions[i]
+			var wheel: Node3D = rolling_wheels[i].get_parent() as Node3D
+			var slot: int = (0 if rest.z < 0.0 else 2)+(0 if rest.x < 0.0 else 1)
+			wheel.position.y += ((bump_heights[slot]-bump_pose.x)/HandlingConfig.BODY_SCALE-basis.x.y*rest.x-basis.z.y*rest.z)/basis.y.y
 
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.
@@ -369,6 +453,14 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 	var roll: float = state.roll_direction * TAU * turn
 	var low: float = INF
 	var outline: Array[Vector2] = ROLL_OUTLINE
+	if vehicle_id=="compact" and customisation != VehicleCustomisation.defaults():
+		outline = ROLL_OUTLINE.duplicate()
+		if customisation.body in ["rally","club"]:
+			outline.append_array([Vector2(-1.10,0.37),Vector2(1.10,0.37),Vector2(-1.10,0.85),Vector2(1.10,0.85)])
+		if customisation.aero!="stock":
+			var half: float = 0.92 if customisation.aero=="wing" else 0.65
+			var height: float = 1.89 if customisation.aero=="wing" else 1.64
+			outline.append_array([Vector2(-half,height),Vector2(half,height)])
 	if vehicle_id != "compact":
 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
 		var height: float = 1.96 if vehicle_id == "pickup" else 0.91 if vehicle_id == "formula" else 1.36

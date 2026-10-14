@@ -5,16 +5,17 @@ extends RefCounted
 const RAIL_TOP: Color = Color("858681")
 const RAIL_SIDE: Color = Color("60635f")
 
-static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> void:
+static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = []) -> void:
 	if bridges.is_empty(): return
 	ContactShading.build_bridges(parent,bridges)
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var deck := SurfaceTool.new()
 	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for span: Dictionary in bridges:
+	for span_index: int in range(bridges.size()):
+		var span: Dictionary = bridges[span_index]
 		if theme == "desert":
-			DesertBridgeVisual.append(tool,deck,span,bridges)
+			DesertBridgeVisual.append(tool,deck,span,bridges,road_phases[span_index] if span_index < road_phases.size() else {})
 			continue
 		var rails: Dictionary = {}
 		for side: float in [-1.0,1.0]: rails[side] = CreatorBridges.rail_runs(span,bridges,0,float(span.length),side)
@@ -92,6 +93,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 	road.mesh = deck.commit()
 	var asphalt := ShaderMaterial.new()
 	asphalt.shader = preload("res://track/storm_bridge_road.gdshader") if theme == "storm" else preload("res://track/bridge_road.gdshader")
+	if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
@@ -102,6 +104,13 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine") -> voi
 		asphalt.set_shader_parameter("winter_bridge_width_data",true)
 	asphalt.set_shader_parameter("wet_road",theme == "storm")
 	asphalt.set_shader_parameter("packed_sand",theme == "desert")
+	asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+	asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+	if theme == "desert":
+		asphalt.set_shader_parameter("desert_apron",NativeTrackVisual.DESERT_APRON)
+		asphalt.set_shader_parameter("desert_bridge_width_data",true)
+		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
+		SurfaceShaderVariants.specialize(asphalt)
 	road.material_override = asphalt
 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
 	parent.add_child(road)
@@ -110,11 +119,18 @@ static func vertex(span: Dictionary, along: float, across: float, offset: float)
 	var p: Vector2 = Vector2(span.position[0],span.position[1])+Vector2(along,across).rotated(deg_to_rad(float(span.heading)))
 	return VisualGeometry.world(p)+Vector3.UP*(CreatorBridges.height(span,p)+offset)
 
-static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color) -> void:
+static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color, road_phase: Dictionary = {}) -> void:
 	# Metres along/across this span, so winter wear follows any bridge heading.
 	tool.set_color(color)
 	for uv: Vector2 in [Vector2(a,left),Vector2(b,right),Vector2(b,left),Vector2(a,left),Vector2(a,right),Vector2(b,right)]:
-		tool.set_uv(uv)
+		if not road_phase.is_empty():
+			# Continue settled shoulder grains onto the mouth, then let them
+			# recede along the first four metres of the stone-confined ramp.
+			tool.set_uv2(Vector2(float(span.width)*0.5,smoothstep(0.0,4.0,minf(uv.x,float(span.length)-uv.x))))
+		# Ground roads measure across with Vector2.orthogonal(): (y,-x).
+		# Bridge geometry uses the opposite transverse basis. Correct the UV
+		# before applying shared phase/sign, including reverse-authored spans.
+		tool.set_uv(preload("res://track/desert_road_union.gd").coordinates(Vector2(uv.x,-uv.y),road_phase) if not road_phase.is_empty() else uv)
 		tool.add_vertex(vertex(span,uv.x,uv.y,offset))
 
 static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:

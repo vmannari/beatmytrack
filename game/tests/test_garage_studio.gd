@@ -2,7 +2,7 @@ extends SceneTree
 ## Native studio/model inspection. Isolated records; no account, backend or race writes.
 var failures: int = 0
 var checks: int = 0
-var output: String = "res://../docs/evidence/garage-studio-2026-10-10"
+var output: String = "res://../docs/evidence/garage-pedestal-2026-10-12/model-regression"
 
 func _initialize() -> void: _run.call_deferred()
 func check(ok: bool, label: String) -> void:
@@ -46,6 +46,8 @@ func _run() -> void:
 	page.circuit_title = "STARTER CIRCUIT"
 	var build_began: int = Time.get_ticks_usec()
 	holder.add_child(page)
+	page._show_section("customise")
+	page._set_customise_tab("colours")
 	print("STUDIO_BUILD_MS ",(Time.get_ticks_usec()-build_began)/1000.0)
 	await capture("compact-default-1280")
 	var view: CarShowroom = page.showroom
@@ -53,10 +55,11 @@ func _run() -> void:
 	check(view.camera.projection == Camera3D.PROJECTION_PERSPECTIVE,"perspective preserved")
 	check(view.showroom_viewport.own_world_3d,"studio world isolated")
 	check(view.showroom_viewport.msaa_3d == Viewport.MSAA_4X,"menu antialiasing")
-	check(view.showroom_viewport.find_child("SeamlessStudioCove",true,false) != null,"continuous cove replaces platform")
-	var env: WorldEnvironment = view.showroom_viewport.find_child("StudioEnvironment",true,false)
+	check(view.showroom_viewport.find_child("GarageArchitecture",true,false) != null and view.turntable.is_ancestor_of(view.car),"owner-requested garage and turntable replace seamless cove")
+	var env: WorldEnvironment = view.showroom_viewport.find_child("GarageEnvironment",true,false)
 	check(env.environment.sky == ShowroomStudio.cached_sky,"cached studio radiance")
-	check(view.showroom_viewport.find_child("PreparedStudioShadow",true,false)!=null,"mesh-derived soft ground shadow")
+	var garage_key: DirectionalLight3D = view.showroom_viewport.find_child("GarageKey",true,false)
+	check(garage_key != null and garage_key.shadow_enabled,"parked car has actual directional shadows on the pedestal")
 	var body: StandardMaterial3D = view.car.paint_materials.body
 	check(body.roughness < 0.5 and body.specular_mode != BaseMaterial3D.SPECULAR_DISABLED,"satin automotive finish")
 	var before: Dictionary = {"meshes":0,"triangles":0,"uv_vertices":0,"vertices":0,"finite":true}

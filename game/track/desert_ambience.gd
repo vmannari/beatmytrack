@@ -1,10 +1,10 @@
 class_name DesertAmbience
 extends Node
 ## Open wind and wind-blown dune sand; local presentation RNG, independent of driving.
-const WIND_CLIPS: Array[AudioStreamWAV] = [
-	preload("res://assets/audio/ambience/desert_wind.wav"),
-	preload("res://assets/audio/ambience/desert_wind_b.wav"),
-	preload("res://assets/audio/ambience/desert_wind_c.wav"),
+const WIND_CLIPS: Array[AudioStream] = [
+	preload("res://assets/audio/ambience/desert_wind.ogg"),
+	preload("res://assets/audio/ambience/desert_wind_b.ogg"),
+	preload("res://assets/audio/ambience/desert_wind_c.ogg"),
 ]
 const WIND_BASE: float = 0.38
 const WIND_SWELL: float = 0.12
@@ -35,7 +35,7 @@ var gust_duration: float = 0.0
 var gust_wait: float = 0.0
 var next_high: bool = true
 var gusts_started: int = 0
-var wind_loops: Array[AudioStreamWAV] = []
+var wind_loops: Array[AudioStream] = []
 var wind_bag: Array[int] = []
 var wind_variant: int = -1
 
@@ -47,13 +47,13 @@ func _init() -> void:
 func configure(theme: String) -> void:
 	enabled = theme == "desert"
 	if enabled and wind == null:
-		for source: AudioStreamWAV in WIND_CLIPS: wind_loops.append(PcmAudioLoop.prepare(source))
+		for source: AudioStream in WIND_CLIPS: wind_loops.append(AudioLoop.prepare(source))
 		wind = _voice("DesertWind", wind_loops[0])
-		sand = _voice("DuneSand", PcmAudioLoop.prepare(preload("res://assets/audio/ambience/desert_dune_sand.wav")))
+		sand = _voice("DuneSand", AudioLoop.prepare(preload("res://assets/audio/ambience/desert_dune_sand.ogg")))
 	reset()
 
 
-func _voice(label: String, stream: AudioStreamWAV) -> AudioStreamPlayer:
+func _voice(label: String, stream: AudioStream) -> AudioStreamPlayer:
 	var voice := AudioStreamPlayer.new()
 	voice.name = label
 	voice.bus = "Vehicle"

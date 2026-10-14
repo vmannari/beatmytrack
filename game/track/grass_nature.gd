@@ -32,7 +32,7 @@ func configure(theme: String) -> void:
 	enabled = theme == "pine"
 	if enabled and insects == null:
 		insects = _voice("GrassInsects")
-		insects.stream = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/night_cicadas.wav"))
+		insects.stream = AudioLoop.prepare(preload("res://assets/audio/ambience/night_cicadas.ogg"))
 		leaves = _voice("GrassLeaves")
 		leaves.stream = preload("res://assets/audio/ambience/grass_leaves.wav")
 	reset()

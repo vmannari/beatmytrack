@@ -141,7 +141,7 @@ func run() -> void:
 	var environment := Environment.new()
 	var light := DirectionalLight3D.new()
 	TrackTheme.apply_lighting("desert",environment,light)
-	check(is_equal_approx(light.rotation_degrees.x,-58) and light.light_color == Color("ffedce") and is_equal_approx(light.light_energy,1.32),"desert shares grass warm daylight per owner override")
+	check(is_equal_approx(light.rotation_degrees.x,-46) and light.light_color == Color("ffedce") and is_equal_approx(light.light_energy,1.32) and environment.ambient_light_energy < 0.35,"desert directional daylight defines low sandbanks with stronger shade")
 	TrackTheme.apply_lighting("pine",environment,light)
 	check(is_equal_approx(light.rotation_degrees.x,-58),"leaving desert restores daylight angle")
 	light.free()

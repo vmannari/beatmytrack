@@ -2,14 +2,14 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-132"
+const VERSION: String = "track-kit-191"
 const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
 const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
 const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
 const WORN_ASPHALT_FINISH_COLORS: Array[Color] = [Color("b8b9ad"), Color("42494a")]
 const SURFACE_FACTORS: Texture2D = preload("res://assets/textures/surface_factors_v1.png")
 const WINTER_ICE: Texture2D = preload("res://assets/textures/winter_ice_v1.png")
-const WINTER_ICE_FINISH: Texture2D = preload("res://assets/textures/winter_ice_finish_v3.png")
+const WINTER_ICE_FINISH: Texture2D = preload("res://assets/textures/winter_ice_seam_finish_v4.png")
 const WINTER_SNOW: Texture2D = preload("res://assets/textures/winter_snow_v1.png")
 const COLORS: Array[Color] = TrackTheme.PINE # Legacy geometry-debug palette.
 const GRASS_TEXTURE: Texture2D = preload("res://assets/textures/painted_grass_v1.png")
@@ -19,12 +19,26 @@ const GRASS_NORMAL: Texture2D = preload("res://assets/textures/grass_normal.png"
 const DUNE_FACTORS: Texture2D = preload("res://assets/textures/desert_dunes_v1.png")
 const DESERT_APRON: Texture2D = preload("res://assets/textures/desert_apron_v1.png")
 const DUNE_ALBEDO: Texture2D = preload("res://assets/textures/desert_sand_v2.png")
+const DESERT_ROAD_ALBEDO: Texture2D = preload("res://assets/textures/desert_compacted_road_v3.png")
+static var desert_road_reference: Vector2 = _desert_road_reference()
+
+static func _desert_road_reference() -> Vector2:
+	var artwork: Image = DESERT_ROAD_ALBEDO.get_image()
+	var reference := Vector2.ZERO
+	for y: int in range(32):
+		for x: int in range(32):
+			var color: Color = artwork.get_pixel((x*artwork.get_width()+artwork.get_width()/2)/32,(y*artwork.get_height()+artwork.get_height()/2)/32)
+			var linear: Color = color.srgb_to_linear()
+			reference += Vector2(color.r*0.2126+color.g*0.7152+color.b*0.0722,linear.r*0.2126+linear.g*0.7152+linear.b*0.0722)
+	return reference/1024.0
 
 const TERRAIN_SHADER: Shader = preload("res://track/terrain.gdshader")
 const CREATOR_ROAD_SHADER: Shader = preload("res://track/creator_road.gdshader")
 const NIGHT_TILE_SIZE: float = 16.0
 const NIGHT_ROAD_GROUP_SIZE: float = 16.0
 var partition_night_ground: bool = true
+var partition_static_meshes: bool = true
+var uniform_terrain_regions: bool = true
 var _menu_slices: bool = false
 var _slice_started: int = 0
 var theme_id: String = "pine"
@@ -34,18 +48,27 @@ var tyre_instances: MultiMeshInstance3D
 var _tyre_positions := PackedVector2Array()
 var _tyre_spins: Array[float] = []
 var light_instances: Array[Node3D] = []
+var _prop_draw_states: Array[Dictionary] = []
 var scenic_count: int = 0
 var editor_objects: NativeTrackVisual
 var editor_cover: NativeTrackVisual
 var editor_scenery: NativeTrackVisual
 var _editor_scenery_sources: Array = []
 var _editor_object_revision: int = 0
+var _editor_authored_batches: RefCounted
+var _capture_editor_prop_arrays: bool = false
+var _capture_road_arrays: bool = false
+var _prepared_road_parts: Array = []
+var prepare_editor_roads: bool = true
+const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
 var cache_road_meshes: bool = true
 var persist_road_meshes: bool = true
 var cache_race_world: bool = false
+var world_built: bool = false
 const PREPARED_WORLDS = preload("res://track/prepared_world_cache.gd")
 const ROAD_DISK_CACHE = preload("res://track/road_mesh_disk_cache.gd")
 const ROAD_CACHE_BUDGET: int = 32 * 1024 * 1024
+const ROAD_CACHE_MAX_ENTRIES: int = 8
 static var _road_mesh_cache: Array[Dictionary] = []
 static var _pending_road_bakes: Dictionary = {}
 
@@ -57,9 +80,14 @@ func _bind_grass(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
 	material.set_shader_parameter("ice_finish",WINTER_ICE_FINISH)
 	material.set_shader_parameter("desert_dunes",theme_id == "desert")
+	if theme_id == "desert":
+		var sun_rotation: Vector3 = TrackTheme.DESERT_SUN_ROTATION
+		material.set_shader_parameter("desert_sun_direction",Basis.from_euler(Vector3(deg_to_rad(sun_rotation.x),deg_to_rad(sun_rotation.y),deg_to_rad(sun_rotation.z))).z)
 	material.set_shader_parameter("dune_factors",DUNE_FACTORS)
 	material.set_shader_parameter("desert_apron",DESERT_APRON)
 	material.set_shader_parameter("dune_albedo",DUNE_ALBEDO)
+	material.set_shader_parameter("desert_road_albedo",DESERT_ROAD_ALBEDO)
+	material.set_shader_parameter("desert_road_reference",desert_road_reference)
 	material.set_shader_parameter("hybrid_grass",theme_id in ["pine","storm"])
 	material.set_shader_parameter("grass_albedo",GRASS_ALBEDO)
 	material.set_shader_parameter("grass_macro_mask",GRASS_MACRO)
@@ -67,19 +95,27 @@ func _bind_grass(material: ShaderMaterial) -> void:
 
 
 func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
+	world_built = false
 	_menu_slices = menu_slices
 	_slice_started = Time.get_ticks_usec() if menu_slices else 0
 	theme_id = TrackTheme.normalized(str(track.metadata.get("theme", "pine")))
 	colors = TrackTheme.palette(theme_id)
-	var world_key: Array = [track.content_hash,VERSION,ContactShading.VERSION,theme_id,colors,partition_night_ground]
-	var reuse_world: bool = cache_race_world and not editor_preview and not menu_slices
-	if reuse_world and PREPARED_WORLDS.restore(world_key,self): return
+	set_meta("spatial_mask_budget_bytes",track.cells.size()*16)
+	var visual_version: String = VERSION if partition_static_meshes and uniform_terrain_regions else VERSION+"/"+str(partition_static_meshes)+"/"+str(uniform_terrain_regions)
+	var world_key: Array = [track.content_hash,visual_version,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
+	var reuse_world: bool = cache_race_world and not editor_preview
+	if reuse_world and PREPARED_WORLDS.restore(world_key,self):
+		world_built = true
+		return
 	var ground := ShaderMaterial.new()
 	ground.shader = preload("res://track/ground.gdshader")
 	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	ground.set_shader_parameter("ground_color", colors[1])
 	ground.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
 	_bind_grass(ground)
+	# Opaque roads/banks/props populate depth first. Their hidden terrain and
+	# the kilometre-wide backdrop then fail depth before expensive shading.
+	if theme_id in ["winter","desert"]: ground.render_priority = 2
 	VisualGeometry.box(self, Vector3(1000, 0.1, 1000), Vector3(0, -0.15, 0), ground)
 	SurfaceShaderVariants.specialize(ground)
 	if theme_id == "night_city" and partition_night_ground and _lamps_inside_terrain(track):
@@ -103,7 +139,32 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	bridge.build(self)
 	_build_finish(track)
 	_build_snow_banks(track)
+	_partition_bank_meshes()
 	if reuse_world: PREPARED_WORLDS.remember(world_key,self,track)
+	world_built = true
+
+
+func _partition_bank_meshes() -> void:
+	if not partition_static_meshes or editor_preview: return
+	# The road cache retains the original aggregate arrays. A completed preview
+	# world retains the prepared chunks, avoiding another split at race startup.
+	var resources: Dictionary = {}
+	var bytes: int = int(get_meta("spatial_mask_budget_bytes",0))
+	for child: Node in get_children(): bytes += PREPARED_WORLDS._resource_bytes(child,resources)
+	for child: Node in get_children():
+		if not child is MeshInstance3D or child.has_meta("spatial_mesh_family"): continue
+		var material: ShaderMaterial = child.material_override as ShaderMaterial
+		var bank: bool = material != null and theme_id == "winter" and material.shader.code.contains("smooth_road_bank")
+		bank = bank or (material != null and theme_id == "desert" and material.get_shader_parameter("gravel") == true)
+		var static_material: Material = child.material_override
+		var props: bool = static_material is BaseMaterial3D and static_material.vertex_color_use_as_albedo
+		props = props or child.name in ["LowCover","DesertLowCover"]
+		if not bank and not props: continue
+		remove_child(child)
+		var parts: Array[MeshInstance3D] = SpatialMeshChunks.add(self,child,true,false,true,maxi(0,PREPARED_WORLDS.MAX_BYTES-bytes))
+		if parts.size() <= 1: continue
+		for part: MeshInstance3D in parts:
+			bytes += 512+part.mesh.surface_get_array_len(0)*96+part.mesh.surface_get_array_index_len(0)*4
 
 
 func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, sliced: bool = false) -> void:
@@ -112,29 +173,21 @@ func refresh_editor_objects(track: NativeTrack, refresh_cover: bool = true, slic
 	if theme_id == "night_city" and partition_night_ground and get_child_count() > 0 and get_child(0) is MeshInstance3D:
 		# Moving/scaling a lamp in the editor can expose the outer backdrop.
 		(get_child(0) as MeshInstance3D).layers = 2 if _lamps_inside_terrain(track) else 1
-	var objects := NativeTrackVisual.new()
-	objects.editor_preview = true
+	var objects: NativeTrackVisual = editor_objects
+	if objects == null:
+		objects = NativeTrackVisual.new()
+		objects.editor_preview = true
+		objects.theme_id = theme_id
+		objects.colors = colors
+		objects._editor_authored_batches = preload("res://editor/placed_object_batches.gd").new()
+		add_child(objects)
+		editor_objects = objects
 	objects._menu_slices = sliced
 	objects._slice_started = Time.get_ticks_usec()
-	objects.theme_id = theme_id
-	objects.colors = colors
-	objects.visible = false
-	add_child(objects)
-	# Authored props are small, immediate edits. Generated scenery has its own
-	# stable batch, so placing one tyre does not recreate every meadow tree.
-	var authored := NativeTrack.new()
-	authored.metadata = {"creator_document":track.metadata.get("creator_document",{}),"scenery_objects":[]}
-	authored.tyre_origins = track.tyre_origins
-	await objects._build_placed_objects(authored)
+	var current: Callable = func() -> bool: return revision == _editor_object_revision and (not sliced or is_inside_tree())
+	await objects._editor_authored_batches.refresh(objects,track,sliced,current)
 	if sliced and not is_inside_tree(): return
-	if revision != _editor_object_revision:
-		objects.queue_free()
-		return
-	if editor_objects != null:
-		remove_child(editor_objects)
-		editor_objects.queue_free()
-	editor_objects = objects
-	objects.visible = true
+	if revision != _editor_object_revision: return
 	if refresh_cover:
 		var cover := NativeTrackVisual.new()
 		cover.editor_preview = true
@@ -186,6 +239,10 @@ func _build_terrain(track: NativeTrack) -> void:
 	high.fill(Color(0,0,0,0))
 	var hide_boundary: bool = _hide_creator_boundary(track)
 	var object_ground: PackedByteArray = _authored_barrier_cells(track)
+	var high_present: bool = false
+	var present: Dictionary = {}
+	var terrain_kinds := PackedByteArray()
+	terrain_kinds.resize(track.cells.size())
 	for y: int in range(track.grid_height):
 		if _menu_yield_due():
 			await get_tree().process_frame
@@ -196,12 +253,36 @@ func _build_terrain(track: NativeTrack) -> void:
 			# Object collision footprints are not concrete paving beneath foliage.
 			if kind == 4 and not object_ground.is_empty() and object_ground[y*track.grid_width+x] == 1: kind = 1
 			if hide_boundary and _boundary_cell(track,x,y): kind = 1
+			terrain_kinds[y*track.grid_width+x] = kind
+			present[kind] = true
 			var weights := Color(0,0,0,0)
 			weights[kind % 4] = 1.0
 			if kind < 4: low.set_pixel(x, y, weights)
-			else: high.set_pixel(x, y, weights)
+			else:
+				high.set_pixel(x, y, weights)
+				high_present = true
+	# Four or fewer surface kinds fit the same exact masks into one RGBA sheet.
+	# Keep all eight kinds on the original path for richer painted documents.
+	var packed: bool = theme_id in ["winter","desert"] and present.size() <= 4
+	var slots := Vector4i(-1,-1,-1,-1)
+	if packed:
+		var kinds: Array = present.keys()
+		kinds.sort()
+		for index: int in range(kinds.size()): slots[index] = int(kinds[index])
+		low = Image.create(track.grid_width,track.grid_height,false,Image.FORMAT_RGBA8)
+		for y: int in range(track.grid_height):
+			if _menu_yield_due():
+				await get_tree().process_frame
+				if not is_inside_tree(): return
+				_slice_started = Time.get_ticks_usec()
+			for x: int in range(track.grid_width):
+				var weights := Color(0,0,0,0)
+				weights[kinds.find(int(terrain_kinds[y*track.grid_width+x]))] = 1.0
+				low.set_pixel(x,y,weights)
+		high_present = false
 	var surface := ShaderMaterial.new()
 	surface.shader = preload("res://track/storm_terrain.gdshader") if theme_id == "storm" else TERRAIN_SHADER
+	if theme_id in ["winter","desert"]: surface.render_priority = 1
 	surface.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	surface.set_shader_parameter("icy_road", theme_id == "winter")
 	surface.set_shader_parameter("wet_road", theme_id == "storm")
@@ -210,7 +291,13 @@ func _build_terrain(track: NativeTrack) -> void:
 	_bind_grass(surface)
 	surface.set_shader_parameter("surface_low", ImageTexture.create_from_image(low))
 	surface.set_shader_parameter("surface_high", ImageTexture.create_from_image(high))
+	surface.set_shader_parameter("terrain_high_present",high_present)
+	surface.set_shader_parameter("terrain_packed",packed)
+	surface.set_shader_parameter("terrain_slots",slots)
 	surface.set_shader_parameter("map_texel", Vector2(1.0 / track.grid_width, 1.0 / track.grid_height))
+	if uniform_terrain_regions:
+		var regions: Dictionary = TerrainUniformRegions.build(terrain_kinds,track.grid_width,track.grid_height,slots if packed else Vector4i(-1,-1,-1,-1))
+		TerrainUniformRegions.bind(surface,high,regions,high_present)
 	for i: int in range(colors.size()):
 		# Terrain sand uses the exact same theme tint as the road shoulder.
 		surface.set_shader_parameter("color_" + str(i), colors[i].darkened(0.20) if i == 2 else colors[i])
@@ -267,16 +354,35 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	var pieces: Array = document.get("pieces",[])
 	if pieces.is_empty(): return
 	var cache_key: Array = [track.content_hash,VERSION,theme_id,colors,partition_night_ground]
-	if cache_road_meshes and _restore_road_meshes(cache_key): return
+	var packet: Dictionary = track.editor_roads if editor_preview and prepare_editor_roads else {}
+	var geometry_key: String = str(packet.get("key",""))
+	if editor_preview and prepare_editor_roads and geometry_key.is_empty(): geometry_key = EDITOR_ROADS.key_for(track)
+	var first_child: int = get_child_count()
+	if cache_road_meshes and _restore_road_meshes(cache_key,geometry_key,track):
+		track.editor_roads = {}
+		if not geometry_key.is_empty(): _remember_road_meshes(cache_key,first_child,track,geometry_key)
+		return
+	if editor_preview and prepare_editor_roads and not _capture_road_arrays:
+		if packet.get("parts",[]).is_empty():
+			var job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
+			while not job.done:
+				await get_tree().process_frame
+				if not is_inside_tree(): return
+			packet = job.packet
+		if not packet.is_empty():
+			await _install_prepared_roads(track,packet)
+			track.editor_roads = {}
+			if _menu_slices and not is_inside_tree(): return
+			if cache_road_meshes: _remember_road_meshes(cache_key,first_child,track,str(packet.key))
+			return
 	if cache_road_meshes and persist_road_meshes and not editor_preview:
 		var stored: Dictionary = ROAD_DISK_CACHE.read_entry(cache_key)
 		if not stored.is_empty():
 			_admit_road_entry(stored)
 			if _restore_road_meshes(cache_key): return
-	var first_child: int = get_child_count()
 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
-	var texture: ImageTexture = ImageTexture.create_from_image(mask)
-	var road_texture: ImageTexture = ImageTexture.create_from_image(_creator_road_mask(track))
+	var texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(mask)
+	var road_texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(_creator_road_mask(track))
 	var winter_bank := SurfaceTool.new()
 	winter_bank.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var winter_sections: int = 0
@@ -292,9 +398,11 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	for tool: SurfaceTool in [shoulders,asphalt,asphalt_fringe,markings]: tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var counts: Array[int] = [0,0,0]
 	var fringe_count: int = 0
-	var sand_clods: int = 0
+	var sand_banks := preload("res://track/desert_sand_banks.gd").new()
+	var desert_road_union := preload("res://track/desert_road_union.gd").new()
 	var outlines: Array[Dictionary] = []
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+	var desert_phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,topology) if theme_id == "desert" else {}
 	for index: int in range(pieces.size()):
 		if _menu_yield_due():
 			await get_tree().process_frame
@@ -312,6 +420,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 			for point: Vector2 in polygon: bounds = bounds.expand(point)
 			var swept: bool = pieces[index].kind == "spline" or topology.get("visual_folded",{}).get(index,false)
 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
+	if theme_id == "desert": desert_road_union.configure(pieces,outlines,desert_phases)
 	for index: int in range(pieces.size()):
 		if _menu_yield_due():
 			await get_tree().process_frame
@@ -322,6 +431,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		var points: PackedVector2Array = RoadPieces.samples(piece)
 		# Exact repeated vertices share road UV queries only within this piece.
 		var axis_cache: Dictionary = {}
+		if theme_id == "desert":
+			axis_cache.merge(desert_phases.get(index,{}))
+			axis_cache["desert_piece_index"] = index
 		if theme_id == "winter":
 			axis_cache["winter_bank_uvs"] = {}
 			var geometry: Dictionary = RoadPieces.section_geometry(pieces,index,topology)
@@ -330,6 +442,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 			var distances := PackedFloat32Array([0.0])
 			for i: int in range(1,points.size()): distances.append(distances[-1]+points[i-1].distance_to(points[i]))
 			axis_cache["winter_distances"] = distances
+			axis_cache.winter_bank_uvs["bridge_fade_start"] = _winter_bridge_end(pieces,index,0,topology)
+			axis_cache.winter_bank_uvs["bridge_fade_end"] = _winter_bridge_end(pieces,index,1,topology)
+			axis_cache.winter_bank_uvs["bridge_fade_length"] = float(distances[-1])
 		var road_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,0.0,topology)
 		var marking_join: Dictionary = {} if piece.kind == "spline" else preload("res://track/visual_road_join.gd").build(pieces,index,-0.20,topology)
 		var swept: bool = piece.kind == "spline" or road_join.get("swept",false)
@@ -345,7 +460,9 @@ func _build_creator_roads(track: NativeTrack) -> void:
 			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if swept else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
 		for polygon: PackedVector2Array in surfaces:
-			counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+			if theme_id == "desert": desert_road_union.add(polygon,points,axis_cache)
+			else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+		if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
 		var dirt: bool = document.get("surface","asphalt") == "dirt"
 		var border_contours: Array[PackedVector2Array] = []
 		if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
@@ -363,7 +480,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 				var normal_a: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,true) if swept else _roadside_miter(polygon,edge,cuts)
 				var normal_b: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,true) if swept else _roadside_miter(polygon,(edge+1)%polygon.size(),cuts)
 				if hole: normal_a = -normal_a; normal_b = -normal_b
-				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+				# More cross-bank samples replace along-bank oversampling in Winter.
+				var steps: int = maxi(1,ceili(a.distance_to(b)/(0.28 if theme_id == "winter" else 0.20)))
 				for step: int in range(steps):
 					if _menu_yield_due():
 						await _yield_build()
@@ -382,10 +500,15 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					if theme_id == "winter" and not dirt:
 						_winter_bank_section(winter_bank,p,q,normal_p,normal_q,points,axis_cache.winter_bank_uvs)
 						winter_sections += 1
-						_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
+						var bank_cache: Dictionary = axis_cache.winter_bank_uvs
+						var along: float = (Vector2(bank_cache[p]).x+Vector2(bank_cache[q]).x)*0.5
+						# Include the clump's position jitter/footprint in the clear
+						# distance, so its foot cannot float above a tapering bank.
+						if minf(_winter_bank_end_fade(along-1.5,bank_cache),_winter_bank_end_fade(along+1.5,bank_cache)) >= 0.999:
+							_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
 					_asphalt_fringe_quad(asphalt_fringe,
-						p+normal_p*(-0.55 if theme_id == "desert" else 0.36),q+normal_q*(-0.55 if theme_id == "desert" else 0.36),
-						p+normal_p*(0.92 if theme_id == "desert" else 0.56),q+normal_q*(0.92 if theme_id == "desert" else 0.56),points,axis_cache)
+						p+normal_p*(-1.25 if theme_id == "desert" else 0.36),q+normal_q*(-1.25 if theme_id == "desert" else 0.36),
+						p+normal_p*(0.70 if theme_id == "desert" else 0.56),q+normal_q*(0.70 if theme_id == "desert" else 0.56),points,axis_cache)
 					fringe_count += 1
 					# Continuous sand transition around the road.
 					# Only the outer contour varies; road/paint stay fixed.
@@ -393,24 +516,26 @@ func _build_creator_roads(track: NativeTrack) -> void:
 					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
 					shoulder_mesh.add_quad(p,q,outer_p,outer_q)
 					counts[0] += 1
-					# Desert edges are a flat compacted-to-loose sand transition.
-					# Authored contacts remain canonical; no decorative raised clods.
+					if theme_id == "desert": sand_banks.add_section(shoulders,p,q,normal_p,normal_q,outlines,track)
+					# Low broken desert deposits are decorative; contacts stay canonical.
 					# Retain the authored road-edge marking and keep it smooth;
 					# only the asphalt/sand colour transition receives subtle breakup.
 					if dirt or theme_id in ["desert","winter"]: continue
 					_quad(markings,VisualGeometry.world(p-normal_p*0.085)+Vector3.UP*0.018,VisualGeometry.world(q-normal_q*0.085)+Vector3.UP*0.018,
 						VisualGeometry.world(q+normal_q*0.085)+Vector3.UP*0.018,VisualGeometry.world(p+normal_p*0.085)+Vector3.UP*0.018)
 					counts[2] += 1
+	if theme_id == "desert": counts[1] = await desert_road_union.emit(self,asphalt)
 	if winter_sections > 0:
 		_commit_winter_bank(winter_bank,texture,track.half_extent,road_texture)
 		set_meta("winter_smooth_sections",winter_sections)
 		set_meta("winter_deposits",winter_piles.size())
 	await shoulder_mesh.emit(shoulders,_yield_build if _menu_slices else Callable())
 	if _menu_slices and not is_inside_tree(): return
-	set_meta("desert_clod_count",sand_clods)
+	set_meta("desert_clod_count",sand_banks.count)
+	set_meta("desert_bank_sections",sand_banks.sections)
 	await _build_kerbs(track)
 	if _menu_slices and not is_inside_tree(): return
-	if counts[0]: await _commit_creator_road(shoulders,Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+	if counts[0]: await _commit_creator_road(shoulders,TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
 	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
 	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id not in ["desert","winter"]: await _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
@@ -419,17 +544,56 @@ func _build_creator_roads(track: NativeTrack) -> void:
 		_remember_road_meshes(cache_key,first_child,track)
 
 
-func _restore_road_meshes(key: Array) -> bool:
+func _install_prepared_roads(track: NativeTrack, packet: Dictionary) -> void:
+	var texture := ImageTexture.create_from_image(_creator_overlay_mask(track,track.metadata.creator_document.paint))
+	var road_texture := ImageTexture.create_from_image(_creator_road_mask(track))
+	for part: Dictionary in packet.parts:
+		if _menu_slices and not await _yield_build(): return
+		match part.role:
+			"road":
+				var args: Array = part.arguments
+				await _commit_creator_road(null,args[0],texture,road_texture,args[1],args[2],args[3],args[4],args[5],args[6],args[7],part.arrays)
+			"winter": _commit_winter_bank(null,texture,track.half_extent,road_texture,part.arrays)
+			"kerb": await _build_kerbs(track,part.arrays)
+	for name: String in packet.metadata: set_meta(name,packet.metadata[name])
+
+func _rebind_road_masks(material: ShaderMaterial, track: NativeTrack, textures: Dictionary) -> void:
+	var names: Dictionary = {}
+	for uniform: Dictionary in material.shader.get_shader_uniform_list(): names[uniform.name] = true
+	if names.has("overlay_mask"):
+		if not textures.has("overlay"): textures.overlay = ImageTexture.create_from_image(_creator_overlay_mask(track,track.metadata.creator_document.paint))
+		material.set_shader_parameter("overlay_mask",textures.overlay)
+		if names.has("verge_blend_mask"): material.set_shader_parameter("verge_blend_mask",textures.overlay)
+	if names.has("road_mask"):
+		if not textures.has("road"): textures.road = ImageTexture.create_from_image(_creator_road_mask(track))
+		material.set_shader_parameter("road_mask",textures.road)
+	if names.has("exclusion"):
+		if not textures.has("exclusion"):
+			var pixels := PackedByteArray(); pixels.resize(track.cells.size())
+			for index: int in range(pixels.size()): pixels[index] = 255 if track.kerbs.blocked[index] != 0 else 0
+			textures.exclusion = ImageTexture.create_from_image(Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_R8,pixels))
+		material.set_shader_parameter("exclusion",textures.exclusion)
+
+func _restore_road_meshes(key: Array, geometry_key: String = "", target: NativeTrack = null) -> bool:
 	for index: int in range(_road_mesh_cache.size()):
 		var entry: Dictionary = _road_mesh_cache[index]
-		if entry.key != key: continue
+		if entry.key.slice(1) != key.slice(1): continue
+		if entry.key != key and (geometry_key.is_empty() or entry.get("geometry_key","") != geometry_key): continue
 		_road_mesh_cache.remove_at(index)
 		_road_mesh_cache.append(entry)
+		var rebound: Dictionary = {}
+		var textures: Dictionary = {}
 		for data: Dictionary in entry.meshes:
 			# Only immutable road resources are shared. Every scene owns new nodes.
 			var instance := MeshInstance3D.new()
 			instance.mesh = data.mesh
 			instance.material_override = data.material
+			if entry.key != key and target != null:
+				var source_id: int = data.material.get_instance_id()
+				if not rebound.has(source_id):
+					rebound[source_id] = data.material.duplicate()
+					_rebind_road_masks(rebound[source_id],target,textures)
+				instance.material_override = rebound[source_id]
 			instance.transform = data.transform
 			instance.layers = data.layers
 			instance.cast_shadow = data.shadow
@@ -439,7 +603,7 @@ func _restore_road_meshes(key: Array) -> bool:
 	return false
 
 
-func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack) -> void:
+func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack, geometry_key: String = "") -> void:
 	var meshes: Array[Dictionary] = []
 	# Conservative vertex/index plus CPU/GPU mask allowance; cap both bytes
 	# and entries. Oversized roads still use the ordinary uncached builder.
@@ -454,9 +618,9 @@ func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack) -> 
 		meshes.append({"mesh":instance.mesh,"material":instance.material_override,"transform":instance.transform,"layers":instance.layers,"shadow":instance.cast_shadow})
 	if meshes.is_empty() or bytes > ROAD_CACHE_BUDGET: return
 	var metadata: Dictionary = {}
-	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count"]:
+	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
 		if has_meta(name): metadata[name] = get_meta(name)
-	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes}
+	var entry: Dictionary = {"key":key.duplicate(true),"meshes":meshes,"metadata":metadata,"bytes":bytes,"geometry_key":geometry_key}
 	_admit_road_entry(entry)
 	var id: String = ROAD_DISK_CACHE.identity(key)
 	if persist_road_meshes and (not editor_preview or _pending_road_bakes.has(id)):
@@ -481,12 +645,13 @@ static func request_saved_road_bake(track: NativeTrack) -> void:
 
 static func _admit_road_entry(entry: Dictionary) -> void:
 	for index: int in range(_road_mesh_cache.size()-1,-1,-1):
-		if _road_mesh_cache[index].key == entry.key: _road_mesh_cache.remove_at(index)
+		if _road_mesh_cache[index].key == entry.key or (not str(entry.get("geometry_key","")).is_empty() and _road_mesh_cache[index].get("geometry_key","") == entry.geometry_key): _road_mesh_cache.remove_at(index)
 	var total: int = int(entry.bytes)
 	for existing: Dictionary in _road_mesh_cache: total += int(existing.bytes)
-	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= 2 or total > ROAD_CACHE_BUDGET):
+	while not _road_mesh_cache.is_empty() and (_road_mesh_cache.size() >= ROAD_CACHE_MAX_ENTRIES or total > ROAD_CACHE_BUDGET):
 		total -= int(_road_mesh_cache.pop_front().bytes)
 	_road_mesh_cache.append(entry)
+	EDITOR_ROADS.account_gpu(_road_mesh_cache)
 
 
 
@@ -586,9 +751,14 @@ func _sand_clod(tool: SurfaceTool, center: Vector2, turn: float, size: float, se
 func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}) -> void:
 	var vertices: Array[Vector2] = [inner_a,outer_b,inner_b,inner_a,outer_a,outer_b]
 	var across: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
+	if theme_id == "desert" and not axis_cache.has("desert_fringe_uvs"): axis_cache["desert_fringe_uvs"] = {}
 	for i: int in range(6):
 		tool.set_uv(Vector2(0.0,across[i]))
-		tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
+		if theme_id == "desert":
+			if not axis_cache.desert_fringe_uvs.has(vertices[i]): axis_cache.desert_fringe_uvs[vertices[i]] = _sand_coordinates(vertices[i],points)
+			tool.set_uv2(preload("res://track/desert_road_union.gd").coordinates(axis_cache.desert_fringe_uvs[vertices[i]],axis_cache))
+			tool.set_color(axis_cache.desert_blend_sampler.blend(vertices[i],int(axis_cache.desert_piece_index)))
+		else: tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
 		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
 
 
@@ -666,8 +836,9 @@ func _sand_triangle(tool: SurfaceTool, a: Vector2, b: Vector2, c: Vector2, heigh
 		return
 	for point: Vector2 in [a,b,c]:
 		if not sand_cache.has(point): sand_cache[point] = _sand_coordinates(point,points)
-		tool.set_uv(sand_cache[point])
+		tool.set_uv(preload("res://track/desert_road_union.gd").coordinates(sand_cache[point],axis_cache) if theme_id == "desert" else sand_cache[point])
 		tool.set_uv2(_cached_asphalt_axis(point,points,axis_cache))
+		if theme_id == "desert" and axis_cache.has("desert_blend_sampler"): tool.set_color(axis_cache.desert_blend_sampler.blend(point,int(axis_cache.desert_piece_index)))
 		if theme_id == "winter": tool.set_color(Color(_winter_half_width(Vector2(sand_cache[point]).x,axis_cache)/32.0+0.5/255.0,0,0,1))
 		tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*height)
 
@@ -709,37 +880,51 @@ func _creator_road_mask(track: NativeTrack) -> Image:
 
 
 
-func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false) -> void:
+func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false, prepared_arrays: Array = []) -> void:
 	# Polygon triangulation and edge strips can have opposite winding. All
 	# these surfaces are horizontal: normalize clockwise top faces and use
 	# explicit up normals instead of inferring lighting from polygon order.
-	var source: ArrayMesh = tool.commit()
-	var arrays: Array = source.surface_get_arrays(0)
-	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	var uv := PackedVector2Array()
-	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
-	var uv2 := PackedVector2Array()
-	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
-	var vertex_colors := PackedColorArray()
-	if arrays[Mesh.ARRAY_COLOR] != null: vertex_colors = arrays[Mesh.ARRAY_COLOR]
-	var flat := SurfaceTool.new()
-	flat.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for triangle: int in range(0,vertices.size(),3):
-		if _menu_yield_due():
-			if not await _yield_build(): return
-		var order: Array[int] = [triangle,triangle+1,triangle+2]
-		if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
-			order = [triangle,triangle+2,triangle+1]
-		for index: int in order:
-			flat.set_normal((vertices[order[2]]-vertices[order[0]]).cross(vertices[order[1]]-vertices[order[0]]).normalized() if theme_id == "desert" and gravel else Vector3.UP)
-			if not uv.is_empty(): flat.set_uv(uv[index])
-			if not uv2.is_empty(): flat.set_uv2(uv2[index])
-			if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
-			flat.add_vertex(vertices[index])
+	if prepared_arrays.is_empty():
+		var arrays: Array
+		if _capture_road_arrays:
+			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),theme_id == "desert" and gravel)
+		else:
+			var source: ArrayMesh = tool.commit()
+			arrays = source.surface_get_arrays(0)
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL] if arrays[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
+		var uv := PackedVector2Array()
+		if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+		var uv2 := PackedVector2Array()
+		if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
+		var vertex_colors := PackedColorArray()
+		if arrays[Mesh.ARRAY_COLOR] != null: vertex_colors = arrays[Mesh.ARRAY_COLOR]
+		var flat := SurfaceTool.new()
+		flat.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for triangle: int in range(0,vertices.size(),3):
+			if _menu_yield_due():
+				if not await _yield_build(): return
+			var order: Array[int] = [triangle,triangle+1,triangle+2]
+			if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+				order = [triangle,triangle+2,triangle+1]
+			for index: int in order:
+				flat.set_normal(normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
+				if not uv.is_empty(): flat.set_uv(uv[index])
+				if not uv2.is_empty(): flat.set_uv2(uv2[index])
+				if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+				flat.add_vertex(vertices[index])
+		if theme_id == "desert" and gravel: flat.index()
+		prepared_arrays = flat.commit_to_arrays()
+	if _capture_road_arrays:
+		_prepared_road_parts.append({"role":"road","arrays":prepared_arrays,"arguments":[color,extent,gravel,grass,kerb,asphalt_surface,edge_fringe,road_marking]})
+		return
 	var instance := MeshInstance3D.new()
-	instance.mesh = flat.commit()
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
+	instance.mesh = mesh
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/storm_creator_road.gdshader") if theme_id == "storm" and not grass and not gravel else CREATOR_ROAD_SHADER
+	if theme_id == "desert": material.shader = preload("res://track/desert_road.gdshader")
 	if theme_id == "winter": material.shader = preload("res://track/winter_creator_road.gdshader")
 	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
 	material.set_shader_parameter("painted_grass_texture", GRASS_TEXTURE)
@@ -749,7 +934,7 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("verge_blend_mask",mask)
 	material.set_shader_parameter("road_mask",road_mask)
 	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
-	material.set_shader_parameter("sand_color",Color("99805e") if theme_id == "desert" else colors[2].darkened(0.20))
+	material.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
 	material.set_shader_parameter("road_color",color)
 	material.set_shader_parameter("asphalt_base_color",colors[0])
@@ -763,8 +948,9 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("edge_fringe",edge_fringe)
 	material.set_shader_parameter("road_marking",road_marking)
 	material.set_shader_parameter("winter_width_data",theme_id == "winter" and asphalt_surface and not edge_fringe)
+	SurfaceShaderVariants.specialize(material)
 	instance.material_override = material
-	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if theme_id == "desert" and gravel else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	if theme_id == "night_city" and partition_night_ground:
 		_add_lit_road_parts(instance)
 		instance.free()
@@ -910,6 +1096,7 @@ func _build_low_cover(track: NativeTrack) -> void:
 	# Owner rejected standing grass blades; meadow uses the static surface only.
 	var scenery := SurfaceTool.new()
 	scenery.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if theme_id == "desert": scenery.set_uv2(Vector2.ZERO)
 	if theme_id == "desert":
 		# Refreshes replace the batch, so its diagnostics describe this build only.
 		for key: String in ["desert_stones","desert_large_stones","desert_scrub","desert_roadside_stones"]:
@@ -962,6 +1149,11 @@ func _build_low_cover(track: NativeTrack) -> void:
 		if theme_id != "desert": VisualGeometry.ink(material)
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		instance.material_override = material
+		if theme_id == "desert":
+			var mineral := ShaderMaterial.new()
+			mineral.shader = preload("res://track/desert_pebbles.gdshader")
+			mineral.set_shader_parameter("surface_factors",SURFACE_FACTORS)
+			instance.material_override = mineral
 		add_child(instance)
 
 
@@ -1017,6 +1209,7 @@ func _desert_roadside_cover(tool: SurfaceTool, track: NativeTrack) -> void:
 
 
 func _desert_rock(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float, seed_value: int, color: Color) -> void:
+	tool.set_uv2(Vector2(1.0,0.0))
 	# Asymmetric, flattened weathered stones with broad worn top planes and
 	# irregular bevels; distinct lengths/widths avoid round polygon pellets.
 	var lower: Array[Vector3] = []
@@ -1037,6 +1230,7 @@ func _desert_rock(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn:
 		var next: int = (i+1)%8
 		_quad(tool,lower[next],lower[i],upper[i],upper[next])
 		for vertex: Vector3 in [upper[next],crown,upper[i]]: tool.add_vertex(vertex)
+	tool.set_uv2(Vector2.ZERO)
 
 
 func _desert_scrub(tool: SurfaceTool, center: Vector3, size: float, turn: float, seed_value: int) -> void:
@@ -1157,10 +1351,16 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			add_child(node)
 			node.position = center
 			node.rotation.y = deg_to_rad(float(object.rotation))
-			var prop_tool := SurfaceTool.new()
-			prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-			CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
-			_finish_prop_mesh(prop_tool,node)
+			node.set_meta("prop_origin",center)
+			node.set_meta("prop_yaw",node.rotation.y)
+			if object.kind in BreakableProps.KINDS:
+				BreakablePropVisual.build(node,self,object.kind,object_scale)
+				BreakablePropVisual.ensure_debris(self)
+			else:
+				var prop_tool := SurfaceTool.new()
+				prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+				CreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
+				_finish_prop_mesh(prop_tool,node)
 			light_instances.append(node)
 			continue
 		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
@@ -1168,7 +1368,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)))
 			ink_count += 1
 			continue
-		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0))):
+		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else ""):
 			count += 1
 			continue
 		if object.kind == "tree":
@@ -1183,7 +1383,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			if object.kind == "cliff":
 				for x: float in [-0.3,0.1,0.35]:
 					_mound(tool,center+Vector3(size.x*x,0,0).rotated(Vector3.UP,turn),Vector3(size.x*0.19,height*(0.8+x),size.y*0.47),turn+x,TrackTheme.stone(theme_id).darkened(0.08))
-		elif object.kind in ["oil","puddle","jump"]:
+		elif object.kind in ["oil","puddle","jump","speed_bump"]:
 			HazardVisual.build(self,object)
 			continue
 		elif object.kind in ["tyre_wall","tyre_stack"]: continue # Shared instanced mesh below.
@@ -1191,21 +1391,27 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		count += 1
 	if count > 0:
 		tool.generate_normals()
+		tool.index()
 		var mesh := MeshInstance3D.new()
 		mesh.mesh = tool.commit()
+		if _capture_editor_prop_arrays: mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
 		var material := VisualGeometry.material(Color.WHITE)
 		material.vertex_color_use_as_albedo = true
 		# Small roof seams and foliage use their silhouettes, not intersecting ink hulls.
+		material.vertex_color_is_srgb = true
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mesh.material_override = material
 		add_child(mesh)
 
 	if ink_count > 0:
 		ink_tool.generate_normals()
+		ink_tool.index()
 		var ink_mesh := MeshInstance3D.new()
 		ink_mesh.mesh = ink_tool.commit()
+		if _capture_editor_prop_arrays: ink_mesh.set_meta("editor_prop_arrays",ink_tool.commit_to_arrays())
 		var ink_material := VisualGeometry.material(Color.WHITE)
 		ink_material.vertex_color_use_as_albedo = true
+		ink_material.vertex_color_is_srgb = true
 		ink_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 		VisualGeometry.ink(ink_material)
 		ink_mesh.material_override = ink_material
@@ -1217,6 +1423,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		_tyre(stack,Vector3.ZERO)
 		_tyre(stack,Vector3.UP*0.30)
 		stack.generate_normals()
+		stack.index()
 		tyre_instances = MultiMeshInstance3D.new()
 		var instances := MultiMesh.new()
 		instances.transform_format = MultiMesh.TRANSFORM_3D
@@ -1227,6 +1434,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 		_tyre_spins.clear()
 		var rubber := VisualGeometry.material(Color.WHITE)
 		rubber.vertex_color_use_as_albedo = true
+		rubber.vertex_color_is_srgb = true
 		rubber.cull_mode = BaseMaterial3D.CULL_DISABLED
 		tyre_instances.material_override = rubber
 		add_child(tyre_instances)
@@ -1234,22 +1442,19 @@ func _build_placed_objects(track: NativeTrack) -> void:
 
 
 func _tyre(tool: SurfaceTool, center: Vector3) -> void:
-	# Open centers and two restrained sidewall tones make the stack readable
-	# from overhead without textures or an unrelated asset style.
-	for index: int in range(12):
-		var a: float = TAU*index/12.0
-		var b: float = TAU*(index+1)/12.0
-		var p := Vector3(cos(a),0,sin(a))
-		var q := Vector3(cos(b),0,sin(b))
-		tool.set_color(Color("333a3b"))
-		_quad(tool,center+p*0.48+Vector3.UP*0.04,center+q*0.48+Vector3.UP*0.04,
-			center+q*0.48+Vector3.UP*0.29,center+p*0.48+Vector3.UP*0.29)
-		tool.set_color(Color("474d4d"))
-		_quad(tool,center+p*0.48+Vector3.UP*0.29,center+q*0.48+Vector3.UP*0.29,
-			center+q*0.24+Vector3.UP*0.29,center+p*0.24+Vector3.UP*0.29)
-		tool.set_color(Color("252c2d"))
-		_quad(tool,center+p*0.24+Vector3.UP*0.29,center+q*0.24+Vector3.UP*0.29,
-			center+q*0.24,center+p*0.24)
+	# Rounded carcass, open bead, moulded shoulder and restrained tread cuts.
+	var profile: Array = [Vector2(0.24,0.025),Vector2(0.38,0.025),Vector2(0.455,0.045),Vector2(0.48,0.095),Vector2(0.48,0.225),Vector2(0.455,0.275),Vector2(0.36,0.29),Vector2(0.24,0.285),Vector2(0.23,0.11),Vector2(0.24,0.025)]
+	var colors: Array = [Color("2e3737"),Color("394342"),Color("3a4342"),Color("303938"),Color("3a4342"),Color("505956"),Color("454e4b"),Color("242f2e"),Color("242f2e")]
+	CreatorPropVisual._lathe(tool,self,center,1,0,profile,colors)
+	PropGeometry.ring(tool,center+Vector3.UP*0.290,Vector3.UP,0.395,0.38,0.006,Color("636b61"),24)
+	for i: int in range(24):
+		var a: float = TAU*i/24
+		var b: float = a+0.028
+		var p := Vector3(cos(a)*0.482,0.096,sin(a)*0.482)
+		var q := Vector3(cos(b)*0.482,0.096,sin(b)*0.482)
+		var r := Vector3(cos(b+0.055)*0.482,0.224,sin(b+0.055)*0.482)
+		var t := Vector3(cos(a+0.055)*0.482,0.224,sin(a+0.055)*0.482)
+		PropGeometry.face(tool,[center+p,center+q,center+r,center+t],Color("242e2d"))
 
 
 func _colored_box(tool: SurfaceTool, center: Vector3, dimensions: Vector3, turn: float, color: Color) -> void:
@@ -1389,61 +1594,80 @@ func update_tyres(state: VehicleState, origins: PackedVector2Array) -> void:
 
 func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
 	tool.generate_normals()
+	tool.index()
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = tool.commit()
 	var material := VisualGeometry.material(Color.WHITE)
 	material.vertex_color_use_as_albedo = true
+	material.vertex_color_is_srgb = true
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mesh.material_override = material
 	parent.add_child(mesh)
 
 func update_light_props(state: VehicleState) -> void:
-	for index: int in range(mini(light_instances.size(),state.light_props.size())):
-		var row: Array = state.light_props[index]
-		light_instances[index].position.x = row[0]
-		light_instances[index].position.z = -float(row[1])
-		light_instances[index].rotation.z = float(row[4])*0.9
+	_prop_draw_states.resize(light_instances.size())
+	for index: int in range(light_instances.size()):
+		var node: Node3D = light_instances[index]
+		var origin: Vector3 = node.get_meta("prop_origin",node.position)
+		var row: Array = state.light_props[index] if index < state.light_props.size() else [origin.x,-origin.z,0.0,0.0,0.0]
+		var integrity: float = float(state.prop_destruction[index][0]) if index < state.prop_destruction.size() else 1.0
+		var previous: Dictionary = _prop_draw_states[index]
+		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
+		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
+		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
+		var at := Vector3(row[0],node.position.y,-float(row[1]))
+		if node.position != at: node.position = at
+		if node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
+		else: node.rotation.z = float(row[4])*0.9
+	BreakablePropVisual.update_debris(self,state)
 
 
-func _build_kerbs(track: NativeTrack) -> void:
+func _build_kerbs(track: NativeTrack, prepared_arrays: Array = []) -> void:
 	if theme_id == "winter": return # Ploughed snow covers the retained canonical kerbs.
 	if track.kerbs.triangles.is_empty(): return
 	if theme_id == "desert" and not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return
-	var document: Dictionary = track.metadata.get("creator_document",{})
-	var triangles: Array[Dictionary] = track.kerbs.triangles
-	var pieces: Array = document.get("pieces",[])
-	var fair: bool = pieces.size() > 1
-	if pieces.size() == 1 and pieces[0].kind not in ["spline","bridge"]:
-		fair = VisualRoadJoin._base_shape(pieces,0,0.0,RoadPieces.prepare_endpoints(pieces)).swept
-	# Ordinary solitary pieces retain their canonical kerb; folded ones need
-	# the same exposed cosmetic border as their road surface.
-	if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
-		triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
-		if _menu_slices and not is_inside_tree(): return
-	if triangles.is_empty(): return
-	var tool := SurfaceTool.new()
-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for triangle: Dictionary in triangles:
-		if _menu_yield_due():
-			if not await _yield_build(): return
-		var vertices := PackedVector3Array()
-		for i: int in range(3):
-			var point: Vector3 = VisualGeometry.world(triangle.points[i])
-			var height: float = triangle.heights[i]
-			if theme_id == "desert":
-				# Keep the canonical footprint; irregular low sand crowns are cosmetic.
-				var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
-				height *= 1.25+rough*0.55
-			vertices.append(point+Vector3.UP*(0.018+height))
-		var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
-		var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
-		if normal.y < 0.0: normal = -normal
-		for i: int in order:
-			tool.set_normal(normal)
-			tool.set_uv(triangle.uv[i])
-			tool.add_vertex(vertices[i])
+	if prepared_arrays.is_empty():
+		var document: Dictionary = track.metadata.get("creator_document",{})
+		var triangles: Array[Dictionary] = track.kerbs.triangles
+		var pieces: Array = document.get("pieces",[])
+		var fair: bool = pieces.size() > 1
+		if pieces.size() == 1 and pieces[0].kind not in ["spline","bridge"]:
+			fair = VisualRoadJoin._base_shape(pieces,0,0.0,RoadPieces.prepare_endpoints(pieces)).swept
+		# Ordinary solitary pieces retain their canonical kerb; folded ones need
+		# the same exposed cosmetic border as their road surface.
+		if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+			triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
+			if _menu_slices and not is_inside_tree(): return
+		if triangles.is_empty(): return
+		var tool := SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for triangle: Dictionary in triangles:
+			if _menu_yield_due():
+				if not await _yield_build(): return
+			var vertices := PackedVector3Array()
+			for i: int in range(3):
+				var point: Vector3 = VisualGeometry.world(triangle.points[i])
+				var height: float = triangle.heights[i]
+				if theme_id == "desert":
+					# Keep the canonical footprint; irregular low sand crowns are cosmetic.
+					var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
+					height *= 1.25+rough*0.55
+				vertices.append(point+Vector3.UP*(0.018+height))
+			var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
+			var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
+			if normal.y < 0.0: normal = -normal
+			for i: int in order:
+				tool.set_normal(normal)
+				tool.set_uv(triangle.uv[i])
+				tool.add_vertex(vertices[i])
+		prepared_arrays = tool.commit_to_arrays()
+	if _capture_road_arrays:
+		_prepared_road_parts.append({"role":"kerb","arrays":prepared_arrays})
+		return
 	var mesh := MeshInstance3D.new()
-	mesh.mesh = tool.commit()
+	var surface_mesh := ArrayMesh.new()
+	surface_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
+	mesh.mesh = surface_mesh
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/kerb.gdshader")
 	material.set_shader_parameter("surface_factors",SURFACE_FACTORS)
@@ -1480,7 +1704,9 @@ func _build_snow_banks(track: NativeTrack) -> void:
 	mesh.name = "WinterSnowBanks"
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/winter_bank.gdshader")
-	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
+	_bind_grass(material)
+	material.set_shader_parameter("icy_road",true)
+	SurfaceShaderVariants.specialize(material)
 	mesh.material_override = material
 	tool.index()
 	tool.generate_normals()
@@ -1493,6 +1719,17 @@ func _menu_yield_due() -> bool:
 
 
 static var _winter_drift_noise: FastNoiseLite = _make_winter_drift_noise()
+static var _winter_pack_noise: FastNoiseLite = _make_winter_pack_noise()
+
+static func _make_winter_pack_noise() -> FastNoiseLite:
+	var noise := FastNoiseLite.new()
+	noise.seed = 9371
+	noise.noise_type = FastNoiseLite.TYPE_CELLULAR
+	noise.frequency = 1.85
+	noise.fractal_type = FastNoiseLite.FRACTAL_NONE
+	noise.cellular_jitter = 1.0
+	noise.cellular_return_type = FastNoiseLite.RETURN_DISTANCE2_SUB
+	return noise
 
 static func _make_winter_drift_noise() -> FastNoiseLite:
 	var noise := FastNoiseLite.new()
@@ -1502,83 +1739,144 @@ static func _make_winter_drift_noise() -> FastNoiseLite:
 	return noise
 
 func _winter_bank_offset(anchor: Vector2, t: float) -> float:
+	return _winter_shape_offset(_winter_bank_shape(anchor),t)
+
+func _winter_bank_shape(anchor: Vector2) -> PackedFloat64Array:
 	var drift: float = _winter_drift_noise.get_noise_2dv(anchor*0.43)
 	var chips: float = _winter_drift_noise.get_noise_2dv(anchor*0.95+Vector2(71,13))
-	var crown: float = 0.90+drift*0.40+chips*0.15
+	var crown: float = 0.78+drift*0.25+chips*0.12
 	# Vary the actual snow toe, not just a colour gradient on a circular ribbon.
-	var toe: float = -0.82+drift*0.72+chips*0.38
-	return lerpf(toe,crown,t/0.5) if t <= 0.5 else lerpf(crown,4.4+drift*0.8,(t-0.5)/0.5)
+	var toe: float = -0.50+drift*0.24+chips*0.16
+	return PackedFloat64Array([toe,crown,4.4+drift*0.8,_winter_drift_noise.get_noise_2dv(anchor*0.23)])
+
+func _winter_shape_offset(shape: PackedFloat64Array, t: float) -> float:
+	return lerpf(shape[0],shape[1],t/0.42) if t <= 0.42 else lerpf(shape[1],shape[2],(t-0.42)/0.58)
 
 func _winter_bank_section(tool: SurfaceTool, a: Vector2, b: Vector2, na: Vector2, nb: Vector2, points: PackedVector2Array, uv_cache: Dictionary = {}) -> void:
 	# Compact ploughed crown and a broad downhill apron which sinks into terrain.
 	var rows: Array[Dictionary] = [_winter_bank_row(a,na,points,uv_cache),_winter_bank_row(b,nb,points,uv_cache)]
-	for band: int in range(8):
+	for band: int in range(11):
 		for corner: Vector2i in [Vector2i(0,band),Vector2i(1,band+1),Vector2i(1,band),Vector2i(0,band),Vector2i(0,band+1),Vector2i(1,band+1)]:
 			var row: Dictionary = rows[corner.x]
 			tool.set_normal(row.normals[corner.y])
-			tool.set_uv(Vector2(float(corner.y)/8.0,0.0))
+			tool.set_uv(Vector2(row.fractions[corner.y],0.0))
 			tool.set_uv2(row.uvs[corner.y])
 			tool.set_color(row.color)
 			tool.add_vertex(row.vertices[corner.y])
 
 
+func _winter_bridge_end(pieces: Array, index: int, endpoint: int, topology: Dictionary) -> bool:
+	var bridge: bool = false
+	for match: Array in RoadPieces._matches(topology,index,endpoint):
+		# Ground continues at a junction/underpass: keep its normal banks.
+		if pieces[int(match[0])].kind != "bridge": return false
+		bridge = true
+	return bridge
+
+func _winter_bank_end_fade(along: float, cache: Dictionary) -> float:
+	if not cache.get("bridge_fade_start",false) and not cache.get("bridge_fade_end",false): return 1.0
+	var length: float = float(cache.bridge_fade_length)
+	var reach: float = minf(4.0,maxf(0.01,length*0.45))
+	var fade: float = 1.0
+	if cache.get("bridge_fade_start",false): fade *= smoothstep(0.0,reach,along)
+	if cache.get("bridge_fade_end",false): fade *= smoothstep(0.0,reach,length-along)
+	return fade
+
 func _winter_bank_row(anchor: Vector2, outward: Vector2, points: PackedVector2Array, cache: Dictionary) -> Dictionary:
-	# One nine-point row is shared by neighbouring triangles and sections.
+	# Samples concentrate on the compacted face, rather than its buried apron.
 	# Exact inputs/attributes are cached only inside this authored road piece.
 	var key := Vector4(anchor.x,anchor.y,outward.x,outward.y)
 	if cache.has(key): return cache[key]
 	if not cache.has(anchor): cache[anchor] = _sand_coordinates(anchor,points)
+	var end_fade: float = _winter_bank_end_fade(Vector2(cache[anchor]).x,cache)
 	var vertices := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs := PackedVector2Array()
-	for i: int in range(9):
-		var t: float = float(i)/8.0
-		var offset: float = _winter_bank_offset(anchor,t)
+	var fractions := PackedFloat32Array([0.0,0.08,0.16,0.24,0.32,0.40,0.48,0.56,0.64,0.75,0.87,1.0])
+	var tangent: Vector2 = outward.normalized().orthogonal()
+	# The same three anchor profiles serve every sample and normal in this
+	# row. Retain 64-bit values so this reuse preserves exact mesh buffers.
+	var shape: PackedFloat64Array = _winter_bank_shape(anchor)
+	var left_anchor: Vector2 = anchor-tangent*0.16
+	var right_anchor: Vector2 = anchor+tangent*0.16
+	var left_shape: PackedFloat64Array = _winter_bank_shape(left_anchor)
+	var right_shape: PackedFloat64Array = _winter_bank_shape(right_anchor)
+	var left_fade: float = end_fade
+	var right_fade: float = end_fade
+	if end_fade < 1.0:
+		if not cache.has(left_anchor): cache[left_anchor] = _sand_coordinates(left_anchor,points)
+		if not cache.has(right_anchor): cache[right_anchor] = _sand_coordinates(right_anchor,points)
+		left_fade = _winter_bank_end_fade(Vector2(cache[left_anchor]).x,cache)
+		right_fade = _winter_bank_end_fade(Vector2(cache[right_anchor]).x,cache)
+	for t: float in fractions:
+		var offset: float = _winter_shape_offset(shape,t)
 		var point: Vector2 = anchor+outward*offset
-		var height: float = _winter_pile_height(anchor,t)
-		var slope: float = (_winter_pile_height(anchor,t+0.01)-_winter_pile_height(anchor,t-0.01))/(_winter_bank_offset(anchor,t+0.01)-_winter_bank_offset(anchor,t-0.01))
-		var tangent: Vector2 = outward.normalized().orthogonal()
-		var along: float = (_winter_pile_height(anchor+tangent*0.04,t)-_winter_pile_height(anchor-tangent*0.04,t))/0.08
+		var height: float = _winter_shape_height(anchor,t,outward,shape)
+		# Match normals to the mesh sample footprint. Infinitesimal noise
+		# derivatives exaggerate grooves the geometry cannot actually resolve.
+		var slope: float = (_winter_shape_height(anchor,t+0.06,outward,shape)-_winter_shape_height(anchor,t-0.06,outward,shape))/(_winter_shape_offset(shape,t+0.06)-_winter_shape_offset(shape,t-0.06))
+		var left_height: float = _winter_shape_height(left_anchor,t,outward,left_shape)
+		var right_height: float = _winter_shape_height(right_anchor,t,outward,right_shape)
+		if end_fade < 1.0:
+			height = lerpf(-0.065,height,end_fade)
+			slope *= end_fade
+			left_height = lerpf(-0.065,left_height,left_fade)
+			right_height = lerpf(-0.065,right_height,right_fade)
+		var along: float = (right_height-left_height)/0.32
 		var gradient: Vector2 = outward.normalized()*slope+tangent*along
 		normals.append(Vector3(-gradient.x,1.0,gradient.y).normalized())
 		if not cache.has(point): cache[point] = _sand_coordinates(point,points)
 		uvs.append(cache[point])
 		vertices.append(VisualGeometry.world(point)+Vector3.UP*height)
-	var row: Dictionary = {"vertices":vertices,"normals":normals,"uvs":uvs,"color":Color(absf(Vector2(cache[anchor]).y)/32.0+0.5/255.0,0,0,1)}
+	var row: Dictionary = {"vertices":vertices,"normals":normals,"uvs":uvs,"fractions":fractions,"color":Color(absf(Vector2(cache[anchor]).y)/32.0+0.5/255.0,0,0,1)}
 	cache[key] = row
 	return row
 
 
-func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2, road_mask: Texture2D) -> void:
+func _commit_winter_bank(tool: SurfaceTool, mask: Texture2D, extent: Vector2, road_mask: Texture2D, prepared_arrays: Array = []) -> void:
+	if prepared_arrays.is_empty():
+		tool.index()
+		prepared_arrays = tool.commit_to_arrays()
+	if _capture_road_arrays:
+		_prepared_road_parts.append({"role":"winter","arrays":prepared_arrays})
+		return
 	var mesh := MeshInstance3D.new()
 	mesh.name = "WinterSnowBanks"
-	# Shared corners retain identical position/normal/UV/colour; avoid running
-	# the vertex shader six times for the same bank-grid point.
-	tool.index()
-	mesh.mesh = tool.commit()
+	var surface_mesh := ArrayMesh.new()
+	surface_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,prepared_arrays)
+	mesh.mesh = surface_mesh
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/winter_bank.gdshader")
-	material.set_shader_parameter("snow_albedo",WINTER_SNOW)
-	material.set_shader_parameter("ice_albedo",WINTER_ICE)
+	_bind_grass(material)
+	material.set_shader_parameter("icy_road",true)
 	material.set_shader_parameter("smooth_road_bank",true)
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("road_mask",road_mask)
 	material.set_shader_parameter("map_extent",extent)
+	SurfaceShaderVariants.specialize(material)
 	mesh.material_override = material
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	add_child(mesh)
 
 
-func _winter_pile_height(anchor: Vector2, t: float) -> float:
-	# Connected ploughed masses with broken crests and shallow snow tongues.
-	var broad: float = _winter_drift_noise.get_noise_2dv(anchor*0.23)
-	var chunks: float = _winter_drift_noise.get_noise_2dv(anchor*0.65+Vector2(29,13))
-	var cluster: float = pow(clampf(0.5+chunks*0.5,0.0,1.0),1.7)
-	var crest: float = 0.42+cluster*0.64+broad*0.16
-	var profile: float = smoothstep(0.0,0.46,t) if t <= 0.46 else 1.0-smoothstep(0.46,1.0,t)
-	var crumple: float = _winter_drift_noise.get_noise_2dv(anchor*1.2+Vector2(t*4.0,-t*3.0))*0.13
+func _winter_pile_height(anchor: Vector2, t: float, outward: Vector2 = Vector2.RIGHT) -> float:
+	return _winter_shape_height(anchor,t,outward,_winter_bank_shape(anchor))
+
+func _winter_shape_height(anchor: Vector2, t: float, outward: Vector2, shape: PackedFloat64Array) -> float:
+	# Independent variation across AND along the bank prevents comb-like ridges.
+	# This field is baked into the mesh once; the material does not run noise.
+	var broad: float = shape[3]
+	var point: Vector2 = anchor+outward*_winter_shape_offset(shape,t)
+	# Uneven packed cells form interlocking fragments rather than smooth
+	# periodic noise humps; low-frequency drift still supplies the bulk.
+	var packed: float = clampf((_winter_pack_noise.get_noise_2dv(point)+1.0)*1.5,0.0,1.0)
+	# A steep plough face supports a broken, broad upper shelf. A symmetric
+	# hill profile produces the rejected row of inflated rounded cushions.
+	var peak: float = 0.24+broad*0.06
+	var profile: float = smoothstep(0.0,peak,t)*(1.0-smoothstep(peak+0.15,0.95,t))
+	var crest: float = 0.74+broad*0.18+packed*0.22
 	var base: float = lerpf(0.018,-0.065,smoothstep(0.65,1.0,t))
-	return base+(crest+crumple)*profile
+	return base+crest*profile
 
 
 func _winter_deposit(tool: SurfaceTool, anchor: Vector2, outward: Vector2, occupied: Dictionary) -> void:
@@ -1588,37 +1886,48 @@ func _winter_deposit(tool: SurfaceTool, anchor: Vector2, outward: Vector2, occup
 	var seed_value: int = absi(key.x*73856093 ^ key.y*19349663)
 	if seed_value%5 == 0: return
 	occupied[key] = true
-	# Three overlapping, mostly buried lobes per deposit. They join the bank,
-	# rather than forming a row of isolated round stones.
-	for lobe: int in range(3):
+	# Unequal buried fragments occupy irregular patches of the bank face.
+	# No evenly spaced triplets and no identical rounded caps.
+	for lobe: int in range(2+seed_value%2):
 		_winter_deposit_lobe(tool,anchor,outward,seed_value+lobe*23,lobe)
 
 
 func _winter_deposit_lobe(tool: SurfaceTool, anchor: Vector2, outward: Vector2, seed_value: int, lobe: int) -> void:
-	# A small broken clod at the toe interrupts the snow/ice silhouette;
-	# the remaining two masses overlap the raised ploughed crown.
-	var toe: bool = lobe == 0
-	var t: float = (0.04 if toe else 0.26)+float(seed_value%17)/17.0*(0.10 if toe else 0.30)
-	var center: Vector2 = anchor+outward*_winter_bank_offset(anchor,t)
-	center += outward.normalized().orthogonal()*(float(lobe-1)*0.42+(float((seed_value/17)%13)/13.0-0.5)*0.32)
-	var radius: float = (0.18 if toe else 0.32)+float(seed_value%11)*(0.014 if toe else 0.026)
-	var height: float = (0.09 if toe else 0.24)+float(seed_value%7)*(0.012 if toe else 0.035)
-	var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*(_winter_pile_height(anchor,t)-height*0.72)
+	var t: float = 0.12+float(seed_value%41)/41.0*0.48
+	var shifted: Vector2 = anchor+outward.normalized().orthogonal()*(float((seed_value/41)%37)/37.0-0.5)*1.8
+	var center: Vector2 = shifted+outward*_winter_bank_offset(shifted,t)
+	var radius: float = 0.19+float(seed_value%29)/29.0*0.30
+	var height: float = 0.16+float((seed_value/29)%31)/31.0*0.20
+	var origin: Vector3 = VisualGeometry.world(center)+Vector3.UP*_winter_pile_height(shifted,t,outward)
 	var lower := PackedVector3Array()
 	var upper := PackedVector3Array()
-	for i: int in range(10):
-		var angle: float = TAU*float(i)/10.0+float(seed_value%31)
-		var irregular: float = 0.80+float((seed_value+i*11)%17)*0.022
-		var radial := Vector3(cos(angle)*radius*irregular,0,sin(angle)*radius*irregular)
-		lower.append(origin+radial)
-		upper.append(origin+radial*0.68+Vector3(radius*0.08,height*0.76,0))
-	var top: Vector3 = origin+Vector3(-radius*0.1,height,radius*0.08)
-	for i: int in range(10):
-		var j: int = (i+1)%10
+	var sides: int = 5+seed_value%3
+	var turn: float = float(seed_value%101)*0.0622
+	var stretch: float = 0.60+float((seed_value/31)%19)/19.0*0.85
+	var bank_span: float = (_winter_bank_offset(shifted,t+0.01)-_winter_bank_offset(shifted,t-0.01))/0.02
+	var tangent: Vector2 = outward.normalized().orthogonal()
+	for i: int in range(sides):
+		var angle: float = TAU*float(i)/sides+turn
+		var irregular: float = 0.70+float(absi(seed_value ^ (i*92821))%97)/97.0*0.55
+		var radial := Vector3(cos(angle)*radius*irregular,0,sin(angle)*radius*irregular*stretch)
+		# Each fragment grows out of its actual slope: its foot is never a
+		# horizontal floating ring or a repeated dark notch in the bank.
+		var delta2 := Vector2(radial.x,-radial.z)
+		var sample_anchor: Vector2 = shifted+tangent*delta2.dot(tangent)
+		var sample_t: float = clampf(t+delta2.dot(outward.normalized())/bank_span,0.0,1.0)
+		var foot: float = _winter_pile_height(sample_anchor,sample_t,outward)
+		lower.append(VisualGeometry.world(center)+radial+Vector3.UP*(foot-0.04))
+		var bevel: float = 0.60+float(absi(seed_value ^ (i*19391))%83)/83.0*0.27
+		upper.append(origin+radial*bevel+Vector3(radius*0.13,height*(0.73+bevel*0.14)+(foot-origin.y)*bevel,-radius*0.1))
+	var top: Vector3 = origin+Vector3(radius*0.19,height*0.93,-radius*0.14)
+	for i: int in range(sides):
+		var j: int = (i+1)%sides
 		for face: Array in [[lower[i],lower[j],upper[j]],[lower[i],upper[j],upper[i]],[upper[i],upper[j],top]]:
+			var normal: Vector3 = (Vector3(face[2])-Vector3(face[0])).cross(Vector3(face[1])-Vector3(face[0])).normalized()
 			for point: Vector3 in face:
 				var delta: Vector3 = point-origin
-				tool.set_normal(Vector3(delta.x/(radius*radius),maxf(0.35,delta.y/height)/height,delta.z/(radius*radius)).normalized())
+				var soft: Vector3 = Vector3(delta.x/(radius*radius),maxf(0.35,delta.y/height)/height,delta.z/(radius*radius*stretch*stretch)).normalized()
+				tool.set_normal(soft.lerp(normal,0.12).normalized())
 				tool.set_uv(Vector2(0.65,0.0))
 				tool.set_uv2(Vector2.ZERO)
 				tool.add_vertex(point)

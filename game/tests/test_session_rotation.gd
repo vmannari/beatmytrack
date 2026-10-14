@@ -17,6 +17,7 @@ class Service extends RefCounted:
 class SimulatedClient extends Client:
 	var service: Service
 	var change_login: Callable
+	var change_login_on_reuse: Callable
 	var sign_out_during_refresh: bool = false
 	func _send(path: String, _method: HTTPClient.Method, payload: Dictionary, authorized: bool, _key: String = "", _headers: PackedStringArray = [], _owner: int = 0) -> Dictionary:
 		var sent_access: String = _access_token
@@ -32,8 +33,11 @@ class SimulatedClient extends Client:
 			service.refresh = "fixture-refresh-"+str(service.rotations).pad_zeros(32)
 			return {"ok":true,"status":200,"error":"","data":{"access_token":service.access,"refresh_token":service.refresh,"player":{"id":"rotation-player","display_name":"Rotation driver"}}}
 		if authorized and (sent_access != service.access or sent_access == "expired"): return _failure("INVALID_SESSION",401)
+		if authorized and change_login_on_reuse.is_valid(): change_login_on_reuse.call()
 		if service.offline_retry: return _failure("NETWORK_ERROR")
 		service.reads += 1
+		if path == "/me": return {"ok":true,"status":200,"error":"","data":{"id":"rotation-player"}}
+		if path == "/runs": return {"ok":true,"status":202,"error":"","data":{"run_id":"rotation-run","status":"queued"}}
 		return {"ok":true,"status":200,"error":"","data":{}}
 
 func _initialize() -> void: call_deferred("run")
@@ -74,9 +78,36 @@ func run() -> void:
 	while responses.size() < 2: await process_frame
 	check(responses.all(func(value: Dictionary) -> bool: return value.ok),"simultaneous readers/writers sharing a save both succeed")
 	check(service.reuses == 0 and first.signed_in() and second.signed_in(),"shared renewal never replays a consumed refresh or logs out either client")
+	check(service.rotations == 1,"shared clients reuse the issued access token instead of rotating each other out")
+	for attempt: int in range(8):
+		await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+		await second.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+	check(service.rotations == 1,"alternating instances do not cause ongoing credential ping-pong")
 	check(not DirAccess.dir_exists_absolute(first.session_path+".rotation"),"shared request lease is released")
 	first.queue_free(); second.queue_free()
 	await process_frame
+
+	service = Service.new()
+	first = client(service,"cached-expired")
+	var saved := ConfigFile.new()
+	first._load_saved_config(saved)
+	saved.set_value("session","access_token","another-expired-credential")
+	first._write_saved_config(saved)
+	var expired: Dictionary = await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+	check(expired.ok and service.rotations == 1,"an expired saved access credential falls back to one authenticated renewal")
+	first.queue_free(); await process_frame
+
+	service = Service.new()
+	first = client(service,"reuse-login-fence")
+	second = client(service,"reuse-login-fence",first)
+	await first.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+	second.change_login_on_reuse = func() -> void:
+		first._login_id = "different-explicit-login"
+		first._save_session()
+	var fenced: Dictionary = await second.request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+	check(fenced.error == "ACCOUNT_CHANGED" and not second.signed_in(),"cached credential reuse remains fenced against an explicit login during delivery")
+	check(first.has_saved_session() and not FileAccess.file_exists(first.session_path+".signed_out"),"reuse fence preserves the newer saved login")
+	first.queue_free(); second.queue_free(); await process_frame
 
 	service = Service.new()
 	first = client(service,"same-client")

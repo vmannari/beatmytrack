@@ -39,15 +39,19 @@ func run() -> void:
 	for package: Dictionary in manifest.packages:
 		check(package.frames == 2116800 and package.bars == 32 and package.bpm == 160, "new performed score's exact racing grid: " + package.id)
 		check(float(package.combined.peak_dbfs) < -5.5, "combined score retains headroom: " + package.id)
-	var menu: AudioStreamWAV = world.menu_player.stream
+	var menu: AudioStreamOggVorbis = world.menu_player.stream
 	var menu_manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/audio/menu_exploration_v1/manifest.json"))
 	var menu_frames: int = int(menu_manifest.output.frames)
-	check(FileAccess.get_sha256(world.MENU_ASSET) == menu_manifest.output.sha256, "owner-selected menu export is traceable")
+	check(FileAccess.get_sha256(world.MENU_ASSET.replace(".ogg", ".wav")) == menu_manifest.output.sha256, "owner-selected menu export is traceable")
 	check(menu_frames == 4888591 and float(menu_manifest.output.seam_delta) < .008, "prepared source loop duration and seam remain pinned")
-	check(menu.format == AudioStreamWAV.FORMAT_16_BITS and menu.stereo and menu.mix_rate == 44100, "lossless native stereo PCM menu")
-	check(menu.loop_begin == 0 and menu.loop_end == menu_frames and menu.loop_mode == AudioStreamWAV.LOOP_FORWARD, "complete exact menu loop without a decoder restart")
-	var menu_pcm: PackedByteArray = menu.data
-	check(menu_pcm.size() == (menu_frames + 1) * 4 and menu_pcm.slice(0, 4) == menu_pcm.slice(menu_pcm.size() - 4), "cyclic endpoint guard prevents a zero frame at PCM wrap")
+	check(menu.packet_sequence.sampling_rate == 44100, "compressed menu retains original sample rate")
+	check(menu.loop and menu.loop_offset == 0.0 and absf(menu.get_length() - menu_frames / 44100.0) < 1.0 / 44100.0, "complete original menu duration with native Vorbis looping")
+	var compression: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/audio/compressed/manifest.json"))
+	var traceable: bool = false
+	for asset: Dictionary in compression.outputs:
+		if asset.encoded == "game/" + world.MENU_ASSET.trim_prefix("res://"):
+			traceable = FileAccess.get_sha256(world.MENU_ASSET) == asset.encoded_sha256 and asset.master_sha256 == menu_manifest.output.sha256 and float(asset.snr_db) >= 30.0
+	check(traceable, "compressed menu is pinned to unchanged master and measured quality")
 	_test_progress(world)
 	_test_qualities()
 	_test_equivalence()

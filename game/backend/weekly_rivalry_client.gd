@@ -22,6 +22,8 @@ var cache_directory: String = ""
 var cached_snapshot: bool = false
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 var _last_refresh_msec: int = -60000
+var _continue_group: String = ""
+var _continue_key: String = ""
 const REFRESH_INTERVAL_MSEC: int = 30000
 
 func _cache_scope() -> String:
@@ -80,8 +82,16 @@ func reset() -> void:
 	_ghost_pending.clear()
 	cached_snapshot = false
 	_last_refresh_msec = -60000
+	_continue_group = ""
+	_continue_key = ""
 
 static func valid_snapshot(value: Dictionary) -> bool:
+	if value.has("personal_best_slots"):
+		if not value.personal_best_slots is Array or value.personal_best_slots.size() > 5: return false
+		var seen: Array[int] = []
+		for slot: Variant in value.personal_best_slots:
+			if not (slot is int or slot is float) or not is_finite(float(slot)) or float(slot) != floor(float(slot)) or slot < 0 or slot >= 5 or seen.has(int(slot)): return false
+			seen.append(int(slot))
 	if value.get("state") not in ["not_joined","active","settling","complete"]: return false
 	if value.has("test_population") and not value.test_population is bool: return false
 	if value.has("automatic_test_drivers") and not value.automatic_test_drivers is bool: return false
@@ -150,6 +160,14 @@ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, pay
 	busy = false
 	request_scope = ""
 	if response.ok and valid_snapshot(response.data):
+		if model.group_id != str(response.data.get("group_id","")):
+			model = WeeklyRivalry.new()
+			result_ticket = ""
+			result_state = ""
+			_ghost_cache.clear()
+			_ghost_pending.clear()
+			_continue_group = ""
+			_continue_key = ""
 		model.apply_snapshot(response.data)
 		snapshot_scope = original
 		cached_snapshot = false
@@ -226,6 +244,8 @@ static func _validate_ghost(recording: Variant) -> Dictionary:
 		if not pose is Array or pose.size() != 7: return {}
 		for number: Variant in pose:
 			if not (number is float or number is int) or not is_finite(float(number)): return {}
+		for component: int in range(1,7):
+			if absf(float(pose[component])) > 100000.0: return {}
 		if float(pose[0]) <= previous: return {}
 		previous = float(pose[0])
 	if not (recording.ticks is float or recording.ticks is int) or not is_finite(float(recording.ticks)): return {}
@@ -287,16 +307,31 @@ func poll_result() -> void:
 		changed.emit()
 
 func continue_week() -> void:
-	if busy or not model.completed: return
+	if busy or not model.completed or snapshot_scope != scope() or not client.signed_in(): return
 	var original: String = scope()
+	# Own the whole acknowledgement/enrollment transition before yielding. Late
+	# result polls belong to the old week and must not replace the new board.
+	_generation += 1
 	var generation: int = _generation
-	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/continue",HTTPClient.METHOD_POST,{},client.new_operation_key(),true)
+	result_polling = false
+	busy = true
+	request_scope = original
+	error = ""
+	if _continue_group != model.group_id:
+		_continue_group = model.group_id
+		_continue_key = client.new_operation_key()
+	changed.emit()
+	var response: Dictionary = await client.request_api("/rivalry/"+_continue_group+"/continue",HTTPClient.METHOD_POST,{},_continue_key,true)
 	if original != scope() or generation != _generation: return
 	if response.ok:
 		_configure_cache()
 		snapshot_cache.forget("current")
-		reset()
-		await refresh()
+		cached_snapshot = false
+		# Join targets the actual current UTC week even on an older backend with
+		# several unreviewed finales. Keep the finale visible until it succeeds.
+		await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
 	else:
+		busy = false
+		request_scope = ""
 		error = "Could not continue. Try again."
 		changed.emit()

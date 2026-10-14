@@ -88,6 +88,11 @@ var editor_gesture_redo: Array[Dictionary] = []
 var editor_issue_cursor: int = -1
 var editor_hint_generation: int = 0
 var editor_wip_saved: String = ""
+var editor_wip_snapshot: Dictionary = {}
+var editor_wip_store: TrackLibrary
+var editor_saved_store: TrackLibrary
+var editor_wip_disk_hash: String = ""
+var editor_saved_disk_hash: String = ""
 var editor_retry_original: bool = false
 var online: AccountController
 var account_button: Button
@@ -131,6 +136,7 @@ var challenge_queued_invitation: String = ""
 var challenge_links: Node
 var challenge_refresh_ticks: int = 0
 var product_telemetry: Node
+var client_quality: Node
 var _telemetry_race_started: bool = false
 var _telemetry_race_finished: bool = false
 
@@ -155,8 +161,11 @@ func _process(_delta: float) -> void:
 	if result != null and not editor_pending_road_bake.is_empty() and result.metadata.get("creator_document",{}) == editor_pending_road_bake:
 		NativeTrackVisual.request_saved_road_bake.call_deferred(result)
 		editor_pending_road_bake.clear()
-	if not is_instance_valid(canvas) or screen != "create": return
+	if not is_instance_valid(canvas) or screen != "create":
+		if result != null: result.editor_roads = {}
+		return
 	if document != editor_preview_document:
+		if result != null: result.editor_roads = {}
 		_queue_editor_preview()
 		return
 	editor_preview_document = {}
@@ -214,10 +223,10 @@ func _ready() -> void:
 	product_telemetry.storage_path = profile_root.path_join("product_telemetry.json")
 	product_telemetry.observations_due.connect(_telemetry_observe_activity)
 	add_child(product_telemetry)
-	var quality_observer: Node = preload("res://backend/client_quality.gd").new()
-	quality_observer.telemetry = product_telemetry
-	quality_observer.app = self
-	add_child(quality_observer)
+	client_quality = preload("res://backend/client_quality.gd").new()
+	client_quality.telemetry = product_telemetry
+	client_quality.app = self
+	add_child(client_quality)
 	cloud = preload("res://backend/cloud_tracks.gd").new()
 	cloud.changed.connect(_prime_free_race_comparisons)
 	cloud.client = online.client
@@ -354,10 +363,10 @@ func _show_screen(next: String) -> void:
 	# A departing page does not need its preview. The single worker retires in
 	# _process; a newly opened document supersedes its output without joining.
 	if is_instance_valid(object_browser):
-		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale}
+		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span}
 	if is_instance_valid(canvas):
 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	screen = next
 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
 	canvas = null
@@ -937,7 +946,6 @@ func _account_changed() -> void:
 		lifecycle.library = library
 		lifecycle.records = records
 		lifecycle.legacy_directories = _legacy_track_directories()
-		for item: Dictionary in library.editable_entries(): lifecycle.defer_sync(item.document)
 	if is_instance_valid(account_button):
 		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
 	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
@@ -1268,6 +1276,7 @@ func _challenge_code_dialog() -> void:
 		challenge_invitation = ChallengesClient.code_from(field.text)
 		challenges.open(field.text))
 	dialog.popup_centered(Vector2i(500,150))
+	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
 	field.grab_focus()
 
 func _share_challenge() -> void:
@@ -1487,6 +1496,9 @@ func _rivalry(parent: VBoxContainer = null) -> void:
 		child.queue_free()
 	var page := WeeklyRivalryPage.new()
 	page.model = rivalry.model
+	page.finale_livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
+	page.finale_customisation = VehicleCustomisation.for_car(records.settings,rivalry.model.vehicle_id)
+	page.finale_condition = VehicleCondition.read(records,rivalry.model.vehicle_id)
 	page.standings_identity = rivalry.scope()+"/"+rivalry.model.group_id+"/"+str(rivalry.model.week)
 	if rivalry_standings_view.get("key","") == page.standings_identity:
 		page.standings_scroll_offset = int(rivalry_standings_view.offset)
@@ -1530,11 +1542,24 @@ func _rivalry(parent: VBoxContainer = null) -> void:
 			rivalry.model.next_week()
 			_rivalry()
 		else: rivalry.continue_week())
+	page.share_requested.connect(_share_rivalry_results)
 	page.retry_requested.connect(_retry_race)
 	parent.add_child(page)
 	_keep_race_mode_rail_fixed(page)
 	if page.section == "detail" and not rivalry.model.sample and not rivalry.model.tracks.is_empty():
 		_prepare_rivalry_track_preview(page,rivalry_track)
+
+func _share_rivalry_results() -> void:
+	if rivalry.busy or rivalry.cached_snapshot or not rivalry.model.completed: return
+	if not rivalry.model.sample and rivalry.snapshot_scope != rivalry.scope(): return
+	var text: String = rivalry.model.finale_share_text()
+	if text.is_empty(): return
+	if challenge_links.share(text): return
+	var dialog := AcceptDialog.new()
+	dialog.title = "Championship results copied"
+	dialog.dialog_text = text
+	_own_dialog(dialog)
+	dialog.popup_centered(Vector2i(620,360))
 
 func _remember_rivalry_standings(parent: Control) -> void:
 	if not is_instance_valid(parent): return
@@ -1709,7 +1734,6 @@ func _start_new_document() -> void:
 	object_browser_state.clear()
 
 func _editor() -> void:
-	_telemetry_observe("editor_opened",{"biome":str(document.get("theme","")),"reason":"edit"})
 	_stamp_creator()
 	if document.is_empty():
 		document = TrackDocument.create_blank()
@@ -1722,6 +1746,9 @@ func _editor() -> void:
 		editor_retry_original = false
 		editor_save_message = ""
 		editor_wip_saved = ""
+		editor_wip_snapshot.clear()
+		editor_wip_store = null
+		editor_wip_disk_hash = ""
 		editor_issue_cursor = -1
 	editor_world = EditorWorld.new()
 	root_ui.add_child(editor_world)
@@ -1739,6 +1766,7 @@ func _editor() -> void:
 		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
 		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
+		canvas.stamp_span = float(editor_view.get("stamp_span",8.0))
 		canvas.run_shape = str(editor_view.get("run_shape","line"))
 		canvas.free_run = bool(editor_view.get("free_run",false))
 		canvas.brush_surface = int(editor_view.get("brush_surface",0))
@@ -1960,6 +1988,8 @@ func _editor() -> void:
 	object_browser.visible = false
 	for key: String in object_browser_state: object_browser.set(key,object_browser_state[key])
 	object_browser.current = canvas.stamp_kind
+	object_browser.stamp_span = canvas.stamp_span
+	object_browser.stamp_container_color = canvas.stamp_container_color
 	object_browser.biome = str(document.get("biome",document.theme))
 	overlay.add_child(object_browser)
 	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
@@ -1969,6 +1999,8 @@ func _editor() -> void:
 	object_browser.asset_chosen.connect(_choose_object)
 	object_browser.mode_chosen.connect(_object_placement)
 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+	object_browser.span_chosen.connect(func(value: float) -> void: canvas.stamp_span=value)
+	object_browser.container_color_chosen.connect(_container_colour)
 	object_browser.select_requested.connect(func() -> void:
 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
 	object_browser.populate_requested.connect(_open_object_population)
@@ -2055,12 +2087,12 @@ func _update_editor_save_state() -> void:
 		editor_save_button.text = "Preview pending"
 		editor_save_button.disabled = true
 		editor_save_button.tooltip_text = "Switching tools retains previews. Save confirms valid previews; Discard cancels them."
-	elif not editor_saved_snapshot.is_empty() and TrackLibrary.draft_fingerprint(document) == TrackLibrary.draft_fingerprint(editor_saved_snapshot):
+	elif not editor_saved_snapshot.is_empty() and (document == editor_saved_snapshot or TrackLibrary.draft_fingerprint(document) == TrackLibrary.draft_fingerprint(editor_saved_snapshot)):
 		editor_save_button.text = "Saved on device"
 		editor_save_button.disabled = true
 		editor_save_button.tooltip_text = "The saved original matches this document."
 	else:
-		editor_save_button.text = "WIP recovery saved" if editor_wip_saved == TrackLibrary.draft_fingerprint(document) else "Unsaved draft"
+		editor_save_button.text = "WIP recovery saved" if (editor_wip_store == library and document == editor_wip_snapshot) or editor_wip_saved == TrackLibrary.draft_fingerprint(document) else "Unsaved draft"
 		editor_save_button.disabled = true
 		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
 
@@ -2075,7 +2107,7 @@ func _editor_tool() -> String:
 
 func _capture_pending_tool() -> Dictionary:
 	var state: Dictionary = {"mode":canvas.mode}
-	var keys: Array = {"road":["ghost","piece_kind","snap_matched"],"paint":["paint_points","paint_mode","brush_surface","brush_width","brush_shape","protect_road","stamp_kind","stamp_scale"],"objects":["run_start","run_preview","run_draw","run_shape","free_run","stamp_kind","stamp_scale","stamp_rotation"]}[_editor_tool()]
+	var keys: Array = {"road":["ghost","piece_kind","snap_matched"],"paint":["paint_points","paint_mode","brush_surface","brush_width","brush_shape","protect_road","stamp_kind","stamp_scale"],"objects":["run_start","run_preview","run_draw","run_shape","free_run","stamp_kind","stamp_scale","stamp_span","stamp_rotation","stamp_container_color"]}[_editor_tool()]
 	for key: String in keys:
 		var value: Variant = canvas.get(key)
 		state[key] = value.duplicate(true) if value is Array or value is Dictionary else value
@@ -2277,11 +2309,18 @@ func _build_editor_tools() -> void:
 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
 			_context_button("Rotate","rotate",_rotate_object)
 			_context_button("Copy","objects",_duplicate_object)
-			if document.objects[canvas.selected_object].kind not in ["tyre_wall","tyre_stack"]:
+			if document.objects[canvas.selected_object].kind == "speed_bump":
+				_context_button("Width -","minus",func() -> void: _resize_speed_bump(-0.5))
+				_context_button("Width +","plus",func() -> void: _resize_speed_bump(0.5))
+				_context_button("Fit road","snap",_fit_speed_bump)
+				editor_status.text = "%.2f m / Drag end dots to set width" % CreatorObjects.size_of(document.objects[canvas.selected_object]).y
+			elif document.objects[canvas.selected_object].kind not in ["tyre_wall","tyre_stack"]:
 				_context_button("Size -","minus",func() -> void: _scale_object(-0.25))
 				_context_button("Size +","plus",func() -> void: _scale_object(0.25))
 				editor_status.text = "%s / %.2fx" % [CreatorObjects.description(document.objects[canvas.selected_object].kind),float(document.objects[canvas.selected_object].get("scale",1.0))]
 			_context_button("Delete","delete",_delete_selection)
+			if document.objects[canvas.selected_object].kind == "container":
+				editor_context.add_child(ContainerColorButton.make(ContainerPaint.value(document.objects[canvas.selected_object]),_container_colour))
 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",canvas.choose_start_line)
 			_context_button("Palette","more",func() -> void:
 				canvas.selected_object = -1
@@ -2447,9 +2486,38 @@ func _rotate_object() -> void:
 
 func _scale_object(delta: float) -> void:
 	if canvas.selected_object < 0: return
+	if document.objects[canvas.selected_object].kind == "speed_bump":
+		_resize_speed_bump(delta*4.0)
+		return
 	_remember()
 	var object: Dictionary = document.objects[canvas.selected_object]
 	object.scale = clampf(float(object.get("scale",1.0))+delta,0.5,1.5 if object.kind in CreatorCatalog.DECORATIVE else 3.0)
+	_commit_selection()
+
+
+func _resize_speed_bump(delta: float) -> void:
+	if canvas.selected_object < 0: return
+	var object: Dictionary = document.objects[canvas.selected_object]
+	if object.kind != "speed_bump": return
+	var span: float = clampf(CreatorObjects.size_of(object).y+delta,SpeedBumpEdit.MIN_SPAN,SpeedBumpEdit.MAX_SPAN)
+	if is_equal_approx(span,CreatorObjects.size_of(object).y): return
+	_remember()
+	object["span"] = span
+	document.objects[canvas.selected_object] = SpeedBumpEdit.serialize_ready(object)
+	_commit_selection()
+
+
+func _fit_speed_bump() -> void:
+	if canvas.selected_object < 0: return
+	var object: Dictionary = document.objects[canvas.selected_object]
+	if object.kind != "speed_bump": return
+	var fitted: Dictionary = SpeedBumpEdit.fit_road(document,object,canvas.native_preview)
+	if fitted.is_empty():
+		_editor_hint("Place the speed bump on a ground road first.")
+		return
+	if fitted == object: return
+	_remember()
+	document.objects[canvas.selected_object] = fitted
 	_commit_selection()
 
 
@@ -2515,6 +2583,11 @@ func _refresh_editor() -> void:
 	share_button.disabled = not errors.is_empty()
 	if is_instance_valid(canvas): canvas.refresh()
 
+func _editor_copy_is_current(snapshot: Dictionary, storage: TrackLibrary, relative_path: String, disk_hash: String) -> bool:
+	if storage != library or document != snapshot or disk_hash.is_empty(): return false
+	var path: String = library.directory.path_join(relative_path)
+	return FileAccess.file_exists(path) and FileAccess.get_sha256(path) == disk_hash
+
 func _save_draft(background_preview: bool = false) -> Error:
 	if not background_preview: _finish_preview_thread()
 	if document.is_empty(): return ERR_INVALID_DATA
@@ -2530,12 +2603,19 @@ func _save_draft(background_preview: bool = false) -> Error:
 			for key: String in editor_route_fields: document[key] = editor_route_fields[key].duplicate(true) if editor_route_fields[key] is Array else editor_route_fields[key]
 	var errors: Array[String] = TrackDocument.validate(document)
 	var message: String
-	var save_error: Error = library.save_wip(document)
+	# A successful immutable snapshot belongs to this exact local library.
+	# Missing primaries and failed writes still take the real recovery path.
+	var wip_current: bool = (editor_save_error == OK or editor_retry_original) and _editor_copy_is_current(editor_wip_snapshot,editor_wip_store,"wip/"+str(document.id)+".json",editor_wip_disk_hash) and not library.is_published(str(document.id))
+	var save_error: Error = OK if wip_current else library.save_wip(document)
+	if wip_current: library.last_error = ""
 	if save_error != OK or not editor_retry_original:
 		editor_save_error = save_error
 		editor_save_message = "Could not save: "+library.last_error if save_error != OK else ""
-	if save_error == OK: editor_wip_saved = TrackLibrary.draft_fingerprint(document)
-	if save_error == OK and lifecycle != null: lifecycle.defer_sync(document)
+	if save_error == OK and not wip_current:
+		editor_wip_saved = TrackLibrary.draft_fingerprint(document)
+		editor_wip_snapshot = document.duplicate(true)
+		editor_wip_store = library
+		editor_wip_disk_hash = FileAccess.get_sha256(library.directory.path_join("wip/"+str(document.id)+".json"))
 	if save_error != OK: message = "Could not save: " + library.last_error
 	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
 	else: message = "WIP autosaved. Saved original unchanged."
@@ -2551,10 +2631,13 @@ func _save_draft(background_preview: bool = false) -> Error:
 		if is_instance_valid(editor_undo): editor_undo.disabled = history.is_empty()
 		if is_instance_valid(editor_redo): editor_redo.disabled = redo_history.is_empty()
 		if background_preview:
-			if _objects_only_edit(): editor_world.preview_objects(document)
 			canvas.queue_redraw()
-			test_button.disabled = true
-			_queue_editor_preview()
+			if canvas.native_preview != null and canvas.native_preview.metadata.get("creator_document",{}) == document:
+				_update_editor_issues()
+			else:
+				if _objects_only_edit(): editor_world.preview_objects(document)
+				test_button.disabled = true
+				_queue_editor_preview()
 		else:
 			var preview_track: NativeTrack = _editor_track_preview()
 			if preview_track != null: canvas.show_native(preview_track)
@@ -2710,10 +2793,10 @@ func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> Ra
 		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice)
 	return race_loading
 
-func _present_race_loading() -> void:
+func _present_race_loading() -> bool:
 	# Layout and actually draw the overlay before synchronous scene construction.
 	await get_tree().process_frame
-	if DisplayServer.get_name() == "headless": return
+	if DisplayServer.get_name() == "headless": return false
 	# Minimized/suspended windows may stop emitting frame_post_draw entirely.
 	# Wait for an actual draw normally, but never make it an unbounded race gate.
 	var drawn: Dictionary = {"done": false}
@@ -2724,6 +2807,7 @@ func _present_race_loading() -> void:
 		await get_tree().process_frame
 	if RenderingServer.frame_post_draw.is_connected(observe):
 		RenderingServer.frame_post_draw.disconnect(observe)
+	return drawn.done
 
 func _race_loading_matches(expected_id: int) -> bool:
 	return is_instance_valid(race_loading) and race_loading.get_instance_id() == expected_id
@@ -2827,7 +2911,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	if not _race_loading_matches(loading_id): return
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	cloud_ticket = {}
-	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
+	cloud_publish_version = ""
 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
 		loading.stage("Connecting race…")
 		var issued: Dictionary = await cloud.ticket(track,false,VehicleCatalog.selected,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
@@ -2882,7 +2966,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
 	_stop_menu_page_motion()
 	root_ui.visible = false
 	game = GAME_SCENE.instantiate()
@@ -2919,7 +3003,15 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	# Render the prepared world once with the countdown/input still frozen.
 	game.call("_process", 0.0)
 	loading.stage("Preparing start…")
-	await _present_race_loading()
+	var prepared_finish: VehicleWeathering = game.get("car_weathering")
+	var finish_warmed: bool = prepared_finish.begin_render_warmup()
+	var finish_drawn: bool = await _present_race_loading()
+	# Always restore after the bounded draw wait, including cancellation/focus loss.
+	prepared_finish.end_render_warmup()
+	if finish_warmed and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
+		game.call("_process", 0.0)
+		# The exact clean/livery finish is visible before releasing the loading cover.
+		await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if not is_instance_valid(prepared_game) or game != prepared_game:
 		cloud_starting = false
@@ -2930,6 +3022,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		_close_race_loading(loading_id)
 		_leave_race()
 		return
+	game.set("weathering_prepared", finish_drawn)
 	game.process_mode = Node.PROCESS_MODE_INHERIT
 	_telemetry_begin_attempt(track)
 	cloud_starting = false
@@ -2947,6 +3040,7 @@ func _leave_race() -> void:
 		if not cloud_ticket.is_empty(): return
 	if is_instance_valid(game) and not _telemetry_race_finished:
 		var complete: bool = bool(game.get("track_session").finished)
+		if client_quality != null: client_quality.finish_race("finished" if complete else "abandoned")
 		_telemetry_observe("race_finished" if complete else "race_abandoned",_telemetry_track_properties(game.get("native_track"),"finished" if complete else "exit"))
 		_telemetry_race_finished = complete
 	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
@@ -2985,6 +3079,7 @@ func _results() -> void:
 	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor
 	if _result_game_id == game.get_instance_id(): return
 	_result_game_id = game.get_instance_id()
+	if client_quality != null: client_quality.finish_race("finished")
 	_telemetry_race_finished = true
 	_telemetry_observe("race_finished",_telemetry_track_properties(track,"finished"))
 	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
@@ -3083,7 +3178,7 @@ func _results() -> void:
 				if cloud.changed.is_connected(update_status): cloud.changed.disconnect(update_status))
 	root_ui.modulate.a = 0.0
 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	if online_queued: _save_result_upload(game,cloud_ticket,game.get("online_frames"),cloud_publish_version,game.get("online_rewinds"))
+	if online_queued: _save_result_upload(game,cloud_ticket,game.get("online_frames"),"",game.get("online_rewinds"))
 
 func _save_result_upload(completed_game: Node, ticket_data: Dictionary, frames: Array, publish_version: String, rewinds: Array) -> void:
 	if is_instance_valid(completed_game) and completed_game.get("race_proof") != null and bool(cloud.client.get("_capabilities").get("lightweight_race_proofs",false)):
@@ -3227,7 +3322,7 @@ func _retry_race(offline_only: bool = false) -> void:
 	if not cloud_ticket.is_empty():
 		cloud_ticket._owner_id = account_id
 		cloud_ticket._origin = origin
-	cloud_publish_version = str(track.metadata.get("cloud_version","")) if track.metadata.get("cloud_publish",false) else ""
+	cloud_publish_version = ""
 	root_ui.visible = false
 	(game.get("hud") as PlaygroundHUD).show()
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
@@ -3238,6 +3333,7 @@ func _retry_race(offline_only: bool = false) -> void:
 	# Retry reuses the Game node but starts a new scored attempt. Keep duplicate
 	# finish signals idempotent within an attempt, without suppressing its retry.
 	_result_game_id = 0
+	if client_quality != null: client_quality.finish_race("restarted")
 	if not _telemetry_race_finished: _telemetry_observe("race_abandoned",_telemetry_track_properties(track,"restart"))
 	_telemetry_observe("race_retried",_telemetry_track_properties(track,"restart"))
 	_telemetry_begin_attempt(track)
@@ -3257,6 +3353,7 @@ func _prepare_race_rating(track: NativeTrack) -> void:
 	var vote := preload("res://backend/finish_rating.gd").new()
 	vote.client = online.client
 	vote.sync = cloud
+	if rivalry_racing: vote.rivalry_sync = rivalry
 	vote.version = str(track.metadata.cloud_version)
 	vote.creator_id = str(track.metadata.get("cloud_creator_id",""))
 	cloud.add_child(vote)
@@ -3399,10 +3496,17 @@ func _save_track_explicit() -> void:
 
 func _save_track_now() -> bool:
 	if not _commit_editor_previews(): return false
+	_stamp_creator()
+	var id: String = str(document.id)
+	if editor_save_error == OK and not editor_retry_original and _editor_copy_is_current(editor_saved_snapshot,editor_saved_store,id+".json",editor_saved_disk_hash) and _editor_copy_is_current(editor_wip_snapshot,editor_wip_store,"wip/"+id+".json",editor_wip_disk_hash) and not library.is_published(id):
+		library.last_error = ""
+		_update_editor_save_state()
+		return true
 	if _save_draft(true) != OK:
 		_notice("Could not save: "+library.last_error)
 		return false
-	if library.save_document(document) != OK:
+	var original_current: bool = not editor_retry_original and _editor_copy_is_current(editor_saved_snapshot,editor_saved_store,id+".json",editor_saved_disk_hash) and not library.is_published(id)
+	if not original_current and library.save_document(document) != OK:
 		editor_retry_original = true
 		editor_save_error = ERR_FILE_CANT_WRITE
 		editor_save_message = "Could not save: "+library.last_error
@@ -3414,22 +3518,24 @@ func _save_track_now() -> bool:
 	else:
 		# Menus retain a compiled selection independently of the saved-track index.
 		# Replace it after committing edits so Race cannot launch its old geometry.
-		if selected_track != null and selected_track.identity == "creator_"+str(document.id):
-			var saved_track: NativeTrack = TrackCompiler.compile(document)
+		if selected_track != null and selected_track.identity == "creator_"+str(document.id) and selected_track.metadata.get("creator_document",{}) != document:
+			var saved_track: NativeTrack = canvas.native_preview if canvas.native_preview != null and canvas.native_preview.metadata.get("creator_document",{}) == document else TrackCompiler.compile(document)
 			if saved_track != null: selected_track = saved_track
 		_notice("Saved on this device. Open Load track to edit or test it.")
-		editor_pending_road_bake = document.duplicate(true)
-		if canvas.native_preview != null and canvas.native_preview.metadata.get("creator_document",{}) == document:
-			NativeTrackVisual.request_saved_road_bake.call_deferred(canvas.native_preview)
-			editor_pending_road_bake.clear()
+		if not original_current:
+			editor_pending_road_bake = document.duplicate(true)
+			if canvas.native_preview != null and canvas.native_preview.metadata.get("creator_document",{}) == document:
+				NativeTrackVisual.request_saved_road_bake.call_deferred(canvas.native_preview)
+				editor_pending_road_bake.clear()
 	var saved_title: Label = root_ui.find_child("TrackName",true,false) as Label
 	if saved_title != null: saved_title.text = str(document.name)
 	editor_saved_snapshot = document.duplicate(true)
+	editor_saved_store = library
+	if not original_current: editor_saved_disk_hash = FileAccess.get_sha256(library.directory.path_join(id+".json"))
 	editor_retry_original = false
 	editor_save_error = OK
 	editor_save_message = ""
 	_update_editor_save_state()
-	_telemetry_observe("draft_saved",{"biome":str(document.get("theme","")),"reason":"save"})
 	return true
 
 func _editor_has_unsaved_changes() -> bool:
@@ -3447,7 +3553,7 @@ func _confirm_editor_departure(after: Callable, allow_discard: bool = true) -> v
 	var dialog := ConfirmationDialog.new()
 	dialog.name = "SaveChangesDialog"
 	dialog.title = "Save this draft?"
-	dialog.dialog_text = "Enter a name to keep this draft. Discard removes the autosaved recovery copy."
+	dialog.dialog_text = ""
 	dialog.ok_button_text = "Save"
 	dialog.cancel_button_text = "Cancel"
 	var discard := dialog.add_button("Discard", true, "discard")
@@ -3482,7 +3588,10 @@ func _confirm_editor_departure(after: Callable, allow_discard: bool = true) -> v
 		if after.is_valid(): after.call())
 	root_ui.add_child(dialog)
 	dialog.canceled.connect(dialog.queue_free)
-	dialog.popup_centered_clamped(Vector2i(520, 250))
+	dialog.popup_centered_clamped(Vector2i(520, 180))
+	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
+	field.text_submitted.connect(func(_value: String) -> void:
+		if not dialog.get_ok_button().disabled: dialog.confirmed.emit())
 	field.grab_focus()
 
 func _open_saved_tracks() -> void:
@@ -3549,7 +3658,6 @@ func _fork_track_draft(source: Dictionary) -> void:
 	if library.save_wip(document) != OK:
 		_notice(library.last_error)
 		return
-	lifecycle.defer_sync(document)
 	editor_view.clear()
 	history.clear()
 	redo_history.clear()
@@ -3599,9 +3707,9 @@ func _complete_draft_test() -> void:
 	if not witness.finished or not bool(game.get("practice_validation_eligible")): return
 	var storage: TrackLibrary = test_library_snapshot if test_library_snapshot != null else library
 	var proof_document: Dictionary = test_document_snapshot.duplicate(true)
-	var proof_frames: Array = game.get("online_frames").duplicate(true)
-	var staged: Dictionary = lifecycle.stage(proof_document,proof_frames,test_vehicle_snapshot,storage,test_scope_snapshot,game.race_proof.recording(witness))
-	if proof_frames.is_empty() or staged.is_empty() or storage.mark_tested(proof_document) != OK:
+	var trajectory: Dictionary = game.race_proof.recording(witness)
+	var staged: Dictionary = lifecycle.stage(proof_document,[],test_vehicle_snapshot,storage,test_scope_snapshot,trajectory)
+	if trajectory.is_empty() or staged.is_empty() or storage.mark_tested(proof_document) != OK:
 		var recovery := AcceptDialog.new()
 		recovery.dialog_text = "The completed test could not be saved. Free storage, then retry saving this recording."
 		recovery.ok_button_text = "Retry saving"
@@ -3609,8 +3717,7 @@ func _complete_draft_test() -> void:
 		recovery.confirmed.connect(_complete_draft_test,CONNECT_DEFERRED)
 		recovery.popup_centered()
 		return # Keep the exact finished recording available until durable save succeeds.
-	pending_menu_notice = "Test recording saved. Backend verification continues automatically."
-	lifecycle.process_jobs()
+	pending_menu_notice = "Test lap saved on this device. Ready to publish."
 	if test_return_to_drafts: _leave_race()
 
 func _publish_saved_draft(id: String) -> void:
@@ -3673,7 +3780,7 @@ func _confirm_delete_draft(id: String, title: String) -> void:
 	dialog.name = "DeleteDraftDialog"
 	dialog.title = "Delete draft?"
 	dialog.dialog_autowrap = true
-	dialog.dialog_text = 'Delete "%s" and its local autosave?\nIts private cloud draft will be archived; shared versions stay available.\nThis cannot be undone.' % title
+	dialog.dialog_text = 'Delete "%s" and its autosave from this device?\nPublished versions stay available.\nThis cannot be undone.' % title
 	dialog.ok_button_text = "Delete draft"
 	dialog.confirmed.connect(func() -> void:
 		if lifecycle != null and not lifecycle.archive_draft(id):
@@ -3709,6 +3816,8 @@ func _load_saved_document(id: String) -> void:
 	document = loaded
 	editor_pending_tools.clear()
 	editor_saved_snapshot = library.load_document(str(loaded.id)) if id.begins_with("wip:") else loaded.duplicate(true)
+	editor_saved_store = library
+	editor_saved_disk_hash = "" # A recovered backup must be committed before it is acknowledged.
 	canvas = null # Loading a different document must not capture the outgoing view.
 	editor_view.clear()
 	history.clear()
@@ -3748,6 +3857,9 @@ func _compile_editor_with_masks(source: Dictionary) -> NativeTrack:
 	if track != null:
 		track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,source.paint)
 		track.editor_road_mask = CreatorPreviewMasks.road(track)
+		# Cold road jobs remain separate from compilation: undo/profile changes may
+		# join this preview worker, but must never join seconds of road geometry.
+		if not Thread.is_main_thread(): track.editor_roads = preload("res://editor/road_preparation.gd").prepare(track,false,true)
 	return track
 
 
@@ -3789,6 +3901,19 @@ func _choose_object(kind: String) -> void:
 	object_browser.stamp_scale=canvas.stamp_scale
 	canvas.selected_object=-1
 	_object_placement("single")
+
+func _container_colour(color: String) -> void:
+	if not ContainerPaint.valid(color) or not is_instance_valid(canvas): return
+	canvas.stamp_container_color = color
+	if is_instance_valid(object_browser):
+		object_browser.stamp_container_color = color
+		object_browser.refresh()
+	if canvas.selected_object < 0: return
+	var object: Dictionary = document.objects[canvas.selected_object]
+	if object.kind != "container" or ContainerPaint.value(object) == color: return
+	_remember()
+	object["color"] = color
+	_commit_selection()
 
 func _open_object_population() -> void:
 	if is_instance_valid(object_population_panel) or not is_instance_valid(canvas): return
@@ -4050,15 +4175,7 @@ func _rename_track() -> void:
 		dialog.queue_free())
 	root_ui.add_child(dialog)
 	dialog.popup_centered_clamped(Vector2i(500,220))
-	var keyboard_timer := Timer.new()
-	keyboard_timer.wait_time=0.1
-	dialog.add_child(keyboard_timer)
-	keyboard_timer.timeout.connect(func() -> void:
-		var visible_size: Vector2=get_viewport().get_visible_rect().size
-		var keyboard: float=0
-		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): keyboard=DisplayServer.virtual_keyboard_get_height()*visible_size.y/maxf(1.0,DisplayServer.window_get_size().y)
-		dialog.position=Vector2i(_rename_dialog_position(visible_size,Vector2(dialog.size),keyboard)))
-	keyboard_timer.start()
+	preload("res://ui/keyboard_dialog.gd").attach(dialog, field)
 	field.grab_focus()
 	field.select_all()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
@@ -4069,6 +4186,7 @@ static func _rename_dialog_position(view: Vector2, dialog_size: Vector2, keyboar
 
 
 func _telemetry_observe(name: String, properties: Dictionary = {}, once_key: String = "") -> void:
+	if name in ["race_attempt","race_started","race_finished","race_abandoned","race_retried"] and (returning_to_editor or (is_instance_valid(game) and bool(game.get("attempt_practice")))): return
 	if product_telemetry != null: product_telemetry.observe(name,properties,once_key)
 
 func _connect_store_telemetry(store: Node) -> void:
@@ -4077,6 +4195,8 @@ func _connect_store_telemetry(store: Node) -> void:
 			_telemetry_observe("purchase_requested",{"product_id":product_id}))
 
 func _telemetry_track_properties(track: NativeTrack, reason: String = "") -> Dictionary:
+	if track == null or str(track.metadata.get("cloud_version","")).length() != 36:
+		return {"reason":reason} if not reason.is_empty() else {}
 	var value: Dictionary = {"car_id":str(game.get("vehicle_id")) if is_instance_valid(game) else VehicleCatalog.selected,"mode":"creator" if returning_to_editor else "challenge" if challenge_racing or challenge_practice else "rivalry" if rivalry_racing else "free"}
 	if track != null:
 		var version: String = str(track.metadata.get("cloud_version",""))
@@ -4091,6 +4211,8 @@ func _telemetry_begin_attempt(track: NativeTrack) -> void:
 	_telemetry_race_started = false
 	_telemetry_race_finished = false
 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
+	if client_quality != null:
+		client_quality.start_race(track,cloud_ticket,not returning_to_editor and is_instance_valid(game) and not bool(game.get("attempt_practice")))
 	_telemetry_observe("race_attempt",_telemetry_track_properties(track))
 
 func _telemetry_observe_activity() -> void:

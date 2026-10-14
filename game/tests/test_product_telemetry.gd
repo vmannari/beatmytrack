@@ -4,6 +4,7 @@ const Client = preload("res://backend/backend_client.gd")
 var checks: int = 0
 var failures: int = 0
 var evidence: Dictionary = {}
+var published_version: String = Telemetry.uuid()
 var test_directory: String = ProjectSettings.globalize_path("res://../build/telemetry-analysis-2026-10-11/client-test")
 
 class FakeClient extends Node:
@@ -77,7 +78,7 @@ func run() -> void:
 	telemetry.update_identity()
 	check(telemetry.queue[-1].event.name == "session_started","enabling negotiated collection within an account starts an observed session")
 	check(telemetry.observe("track_exposed",{"track_version_id":Telemetry.uuid(),"position":0,"car_id":"compact","access_token":"private","biome":"player name / path","mode":"free"},"one"),"governed exposure accepted")
-	check(not telemetry.observe("track_exposed",{},"one"),"session duplicate exposure suppressed")
+	check(not telemetry.observe("track_exposed",{"track_version_id":published_version},"one"),"session duplicate exposure suppressed")
 	var properties: Dictionary = telemetry.queue[-1].event.properties
 	check(not properties.has("access_token") and not properties.has("biome") and properties.has("car_id"),"freeform names paths tokens and unknown properties excluded")
 	telemetry.set_transport_allowed(false)
@@ -88,7 +89,7 @@ func run() -> void:
 	telemetry.background()
 	check(not telemetry._foreground and telemetry._thread == null,"focus-out cancels observations without starting persistence during a live race")
 	telemetry.background(true)
-	check(telemetry._thread != null,"explicit application pause permits a bounded worker save even after focus-out")
+	check(telemetry._thread == null,"explicit application pause keeps active-race observations in RAM without starting disk work")
 	var pause_save_deadline: int = Time.get_ticks_msec()+10000
 	while telemetry._thread != null and telemetry._thread.is_alive() and Time.get_ticks_msec() < pause_save_deadline: await process_frame
 	telemetry._finish_thread()
@@ -118,7 +119,7 @@ func run() -> void:
 	var samples: Array[int] = []
 	for index: int in range(1100):
 		var event_start: int = Time.get_ticks_usec()
-		telemetry.observe("track_selected",{"car_id":"compact","mode":"free","position":index%1001})
+		telemetry.observe("track_selected",{"track_version_id":published_version,"car_id":"compact","mode":"free","position":index%1001})
 		samples.append(Time.get_ticks_usec()-event_start)
 	evidence.enqueue_1100_usec = Time.get_ticks_usec()-start
 	samples.sort()
@@ -229,12 +230,12 @@ func run() -> void:
 	policy.observe("session_heartbeat",{"foreground_ms":60000})
 	policy._persisted_ids[str(policy.queue[-1].event.id)] = true
 	check(not policy._flush_due(60000) and policy._flush_due(300000),"isolated idle heartbeat waits five minutes before using network")
-	policy.observe("track_selected",{"car_id":"compact"})
+	policy.observe("track_selected",{"track_version_id":published_version,"car_id":"compact"})
 	policy._persisted_ids[str(policy.queue[-1].event.id)] = true
 	policy._journey_pending_msec = 0
 	check(not policy._flush_due(59000) and policy._flush_due(60000),"meaningful menu journey flushes after a minute debounce")
 	for index: int in range(48):
-		policy.observe("track_selected",{"car_id":"compact"})
+		policy.observe("track_selected",{"track_version_id":published_version,"car_id":"compact"})
 		policy._persisted_ids[str(policy.queue[-1].event.id)] = true
 	check(policy._flush_due(0),"full 50-event packet qualifies immediately subject to request spacing")
 	policy.dropped_events = 3
@@ -246,7 +247,7 @@ func run() -> void:
 	policy.queue.clear()
 	fake.server_sample = int(Time.get_unix_time_from_system())+60
 	policy._anchor_clock()
-	policy.observe("track_selected",{"car_id":"compact","biome":"unreleased_biome"})
+	policy.observe("track_selected",{"track_version_id":published_version,"car_id":"compact","biome":"unreleased_biome"})
 	policy._persisted_ids[str(policy.queue[-1].event.id)] = true
 	var server_clock_batch: Dictionary = policy.batch_payload()
 	check(server_clock_batch.clock_quality == "server_estimate" and int(server_clock_batch.events[0].occurred_at) >= fake.server_sample,"existing server sample anchors monotonic session UTC with declared quality")
@@ -294,7 +295,7 @@ func model_network(fake: FakeClient) -> Dictionary:
 			collector.observe("session_heartbeat",{"foreground_ms":60000})
 			if was_empty: collector._pending_since_msec = now
 			if scenario == "active_menu" and minute%3 == 0:
-				collector.observe("track_selected",{"car_id":"compact","mode":"free"})
+				collector.observe("track_selected",{"track_version_id":published_version,"car_id":"compact","mode":"free"})
 				if collector._journey_pending_msec < 0 or collector._journey_pending_msec > now: collector._journey_pending_msec = now
 			for entry: Dictionary in collector.queue: collector._persisted_ids[str(entry.event.id)] = true
 			var racing: bool = scenario == "racing_45min" and minute < 45

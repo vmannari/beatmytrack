@@ -1,194 +1,25 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0) -> bool:
-	var wood := Color("887354")
-	var metal := Color("858b87")
-	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.08)
-	var stone: Color = TrackTheme.stone(kit.theme_id)
-	var box: Callable = func(p: Vector3, size: Vector3, color: Color) -> void:
-		kit._colored_box(tool,center+(p*scale).rotated(Vector3.UP,turn),size*scale,turn,color)
-	var mound: Callable = func(p: Vector3, size: Vector3, color: Color) -> void:
-		kit._mound(tool,center+(p*scale).rotated(Vector3.UP,turn),size*scale,turn,color)
-	match kind:
-		"rock", "boulder", "slate", "cliff":
-			var bounds: Vector2 = CreatorObjects.dimensions(kind)
-			var height: float = {"rock":0.7,"boulder":2.1,"slate":0.85,"cliff":4.0}[kind]
-			if kind == "cliff":
-				_cliff(tool,kit,center,Vector3(bounds.x,height,bounds.y)*scale,turn,stone)
-			else:
-				_stone(tool,kit,center,Vector3(bounds.x*0.5,height,bounds.y*0.5)*scale,turn,stone)
-		"broadleaf":
-			_lathe(tool,kit,center,scale,turn,[Vector2(0.32,0),Vector2(0.21,1.4),Vector2(0.11,2.7),Vector2(0,2.8)],[wood.darkened(0.26),wood,wood],true)
-			for i: int in range(6):
-				var angle: float=i*2.4
-				var radius: float=0.20 if i>3 else 0.78
-				_crown(tool,kit,center+(Vector3(sin(angle)*radius,1.85+(i%3)*0.34,cos(angle)*radius)*scale).rotated(Vector3.UP,turn),Vector3(1.03,0.78,0.92)*scale,turn+angle,leaf.lightened((i%3)*0.045))
-		"bush":
-			for p: Vector3 in [Vector3(-0.4,0,0),Vector3(0.4,0,0.2),Vector3(0,0,-0.3)]: _crown(tool,kit,center+(p*scale).rotated(Vector3.UP,turn),Vector3(0.6,0.75,0.6)*scale,turn+p.x,leaf)
-		"grass_clump", "flowers":
-			for i: int in range(7):
-				var p := Vector3(sin(i*2.4)*0.35,0.25,cos(i*2.4)*0.35)
-				_face(tool,kit,center,scale,turn,[Vector3(p.x-0.055,0,p.z),Vector3(p.x+0.055,0,p.z),Vector3(p.x+sin(i)*0.18,0.55+0.035*i,p.z+0.12)],leaf.lightened((i%3)*0.08))
-				_face(tool,kit,center,scale,turn,[Vector3(p.x,0,p.z-0.06),Vector3(p.x,0,p.z+0.06),Vector3(p.x-0.16,0.48+0.035*i,p.z)],leaf)
-				if kind == "flowers": mound.call(p+Vector3.UP*0.25,Vector3(0.12,0.08,0.12),Color("c7bc80"))
-		"pebbles":
-			for i: int in range(5): mound.call(Vector3(sin(i*2.4)*0.3,0,cos(i*2.4)*0.3),Vector3(0.12,0.08,0.14),stone)
-		"log":
-			# Bark and inset end grain, with a real round cross-section.
-			for i: int in range(10):
-				var a: float = TAU*i/10.0
-				var b: float = TAU*(i+1)/10.0
-				var p := Vector3(0,0.42+cos(a)*0.4,sin(a)*0.4)
-				var q := Vector3(0,0.42+cos(b)*0.4,sin(b)*0.4)
-				_face(tool,kit,center,scale,turn,[p+Vector3.LEFT*2,q+Vector3.LEFT*2,q+Vector3.RIGHT*2,p+Vector3.RIGHT*2],wood.darkened(0.18+(i%3)*0.06))
-				for side: float in [-1.0,1.0]:
-					_face(tool,kit,center,scale,turn,[Vector3(side*2.005,0.42,0),p+Vector3.RIGHT*side*2.005,q+Vector3.RIGHT*side*2.005],Color("bda079"))
-		"barrier":
-			var span: float = section_length/scale if section_length >= 0.0 else 6.0
-			# Original solid block and three red bands; graphic shadow foot and bevel.
-			box.call(Vector3(0,0.43,0),Vector3(span,0.86,1),Color("a8aaa0"))
-			box.call(Vector3(0,0.10,0),Vector3(span+0.005,0.20,1.005),Color("505d59"))
-			box.call(Vector3(0,0.885,0),Vector3(maxf(0.01,span-0.06),0.07,0.88),Color("d9d7c4"))
-			for side: float in [-1.0,1.0]:
-				_face(tool,kit,center,scale,turn,[Vector3(-span*0.5,0.85,side*0.5),Vector3(span*0.5,0.85,side*0.5),Vector3(maxf(0.005,span*0.5-0.03),0.92,side*0.44),Vector3(-maxf(0.005,span*0.5-0.03),0.92,side*0.44)],Color("c8c9b9"))
-			for x: int in [-2,0,2]:
-				box.call(Vector3(x*span/6.0,0.775,0),Vector3(span*0.15,0.30,1.018),Color("9d392c"))
-				box.call(Vector3(x*span/6.0,0.935,0),Vector3(span*0.15,0.025,1.018),Color("cf6045"))
-		"fence":
-			var span: float = section_length/scale if section_length >= 0.0 else 6.0
-			# Endpoint posts hide angled rail joints; dimensions stay uniform.
-			var posts: int = maxi(1,ceili(span/3.0))
-			for i: int in range(posts+1):
-				var reach: float = span*0.5 if section_length >= 0.0 else 2.8
-				box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.64,0),Vector3(0.20,1.28,0.20),Color("706b5b"))
-			for height: float in [0.42,1.02]: box.call(Vector3(0,height,0),Vector3(span,0.16,0.16),Color("898373"))
-		"guardrail", "wire_fence":
-			var span: float = section_length/scale if section_length >= 0.0 else 6.0
-			var reach: float = span*0.5 if section_length >= 0.0 else 2.9
-			var posts: int = maxi(1,ceili(span/3.0))
-			for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.7,0),Vector3(0.12,1.4,0.12),metal.darkened(0.2))
-			if kind == "guardrail":
-				box.call(Vector3(0,0.8,0),Vector3(span,0.42,0.10),metal.darkened(0.15))
-				for h: float in [0.66,0.94]: box.call(Vector3(0,h,0.015),Vector3(span,0.10,0.17),metal.lightened(0.1))
-				for i: int in range(posts+1): box.call(Vector3(lerpf(-reach,reach,float(i)/posts),0.8,0.072),Vector3(0.07,0.07,0.035),Color("d1cfbd"))
-			else:
-				for h: float in [0.3,0.6,0.9,1.2]: box.call(Vector3(0,h,0),Vector3(span,0.025,0.025),metal)
-				var wires: int = maxi(1,ceili(span/0.5))
-				for i: int in range(1,wires): box.call(Vector3(lerpf(-span*0.5,span*0.5,float(i)/wires),0.75,0),Vector3(0.02,0.9,0.02),metal)
-		"cone":
-			box.call(Vector3(0,0.06,0),Vector3(0.7,0.12,0.7),Color("303837"))
-			_lathe(tool,kit,center,scale,turn,[Vector2(0.29,0.12),Vector2(0.22,0.38),Vector2(0.16,0.57),Vector2(0.045,0.88),Vector2(0,0.88)],[Color("cc6b32"),Color("e9e7d7"),Color("cc6b32"),Color("cc6b32")])
-		"chevron", "braking_board", "banner":
-			var width: float = 4.0 if kind == "banner" else 1.5
-			for x: float in [-0.4,0.4]: box.call(Vector3(x*width,0.6,0),Vector3(0.08,1.2,0.08),metal)
-			box.call(Vector3(0,1.15,0),Vector3(width,0.8,0.12),Color("d5d8c7"))
-			for side: float in [-1.0,1.0]:
-				if kind == "chevron":
-					for x: float in [-0.42,0.18]:
-						_face(tool,kit,center,scale,turn,[Vector3(x-0.16,0.83,side*0.065),Vector3(x+0.04,0.83,side*0.065),Vector3(x+0.30,1.15,side*0.065),Vector3(x+0.10,1.15,side*0.065)],Color("303c3d"))
-						_face(tool,kit,center,scale,turn,[Vector3(x+0.10,1.15,side*0.065),Vector3(x+0.30,1.15,side*0.065),Vector3(x+0.04,1.47,side*0.065),Vector3(x-0.16,1.47,side*0.065)],Color("303c3d"))
-				else:
-					for x: float in [-0.3,0,0.3]: box.call(Vector3(x*width,1.15,side*0.07),Vector3(0.14,0.48,0.02),Color("38484a"))
-		"flag":
-			box.call(Vector3(0,1.5,0),Vector3(0.07,3,0.07),metal)
-			box.call(Vector3(0.4,2.7,0),Vector3(0.8,0.45,0.035),Color("b7a171"))
-		"light":
-			box.call(Vector3(0,2.4,0),Vector3(0.2,4.8,0.2),metal)
-			box.call(Vector3(0.4,4.8,0),Vector3(1,0.2,0.4),Color("c8c9b2"))
-		"gantry":
-			for x: float in [-5.7,5.7]: box.call(Vector3(x,2.5,0),Vector3(0.6,5,1),metal)
-			box.call(Vector3(0,4.8,0),Vector3(12,0.8,0.4),Color("d7d8c8"))
-			for x: int in range(-5,6): box.call(Vector3(x,4.8,-0.22),Vector3(0.45,0.75,0.02),Color("354344"))
-		"crate":
-			box.call(Vector3(0,0.5,0),Vector3(1.06,0.98,1.06),wood.darkened(0.3))
-			for side: float in [-1.0,1.0]:
-				for i: int in range(5):
-					box.call(Vector3(-0.44+i*0.22,0.5,side*0.54),Vector3(0.20,0.95,0.035),wood.lightened((i%2)*0.06))
-				for h: float in [0.12,0.88]: box.call(Vector3(0,h,side*0.58),Vector3(1.1,0.13,0.06),wood.lightened(0.16))
-			for i: int in range(5): box.call(Vector3(-0.44+i*0.22,1.0,0),Vector3(0.20,0.05,1.1),wood.lightened(0.08))
-		"barrel":
-			_lathe(tool,kit,center,scale,turn,[Vector2(0.48,0),Vector2(0.51,0.18),Vector2(0.54,0.25),Vector2(0.51,0.32),Vector2(0.51,0.76),Vector2(0.54,0.83),Vector2(0.51,0.90),Vector2(0.48,1.08),Vector2(0,1.08)],[wood,metal,metal,wood,metal,metal,wood,metal])
-		"pallet":
-			for z: float in [-0.52,0.52]: box.call(Vector3(0,0.06,z),Vector3(1.9,0.12,0.16),wood.darkened(0.15))
-			for x: int in range(5): box.call(Vector3(-0.8+x*0.4,0.14,0),Vector3(0.3,0.16,1.4),wood)
-		"car_wreck":
-			# Original stripped fictional compact: collapsed roof, exposed cabin,
-			# rusted panels and missing front wheel. Static opaque batched geometry.
-			var rust := Color("79513d")
-			box.call(Vector3(0,0.32,0),Vector3(4.2,0.42,1.8),rust.darkened(0.12))
-			box.call(Vector3(-1.55,0.60,0),Vector3(1.0,0.20,1.7),Color("8c6950"))
-			box.call(Vector3(1.50,0.49,0.05),Vector3(1.1,0.13,1.5),rust)
-			box.call(Vector3(-0.15,0.57,0),Vector3(1.8,0.08,1.45),Color("293334"))
-			for side: float in [-1.0,1.0]:
-				box.call(Vector3(-0.2,0.69,side*0.78),Vector3(2.1,0.25,0.10),rust)
-				_face(tool,kit,center,scale,turn,[Vector3(-1.1,0.8,side*0.75),Vector3(-0.85,1.15,side*0.62),Vector3(0.30,1.04,side*0.65),Vector3(0.75,0.77,side*0.75)],Color("65564a"))
-			_face(tool,kit,center,scale,turn,[Vector3(-0.85,1.15,-0.62),Vector3(0.30,1.04,-0.65),Vector3(0.1,0.89,0.64),Vector3(-0.85,1.15,0.62)],rust.lightened(0.08))
-			for axle: float in [-1.3,1.3]:
-				for side: float in [-1.0,1.0]:
-					if axle > 0.0 and side > 0.0: continue
-					mound.call(Vector3(axle,0.24,side*0.78),Vector3(0.3,0.24,0.17),Color("252c2b"))
-			box.call(Vector3(2.03,0.24,0),Vector3(0.13,0.15,1.55),metal.darkened(0.35))
-		"parked_car", "van":
-			var length: float = 4.2 if kind == "parked_car" else 5.0
-			box.call(Vector3(0,0.55,0),Vector3(length,0.65,1.8),Color("8e9f9a"))
-			var roof_y: float = 1.55 if kind == "parked_car" else 2.12
-			var rear: float = -1.48 if kind == "parked_car" else -2.18
-			var roof_rear: float = rear+0.28
-			_face(tool,kit,center,scale,turn,[Vector3(roof_rear,roof_y,-0.65),Vector3(0.38,roof_y,-0.65),Vector3(0.38,roof_y,0.65),Vector3(roof_rear,roof_y,0.65)],Color("a1afa4"))
-			_face(tool,kit,center,scale,turn,[Vector3(0.92,0.90,-0.76),Vector3(0.92,0.90,0.76),Vector3(0.38,roof_y,0.65),Vector3(0.38,roof_y,-0.65)],Color("314c58"))
-			_face(tool,kit,center,scale,turn,[Vector3(rear,0.90,0.76),Vector3(rear,0.90,-0.76),Vector3(roof_rear,roof_y,-0.65),Vector3(roof_rear,roof_y,0.65)],Color("42545a"))
-			box.call(Vector3(1.65,0.9,0),Vector3(0.6,0.04,1.6),Color("9baea8"))
-			for z: float in [-0.76,0.76]:
-				_face(tool,kit,center,scale,turn,[Vector3(rear,0.9,z),Vector3(0.92,0.9,z),Vector3(0.38,roof_y,signf(z)*0.65),Vector3(roof_rear,roof_y,signf(z)*0.65)],Color("8e9f9a"))
-				_face(tool,kit,center,scale,turn,[Vector3(rear+0.19,1.02,z*0.98),Vector3(0.70,1.02,z*0.98),Vector3(0.27,roof_y-0.1,signf(z)*0.68),Vector3(roof_rear+0.1,roof_y-0.1,signf(z)*0.68)],Color("314c58"))
-				box.call(Vector3(1.1,1.0,z*1.3),Vector3(0.25,0.15,0.18),Color("687e78"))
-			for z: float in [-0.6,0.6]:
-				box.call(Vector3(length*0.5+0.01,0.64,z),Vector3(0.035,0.18,0.36),Color("e1dfba"))
-				box.call(Vector3(-length*0.5-0.01,0.64,z),Vector3(0.035,0.18,0.3),Color("9b4438"))
-			for z: float in [-0.73,0.73]: box.call(Vector3(-0.25,(roof_y+0.94)*0.5,z),Vector3(0.10,roof_y-0.94,0.035),Color("8e9f9a"))
-			for x: float in [-1.3,1.3]:
-				for z: float in [-0.9,0.9]:
-					for i: int in range(12):
-						var a: float = TAU*i/12.0
-						var b: float = TAU*(i+1)/12.0
-						var p := Vector3(x+cos(a)*0.34,0.34+sin(a)*0.34,z)
-						var q := Vector3(x+cos(b)*0.34,0.34+sin(b)*0.34,z)
-						_face(tool,kit,center,scale,turn,[p-Vector3.BACK*0.12,q-Vector3.BACK*0.12,q+Vector3.BACK*0.12,p+Vector3.BACK*0.12],Color("242e2f"))
-						_face(tool,kit,center,scale,turn,[Vector3(x,0.34,z+signf(z)*0.125),p+Vector3.BACK*signf(z)*0.125,q+Vector3.BACK*signf(z)*0.125],Color("394243"))
-					box.call(Vector3(x,0.34,z+signf(z)*0.13),Vector3(0.20,0.20,0.025),metal)
-		"container":
-			box.call(Vector3(0,1.3,0),Vector3(6,2.6,2.5),Color("6a8279"))
-			for side: float in [-1.0,1.0]:
-				for x: int in range(-7,8): box.call(Vector3(x*0.38,1.3,side*1.26),Vector3(0.11,2.4,0.06),Color("7e9183"))
-				for h: float in [0.08,2.52]: box.call(Vector3(0,h,side*1.27),Vector3(6,0.16,0.08),Color("415b54"))
-				for z: float in [-0.58,0.58]: box.call(Vector3(side*3.02,1.3,z),Vector3(0.07,2.36,0.07),metal)
-			for x: int in range(-7,8): box.call(Vector3(x*0.38,2.62,0),Vector3(0.10,0.04,2.4),Color("819285"))
-		"shed", "hut":
-			var width: float = 7.0 if kind == "shed" else 2.5
-			var depth: float = 5.0 if kind == "shed" else 2.5
-			box.call(Vector3(0,1.5,0),Vector3(width,3,depth),wood.darkened(0.1))
-			_roof(tool,kit,center,scale,turn,width,depth,Color("646c68") if kind=="shed" else Color("815d47"))
-			for side: float in [-1.0,1.0]:
-				_face(tool,kit,center,scale,turn,[Vector3(side*width*0.5,3.0,-depth*0.5),Vector3(side*width*0.5,3.0,depth*0.5),Vector3(side*width*0.5,4.0,0)],wood.darkened(0.18))
-				box.call(Vector3(0,3.0,side*(depth*0.5+0.12)),Vector3(width+0.3,0.12,0.12),Color("444f4c"))
-			for x: float in [-width*0.42,width*0.42]:
-				box.call(Vector3(x,1.9,-depth*0.5-0.04),Vector3(width*0.14,0.8,0.08),Color("d1c8ac"))
-				box.call(Vector3(x,1.9,-depth*0.5-0.09),Vector3(width*0.11,0.61,0.035),Color("324f57"))
-			for h: int in range(10):
-				box.call(Vector3(0,0.15+h*0.28,depth*0.5+0.015),Vector3(width,0.03,0.035),wood.darkened(0.25))
-			box.call(Vector3(-width*0.28,3.65,depth*0.15),Vector3(0.45,1.0,0.45),Color("8a7c68"))
-			box.call(Vector3(0,1.25,-depth*0.5-0.02),Vector3(width*0.5,2.5,0.05),metal.darkened(0.3))
-			if kind == "shed":
-				for h: int in range(8): box.call(Vector3(0,0.2+h*0.29,-depth*0.5-0.052),Vector3(width*0.48,0.025,0.018),metal.darkened(0.46))
-		"grandstand":
-			for i: int in range(4):
-				box.call(Vector3(0,0.25+i*0.4,-1.5+i),Vector3(8,0.18,0.85),metal.darkened(0.1))
-				box.call(Vector3(0,0.46+i*0.4,-1.3+i),Vector3(7.7,0.12,0.32),wood)
-				for x: float in [-3.7,3.7]: box.call(Vector3(x,(0.25+i*0.4)*0.5,-1.5+i),Vector3(0.12,0.25+i*0.4,0.12),metal.darkened(0.28))
-			for x: float in [-3.9,3.9]: box.call(Vector3(x,1.25,1.7),Vector3(0.10,2.5,0.10),metal)
-			box.call(Vector3(0,2.5,1.7),Vector3(8,0.10,0.10),metal)
-		_: return false
+const VERSION: String = "authored-props-3"
+const CACHE_LIMIT: int = 96
+static var meshes: Dictionary = {}
+static var pine_meshes: Dictionary = {}
+
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
+	var length: float = section_length/scale if section_length >= 0 else -1.0
+	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
+	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
+	if not meshes.has(key):
+		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0)
+		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
+		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
+		if not found: return false
+		local.generate_normals()
+		if meshes.size() >= CACHE_LIMIT: meshes.erase(meshes.keys()[0])
+		meshes[key] = local.commit()
+	tool.append_from(meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
 	return true
 
 static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
@@ -200,27 +31,41 @@ static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, t
 		for index: int in [0,2,1]: tool.add_vertex(vertices[index])
 
 static func _stone(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
-	# Off-centre fractured cap; broad shaded faces, not a rounded bevel stack.
-	var footprint: Array[Vector2] = [Vector2(1,0),Vector2(0.66,0.73),Vector2(-0.12,0.99),Vector2(-0.78,0.60),Vector2(-1,-0.03),Vector2(-0.55,-0.82),Vector2(0.16,-0.98),Vector2(0.81,-0.57)]
-	var lower: Array[Vector3] = []
-	var upper: Array[Vector3] = []
-	for i: int in range(8):
-		var p: Vector2 = footprint[i]
-		lower.append(Vector3(p.x,0,p.y)*size)
-		var inset: float = [0.76,0.69,0.81,0.63,0.83,0.77,0.58,0.71][i]
-		upper.append(Vector3(p.x*inset+0.06,[0.64,0.86,0.95,0.83,0.69,0.88,0.94,0.72][i],p.y*inset-0.04)*size)
-	for i: int in range(8):
-		var j: int = (i+1)%8
-		var shade: Color = color.darkened(0.32 if i in [0,1,7] else 0.12)
-		_leaf_face(tool,kit,center,1,turn,[lower[i],lower[j],upper[j],upper[i]],shade)
-		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.08,0.99,0.08)*size],color.lightened(0.20 if i<4 else 0.07))
-		# Short tapered fissure follows a real face, offset to avoid z-fighting.
-		if i in [0,3,6]:
-			var outward := Vector3(footprint[i].x,0,footprint[i].y).normalized()*0.012
-			var a: Vector3 = lower[i].lerp(upper[i],0.32)+outward
-			var b: Vector3 = lower[i].lerp(upper[i],0.83)+outward
-			var c: Vector3 = b.lerp(lower[j].lerp(upper[j],0.83)+outward,0.045)
-			_leaf_face(tool,kit,center,1,turn,[a,b,c],color.darkened(0.58))
+	# Three fractured strata and an offset split cap, inside the original footprint.
+	var rings: Array = []
+	for row: int in range(3):
+		var ring: Array[Vector3] = []
+		for i: int in range(12):
+			var angle: float = TAU*i/12
+			var radial: float = 0.92+0.08*sin(i*2.31)
+			var reach: float = radial * ([1.0,0.93,0.67][row] + (0.055*sin(i*1.83+row) if row > 0 else 0.0))
+			var y: float = [0.0,0.38,0.81][row] + (0.10*sin(i*1.73+row*0.83) if row > 0 else 0.0)
+			ring.append(Vector3(cos(angle)*reach+row*0.025,y,sin(angle)*reach-row*0.018)*size)
+		rings.append(ring)
+	for row: int in range(2):
+		for i: int in range(12):
+			var j: int = (i+1)%12
+			var shade: Color = color.darkened(0.12+0.045*((i+row)%3))
+			var a: Vector3 = rings[row][i]; var b: Vector3 = rings[row][j]
+			var c: Vector3 = rings[row+1][j]; var d: Vector3 = rings[row+1][i]
+			var split: Vector3 = (a+b+c+d)*0.25 + Vector3(cos(i*TAU/12)*0.025,0,sin(i*TAU/12)*0.025)*size
+			_leaf_face(tool,kit,center,1,turn,[a,b,split],shade.darkened(0.03))
+			_leaf_face(tool,kit,center,1,turn,[b,c,split],shade)
+			_leaf_face(tool,kit,center,1,turn,[c,d,split],shade.lightened(0.04))
+			_leaf_face(tool,kit,center,1,turn,[d,a,split],shade)
+			if row == 1 and i in [1,5,9]:
+				var offset := Vector3(cos(i*TAU/12),0,sin(i*TAU/12))*0.004
+				_leaf_face(tool,kit,center,1,turn,[a.lerp(d,0.22)+offset,d+offset,d.lerp(c,0.025)+offset],color.darkened(0.42))
+	for i: int in range(12):
+		var j: int = (i+1)%12
+		var cap := Vector3(-0.08,1.0,0.07)*size
+		_leaf_face(tool,kit,center,1,turn,[rings[2][i],rings[2][j],cap],color.lightened(0.12+(i%3)*0.04))
+	# Short oblique sediment trace sits on one real slope, not a floating decal.
+	for i: int in [2,3,7]:
+		var a: Vector3 = rings[1][i].lerp(rings[2][i],0.23)
+		var b: Vector3 = rings[1][(i+1)%12].lerp(rings[2][(i+1)%12],0.30)
+		var offset := Vector3(cos(i*TAU/12)*0.005,0.003,sin(i*TAU/12)*0.005)
+		_leaf_face(tool,kit,center,1,turn,[a+offset,b+offset,b+offset+Vector3.UP*size.y*0.009,a+offset+Vector3.UP*size.y*0.009],color.lightened(0.10))
 
 static func _cliff(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
 	# Continuous rectangular rock wall: exact solid footprint, broken upper ledge.
@@ -288,7 +133,21 @@ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
 		_leaf_face(tool,kit,center,1,turn,[rim[j],rim[i],Vector3(0,0.0,0)*size],color.darkened(0.43))
 
 static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
+	var key: String = color.to_html()
+	if not pine_meshes.has(key):
+		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+		_pine_model(local,kit,Vector3.ZERO,1,0,color)
+		local.generate_normals()
+		if pine_meshes.size() >= 32: pine_meshes.erase(pine_meshes.keys()[0])
+		pine_meshes[key] = local.commit()
+	tool.append_from(pine_meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+
+static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
+	var branches := SurfaceTool.new(); branches.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i: int in range(7):
+		var a: float = i*2.4
+		PropGeometry.tube(branches,Vector3(0,0.035,0),Vector3(cos(a)*0.24,0.008,sin(a)*0.24),0.055,0.014,Color("63523e"),6)
 	# Swept, tapered boughs: dark lower blades and connected upper ridges.
 	for tier: int in range(5):
 		var radius: float = 1.02-tier*0.17
@@ -298,13 +157,19 @@ static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, tu
 			var reach: float = radius*(0.91+0.09*sin(branch*2.7+tier))
 			var points: Array[Vector3] = [Vector3(-0.15,height+0.47,0),Vector3(reach*0.63,height+0.12,-reach*0.36),Vector3(reach,height-0.10,-reach*0.13),Vector3(reach*0.83,height-0.02,reach*0.08),Vector3(reach*0.95,height-0.15,reach*0.24),Vector3(reach*0.45,height+0.04,reach*0.40)]
 			var ridge := Vector3(reach*0.38,height+0.37,0)
+			PropGeometry.tube(branches,Vector3(0,height+0.10,0),Vector3(reach*0.77,height-0.045,0).rotated(Vector3.UP,angle-turn),0.025,0.007,Color("746044"),6)
 			for i: int in range(points.size()):
 				var j: int = (i+1)%points.size()
 				var shade: Color = color.lightened(0.23) if i<3 else color.darkened(0.12)
 				_leaf_face(tool,kit,center,scale,angle,[points[i],points[j],ridge],shade)
 				_leaf_face(tool,kit,center,scale,angle,[points[j],points[i],Vector3(0,height-0.02,0)],color.darkened(0.40))
+			# Split needle tips, rather than a single unbroken triangular blade.
+			for spray: int in range(3):
+				var p := Vector3(reach*(0.47+spray*0.17),height+0.14-spray*0.075,reach*(-0.19+spray*0.16))
+				_leaf_face(tool,kit,center,scale,angle,[p+Vector3(-0.17,0.06,-0.05),p+Vector3(0.16,-0.06,-0.09),p+Vector3(0.13,-0.08,0.09),p+Vector3(-0.13,0.07,0.06)],color.lightened(0.17+(spray%2)*0.06))
 	# Small pointed leader rather than a round cap.
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.22,2.65),Vector2(0.0,3.3)],[color.lightened(0.20)],true)
+	PropGeometry.append_transformed(tool,branches,center,scale,turn)
 
 static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array, reverse: bool = false) -> void:
 	for row: int in range(profile.size()-1):

@@ -7,9 +7,11 @@ uniform vec2 map_extent;
 uniform bool smooth_road_bank = false;
 varying vec3 world_position;
 varying float bank_half_width;
+varying float raised_snow;
 void vertex() {
 	world_position = (MODEL_MATRIX*vec4(VERTEX,1.0)).xyz;
 	bank_half_width = COLOR.r*32.0;
+	raised_snow = smoothstep(0.035,0.40,VERTEX.y);
 }
 void fragment() {
 	vec3 snow = snow_detail(world_position.xz);
@@ -26,7 +28,8 @@ void fragment() {
 		float crest = smoothstep(0.35,0.60,UV.x)*(1.0-smoothstep(0.78,1.0,UV.x));
 		vec3 piled = snow*1.07;
 		float settled = 1.0-smoothstep(0.56,0.85,UV.x);
-		ALBEDO = mix(snow,piled,crest*settled);
+		// Flattened bridge endings must match the ground, including their tint.
+		ALBEDO = mix(snow,piled,crest*settled*raised_snow);
 		// Coherent snow-only strips do not need any of the ice/finish samples.
 		if (coverage < 0.999) {
 			vec3 ice = winter_wear_width(UV2,world_position.xz,max(bank_half_width,1.0));
@@ -34,4 +37,8 @@ void fragment() {
 		}
 	}
 	ROUGHNESS = 1.0;
+	// Settled powder follows the actual irregular toe, rather than spanning
+	// it with a detached sheet. The raised bank retains its sculpted finish.
+	float powder = winter_ground_powder(world_position.xz,1.0-smoothstep(0.06,0.24,world_position.y));
+	ALBEDO = mix(ALBEDO,vec3(0.92,0.945,0.97),powder);
 }

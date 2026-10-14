@@ -147,6 +147,7 @@ func run() -> void:
 	app.call("_show_screen","drafts")
 	for i: int in range(40): await process_frame
 	var draft_browser: Control = app.root_ui.find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,draft_browser),"draft gallery completes preparation")
 	check(draft_browser != null and draft_browser.find_child("Draft_"+str(road.id),true,false) != null,"Load track contains the saved local circuit")
 	var catalog := TrackCatalog.new(library)
 	catalog.add_local(str(road.id))

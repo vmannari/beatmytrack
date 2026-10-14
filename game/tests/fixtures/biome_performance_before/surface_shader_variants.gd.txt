@@ -1,0 +1,60 @@
+class_name SurfaceShaderVariants
+extends RefCounted
+## Fixed visual-material flags become constants; samples and lighting stay intact.
+const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
+const INCLUDES: Dictionary = {
+	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
+	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
+	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
+	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
+	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
+}
+static var cache: Dictionary = {}
+
+static func specialize(material: ShaderMaterial) -> void:
+	var dynamic: ShaderMaterial = material.duplicate()
+	var source: String = material.shader.code
+	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
+	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
+		source = source.replace("diffuse_toon","diffuse_burley")
+	for pass_index: int in range(3):
+		for path: String in INCLUDES:
+			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
+	for flag: String in FLAGS:
+		var pattern := RegEx.new()
+		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
+		var found: RegExMatch = pattern.search(source)
+		if found == null: continue
+		var value: Variant = material.get_shader_parameter(flag)
+		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
+		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
+	# GLES drivers count declared samplers even in constant-disabled branches.
+	# Alias unreachable biome samples to the shared factor sampler so those
+	# declarations cannot consume phone texture units. Active artwork is untouched.
+	var inactive: Array[String] = []
+	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
+		inactive.append_array(["snow_albedo","ice_albedo","ice_finish"])
+	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
+		inactive.append_array(["desert_apron","desert_road_albedo","dune_factors","dune_albedo"])
+	if not (material.get_shader_parameter("hybrid_grass") == true):
+		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
+	for sampler: String in inactive:
+		var declaration := RegEx.new()
+		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
+		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
+	# Aliases in early helper bodies require the shared sampler declared first.
+	var factors := RegEx.new()
+	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
+	var factor_declaration: RegExMatch = factors.search(source)
+	if factor_declaration != null:
+		source = factors.sub(source,"",true)
+		var header_end: int = source.find(";",source.find("render_mode")) + 1
+		source = source.insert(header_end,"\n" + factor_declaration.get_string())
+	var key: String = source.sha256_text()
+	if not cache.has(key):
+		var shader := Shader.new()
+		shader.code = source
+		if cache.size()>=64: cache.erase(cache.keys()[0])
+		cache[key] = shader
+	material.set_meta("surface_dynamic_material",dynamic)
+	material.shader = cache[key] as Shader

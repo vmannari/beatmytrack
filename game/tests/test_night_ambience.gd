@@ -20,11 +20,11 @@ func run() -> void:
 	ambience.configure("night_city")
 	check(ambience.get_child_count() == 1,"night allocates one bounded voice")
 	var player: AudioStreamPlayer = ambience.player
-	var stream: AudioStreamWAV = player.stream
+	var stream: AudioStreamOggVorbis = player.stream
 	check(player.bus == "Vehicle","ambience follows existing sound volume")
-	check(stream.format == AudioStreamWAV.FORMAT_16_BITS and not stream.stereo and stream.mix_rate == 44100,"import retains authored PCM")
-	check(stream.loop_mode == AudioStreamWAV.LOOP_FORWARD and stream.loop_end == 40 * 44100,"full 40-second loop")
-	check(stream.data.slice(stream.data.size()-2) == stream.data.slice(0,2),"inclusive cyclic endpoint supplied")
+	check(stream.packet_sequence.sampling_rate == 44100,"compressed import retains original sample rate")
+	check(stream.loop and absf(stream.get_length() - 40.0) < 1.0 / 44100.0,"full 40-second loop")
+	check(stream.loop_offset == 0.0,"native Vorbis loop covers the complete recording")
 	ambience.present(0.1,false,false)
 	check(ambience.gain > 0 and ambience.gain < NightAmbience.LEVEL,"gradual initial fade")
 	ambience.present(1,false,false)

@@ -33,15 +33,15 @@ func run() -> void:
 	ambience.rng.seed = 4201
 	ambience.configure("desert")
 	check(ambience.get_child_count() == 2 and ambience.wind.bus == "Vehicle" and ambience.sand.bus == "Vehicle", "two bounded voices use existing sound settings")
-	var wind_stream: AudioStreamWAV = ambience.wind_loops[0]
-	var streams: Array[AudioStreamWAV] = []
+	var wind_stream: AudioStream = ambience.wind_loops[0]
+	var streams: Array[AudioStreamOggVorbis] = []
 	streams.assign(ambience.wind_loops)
 	streams.append(ambience.sand.stream)
-	for stream: AudioStreamWAV in streams:
-		check(stream.format == AudioStreamWAV.FORMAT_16_BITS and stream.mix_rate == 44100 and not stream.stereo, "lossless authored PCM")
-		check(stream.loop_mode == AudioStreamWAV.LOOP_FORWARD and stream.loop_begin == 0, "full-file loop")
-		check(stream.data.slice(stream.data.size() - 2) == stream.data.slice(0, 2), "cyclic interpolation guard")
-	check(ambience.wind_loops.size() == 3 and ambience.wind_loops[0].loop_end == 12 * 44100 and ambience.wind_loops[1].loop_end == 14 * 44100 and ambience.wind_loops[2].loop_end == 12 * 44100 and ambience.sand.stream.get_length() > 29.0, "three complete owner-wind variants and retained sand")
+	for stream: AudioStreamOggVorbis in streams:
+		check(stream.packet_sequence.sampling_rate == 44100, "compressed original sample rate")
+		check(stream.loop and stream.loop_offset == 0.0, "full-file loop")
+		check(stream.get_length() > 10.0, "complete long loop retained")
+	check(ambience.wind_loops.size() == 3 and absf(ambience.wind_loops[0].get_length() - 12.0) < 1.0 / 44100.0 and absf(ambience.wind_loops[1].get_length() - 14.0) < 1.0 / 44100.0 and absf(ambience.wind_loops[2].get_length() - 12.0) < 1.0 / 44100.0 and absf(ambience.sand.stream.get_length() - 29.0) < 1.0 / 44100.0, "three complete owner-wind variants and retained sand")
 	var variants: Array[int] = [ambience.wind_variant]
 	var phases: Array = []
 	var sequences: Array = []

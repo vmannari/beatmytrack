@@ -12,13 +12,14 @@ const MAX_AGE_SECONDS: int = 86400
 const FLUSH_INTERVAL_MSEC: int = 60000
 const IDLE_FLUSH_MSEC: int = 300000
 const SESSION_GAP_MSEC: int = 1800000
-const EVENT_NAMES: Array[String] = ["app_first_open","session_started","session_foregrounded","session_backgrounded","session_heartbeat","collection_summary","menu_ready","track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried","editor_opened","draft_saved","publish_requested","challenge_opened","challenge_joined","challenge_created","share_clicked","store_opened","offer_exposed","purchase_requested"]
+const EVENT_NAMES: Array[String] = ["app_first_open","session_started","session_foregrounded","session_backgrounded","session_heartbeat","collection_summary","menu_ready","track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried","publish_requested","challenge_opened","challenge_joined","challenge_created","share_clicked","store_opened","offer_exposed","purchase_requested"]
 const STORE_PRODUCTS: Array[String] = ["creator_slot_1","creator_slots_5","creator_slots_10","ad_free_month","ad_free_forever"]
 const NUMBER_PROPERTIES: Array[String] = ["foreground_ms","position","dropped_events","rejected_events","persistence_failures"]
 var client: Node
 var storage_path: String = ""
 var enabled: bool = true
 var queue: Array[Dictionary] = []
+var _queue_budget_bytes: int = 0
 var dropped_events: int = 0
 var rejected_events: int = 0
 var persistence_failures: int = 0
@@ -56,7 +57,7 @@ var _journey_pending_msec: int = -1
 var _next_save_msec: int = 0
 var _save_retry_msec: int = 5000
 var _install_id: String = uuid()
-var _build_id: String = str(ProjectSettings.get_setting("application/config/version","local"))
+var _build_id: String = preload("res://core/build_identity.gd").ID
 var _platform: String = OS.get_name().to_lower()
 var _build_pattern: RegEx = RegEx.create_from_string("^[A-Za-z0-9._:-]{1,80}$")
 var _scope_pattern: RegEx = RegEx.create_from_string("^[a-f0-9]{64}$")
@@ -66,8 +67,9 @@ var _event_ids: Array[String] = uuid_pool(128)
 var _provisional_first_opens: Dictionary = {}
 var _collection_started_scope: String = ""
 var _process_exit_cursor: int = 0
-const QUALITY_NAMES: Array[String] = ["quality_summary","segment_summary","process_exit"]
-const PASSIVE_NAMES: Array[String] = ["session_heartbeat","quality_summary","segment_summary","process_exit"]
+const QUALITY_NAMES: Array[String] = ["quality_summary","process_exit","race_statistics"]
+const NETWORK_NAMES: Array[String] = ["network_summary","network_failure"]
+const PASSIVE_NAMES: Array[String] = ["session_heartbeat","quality_summary","process_exit","network_summary","network_failure"]
 const QUALITY_NUMBERS: Array[String] = ["samples","slow","segment","cell_x","cell_y","exit_reason","b0","b1","b2","b3","b4","b5","b6","b7"]
 
 static func uuid() -> String:
@@ -147,9 +149,14 @@ func _anchor_clock() -> void:
 	_clock_quality = "server_estimate" if estimated > 0 else "client_clock"
 
 func observe(name: String, properties: Dictionary = {}, once_key: String = "") -> bool:
+	if name == "race_statistics": return false # Only a negotiated lifecycle capture may enqueue this.
+	if name in NETWORK_NAMES and (not _allowed or not _network_supported()): return false
+	if name in ["track_exposed","track_selected"]:
+		var published_version: Variant = properties.get("track_version_id","")
+		if not published_version is String or _uuid_pattern.search(published_version) == null: return false
 	if name in QUALITY_NAMES and (client == null or not client.has_method("quality_supported") or not client.quality_supported()): return false
 	if name in QUALITY_NAMES and not _allowed and _event_ids.size() <= 32: return false # Reserve identifiers for product/race observations.
-	if not enabled or not _foreground or (name not in EVENT_NAMES and name not in QUALITY_NAMES) or client == null or not client.telemetry_supported() or _scope == "guest": return false
+	if not enabled or not _foreground or (name not in EVENT_NAMES and name not in QUALITY_NAMES and name not in NETWORK_NAMES) or client == null or not client.telemetry_supported() or _scope == "guest": return false
 	if name in ["offer_exposed","purchase_requested"] and properties.get("product_id","") not in STORE_PRODUCTS: return false
 	# Never call the operating-system random provider during a live race.
 	# An unusually long attempt can exhaust the bounded preallocated pool; report
@@ -165,30 +172,59 @@ func observe(name: String, properties: Dictionary = {}, once_key: String = "") -
 		if _deduplicated.size() >= 1000: return false
 		_deduplicated[key] = true
 	var safe: Dictionary = _safe_properties(name,properties)
-	# Fixed 7 ASCII identifiers + 2 integers plus envelope stays below 1.5 KiB/event.
-	# The count cap therefore bounds the 2 MiB queue without serializing each event.
+	if name in NETWORK_NAMES and safe.is_empty(): return false
+	return _enqueue(name,safe)
+
+func reserve_capture_id() -> String:
+	# Reserve product/race journey identifiers ahead of optional diagnostics.
+	if _scope == "guest": return ""
+	if _event_ids.size() <= 32:
+		dropped_events += 1
+		_mark_dirty()
+		return ""
+	return _event_ids.pop_back()
+
+func observe_race_statistics(properties: Dictionary, captured_scope: String) -> bool:
+	# Capture was negotiated at attempt start. Temporary bootstrap loss or a
+	# focus-out at finish must not discard it or move it to another account.
+	if not enabled or client == null or not client.signed_in() or captured_scope == "guest" or captured_scope != _scope: return false
+	var actual_scope: String = (client.base_url()+"/"+str(client.player.get("id",""))).sha256_text()
+	if actual_scope != captured_scope: return false
+	var safe: Dictionary = _safe_race_statistics(properties)
+	if safe.is_empty(): return false
+	return _enqueue("race_statistics",safe,str(safe.race_id))
+
+static func _entry_budget(entry: Dictionary) -> int:
+	# Conservative UTF-8/envelope bounds avoid per-event JSON work during driving.
+	return 8192 if entry.event.name == "race_statistics" else 4096 if entry.event.name == "network_summary" else 1536
+
+func _enqueue(name: String, safe: Dictionary, identifier: String = "") -> bool:
 	_sequence += 1
 	var elapsed: int = maxi(0,Time.get_ticks_msec()-_session_start_msec)
-	var event: Dictionary = {"id":_event_ids.pop_back() if not _event_ids.is_empty() else uuid(),"name":name,"occurred_at":_session_clock_unix+elapsed/1000,"session_id":_session_id,"seq":_sequence,"monotonic_ms":elapsed,"properties":safe}
-	queue.append({"scope":_scope,"build_id":_build_id,"platform":_platform,"clock_quality":_clock_quality,"event":event})
+	var event: Dictionary = {"id":identifier if not identifier.is_empty() else _event_ids.pop_back() if not _event_ids.is_empty() else uuid(),"name":name,"occurred_at":_session_clock_unix+elapsed/1000,"session_id":_session_id,"seq":_sequence,"monotonic_ms":elapsed,"properties":safe}
+	var entry: Dictionary = {"scope":_scope,"build_id":_build_id,"platform":_platform,"clock_quality":_clock_quality,"event":event}
+	queue.append(entry)
+	_queue_budget_bytes += _entry_budget(entry)
 	if _pending_since_msec < 0: _pending_since_msec = Time.get_ticks_msec()
 	if name not in PASSIVE_NAMES and _journey_pending_msec < 0: _journey_pending_msec = Time.get_ticks_msec()
-	while queue.size() > MAX_EVENTS:
+	while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-8192:
 		_persisted_ids.erase(str(queue[0].event.id))
+		_queue_budget_bytes -= _entry_budget(queue[0])
 		queue.pop_front()
 		dropped_events += 1
 	_mark_dirty()
 	return true
 
 func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
+	if name in NETWORK_NAMES: return preload("res://backend/network_health.gd").normalize(name,properties)
+	if name == "race_statistics": return _safe_race_statistics(properties)
 	var allowed: Array[String] = []
 	if name == "quality_summary": allowed = ["device_class","scene","samples","slow","b0","b1","b2","b3","b4","b5","b6","b7"]
-	elif name == "segment_summary": allowed = ["track_version_id","segment","cell_x","cell_y","samples","slow"]
 	elif name == "process_exit": allowed = ["exit_reason","device_class"]
 	elif name in ["track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried"]:
 		allowed = ["track_version_id","ticket_id","car_id","biome","mode","position"]
 		if name in ["race_finished","race_abandoned","race_retried"]: allowed.append("reason")
-	elif name in ["editor_opened","draft_saved","publish_requested"]: allowed = ["biome","reason"]
+	elif name == "publish_requested": allowed = ["biome","reason"]
 	elif name in ["challenge_opened","challenge_joined","challenge_created","share_clicked"]: allowed = ["challenge_id","reason"]
 	elif name in ["session_started","session_foregrounded"]: allowed = ["reason"]
 	elif name in ["session_backgrounded","session_heartbeat"]: allowed = ["foreground_ms"]
@@ -199,7 +235,7 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 		if key not in allowed: continue
 		var value: Variant = properties[key]
 		if name in QUALITY_NAMES:
-			if key in QUALITY_NUMBERS and value is int and value >= (-5000 if key in ["cell_x","cell_y"] else 0) and value <= (5000 if key in ["cell_x","cell_y"] else 1000000): safe[key] = value
+			if key in QUALITY_NUMBERS and _bounded_integer(value,-5000 if key in ["cell_x","cell_y"] else 0,5000 if key in ["cell_x","cell_y"] else 1000000): safe[key] = int(value)
 			elif key == "device_class" and value in ["android_arm64","android_other","desktop","other"]: safe[key] = value
 			elif key == "scene" and value in ["menu","race","editor"]: safe[key] = value
 			elif key == "track_version_id" and value is String and _uuid_pattern.search(value) != null: safe[key] = value
@@ -214,6 +250,62 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 			safe[key] = int(value)
 	return safe
 
+static func _bounded_integer(value: Variant, minimum: int, maximum: int) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) and value == int(value) and value >= minimum and value <= maximum
+
+func _safe_race_statistics(properties: Dictionary) -> Dictionary:
+	var required: Array[String] = ["schema_version","race_id","outcome","elapsed_ms","device_class","device_model","os_version","frame_buckets","cells","segments","position_samples","dropped_samples"]
+	for key: String in required:
+		if not properties.has(key): return {}
+	if not _bounded_integer(properties.schema_version,2,3) or properties.outcome not in ["finished","abandoned","restarted"]: return {}
+	if not properties.race_id is String or _uuid_pattern.search(properties.race_id) == null or properties.race_id.substr(14,1) != "4" or properties.race_id.substr(19,1).to_lower() not in ["8","9","a","b"]: return {}
+	if properties.device_class not in ["android_arm64","android_other","desktop","other"]: return {}
+	if not _bounded_integer(properties.elapsed_ms,0,3600000) or not _bounded_integer(properties.position_samples,0,3600) or not _bounded_integer(properties.dropped_samples,0,3600): return {}
+	var safe: Dictionary = {"schema_version":int(properties.schema_version),"race_id":properties.race_id,"outcome":properties.outcome,"device_class":properties.device_class,"elapsed_ms":int(properties.elapsed_ms),"position_samples":int(properties.position_samples),"dropped_samples":int(properties.dropped_samples)}
+	if properties.schema_version == 3:
+		var context: Dictionary = preload("res://backend/race_render_context.gd").normalize(properties.get("render_context"))
+		if context.is_empty() or not properties.get("render_context_changed") is bool: return {}
+		safe.render_context = context
+		safe.render_context_changed = properties.render_context_changed
+	elif properties.has("render_context") or properties.has("render_context_changed"): return {}
+	for key: String in ["device_model","os_version"]:
+		if not properties[key] is String or properties[key].is_empty() or properties[key].length() > 80: return {}
+		for index: int in range(properties[key].length()):
+			if properties[key].unicode_at(index) < 32 or properties[key].unicode_at(index) == 127: return {}
+		safe[key] = properties[key]
+	for key: String in ["track_version_id","ticket_id"]:
+		if properties.has(key):
+			if not properties[key] is String or _uuid_pattern.search(properties[key]) == null: return {}
+			safe[key] = properties[key]
+	if not properties.frame_buckets is Array or properties.frame_buckets.size() != 8: return {}
+	var buckets: Array = []; var frame_count: int = 0
+	for count: Variant in properties.frame_buckets:
+		if not _bounded_integer(count,0,1000000): return {}
+		frame_count += int(count); buckets.append(int(count))
+	if frame_count > 1000000: return {}
+	safe.frame_buckets = buckets
+	var sample_totals: Dictionary = {"cells":0,"segments":0}
+	for key: String in ["cells","segments"]:
+		var rows: Variant = properties[key]
+		if not rows is Array or rows.size() > (128 if key == "cells" else 32): return {}
+		var packed: Array = []; var seen: Dictionary = {}
+		for row: Variant in rows:
+			if not row is Array or row.size() != (4 if key == "cells" else 3): return {}
+			if not _bounded_integer(row[0],-5000 if key == "cells" else 0,5000 if key == "cells" else 31): return {}
+			if key == "cells" and not _bounded_integer(row[1],-5000,5000): return {}
+			var count_index: int = 2 if key == "cells" else 1
+			if not _bounded_integer(row[count_index],1,3600) or not _bounded_integer(row[count_index+1],0,int(row[count_index])): return {}
+			var identity: String = str(int(row[0]))+"/"+str(int(row[1])) if key == "cells" else str(int(row[0]))
+			if seen.has(identity): return {}
+			seen[identity] = true
+			var normalized: Array = []
+			for value: Variant in row: normalized.append(int(value))
+			packed.append(normalized); sample_totals[key] += int(row[count_index])
+		safe[key] = packed
+	if sample_totals.cells+safe.dropped_samples != safe.position_samples or sample_totals.segments != safe.position_samples: return {}
+	if safe.position_samples > 0 and not safe.has("track_version_id"): return {}
+	return safe
+
 func set_transport_allowed(allowed: bool) -> void:
 	if _allowed and not allowed and client != null and client.has_method("cancel_telemetry"): client.cancel_telemetry()
 	_allowed = allowed
@@ -226,7 +318,7 @@ func _notification(what: int) -> void:
 	elif what == NOTIFICATION_APPLICATION_RESUMED or what == NOTIFICATION_APPLICATION_FOCUS_IN:
 		foreground()
 
-func background(application_paused: bool = false) -> void:
+func background(_application_paused: bool = false) -> void:
 	if _foreground:
 		observe("session_backgrounded",{"foreground_ms":maxi(0,Time.get_ticks_msec()-_foreground_start_msec)})
 		_foreground_start_msec = Time.get_ticks_msec()
@@ -234,8 +326,8 @@ func background(application_paused: bool = false) -> void:
 		_background_msec = Time.get_ticks_msec()
 	if client != null and client.has_method("cancel_telemetry"): client.cancel_telemetry()
 	# Losing window focus does not suspend Windows race processing. Start a disk
-	# worker only from a menu or an explicit application-pause notification.
-	if _allowed or application_paused:
+	# worker only from a menu. Even application-pause keeps active capture in RAM.
+	if _allowed:
 		_finish_thread()
 		_save_if_needed()
 
@@ -266,6 +358,7 @@ func pump() -> void:
 		_prune()
 		_next_prune_msec = Time.get_ticks_msec()+FLUSH_INTERVAL_MSEC
 	_report_losses()
+	_collect_network()
 	_save_if_needed()
 	if _thread != null or _dirty or _uploading or Time.get_ticks_msec() < _next_upload_msec: return
 	if client == null or not client.telemetry_supported() or client.auth_busy(): return
@@ -283,10 +376,25 @@ func _report_losses() -> void:
 		_reported_counters = counters
 		_next_summary_msec = now+IDLE_FLUSH_MSEC
 
+func _network_supported() -> bool:
+	return client != null and client.has_method("network_supported") and client.network_supported()
+
+func _collect_network() -> void:
+	if not _allowed or not _foreground or _scope == "guest" or not _network_supported(): return
+	var monitor: RefCounted = client.get("network_health")
+	if monitor == null: return
+	for observation: Dictionary in monitor.pending(_scope):
+		if _event_ids.is_empty(): return # Optional diagnostics never allocate live random IDs.
+		if observe(str(observation.name),observation.properties): monitor.acknowledge(_scope,str(observation.name),observation.properties)
+
 func _flush_due(now_msec: int = -1) -> bool:
 	var count: int = 0
 	for entry: Dictionary in queue:
 		if entry.scope == _scope and _persisted_ids.has(str(entry.event.id)):
+			if entry.event.name in NETWORK_NAMES and not _network_supported(): continue
+			if entry.event.name == "race_statistics":
+				if _package_supported(entry.event.properties): return true
+				continue
 			count += 1
 			if count >= MAX_BATCH_EVENTS: return true
 	if count == 0: return false
@@ -295,12 +403,15 @@ func _flush_due(now_msec: int = -1) -> bool:
 
 func batch_payload() -> Dictionary:
 	var events: Array[Dictionary] = []
-	var bytes: int = 128
+	# The bounded ASCII envelope (including build ID) fits below 512 bytes.
+	var bytes: int = 512
 	var build: String = ""
 	var platform: String = ""
 	var quality: String = ""
 	for entry: Dictionary in queue:
 		if str(entry.scope) != _scope or not _persisted_ids.has(str(entry.event.id)): continue
+		if entry.event.name in NETWORK_NAMES and not _network_supported(): continue
+		if entry.event.name == "race_statistics" and not _package_supported(entry.event.properties): continue
 		if build.is_empty():
 			build = str(entry.build_id)
 			platform = str(entry.platform)
@@ -313,6 +424,11 @@ func batch_payload() -> Dictionary:
 	var value: Dictionary = {"schema":SCHEMA,"purpose_policy":"bmt-product-telemetry-v1","build_id":build,"platform":platform,"clock_quality":quality,"batch_id":uuid(),"install_id":_install_id,"events":events}
 	last_batch_bytes = JSON.stringify(value).to_utf8_buffer().size()
 	return value
+
+func _package_supported(properties: Dictionary) -> bool:
+	if client == null or not client.quality_supported(): return false
+	var version: int = client.quality_schema_version() if client.has_method("quality_schema_version") else 2
+	return int(properties.get("schema_version",0)) in [2,3] and int(properties.schema_version) <= version
 
 func _upload(batch: Dictionary, scope: String) -> void:
 	if _uploading or not _allowed or not _foreground or scope != _scope: return
@@ -340,6 +456,7 @@ func _upload(batch: Dictionary, scope: String) -> void:
 			_persisted_ids.erase(str(entry.event.id))
 		else: kept.append(entry)
 	queue = kept
+	_recount_budget()
 	_pending_since_msec = -1
 	_journey_pending_msec = -1
 	for entry: Dictionary in queue:
@@ -358,7 +475,12 @@ func _prune() -> void:
 		else: kept.append(entry)
 	if kept.size() != queue.size():
 		queue = kept
+		_recount_budget()
 		_mark_dirty()
+
+func _recount_budget() -> void:
+	_queue_budget_bytes = 0
+	for entry: Dictionary in queue: _queue_budget_bytes += _entry_budget(entry)
 
 func _mark_dirty() -> void:
 	_dirty = true
@@ -410,9 +532,10 @@ func _finish_thread() -> void:
 			var restored: Array[Dictionary] = []
 			var saved_queue: Array = result.queue if result.get("queue") is Array else []
 			for entry: Variant in saved_queue:
-				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
+				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES or entry.event.get("name","") in NETWORK_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
 					var original: Dictionary = entry.event
 					entry.event = {"id":str(original.id),"name":str(original.name),"occurred_at":_saved_integer(original.get("occurred_at",0)),"session_id":str(original.session_id),"seq":_saved_integer(original.get("seq",0)),"monotonic_ms":_saved_integer(original.get("monotonic_ms",0)),"properties":_safe_properties(str(original.name),original.properties)}
+					if (original.name == "race_statistics" or original.name in NETWORK_NAMES) and entry.event.properties.is_empty(): continue
 					restored.append(entry)
 					_persisted_ids[str(entry.event.id)] = true
 					if restored.size() >= MAX_EVENTS: break
@@ -433,10 +556,12 @@ func _finish_thread() -> void:
 				_first_open_scopes[str(entry.scope)] = true
 			kept.append(entry)
 		queue = kept
+		_recount_budget()
 		_provisional_first_opens.clear()
 		_record_first_open()
-		while queue.size() > MAX_EVENTS:
+		while queue.size() > MAX_EVENTS or _queue_budget_bytes > MAX_QUEUE_BYTES-8192:
 			_persisted_ids.erase(str(queue[0].event.id))
+			_queue_budget_bytes -= _entry_budget(queue[0])
 			queue.pop_front()
 			dropped_events += 1
 		_mark_dirty()

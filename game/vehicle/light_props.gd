@@ -7,7 +7,11 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
 		if object.kind in CreatorCatalog.SOFT: props.append(object)
 	if state.light_props.is_empty():
 		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
+	BreakableProps.prepare(state,props)
 	for index: int in range(props.size()):
+		if props[index].kind in BreakableProps.KINDS:
+			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
+			continue
 		var row: Array = state.light_props[index]
 		var p := Vector2(row[0],row[1])
 		var velocity := Vector2(row[2],row[3])
@@ -29,3 +33,4 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
 		if collision.z<=0: p=next
 		else: velocity=Vector2.ZERO
 		row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
+	BreakableProps.step_fragments(state,contact,previous,dt,car_mass,car_radius)

@@ -2,7 +2,7 @@ class_name GameSoundtrack
 extends Node
 ## Recorded music and interface feedback, entirely outside canonical simulation.
 const BANK: String = "res://assets/audio/locked_in_v1/"
-const MENU_ASSET: String = "res://assets/audio/menu_exploration_v1/exploration_menu_loop.wav"
+const MENU_ASSET: String = "res://assets/audio/menu_exploration_v1/exploration_menu_loop.ogg"
 const LAYERS: Array[String] = ["pulse", "lock", "groove", "hook", "wide", "soar"]
 const DEFAULTS: Dictionary = {"music_volume": 0.7, "vehicle_volume": 1.0, "interface_volume": 0.7}
 const BPM: float = 160.0
@@ -84,8 +84,8 @@ func _loop(file: String) -> AudioStreamOggVorbis:
 	return stream
 
 
-func _menu_loop() -> AudioStreamWAV:
-	return PcmAudioLoop.prepare(load(MENU_ASSET) as AudioStreamWAV)
+func _menu_loop() -> AudioStream:
+	return AudioLoop.prepare(load(MENU_ASSET) as AudioStream)
 
 
 func apply_settings(settings: Dictionary) -> void:

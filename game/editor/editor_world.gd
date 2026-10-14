@@ -92,6 +92,7 @@ func show_track(data: NativeTrack) -> void:
 	track = data
 	if is_node_ready() and not _building:
 		if reuse:
+			track.editor_roads = {}
 			if _visual_track.metadata.get("creator_document",{}).get("objects",[]) != track.metadata.get("creator_document",{}).get("objects",[]) or _visual_track.metadata.get("scenery_objects",[]) != track.metadata.get("scenery_objects",[]):
 				var target: NativeTrack = track
 				_building = true
@@ -166,6 +167,7 @@ func _build_track() -> void:
 			_build_track()
 			return
 	else:
+		target.editor_roads = {}
 		world.add_child(candidate)
 		candidate.refresh_editor_objects(target)
 	if visual != null:

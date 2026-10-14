@@ -220,12 +220,17 @@ func poll_result() -> void:
 	var response: Dictionary = await _request("/challenge-results/"+expected)
 	_polling = false
 	if expected != result_ticket or original != scope(): return
-	_next_poll = Time.get_ticks_msec()+maxi(1000,int(response.get("data",{}).get("poll_after_ms",2500)))
-	if not response.get("ok",false):
+	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
+	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"]
+	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])*10
+	_next_poll = Time.get_ticks_msec()+maxi(1000,int(data.get("poll_after_ms",2500)))+jitter
+	if not valid:
 		_failures = mini(_failures+1,5)
-		_next_poll = Time.get_ticks_msec()+mini(60000,2500*int(pow(2,_failures)))
+		var wait_msec: int = maxi(int(response.get("retry_after",0))*1000,mini(60000,2500*int(pow(2,_failures))))
+		_next_poll = Time.get_ticks_msec()+wait_msec+jitter
 		error = "Result saved. Reconnect to verify it."
-	elif valid_snapshot(response.data.get("challenge")):
+	else:
+		_failures = 0
 		if str(selected.get("code","")) == result_code: selected = response.data.challenge
 		result_state = str(response.data.get("status","upload_pending"))
 		outcome = response.data.get("outcome",{}) if response.data.get("outcome") is Dictionary else {}
@@ -233,13 +238,12 @@ func poll_result() -> void:
 		if result_state == "failed":
 			if response.data.get("failure_code") == "verifier_unavailable":
 				result_state = "retry_pending"
-				_next_poll = Time.get_ticks_msec()+15000
+				_next_poll = Time.get_ticks_msec()+15000+jitter
 				error = "Your race is saved. Verification will retry."
 			else:
 				result_state = "rejected"
 				error = "This race could not be verified."
 		elif result_state in ["rejected","expired"]: error = "This race did not enter the challenge standings."
-	else: error = "Could not load challenge results. Try again."
 	changed.emit()
 
 static func friendly(message: String) -> String:

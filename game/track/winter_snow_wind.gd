@@ -8,9 +8,10 @@ const BANK_SLOTS: int = 12
 const WISPS: int = 3
 const BUCKET: float = 6.0
 const REFRESH: float = 0.25
-const VERSION: String = "winter-wind-7"
-const CALM_SPEED: float = 6.0
-const GUST_SPEED: float = 24.0
+const VERSION: String = "winter-wind-12"
+const CALM_SPEED: float = 5.4
+const GUST_SPEED: float = 21.6
+const AIR_GRAINS: int = 48
 var ground: MultiMeshInstance3D
 var powder: MultiMeshInstance3D
 var airborne: MultiMeshInstance3D
@@ -29,8 +30,16 @@ var sources_from_visual: bool = false
 var sources_checked: bool = false
 var bank_visual: Node3D
 var source_track: NativeTrack
+var surface_materials: Array[ShaderMaterial] = []
+var surface_bindings: Array[Dictionary] = []
+var surface_instances: Dictionary = {}
+var last_focus: Vector2 = Vector2.ZERO
+var surface_child_count: int = -1
+var car_visual: Node3D
 
-func configure(track: NativeTrack, visual: Node3D = null) -> void:
+func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null) -> void:
+	_release_surfaces()
+	car_visual = vehicle
 	enabled = track != null and track.metadata.get("theme", "pine") == "winter"
 	visible = enabled
 	anchors.clear()
@@ -49,6 +58,7 @@ func configure(track: NativeTrack, visual: Node3D = null) -> void:
 		airborne = _air_batch()
 		ground_material = ground.material_override
 		powder_material = powder.material_override
+	_bind_surfaces()
 	if _prepare_visual_sources(track):
 		reset()
 		return
@@ -122,6 +132,7 @@ func reset() -> void:
 		powder_material.set_shader_parameter("strength", 0.0)
 		powder.multimesh.visible_instance_count = 0
 		(airborne.material_override as ShaderMaterial).set_shader_parameter("strength",0.0)
+	_sync_surfaces()
 
 func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: bool) -> void:
 	if not enabled or suspended or paused: return
@@ -138,6 +149,7 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: 
 		refresh_wait = 0.0
 	refresh_wait -= step
 	if refresh_wait <= 0.0:
+		_bind_surfaces()
 		# Native road construction may finish a few frames after race startup.
 		if not sources_checked and is_instance_valid(bank_visual):
 			_prepare_visual_sources(source_track)
@@ -149,6 +161,81 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: 
 		material.set_shader_parameter("strength", intensity)
 		material.set_shader_parameter("focus", VisualGeometry.world(focus))
 	airborne.multimesh.custom_aabb = AABB(VisualGeometry.world(focus)+Vector3(-80,-1,-80),Vector3(160,6,160))
+	last_focus = focus
+	_sync_surfaces()
+	if not surface_materials.is_empty():
+		# Actual opaque geometry owns road/terrain/bank powder. No floating cards.
+		ground.multimesh.visible_instance_count = 0
+		powder.multimesh.visible_instance_count = 0
+
+func _bind_surfaces() -> void:
+	if not enabled or not is_instance_valid(bank_visual): return
+	# Let prepared-world recording finish before installing run-owned finishes.
+	if bank_visual is NativeTrackVisual and not (bank_visual as NativeTrackVisual).world_built: return
+	# Native roads/bridges arrive as prepared children. After the sliced build,
+	# stable worlds need only this count check, not recurring scene traversal.
+	var count: int = bank_visual.get_child_count()
+	if count == surface_child_count: return
+	surface_child_count = count
+	var pending: Array[Node] = [bank_visual]
+	while not pending.is_empty():
+		var node: Node = pending.pop_back()
+		for child: Node in node.get_children(): pending.append(child)
+		if not node is MeshInstance3D: continue
+		var mesh: MeshInstance3D = node
+		if mesh.mesh == null: continue
+		if mesh.material_override is ShaderMaterial:
+			_bind_surface(mesh,-1,mesh.material_override as ShaderMaterial)
+		elif mesh.material_override == null:
+			for index: int in range(mesh.mesh.get_surface_count()):
+				var material: Material = mesh.get_active_material(index)
+				if material is ShaderMaterial: _bind_surface(mesh,index,material as ShaderMaterial)
+
+func _bind_surface(mesh: MeshInstance3D, index: int, original: ShaderMaterial) -> void:
+	if original in surface_materials or original.shader == null: return
+	var code: String = original.shader.code
+	if not code.contains("wind_surface_strength"): return
+	if not (code.contains("const bool winter_snow = true;") or code.contains("const bool icy_road = true;")
+		or original.get_shader_parameter("winter_snow") == true or original.get_shader_parameter("icy_road") == true): return
+	# Cache resources stay immutable. All uses of a material share one run-owned
+	# duplicate, restored exactly when the weather node is removed/reconfigured.
+	var key: int = original.get_instance_id()
+	var material: ShaderMaterial
+	if surface_instances.has(key): material = surface_instances[key]
+	else:
+		material = original.duplicate() as ShaderMaterial
+		material.set_shader_parameter("wind_surface_flow",preload("res://assets/textures/winter_wind_flow_v1.png"))
+		surface_instances[key] = material
+		surface_materials.append(material)
+	var previous: Material = mesh.material_override if index < 0 else mesh.get_surface_override_material(index)
+	surface_bindings.append({"node":weakref(mesh),"surface":index,"original":previous,"material":material})
+	if index < 0: mesh.material_override = material
+	else: mesh.set_surface_override_material(index,material)
+
+func _sync_surfaces() -> void:
+	var car_point := Vector2(last_focus.x,-last_focus.y)
+	if is_instance_valid(car_visual): car_point = Vector2(car_visual.global_position.x,car_visual.global_position.z)
+	if airborne != null: (airborne.material_override as ShaderMaterial).set_shader_parameter("protected_car",car_point)
+	for material: ShaderMaterial in surface_materials:
+		material.set_shader_parameter("wind_surface_elapsed",elapsed)
+		material.set_shader_parameter("wind_surface_travel",travel)
+		material.set_shader_parameter("wind_surface_strength",intensity if enabled and is_visible_in_tree() else 0.0)
+		material.set_shader_parameter("wind_surface_focus",Vector2(last_focus.x,-last_focus.y))
+		material.set_shader_parameter("wind_surface_car",car_point)
+
+func _release_surfaces() -> void:
+	for material: ShaderMaterial in surface_materials: material.set_shader_parameter("wind_surface_strength",0.0)
+	for binding: Dictionary in surface_bindings:
+		var mesh: MeshInstance3D = binding.node.get_ref() as MeshInstance3D
+		if not is_instance_valid(mesh): continue
+		var index: int = binding.surface
+		if index < 0 and mesh.material_override == binding.material: mesh.material_override = binding.original
+		elif index >= 0 and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
+	surface_materials.clear(); surface_instances.clear(); surface_bindings.clear()
+	surface_child_count = -1
+
+func _exit_tree() -> void:
+	_release_surfaces()
 
 func _air_batch() -> MultiMeshInstance3D:
 	var node := MultiMeshInstance3D.new()
@@ -161,8 +248,8 @@ func _air_batch() -> MultiMeshInstance3D:
 	instances.transform_format = MultiMesh.TRANSFORM_3D
 	instances.use_custom_data = true
 	instances.mesh = mesh
-	instances.instance_count = 24
-	for i: int in range(24):
+	instances.instance_count = AIR_GRAINS
+	for i: int in range(AIR_GRAINS):
 		instances.set_instance_transform(i,Transform3D.IDENTITY)
 		instances.set_instance_custom_data(i,Color(_hash(Vector2(i,13)),_hash(Vector2(i,31)),_hash(Vector2(i,47)),1.0))
 	node.multimesh = instances
@@ -245,3 +332,4 @@ func _hash(point: Vector2) -> float:
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: suspended = true
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]: suspended = false
+	elif what == NOTIFICATION_VISIBILITY_CHANGED: _sync_surfaces()

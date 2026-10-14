@@ -5,7 +5,9 @@ extends RefCounted
 
 const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
 const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
-const DESERT: Array[Color] = [Color("9d896a"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT: Array[Color] = [Color("9f8052"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT_SHOULDER: Color = Color("ad8957")
+const DESERT_SUN_ROTATION: Vector3 = Vector3(-46,-48,0)
 
 
 static func normalized(theme: String) -> String:
@@ -67,15 +69,11 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 		environment.ambient_light_color = Color("879ec2")
 		environment.ambient_light_energy = 0.48
 		var sky := Sky.new()
-		var material := ProceduralSkyMaterial.new()
-		material.sky_top_color = Color("7199bd")
-		material.sky_horizon_color = Color("d8e0e6")
-		material.ground_bottom_color = Color("758396")
-		material.ground_horizon_color = Color("d8e0e6")
-		material.sky_energy_multiplier = 0.45
-		material.ground_energy_multiplier = 0.35
+		var material := ShaderMaterial.new()
+		material.shader = preload("res://track/winter_reflection_sky.gdshader")
 		sky.sky_material = material
 		sky.radiance_size = Sky.RADIANCE_SIZE_128
+		sky.process_mode = Sky.PROCESS_MODE_QUALITY
 		environment.sky = sky
 		environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 		environment.fog_enabled = true
@@ -89,8 +87,10 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 		light.light_color = Color("ffedce")
 	if theme == "desert":
 		# Sun-baked daylight, with warm open shade rather than a sunset/haze pass.
+		light.rotation_degrees = DESERT_SUN_ROTATION
+		light.shadow_opacity = 0.90
 		environment.ambient_light_color = Color("c5b9a4")
-		environment.ambient_light_energy = 0.38
+		environment.ambient_light_energy = 0.30
 	if theme == "storm":
 		environment.sky = preload("res://track/storm_sky.tres")
 		environment.background_mode = Environment.BG_SKY

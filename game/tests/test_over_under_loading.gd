@@ -51,6 +51,7 @@ func run() -> void:
 		if is_instance_valid(app.game):
 			app.game.set_physics_process(false)
 			check(app.game.hud != null and app.game.track_session.target_laps == 5 and revealed.get("countdown", -1) == 360 and revealed.get("tick", -1) == 0, "prepared five-lap bridge race remains at full countdown")
+			check(app.game.weathering_prepared == (DisplayServer.get_name() != "headless") and not app.game.car_weathering._render_warming, "preparation records an actual draw and restores clean bindings before racing")
 			print("OVER_UNDER_LOAD_MS ", Time.get_ticks_msec()-began)
 			app._leave_race()
 		await process_frame

@@ -2,10 +2,12 @@ class_name CreatorObjects
 extends RefCounted
 ## Original scalable stamps; the same footprint is used in plans and native cells.
 
-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand"]
+const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale"]
 
 static func dimensions(kind: String) -> Vector2:
 	match kind:
+		"hay_bale": return Vector2(2.0,1.2)
+		"speed_bump": return Vector2(2.0,8.0)
 		"tyre_stack": return Vector2(1,1)
 		"broadleaf": return Vector2(4,4)
 		"bush": return Vector2(2,2)
@@ -37,11 +39,13 @@ static func dimensions(kind: String) -> Vector2:
 
 static func size_of(object: Dictionary) -> Vector2:
 	var size: Vector2 = dimensions(object.kind)*float(object.get("scale",1.0))
+	if object.kind == "speed_bump": size.y = float(object.get("span",size.y))
 	if object.kind in ObjectRuns.CONTINUOUS: size.x = float(object.get("length",size.x))
 	return size
 
 
 static func surface(kind: String) -> int:
+	if kind == "speed_bump": return 0
 	if not CreatorCatalog.family(kind).is_empty(): return 0 if kind in CreatorCatalog.DECORATIVE or kind in CreatorCatalog.SOFT else 4
 	match kind:
 		"tree", "rock", "boulder", "slate", "cliff", "barrier", "tyre_wall", "fence": return 4

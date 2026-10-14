@@ -248,7 +248,7 @@ func _run() -> void:
 	check(trails.mark_colors[8].a < strong,"cleaner tires deposit fainter marks after the natural fade distance")
 	check(trails.instances.visible_instance_count == 12,"four wheel trails share one bounded instance batch")
 	var mark_transform: Transform3D = trails.mark_transforms[0]
-	check(is_equal_approx(mark_transform.basis.z.length(),1.06),"batched mark retains driven length and seam overlap")
+	check(is_equal_approx(mark_transform.basis.z.length(),1.0),"batched mark retains exact driven length without double-blended seam overlap")
 	check(trails.CAPACITY == 16384 and trails.instances.instance_count == trails.CAPACITY,"one fixed batch retains a race-scale four-wheel mark budget")
 	check(trails.instances.use_custom_data,"single trail batch carries per-segment physics and loose-surface tread data")
 	var asphalt_style: Vector4 = trails._surface_style(0,0.0)

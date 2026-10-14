@@ -22,6 +22,8 @@ func run() -> void:
 	var input: DriveFrame = DriveFrame.sample(0,0.7,0)
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var audio := VehicleAudio.new()
+	# This fixture explicitly tests output-player pause state, including dummy output.
+	audio.output_enabled = true
 	root.add_child(audio)
 	audio.configure("compact",config)
 	state.velocity = Vector2(7,25)
@@ -98,6 +100,8 @@ func run() -> void:
 	check(plain.state.snapshot()==mixed.state.snapshot() and audio.grit_count==0,"continuous desert debris leaves 960 canonical ticks exactly equivalent")
 	audio.free()
 	if DisplayServer.get_name()!="headless": await capture(track,config)
+	# Allow queued mixer playback removals to finish before engine shutdown.
+	await create_timer(.05).timeout
 	print("DESERT_AUDIO: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures>0 else 0)
 
@@ -111,6 +115,8 @@ func capture(track: NativeTrack, config: HandlingConfig) -> void:
 	AudioServer.add_bus_effect(0,master)
 	AudioServer.add_bus_effect(tire_bus,tires)
 	var audio := VehicleAudio.new()
+	# This fixture explicitly tests output-player pause state, including dummy output.
+	audio.output_enabled = true
 	root.add_child(audio)
 	audio.configure("compact",config)
 	var state := VehicleState.new()

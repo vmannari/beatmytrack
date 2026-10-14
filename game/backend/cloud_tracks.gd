@@ -31,6 +31,9 @@ var _recovered_outboxes: Dictionary = {}
 var _pending_iterators: Dictionary = {}
 var result_saves: Node
 var _retry_deadlines: Dictionary = {}
+var _write_deadlines: Dictionary = {}
+var _flush_deadlines: Dictionary = {}
+var profile_local_io_us: int = 0
 const MAX_FLUSH_JOBS: int = 16
 
 func _ready() -> void:
@@ -50,7 +53,7 @@ func enqueue_completed(ticket_data: Dictionary, frames: Array, publish: String =
 	captured["_owner_id"] = str(ticket_data.get("_owner_id",client.player.get("id","")))
 	captured["_origin"] = str(ticket_data.get("_origin",client.base_url()))
 	if not captured.has("_submit_key"): captured["_submit_key"] = client.new_operation_key()
-	if not captured.has("_publish_key"): captured["_publish_key"] = client.new_operation_key()
+	captured.erase("_publish_key")
 	return result_saves.enqueue(captured,frames,publish,rewinds)
 
 static func _pending_marker(path: String) -> String:
@@ -162,7 +165,10 @@ func cache_root() -> String:
 	return (root_override if not root_override.is_empty() else "user://cloud").path_join(str(client.base_url()).sha256_text())
 
 func _read(path: String) -> Dictionary:
-	return _read_file(path)
+	var started: int = Time.get_ticks_usec()
+	var result: Dictionary = _read_file(path)
+	profile_local_io_us += Time.get_ticks_usec() - started
+	return result
 
 static func _read_file(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path): return {}
@@ -174,7 +180,10 @@ static func _read_file(path: String) -> Dictionary:
 	return value if value is Dictionary else {"_read_error":true}
 
 func _write(path: String, value: Dictionary) -> bool:
-	return _write_file(path,value)
+	var started: int = Time.get_ticks_usec()
+	var result: bool = _write_file(path,value)
+	profile_local_io_us += Time.get_ticks_usec() - started
+	return result
 
 static func _write_file(path: String, value: Dictionary) -> bool:
 	var encoded: String = JSON.stringify(value)
@@ -493,7 +502,8 @@ func migrate_record_identities(local: LocalRecords) -> Error:
 			if stable not in values: values.append(stable)
 		local.settings[key] = values
 	var last: String = str(local.settings.get("last_track",""))
-	local.settings.last_track = aliases.get(last,last)
+	if not last.is_empty(): local.settings.last_track = aliases.get(last,last)
+	else: local.settings.erase("last_track")
 	return local.save_records()
 
 static func cached_document(entry: Dictionary) -> Dictionary:
@@ -596,18 +606,12 @@ func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String =
 		last_error = "Selected handling differs from the server's race rules."
 		return {}
 	response.data["_submit_key"] = client.new_operation_key()
-	response.data["_publish_key"] = client.new_operation_key()
 	return response.data
 
-func upload_draft(document: Dictionary) -> Dictionary:
-	var path: String = outbox_path().get_base_dir().path_join("uploads.json")
-	var uploads: Dictionary = _read(path)
-	if uploads.has("_read_error"): return {"ok":false,"error":"Upload retry state needs recovery; original data was preserved"}
-	var fingerprint: String = TrackLibrary.draft_fingerprint(document)
-	if not uploads.has(fingerprint):
-		uploads[fingerprint] = client.new_operation_key()
-		if not _write(path,uploads): return {"ok":false,"error":"Could not save upload retry state"}
-	return await client.upload_track(str(document.name),document,str(uploads[fingerprint]))
+func upload_draft(_document: Dictionary) -> Dictionary:
+	# Deprecated adapter kept to fail closed for old callers. The exact local
+	# document and creator trajectory leave the device only through Publish.
+	return {"ok":false,"status":410,"error":"LOCAL_DRAFTS_ONLY","data":{}}
 
 func outbox_path() -> String:
 	return cache_root().path_join("players").path_join(str(client.player.get("id","")).sha256_text()).path_join("outbox.json")
@@ -616,7 +620,7 @@ static func _save_pending_job_files(path: String, job: Dictionary) -> bool:
 	if not _write_file(_pending_marker(path),{"job":path.get_file()}): return false
 	return _write_file(path,job)
 
-static func _queue_run_io(ticket_data: Dictionary, frames: Array, publish_version: String, rewinds: Array, root_path: String, owner: String) -> bool:
+static func _queue_run_io(ticket_data: Dictionary, frames: Array, _publish_version: String, rewinds: Array, root_path: String, owner: String, queued_server_at: int = 0) -> bool:
 	if frames.is_empty():
 		return false
 	var directory: String = root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs")
@@ -635,7 +639,7 @@ static func _queue_run_io(ticket_data: Dictionary, frames: Array, publish_versio
 		return _replay_integrity(directory.path_join(name+".replay.json"),replay_hash)
 	var saved: bool = _write_file(directory.path_join(name+".replay.json"),recording)
 	if saved:
-		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":publish_version,"publish_key":ticket_data.get("_publish_key",Client.new_idempotency_key())})
+		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at})
 	return saved
 
 func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
@@ -645,7 +649,7 @@ func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String =
 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
-	var saved: bool = _queue_run_io(ticket_data,frames,publish_version,rewinds,root_path,owner)
+	var saved: bool = _queue_run_io(ticket_data,frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
 	if saved: changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved
@@ -655,7 +659,7 @@ func queue_run_async(ticket_data: Dictionary, frames: Array, publish_version: St
 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
-	var saved: Variant = await client._background(_queue_run_io.bind(ticket_data,frames,publish_version,rewinds,root_path,owner))
+	var saved: Variant = await client._background(_queue_run_io.bind(ticket_data,frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0))
 	if saved == true: changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved == true
@@ -823,7 +827,7 @@ func _job_ready(job: Dictionary) -> bool:
 	if not _retry_deadlines.has(id):
 		# Ignore legacy phone-wall-clock deadlines. New saved waits are bounded;
 		# corrected server time can shorten them after a restart.
-		var wait_seconds: int = clampi(int(job.get("retry_delay",0)),0,600)
+		var wait_seconds: int = clampi(int(job.get("retry_delay",0)),0,3600)
 		var epoch: int = int(job.get("retry_server_at",0))
 		if epoch > 0 and client.server_now() > 0: wait_seconds = clampi(epoch-client.server_now(),0,wait_seconds)
 		_retry_deadlines[id] = Time.get_ticks_msec()+wait_seconds*1000
@@ -834,7 +838,7 @@ func _delay_job(job: Dictionary, seconds: int, failed: bool = false) -> void:
 	job.retry_streak = mini(streak,6)
 	var bound: int = maxi(seconds,mini(600,15*int(pow(2,mini(streak,5))))) if failed else seconds
 	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])%maxi(1,bound/3+1)
-	job.retry_delay = mini(600,bound+jitter)
+	job.retry_delay = maxi(seconds,mini(600,bound+jitter))
 	job.retry_server_at = client.server_now()+int(job.retry_delay) if client.server_now() > 0 else 0
 	job.erase("retry_at")
 	_retry_deadlines[str(job.ticket)] = Time.get_ticks_msec()+int(job.retry_delay)*1000
@@ -860,9 +864,16 @@ func retry_upload(ticket_id: String) -> bool:
 	return _save_pending_job(str(job._path),job)
 
 func _submit_saved(job: Dictionary, path: String) -> Dictionary:
+	var origin: String = str(client.base_url())
+	var owner: String = str(client.player.get("id",""))
+	var preparation: int = Time.get_ticks_usec()
 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
+	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 	if not loaded is Dictionary or not loaded.get("frames") is Array:
 		return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+	var queued: Variant = job.get("queued_server_at",0)
+	if client.has_method("note_upload_age"): client.note_upload_age(str(job.key),int(queued) if Client._whole(queued,1000000000,9999999999) else 0)
+	if client.has_method("note_request_preparation"): client.note_request_preparation(str(job.key),Time.get_ticks_usec()-preparation)
 	return await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]),loaded.get("race_proof",{}),loaded.get("ghost",{}))
 
 func flush_outbox() -> void:
@@ -876,6 +887,8 @@ func _flush_jobs() -> void:
 	if not _migrate_outbox(): return
 	var owner: String = str(client.player.get("id",""))
 	var origin: String = str(client.base_url())
+	var request_scope: String = origin+"/"+owner
+	if Time.get_ticks_msec() < int(_flush_deadlines.get(request_scope,0)): return
 	var directory: String = outbox_path().get_base_dir().path_join("runs")
 	if not await _recover_pending(directory) or str(client.player.get("id","")) != owner or client.base_url() != origin: return
 	var jobs: Array[Dictionary] = _pending_jobs(directory)
@@ -887,6 +900,9 @@ func _flush_jobs() -> void:
 	if not ids.is_empty() and bool(client._capabilities.get("batch_run_status",false)):
 		batch = await client.request_api("/runs/status?"+"&".join(ids),HTTPClient.METHOD_GET,{},"",true)
 		if str(client.player.get("id","")) != owner or client.base_url() != origin: return
+		if int(batch.get("status",0)) == 429:
+			_pause_flush(request_scope,batch)
+			return
 		if batch.ok and batch.data.get("items") is Array:
 			for item: Variant in batch.data.items:
 				if Client.valid_run(item): polled[str(item.run_id)] = item
@@ -899,6 +915,7 @@ func _flush_jobs() -> void:
 		if job.has("done") or not _job_ready(job): continue
 		if job.has("failure"):
 			if job.get("failure","") != "verifier_unavailable" or not job.get("retryable",false): continue
+			if not _reserve_background_write(request_scope): continue
 			if not job.has("retry_key"):
 				job.retry_key = client.new_operation_key()
 				_save_job(path,job)
@@ -908,12 +925,16 @@ func _flush_jobs() -> void:
 				_delay_job(job,maxi(30,int(retried.get("retry_after",0))),true)
 				if str(retried.get("error","")) in ["CONTRACT_UNSUPPORTED","INVALID_REPLAY"]: job.retryable = false
 				_save_job(path,job)
+				if int(retried.get("status",0)) == 429:
+					_pause_flush(request_scope,retried)
+					return
 				continue
 			job.erase("failure")
 			job.erase("retry_key")
 			_save_job(path,job)
 		var response: Dictionary = {}
 		if not job.has("run_id"):
+			if not _reserve_background_write(request_scope): continue
 			response = await _submit_saved(job,path)
 			checked = true
 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
@@ -921,11 +942,14 @@ func _flush_jobs() -> void:
 			if not response.ok:
 				unavailable = unavailable or int(response.get("status",0)) >= 500 or response.get("error") == "NETWORK_ERROR"
 				_delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
-				if int(response.get("status",0)) in [400,403,404,409,410,422]:
+				if int(response.get("status",0)) in [400,403,404,409,410,413,422]:
 					job.failure = str(response.error)
 					job.rejection_status = int(response.status)
 				status = "Score upload pending: "+str(response.get("error","Unavailable"))
 				_save_job(path,job)
+				if int(response.get("status",0)) == 429:
+					_pause_flush(request_scope,response)
+					return
 				continue
 			job.run_id = response.data.run_id
 			_save_job(path,job)
@@ -935,6 +959,10 @@ func _flush_jobs() -> void:
 		checked = true
 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
 		if not response.ok and int(response.get("status",0)) == 404:
+			if not _reserve_background_write(request_scope):
+				_delay_job(job,5)
+				_save_job(path,job)
+				continue
 			# Reconcile the original ticket/key/content. Never mint a replacement attempt.
 			var recovered: Dictionary = await _submit_saved(job,path)
 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
@@ -953,16 +981,15 @@ func _flush_jobs() -> void:
 			unavailable = unavailable or int(response.get("status",0)) >= 500 or response.get("error") == "NETWORK_ERROR"
 			_delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
 			_save_job(path,job)
+			if int(response.get("status",0)) == 429:
+				_pause_flush(request_scope,response)
+				return
 			continue
 		if response.data.status == "verified":
-			if not str(job.publish).is_empty():
-				response = await client.request_api("/track-versions/"+str(job.publish)+"/publish",HTTPClient.METHOD_POST,{},str(job.publish_key),true)
-				if str(client.player.get("id","")) != owner or client.base_url() != origin: break
-				if not response.ok:
-					_delay_job(job,15,true)
-					_save_job(path,job)
-					status = "Publication pending: "+str(response.error)
-					continue
+			if not str(job.get("publish","")).is_empty():
+				# Preserve the recorded race and obsolete metadata; accepted race
+				# retries cannot create a publication as an implicit side effect.
+				job.publication_requires_explicit_request = true
 			job.done = true
 			status = "Race verified"
 		elif response.data.status in ["rejected","failed"]:
@@ -976,3 +1003,15 @@ func _flush_jobs() -> void:
 		_save_job(path,job)
 		if job.get("done",false) and _read(path).get("done",false): _retire_replay(job)
 	if checked: run_connection_failed = unavailable
+
+func _reserve_background_write(request_scope: String) -> bool:
+	if Time.get_ticks_msec() < int(_write_deadlines.get(request_scope,0)): return false
+	# Result uploads cost four units. Leave room in the shared account budget
+	# for actual race starts, resume operations and player actions.
+	_write_deadlines[request_scope] = Time.get_ticks_msec()+5000
+	return true
+
+func _pause_flush(request_scope: String, response: Dictionary) -> void:
+	# A rate limit applies to the account, so stop the whole batch rather than
+	# sending every remaining saved job into the same exhausted budget.
+	_flush_deadlines[request_scope] = Time.get_ticks_msec()+maxi(60,int(response.get("retry_after",0)))*1000

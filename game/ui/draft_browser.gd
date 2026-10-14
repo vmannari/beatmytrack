@@ -19,6 +19,12 @@ var detail: PanelContainer
 var count: Label
 var previous: Button
 var next: Button
+const SCANS = preload("res://persistence/draft_scan.gd")
+var scan: RefCounted
+var scanning: bool = false
+var scan_revision: int = -1
+var scan_directory: String
+var scan_scope: String
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -62,6 +68,20 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_show_detail)
 	_refresh()
 
+func _exit_tree() -> void:
+	if scan != null: scan.cancel()
+
+func _process(_delta: float) -> void:
+	if scan != null and scan.done:
+		var completed = scan; scan = null
+		if library.directory != scan_directory or library.revision != scan_revision or (lifecycle != null and lifecycle.scope() != scan_scope):
+			_load_entries(); return
+		var selected_id: String = str(selection.get("id",""))
+		entries = completed.entries
+		for item: Dictionary in entries:
+			if str(item.id) == selected_id: selection = item
+		scanning = false; _refresh()
+
 func _refresh() -> void:
 	for child: Node in gallery.get_children():
 		gallery.remove_child(child)
@@ -78,7 +98,7 @@ func _refresh() -> void:
 	var visible_entries: Array[Dictionary] = matches.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE)
 	if visible_entries.is_empty():
 		selection = {}
-		var empty := MenuStyle.label("No drafts saved yet. Create a track to get started." if entries.is_empty() else "No drafts match your search.",24,true)
+		var empty := MenuStyle.label("Loading drafts…" if scanning else "No drafts saved yet. Create a track to get started." if entries.is_empty() else "No drafts match your search.",24,true)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		gallery.add_child(empty)
@@ -120,7 +140,8 @@ func _show_detail() -> void:
 	detail.visible = not selection.is_empty()
 	if selection.is_empty(): return
 	var item: Dictionary = selection
-	var doc: Dictionary = item.document
+	var doc: Dictionary = library.load_wip(str(item.id)) if item.source == "wip" else library.load_document(str(item.id))
+	if doc.is_empty(): _load_entries(); return
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",12)
 	var actions: Control = row
@@ -167,7 +188,7 @@ func _show_detail() -> void:
 	actions.add_child(test)
 	var publish: Button = _action("Publish","publish",func() -> void: publish_requested.emit(str(item.load_id)),true)
 	publish.name = "PublishDraft"
-	publish.tooltip_text = "Publish this version after its completed test drive has been verified."
+	publish.tooltip_text = "Publish this exact version and its saved test lap for server verification."
 	publish.custom_minimum_size.x = 252
 	publish.clip_text = true
 	publish.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -209,17 +230,18 @@ func _status_changed() -> void:
 	var selected_id: String = str(selection.get("id",""))
 	_load_entries()
 	for item: Dictionary in entries:
-		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
 		if str(item.id) == selected_id: selection = item
 	_refresh()
 
 func _load_entries() -> void:
-	entries = library.editable_entries()
-	for item: Dictionary in entries:
-		item.tested = lifecycle.ready_to_publish(item.document) if lifecycle != null else library.is_tested(item.document)
+	if scan != null: scan.cancel()
+	scanning = true
+	scan_directory = library.directory; scan_revision = library.revision
+	scan_scope = lifecycle.scope() if lifecycle != null else ""
+	scan = SCANS.start(scan_directory,get_tree(),lifecycle._root() if lifecycle != null else "")
 
 static func _counts(doc: Dictionary) -> String:
-	return "%d road pieces  ·  %d objects" % [doc.pieces.size(),doc.objects.size()]
+	return "%d road pieces  ·  %d objects" % [doc.get("piece_count",doc.pieces.size()),doc.get("object_count",doc.get("objects",[]).size())]
 
 static func _stamp(item: Dictionary) -> String:
 	if int(item.modified) <= 0: return "Unknown"

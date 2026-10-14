@@ -3,20 +3,23 @@ extends RefCounted
 ## Original fictional hatch details, authored from the owner's visual direction.
 ## Shared opaque materials batch on the sprung body and four rolling pivots.
 static var cached_tire: ArrayMesh
+static var cached_simple_tire: ArrayMesh
 static var rear_tiles: Dictionary = {}
 
-static func tire(parent: Node3D, material: Material) -> void:
-	if VisualGeometry.optimize_model_geometry and cached_tire!=null:
-		_attach_tire(parent,cached_tire)
+static func tire(parent: Node3D, material: Material, simple: bool = false) -> void:
+	var cached: ArrayMesh = cached_simple_tire if simple else cached_tire
+	if VisualGeometry.optimize_model_geometry and cached!=null:
+		_attach_tire(parent,cached)
 		return
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	# Rounded shoulders, broad tread, recessed sidewall. Axis is local X.
 	var profile: Array[Vector2] = [Vector2(-0.14,0.23),Vector2(-0.14,0.32),Vector2(-0.105,0.363),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.105,0.363),Vector2(0.14,0.32),Vector2(0.14,0.23)]
+	var segments: int = 32 if simple else 64
 	for row: int in range(profile.size()-1):
-		for segment: int in range(64):
-			var a: float = TAU*segment/64.0
-			var b: float = TAU*(segment+1)/64.0
+		for segment: int in range(segments):
+			var a: float = TAU*segment/float(segments)
+			var b: float = TAU*(segment+1)/float(segments)
 			var p: Vector2 = profile[row]
 			var q: Vector2 = profile[row+1]
 			var points: Array[Vector3] = [Vector3(p.x,sin(a)*p.y,cos(a)*p.y),Vector3(q.x,sin(a)*q.y,cos(a)*q.y),Vector3(q.x,sin(b)*q.y,cos(b)*q.y),Vector3(p.x,sin(b)*p.y,cos(b)*p.y)]
@@ -28,7 +31,9 @@ static func tire(parent: Node3D, material: Material) -> void:
 				tool.add_vertex(points[index])
 	if VisualGeometry.optimize_model_geometry:tool.index()
 	var resource: ArrayMesh=tool.commit()
-	if VisualGeometry.optimize_model_geometry:cached_tire=resource
+	if VisualGeometry.optimize_model_geometry:
+		if simple: cached_simple_tire=resource
+		else: cached_tire=resource
 	_attach_tire(parent,resource)
 
 static func _attach_tire(parent: Node3D,resource: ArrayMesh) -> void:
@@ -88,20 +93,24 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 		indicator.name="FrontBumperIndicatorLeft" if side<0 else "FrontBumperIndicatorRight"
 		indicator.rotation.y=atan2(-outward.x,-outward.z)
 	# Recessed dark centres, alloy rim lips and explicit lug centres on every wheel.
+	if CompactKits.choice(car,"rims") != "stock": return
 	for rotor: Node3D in car.rolling_wheels:
 		var side: float = signf((rotor.get_parent() as Node3D).position.x)
-		var lip := Node3D.new()
-		rotor.add_child(lip)
-		lip.position.x = side*0.143
-		lip.rotation.z = -side*PI*0.5
-		VisualGeometry.ring(lip,Vector3.ZERO,0.235,0.023,bright)
-		_rim_bowl(rotor,side,alloy)
-		var cap := VisualGeometry.cylinder(rotor,0.062,0.18,Vector3.ZERO,trim,true)
-		cap.rotation.z = PI*0.5
-		for lug: int in range(4):
-			var a: float = lug*TAU/4.0
-			var bolt := VisualGeometry.cylinder(rotor,0.014,0.195,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright,true)
-			bolt.rotation.z = PI*0.5
+		rim_detail(car.wheel_kit_frame(rotor),side,alloy,trim,bright)
+
+static func rim_detail(parent: Node3D,side: float,alloy: Material,trim: Material,bright: Material) -> void:
+	var lip := Node3D.new()
+	parent.add_child(lip)
+	lip.position.x = side*0.143
+	lip.rotation.z = -side*PI*0.5
+	VisualGeometry.ring(lip,Vector3.ZERO,0.235,0.023,bright)
+	_rim_bowl(parent,side,alloy)
+	var cap := VisualGeometry.cylinder(parent,0.062,0.18,Vector3.ZERO,trim,true)
+	cap.rotation.z = PI*0.5
+	for lug: int in range(4):
+		var a: float = lug*TAU/4.0
+		var bolt := VisualGeometry.cylinder(parent,0.014,0.195,Vector3(0,sin(a)*0.047,cos(a)*0.047),bright,true)
+		bolt.rotation.z = PI*0.5
 
 
 static func _door(car: CarVisual,side: float,trim: Material) -> void:
@@ -161,6 +170,7 @@ static func _rear_skin(x: float, y: float) -> float:
 static func _rear_patch(car: CarVisual, side: float, inner: float, outer: float, bottom: float, top: float, relief: float, material: Material,label: String="") -> void:
 	# Rounded tiles follow the actual tail surface with shallow embedded backs.
 	var key: String=var_to_bytes(PackedFloat64Array([side,inner,outer,bottom,top,relief])).hex_encode()
+	if car.simple_model: key += "_simple"
 	var tool: SurfaceTool
 	if VisualGeometry.optimize_model_geometry:
 		if rear_tiles.has(key):
@@ -169,16 +179,18 @@ static func _rear_patch(car: CarVisual, side: float, inner: float, outer: float,
 		tool=SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var rows: int=1 if top-bottom<0.004 else maxi(8,int(ceil((top-bottom)/0.015)))
+	if car.simple_model: rows = maxi(1,rows/2)
+	var columns: int = 4 if car.simple_model else 8
 	for row: int in range(rows):
 		var y0: float=lerpf(bottom,top,row/float(rows))
 		var y1: float=lerpf(bottom,top,(row+1)/float(rows))
 		var bounds0: Vector2=_rear_lamp_bounds(inner,outer,bottom,top,y0)
 		var bounds1: Vector2=_rear_lamp_bounds(inner,outer,bottom,top,y1)
-		for column: int in range(8):
-			var x0: float=lerpf(bounds0.x,bounds0.y,column/8.0)
-			var x1: float=lerpf(bounds0.x,bounds0.y,(column+1)/8.0)
-			var x2: float=lerpf(bounds1.x,bounds1.y,(column+1)/8.0)
-			var x3: float=lerpf(bounds1.x,bounds1.y,column/8.0)
+		for column: int in range(columns):
+			var x0: float=lerpf(bounds0.x,bounds0.y,float(column)/columns)
+			var x1: float=lerpf(bounds0.x,bounds0.y,float(column+1)/columns)
+			var x2: float=lerpf(bounds1.x,bounds1.y,float(column+1)/columns)
+			var x3: float=lerpf(bounds1.x,bounds1.y,float(column)/columns)
 			var a:=Vector3(side*x0,y0,_rear_skin(x0,y0)+relief)
 			var b:=Vector3(side*x1,y0,_rear_skin(x1,y0)+relief)
 			var c:=Vector3(side*x2,y1,_rear_skin(x2,y1)+relief)
@@ -188,7 +200,7 @@ static func _rear_patch(car: CarVisual, side: float, inner: float, outer: float,
 			_rear_quad(tool,car,[a,b,c,d],normal,material)
 			var inset:=Vector3(0,0,-relief-0.012)
 			if column==0:_rear_quad(tool,car,[a,d,d+inset,a+inset],Vector3(-side,0,0),material)
-			if column==7:_rear_quad(tool,car,[b,c,c+inset,b+inset],Vector3(side,0,0),material)
+			if column==columns-1:_rear_quad(tool,car,[b,c,c+inset,b+inset],Vector3(side,0,0),material)
 			if row==0:_rear_quad(tool,car,[a,b,b+inset,a+inset],Vector3.DOWN,material)
 			if row==rows-1:_rear_quad(tool,car,[d,c,c+inset,d+inset],Vector3.UP,material)
 	if tool!=null:
@@ -228,6 +240,9 @@ static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float,
 	# The thin solid applique follows the shell in both directions. Its back is
 	# embedded in the steel; an old rectangular back wall cut across the corner.
 	var inset:=Vector3(0,0,0.024)
+	if car.simple_model:
+		columns = maxi(2,columns/2)
+		rows = maxi(1,rows/2)
 	var tool:=SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for row: int in range(rows):

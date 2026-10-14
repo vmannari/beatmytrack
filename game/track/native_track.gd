@@ -31,10 +31,12 @@ var finish_half_width: float = 0.0
 var tyre_origins := PackedVector2Array()
 var creator_bridges: Array = []
 var hazard_objects: Array = []
+var speed_bump_objects: Array = []
 var kerbs := RoadKerbs.new()
 var snow_banks := SnowBanks.new()
 var editor_overlay_mask: Image
 var editor_road_mask: Image
+var editor_roads: Dictionary = {}
 
 
 static func read(path: String) -> NativeTrack:
@@ -52,6 +54,8 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	track.tyre_origins = LooseTyres.positions(data.get("creator_document",{}))
 	track.creator_bridges = data.get("creator_bridges",[])
 	track.hazard_objects = data.get("creator_document",{}).get("objects",[])
+	for object: Dictionary in track.hazard_objects:
+		if object.kind == "speed_bump": track.speed_bump_objects.append(object)
 	track.content_hash = hash_value
 	track.identity = data.identity
 	track.cell_size = float(data.cell_size)
@@ -683,6 +687,10 @@ func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step
 
 func launch_jump(state: VehicleState, previous: Vector2) -> void:
 	TrackHazards.launch(state,previous,hazard_objects)
+
+
+func step_speed_bumps(state: VehicleState, previous: Vector2, heading: float, velocity: Vector2, config: HandlingConfig, seconds: float) -> void:
+	SpeedBumps.advance(state,previous,heading,velocity,config,speed_bump_objects,seconds)
 
 
 func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:

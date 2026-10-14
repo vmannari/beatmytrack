@@ -25,6 +25,9 @@ func clear() -> void:
 	label.visible = false
 
 func present(marker: CheckpointMarker, camera: Camera3D, source_screen: Vector2 = Vector2.INF) -> void:
+	var was_visible: bool = visible
+	var previous_bearing: Vector2 = bearing
+	var previous_rect: Rect2 = banner_rect
 	var active: bool = marker.visible
 	visible = active
 	label.visible = active
@@ -39,7 +42,7 @@ func present(marker: CheckpointMarker, camera: Camera3D, source_screen: Vector2 
 	banner_rect = Rect2(Vector2((size.x-386)*0.5,174),Vector2(386,54))
 	label.position = banner_rect.position+Vector2(70,0)
 	label.size = Vector2(254,54)
-	queue_redraw()
+	if not was_visible or previous_bearing != bearing or previous_rect != banner_rect: queue_redraw()
 
 func _draw() -> void:
 	if not visible: return

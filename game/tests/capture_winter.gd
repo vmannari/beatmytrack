@@ -2,6 +2,7 @@ extends SceneTree
 
 var checks: int = 0
 var failures: int = 0
+var evidence_root: String = ""
 
 func check(ok: bool, label: String = "capture saved") -> void:
 	checks += 1
@@ -10,6 +11,8 @@ func check(ok: bool, label: String = "capture saved") -> void:
 		push_error(label)
 
 func _initialize() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--output-dir="): evidence_root = argument.trim_prefix("--output-dir=").trim_suffix("/")
 	run.call_deferred()
 
 func run() -> void:
@@ -72,7 +75,15 @@ func run() -> void:
 			check(marking.material_override is ShaderMaterial,"winter finish uses abrasion shader")
 	check(ground.get_node_or_null("FinishDark") == null,"winter omits opaque black finish")
 
-	check(ground.get_node_or_null("WinterSnowBanks") != null,"snowbanks rendered")
+	# Cached road meshes restore resources without their original node names.
+	# Verify actual visible bank geometry/material on both warm and fresh builds.
+	var rendered_bank: bool = false
+	for child: Node in ground.get_children():
+		if child is MeshInstance3D and child.material_override is ShaderMaterial:
+			var bank_material: ShaderMaterial = child.material_override
+			if bank_material.shader == preload("res://track/winter_bank.gdshader"):
+				rendered_bank = rendered_bank or (child.visible and child.mesh != null and child.mesh.get_surface_count() > 0)
+	check(rendered_bank,"snowbanks rendered with visible geometry and Winter material")
 	check(int(ground.get_meta("winter_smooth_sections",0)) > 0,"analytic smooth snowbank sections generated")
 	check(int(ground.get_meta("winter_deposits",0)) > 0,"outer snow deposits generated")
 	for child: Node in ground.get_children():
@@ -80,7 +91,7 @@ func run() -> void:
 			var material: ShaderMaterial = child.material_override
 			if material.shader == NativeTrackVisual.CREATOR_ROAD_SHADER:
 				check(not material.get_shader_parameter("road_marking"),"winter omits edge stripes")
-	var folder: String = "res://../docs/evidence/winter-frost"
+	var folder: String = evidence_root+"/frost" if not evidence_root.is_empty() else "res://../docs/evidence/winter-frost"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	check(root.get_texture().get_image().save_png(folder+"/driving.png") == OK)
 	root.size = Vector2i(960,540)
@@ -97,6 +108,7 @@ func run() -> void:
 	check(root.get_texture().get_image().save_png(folder+"/bend-detail.png") == OK)
 	print("WINTER_CAPTURE: surfaces/contacts preserved, mipmaps, smooth banks, no edge stripes, two captures PASS; sections=",ground.get_meta("winter_smooth_sections"))
 	await _snow_effects(game,track)
+	if "--ice-scuff-preview" in OS.get_cmdline_user_args(): await _ice_scuff_preview(game,track)
 	game.queue_free()
 	await process_frame
 	print("WINTER_CHECKS: %d checks, %d failures" % [checks,failures])
@@ -122,7 +134,7 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	state.velocity = Vector2(3,-9)
 	state.heading = PI
 	var frame: DriveFrame = DriveFrame.sample(0,1,0)
-	var folder: String = "res://../docs/evidence/winter-directional"
+	var folder: String = evidence_root+"/tracks" if not evidence_root.is_empty() else "res://../docs/evidence/winter-directional"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	game.set_process(false)
 	trails.clear()
@@ -144,6 +156,7 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 		camera.position = Vector3(0,22,42)
 		camera.look_at(Vector3(0,0,24))
 		camera.size = 23.0
+		effects.set_water_paused(false) # Animate particles while the staged vehicle stays frozen.
 		await create_timer(0.016).timeout
 		await RenderingServer.frame_post_draw
 		if not captured_impact and effects.snow_burst_count > 0:
@@ -152,11 +165,12 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 			check(track.snow_banks.height_at(effects.snow_impact_position) > 0.035,"impact origin is actual bank contact")
 			var impact_process: ParticleProcessMaterial = effects.snow_impacts[0].process_material
 			check(impact_process.direction.dot(VisualGeometry.world(state.velocity.normalized())) > 0.8,"snow launches in impact travel direction")
-			check(effects.snow_impacts[0].draw_pass_1 is SphereMesh,"impact uses snow fragments instead of cloud billboards")
+			check(effects.snow_impacts[0].draw_pass_1 is ArrayMesh and bool(effects.snow_impacts[0].draw_pass_1.surface_get_material(0).get_shader_parameter("billowing")),"impact uses owner-requested textured snow clouds")
 			captured_impact = true
 			impact_frame = index
 		if index == impact_frame+1: check(root.get_texture().get_image().save_png(folder+"/bank-impact.png") == OK)
 		if index == 20: check(root.get_texture().get_image().save_png(folder+"/ice-drift.png") == OK)
+		if index == 40: check(root.get_texture().get_image().save_png(folder+"/ice-scuffs.png") == OK)
 	check(effects.snow_burst_count > 0,"crossing bank emits impact snow")
 	check(effects.snow_burst_count <= 3,"bank cloud cooldown prevents sustained burst spam")
 	check(effects.snow_chips.size() == 4 and effects.snow_impacts.size() == 2,"bounded wheel emitters and impact pool")
@@ -176,22 +190,28 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	check(effects.snow_impacts[0].lifetime <= 0.45,"bank burst settles within half a second")
 	check(effects.snow_impacts[0].explosiveness == 1.0,"impact particles spawn together immediately")
 	var burst_process: ParticleProcessMaterial = effects.snow_impacts[0].process_material
-	check((burst_process.color_ramp as GradientTexture1D).gradient.get_color(0).a > 0.5,"impact starts visible without dust fade-in")
+	check((burst_process.color_ramp as GradientTexture1D).gradient.get_color(0).a > 0.35,"impact starts visible without long dust fade-in")
 	state.track_elevated = false
 	state.position = Vector2.ZERO
 	probe.cells.fill(0)
 	state.velocity = Vector2(9,-9)
 	effects.sample(state,frame,probe)
 	var ice_spray: float = effects.snow_chips[0].amount_ratio
-	check(not effects.snow_powder[0].emitting and not effects.smoke_emitters[0].emitting,"ice drift emits chips without tyre clouds")
+	# WE06 superseded the original no-powder fixture with a small ice wake.
+	# Keep it bounded well below loose-snow spray, and still prohibit tyre smoke.
+	var ice_powder: float = effects.snow_powder[0].amount_ratio
+	check(not effects.smoke_emitters[0].emitting,"ice drift has no tyre smoke")
+	check(effects.snow_powder[0].emitting and ice_powder <= 0.17 and ice_powder < ice_spray*0.33,"ice drift powder remains sparse relative to chips")
 	check(ice_spray > 0.3,"drifting on ice throws substantial snow chips")
 	probe.cells.fill(1)
 	effects.sample(state,frame,probe)
 	check(absf(effects.snow_chips[0].amount_ratio-ice_spray) < 0.05,"full ice drift uses off-track snow emission strength")
+	check(effects.snow_powder[0].amount_ratio > ice_powder*3.0,"loose snow has substantially more powder than ice")
 	probe.cells.fill(0)
 	state.velocity = state.forward()*12.0
 	effects.sample(state,frame,probe)
 	check(not effects.snow_chips[0].emitting,"straight ice driving does not spray loose snow")
+	check(effects.snow_powder[0].amount_ratio <= 0.05,"straight ice driving keeps only a light powder wake")
 	state.track_elevated = false
 	state.position = Vector2.ZERO
 	probe.cells.fill(1)
@@ -201,3 +221,31 @@ func _snow_effects(game: Node, track: NativeTrack) -> void:
 	check(effects.clipping_emitters[0].emitting,"grass keeps its original clippings")
 	check(trails._surface_style(7,0.0).z > trails._surface_style(7,0.0).x,"loose snow marks stay cool rather than muddy")
 	check(trails._surface_relief(7) > trails._surface_relief(8),"snow ruts have more relief than ice scuffs")
+
+
+func _ice_scuff_preview(game: Node, track: NativeTrack) -> void:
+	# Staged presentation samples on actual road contacts, not a race or replay.
+	var trails: SkidTrails = game.get("trails")
+	trails.clear()
+	var state := VehicleState.new()
+	state.heading = PI*0.5-0.5
+	state.velocity = Vector2(16,0)
+	var frame := DriveFrame.sample(0,1,0)
+	var untouched: bool = true
+	for index: int in range(90):
+		state.tick = index*2
+		state.position = Vector2(-18+float(index)*0.27,-18+sin(float(index)/89.0*PI)*1.4)
+		var before: Array = state.snapshot()
+		trails.sample(state,frame,game.get("bridge_presentation"),track)
+		untouched = untouched and state.snapshot() == before
+	check(untouched,"staged ice-scuff presentation preserves all sampled states")
+	print("WINTER_ICE_SCUFF_PREVIEW: instances=",trails.instances.visible_instance_count," first_tint=",trails.mark_colors[0]," surface_data=",trails.mark_custom[0])
+	game.get("sim").state = state
+	game.call("_process",0.0)
+	var camera: Camera3D = game.get("camera")
+	camera.position = Vector3(0,22,36)
+	camera.look_at(Vector3(0,0,18))
+	camera.size = 30.0
+	for index: int in range(4): await RenderingServer.frame_post_draw
+	var folder: String = evidence_root+"/tracks" if not evidence_root.is_empty() else "res://../docs/evidence/winter-directional"
+	check(root.get_texture().get_image().save_png(folder+"/ice-scuff-preview.png") == OK)

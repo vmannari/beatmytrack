@@ -112,3 +112,7 @@ func kerb_heights(_state: VehicleState, _config: HandlingConfig) -> Vector4:
 
 func slow_in_snow(_state: VehicleState, _previous: Vector2, _config: HandlingConfig, _seconds: float) -> void:
 	pass
+
+
+func step_speed_bumps(_state: VehicleState, _previous: Vector2, _heading: float, _velocity: Vector2, _config: HandlingConfig, _seconds: float) -> void:
+	pass

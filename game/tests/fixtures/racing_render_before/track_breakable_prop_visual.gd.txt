@@ -1,0 +1,100 @@
+class_name BreakablePropVisual
+extends RefCounted
+## Prepared damage meshes and two debris batches; never changes canonical state.
+static var debris_meshes: Dictionary = {}
+static var damage_meshes: Dictionary = {}
+static var shared_material: StandardMaterial3D
+
+static func build(node: Node3D, kit: Node, kind: String, scale: float) -> void:
+	node.set_meta("breakable_kind",kind)
+	node.set_meta("authored_yaw",node.rotation.y)
+	for phase: int in range(3):
+		var key: String = CreatorPropVisual.VERSION+"/"+kind+"/"+str(phase)
+		if not damage_meshes.has(key):
+			var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+			if phase == 0: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1,0)
+			elif kind == "hay_bale": PropEquipment.hay(tool,phase)
+			else: _damaged_crate(tool,phase)
+			tool.generate_normals(); tool.index()
+			if damage_meshes.size() >= 12: damage_meshes.erase(damage_meshes.keys()[0])
+			damage_meshes[key] = tool.commit()
+		var mesh := MeshInstance3D.new()
+		mesh.name = "DamagePhase"+str(phase); mesh.mesh = damage_meshes[key]
+		mesh.material_override = material(); mesh.scale = Vector3.ONE*scale
+		mesh.visible = phase == 0
+		node.add_child(mesh)
+
+static func material() -> StandardMaterial3D:
+	if shared_material == null:
+		shared_material = VisualGeometry.material(Color.WHITE)
+		shared_material.vertex_color_use_as_albedo = true; shared_material.vertex_color_is_srgb = true
+		shared_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return shared_material
+
+static func present(node: Node3D, row: Array, integrity: float) -> void:
+	var kind: String = node.get_meta("breakable_kind")
+	node.visible = integrity > 0
+	node.scale = Vector3.ONE*BreakableProps.size_fraction(kind,integrity)
+	node.rotation.y = float(node.get_meta("authored_yaw"))+float(row[4])
+	node.rotation.z = clampf(float(row[2])*0.012,-0.12,0.12)
+	node.rotation.x = clampf(float(row[3])*0.012,-0.12,0.12)
+	var phase: int = 0 if integrity > 0.96 else 1 if integrity > 0.38 else 2
+	for child: MeshInstance3D in node.get_children(): child.visible = child.name == "DamagePhase"+str(phase)
+
+static func _damaged_crate(tool: SurfaceTool, phase: int) -> void:
+	var wood := PropEquipment.WOOD
+	# Open interior, missing/split boards and broken diagonal braces.
+	for i: int in range(5): PropGeometry.box(tool,Vector3(-0.43+i*0.215,0.055,0),Vector3(0.195,0.07,1.06),wood.darkened(0.16),0.008)
+	for side: float in [-1.0,1.0]:
+		for i: int in range(5):
+			if i == 1 or (phase == 2 and i == 3): continue
+			var height: float = 0.92 if i%2 == 0 else 0.56
+			PropGeometry.box(tool,Vector3(-0.43+i*0.215,height*0.5+0.06,side*0.525),Vector3(0.196,height,0.04),wood.lightened((i%3)*0.03),0.008)
+			PropGeometry.box(tool,Vector3(side*0.525,height*0.5+0.06,-0.43+i*0.215),Vector3(0.04,height,0.196),wood,0.008)
+		PropGeometry.box(tool,Vector3(0,0.14,side*0.56),Vector3(1.10,0.13,0.07),wood.lightened(0.10),0.012)
+		PropGeometry.beam(tool,Vector3(-0.42,0.27,side*0.56),Vector3(-0.05,0.47,side*0.56),0.12,0.06,wood.lightened(0.08))
+		PropGeometry.beam(tool,Vector3(0.18,0.62,side*0.56),Vector3(0.41,0.81,side*0.56),0.12,0.06,wood.lightened(0.08))
+	for i: int in [0,2,4]:
+		if phase == 2 and i == 2: continue
+		PropGeometry.box(tool,Vector3(-0.43+i*0.215,0.93-i*0.025,0.17),Vector3(0.196,0.055,0.71),wood.lightened(0.05),0.009)
+
+static func ensure_debris(parent: Node3D) -> void:
+	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
+		var name: String = "LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments"
+		if parent.has_node(name): continue
+		var node := MultiMeshInstance3D.new(); node.name = name
+		node.multimesh = MultiMesh.new(); node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		node.multimesh.mesh = _debris_mesh(kind); node.material_override = material()
+		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		parent.add_child(node)
+
+static func _debris_mesh(kind: int) -> ArrayMesh:
+	if debris_meshes.has(kind): return debris_meshes[kind]
+	var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if kind == BreakableProps.WOOD:
+		PropGeometry.box(tool,Vector3(0,0.03,0),Vector3(1,0.06,1),PropEquipment.WOOD,0.012)
+		for side: float in [-1.0,1.0]:
+			PropGeometry.face(tool,[Vector3(side*0.50,0.004,-0.46),Vector3(side*0.56,0.031,0.15),Vector3(side*0.50,0.058,0.46)],PropEquipment.WOOD.lightened(0.18))
+	else:
+		for i: int in range(40):
+			var a: float = i*2.4
+			var p := Vector3(cos(a)*0.35,0.01,sin(a)*0.35)
+			var reach := Vector3(cos(a+0.8)*0.32,0.012+(i%3)*0.012,sin(a+0.8)*0.32)
+			var side := Vector3(-sin(a)*0.026,0,cos(a)*0.026)
+			PropGeometry.face(tool,[p-side,p+reach,p+side],Color("a68c55").lightened((i%3)*0.055))
+	tool.generate_normals(); tool.index(); debris_meshes[kind] = tool.commit()
+	return debris_meshes[kind]
+
+static func update_debris(parent: Node3D, state: VehicleState) -> void:
+	if not parent.has_node("WoodFragments"): return
+	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
+		var node: MultiMeshInstance3D = parent.get_node("LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments")
+		var pieces: Array = []
+		for row: Array in state.prop_fragments:
+			if int(row[0]) == kind: pieces.append(row)
+		if node.multimesh.instance_count != pieces.size(): node.multimesh.instance_count = pieces.size()
+		for i: int in range(pieces.size()):
+			var row: Array = pieces[i]
+			var size := Vector3(float(row[8]),1,float(row[9]))
+			var pose := Transform3D(Basis(Vector3.UP,float(row[6])).scaled(size),Vector3(row[2],0.023,-float(row[3])))
+			node.multimesh.set_instance_transform(i,pose)

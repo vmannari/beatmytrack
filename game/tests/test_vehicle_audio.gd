@@ -135,6 +135,8 @@ func run() -> void:
 	game.vehicle_audio.present(game.sim.state,game.frame,game.native_track,0.1,false)
 	game.restart()
 	check(game.vehicle_audio.model.shifts==0 and game.vehicle_audio.event_count==0,"race retry resets audio")
+	# Let deferred draw callbacks finish while their captured controls are alive.
+	await process_frame
 	game.free()
 	if capture_audio: await _record_previews()
 	await process_frame

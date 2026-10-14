@@ -10,6 +10,7 @@ static func material() -> StandardMaterial3D:
 	if surface == null:
 		surface = StandardMaterial3D.new()
 		surface.vertex_color_use_as_albedo = true
+		surface.vertex_color_is_srgb = true
 		surface.diffuse_mode = BaseMaterial3D.DIFFUSE_BURLEY
 		surface.roughness = 0.95
 		surface.metallic_specular = 0.0

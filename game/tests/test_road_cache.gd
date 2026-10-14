@@ -16,7 +16,9 @@ func signature(node: Node) -> Array:
 		var data: Array = [child.transform,child.layers,child.cast_shadow]
 		for surface: int in range(child.mesh.get_surface_count()): data.append(child.mesh.surface_get_arrays(surface))
 		var material: ShaderMaterial = child.material_override
-		data.append(material.shader.resource_path)
+		# Generated biome shaders gain a subresource path after disk serialization.
+		# Compare executable source, rather than that storage location.
+		data.append(material.shader.code)
 		for uniform: Dictionary in material.shader.get_shader_uniform_list():
 			var value: Variant = material.get_shader_parameter(uniform.name)
 			if value is Texture2D:
@@ -43,7 +45,7 @@ func run() -> void:
 		original.theme_id = theme
 		original.colors = TrackTheme.palette(theme)
 		root.add_child(original)
-		original._build_creator_roads(track)
+		await original._build_creator_roads(track)
 		var expected: Array = signature(original)
 		check(not expected.is_empty(),theme+" road fixture is nonempty")
 		last_entry = CACHE.read_entry(key)
@@ -53,7 +55,7 @@ func run() -> void:
 		restored.theme_id = theme
 		restored.colors = TrackTheme.palette(theme)
 		root.add_child(restored)
-		restored._build_creator_roads(track)
+		await restored._build_creator_roads(track)
 		check(signature(restored) == expected,theme+" disk-loaded meshes, materials, masks and render flags exactly match")
 		for name: String in original.get_meta_list():
 			check(restored.get_meta(name,null) == original.get_meta(name),theme+" retains "+name)
@@ -78,7 +80,7 @@ func run() -> void:
 		editor.theme_id = theme
 		editor.colors = TrackTheme.palette(theme)
 		root.add_child(editor)
-		editor._build_creator_roads(track)
+		await editor._build_creator_roads(track)
 		check(not CACHE.read_entry(key).is_empty(),"saved editor road is baked when pending geometry completes")
 		DirAccess.remove_absolute(path+".sha256")
 		NativeTrackVisual.request_saved_road_bake(track)

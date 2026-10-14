@@ -121,6 +121,14 @@ var profile_contact_us: int = 0
 var profile_music_us: int = 0
 var profile_water_us: int = 0
 var profile_history_us: int = 0
+var profile_condition_us: int = 0
+var profile_weathering_us: int = 0
+var profile_physics_total_us: int = 0
+var profile_process_total_us: int = 0
+var condition_save_count: int = 0
+var weathering_prepared: bool = false
+var hitch_diagnostics_enabled: bool = true
+var hitch_diagnostics: Node
 var profile_skip_telemetry: bool = false
 var _render_viewport: Viewport
 var _base_msaa: Viewport.MSAA = Viewport.MSAA_DISABLED
@@ -185,8 +193,14 @@ func _ready() -> void:
 	world.add_child(checkpoint_marker)
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
-	if preference_records != null: car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
+	car.simple_model = preference_records != null and bool(preference_records.settings.get("simple_car_models",false))
+	if preference_records != null:
+		car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
+		car.customisation = VehicleCustomisation.for_car(preference_records.settings, vehicle_id)
 	world.add_child(car)
+	# Weather is created before the car during startup; bind its real footprint
+	# as soon as the presentation node exists.
+	if winter_snow_wind != null: winter_snow_wind.car_visual = car
 	if production_mode and not editor_test and native_track != null and preference_records != null:
 		personal_ghost = PersonalGhost.new()
 		world.add_child(personal_ghost)
@@ -204,6 +218,8 @@ func _ready() -> void:
 	sand_dust.track_width = handling.track_width
 	sand_dust.collision_radius = handling.collision_radius
 	world.add_child(sand_dust)
+	if native_track != null and native_track.metadata.get("theme", "pine") == "winter":
+		sand_dust.configure_snow_surface(track_ground)
 	vehicle_audio = VehicleAudio.new()
 	add_child(vehicle_audio)
 	vehicle_audio.configure(vehicle_id,handling,car)
@@ -266,6 +282,10 @@ func _ready() -> void:
 	resume_credits.show_ads = OS.is_debug_build() and preference_records != null and bool(preference_records.settings.get("development_show_ads", false))
 	add_child(resume_credits)
 	restart()
+	if hitch_diagnostics_enabled:
+		hitch_diagnostics = preload("res://diagnostics/race_hitch_monitor.gd").new()
+		hitch_diagnostics.game = self
+		add_child(hitch_diagnostics)
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
 		for argument: String in OS.get_cmdline_user_args():
@@ -278,6 +298,11 @@ func _ready() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	var started: int = Time.get_ticks_usec() if profile_enabled else 0
+	_advance_physics(_delta)
+	if profile_enabled: profile_physics_total_us += Time.get_ticks_usec() - started
+
+func _advance_physics(_delta: float) -> void:
 	if sim == null or paused:
 		return
 	if finish_sim != null:
@@ -424,6 +449,11 @@ func _complete_finish() -> void:
 
 
 func _process(delta: float) -> void:
+	var started: int = Time.get_ticks_usec() if profile_enabled else 0
+	_present_frame(delta)
+	if profile_enabled: profile_process_total_us += Time.get_ticks_usec() - started
+
+func _present_frame(delta: float) -> void:
 	if sim == null:
 		return
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
@@ -452,8 +482,10 @@ func _process(delta: float) -> void:
 	var water_depth: float = _presentation_water_depth(point)
 	if profile_enabled: profile_water_us += Time.get_ticks_usec() - water_start
 	car.present(point, heading, presented.state, frame)
+	var weathering_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
 	if finish_sim != null and not paused: car_weathering.melt(delta)
+	if profile_enabled: profile_weathering_us += Time.get_ticks_usec() - weathering_start
 	condition_save_elapsed += delta
 	if condition_save_elapsed >= 5.0:
 		_save_condition()
@@ -482,11 +514,19 @@ func _process(delta: float) -> void:
 	if native_track != null:
 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
 	var kerb_contacts: Vector4 = native_track.kerb_heights(presented.state,handling) if native_track != null else Vector4.ZERO
-	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts)
+	var bump_track: bool = native_track != null and not native_track.speed_bump_objects.is_empty()
+	var bump_contacts: Vector4 = SpeedBumps.contacts(point,heading,handling,native_track.speed_bump_objects) if bump_track and not presented.state.track_elevated and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 else Vector4.ZERO
+	var bump_pose := Vector3((bump_contacts.x+bump_contacts.y+bump_contacts.z+bump_contacts.w)*0.25,
+		atan2((bump_contacts.x+bump_contacts.y-bump_contacts.z-bump_contacts.w)*0.5,handling.wheelbase),
+		atan2((bump_contacts.y+bump_contacts.w-bump_contacts.x-bump_contacts.z)*0.5,handling.track_width))
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts,bump_contacts,bump_track,bump_pose)
+	car.position.y += bump_pose.x
+	car.rotation.x += bump_pose.y
+	car.rotation.z += bump_pose.z
 	if presented.state.jump_height == 0.0:
 		car.position.y += presented.state.kerb_offset.x
 		car.rotation.x += presented.state.kerb_offset.y
-		car.rotation.z = presented.state.kerb_offset.z
+		car.rotation.z += presented.state.kerb_offset.z
 	car.present_roll(presented.state, weight)
 	ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation)
 	if not contact_lighting_enabled: contact_shadow.hide()
@@ -504,9 +544,7 @@ func _process(delta: float) -> void:
 		profile_camera_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
 	if hud.rewind_button != null:
-		hud.rewind_button.disabled = countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3 or rewind_return.remaining > 0
-		hud.rewind_button.race_remaining = maxi(0,3-online_rewinds.size())
-		hud.rewind_button.queue_redraw()
+		hud.rewind_button.set_race_state(countdown_ticks > 0 or finish_sim != null or sim.state.tick < RewindHistory.STRIDE or online_rewinds.size() >= 3 or rewind_return.remaining > 0,maxi(0,3-online_rewinds.size()))
 	hud.set_track(native_track)
 	hud.update_values(presented.state, frame, delta, paused, recorder.active)
 	track_debug.visible = overview and native_track != null
@@ -514,8 +552,6 @@ func _process(delta: float) -> void:
 		track_debug.track = native_track
 		track_debug.state = presented.state
 		if track_debug.visible: track_debug.queue_redraw()
-		var progress_text: String = "FINISH" if track_session.next_checkpoint == track_session.checkpoint_count() else "CP %d/%d" % [track_session.next_checkpoint + 1, track_session.checkpoint_count()]
-		var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
 		if editor_test:
 			hud.title.text = "Practice (untimed)"
 			hud.message_label.text = "Paused — tap Resume to continue" if paused else ""
@@ -524,9 +560,11 @@ func _process(delta: float) -> void:
 			hud.show_session(track_session)
 			hud.shortcut_penalty_label.text = ""
 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
-			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position))
+			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position) if checkpoint_marker.visible else Vector2.INF)
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
 		else:
+			var progress_text: String = "FINISH" if track_session.next_checkpoint == track_session.checkpoint_count() else "CP %d/%d" % [track_session.next_checkpoint + 1, track_session.checkpoint_count()]
+			var status_text: String = "PAUSED" if paused else ("FINISHED - R retry" if track_session.finished else ("AI practice" if ai_enabled else "practice"))
 			hud.message_label.text = "%s | Lap %d/%d | %s | %.2fs | %s | F4 overview F5 track F9 AI" % [native_track.identity, mini(track_session.target_laps, track_session.completed_laps + 1), track_session.target_laps, progress_text, track_session.elapsed_ticks / 120.0, status_text]
 	if profile_enabled: profile_present_us += Time.get_ticks_usec() - profile_start
 	if profile_enabled: profile_hud_us += Time.get_ticks_usec() - section_start
@@ -838,10 +876,13 @@ static func render_scale_for(theme: String, base_scale: float, mobile: bool, pix
 
 
 func _save_condition() -> void:
+	var started: int = Time.get_ticks_usec() if profile_enabled else 0
 	condition_save_elapsed = 0.0
 	if preference_records != null and car != null:
+		condition_save_count += 1
 		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot())
 		if error != OK: push_warning("Local car condition save failed: " + error_string(error))
+	if profile_enabled: profile_condition_us += Time.get_ticks_usec() - started
 
 func _exit_tree() -> void:
 	_save_condition()
@@ -929,7 +970,8 @@ func _update_weather() -> void:
 	if weather_theme == "winter":
 		winter_snow_wind = WinterSnowWind.new()
 		$World.add_child(winter_snow_wind)
-		winter_snow_wind.configure(native_track, track_ground)
+		winter_snow_wind.configure(native_track, track_ground, car)
+		if sand_dust != null: sand_dust.configure_snow_surface(track_ground)
 	if weather_theme not in ["storm", "winter"]: return
 	weather_layer = CanvasLayer.new()
 	weather_layer.layer = 0

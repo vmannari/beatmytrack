@@ -45,6 +45,26 @@ func capture(filename: String) -> void:
 	await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(output.path_join(filename+".png")) == OK,"screenshot "+filename)
 
+func creator_trajectory(document: Dictionary) -> Dictionary:
+	var track: NativeTrack = TrackCompiler.compile(document)
+	track.spawn = Vector2(document.start_line.position[0],document.start_line.position[1])
+	track.spawn_heading = PI*0.5-deg_to_rad(float(document.start_line.heading))
+	var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
+	sim.reset(track.spawn,track.spawn_heading)
+	var witness := TrackSession.new(120,1)
+	var trajectory = preload("res://backend/race_proof.gd").new()
+	trajectory.capture(sim.state,witness,true)
+	var driver := RouteDriver.new()
+	for tick: int in range(24000):
+		var input: DriveFrame = driver.sample(sim.state,track,sim.config)
+		var before: Vector2 = sim.state.position
+		sim.step(input,track)
+		witness.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
+		trajectory.capture(sim.state,witness)
+		if witness.finished: break
+	check(witness.finished,"creator completes one local ordered lap before Publish")
+	return trajectory.recording(witness)
+
 func run() -> void:
 	var client := Client.new()
 	root.add_child(client)
@@ -57,20 +77,39 @@ func run() -> void:
 	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(OS.get_environment("BMT_CLOUD_FIXTURE")))
 	var login: Dictionary = await client.development_login("cloud-creator","Cloud Creator",OS.get_environment("BMT_DEV_AUTH_KEY"))
 	check(login.ok,"creator signs in")
-	var uploaded: Dictionary = await cloud.upload_draft(fixture.document)
-	check(uploaded.ok,"native client uploads validated draft")
-	if not uploaded.ok:
-		print(uploaded)
+	var publication_document: Dictionary = fixture.document.duplicate(true)
+	publication_document.creator = "Cloud Creator"
+	var publisher := Cloud.new()
+	publisher.client = client
+	publisher.root_override = cloud.root_override.path_join("publisher")
+	root.add_child(publisher)
+	var flow := TrackLifecycle.new()
+	flow.cloud = publisher
+	flow.library = TrackLibrary.new(publisher.root_override.path_join("drafts"))
+	flow.records = LocalRecords.new(publisher.root_override.path_join("records.json"))
+	root.add_child(flow)
+	check(not flow.stage(publication_document,[],"compact",null,"",creator_trajectory(publication_document)).is_empty(),"native creator lap is saved locally without controls")
+	check(await flow.request_publish(publication_document),"explicit Publish submits exact completed creator trajectory")
+	for attempt: int in range(100):
+		await flow.process_jobs()
+		if flow.status_for(publication_document).get("state") == "published": break
+		if flow.status_for(publication_document).has("failure"): print(flow.caption(publication_document)); break
+		await create_timer(0.1).timeout
+	var published: Dictionary = flow.status_for(publication_document)
+	check(published.get("state") == "published","native client publishes server-verified local creator lap")
+	if published.get("state") != "published":
+		print("PUBLICATION_LOCAL_RECOVERY ",JSON.stringify({"state":published.get("state"),"error":flow.last_error,"cloud_error":publisher.last_error}))
 		quit(1)
 		return
-	var version: String = uploaded.data.version_id
-	var repeated: Dictionary = await cloud.upload_draft(fixture.document)
-	check(repeated.ok and repeated.data.version_id == version,"repeat upload uses durable idempotency key")
+	var version: String = str(published.receipt.version_id)
+	check(await flow.request_publish(publication_document) and flow.status_for(publication_document).receipt.version_id == version,"repeated publication uses committed receipt without slot duplication")
+	var blocked_draft: Dictionary = await cloud.upload_draft(publication_document)
+	check(not blocked_draft.ok and int(blocked_draft.status) == 410,"deprecated upload adapter cannot transmit drafts")
 	var ticket: Dictionary = await client.race_ticket(version,"compact",Client.new_idempotency_key())
 	ticket.data["_race_proof"] = fixture.race_proof
 	ticket.data["_race_ghost"] = fixture.ghost
 	check(ticket.ok,"creator gets server contract")
-	check(cloud.queue_run(ticket.data,fixture.replay.frames,version),"publication replay durably queued")
+	check(cloud.queue_run(ticket.data,fixture.replay.frames),"ordinary creator race replay durably queued after publication")
 	await settle(cloud)
 	await cloud.refresh(true)
 	check(cloud.entries.size() == 1,"verified publication enters cloud discovery")
@@ -217,9 +256,12 @@ func run() -> void:
 	await rating.choose(5)
 	while cloud.refreshing: await process_frame
 	check(browser.matches.size() == 1 and browser.matches[0].source == "cloud","Race menu contains backend publications only")
-	var rating_dialog: AcceptDialog = rating.get_parent().get_parent()
-	rating_dialog.hide()
-	rating_dialog.queue_free()
+	var rating_dialog: Node = rating
+	while rating_dialog != null and not rating_dialog is AcceptDialog: rating_dialog = rating_dialog.get_parent()
+	check(rating_dialog is AcceptDialog,"styled rating keeps its owning dialog")
+	if rating_dialog != null:
+		rating_dialog.call("hide")
+		rating_dialog.queue_free()
 	await process_frame
 	await capture("cloud-library")
 	browser._open_scores()
@@ -272,6 +314,7 @@ func run() -> void:
 	await process_frame
 	var completion: RaceComplete = app.root_ui.find_child("RaceComplete",true,false)
 	while completion.standings_busy or app.online.client._busy: await process_frame
+	if completion.global_rank.text.is_empty(): print("RESULT_COMPARISON_FIXTURE ",JSON.stringify(completion.last_comparison))
 	check(completion.global_rank.text.begins_with("POSITION ") or completion.global_rank.text.begins_with("TOP "),"results continuation displays the actual server comparison position")
 	await capture("cloud-results-960")
 	app.queue_free()

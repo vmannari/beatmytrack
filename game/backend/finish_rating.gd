@@ -2,6 +2,7 @@ extends Node
 ## Ephemeral, best-effort vote. Never delays finish/results or enters the race outbox.
 var client: Node
 var sync: Node
+var rivalry_sync: Node
 var version: String
 var creator_id: String = ""
 var score: int = 0
@@ -19,10 +20,12 @@ func _ready() -> void:
 	account_id = str(client.player.get("id",""))
 	origin = str(client.base_url())
 	sync.changed.connect(_sync_changed)
+	if is_instance_valid(rivalry_sync): rivalry_sync.changed.connect(_rivalry_changed)
 	if client.has_signal("identity_changed"): client.identity_changed.connect(_identity_changed)
 	_load()
 
 func _exit_tree() -> void:
+	if is_instance_valid(rivalry_sync) and rivalry_sync.changed.is_connected(_rivalry_changed): rivalry_sync.changed.disconnect(_rivalry_changed)
 	if is_instance_valid(sync) and sync.changed.is_connected(_sync_changed): sync.changed.disconnect(_sync_changed)
 	if is_instance_valid(client) and client.has_signal("identity_changed") and client.identity_changed.is_connected(_identity_changed): client.identity_changed.disconnect(_identity_changed)
 
@@ -30,7 +33,17 @@ func _same_account() -> bool:
 	return is_instance_valid(client) and client.signed_in() and str(client.player.get("id","")) == account_id and str(client.base_url()) == origin
 
 func should_prompt() -> bool:
-	return known and score == 0 and selected_score == 0 and _same_account() and creator_id != account_id
+	if not (known and score == 0 and selected_score == 0 and _same_account() and creator_id != account_id): return false
+	# A selected vote survives its race view while verification/PUT completes.
+	# Do not ask again on a retry while that same account/version is in flight.
+	for sibling: Node in sync.get_children():
+		if sibling != self and sibling.get_script() == get_script() and sibling.version == version and sibling.account_id == account_id and sibling.origin == origin and sibling.selected_score > 0 and not sibling.is_queued_for_deletion(): return false
+	return true
+
+func _rivalry_changed() -> void:
+	if selected_score == 0 or sending or str(rivalry_sync.result_state) != "verified": return
+	if loading: reload_pending = true
+	else: _load()
 
 func choose(value: int) -> void:
 	if not should_prompt() or value < 1 or value > 5: return

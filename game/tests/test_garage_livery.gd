@@ -37,6 +37,7 @@ func _run() -> void:
 		var page: GaragePage = app.root_ui.find_child("GaragePage", true, false)
 		page.open_car(VehicleCatalog.IDS.find(id))
 		page._show_section("customise")
+		page._set_customise_tab("colours")
 		await settle()
 		var car: CarVisual = page.showroom.car
 		check(car.vehicle_id == id and car.front_wheels.size() == 2, id + " actual model")
@@ -70,6 +71,7 @@ func _run() -> void:
 		check(page.showroom.yaw != old_yaw, id + " mouse orbit")
 		var touch := InputEventScreenTouch.new()
 		touch.index = 0
+		touch.position = page.showroom.size * 0.5
 		touch.pressed = true
 		page.showroom.gui_input.emit(touch)
 		var drag := InputEventScreenDrag.new()

@@ -7,7 +7,14 @@ func _init(data: NativeTrack) -> void:
 
 
 func build(parent: Node3D) -> void:
-	CreatorBridgeVisual.build(parent,track.creator_bridges,str(track.metadata.get("theme","pine")))
+	var theme: String = str(track.metadata.get("theme","pine"))
+	var bridge_phases: Array[Dictionary] = []
+	if theme == "desert":
+		var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
+		var phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,RoadPieces.prepare_endpoints(pieces))
+		for i: int in range(pieces.size()):
+			if pieces[i].kind == "bridge": bridge_phases.append(phases.get(i,{}))
+	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases)
 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 	var fascia := SurfaceTool.new()
 	fascia.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -57,6 +64,7 @@ func build(parent: Node3D) -> void:
 			if kind == 0:
 				var asphalt := ShaderMaterial.new()
 				asphalt.shader = preload("res://track/storm_bridge_road.gdshader") if track.metadata.get("theme","pine") == "storm" else preload("res://track/bridge_road.gdshader")
+				if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 				asphalt.set_shader_parameter("road_color", palette[0])
 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
@@ -65,6 +73,9 @@ func build(parent: Node3D) -> void:
 				if track.metadata.get("theme","pine") == "winter": asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
 				asphalt.set_shader_parameter("packed_sand",track.metadata.get("theme","pine") == "desert")
+				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+				if theme == "desert": SurfaceShaderVariants.specialize(asphalt)
 				mesh.material_override = asphalt
 			else:
 				mesh.material_override = _structure_material()

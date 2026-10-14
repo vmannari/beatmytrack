@@ -18,6 +18,8 @@ func run() -> void:
 	track.metadata.theme = "storm"
 	track.cells.fill(0)
 	var audio := VehicleAudio.new()
+	# This fixture explicitly tests output-player pause state, including dummy output.
+	audio.output_enabled = true
 	audio.use_windows_impacts = false
 	root.add_child(audio)
 	audio.configure("compact",VehicleCatalog.config("compact"))
@@ -79,8 +81,8 @@ func run() -> void:
 			weather_voices += 1
 			check(child==weather.thunder_audio or child==weather.thunder_tail_audio or child==weather.rain_audio or child==weather.rumble_audio,"storm has rain, distant bed and two bounded strike voices")
 	check(weather_voices==4,"one rain, one distant bed and two thunder crossfade voices")
-	var rumble: AudioStreamWAV = weather.rumble_audio.stream
-	check(rumble.loop_mode==AudioStreamWAV.LOOP_FORWARD and absf(rumble.get_length()-16.0)<.001,"distant rumble is a continuous sixteen-second PCM loop")
+	var rumble: AudioStreamOggVorbis = weather.rumble_audio.stream
+	check(rumble.loop and rumble.loop_offset == 0.0 and absf(rumble.get_length()-16.0)<.001,"distant rumble is a continuous sixteen-second compressed loop")
 	check(weather.rumble_audio.bus=="Vehicle" and weather.rumble_audio.volume_linear==0.0,"distant thunder begins silent and follows Vehicle volume")
 	check(weather.thunder_audio.bus=="Vehicle" and is_equal_approx(weather.thunder_audio.volume_linear,StormWeather.THUNDER_LEVEL),"thunder obeys Vehicle volume at its audible level")
 	weather.advance(1.0,false)
@@ -110,6 +112,8 @@ func run() -> void:
 		if DisplayServer.get_name()!="headless": await capture(audio,state,pedal,track)
 	audio.free()
 	await create_timer(0.15).timeout
+	# Allow queued mixer playback removals to finish before engine shutdown.
+	await create_timer(.05).timeout
 	print("WET_ROAD_AUDIO: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures>0 else 0)
 

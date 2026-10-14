@@ -22,7 +22,7 @@ func configure(theme: String) -> void:
 	player.name = "Cicadas"
 	player.bus = "Vehicle"
 	player.volume_linear = 0.0
-	var stream: AudioStreamWAV = PcmAudioLoop.prepare(preload("res://assets/audio/ambience/night_cicadas.wav"))
+	var stream: AudioStream = AudioLoop.prepare(preload("res://assets/audio/ambience/night_cicadas.ogg"))
 	player.stream = stream
 	add_child(player)
 

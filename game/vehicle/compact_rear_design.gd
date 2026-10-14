@@ -242,7 +242,11 @@ static func _exhaust(car: CarVisual,trim: Material,metal: Material) -> void:
 			parent.free()
 
 static func _surface(car: CarVisual,label: String,columns: int,rows: int,sample: Callable,material: Material,normal_hint: Vector3) -> void:
-	if not meshes.has(label) or not VisualGeometry.optimize_model_geometry:
+	var key: String = label+"_simple" if car.simple_model else label
+	if car.simple_model:
+		columns = maxi(2,columns/2)
+		rows = maxi(1,rows/2)
+	if not meshes.has(key) or not VisualGeometry.optimize_model_geometry:
 		var tool:=SurfaceTool.new()
 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 		for row: int in range(rows):
@@ -252,9 +256,9 @@ static func _surface(car: CarVisual,label: String,columns: int,rows: int,sample:
 				var normal: Vector3=(points[1]-points[0]).cross(points[3]-points[0]).normalized()
 				if normal.dot(normal_hint)<0:normal=-normal
 				CompactDetail._tile_quad(tool,points,normal)
-		meshes[label]=tool.commit()
+		meshes[key]=tool.commit()
 	var mesh:=MeshInstance3D.new()
 	mesh.name=label
-	mesh.mesh=meshes[label]
+	mesh.mesh=meshes[key]
 	mesh.material_override=material
 	car.body.add_child(mesh)

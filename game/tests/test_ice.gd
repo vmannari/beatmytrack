@@ -119,8 +119,10 @@ func _check_snow_banks() -> void:
 		check(clear.velocity == Vector2(20,0),"ground snowbank does not catch an airborne/elevated car")
 	var escape := VehicleSimulation.new(config)
 	escape.reset(Vector2(4.8,10),PI*0.5)
-	for tick: int in range(240): escape.step(DriveFrame.sample(0,1,0),track)
-	check(escape.state.position.x > 8.0,"car can power through soft snowbank from rest")
+	# The owner replaces the soft two-second crossing with difficult packed snow.
+	# Preserve recovery from rest, allowing time for the intentionally slow crawl.
+	for tick: int in range(960): escape.step(DriveFrame.sample(0,1,0),track)
+	check(escape.state.position.x > 8.0,"car can slowly power through packed snowbank from rest")
 	var slower := VehicleSimulation.new(config)
 	var replay := VehicleSimulation.new(config)
 	slower.reset(Vector2(3.8,10),PI*0.5)

@@ -6,6 +6,9 @@ var directory: String
 var last_error: String = ""
 var revision: int = 0
 var owner_name: String = ""
+const READ_CACHE = preload("res://persistence/document_read_cache.gd")
+var last_read_path: String = ""
+var last_read_digest: String = ""
 
 
 func _init(root: String = "user://tracks") -> void:
@@ -62,7 +65,7 @@ func save_document(document: Dictionary) -> Error:
 	return error
 
 
-func load_document(id: String) -> Dictionary:
+func load_document(id: String, summary: bool = false) -> Dictionary:
 	if not TrackDocument.valid_id(id):
 		last_error = "The track identifier is invalid."
 		return {}
@@ -70,8 +73,9 @@ func load_document(id: String) -> Dictionary:
 	# Prefer committed state, then last known good state, then a first-save
 	# temporary. Reads recover even after a crash between the two renames.
 	for candidate: String in [path,path+".bak",path+".tmp"]:
-		var data: Dictionary = _read(candidate)
+		var data: Dictionary = _read_summary(candidate) if summary else _read(candidate)
 		if not data.is_empty() and data.id == id:
+			last_read_path = candidate
 			last_error = ""
 			return data
 	last_error = "This saved track could not be read."
@@ -99,8 +103,18 @@ func _read(path: String) -> Dictionary:
 		last_error = "This file is too large; creator tracks are at most 512 KB."
 		file.close()
 		return {}
-	var text: String = file.get_as_text()
+	var content: PackedByteArray = file.get_buffer(file.get_length())
 	file.close()
+	return _decode_document(path,content)
+
+func _decode_document(path: String, content: PackedByteArray) -> Dictionary:
+	last_read_digest = READ_CACHE.digest(content)
+	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
+	var cached: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest)
+	if not cached.is_empty():
+		last_error = ""
+		return cached
+	var text: String = content.get_string_from_utf8()
 	var parser := JSON.new()
 	if parser.parse(text) != OK:
 		last_error = "This file is not valid track JSON."
@@ -110,7 +124,24 @@ func _read(path: String) -> Dictionary:
 		last_error = errors[0]
 		return {}
 	last_error = ""
+	READ_CACHE.put_value(cache_path,last_read_digest,parser.data)
 	return parser.data
+
+func _read_summary(path: String) -> Dictionary:
+	var file := FileAccess.open(path,FileAccess.READ)
+	if file == null: return {}
+	if file.get_length() > TrackDocument.MAX_BYTES: file.close(); return {}
+	var content: PackedByteArray = file.get_buffer(file.get_length()); file.close()
+	last_read_digest = READ_CACHE.digest(content)
+	var cache_path: String = ProjectSettings.globalize_path(path).simplify_path()
+	var summary: Dictionary = READ_CACHE.get_value(cache_path,last_read_digest,true)
+	if not summary.is_empty(): return summary
+	var doc: Dictionary = _decode_document(path,content)
+	if doc.is_empty(): return {}
+	summary = {"id":doc.id,"name":doc.name,"creator":doc.get("creator",""),"theme":doc.theme,"pieces":doc.pieces,
+		"piece_count":doc.pieces.size(),"object_count":doc.objects.size(),"fingerprint":draft_fingerprint(doc)}
+	READ_CACHE.put_value(cache_path,last_read_digest,summary,true)
+	return summary
 
 
 func _atomic_write(document: Dictionary, path: String) -> Error:
@@ -179,6 +210,7 @@ func save_wip(document: Dictionary) -> Error:
 	drafts.owner_name = owner_name
 	var error: Error=drafts.save_document(document)
 	last_error=drafts.last_error
+	if error == OK: revision += 1
 	return error
 
 func load_wip(id: String) -> Dictionary:
@@ -193,24 +225,30 @@ func delete_wip(id: String) -> Error:
 	drafts.owner_name = owner_name
 	var error: Error = drafts.delete_document(id)
 	last_error = drafts.last_error
+	if error == OK: revision += 1
 	return error
 
 func list_wips() -> Array[Dictionary]:
 	return TrackLibrary.new(directory.path_join("wip")).list_documents()
 
-func editable_entries() -> Array[Dictionary]:
+func editable_entries(summaries: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
 	# Saved originals and editor autosaves are versions of the same local draft.
 	var by_id: Dictionary = {}
 	for source: String in ["saved","wip"]:
 		var store := TrackLibrary.new(directory.path_join("wip") if source == "wip" else directory)
-		for doc: Dictionary in store.list_documents():
+		var folder := DirAccess.open(store.directory)
+		if folder == null: continue
+		var ids: Dictionary = {}
+		for filename: String in folder.get_files():
+			var base: String = filename.trim_suffix(".bak").trim_suffix(".tmp")
+			if base.ends_with(".json") and TrackDocument.valid_id(base.trim_suffix(".json")): ids[base.trim_suffix(".json")] = true
+		var sorted_ids: Array = ids.keys(); sorted_ids.sort()
+		for id: String in sorted_ids:
+			if cancelled.is_valid() and cancelled.call(): return []
+			var doc: Dictionary = store.load_document(id,summaries)
+			if doc.is_empty(): continue
 			if is_published(str(doc.id)): continue
-			var modified: int = 0
-			for suffix: String in [".json",".json.bak",".json.tmp"]:
-				var path: String = store.directory.path_join(str(doc.id)+suffix)
-				if FileAccess.file_exists(path) and not store._read(path).is_empty():
-					modified = FileAccess.get_modified_time(path)
-					break
+			var modified: int = FileAccess.get_modified_time(store.last_read_path)
 			var item: Dictionary = {"id":doc.id,"document":doc,"modified":modified,"source":source,
 				"load_id":("wip:" if source == "wip" else "")+str(doc.id)}
 			if not by_id.has(doc.id) or modified >= int(by_id[doc.id].modified): by_id[doc.id] = item
@@ -246,6 +284,10 @@ func is_tested(document: Dictionary) -> bool:
 	if not TrackDocument.valid_id(document.get("id")): return false
 	var snapshot: Dictionary = _test_library().load_document(str(document.id))
 	return not snapshot.is_empty() and draft_fingerprint(snapshot) == draft_fingerprint(document)
+
+func is_tested_fingerprint(id: String, fingerprint: String) -> bool:
+	var summary: Dictionary = _test_library().load_document(id,true)
+	return not summary.is_empty() and summary.fingerprint == fingerprint
 
 func mark_tested(document: Dictionary) -> Error:
 	if not owner_name.is_empty(): document["creator"] = owner_name

@@ -126,7 +126,9 @@ func _owns_gesture(node: Node, location: Vector2) -> bool:
 		if control.mouse_behavior_recursive == Control.MOUSE_BEHAVIOR_DISABLED: return false
 		if not control.is_visible_in_tree(): return false
 		if control.clip_contents and not control.get_global_rect().has_point(location): return false
-		if control.get_global_rect().has_point(location) and (control is CarShowroom or control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
+		if control is CarShowroom and control.owns_gesture(location): return true
+		if control is StickerPlacement and control.get_global_rect().has_point(location): return true
+		if control.get_global_rect().has_point(location) and (control is ScrollContainer or control is Range or control is LineEdit or control is TextEdit or control is OptionButton or control is MenuButton or (control is BaseButton and control.action_mode == BaseButton.ACTION_MODE_BUTTON_PRESS)):
 			return true
 	for child: Node in node.get_children():
 		if _owns_gesture(child, location): return true

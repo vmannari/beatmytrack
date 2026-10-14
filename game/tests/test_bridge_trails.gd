@@ -20,6 +20,8 @@ func capture() -> Image:
 func difference(a: Color, b: Color) -> float:
 	return maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b)))
 func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--folder="): output = argument.trim_prefix("--folder=")
 	root.size = Vector2i(1280,900)
 	root.msaa_3d = Viewport.MSAA_2X
 	var track: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json")))

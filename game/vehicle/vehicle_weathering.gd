@@ -32,6 +32,7 @@ var _grime_elapsed: float = 0.0
 var _scrub_fraction := PackedFloat32Array()
 var _slow_scrub_fraction := PackedFloat32Array()
 var _body: Node3D
+var _car: CarVisual
 var _wheel_frames: Array[Dictionary] = []
 var wetness: float = 0.0
 var last_tick: int = -1
@@ -39,9 +40,13 @@ var bindings: Array[Dictionary] = []
 var materials: Array[ShaderMaterial] = []
 var contacts := SurfaceAudioModel.new()
 var installed: bool = false
+var _render_warming: bool = false
 var axle_half: float = 1.28
 var wheel_half_span: float = 0.83
 var wheel_radius: float = 0.37
+const FINISH_PARAMETERS: Array[String] = ["amount","snow","slow_amount","slow_snow","deposit_color","mud","smudge","wetness","wash_volume","slow_wash_volume","wash_min","wash_size"]
+var _finish_values: Array = []
+var parameter_uploads: int = 0
 
 func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 	var retained: Dictionary = snapshot()
@@ -49,6 +54,7 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 	bindings.clear()
 	materials.clear()
 	_wheel_frames.clear()
+	_car = car
 	_body = car.body
 	theme = biome
 	contacts.configure(config)
@@ -77,12 +83,17 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 		bounds = box if first else bounds.merge(box)
 		first = false
 	bounds = bounds.grow(0.08)
+	# Saved wash voxels retain the original compact's model-space mapping.
+	# Fitted aero must not stretch old strokes across the hood/body/rims.
+	if car.vehicle_id == "compact" and car.customisation != VehicleCustomisation.defaults():
+		bounds = AABB(Vector3(-1.115,0.181,-2.284),Vector3(2.23,1.412,4.5148))
 	restore(retained)
 
 func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D], height: float, cache: Dictionary, wheel: bool = false, wheel_rest: Transform3D = Transform3D.IDENTITY) -> void:
 	if node is MeshInstance3D and node.mesh != null:
 		for index: int in range(node.mesh.get_surface_count()):
-			var source: StandardMaterial3D = node.get_active_material(index) as StandardMaterial3D
+			var active: Material = node.get_active_material(index)
+			var source: StandardMaterial3D = active.get_meta("livery_source") if active is ShaderMaterial and active.has_meta("livery_source") else active as StandardMaterial3D
 			if source == null: continue
 			var rear_trim: bool = not wheel and source not in paints
 			# Bumpers can share a static batch with front trim. Only matte dark
@@ -99,6 +110,8 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
 						toon_finish.code = FINISH.code.replace("diffuse_burley, specular_schlick_ggx", "diffuse_toon, specular_schlick_ggx")
 					surface.shader = toon_finish
 				else: surface.shader = FINISH
+				surface.set_meta("weathering_finish",true)
+				LiveryGraphics.uniforms(surface,_car.livery,_car.vehicle_id,source in paints and not wheel)
 				surface.set_shader_parameter("paint_color", source.albedo_color)
 				surface.set_shader_parameter("paint_roughness", source.roughness)
 				surface.set_shader_parameter("paint_metallic", source.metallic)
@@ -118,7 +131,7 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
 				surface.set_shader_parameter("mesh_to_body", transform)
 				materials.append(surface)
 				cache[key] = surface
-			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key], "source": source, "wheel": wheel, "wash_transform": transform})
+			bindings.append({"node": node, "index": index, "override": node.material_override != null, "original": node.material_override if node.material_override != null else node.get_surface_override_material(index), "finish": cache[key], "source": source, "wheel": wheel, "wash_transform": transform, "graphics": source in paints and not wheel})
 	for child: Node in node.get_children():
 		if child is Node3D: _bind(child, inverse, paints, height, cache, wheel, wheel_rest)
 
@@ -147,7 +160,7 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
 		snow_amount = 1.0 - (1.0 - snow_amount) * exp(-exposure)
 		slow_snow_amount = 1.0 - (1.0 - slow_snow_amount) * exp(-exposure * SLOW_RATE)
 	else:
-		melt(seconds)
+		_melt_state(seconds)
 		slow_dirt_amount = 1.0 - (1.0 - slow_dirt_amount) * exp(-exposure * SLOW_RATE)
 		var added: float = (1.0 - dirt_amount) * (1.0 - exp(-exposure))
 		if added > 0.0:
@@ -185,18 +198,35 @@ func _age_grime(seconds: float) -> void:
 			grime_age[index] = mini(255, grime_age[index] + steps)
 
 func melt(seconds: float) -> void:
+	_melt_state(seconds)
+	_update_finish()
+
+func _melt_state(seconds: float) -> void:
 	var before: float = snow_amount
 	snow_amount = maxf(0.0, snow_amount - maxf(seconds, 0.0) / 8.0)
 	slow_snow_amount = maxf(0.0, slow_snow_amount - maxf(seconds, 0.0) / 8.0)
 	if dirt_amount > 0.0:
 		smudge = clampf(smudge + (before - snow_amount) * 0.75, 0.0, 1.0)
+
+func begin_render_warmup() -> bool:
+	# Real mesh/material combinations must be drawn at least once in Compatibility.
+	# The race-loading cover hides this pass; cosmetic values remain exact.
+	if installed or _render_warming or materials.is_empty(): return false
+	_render_warming = true
+	_update_finish(true)
+	return true
+
+func end_render_warmup() -> void:
+	if not _render_warming: return
+	_render_warming = false
 	_update_finish()
 
-func _update_finish() -> void:
-	if amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
+func _update_finish(force_install: bool = false) -> void:
+	if not force_install and amount <= 0.00001 and wetness <= 0.00001 and slow_dirt_amount <= 0.00001 and slow_snow_amount <= 0.00001:
 		if installed:
 			for binding: Dictionary in bindings:
 				if not is_instance_valid(binding.node): continue
+				if is_instance_valid(_car) and _car.graphics.restore_surface(binding.node,binding.index): continue
 				if binding.override: binding.node.material_override = binding.original
 				else: binding.node.set_surface_override_material(binding.index, binding.original)
 		installed = false
@@ -206,19 +236,15 @@ func _update_finish() -> void:
 			if binding.override: binding.node.material_override = binding.finish
 			else: binding.node.set_surface_override_material(binding.index, binding.finish)
 		installed = true
-	for material: ShaderMaterial in materials:
-		material.set_shader_parameter("amount", dirt_amount)
-		material.set_shader_parameter("snow", snow_amount)
-		material.set_shader_parameter("slow_amount", slow_dirt_amount)
-		material.set_shader_parameter("slow_snow", slow_snow_amount)
-		material.set_shader_parameter("deposit_color", deposit_color)
-		material.set_shader_parameter("mud", mud_amount)
-		material.set_shader_parameter("smudge", smudge)
-		material.set_shader_parameter("wetness", wetness)
-		material.set_shader_parameter("wash_volume", wash_texture)
-		material.set_shader_parameter("slow_wash_volume", slow_wash_texture)
-		material.set_shader_parameter("wash_min", bounds.position)
-		material.set_shader_parameter("wash_size", bounds.size)
+		_finish_values.clear()
+	var values: Array = [dirt_amount,snow_amount,slow_dirt_amount,slow_snow_amount,deposit_color,mud_amount,smudge,wetness,wash_texture,slow_wash_texture,bounds.position,bounds.size]
+	if values == _finish_values: return
+	for index: int in range(values.size()):
+		if _finish_values.size() == values.size() and values[index] == _finish_values[index]: continue
+		for material: ShaderMaterial in materials:
+			material.set_shader_parameter(FINISH_PARAMETERS[index],values[index])
+			parameter_uploads += 1
+	_finish_values = values
 
 func snapshot() -> Dictionary:
 	if wash_image == null:
@@ -312,9 +338,12 @@ func wash_point(node: MeshInstance3D, local_point: Vector3) -> Vector3:
 	return _body.global_transform.affine_inverse() * node.global_transform * local_point
 
 func reset() -> void:
+	_render_warming = false
+	_finish_values.clear()
 	if installed:
 		for binding: Dictionary in bindings:
 			if not is_instance_valid(binding.node): continue
+			if is_instance_valid(_car) and _car.graphics.restore_surface(binding.node,binding.index): continue
 			if binding.override: binding.node.material_override = binding.original
 			else: binding.node.set_surface_override_material(binding.index, binding.original)
 	installed = false
@@ -341,3 +370,4 @@ func refresh_paint() -> void:
 	for binding: Dictionary in bindings:
 		var source: StandardMaterial3D = binding.source
 		(binding.finish as ShaderMaterial).set_shader_parameter("paint_color", source.albedo_color)
+		LiveryGraphics.uniforms(binding.finish,_car.livery,_car.vehicle_id,binding.graphics)

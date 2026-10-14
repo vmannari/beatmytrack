@@ -17,6 +17,7 @@ var draft_speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
 var draft_labels: bool = true
 var draft_ghost: String = "lap"
 var draft_show_ads: bool = false
+var draft_simple_models: bool = false
 var draft_audio: Dictionary = {}
 var development_available: bool = OS.is_debug_build()
 var ad_test_busy: bool = false
@@ -33,6 +34,7 @@ var reset_button: Button
 const TITLES: Dictionary = {
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
 	"camera": ["Camera", "Choose the view you prefer while driving."],
+	"graphics": ["Graphics", "Choose car detail while racing."],
 	"ghosts": ["Ghosts", "Race against your own locally saved best."],
 	"audio": ["Audio", "Balance the soundtrack, car sounds and menu feedback."],
 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
@@ -53,6 +55,7 @@ func _ready() -> void:
 	draft_labels = bool(records.settings.get("control_labels", true))
 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
+	draft_simple_models = bool(records.settings.get("simple_car_models",false))
 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
 	add_child(ad_adapter)
@@ -90,6 +93,7 @@ func _build_sidebar() -> void:
 	for item: Array in [
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
+		["graphics", "Graphics", "Car detail", "garage"],
 		["ghosts", "Ghosts", "Your personal best", "garage"],
 		["audio", "Audio", "Music and sound", "headphones"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
@@ -190,19 +194,35 @@ func _show_section(id: String) -> void:
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
 	reset_button.visible = id != "account"
-	reset_button.text = "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
+	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
 	match id:
 		"controls": _controls()
 		"camera": _camera()
+		"graphics": _graphics()
 		"ghosts": _ghosts()
 		"audio": _audio()
 		"haptics": _haptics()
 		"account": _account()
 		"development": _development()
 	_keep_category_visible(id)
+
+func _graphics() -> void:
+	var row: HBoxContainer = _row("CarDetailSettings",18)
+	row.add_child(_copy("Simpler car models", "Use lighter car models and shadows from the next race. Garage previews keep full detail."))
+	var toggle := CheckButton.new()
+	toggle.name = "SimpleCarModels"
+	toggle.text = "On" if draft_simple_models else "Off"
+	toggle.button_pressed = draft_simple_models
+	toggle.custom_minimum_size = Vector2(150,52)
+	toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	toggle.toggled.connect(func(on: bool) -> void:
+		draft_simple_models = on
+		toggle.text = "On" if on else "Off"
+		_changed())
+	row.add_child(toggle)
 
 func _keep_category_visible(id: String) -> void:
 	await get_tree().process_frame
@@ -469,7 +489,9 @@ func _changed() -> void:
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
 
 func _reset() -> void:
-	if section == "audio":
+	if section == "graphics":
+		draft_simple_models = false
+	elif section == "audio":
 		draft_audio = GameSoundtrack.DEFAULTS.duplicate()
 	elif section == "development":
 		draft_show_ads = false
@@ -495,6 +517,7 @@ func _apply() -> bool:
 	records.settings.camera_speed_zoom_strength = draft_speed_zoom_strength
 	records.settings.control_labels = draft_labels
 	records.settings.ghost_mode = draft_ghost
+	records.settings.simple_car_models = draft_simple_models
 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
 	if development_available: records.settings.development_show_ads = draft_show_ads
 	var error: Error = records.save_records()

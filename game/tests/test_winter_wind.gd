@@ -28,10 +28,10 @@ func run() -> void:
 	wind.rng.seed = 4611
 	wind.configure("winter")
 	check(wind.get_child_count() == 1 and wind.player.bus == "Vehicle", "one voice uses existing sound volume")
-	for stream: AudioStreamWAV in wind.loops:
-		check(stream.format == AudioStreamWAV.FORMAT_16_BITS and stream.mix_rate == 44100 and not stream.stereo, "lossless authored PCM")
-		check(stream.loop_mode == AudioStreamWAV.LOOP_FORWARD and stream.data.slice(stream.data.size() - 2) == stream.data.slice(0, 2), "continuous loop with cyclic interpolation guard")
-	check(wind.loops[0].loop_end == int(15.5 * 44100) and wind.loops[1].loop_end == int(13.5 * 44100), "complete owner-recorded blizzard variations")
+	for stream: AudioStreamOggVorbis in wind.loops:
+		check(stream.packet_sequence.sampling_rate == 44100, "compressed original sample rate")
+		check(stream.loop and stream.loop_offset == 0.0, "native cyclic Vorbis loop")
+	check(absf(wind.loops[0].get_length() - 15.5) < 1.0 / 44100.0 and absf(wind.loops[1].get_length() - 13.5) < 1.0 / 44100.0, "complete owner-recorded blizzard variations")
 	var phases: Array = []
 	var sequences: Array = []
 	var previous_variant: int = wind.variant

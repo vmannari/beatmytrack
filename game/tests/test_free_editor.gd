@@ -183,6 +183,7 @@ func _ui(doc: Dictionary) -> void:
 	app.call("_show_screen","drafts")
 	await process_frame
 	var drafts: Control = app.root_ui.find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,drafts),"draft gallery completes preparation")
 	var tile: Button = drafts.find_child("Draft_"+str(remix.id),true,false)
 	check(tile != null,"saved starter remix appears in Load track")
 	if tile != null: tile.pressed.emit()

@@ -40,6 +40,10 @@ var run_shape: String = "line"
 var run_draw: PackedVector2Array = []
 var drawing_run: bool = false
 var stamp_scale: float = 1.0
+var stamp_span: float = 8.0
+var stamp_container_color: String = ContainerPaint.DEFAULT
+var bump_end_drag: int = -1
+var bump_before_drag: Dictionary = {}
 var run_start := Vector2.INF
 var run_preview: Array = []
 var issue_marker := Vector2.INF
@@ -163,6 +167,7 @@ func cancel_gesture() -> void:
 	pending_piece_accept = false
 	start_drag = false
 	pending_start_flip = false
+	bump_end_drag = -1
 
 func _gui_input(event: InputEvent) -> void:
 	if document.is_empty(): return
@@ -252,6 +257,7 @@ func _gui_input(event: InputEvent) -> void:
 	accept_event()
 
 func _rollback_navigation_edit() -> void:
+	bump_end_drag = -1
 	if not changed_in_gesture: return
 	if not _gesture_document.is_empty() and document != _gesture_document:
 		document.clear()
@@ -272,6 +278,17 @@ func _begin(point: Vector2, pointer: int) -> void:
 	_gesture_document = document.duplicate(true)
 	_gesture_ghost = ghost.duplicate(true)
 	_run_edge_hint = false
+	bump_end_drag = -1
+	if mode == "objects" and selected_object >= 0 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
+		var ends: PackedVector2Array = SpeedBumpEdit.endpoints(document.objects[selected_object])
+		var nearest: float = 24.0
+		for end: int in range(2):
+			var distance: float = to_screen(ends[end]).distance_to(point)
+			if distance < nearest: nearest = distance; bump_end_drag = end
+		if bump_end_drag >= 0:
+			bump_before_drag = document.objects[selected_object].duplicate(true)
+			dragging = true
+			return
 	if mode=="place":
 		for object: Dictionary in document.objects:
 			if CreatorObjects.contains(object,to_world(point)):
@@ -351,6 +368,15 @@ func _begin(point: Vector2, pointer: int) -> void:
 	queue_redraw()
 
 func _move(point: Vector2) -> void:
+	if bump_end_drag >= 0:
+		if press_position.distance_to(point) < 3.0 and not changed_in_gesture: return
+		var changed: Dictionary = SpeedBumpEdit.move_end(bump_before_drag,bump_end_drag,to_world(point))
+		if changed == document.objects[selected_object]: return
+		if not changed_in_gesture: edit_started.emit(); changed_in_gesture = true
+		document.objects[selected_object] = changed
+		document_changed.emit()
+		queue_redraw()
+		return
 	if pending_paint_accept:
 		if press_position.distance_to(point) > 12:
 			pending_paint_accept = false
@@ -484,6 +510,8 @@ func _place(point: Vector2) -> void:
 		edit_started.emit()
 		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
 		if stamp_scale != 1.0: object["scale"]=stamp_scale
+		if stamp_kind == "speed_bump": object["span"] = stamp_span
+		if stamp_kind == "container": object["color"] = stamp_container_color
 		document.objects.append(object)
 		selected_object = document.objects.size()-1
 		selected = -1
@@ -532,7 +560,8 @@ func _end(pointer: int) -> void:
 	if pending_stamp: _place(press_position)
 	if dragging and changed_in_gesture:
 		edit_finished.emit()
-		if geometry_drag != "" or spline_point_drag >= 0: selection_changed.emit()
+		if geometry_drag != "" or spline_point_drag >= 0 or bump_end_drag >= 0: selection_changed.emit()
+	bump_end_drag = -1
 	pending_stamp = false
 	dragging = false
 	panning = false
@@ -614,6 +643,11 @@ func _draw() -> void:
 		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
 		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
 		if not world_backdrop: draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
+		if i == selected_object and mode == "objects" and object.kind == "speed_bump":
+			for end: Vector2 in SpeedBumpEdit.endpoints(object):
+				var at: Vector2 = to_screen(end)
+				draw_circle(at,11,Color("182533"))
+				draw_circle(at,8,Color("f3c644"))
 	if not paint_points.is_empty():
 		var color: Color = palette[brush_surface]
 		color.a = 0.7

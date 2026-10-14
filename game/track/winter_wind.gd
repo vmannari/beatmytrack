@@ -1,9 +1,9 @@
 class_name WinterWind
 extends Node
 ## Continuous harsh gale with local presentation-only variation.
-const CLIPS: Array[AudioStreamWAV] = [
-	preload("res://assets/audio/ambience/winter_gale_a.wav"),
-	preload("res://assets/audio/ambience/winter_gale_b.wav"),
+const CLIPS: Array[AudioStream] = [
+	preload("res://assets/audio/ambience/winter_gale_a.ogg"),
+	preload("res://assets/audio/ambience/winter_gale_b.ogg"),
 ]
 const BASE: float = 0.40
 const SWELL: float = 0.16
@@ -12,7 +12,7 @@ const OPEN_FADE: float = 1.5
 const FINISH_FADE: float = 0.6
 var rng := RandomNumberGenerator.new()
 var player: AudioStreamPlayer
-var loops: Array[AudioStreamWAV] = []
+var loops: Array[AudioStream] = []
 var variant: int = -1
 var enabled: bool = false
 var suspended: bool = false
@@ -37,7 +37,7 @@ func _init() -> void: rng.randomize()
 func configure(theme: String) -> void:
 	enabled = theme == "winter"
 	if enabled and player == null:
-		for clip: AudioStreamWAV in CLIPS: loops.append(PcmAudioLoop.prepare(clip))
+		for clip: AudioStream in CLIPS: loops.append(AudioLoop.prepare(clip))
 		player = AudioStreamPlayer.new()
 		player.name = "WinterGale"
 		player.bus = "Vehicle"

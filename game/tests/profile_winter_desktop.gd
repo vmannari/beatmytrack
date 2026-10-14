@@ -1,6 +1,6 @@
 extends "res://tests/test_winter_environment.gd"
 ## Explicit local, unscored performance diagnostic; no menu/account/upload path.
-const PROFILE_DIR: String = "res://../docs/evidence/winter-performance-2026-10-11"
+var PROFILE_DIR: String = "res://../docs/evidence/winter-performance-2026-10-11"
 var bank_meshes: Array[MeshInstance3D] = []
 var originals: Array[Dictionary] = []
 var reports: Array[Dictionary] = []
@@ -14,6 +14,7 @@ func run() -> void:
 	var resolutions: Array[Vector2i] = [Vector2i(1920,1080),Vector2i(3840,2160)]
 	var modes: Array[String] = ["full","no_wind","no_banks","flat_world","no_shadows","full_repeat"]
 	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--profile-dir="): PROFILE_DIR = argument.trim_prefix("--profile-dir=")
 		if argument.begins_with("--document="):
 			var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(argument.trim_prefix("--document=")))
 			document.theme = "winter"
@@ -63,6 +64,14 @@ func run() -> void:
 			game.biome_light.shadow_enabled = mode != "no_shadows"
 			await sample(game,viewport,mode,1.0,false)
 			var report: Dictionary = await sample(game,viewport,mode,duration,true)
+			if report.ticks < duration*120.0*0.95:
+				push_error("Winter driving sample did not advance enough simulation ticks")
+				quit(1)
+				return
+			if mode != "no_wind" and report.wind_elapsed_seconds < duration*0.95:
+				push_error("Winter driving sample did not advance its visual wind clock")
+				quit(1)
+				return
 			reports.append(report)
 			print("WINTER_DESKTOP_STAGE: ",JSON.stringify({"mode":mode,"viewport":report.viewport,"frame_ms":report.frame_ms,"gpu_ms":report.gpu_ms,"draws":report.draws,"primitives":report.primitives,"ticks":report.ticks}))
 			if mode == "full_repeat": root.get_texture().get_image().save_png(PROFILE_DIR+"/"+str(resolution.x)+"-"+RenderingServer.get_current_rendering_method()+".png")
@@ -85,8 +94,14 @@ func sample(game: Node, viewport: RID, mode: String, seconds: float, measured: b
 	for name: String in ["sim","rules","ai","present","particles","trails","telemetry","weather","car","props","camera","hud","audio","contact","music","water","history"]:
 		counters[name] = game.get("profile_"+name+"_us")
 	var initial_tick: int = game.sim.state.tick
+	var initial_wind_elapsed: float = game.winter_snow_wind.elapsed
 	var initial_position: Vector2 = game.sim.state.position
 	while Time.get_ticks_usec()-start < seconds*1000000.0:
+		# This explicit unscored diagnostic must keep driving if another local
+		# window takes focus. Ordinary race focus/pause behavior is untouched.
+		if game.paused: game.toggle_pause()
+		if game.winter_snow_wind.suspended:
+			game.winter_snow_wind.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 		await process_frame
 		var now: int = Time.get_ticks_usec()
 		if measured:
@@ -99,7 +114,7 @@ func sample(game: Node, viewport: RID, mode: String, seconds: float, measured: b
 	if not measured: return {}
 	var costs: Dictionary = {}
 	for name: String in counters: costs[name+"_ms_per_frame"] = float(int(game.get("profile_"+name+"_us"))-int(counters[name]))/frames.size()/1000.0
-	return {"mode":mode,"viewport":[root.size.x,root.size.y],"render_scale":root.scaling_3d_scale,"msaa":root.msaa_3d,"samples":frames.size(),"frame_ms":quantiles(frames),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(render_cpu),"process_cpu_ms":quantiles(process_cpu),"physics_cpu_ms":quantiles(physics_cpu),"costs":costs,"ticks":game.sim.state.tick-initial_tick,"movement_m":initial_position.distance_to(game.sim.state.position),"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),"video_memory_bytes":Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)}
+	return {"mode":mode,"viewport":[root.size.x,root.size.y],"render_scale":root.scaling_3d_scale,"msaa":root.msaa_3d,"samples":frames.size(),"frame_ms":quantiles(frames),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(render_cpu),"process_cpu_ms":quantiles(process_cpu),"physics_cpu_ms":quantiles(physics_cpu),"costs":costs,"ticks":game.sim.state.tick-initial_tick,"wind_elapsed_seconds":game.winter_snow_wind.elapsed-initial_wind_elapsed,"wind_strength":game.winter_snow_wind.intensity,"bank_layers":game.winter_snow_wind.powder.multimesh.visible_instance_count,"movement_m":initial_position.distance_to(game.sim.state.position),"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),"video_memory_bytes":Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)}
 
 func quantiles(values: Array[float]) -> Dictionary:
 	values.sort()
@@ -109,4 +124,4 @@ func quantiles(values: Array[float]) -> Dictionary:
 
 func write_report(track: NativeTrack) -> void:
 	var file := FileAccess.open(PROFILE_DIR+"/desktop-"+str(get_meta("profile_tag"))+"-"+RenderingServer.get_current_rendering_method()+".json",FileAccess.WRITE)
-	file.store_string(JSON.stringify({"engine":Engine.get_version_info().string,"visual_version":NativeTrackVisual.VERSION,"device":RenderingServer.get_video_adapter_name(),"track_hash":track.content_hash,"vsync":"disabled","diagnostic":"real unscored AI driving; flat_world also removes material masks, so is a broad shader-cost bound","stages":reports},"\t"))
+	file.store_string(JSON.stringify({"engine":Engine.get_version_info().string,"visual_version":NativeTrackVisual.VERSION,"device":RenderingServer.get_video_adapter_name(),"track_hash":track.content_hash,"vsync":"disabled","diagnostic":"real unscored AI driving; diagnostic resumes game and wind focus pauses; at least 95% expected ticks and active wind clock required; flat_world also removes material masks, so is a broad shader-cost bound","stages":reports},"\t"))

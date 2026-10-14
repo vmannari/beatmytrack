@@ -3,6 +3,8 @@ extends PanelContainer
 signal asset_chosen(kind: String)
 signal mode_chosen(mode: String)
 signal size_chosen(scale: float)
+signal span_chosen(span: float)
+signal container_color_chosen(color: String)
 signal select_requested
 signal populate_requested
 var category: String = "All"
@@ -10,6 +12,8 @@ var biome: String = "pine"
 var current: String = "tree"
 var placement: String = "single"
 var stamp_scale: float = 1.0
+var stamp_span: float = 8.0
+var stamp_container_color: String = ContainerPaint.DEFAULT
 var recent: Array[String] = []
 var tiles: HBoxContainer
 var details: VBoxContainer
@@ -106,7 +110,7 @@ func _tiles() -> void:
 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
 	previous.visible=page>0
 	next.visible=(page+1)*page_size<entries.size()
-	var key: Array = [biome,category if entries.is_empty() else ""]
+	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color]
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
 	if key == _tile_key:
 		for tile: Node in tiles.get_children():
@@ -121,13 +125,13 @@ func _tiles() -> void:
 	_clear(tiles)
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
-		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome))
+		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else ""))
 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
 
 func refresh() -> void:
 	if details == null: return
 	_tiles()
-	var key: Array = [current,placement,stamp_scale,biome]
+	var key: Array = [current,placement,stamp_scale,stamp_span,biome,stamp_container_color]
 	if key == _detail_key: return
 	_detail_key = key
 	_clear(details)
@@ -144,7 +148,22 @@ func refresh() -> void:
 		variants.select(family[3].find(current))
 		variants.item_selected.connect(func(index: int) -> void: choose(family[3][index]))
 		details.add_child(variants)
-	if current not in CreatorCatalog.LINES:
+	if current == "speed_bump":
+		var width: Label = MenuStyle.label("Width: %.2f m" % stamp_span,16)
+		details.add_child(width)
+		var slider := HSlider.new()
+		slider.name = "SpeedBumpWidth"
+		slider.min_value = SpeedBumpEdit.MIN_SPAN
+		slider.max_value = SpeedBumpEdit.MAX_SPAN
+		slider.step = 0.25
+		slider.value = stamp_span
+		slider.custom_minimum_size = Vector2(280,48)
+		slider.value_changed.connect(func(value: float) -> void:
+			stamp_span = value
+			width.text = "Width: %.2f m" % value
+			span_chosen.emit(value))
+		details.add_child(slider)
+	elif current not in CreatorCatalog.LINES:
 		var sizes := OptionButton.new()
 		sizes.name = "ObjectSize"
 		EditorStyle.apply(sizes)
@@ -155,6 +174,11 @@ func refresh() -> void:
 		sizes.item_selected.connect(func(index: int) -> void:
 			stamp_scale = presets[index]; size_chosen.emit(stamp_scale))
 		details.add_child(sizes)
+	if current == "container":
+		details.add_child(ContainerColorButton.make(stamp_container_color,func(color: String) -> void:
+			stamp_container_color = color
+			container_color_chosen.emit(color)
+			refresh()))
 	if current in CreatorCatalog.LINES:
 		for mode: String in ["single","line","curve","road edge"]:
 			var button: Button = _button(mode.capitalize(),func() -> void:

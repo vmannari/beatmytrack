@@ -45,6 +45,9 @@ func run() -> void:
 		game.production_mode = true
 		game.process_mode = Node.PROCESS_MODE_DISABLED
 		root.add_child(game)
+		# _ready queues layout/audio callbacks. Keep the scene alive through a
+		# rendered frame even when optional capture() returns immediately.
+		await RenderingServer.frame_post_draw
 		game.paused = true
 		game.countdown_ticks = 0
 		game.race_cues.reset()
@@ -93,6 +96,7 @@ func run() -> void:
 		game.restart()
 		game._process(0.0)
 		check(tyres_match(visual,game.sim.state,track),"restart returns every tyre to its authored position")
+		await RenderingServer.frame_post_draw
 		root.remove_child(game)
 		game.free()
 		await process_frame
@@ -100,6 +104,7 @@ func run() -> void:
 	var playground: Node = load("res://core/game.tscn").instantiate()
 	playground.process_mode = Node.PROCESS_MODE_DISABLED
 	root.add_child(playground)
+	await RenderingServer.frame_post_draw
 	for profiling: bool in [false,true]:
 		playground.profile_enabled = profiling
 		playground._process(0.0)

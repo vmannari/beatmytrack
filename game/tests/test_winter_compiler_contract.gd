@@ -48,7 +48,7 @@ func run() -> void:
 	var old_winter: NativeTrack = baseline.compile(winter)
 	var new_winter: NativeTrack = TrackCompiler.compile(winter)
 	check(old_winter.route == new_winter.route and old_winter.snow_banks.triangles == new_winter.snow_banks.triangles,"Winter route and prepared bank contacts remain exact")
-	check(old_winter.content_hash != new_winter.content_hash and new_winter.metadata.version == "creator-compiler-23","new solid scenery has a distinct pinned contract")
+	check(old_winter.content_hash != new_winter.content_hash and new_winter.metadata.version == "creator-compiler-27","new solid scenery has a distinct pinned contract")
 	check(old_winter.metadata.scenery_objects.is_empty() and not new_winter.metadata.scenery_objects.is_empty(),"Winter compiler change adds explicit scenery objects")
 	if failures == 0 and "--refresh-contract-fixtures" in OS.get_cmdline_user_args():
 		var file := FileAccess.open("res://tests/fixtures/compiler_raster.json",FileAccess.WRITE)

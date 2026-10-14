@@ -66,6 +66,8 @@ func run() -> void:
 		check(world.mode=="race" and not world.menu_player.playing,"finish coast has no menu music: "+theme)
 		world.results_feedback(0.0,false)
 		check(world.mode=="menu" and world.menu_target==1.0,"actual summary restores menu music: "+theme)
+		# Flush pending control callbacks before their captured nodes are freed.
+		await process_frame
 		game.free()
 		world.event_player.stop()
 		await create_timer(.15).timeout

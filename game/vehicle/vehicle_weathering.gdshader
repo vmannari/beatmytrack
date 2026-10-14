@@ -1,5 +1,6 @@
 shader_type spatial;
 render_mode diffuse_burley, specular_schlick_ggx;
+#include "res://vehicle/livery_finish.gdshaderinc"
 
 // Original opaque finish: no overlay geometry, transparency or screen reads.
 uniform vec4 paint_color : source_color = vec4(1.0);
@@ -144,7 +145,8 @@ void fragment() {
 	float grain_darkening = 0.32 * road_film;
 	float packed_lower = road_film * (0.20 + mud * 0.25);
 	vec3 residue = deposit_color.rgb * (0.87 + mottling * 0.18 - grain_darkening * speckles) * (1.0 - packed_lower);
-	ALBEDO = mix(paint_color.rgb * (1.0 - surface_wetness * 0.10), residue, deposit);
+	vec3 decorated_paint = apply_graphics(paint_color.rgb,body_point,n);
+	ALBEDO = mix(decorated_paint * (1.0 - surface_wetness * 0.10), residue, deposit);
 	float snow_coat = clamp(snow * max(coverage, upward * 0.38 * (1.0 - rear_only) * (1.0 - wheel_surface)) * (film + splashes) * remaining, 0.0, 0.94);
 	snow_coat = 1.0 - (1.0 - snow_coat) * (1.0 - slow_snow * (1.0 - coverage) * slow_scope * 0.38 * slow_remaining);
 	ALBEDO = mix(ALBEDO, vec3(0.8627, 0.9098, 0.9294) * (0.87 + mottling * 0.18), snow_coat);

@@ -28,6 +28,8 @@ func run() -> void:
 	var power: DriveFrame = DriveFrame.sample(0,1.0,0)
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var audio := VehicleAudio.new()
+	# This fixture explicitly tests output-player pause state, including dummy output.
+	audio.output_enabled = true
 	root.add_child(audio)
 	audio.configure("compact",config)
 	for cell: int in [0,1,2,3,5,6,7]:
@@ -160,6 +162,8 @@ func run() -> void:
 		audio.present(mixed.state,input,track,1.0/120.0,false)
 	check(plain.state.snapshot()==mixed.state.snapshot(),"new surface/acceleration audio leaves 960 canonical ticks byte-equivalent")
 	audio.free()
+	# Allow queued mixer playback removals to finish before engine shutdown.
+	await create_timer(.05).timeout
 	print("SURFACE_IMPACT_AUDIO: %d checks, %d failures"%[checks,failures])
 	quit(1 if failures>0 else 0)
 
@@ -174,6 +178,8 @@ func capture(track: NativeTrack, config: HandlingConfig) -> void:
 	AudioServer.add_bus_effect(tire_bus,tires)
 	for scenario: String in ["desert-full","desert-surfaces","offtrack-surfaces","collision-hits"]:
 		var audio := VehicleAudio.new()
+		# This fixture explicitly tests output-player pause state, including dummy output.
+		audio.output_enabled = true
 		root.add_child(audio)
 		audio.configure("compact",config)
 		var state := VehicleState.new()

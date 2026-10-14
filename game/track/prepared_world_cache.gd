@@ -31,7 +31,7 @@ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	if bytes > MAX_BYTES: return
 	var holder := Node3D.new()
 	for child: Node in visual.get_children():
-		var copy: Node = child.duplicate(Node.DUPLICATE_GROUPS)
+		var copy: Node = child.duplicate(Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS)
 		holder.add_child(copy)
 		_own(copy,holder)
 		_isolate_instances(copy)
@@ -84,6 +84,11 @@ static func _resource_bytes(node: Node, seen: Dictionary) -> int:
 	if mesh != null and not seen.has(mesh.get_instance_id()):
 		seen[mesh.get_instance_id()] = true
 		for surface: int in range(mesh.get_surface_count()):
+			if mesh is ArrayMesh:
+				# Counts are enough for this conservative budget. Avoid decoding
+				# complete vertex/index arrays again after spatial preparation.
+				bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
+				continue
 			var arrays: Array = mesh.surface_get_arrays(surface)
 			bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
 			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*4

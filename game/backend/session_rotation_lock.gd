@@ -47,7 +47,8 @@ func acquire(tree: SceneTree) -> Error:
 func _owner() -> Dictionary:
 	var file := FileAccess.open(path.path_join("owner.json"),FileAccess.READ)
 	if file == null or file.get_length() > 1024: return {}
-	var value: Variant = JSON.parse_string(file.get_as_text())
+	var parser := JSON.new()
+	var value: Variant = parser.data if parser.parse(file.get_as_text()) == OK else null
 	return value if value is Dictionary else {}
 
 func release() -> void:

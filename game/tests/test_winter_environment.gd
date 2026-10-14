@@ -1,7 +1,9 @@
 extends "res://tests/test_winter_snow_wind.gd"
-var ENV_OUT: String = "res://../docs/evidence/winter-frost-fringe-2026-10-11"+("/mobile" if RenderingServer.get_current_rendering_method() == "mobile" else "")
+var ENV_OUT: String = "res://../docs/evidence/winter-blue-ice-2026-10-12"+("/mobile" if RenderingServer.get_current_rendering_method() == "mobile" else "")
 
 func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--output-dir="): ENV_OUT = argument.trim_prefix("--output-dir=")
 	if "--fresh-roads" in OS.get_cmdline_user_args(): NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
 	# Real material attribute pipeline on a 6-to-14 m taper: frost must follow
 	# the authored width, including after the road's flat-normal mesh rebuild.
@@ -126,6 +128,76 @@ func make_track() -> NativeTrack:
 	print("WINTER_FIXTURE_VALIDATION: ",TrackDocument.validate(document))
 	return TrackCompiler.compile(document)
 
+func seam_reflection_proof(game: Node) -> void:
+	var finish: Image = NativeTrackVisual.WINTER_ICE_FINISH.get_image()
+	var old: Image = preload("res://assets/textures/winter_ice_finish_v3.png").get_image()
+	var active: int = 0
+	var rgb_preserved: bool = true
+	for y: int in range(512):
+		for x: int in range(512):
+			var a: Color = finish.get_pixel(x,y)
+			var b: Color = old.get_pixel(x,y)
+			if a.a > 0.5: active += 1
+			if a.r != b.r or a.g != b.g or a.b != b.b: rgb_preserved = false
+	check(rgb_preserved,"seam mask preserves original packed slopes and frost byte-for-byte")
+	check(active > 10000 and active < 52428,"reflective seam mask occupies a limited part of the original artwork")
+	var materials: Array[ShaderMaterial] = []
+	for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
+		var material: Material = node.material_override
+		if not material is ShaderMaterial: continue
+		# Serialized specialization stores constant biome flags in this original
+		# material; the executable shader no longer declares those uniforms.
+		var parameters: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
+		if parameters.get_shader_parameter("icy_road") == true and not materials.has(material): materials.append(material)
+	print("WINTER_SEAM_MATERIALS: ",materials.size())
+	check(not materials.is_empty(),"actual ice materials found for seam reflection comparison")
+	var enabled: Image = root.get_texture().get_image()
+	for material: ShaderMaterial in materials: material.set_shader_parameter("winter_seam_reflection_strength",0.0)
+	for i: int in range(8): await RenderingServer.frame_post_draw
+	var disabled: Image = root.get_texture().get_image()
+	disabled.save_png(ENV_OUT+"/seams-disabled.png")
+	for material: ShaderMaterial in materials: material.set_shader_parameter("winter_seam_reflection_strength",1.0)
+	for i: int in range(8): await RenderingServer.frame_post_draw
+	var restored: Image = root.get_texture().get_image()
+	restored.save_png(ENV_OUT+"/seams-enabled.png")
+	var changed: int = 0
+	var unstable: int = 0
+	for y: int in range(enabled.get_height()):
+		for x: int in range(enabled.get_width()):
+			var a: Color = enabled.get_pixel(x,y)
+			var b: Color = disabled.get_pixel(x,y)
+			var c: Color = restored.get_pixel(x,y)
+			if absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b) > 0.015: changed += 1
+			if absf(a.r-c.r)+absf(a.g-c.g)+absf(a.b-c.b) > 0.015: unstable += 1
+	check(changed > 200,"seams alone make a visible reflection contribution")
+	check(unstable == 0,"seam reflections restore without paused shimmer")
+	print("WINTER_SEAM_PIXELS: changed=",changed," unstable=",unstable," mask_pixels=",active)
+
+func reflection_proof(game: Node) -> void:
+	var environment: Environment = game.biome_environment
+	check(environment.sky.radiance_size == Sky.RADIANCE_SIZE_128 and environment.sky.process_mode == Sky.PROCESS_MODE_QUALITY,"bounded static Winter reflection map")
+	var reflected: Image = root.get_texture().get_image()
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_BG
+	for i: int in range(8): await RenderingServer.frame_post_draw
+	var diffuse: Image = root.get_texture().get_image()
+	diffuse.save_png(ENV_OUT+"/reflection-disabled.png")
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	for i: int in range(8): await RenderingServer.frame_post_draw
+	var restored: Image = root.get_texture().get_image()
+	restored.save_png(ENV_OUT+"/reflection-enabled.png")
+	var changed: int = 0
+	var unstable: int = 0
+	for y: int in range(reflected.get_height()):
+		for x: int in range(reflected.get_width()):
+			var a: Color = reflected.get_pixel(x,y)
+			var b: Color = diffuse.get_pixel(x,y)
+			var c: Color = restored.get_pixel(x,y)
+			if absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b) > 0.015: changed += 1
+			if absf(a.r-c.r)+absf(a.g-c.g)+absf(a.b-c.b) > 0.015: unstable += 1
+	check(changed > 1000,"sky reflections contribute visible pixels in actual Winter scene")
+	check(unstable == 0,"static reflections restore without shimmer in paused scene")
+	print("WINTER_REFLECTION_PIXELS: changed=",changed," unstable=",unstable)
+
 func capture(game: Node, fx: WinterSnowWind) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(ENV_OUT))
 	root.size = Vector2i(1280,720)
@@ -139,6 +211,20 @@ func capture(game: Node, fx: WinterSnowWind) -> void:
 	fx.visible = false
 	for i: int in range(3): await RenderingServer.frame_post_draw
 	root.get_texture().get_image().save_png(ENV_OUT+"/materials.png")
+	if "--reflection-proof" in OS.get_cmdline_user_args(): await reflection_proof(game)
+	if "--seam-proof" in OS.get_cmdline_user_args(): await seam_reflection_proof(game)
+	if "--bank-detail" in OS.get_cmdline_user_args():
+		game.hud.visible = false
+		var detail_focus := Vector3(38,0,0)
+		game.camera.position = detail_focus+Vector3(0,20,15)
+		game.camera.look_at(detail_focus)
+		game.camera.size = 16.0
+		for i: int in range(3): await RenderingServer.frame_post_draw
+		root.get_texture().get_image().save_png(ENV_OUT+"/bank-detail.png")
+		game.hud.visible = true
+		game.camera.position = focus+Vector3(0,20,15)
+		game.camera.look_at(focus)
+		game.camera.size = 36.0
 	if "--edge-debug" in OS.get_cmdline_user_args(): await edge_debug(game)
 	fx.visible = true
 	game.camera.position = focus+Vector3(22,20,0)

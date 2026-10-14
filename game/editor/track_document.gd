@@ -118,8 +118,13 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		if not data.get("objects") is Array or data.objects.size() > 96:
 			return ["Use up to 96 placed objects."]
 		for object: Variant in data.objects:
-			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
+			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0)+(1 if object.has("span") else 0)+(1 if object.has("color") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
 				return ["Choose an object from the built-in palette."]
+			if object.has("color") and (object.kind != "container" or not ContainerPaint.valid(object.color)):
+				return ["Choose an opaque container colour."]
+			if object.has("span"):
+				if object.kind != "speed_bump" or not _number(object.span) or float(object.span) < 0.5 or float(object.span) > 40.0:
+					return ["Speed bump width must be 0.5 to 40 metres."]
 			if object.has("length"):
 				if object.kind not in ObjectRuns.CONTINUOUS or not _number(object.length) or float(object.length) < ObjectRuns.MIN_LENGTH or float(object.length) > ObjectRuns.MAX_LENGTH:
 					return ["Fence and barrier section lengths must be 0.01 to 18 metres."]

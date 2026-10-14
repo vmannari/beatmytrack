@@ -7,6 +7,7 @@ signal circuit_requested
 signal save_failed
 
 const Carousel = preload("res://ui/track_carousel.gd")
+const RailIcons = preload("res://ui/garage_mode_icons.gd")
 const LIVERY_NAMES: Array[String] = ["Original", "Rally", "Midnight", "Sandstone"]
 const LIVERY_COLORS: Array[Array] = [[], ["9a3e50", "e4b74c"], ["273b50", "ced7dc"], ["c3ac82", "463c35"]]
 
@@ -20,11 +21,12 @@ var circuit_title: String = ""
 var wash_button: Button
 var view_hint: Label
 var section: String = "cars"
+var _car_menu_open: bool = false
 var gallery: ScrollContainer
 var gallery_slot: Control
 var gallery_content: Control
 var cards: HBoxContainer
-var preview: VBoxContainer
+var preview: Control
 var heading: Label
 var tools: VBoxContainer
 var rail: VBoxContainer
@@ -38,10 +40,25 @@ var _condition_saved: Dictionary = {}
 var _condition_presented: Dictionary = {}
 var _livery_saved: Dictionary = {}
 var _presets: OptionButton
+var kit_draft: Dictionary = {}
+var kit_category: String = "hood"
+var kit_cards: HBoxContainer
+var kit_categories: Dictionary = {}
+var _customise_tab: String = "livery"
+var _sticker_surface: String = "hood"
+var _sticker_board: StickerPlacement
+var _sticker_choice: OptionButton
+var _sticker_sliders: Dictionary = {}
+var livery_menu: GarageLiveryMenu
+var _retained_livery: GarageLiveryMenu
+var _retained_livery_vehicle: String = ""
+var customise_layout: HBoxContainer
+var _colour_slot: String = "body"
+var _sticker_values: Dictionary = {}
+var _sticker_editing: bool = false
 
 func _ready() -> void:
 	name = "GaragePage"
-	resized.connect(queue_redraw)
 	add_theme_constant_override("separation", 12)
 	rail = VBoxContainer.new()
 	rail.name = "GarageModes"
@@ -53,14 +70,32 @@ func _ready() -> void:
 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main.add_theme_constant_override("separation", 8)
 	add_child(main)
-	preview = VBoxContainer.new()
+	preview = Control.new()
 	preview.name = "GaragePreview"
 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	preview.add_theme_constant_override("separation", 8)
+	preview.custom_minimum_size.y = 250
+	preview.clip_contents = true
 	main.add_child(preview)
-	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
-	preview.add_child(heading)
 	_create_showroom()
+	var shade := TextureRect.new()
+	shade.name = "ShowroomHeaderShade"
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var gradient := Gradient.new()
+	gradient.colors = PackedColorArray([Color(0.025,0.055,0.075,0.45), Color(0.025,0.055,0.075,0)])
+	var shading := GradientTexture2D.new()
+	shading.gradient = gradient
+	shading.fill_from = Vector2(0,0)
+	shading.fill_to = Vector2(0,1)
+	shade.texture = shading
+	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview.add_child(shade)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	shade.offset_bottom = 80
+	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
+	heading.name = "GarageCarTitle"
+	preview.add_child(heading)
+	heading.position = Vector2(24, 14)
+	heading.size = Vector2(520, 46)
 	_build_view_controls()
 	tools_panel = PanelContainer.new()
 	tools_panel.name = "GarageTools"
@@ -80,23 +115,26 @@ func _build_rail() -> void:
 	for child: Node in rail.get_children():
 		rail.remove_child(child)
 		child.queue_free()
-	var destinations: Array = [["cars", "car", "Select car"]] if section == "cars" else [["customise", "edit", "Customise"], ["care", "care", "Care"], ["tuning", "settings", "Tuning"]]
+	var destinations: Array = [["cars", "Select car"], ["trophies", "Trophy wall"]] if not _car_menu_open else [["customise", "Customise"], ["care", "Care"], ["tuning", "Tuning"], ["trophies", "Trophy wall"]]
 	for entry: Array in destinations:
 		var destination: String = entry[0]
 		var active: bool = destination == section
 		var button := MenuStyle.button("", _show_section.bind(destination), active)
 		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
-		button.icon = MenuIcon.texture(entry[1])
+		button.icon = RailIcons.texture(destination)
+		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		button.expand_icon = true
-		button.add_theme_constant_override("icon_max_width", 38)
+		button.add_theme_constant_override("icon_max_width", 40)
 		button.add_theme_color_override("icon_normal_color", MenuStyle.INK if active else MenuStyle.TEXT)
 		button.add_theme_color_override("icon_focus_color", MenuStyle.INK if active else MenuStyle.TEXT)
+		button.add_theme_color_override("icon_hover_color", MenuStyle.INK if active else MenuStyle.TEXT)
+		button.add_theme_color_override("icon_pressed_color", MenuStyle.INK)
 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"), 10)
 		style.border_color = Color("ffe792") if active else Color("2a4655")
 		style.set_border_width_all(1)
 		button.add_theme_stylebox_override("normal", style)
 		button.custom_minimum_size = Vector2(60, 60)
-		button.tooltip_text = entry[2]
+		button.tooltip_text = entry[1]
 		rail.add_child(button)
 
 func _create_showroom() -> void:
@@ -105,35 +143,51 @@ func _create_showroom() -> void:
 	showroom = CarShowroom.new()
 	showroom.name = "GarageShowroom"
 	showroom.vehicle_id = vehicle_id
-	showroom.framing_scale = 0.76
+	showroom.garage_mode = true
+	showroom.interaction_inset_top = 68
+	showroom.interaction_inset_bottom = 58
+	showroom.framing_scale = 0.96
 	showroom.livery = draft
+	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	showroom.customisation = kit_draft
 	showroom.condition = VehicleCondition.read(records, vehicle_id)
 	_condition_saved = showroom.condition.duplicate(true)
 	showroom.condition_changed.connect(_save_condition)
 	showroom.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	preview.add_child(showroom)
-	preview.move_child(showroom, 1)
+	preview.move_child(showroom, 0)
+	MenuStyle.fill(showroom)
 	_condition_presented = showroom.weathering.snapshot()
 
 func _build_view_controls() -> void:
 	var row := HBoxContainer.new()
 	row.name = "GarageViewControls"
 	preview.add_child(row)
-	view_hint = MenuStyle.label("Drag to rotate", 16, true)
+	row.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	row.offset_left = 24
+	row.offset_right = -16
+	row.offset_top = -60
+	row.offset_bottom = -12
+	view_hint = MenuStyle.label("Drag to turn", 16, true)
 	view_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	view_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(view_hint)
-	for entry: Array in [["GarageZoomOut", "-", "Zoom out"], ["GarageZoomIn", "+", "Zoom in"], ["GarageResetView", "", "Reset view"]]:
+	for entry: Array in [["GarageTopView", "Top view", "View the hood and roof"], ["GarageZoomOut", "-", "Zoom out"], ["GarageZoomIn", "+", "Zoom in"], ["GarageResetView", "", "Reset view"]]:
 		var button := MenuStyle.button(str(entry[1]), _view_action.bind(str(entry[0])))
+		button.name = str(entry[0])
 		button.name = str(entry[0])
 		button.tooltip_text = str(entry[2])
 		button.custom_minimum_size = Vector2(48, 48)
+		if entry[0] == "GarageTopView": button.add_theme_font_size_override("font_size",18)
 		button.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
 		if entry[0] == "GarageResetView": button.icon = MenuIcon.texture("restart")
 		row.add_child(button)
 
 func _view_action(action: String) -> void:
 	match action:
+		"GarageTopView":
+			showroom.elevation = 0.93
+			showroom._orbit()
 		"GarageZoomOut": showroom.zoom_by(1.15)
 		"GarageZoomIn": showroom.zoom_by(1.0 / 1.15)
 		"GarageResetView": showroom.reset_view()
@@ -174,17 +228,25 @@ func _build_carousel() -> void:
 		model.name = "CarModel_" + id
 		model.vehicle_id = id
 		model.livery = VehicleLivery.for_car(records.settings, id)
+		model.customisation = VehicleCustomisation.for_car(records.settings,id)
 		model.condition = VehicleCondition.read(records, id)
 		model.read_only = true
-		model.framing_scale = 0.70
+		model.garage_mode = true
+		model.framing_scale = 0.94
 		model.custom_minimum_size.y = 104
 		model.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		column.add_child(model)
 		thumbnails[id] = model
-		var caption := MenuStyle.label(VehicleCatalog.title(id), 20)
-		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		caption.custom_minimum_size.y = 36
-		column.add_child(caption)
+		var footer := MarginContainer.new()
+		footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		footer.add_theme_constant_override("margin_left", 14)
+		footer.add_theme_constant_override("margin_right", 14)
+		footer.custom_minimum_size.y = 36
+		column.add_child(footer)
+		var caption := MenuStyle.label(VehicleCatalog.title(id), 22)
+		caption.name = "CarCardTitle_" + id
+		caption.add_theme_font_override("font", MenuStyle.DISPLAY)
+		footer.add_child(caption)
 	_update_cards()
 
 func _layout_gallery() -> void:
@@ -221,19 +283,26 @@ func _update_cards() -> void:
 		style.border_color = MenuStyle.ACCENT if chosen else MenuStyle.BORDER
 		style.set_border_width_all(2 if chosen else 1)
 		card.add_theme_stylebox_override("normal", style)
-		(card.get_child(0).get_child(1) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
+		(card.find_child("CarCardTitle_" + VehicleCatalog.IDS[index], true, false) as Label).add_theme_color_override("font_color", MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
 
 func preview_car(index: int) -> void:
 	if index < 0 or index >= VehicleCatalog.IDS.size(): return
 	_finish_tools()
 	var chosen: String = VehicleCatalog.IDS[index]
 	if chosen != vehicle_id:
-		preview.remove_child(showroom)
-		showroom.queue_free()
 		vehicle_id = chosen
 		heading.text = VehicleCatalog.title(vehicle_id)
-		_create_showroom()
+		_replace_showroom_car()
 	_update_cards()
+
+func _replace_showroom_car() -> void:
+	draft = VehicleLivery.for_car(records.settings,vehicle_id)
+	_livery_saved = draft.duplicate(true)
+	var wear: Dictionary = VehicleCondition.read(records,vehicle_id)
+	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	showroom.replace_car(vehicle_id,draft,wear,kit_draft)
+	_condition_saved = wear.duplicate(true)
+	_condition_presented = showroom.weathering.snapshot()
 
 func _confirm_car() -> void:
 	open_car(VehicleCatalog.IDS.find(vehicle_id))
@@ -251,6 +320,8 @@ func _refresh_thumbnails() -> void:
 		var paint: Dictionary = VehicleLivery.for_car(records.settings, id)
 		var condition: Dictionary = VehicleCondition.read(records, id)
 		if model.livery != paint: model.apply_livery(paint)
+		var parts: Dictionary = VehicleCustomisation.for_car(records.settings,id)
+		if model.customisation != parts: model.apply_customisation(parts)
 		if model.condition != condition:
 			model.condition = condition
 			model.weathering.restore(condition)
@@ -260,30 +331,46 @@ func refresh_selection() -> void:
 	# A warmed page may have been built before another page selected a car.
 	if _selected_vehicle_id == VehicleCatalog.selected: return
 	_finish_tools()
-	preview.remove_child(showroom)
-	showroom.queue_free()
 	vehicle_id = VehicleCatalog.selected
 	_selected_vehicle_id = vehicle_id
 	heading.text = VehicleCatalog.title(vehicle_id)
-	_create_showroom()
+	_replace_showroom_car()
 	_show_section("cars")
 	_update_cards()
 
 func _show_section(next: String) -> void:
 	if next == "car": next = "customise"
-	if next not in ["cars", "customise", "care", "tuning"]: return
+	if next not in ["cars", "customise", "care", "tuning", "trophies"]: return
 	_finish_tools()
+	if next=="customise" and section=="customise" and is_instance_valid(livery_menu) and _retained_livery_vehicle==vehicle_id:
+		livery_menu.show_tab(_customise_tab)
+		return
+	_set_customise_layout(next == "customise")
 	section = next
+	if next == "cars": _car_menu_open = false
+	elif next != "trophies": _car_menu_open = true
+	showroom.set_trophy_view(next == "trophies")
+	heading.text = "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
+	preview.get_node("GarageViewControls").visible = next != "trophies"
+	preview.get_node("GarageViewControls/GarageTopView").visible = next == "customise"
 	for container: Control in [tools, actions]:
 		for child: Node in container.get_children():
+			if child==_retained_livery:
+				_retained_livery.hide()
+				continue
 			container.remove_child(child)
 			child.queue_free()
 	pickers.clear()
 	wash_button = null
 	_presets = null
+	_sticker_board = null
+	_sticker_choice = null
+	_sticker_sliders.clear()
+	_sticker_values.clear()
+	livery_menu = null
 	select_button = null
 	gallery_slot.visible = section == "cars"
-	tools_panel.visible = section not in ["cars", "care"]
+	tools_panel.visible = section not in ["cars", "care", "trophies"]
 	_build_rail()
 	if section == "cars":
 		_refresh_thumbnails()
@@ -299,7 +386,7 @@ func _show_section(next: String) -> void:
 		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
 		actions.add_child(select_button)
 		return
-	tools.add_child(MenuStyle.label(section.to_upper(), 20))
+	if section not in ["customise","tuning"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
 	var back := MenuStyle.button("Back to cars", _show_section.bind("cars"))
 	back.name = "GarageBack"
 	back.custom_minimum_size = Vector2(240, 60)
@@ -314,71 +401,262 @@ func _show_section(next: String) -> void:
 		wash_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
 		wash_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
 		actions.add_child(wash_button)
+	elif section == "trophies":
+		var empty := MenuStyle.label("No trophies yet",18,true)
+		empty.name = "TrophyEmptyState"
+		empty.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		actions.add_child(empty)
+	elif section == "tuning":
+		_build_tuning()
 	else:
 		tools.add_child(MenuStyle.label("Coming later", 18, true))
 
+func _set_customise_layout(active: bool) -> void:
+	if active and not is_instance_valid(customise_layout):
+		customise_layout = HBoxContainer.new()
+		customise_layout.name = "GarageCustomiseLayout"
+		customise_layout.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		customise_layout.add_theme_constant_override("separation",16)
+		main.add_child(customise_layout)
+		main.move_child(customise_layout,0)
+		preview.reparent(customise_layout)
+		tools_panel.reparent(customise_layout)
+		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tools_panel.custom_minimum_size.x = 344
+		tools_panel.size_flags_horizontal = Control.SIZE_FILL
+		tools_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		tools.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	elif not active and is_instance_valid(customise_layout):
+		preview.reparent(main)
+		main.move_child(preview,0)
+		tools_panel.reparent(main)
+		main.move_child(tools_panel,1)
+		tools_panel.custom_minimum_size.x = 0
+		tools_panel.size_flags_vertical = Control.SIZE_FILL
+		main.remove_child(customise_layout)
+		customise_layout.queue_free()
+		customise_layout = null
+
+func _build_tuning() -> void:
+	kit_categories.clear()
+	if vehicle_id != "compact":
+		tools.add_child(MenuStyle.label("Kits available for the Compact",18,true))
+		return
+	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	var categories := HBoxContainer.new()
+	categories.add_theme_constant_override("separation",8)
+	tools.add_child(categories)
+	for category: String in VehicleCustomisation.CATEGORIES:
+		var tab := MenuStyle.button(str(VehicleCustomisation.LABELS[category]),_select_kit_category.bind(category),category==kit_category)
+		tab.name = "KitCategory_"+category
+		tab.custom_minimum_size = Vector2(112,48)
+		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		categories.add_child(tab)
+		kit_categories[category] = tab
+	kit_cards = HBoxContainer.new()
+	kit_cards.name = "CompactKitCards"
+	kit_cards.add_theme_constant_override("separation",8)
+	tools.add_child(kit_cards)
+	_build_kit_cards()
+	var reset := MenuStyle.button("Reset kits",_reset_kits)
+	reset.name = "GarageResetKits"
+	reset.custom_minimum_size = Vector2(200,60)
+	reset.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(reset)
+
+func _select_kit_category(category: String) -> void:
+	if category not in VehicleCustomisation.CATEGORIES or section != "tuning": return
+	kit_category = category
+	for id: String in kit_categories:
+		var tab: Button = kit_categories[id]
+		tab.add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.ACCENT if id==category else Color("10212c"),10))
+		tab.add_theme_stylebox_override("hover",MenuStyle.box(Color("ffe499") if id==category else Color("253b49"),10))
+		tab.add_theme_stylebox_override("pressed",MenuStyle.box(Color("e7b744") if id==category else Color("304857"),10))
+		tab.add_theme_color_override("font_color",MenuStyle.INK if id==category else MenuStyle.TEXT)
+		tab.add_theme_color_override("font_hover_color",MenuStyle.INK if id==category else MenuStyle.TEXT)
+	_build_kit_cards()
+
+func _build_kit_cards() -> void:
+	for child: Node in kit_cards.get_children():
+		kit_cards.remove_child(child)
+		child.queue_free()
+	for option: Array in VehicleCustomisation.OPTIONS[kit_category]:
+		kit_cards.add_child(CompactKitThumbnail.make(kit_category,option,kit_draft[kit_category]==option[0],_select_kit.bind(kit_category,str(option[0]))))
+
+func _select_kit(category: String, option: String) -> void:
+	if vehicle_id != "compact" or section != "tuning": return
+	var next: Dictionary = kit_draft.duplicate(true)
+	next[category] = option
+	if not VehicleCustomisation.valid(next) or next==kit_draft: return
+	_save_kits(next)
+
+func _save_kits(value: Dictionary) -> void:
+	var collection: Dictionary = records.settings.get("vehicle_customisation",{}).duplicate(true)
+	collection[vehicle_id] = value.duplicate(true)
+	records.settings.vehicle_customisation = collection
+	var result: Error = records.save_records()
+	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	showroom.apply_customisation(kit_draft)
+	_condition_presented = showroom.weathering.snapshot()
+	for index: int in range(kit_cards.get_child_count()):
+		(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category]==VehicleCustomisation.OPTIONS[kit_category][index][0])
+	if result != OK: save_failed.emit()
+
+func _reset_kits() -> void:
+	if vehicle_id == "compact" and section=="tuning": _save_kits(VehicleCustomisation.defaults())
+
 func _build_customise() -> void:
-	var controls := HBoxContainer.new()
-	controls.add_theme_constant_override("separation", 20)
-	tools.add_child(controls)
-	var livery_column := VBoxContainer.new()
-	livery_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	livery_column.add_theme_constant_override("separation", 4)
-	controls.add_child(livery_column)
-	livery_column.add_child(MenuStyle.label("Livery", 16, true))
-	_presets = OptionButton.new()
-	_presets.name = "GarageLivery"
-	_presets.custom_minimum_size.y = 48
-	for title: String in LIVERY_NAMES: _presets.add_item(title)
-	_presets.add_item("Custom")
-	_presets.set_item_disabled(LIVERY_NAMES.size(), true)
-	_presets.select(_preset_index())
-	_presets.item_selected.connect(_select_livery)
-	livery_column.add_child(_presets)
-	for slot: String in VehicleLivery.SLOTS:
-		var column := VBoxContainer.new()
-		column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		column.add_theme_constant_override("separation", 4)
-		controls.add_child(column)
-		column.add_child(MenuStyle.label(slot.capitalize(), 16, true))
-		var picker := ColorPickerButton.new()
-		picker.name = "Livery" + slot.capitalize()
-		picker.custom_minimum_size = Vector2(112, 48)
-		picker.edit_alpha = false
-		picker.color = Color(str(draft.colors[slot]))
-		var color_picker: ColorPicker = picker.get_picker()
-		color_picker.color_modes_visible = false
-		color_picker.sliders_visible = false
-		color_picker.sampler_visible = false
-		color_picker.presets_visible = false
-		picker.get_popup().add_theme_stylebox_override("panel", MenuStyle.card(12))
-		picker.color_changed.connect(_preview_color.bind(slot))
-		picker.popup_closed.connect(_save)
-		column.add_child(picker)
-		pickers[slot] = picker
-	var reset := MenuStyle.button("Reset paint", _reset)
-	reset.custom_minimum_size = Vector2(180, 48)
-	reset.size_flags_vertical = Control.SIZE_SHRINK_END
-	controls.add_child(reset)
+	if is_instance_valid(_retained_livery) and _retained_livery_vehicle!=vehicle_id:
+		_retained_livery.get_parent().remove_child(_retained_livery)
+		_retained_livery.queue_free()
+		_retained_livery = null
+	if not is_instance_valid(_retained_livery):
+		_retained_livery = GarageLiveryMenu.new()
+		_retained_livery.page = self
+		_retained_livery_vehicle = vehicle_id
+		tools.add_child(_retained_livery)
+	elif _retained_livery.get_parent()!=tools:
+		_retained_livery.reparent(tools)
+	livery_menu = _retained_livery
+	livery_menu.show()
+	livery_menu.show_tab(_customise_tab)
+
+func _set_customise_tab(tab: String) -> void:
+	if tab not in ["livery","colours","stickers"]: return
+	_sticker_editing = false
+	_customise_tab = tab
+	_show_section("customise")
+
+func _preset_count() -> int:
+	return LIVERY_NAMES.size()+LiveryCatalog.patterns.size()
 
 func _preset_value(index: int) -> Dictionary:
 	var value: Dictionary = VehicleLivery.defaults(vehicle_id)
 	if index > 0 and index < LIVERY_NAMES.size():
 		value.colors.body = LIVERY_COLORS[index][0]
 		value.colors.accent = LIVERY_COLORS[index][1]
+	elif index >= LIVERY_NAMES.size() and index < _preset_count():
+		var pattern: Dictionary = LiveryCatalog.patterns[index-LIVERY_NAMES.size()]
+		value.pattern = pattern.id
+		for slot: int in range(VehicleLivery.SLOTS.size()): value.colors[VehicleLivery.SLOTS[slot]] = pattern.colours[slot]
 	return value
 
 func _preset_index() -> int:
-	for index: int in range(LIVERY_NAMES.size()):
-		if draft == _preset_value(index): return index
-	return LIVERY_NAMES.size()
+	for index: int in range(_preset_count()):
+		var value: Dictionary = _preset_value(index)
+		if draft.colors == value.colors and draft.pattern == value.pattern: return index
+	return _preset_count()
 
 func _select_livery(index: int) -> void:
-	if index < 0 or index >= LIVERY_NAMES.size(): return
+	if index < 0 or index >= _preset_count(): return
+	var stickers: Dictionary = draft.stickers.duplicate(true)
 	draft = _preset_value(index)
+	draft.stickers = stickers
 	showroom.apply_livery(draft)
 	_update_pickers()
 	_save()
+	if _customise_tab == "livery": _refresh_pattern_selection()
+
+func _refresh_pattern_selection() -> void:
+	if is_instance_valid(livery_menu): livery_menu.refresh()
+
+func _build_sticker_tools(parent: Control) -> void:
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation",10)
+	parent.add_child(header)
+	var back := MenuStyle.button("Back",_edit_sticker_position.bind(false))
+	back.name = "StickerPlacementBack"
+	back.custom_minimum_size = Vector2(72,44)
+	header.add_child(back)
+	var index: int = LiveryCatalog.sticker_index(draft.stickers[_sticker_surface].id)
+	var title_text: String = _sticker_surface.capitalize()+" · "+LiveryCatalog.stickers[index].title if index >= 0 else _sticker_surface.capitalize()
+	var title: Label = MenuStyle.label(title_text,20)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	header.add_child(title)
+	_sticker_board = StickerPlacement.new()
+	_sticker_board.name = "StickerPlacement"
+	_sticker_board.custom_minimum_size = Vector2(280,146)
+	_sticker_board.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_sticker_board.vehicle_id = vehicle_id
+	_sticker_board.surface = _sticker_surface
+	_sticker_board.livery = draft
+	_sticker_board.moved.connect(_move_sticker)
+	_sticker_board.committed.connect(_save)
+	parent.add_child(_sticker_board)
+	for property: String in ["size","rotation"]:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation",8)
+		parent.add_child(row)
+		var title_row := VBoxContainer.new()
+		title_row.custom_minimum_size.x = 64
+		title_row.add_theme_constant_override("separation",2)
+		row.add_child(title_row)
+		title_row.add_child(MenuStyle.label(property.capitalize(),14,true))
+		var value := MenuStyle.label("",16)
+		title_row.add_child(value)
+		_sticker_values[property] = value
+		var slider := HSlider.new()
+		slider.name = "Sticker"+property.capitalize()
+		slider.custom_minimum_size = Vector2(112,48)
+		slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slider.min_value = 0.2 if property == "size" else -180
+		slider.max_value = 0.95 if property == "size" else 180
+		slider.step = 0.01 if property == "size" else 1
+		slider.value = draft.stickers[_sticker_surface][property]
+		slider.value_changed.connect(_sticker_property.bind(property))
+		slider.drag_ended.connect(func(_changed: bool) -> void: _save())
+		slider.gui_input.connect(func(event: InputEvent) -> void:
+			if event is InputEventKey and not event.pressed: _save())
+		row.add_child(slider)
+		_sticker_sliders[property] = slider
+	var centre := MenuStyle.button("Centre",_centre_sticker)
+	centre.custom_minimum_size.y = 48
+	parent.add_child(centre)
+	_refresh_sticker_values()
+
+func _refresh_sticker_values() -> void:
+	for property: String in _sticker_values:
+		var value: float = draft.stickers[_sticker_surface][property]
+		_sticker_values[property].text = ("%d%%" % roundi(value*100)) if property == "size" else ("%d°" % roundi(value))
+
+func _choose_sticker_surface(panel: String) -> void:
+	_sticker_editing = false
+	_sticker_surface = panel
+	_show_section("customise")
+
+func _edit_sticker_position(active: bool) -> void:
+	_sticker_editing = active
+	_show_section("customise")
+
+func _choose_sticker(index: int) -> void:
+	if index < 0 or index > LiveryCatalog.stickers.size(): return
+	draft.stickers[_sticker_surface].id = "none" if index == 0 else LiveryCatalog.stickers[index-1].id
+	_preview_sticker()
+	_save()
+
+func _move_sticker(point: Vector2) -> void:
+	draft.stickers[_sticker_surface].x = point.x
+	draft.stickers[_sticker_surface].y = point.y
+	_preview_sticker()
+
+func _sticker_property(value: float, property: String) -> void:
+	draft.stickers[_sticker_surface][property] = value
+	_preview_sticker()
+
+func _centre_sticker() -> void:
+	draft.stickers[_sticker_surface].x = 0.5
+	draft.stickers[_sticker_surface].y = 0.5
+	_preview_sticker()
+	_save()
+
+func _preview_sticker() -> void:
+	showroom.apply_livery(draft)
+	if is_instance_valid(_sticker_board):
+		_sticker_board.livery = draft
+		_sticker_board.queue_redraw()
+	_refresh_sticker_values()
 
 func _finish_tools() -> void:
 	if showroom == null: return
@@ -388,10 +666,12 @@ func _finish_tools() -> void:
 	for picker: ColorPickerButton in pickers.values():
 		if picker.get_popup().visible: picker.get_popup().hide()
 	_save_condition()
-	if view_hint != null: view_hint.text = "Drag to rotate"
+	if view_hint != null: view_hint.text = "Drag to turn"
 
 func _visibility_changed() -> void:
-	if not is_visible_in_tree(): _finish_tools()
+	if not is_visible_in_tree():
+		_finish_tools()
+		showroom.finish_car_transition()
 
 func telemetry_exposures() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -403,15 +683,14 @@ func telemetry_exposures() -> Array[Dictionary]:
 			result.append({"car_id": VehicleCatalog.IDS[index], "position": index})
 	return result
 
-func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, size), Color("111922"))
-
 func _preview_color(color: Color, slot: String) -> void:
 	draft.colors[slot] = Color(clampf(color.r,0,1),clampf(color.g,0,1),clampf(color.b,0,1)).to_html(false)
 	showroom.apply_livery(draft)
 	if is_instance_valid(_presets): _presets.select(_preset_index())
+	_refresh_pattern_selection()
 
 func _save() -> void:
+	if draft==_livery_saved: return
 	var colors: Dictionary = records.settings.get("vehicle_liveries", {}).duplicate(true)
 	colors[vehicle_id] = draft.duplicate(true)
 	records.settings.vehicle_liveries = colors
@@ -423,23 +702,32 @@ func _save() -> void:
 	else:
 		_livery_saved = draft.duplicate(true)
 	if is_instance_valid(_presets): _presets.select(_preset_index())
+	_refresh_pattern_selection()
 
 func _update_pickers() -> void:
 	for slot: String in VehicleLivery.SLOTS:
 		if not pickers.has(slot): continue
 		(pickers[slot] as ColorPickerButton).color = Color(str(draft.colors[slot]))
+	if is_instance_valid(_sticker_choice): _sticker_choice.select(LiveryCatalog.sticker_index(draft.stickers[_sticker_surface].id)+1)
+	for property: String in _sticker_sliders: _sticker_sliders[property].set_value_no_signal(draft.stickers[_sticker_surface][property])
+	if is_instance_valid(_sticker_board):
+		_sticker_board.livery = draft
+		_sticker_board.queue_redraw()
+	_refresh_sticker_values()
+	_refresh_pattern_selection()
 
 func _reset() -> void:
 	draft = VehicleLivery.defaults(vehicle_id)
 	showroom.apply_livery(draft)
 	_update_pickers()
 	_save()
+	if _sticker_editing: _edit_sticker_position(false)
 
 func _toggle_wash() -> void:
 	if section != "care": return
 	showroom.set_wash_mode(not showroom.wash_mode)
 	wash_button.text = "Done" if showroom.wash_mode else "Wash"
-	view_hint.text = "Drag to wash / Two fingers to rotate" if showroom.wash_mode else "Drag to rotate"
+	view_hint.text = "Drag to wash / Two fingers to turn" if showroom.wash_mode else "Drag to turn"
 	if not showroom.wash_mode: _save_condition()
 
 func _save_condition() -> void:

@@ -11,13 +11,20 @@ func check(ok: bool, label: String) -> void:
 		failures += 1
 		print("FAIL: "+label)
 
-func verify(source: AudioStreamWAV, prepared: AudioStreamWAV, label: String) -> void:
+func verify(source: AudioStreamWAV, prepared: AudioStream, label: String) -> void:
+	if prepared is AudioStreamOggVorbis:
+		var ogg: AudioStreamOggVorbis = prepared as AudioStreamOggVorbis
+		check(ogg.loop and ogg.loop_offset == 0.0, "native Vorbis full-file loop: " + label)
+		check(absf(ogg.get_length() - source.get_length()) < 1.0 / source.mix_rate, "unchanged original frame duration: " + label)
+		check(ogg.packet_sequence.sampling_rate == source.mix_rate, "original encoded sample rate: " + label)
+		return
+	var pcm_stream: AudioStreamWAV = prepared as AudioStreamWAV
 	var frame_bytes: int = 4 if source.stereo else 2
 	var original: PackedByteArray = source.data
-	check(prepared.loop_mode==AudioStreamWAV.LOOP_FORWARD and prepared.loop_begin==0,"full cyclic mode: "+label)
-	check(prepared.loop_end==original.size()/frame_bytes,"exact source frame count: "+label)
-	check(prepared.data.size()==original.size()+frame_bytes,"one interpolation frame: "+label)
-	check(prepared.data.slice(0,original.size())==original and prepared.data.slice(original.size())==original.slice(0,frame_bytes),"unchanged waveform plus exact cyclic endpoint: "+label)
+	check(pcm_stream.loop_mode==AudioStreamWAV.LOOP_FORWARD and pcm_stream.loop_begin==0,"full cyclic mode: "+label)
+	check(pcm_stream.loop_end==original.size()/frame_bytes,"exact source frame count: "+label)
+	check(pcm_stream.data.size()==original.size()+frame_bytes,"one interpolation frame: "+label)
+	check(pcm_stream.data.slice(0,original.size())==original and pcm_stream.data.slice(original.size())==original.slice(0,frame_bytes),"unchanged waveform plus exact cyclic endpoint: "+label)
 
 func run() -> void:
 	for stereo: bool in [false,true]:
@@ -55,12 +62,12 @@ func run() -> void:
 			verify(source,audio._stream(str(clip.file).trim_suffix(".wav"),true),str(clip.file))
 		else:
 			check(source.loop_mode==AudioStreamWAV.LOOP_DISABLED,"incident is still a one-shot: "+str(clip.file))
-	check(loops==40,"all forty vehicle looping masters covered, including deferred wet asset")
+	check(loops==42,"all forty-two current vehicle looping masters covered, including kerb and deferred wet asset")
 	verify(load("res://assets/audio/vehicles/tire.wav"),TireAudio.make_scrub(),"legacy tire diagnostic")
 	var legacy_rain: AudioStreamWAV = load("res://assets/audio/storm_rain.wav")
 	verify(legacy_rain,PcmAudioLoop.prepare(legacy_rain),"retained inactive rain")
 	var world: GameSoundtrack = root.get_node("AudioWorld")
-	verify(load(world.BANK+"menu_theme.wav"),world._menu_loop(),"menu stereo")
+	verify(load(world.MENU_ASSET.replace(".ogg", ".wav")),world._menu_loop(),"menu stereo")
 	var night := NightAmbience.new()
 	root.add_child(night)
 	night.configure("night_city")

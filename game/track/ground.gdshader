@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode diffuse_toon, specular_disabled;
+render_mode diffuse_toon, specular_schlick_ggx;
 #include "res://track/surface_detail.gdshaderinc"
 uniform vec4 ground_color : source_color;
 varying vec3 world_position;
@@ -9,4 +9,13 @@ void fragment() {
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
 	ROUGHNESS = 1.0;
+	SPECULAR = 0.0;
+	if (desert_dunes) {
+		vec3 mineral = texture(surface_factors,world_position.xz/24.0,0.65).rgb;
+		float footprint = length(fwidth(world_position.xz));
+		vec2 finish = mineral_sun_finish(mineral,footprint,1.0);
+		ROUGHNESS = finish.x;
+		SPECULAR = finish.y;
+		NORMAL = mineral_terrain_normal(mineral,footprint,1.0,NORMAL,VIEW_MATRIX);
+	}
 }

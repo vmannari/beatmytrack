@@ -18,6 +18,7 @@
 #include <thread>
 #include <vector>
 using namespace godot;
+#include "secure_session.h"
 
 // Windows-only presentation adapter. Godot remains the fallback. The pinned
 // engine's WASAPI stream does not request RAW, which permits slow optional APOs.
@@ -191,7 +192,7 @@ public:
   d["queued_frames"]=queued_frames.load();d["idle_skips"]=idle_skips.load();d["idle_silence_queued"]=false;d["clip_count"]=int64_t(clips.size());return d;
  }
 };
-static void initialize(ModuleInitializationLevel level) {if(level==MODULE_INITIALIZATION_LEVEL_SCENE) ClassDB::register_class<BmtWindowsImpact>();}
+static void initialize(ModuleInitializationLevel level) {if(level==MODULE_INITIALIZATION_LEVEL_SCENE) {ClassDB::register_class<BmtWindowsImpact>();ClassDB::register_class<BmtSecureSession>();}}
 static void uninitialize(ModuleInitializationLevel) {}
 extern "C" GDExtensionBool GDE_EXPORT bmt_windows_audio_init(GDExtensionInterfaceGetProcAddress address,GDExtensionClassLibraryPtr library,GDExtensionInitialization *initialization) {
  GDExtensionBinding::InitObject init(address,library,initialization);init.register_initializer(initialize);init.register_terminator(uninitialize);init.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);return init.init();

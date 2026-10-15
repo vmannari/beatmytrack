@@ -28,6 +28,8 @@ class CloudFixture extends "res://backend/cloud_tracks.gd":
 		await get_tree().process_frame
 		if not download_ok: last_error = "Track download failed. Check your connection and try again."
 		return download_ok
+	func download_document(entry: Dictionary) -> Dictionary:
+		return cached_document(entry) if await download(entry) else {}
 
 func _initialize() -> void: run.call_deferred()
 func check(ok: bool, message: String) -> void:
@@ -119,7 +121,7 @@ func run() -> void:
 			"older-server":
 				rivalry.issued.manifest.compiler_version = "creator-compiler-22"
 				rivalry.issued.manifest.track_content_hash = "0".repeat(64)
-			"newer-server": rivalry.issued.manifest.compiler_version = "creator-compiler-24"
+			"newer-server": rivalry.issued.manifest.compiler_version = "creator-compiler-"+str(int(TrackCompiler.VERSION.get_slice("-",2))+1)
 			"unknown-server": rivalry.issued.manifest.compiler_version = "creator-compiler-unknown"
 			"track-mismatch": rivalry.issued.manifest.track_content_hash = "0".repeat(64)
 			"ticket-failure": rivalry.issued = {}

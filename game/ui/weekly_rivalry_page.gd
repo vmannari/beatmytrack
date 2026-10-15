@@ -32,6 +32,8 @@ var detail_route: LapRouteView
 var finale_livery: Dictionary = {}
 var finale_customisation: Dictionary = {}
 var finale_condition: Dictionary = {}
+var _presented_key: PackedByteArray
+var content_builds: int = 0
 const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
 const STANDINGS_GUTTER: int = 12
 const QUIET_BORDER := Color("2e495a88")
@@ -41,6 +43,65 @@ func _ready() -> void:
 	name = "WeeklyRivalryPage"
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	resized.connect(queue_redraw)
+	_build_content()
+	_presented_key = _content_key()
+
+func _content_key() -> PackedByteArray:
+	var loading_view: bool = model.tracks.is_empty() and signed_in and error.is_empty() and (busy or model.received_msec == 0)
+	return var_to_bytes([section,selected,ghost_choice,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,model.tracks,model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
+
+func refresh_presentation() -> bool:
+	var key: PackedByteArray = _content_key()
+	var rebuilt: bool = key != _presented_key
+	if key != _presented_key:
+		var focus: Control = get_viewport().gui_get_focus_owner()
+		var focused_name: String = str(focus.name) if focus != null and is_ancestor_of(focus) else ""
+		if is_instance_valid(standings_scroll): standings_scroll_offset = standings_scroll.scroll_vertical
+		for child: Node in get_children():
+			remove_child(child)
+			child.queue_free()
+		standings_scroll = null
+		standings_ready = false
+		track_rows.clear()
+		track_markers.clear()
+		detail_route = null
+		_build_content()
+		_presented_key = key
+		if not focused_name.is_empty():
+			var restored: Control = find_child(focused_name,true,false) as Control
+			if restored != null: restored.grab_focus.call_deferred()
+	_update_status()
+	return rebuilt
+
+func _update_status() -> void:
+	if is_instance_valid(clock_label): clock_label.text = model.countdown()
+	for id: String in ["RivalryJoin","RivalryRefresh","RivalryNextWeek","RivalryShareResults"]:
+		var button: Button = find_child(id,true,false) as Button
+		if button != null: button.disabled = busy
+	var again: Button = find_child("RivalryRaceAgain",true,false) as Button
+	if again != null: again.disabled = busy or model.status != "active"
+	var start: Button = find_child("RivalryStartRace",true,false) as Button
+	if start != null and not model.tracks.is_empty():
+		var track: Dictionary = model.tracks[selected]
+		start.disabled = busy or model.completed or model.status != "active" or not bool(track.get("available",true))
+		start.text = "WEEK COMPLETE" if model.completed else "TRACK UNAVAILABLE" if not bool(track.get("available",true)) else ("UPDATING RIVALRY..." if error.is_empty() else "RIVALRY UNAVAILABLE") if busy else "RIVALRY NOT ACTIVE" if model.status != "active" else "RACE "+str(track.name).to_upper()+"  →"
+	var message: Label = find_child("RivalryStatusMessage",true,false) as Label
+	if message != null:
+		var normal: String = "Choose a track and beat your best time."
+		if model.completed:
+			var summary: Dictionary = model.finale_summary()
+			normal = "%d points ahead of %s." % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else "%d of five tracks completed." % summary.completed
+		message.text = error if not error.is_empty() else normal
+		message.tooltip_text = message.text
+	var result_error: Label = find_child("RivalryResultError",true,false) as Label
+	if result_error != null:
+		result_error.text = error
+		result_error.visible = not error.is_empty()
+	var empty_message: Label = find_child("RivalryEmptyStatus",true,false) as Label
+	if empty_message != null: empty_message.text = error if not error.is_empty() else "Finding this week's rivalry…" if busy else "Race as often as you like. Find your next rival."
+
+func _build_content() -> void:
+	content_builds += 1
 	var row := HBoxContainer.new()
 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(row)
@@ -251,10 +312,10 @@ func _loading(parent: Control) -> void:
 	field.add_theme_constant_override("separation",12)
 	parent.add_child(field)
 	var podium := HBoxContainer.new()
-	podium.custom_minimum_size.y = 116
+	podium.custom_minimum_size.y = 184
 	podium.add_theme_constant_override("separation",10)
 	field.add_child(podium)
-	for position: int in [1,0,2]: _loading_block(podium,116 if position == 0 else 104).size_flags_vertical = Control.SIZE_SHRINK_END
+	for position: int in [1,0,2]: _loading_block(podium,184 if position == 0 else 172).size_flags_vertical = Control.SIZE_SHRINK_END
 	var standings: VBoxContainer = _card(field,"",12)
 	_copy(standings,"STANDINGS",27)
 	_copy(standings,"Loading…",18,MenuStyle.MUTED)
@@ -286,9 +347,8 @@ func _empty(parent: Control) -> void:
 	_copy(hero,"A SMALL CHAMPIONSHIP.\nA NEW RIVALRY EACH WEEK.",46)
 	_copy(hero,"Five tracks. Drivers near your pace.\nYour best result on each track counts.",22,MenuStyle.MUTED)
 	_space(hero)
-	if not error.is_empty(): _copy(hero,error,20,MenuStyle.MUTED)
-	elif busy: _copy(hero,"Finding this week's rivalry…",20,MenuStyle.MUTED)
-	else: _copy(hero,"Race as often as you like. Find your next rival.",20,MenuStyle.MUTED)
+	var status: Label = _copy(hero,error if not error.is_empty() else "Finding this week's rivalry…" if busy else "Race as often as you like. Find your next rival.",20,MenuStyle.MUTED)
+	status.name = "RivalryEmptyStatus"
 	var actions := HBoxContainer.new()
 	hero.add_child(actions)
 	var join_button: Button = _action(actions,"JOIN THIS WEEK  →" if signed_in else "SIGN IN TO JOIN  →","RivalryJoin",func() -> void: join_requested.emit(),true)
@@ -466,7 +526,7 @@ func _medal_color(position: int) -> Color:
 func _podium(parent: Control) -> void:
 	var podium := HBoxContainer.new()
 	podium.name = "RivalryPodium"
-	podium.custom_minimum_size.y = 116
+	podium.custom_minimum_size.y = 184
 	podium.add_theme_constant_override("separation",10)
 	parent.add_child(podium)
 	var leaders: Array[Dictionary] = []
@@ -486,7 +546,7 @@ func _podium(parent: Control) -> void:
 		var card: VBoxContainer = _card(podium,"",9)
 		var panel: PanelContainer = card.get_parent()
 		panel.name = "RivalryPodium_"+str(position+1)
-		panel.custom_minimum_size.y = 116 if position == 0 else 104
+		panel.custom_minimum_size.y = 184 if position == 0 else 172
 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
 		panel.size_flags_stretch_ratio = 1.08 if position == 0 else 1.0
 		var style: StyleBoxFlat = MenuStyle.card(9)
@@ -506,16 +566,40 @@ func _podium(parent: Control) -> void:
 		icon.modulate = color
 		rank.add_child(icon)
 		_copy(rank,rank_text(driver),32 if position == 0 else 29,color)
+		# Keep the shared content rows on one baseline beneath the taller winner header.
+		var header_space := Control.new()
+		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		header_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(header_space)
+		var car: Control = preload("res://ui/rivalry_victory_car.gd").new()
+		car.name = "RivalryPodiumCar_"+str(position+1)
+		car.vehicle_id = model.vehicle_id
+		car.simple_model = true
+		car.podium_presentation = true
+		var appearance: Variant = driver.get("appearance",{})
+		if appearance is Dictionary and appearance.get("vehicle_id") == model.vehicle_id:
+			if VehicleLivery.valid(appearance.get("livery")): car.livery = VehicleLivery.normalize(appearance.livery,model.vehicle_id)
+			if VehicleCustomisation.valid(appearance.get("customisation")):
+				car.customisation = appearance.customisation.duplicate(true)
+				car.customisation.version = VehicleCustomisation.VERSION
+		if driver.id == WeeklyRivalry.SELF:
+			if VehicleLivery.valid(finale_livery): car.livery = finale_livery.duplicate(true)
+			if VehicleCustomisation.valid(finale_customisation): car.customisation = finale_customisation.duplicate(true)
+		car.custom_minimum_size.y = 68
+		card.add_child(car)
 		var identity := HBoxContainer.new()
+		identity.name = "RivalryPodiumIdentity_"+str(position+1)
 		identity.add_theme_constant_override("separation",6)
 		card.add_child(identity)
 		identity.add_child(PlayerCountry.flag(str(driver.get("country_code","")),24))
 		var driver_name: Label = _copy(identity,_display_name(driver),20)
+		driver_name.name = "RivalryPodiumName_"+str(position+1)
 		driver_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		driver_name.add_theme_font_override("font",MenuStyle.DISPLAY)
 		driver_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 		driver_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		_copy(card,str(int(driver.points))+" pts",20,color)
+		var points: Label = _copy(card,str(int(driver.points))+" pts",20,color)
+		points.name = "RivalryPodiumPoints_"+str(position+1)
 
 func _track_row(parent: Control, index: int) -> void:
 	var track: Dictionary = model.tracks[index]

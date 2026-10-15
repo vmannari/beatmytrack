@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmt-backend"
+version = "0.1.0"
+description = "Beat my track identity, immutable tracks and verified competition API"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.141,<1", "uvicorn>=0.34,<1", "SQLAlchemy>=2.0,<2.1",
+  "psycopg[binary]>=3.2,<4", "alembic>=1.14,<2",
+  "google-auth[requests]>=2.38,<3", "CacheControl>=0.14,<1", "cryptography>=50.0.2,<51",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1", "PyYAML>=6,<7"]
+
+[tool.setuptools.packages.find]
+include = ["bmt_backend*"]
+
+[tool.setuptools.package-data]
+"bmt_backend" = ["admin_ui/*", "privacy_ui/*", "lab_tracks.json", "countries.json", "LICENSE-countries.txt"]
+"bmt_backend.migrations" = ["*.mako"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["postgres: requires a disposable PostgreSQL database", "godot: uses the exact pinned Godot binary"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bmt_backend"]

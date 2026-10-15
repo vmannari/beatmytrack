@@ -2,6 +2,8 @@ extends Node
 ## Authenticated rivalry adapter. All points and results come from the server.
 signal changed
 var client: Node
+var appearance_provider: Callable
+var _synced_appearance: String = ""
 var model := WeeklyRivalry.new()
 var busy: bool = false
 var error: String = ""
@@ -68,6 +70,7 @@ func set_test_population(enabled: bool) -> void:
 
 func reset() -> void:
 	_generation += 1
+	_synced_appearance = ""
 	model = WeeklyRivalry.new()
 	snapshot_scope = ""
 	request_scope = ""
@@ -125,6 +128,18 @@ static func valid_outcome(value: Dictionary) -> bool:
 func has_snapshot() -> bool:
 	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
 
+func _sync_appearance() -> void:
+	if not appearance_provider.is_valid() or not client.signed_in(): return
+	var value: Variant = appearance_provider.call(VehicleCatalog.selected)
+	if not value is Dictionary or not value.has_all(["vehicle_id","livery","customisation"]): return
+	if not VehicleLivery.valid(value.livery) or not VehicleCustomisation.valid(value.customisation): return
+	var original: String = scope()
+	var generation: int = _generation
+	var signature: String = original+"/"+JSON.stringify(value,"",true).sha256_text()
+	if signature == _synced_appearance: return
+	var response: Dictionary = await client.request_api("/rivalry/appearance",HTTPClient.METHOD_PUT,value,"",true)
+	if generation == _generation and original == scope() and response.get("ok",false): _synced_appearance = signature
+
 func refresh(force: bool = true) -> void:
 	# Development rivalries use the server capability automatically. Release
 	# and ordinary services retain the real-player population.
@@ -142,10 +157,22 @@ func refresh(force: bool = true) -> void:
 		return
 	_restore_snapshot()
 	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+	var original: String = scope()
+	var generation: int = _generation
+	busy = true
+	request_scope = original
+	await _sync_appearance()
+	if generation != _generation or original != scope(): return
 	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode()+("&test_population=true" if test_population else ""))
 
 func join() -> void:
 	if busy: return
+	var original: String = scope()
+	var generation: int = _generation
+	busy = true
+	request_scope = original
+	await _sync_appearance()
+	if generation != _generation or original != scope(): return
 	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
 
 func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
@@ -185,6 +212,8 @@ func ticket(slot: int) -> Dictionary:
 	if busy or cached_snapshot or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
 	var original: String = scope()
 	var generation: int = _generation
+	# Cosmetic sharing must not queue fresh race authorization behind uploads.
+	_sync_appearance()
 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tickets",HTTPClient.METHOD_POST,{"slot":slot},client.new_operation_key(),true)
 	if original != scope() or generation != _generation: return {}
 	if not response.ok:

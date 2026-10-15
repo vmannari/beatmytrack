@@ -1,0 +1,1287 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 0bb8a31..88e187d 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Customised Weekly Rivalry podium override (2026-10-14)
++The owner requests the cars used by the three leaders on the top podium, superseding the earlier omission of car pictures. Use bounded one-shot native renders with each driver's shared paint/livery/panel stickers/fitted parts and the pinned championship vehicle. Current local self appearance is immediate; missing or malformed remote cosmetics use factory models. Share only validated appearance IDs/pigments, retain local-only dirt/washing, scrollable standings, five-track entry, normal results first and canonical contracts. See `docs/RIVALRY_CUSTOM_CARS_2026_10_14.md` for both-renderer views, actual checks, scoped checkpoint and remaining owner/phone/matching client-backend rollout acceptance. No APK or deployment is implied.
++
+ ## Garage LP player and record collection override (2026-10-14)
+ The owner requests an LP player and selectable background-music records. Keep the native listening console/player/speakers/sleeves and retained Records camera/workbench. Exploration stays the initial LP; owner-chosen MP3/OGG/PCM WAV imports, selection/stop/volume and removal remain local, with source originals preserved and twelve-import/24MiB-file/96MiB-collection/thirteen-cover bounds. Menu/results selection is saved; racing stays silent. Preserve actual car/camera/condition/kits/reflections/washing and canonical behavior. See `docs/GARAGE_RECORD_PLAYER_2026_10_14.md` for actual both-renderer UI/audio checks, regressions, task-only checkpoint and remaining owner/phone file-picker/playback acceptance. No rejected music restoration, new generation, APK or deployment.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 67e432b..90b8bd3 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 RPC01-RPC04/WR01-WR03/R01/V03-V05/Q01: owner requests customised cars on the top Weekly Rivalry podium. Three native one-shot cars show each leader's actual pinned vehicle, pigments, wrap, panel stickers and fitted kit IDs; current local self edits are immediate. Authenticated, bounded per-car appearance sharing and migration0035 preserve local dirt/washing and canonical scoring; legacy/malformed appearances use factory models. Both-renderer110+110/native all-five-car captures, full-app rivalry1136+1136, backend SQLite55/Ruff and752-script parser pass. PostgreSQL service unavailable; no phone/APK/deployment. Actual commands, scoped checkpoint and owner/device/rollout acceptance: docs/RIVALRY_CUSTOM_CARS_2026_10_14.md.
++
+ 2026-10-14 LP01-LP04/MUS35/MUS36/SND05/G01/R01/Q01: native Garage listening console, LP player/speakers/grooved vinyl and actual sleeve collection; retained Records camera/right workbench. Exploration default plus bounded owner MP3/OGG/PCM WAV imports, saved menu/results selection/stop/volume; originals preserved, no rejected music/race score restored. LP33 headless/42+42 graphical checks and actual audio/silence; soundtrack1158/biome42/Garage178/parser749 pass. Startup-only soundtrack fixture wait retains all assertions. Concurrent room/reflection/wash work excluded from task checkpoint. No phone/APK/deploy or musical-quality/FPS claim. Actual captures/commands/scoped checkpoint and remaining owner/phone acceptance: docs/GARAGE_RECORD_PLAYER_2026_10_14.md.
+ 
+ 2026-10-14 DST01-DST03/V05/G01/R01/Q01: owner requests Desert tire tracks like Grass-biome sand, a slightly lighter road and matching marks. Road9f8052 becomesac8b5a; marks bind the exact road source-colour pigment, share sand tread/analytic groove/0.52 base opacity, retain matte specular. Kit199 fences prepared materials; no new draws/geometry/textures/samplers. Shared width/relief/pressure/sampling/ring/bridges/first-draw/camera/dust/canonical behavior retained within task scope. Both-renderer native rolling/braking/loose/cornering/five-pass overlap captures; clear road-region display luma+7.45%/+5.43%. Soil163/Desert87/ribbon14/bridge656+656/trail bridge8+8/preparation38+38 and742-script parse pass; final Mobile preparation exits cleanly after one initial post-assertion shutdown timeout. Initial paused Mobile control corrected using saved renderer/old material pigment. Concurrent mud work preserved and excluded from scoped checkpoint. No phone test/APK/deploy or FPS claim; owner/phone appearance acceptance remains. Actual commands/captures/limitations/checkpoint: docs/DESERT_SAND_TRACKS_2026_10_14.md.
+diff --git a/backend/bmt_backend/identity_models.py b/backend/bmt_backend/identity_models.py
+index 0940421..d63c989 100644
+--- a/backend/bmt_backend/identity_models.py
++++ b/backend/bmt_backend/identity_models.py
+@@ -2,6 +2,7 @@ import time
+ import uuid
+ 
+ from sqlalchemy import (
++    JSON,
+     Boolean,
+     CheckConstraint,
+     ForeignKey,
+@@ -42,6 +43,7 @@ class Player(Base):
+     deleted_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+     analytics_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+     is_test_driver: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
++    vehicle_appearances: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
+     created_at: Mapped[int] = mapped_column(Integer, default=now)
+ 
+ 
+@@ -51,6 +53,7 @@ def set_username_key(_mapper, _connection, player):
+     if player.deleted_at is not None:
+         player.display_name, player.country_code, player.needs_username = "Removed account", "", True
+         player.analytics_enabled, player.created_at = False, 0
++        player.vehicle_appearances = {}
+     player.username_key = None if player.needs_username else username_key(player.display_name or "Racer")
+ 
+ 
+diff --git a/backend/bmt_backend/migrations/versions/0035_rivalry_car_appearance.py b/backend/bmt_backend/migrations/versions/0035_rivalry_car_appearance.py
+new file mode 100644
+index 0000000..d105923
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0035_rivalry_car_appearance.py
+@@ -0,0 +1,16 @@
++"""Bounded cosmetic IDs for each player's rivalry cars."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0035_rivalry_car_appearance"
++down_revision = "0034_account_privacy"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.add_column("players", sa.Column("vehicle_appearances", sa.JSON(), nullable=False, server_default="{}"))
++
++
++def downgrade():
++    op.drop_column("players", "vehicle_appearances")
+diff --git a/backend/bmt_backend/privacy.py b/backend/bmt_backend/privacy.py
+index f810257..2d1da5c 100644
+--- a/backend/bmt_backend/privacy.py
++++ b/backend/bmt_backend/privacy.py
+@@ -94,6 +94,7 @@ def remove_account(session, player_id, credential_hash, request_id):
+     player.deleted_at, player.display_name = now(), REMOVED_NAME
+     player.needs_username, player.country_code, player.analytics_enabled = True, "", False
+     player.created_at = 0
++    player.vehicle_appearances = {}
+     subjects = list(session.scalars(select(Identity.subject).where(Identity.player_id == player_id, Identity.provider == "google")))
+     session.execute(delete(BrowserLogin).where(BrowserLogin.subject.in_(subjects)))
+     session.execute(delete(Identity).where(Identity.player_id == player_id))
+@@ -408,6 +409,7 @@ def redact_snapshot(value, player_id):
+                 result[key] = REMOVED_NAME
+         if "country_code" in result:
+             result["country_code"] = ""
++        result.pop("appearance", None)
+     if any(value.get(key) == player_id for key in ("owner_id", "creator_id")) and "creator" in result:
+         result["creator"] = REMOVED_NAME
+     return result
+diff --git a/backend/bmt_backend/privacy_pages.py b/backend/bmt_backend/privacy_pages.py
+index c6ecd93..52b0ff2 100644
+--- a/backend/bmt_backend/privacy_pages.py
++++ b/backend/bmt_backend/privacy_pages.py
+@@ -36,12 +36,12 @@ def policy(request: Request):
+     placeholder = '<aside>Pre-release information. Developer identity and privacy contact are placeholders awaiting confirmation.</aside>' if not s.privacy_contact_email or s.privacy_developer_name.startswith("[") else ""
+     return page("Privacy policy", f'''{placeholder}<p>Version bmt-privacy-v1 · 14 October 2026</p>
+ <h2>Who operates the game</h2><p>{developer}. Privacy contact: {contact}.</p>
+-<h2>What stays on your device</h2><p>Local tracks, car paint, parts, stickers, dirt and washing, local records and game preferences stay on your device. Local play is available without an online account. Saved sign-in credentials are protected by Windows DPAPI or Android Keystore; platforms without protection use memory-only sign-in.</p>
++<h2>What stays on your device</h2><p>Local tracks, car dirt and washing, local records and game preferences stay on your device. Your saved car paint, parts and stickers remain on your device; when you use Weekly Rivalry, a copy of those appearance choices is shared with the drivers in your rivalry to display your car on the podium. Local play is available without an online account. Saved sign-in credentials are protected by Windows DPAPI or Android Keystore; platforms without protection use memory-only sign-in.</p>
+ <h2>Online accounts and racing</h2><p>Google supplies a verified identity identifier for sign-in. We store that identifier, an account identifier, your racing name and selected country; we do not use Google email addresses to link accounts. Online play sends track documents when you publish, race tickets, timestamped movement evidence, optional ghost recordings, verified results, ratings and competition participation. These support publication, race verification and standings.</p>
+ <h2>Optional usage and performance information</h2><p>The rebuilt app asks you to choose whether to share optional analytics. This is off until you choose to enable it. It includes menu and race observations, bounded timing and performance summaries, device model, operating system, renderer/settings, network category counts and selected server request IDs. It excludes authentication credentials, request bodies and full request URLs. Change the choice in Settings → Privacy; disabling it stops collection/uploads and clears pending observations on that device. Verified online results and essential security processing still operate.</p>
+ <h2>Providers, ads and purchases</h2><p>Google processes Google sign-in. The service uses configured hosting and storage providers. Android development builds include Google Mobile Ads 25.5.0 for test ads and may offer simulated purchases, which do not charge money. Google's ads SDK can process network addresses, advertising/app-set identifiers, interactions and diagnostic information for advertising, analytics and fraud prevention. Our optional analytics choice controls our own observations; provider SDK processing has separate controls. See <a href="https://developers.google.com/admob/android/privacy/play-data-disclosure">Google's SDK data disclosure</a> and <a href="https://policies.google.com/privacy">Google's privacy policy</a>. Production ads or purchases require matching provider disclosures, consent where required, and updated store declarations before release. Optional analytics goes to our backend.</p>
+ <h2>Retention</h2><p>Scheduled processing normally removes raw optional observations after {max(7, s.telemetry_raw_days + 1)} days, including the receipt retry allowance. Prepared reporting facts expire after {s.telemetry_fact_days} days; facts with no account identifiers may remain until expiry. Ordinary superseded race evidence follows the configured {s.retention_days}-day reference-aware retention. Account deletion removes private evidence through a resumable worker, including file cleanup after active storage leases expire. Service outages or active leases can delay physical cleanup; operators must monitor its progress. Minimal purchase token digests and transaction records are retained for up to {s.privacy_purchase_days} days for replay/fraud prevention. Deletion retry receipts expire after 90 days. Backups must expire within the configured {s.privacy_backup_days}-day period; erasure records are reapplied before any restored service becomes available.</p>
+-<h2>Deleting your account</h2><p><a href="/account-deletion">Request deletion here</a> or use Manage account → Delete account in the game. We remove Google identity links and credentials, racing name, country, account-linked optional observations, private recordings and recovery data. Existing published tracks, their authored titles/content and historical standings remain. Their author/player is shown as “Removed account”; the creator metadata in published track files is redacted. The remaining opaque historical identity cannot sign in. Signing in again creates a separate account and does not reclaim those records.</p>
++<h2>Deleting your account</h2><p><a href="/account-deletion">Request deletion here</a> or use Manage account → Delete account in the game. We remove Google identity links and credentials, racing name, country, shared car appearances, account-linked optional observations, private recordings and recovery data. Existing published tracks, their authored titles/content and historical standings remain. Their author/player is shown as “Removed account”; the creator metadata in published track files is redacted. The remaining opaque historical identity cannot sign in. Signing in again creates a separate account and does not reclaim those records.</p>
+ <p>Deletion removes online account access and balances. It does not delete your Google account, cancel any provider subscription, or erase local tracks, car condition or cosmetics. Clear local app data yourself if you want those removed. Tracks you intentionally named or designed to contain personal information may still contain it; contact us about that content. Previously downloaded public copies are outside our control. Minimal erasure records prevent restoration of a removed account from backups.</p>
+ <h2>Security and your choices</h2><p>Authentication and transmission use protected credentials and HTTPS in release environments. Access to private service data is restricted. You can change your racing profile, disable optional analytics, request account deletion, and contact the privacy contact above about access, correction, processing or retained content.</p>''')
+ 
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+index 70d62f0..35bf27d 100644
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -34,6 +34,7 @@ from .track_models import (
+     replay_response,
+ )
+ from .tracks import DB, Auth, Key, track_payload
++from .vehicle_appearance import Appearance
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, tags=["weekly rivalry"])
+ TRACK_COUNT = 5
+@@ -54,6 +55,19 @@ class Race(BaseModel):
+     slot: int = Field(strict=True, ge=0, lt=TRACK_COUNT)
+ 
+ 
++@router.put("/rivalry/appearance")
++def save_appearance(payload: Appearance, session: DB, player: Auth):
++    # Serialize per-player car updates with other devices and account erasure.
++    owner = session.scalar(select(Player).where(Player.id == player.id).with_for_update()
++                           .execution_options(populate_existing=True))
++    if owner is None or owner.deleted_at is not None or owner.disabled:
++        raise HTTPException(401, "INVALID_SESSION")
++    value = payload.model_dump()
++    owner.vehicle_appearances = {**owner.vehicle_appearances, payload.vehicle_id: value}
++    session.commit()
++    return value
++
++
+ def week_window(timestamp: int) -> tuple[int, int, int, int]:
+     day = timestamp // 86400
+     start = (day - (day + 3) % 7) * 86400  # Monday 00:00 UTC.
+@@ -221,6 +235,12 @@ def standings_data(session, group):
+ def snapshot(session, group, player_id, timestamp=None):
+     timestamp = now() if timestamp is None else timestamp
+     tracks, overall = standings_data(session, group)
++    appearances = dict(session.execute(select(Player.id, Player.vehicle_appearances)
++        .where(Player.id.in_([row["id"] for row in overall]), Player.deleted_at.is_(None))).all())
++    for row in overall:
++        appearance = appearances.get(row["id"], {}).get(group.vehicle_id)
++        if appearance is not None:
++            row["appearance"] = appearance
+     pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
+         .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
+     state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
+diff --git a/backend/bmt_backend/vehicle_appearance.py b/backend/bmt_backend/vehicle_appearance.py
+new file mode 100644
+index 0000000..5dd0db1
+--- /dev/null
++++ b/backend/bmt_backend/vehicle_appearance.py
+@@ -0,0 +1,86 @@
++"""Presentation-only car IDs and bounded pigments; never used in race contracts."""
++import json
++from pathlib import Path
++from typing import Literal
++
++from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
++
++CATALOG = json.loads(Path(__file__).with_name("vehicle_appearance_catalog.json").read_text(encoding="utf-8"))
++
++
++class Cosmetic(BaseModel):
++    model_config = ConfigDict(strict=True, extra="forbid", allow_inf_nan=False)
++
++    @field_validator("version", mode="before", check_fields=False)
++    @classmethod
++    def integer_version(cls, value):
++        if type(value) is not int:
++            raise ValueError("Version must be an integer")
++        return value
++
++
++class Pigments(Cosmetic):
++    body: str = Field(pattern=r"^[0-9a-f]{6}$")
++    accent: str = Field(pattern=r"^[0-9a-f]{6}$")
++    detail: str = Field(pattern=r"^[0-9a-f]{6}$")
++
++
++class Sticker(Cosmetic):
++    id: str = Field(min_length=1, max_length=40)
++    x: float = Field(ge=0, le=1)
++    y: float = Field(ge=0, le=1)
++    size: float = Field(ge=0.2, le=0.95)
++    rotation: float = Field(ge=-180, le=180)
++
++    @field_validator("id")
++    @classmethod
++    def known_sticker(cls, value):
++        if value not in CATALOG["stickers"]:
++            raise ValueError("Unknown sticker")
++        return value
++
++
++class Panels(Cosmetic):
++    hood: Sticker
++    roof: Sticker
++
++
++class Livery(Cosmetic):
++    version: Literal[2]
++    colors: Pigments
++    pattern: str = Field(min_length=1, max_length=40)
++    stickers: Panels
++
++    @field_validator("pattern")
++    @classmethod
++    def known_pattern(cls, value):
++        if value not in CATALOG["patterns"]:
++            raise ValueError("Unknown pattern")
++        return value
++
++
++class Parts(Cosmetic):
++    version: Literal[1]
++    hood: str = Field(min_length=1, max_length=40)
++    aero: str = Field(min_length=1, max_length=40)
++    rims: str = Field(min_length=1, max_length=40)
++    body: str = Field(min_length=1, max_length=40)
++
++    @field_validator("hood", "aero", "rims", "body")
++    @classmethod
++    def known_part(cls, value, info):
++        if value not in CATALOG["parts"][info.field_name]:
++            raise ValueError("Unknown part")
++        return value
++
++
++class Appearance(Cosmetic):
++    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart"]
++    livery: Livery
++    customisation: Parts
++
++    @model_validator(mode="after")
++    def fitted_parts(self):
++        if self.vehicle_id != "compact" and any(v != "stock" for k, v in self.customisation.model_dump().items() if k != "version"):
++            raise ValueError("Parts are fitted to Compact only")
++        return self
+diff --git a/backend/bmt_backend/vehicle_appearance_catalog.json b/backend/bmt_backend/vehicle_appearance_catalog.json
+new file mode 100644
+index 0000000..373103d
+--- /dev/null
++++ b/backend/bmt_backend/vehicle_appearance_catalog.json
+@@ -0,0 +1,133 @@
++{
++  "patterns": [
++    "plain",
++    "apex_twin",
++    "offset_gt",
++    "endurance",
++    "rally_blocks",
++    "heritage_sweep",
++    "chevron",
++    "velocity",
++    "split_grid",
++    "contour",
++    "forged_hex",
++    "digital_camo",
++    "tiger",
++    "flame",
++    "lightning",
++    "orbit",
++    "prism",
++    "sunburst",
++    "scallop",
++    "herringbone",
++    "circuit",
++    "monza_fan",
++    "nightfall",
++    "crossfire",
++    "coastal_wave",
++    "topo_rally",
++    "saber",
++    "checker_fade",
++    "pinstripe_club",
++    "delta_wing",
++    "fracture",
++    "pulse",
++    "aero_cut",
++    "tribal_fang",
++    "tribal_flow",
++    "tribal_wing",
++    "tribal_thorn",
++    "tribal_crest",
++    "tribal_surge",
++    "ink_brush",
++    "paint_splash",
++    "art_deco",
++    "op_art",
++    "paisley_drift",
++    "ribbon_weave",
++    "scale_shift",
++    "petal_drift",
++    "halftone",
++    "graffiti_slash"
++  ],
++  "stickers": [
++    "none",
++    "crest",
++    "roundel",
++    "compass",
++    "summit",
++    "bolt",
++    "phoenix",
++    "skull",
++    "orbital",
++    "laurel",
++    "piston",
++    "checker",
++    "sun",
++    "zelvora",
++    "vorqen",
++    "talvexa",
++    "orynth",
++    "keldrift",
++    "velqor",
++    "myrvanta",
++    "quorven",
++    "draxelle",
++    "selyth",
++    "auvrion",
++    "rhexori"
++  ],
++  "parts": {
++    "hood": [
++      "stock",
++      "louvres",
++      "scoop",
++      "dome",
++      "extractor",
++      "cowl",
++      "twin_scoop",
++      "reverse",
++      "ribs",
++      "vented"
++    ],
++    "aero": [
++      "stock",
++      "lip",
++      "ducktail",
++      "wing",
++      "touring",
++      "pedestal",
++      "swan",
++      "biwing",
++      "rallywing",
++      "endurance",
++      "whale",
++      "drag",
++      "splitwing"
++    ],
++    "rims": [
++      "stock",
++      "five",
++      "split",
++      "turbine",
++      "mesh",
++      "dish",
++      "rallydisc",
++      "six",
++      "ten",
++      "tri"
++    ],
++    "body": [
++      "stock",
++      "street",
++      "rally",
++      "club",
++      "heritage",
++      "touring",
++      "wide",
++      "endurance",
++      "gravel",
++      "urban"
++    ]
++  }
++}
+diff --git a/backend/pyproject.toml b/backend/pyproject.toml
+index 6fb255f..5ab7dbc 100644
+--- a/backend/pyproject.toml
++++ b/backend/pyproject.toml
+@@ -20,7 +20,7 @@ test = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1", "PyYAML>=6,<7"]
+ include = ["bmt_backend*"]
+ 
+ [tool.setuptools.package-data]
+-"bmt_backend" = ["admin_ui/*", "privacy_ui/*", "lab_tracks.json", "countries.json", "LICENSE-countries.txt"]
++"bmt_backend" = ["admin_ui/*", "privacy_ui/*", "lab_tracks.json", "countries.json", "LICENSE-countries.txt", "vehicle_appearance_catalog.json"]
+ "bmt_backend.migrations" = ["*.mako"]
+ 
+ [tool.pytest.ini_options]
+diff --git a/backend/tests/test_rivalry_appearance.py b/backend/tests/test_rivalry_appearance.py
+new file mode 100644
+index 0000000..c8c90a2
+--- /dev/null
++++ b/backend/tests/test_rivalry_appearance.py
+@@ -0,0 +1,120 @@
++"""Real authenticated appearance writes, shared standings, bounds and erasure."""
++import copy
++import json
++import re
++from pathlib import Path
++from uuid import uuid4
++
++import pytest
++from test_domains import domain as _domain_fixture
++from test_domains import headers
++from test_rivalry import join, seed
++
++from bmt_backend.identity_models import Player
++from bmt_backend.privacy import redact_snapshot, remove_account
++from bmt_backend.vehicle_appearance import CATALOG
++
++rivalry_domain = _domain_fixture
++
++
++def appearance(vehicle="compact", pattern="plain"):
++    sticker = {"id": "none", "x": 0.5, "y": 0.5, "size": 0.62, "rotation": 0.0}
++    return {"vehicle_id": vehicle, "livery": {"version": 2, "colors": {
++        "body": "c94026", "accent": "e0d5b5", "detail": "c78e4c"}, "pattern": pattern,
++        "stickers": {"hood": sticker.copy(), "roof": sticker.copy()}},
++        "customisation": {"version": 1, "hood": "stock", "aero": "stock", "rims": "stock", "body": "stock"}}
++
++
++def save(domain, value, player="Alice"):
++    return domain.client.put("/v1/rivalry/appearance", json=value, headers=headers(domain, player))
++
++
++def test_catalog_matches_native_assets():
++    root = Path(__file__).resolve().parents[2]
++    assert CATALOG["patterns"] == ["plain"] + [row["id"] for row in json.loads((root / "game/assets/liveries/catalog.json").read_text())]
++    assert CATALOG["stickers"] == ["none"] + [row["id"] for row in json.loads((root / "game/assets/liveries/stickers.json").read_text())]
++    source = (root / "game/vehicle/vehicle_customisation.gd").read_text()
++    for category, ids in CATALOG["parts"].items():
++        block = source.split('"' + category + '":[', 1)[1].split(']],', 1)[0].split(']]}', 1)[0]
++        assert ids == re.findall(r'\["([a-z_]+)","', '[' + block)
++
++
++def test_players_share_their_own_parts_and_livery_without_changing_scores(rivalry_domain):
++    seed(rivalry_domain)
++    first = join(rivalry_domain)
++    join(rivalry_domain, "Bob")
++    alice = appearance(pattern=CATALOG["patterns"][-1])
++    alice["customisation"].update(hood="cowl", aero="splitwing", rims="mesh", body="wide")
++    alice["livery"]["stickers"]["hood"].update(id=CATALOG["stickers"][-1], x=0.1, y=0.8, rotation=-97.0)
++    bob = appearance(pattern=CATALOG["patterns"][1])
++    bob["livery"]["colors"]["body"] = "136a94"
++    assert save(rivalry_domain, alice).json() == alice
++    assert save(rivalry_domain, bob, "Bob").json() == bob
++    board = rivalry_domain.client.get(f"/v1/rivalry/{first['group_id']}", headers=headers(rivalry_domain, "Alice")).json()
++    rows = {row["id"]: row for row in board["standings"]}
++    assert rows[rivalry_domain.players["Alice"]]["appearance"] == alice
++    assert rows[rivalry_domain.players["Bob"]]["appearance"] == bob
++    assert all(row["rank"] is None and row["points"] == 0 for row in rows.values())
++    assert all("appearance" not in row for track in board["tracks"] for row in track["entries"])
++    assert all("appearance" not in item for item in board["tracks"])
++    again = copy.deepcopy(alice)
++    again["customisation"]["aero"] = "drag"
++    assert save(rivalry_domain, again).json() == again
++    assert save(rivalry_domain, appearance("pickup")).status_code == 200
++    with rivalry_domain.factory() as session:
++        assert session.get(Player, rivalry_domain.players["Alice"]).vehicle_appearances == {"compact": again, "pickup": appearance("pickup")}
++    other = rivalry_domain.client.get(f"/v1/rivalry/{first['group_id']}", headers=headers(rivalry_domain, "Bob")).json()
++    assert next(row for row in other["standings"] if row["id"] == rivalry_domain.players["Alice"])["appearance"] == again
++
++
++@pytest.mark.parametrize("path,value", [
++    (("vehicle_id",), "../compact"), (("player_id",), "another-player"), (("condition",), {"dirt": 1}),
++    (("livery", "pattern"), "unknown"), (("livery", "colors", "body"), "ff0000ff"),
++    (("livery", "colors", "body"), 30627), (("livery", "stickers", "hood", "id"), "https://example.com/a.png"),
++    (("livery", "stickers", "hood", "x"), -0.001), (("livery", "stickers", "hood", "size"), 0.951),
++    (("livery", "stickers", "hood", "rotation"), 181), (("livery", "stickers", "hood", "x"), "0.5"),
++    (("customisation", "aero"), "arbitrary_mesh"), (("customisation", "version"), 2),
++    (("livery", "version"), 1), (("vehicle_id",), "x" * 5000),
++    (("customisation", "version"), True), (("livery", "version"), 2.0),
++])
++def test_untrusted_appearance_is_rejected(rivalry_domain, path, value):
++    payload = appearance()
++    target = payload
++    for key in path[:-1]:
++        target = target[key]
++    target[path[-1]] = value
++    assert save(rivalry_domain, payload).status_code == 422
++    with rivalry_domain.factory() as session:
++        assert session.get(Player, rivalry_domain.players["Alice"]).vehicle_appearances == {}
++
++
++def test_all_allowed_assets_and_vehicle_bounds(rivalry_domain):
++    for pattern in CATALOG["patterns"]:
++        assert save(rivalry_domain, appearance(pattern=pattern)).status_code == 200
++    for sticker in CATALOG["stickers"]:
++        value = appearance()
++        value["livery"]["stickers"]["hood"]["id"] = sticker
++        assert save(rivalry_domain, value).status_code == 200
++    for category, parts in CATALOG["parts"].items():
++        for part in parts:
++            value = appearance()
++            value["customisation"][category] = part
++            assert save(rivalry_domain, value).status_code == 200
++    for vehicle in ("pickup", "classic", "formula", "kart"):
++        value = appearance(vehicle)
++        assert save(rivalry_domain, value).status_code == 200
++        value["customisation"]["aero"] = "wing"
++        assert save(rivalry_domain, value).status_code == 422
++
++
++def test_authentication_and_deletion_clear_online_appearance(rivalry_domain):
++    assert rivalry_domain.client.put("/v1/rivalry/appearance", json=appearance()).status_code == 401
++    assert save(rivalry_domain, appearance()).status_code == 200
++    pid = rivalry_domain.players["Alice"]
++    with rivalry_domain.factory() as session:
++        remove_account(session, pid, "a" * 64, str(uuid4()))
++        session.commit()
++        assert session.get(Player, pid).vehicle_appearances == {}
++    assert save(rivalry_domain, appearance()).status_code == 401
++    redacted = redact_snapshot({"id": pid, "name": "Alice", "points": 30, "appearance": appearance()}, pid)
++    assert "appearance" not in redacted and redacted["points"] == 30
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 14fedc7..67696af 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 RPC01-RPC04/WR01-WR03/R01/V03-V05/Q01: owner requests customised cars on the top Weekly Rivalry podium. Three native one-shot cars show each leader's actual pinned vehicle, pigments, wrap, panel stickers and fitted kit IDs; current local self edits are immediate. Authenticated, bounded per-car appearance sharing and migration0035 preserve local dirt/washing and canonical scoring; legacy/malformed appearances use factory models. Both-renderer110+110/native all-five-car captures, full-app rivalry1136+1136, backend SQLite55/Ruff and752-script parser pass. PostgreSQL service unavailable; no phone/APK/deployment. Actual commands, scoped checkpoint and owner/device/rollout acceptance: docs/RIVALRY_CUSTOM_CARS_2026_10_14.md.
++
+ 2026-10-14 LP01-LP04/MUS35/MUS36/SND05/G01/R01/Q01: native Garage listening console, LP player/speakers/grooved vinyl and actual sleeve collection; retained Records camera/right workbench. Exploration default plus bounded owner MP3/OGG/PCM WAV imports, saved menu/results selection/stop/volume; originals preserved, no rejected music/race score restored. LP33 headless/42+42 graphical checks and actual audio/silence; soundtrack1158/biome42/Garage178/parser749 pass. Startup-only soundtrack fixture wait retains all assertions. Concurrent room/reflection/wash work excluded from task checkpoint. No phone/APK/deploy or musical-quality/FPS claim. Actual captures/commands/scoped checkpoint and remaining owner/phone acceptance: docs/GARAGE_RECORD_PLAYER_2026_10_14.md.
+ 
+ 2026-10-14 DST01-DST03/V05/G01/R01/Q01: owner requests Desert tire tracks like Grass-biome sand, a slightly lighter road and matching marks. Road9f8052 becomesac8b5a; marks bind the exact road source-colour pigment, share sand tread/analytic groove/0.52 base opacity, retain matte specular. Kit199 fences prepared materials; no new draws/geometry/textures/samplers. Shared width/relief/pressure/sampling/ring/bridges/first-draw/camera/dust/canonical behavior retained within task scope. Both-renderer native rolling/braking/loose/cornering/five-pass overlap captures; clear road-region display luma+7.45%/+5.43%. Soil163/Desert87/ribbon14/bridge656+656/trail bridge8+8/preparation38+38 and742-script parse pass; final Mobile preparation exits cleanly after one initial post-assertion shutdown timeout. Initial paused Mobile control corrected using saved renderer/old material pigment. Concurrent mud work preserved and excluded from scoped checkpoint. No phone test/APK/deploy or FPS claim; owner/phone appearance acceptance remains. Actual commands/captures/limitations/checkpoint: docs/DESERT_SAND_TRACKS_2026_10_14.md.
+diff --git a/docs/RIVALRY_CUSTOM_CARS_2026_10_14.md b/docs/RIVALRY_CUSTOM_CARS_2026_10_14.md
+new file mode 100644
+index 0000000..aa1662b
+--- /dev/null
++++ b/docs/RIVALRY_CUSTOM_CARS_2026_10_14.md
+@@ -0,0 +1,46 @@
++# Customised Weekly Rivalry podium — 14 October 2026
++
++The top three Weekly Rivalry cards now display native renders of the cars their drivers customise in Garage. This supersedes the previous compact-hub instruction to omit vehicle pictures.
++
++Requirements: **RPC01** each leader's actual car and appearance; **RPC02** bounded authenticated sharing; **RPC03** compact, scrollable hub and static render cost; **RPC04** safe legacy, account and condition handling. Existing **WR01–WR03 / R01 / V03–V05 / Q01** navigation, scoring, presentation and evidence requirements remain.
++
++Each card uses the championship's pinned vehicle with that driver's three paint pigments, wrap, independent hood/roof sticker placement, scale/rotation and four Compact part IDs. Your own card immediately reads your current local Garage selections. Other drivers use their latest shared appearance for that vehicle. This is current cosmetic presentation, not a race-result or handling pin. Players without shared data use the native factory finish; mismatched or malformed cosmetic fields cannot load arbitrary assets. Artificial drivers retain their actual factory appearance unless they have saved cosmetics.
++
++The three pictures reuse `rivalry_victory_car.gd`, the same production `CarVisual` used by awards, with transparent one-shot SubViewports. Existing finale presentation and its local condition remain. Podium cars are clean; **dirt, snow, washing history and accumulated condition are never uploaded**. There are at most three extra native viewports and no continuously rendered car pictures after they settle. The gold winner stays slightly taller. Cards are 184/172 layout units high; full-app standings retain 216 units of vertical scroll space at the tested widths, with all five tracks and existing detail-based Race actions intact.
++
++`PUT /v1/rivalry/appearance` stores only the authenticated player's appearance for one of five fixed vehicles. Strict bounded fields reject arbitrary asset names, colours outside six-digit RGB, out-of-range sticker placement, nonfinite numbers, extra fields (including condition/player IDs), incorrect versions and Compact parts on other chassis. The packaged allowlist contains 49 paint/wrap choices, 25 sticker choices including None, and the existing 10/13/10/10 kit IDs. A regression check compares it with the actual native catalogs. One bounded JSON column on `players`, introduced by additive migration **0035_rivalry_car_appearance**, holds at most those five appearances. Updates acquire the player lock and retain the existing erasure fence. Account deletion clears the shared values; snapshot redaction also removes an affected driver's appearance. The privacy policy describes this online copy of Garage choices.
++
++Snapshots add optional `appearance` data to overall standings in one batch query. Track rows, scoring, tickets, physics/rules/handling/compiler pins, PB eligibility and verification do not use cosmetics. The client syncs changed appearance before membership refresh/join, reuses successful values within the authenticated service/player/car scope, and retries failures. Reset and account changes reject stale callbacks. A race start launches cosmetic sync without awaiting it, preserving independent fresh ticket authorization. Older servers and legacy snapshots remain usable, with factory remote cars until the matching backend is available.
++
++Changed files:
++
++- `game/ui/weekly_rivalry_page.gd`: native leader pictures and compact loading geometry.
++- `game/backend/weekly_rivalry_client.gd`, `game/core/app.gd`: scoped appearance provider/sync.
++- `backend/bmt_backend/rivalry.py`, `identity_models.py`, `vehicle_appearance.py`, `vehicle_appearance_catalog.json`, `migrations/versions/0035_rivalry_car_appearance.py`: storage, authenticated validation and snapshot projection.
++- `backend/bmt_backend/privacy.py`, `privacy_pages.py`, `backend/pyproject.toml`: erasure, disclosure and packaged allowlist.
++- `docs/schemas/vehicle-appearance-v1.schema.json`, `weekly-rivalry-v1.schema.json`: optional presentation contract.
++- `game/tests/test_rivalry_custom_cars.gd`, its UID, `test_weekly_rivalry.gd`, `backend/tests/test_rivalry_appearance.py`: focused checks and updated owner-requested podium assertions.
++- This report and the owner override/status entries in `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`.
++
++Actual checks used pinned Godot **4.7.2.stable.official.ed1daf0bf**, through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with APPDATA directed into task-specific `.tools/rivalry-custom-cars*-user` directories. No existing player saves were used.
++
++| Actual command / test | Outcome |
++| --- | --- |
++| `-Action CheckScript -ScriptPath res://ui/weekly_rivalry_page.gd` | Pass. |
++| `-Action TestScript -ScriptPath res://tests/test_rivalry_custom_cars.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3` | **110 checks, zero failures**; three widths, every chassis, complete remote/local appearance, fallback/scope/retry/reset/ticket behavior and native captures. |
++| Same focused test with `-RenderingMethod mobile -RenderingDriver vulkan` | **110 checks, zero failures**; matching native Mobile views. |
++| `-Action TestScript -ScriptPath res://tests/test_weekly_rivalry.gd -Graphical`, Compatibility and Mobile/Vulkan | **1,136 + 1,136 checks, zero failures**; actual full-app navigation, layout, scroll, action gates and existing rivalry behavior. |
++| `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` | **752 scripts, zero failures** in the shared workspace. |
++| `-Action TestScript -ScriptPath res://tests/test_app.gd` | **99 checks, zero failures**; isolated app/record flows. |
++| `.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_rivalry_appearance.py tests/test_rivalry.py tests/test_rivalry_awards.py tests/test_rivalry_week_completion.py tests/test_privacy.py -q -k 'not postgres' --tb=short`, from `backend` using `../.tools/...` | **55 passed, 33 deselected**; existing httpx/Starlette deprecation warning. Covers real authenticated HTTP/SQL, both drivers' independent values, every allowed cosmetic ID, per-car retention, unchanged scores, strict bounds and deletion. |
++| Ruff on changed backend Python modules/migration/test | Pass. |
++
++Measured settled native menu submissions were **141 draw calls**. Explicitly changing all three car viewports to continuous updates raised that to **331** in the final runs; restoring one-shot updates returned exactly to 141. Earlier Compatibility observation was 325 with concurrent workspace assets. These are desktop engine counts, not phone FPS or timing claims.
++
++Inspected native evidence: [compact, small layout](evidence/rivalry-custom-cars-2026-10-14/gl_compatibility/hub-960x540.png), [compact, Mobile](evidence/rivalry-custom-cars-2026-10-14/mobile/car-compact.png), [pickup](evidence/rivalry-custom-cars-2026-10-14/gl_compatibility/car-pickup.png), [classic](evidence/rivalry-custom-cars-2026-10-14/mobile/car-classic.png), [Formula](evidence/rivalry-custom-cars-2026-10-14/mobile/car-formula.png), [kart](evidence/rivalry-custom-cars-2026-10-14/gl_compatibility/car-kart.png). Both renderer folders contain three width captures and all five chassis, sixteen final screenshots total. These use explicit isolated server-shaped fixtures, never fabricated live standings.
++
++Initial execution encountered the PowerShell script policy, sandbox access to Godot's log/certificate store and a missing Python working directory; corrected execution used the pinned entry point, isolated storage and normal engine access. Development checks caught a duplicated API prefix (405), JSON integer-version comparison differences, fixture import lint and an observer assumption that the SubViewport object's property changes from UPDATE_ONCE to disabled. The final draw-work experiment verifies actual static behavior instead. A terminal-only source-diff print hit Windows encoding; no source was changed by that attempt. All relevant final checks above passed without changing canonical invariants. PostgreSQL fixture attempts could not connect to the configured local service and were stopped; **no PostgreSQL test is claimed passed**.
++
++The [task-only checkpoint patch](evidence/rivalry-custom-cars-2026-10-14/scoped-change.patch) and receipt retain the task-start before files and a separate Git checkpoint under `build/rivalry-custom-cars-checkpoint`. Concurrent retained-menu/night-preparation edits in `app.gd` are preserved in the working file and excluded from this checkpoint. The main Git index is untouched.
++
++Rollout requires the matching client plus backend code/package data and migration 0035, using the established backend migration process. No running service was migrated or deployed. No phone test, Android export/install, production write, full Validate or physics merge regression was performed. Owner appearance review, physical-phone layout/frame pacing and matching client/backend rollout remain acceptance checks.
+diff --git a/docs/schemas/vehicle-appearance-v1.schema.json b/docs/schemas/vehicle-appearance-v1.schema.json
+new file mode 100644
+index 0000000..5a39721
+--- /dev/null
++++ b/docs/schemas/vehicle-appearance-v1.schema.json
+@@ -0,0 +1,322 @@
++{
++  "$defs": {
++    "Livery": {
++      "additionalProperties": false,
++      "properties": {
++        "version": {
++          "const": 2,
++          "title": "Version",
++          "type": "integer"
++        },
++        "colors": {
++          "$ref": "#/$defs/Pigments"
++        },
++        "pattern": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Pattern",
++          "type": "string",
++          "enum": [
++            "plain",
++            "apex_twin",
++            "offset_gt",
++            "endurance",
++            "rally_blocks",
++            "heritage_sweep",
++            "chevron",
++            "velocity",
++            "split_grid",
++            "contour",
++            "forged_hex",
++            "digital_camo",
++            "tiger",
++            "flame",
++            "lightning",
++            "orbit",
++            "prism",
++            "sunburst",
++            "scallop",
++            "herringbone",
++            "circuit",
++            "monza_fan",
++            "nightfall",
++            "crossfire",
++            "coastal_wave",
++            "topo_rally",
++            "saber",
++            "checker_fade",
++            "pinstripe_club",
++            "delta_wing",
++            "fracture",
++            "pulse",
++            "aero_cut",
++            "tribal_fang",
++            "tribal_flow",
++            "tribal_wing",
++            "tribal_thorn",
++            "tribal_crest",
++            "tribal_surge",
++            "ink_brush",
++            "paint_splash",
++            "art_deco",
++            "op_art",
++            "paisley_drift",
++            "ribbon_weave",
++            "scale_shift",
++            "petal_drift",
++            "halftone",
++            "graffiti_slash"
++          ]
++        },
++        "stickers": {
++          "$ref": "#/$defs/Panels"
++        }
++      },
++      "required": [
++        "version",
++        "colors",
++        "pattern",
++        "stickers"
++      ],
++      "title": "Livery",
++      "type": "object"
++    },
++    "Panels": {
++      "additionalProperties": false,
++      "properties": {
++        "hood": {
++          "$ref": "#/$defs/Sticker"
++        },
++        "roof": {
++          "$ref": "#/$defs/Sticker"
++        }
++      },
++      "required": [
++        "hood",
++        "roof"
++      ],
++      "title": "Panels",
++      "type": "object"
++    },
++    "Parts": {
++      "additionalProperties": false,
++      "properties": {
++        "version": {
++          "const": 1,
++          "title": "Version",
++          "type": "integer"
++        },
++        "hood": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Hood",
++          "type": "string",
++          "enum": [
++            "stock",
++            "louvres",
++            "scoop",
++            "dome",
++            "extractor",
++            "cowl",
++            "twin_scoop",
++            "reverse",
++            "ribs",
++            "vented"
++          ]
++        },
++        "aero": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Aero",
++          "type": "string",
++          "enum": [
++            "stock",
++            "lip",
++            "ducktail",
++            "wing",
++            "touring",
++            "pedestal",
++            "swan",
++            "biwing",
++            "rallywing",
++            "endurance",
++            "whale",
++            "drag",
++            "splitwing"
++          ]
++        },
++        "rims": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Rims",
++          "type": "string",
++          "enum": [
++            "stock",
++            "five",
++            "split",
++            "turbine",
++            "mesh",
++            "dish",
++            "rallydisc",
++            "six",
++            "ten",
++            "tri"
++          ]
++        },
++        "body": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Body",
++          "type": "string",
++          "enum": [
++            "stock",
++            "street",
++            "rally",
++            "club",
++            "heritage",
++            "touring",
++            "wide",
++            "endurance",
++            "gravel",
++            "urban"
++          ]
++        }
++      },
++      "required": [
++        "version",
++        "hood",
++        "aero",
++        "rims",
++        "body"
++      ],
++      "title": "Parts",
++      "type": "object"
++    },
++    "Pigments": {
++      "additionalProperties": false,
++      "properties": {
++        "body": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Body",
++          "type": "string"
++        },
++        "accent": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Accent",
++          "type": "string"
++        },
++        "detail": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Detail",
++          "type": "string"
++        }
++      },
++      "required": [
++        "body",
++        "accent",
++        "detail"
++      ],
++      "title": "Pigments",
++      "type": "object"
++    },
++    "Sticker": {
++      "additionalProperties": false,
++      "properties": {
++        "id": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Id",
++          "type": "string",
++          "enum": [
++            "none",
++            "crest",
++            "roundel",
++            "compass",
++            "summit",
++            "bolt",
++            "phoenix",
++            "skull",
++            "orbital",
++            "laurel",
++            "piston",
++            "checker",
++            "sun",
++            "zelvora",
++            "vorqen",
++            "talvexa",
++            "orynth",
++            "keldrift",
++            "velqor",
++            "myrvanta",
++            "quorven",
++            "draxelle",
++            "selyth",
++            "auvrion",
++            "rhexori"
++          ]
++        },
++        "x": {
++          "maximum": 1,
++          "minimum": 0,
++          "title": "X",
++          "type": "number"
++        },
++        "y": {
++          "maximum": 1,
++          "minimum": 0,
++          "title": "Y",
++          "type": "number"
++        },
++        "size": {
++          "maximum": 0.95,
++          "minimum": 0.2,
++          "title": "Size",
++          "type": "number"
++        },
++        "rotation": {
++          "maximum": 180,
++          "minimum": -180,
++          "title": "Rotation",
++          "type": "number"
++        }
++      },
++      "required": [
++        "id",
++        "x",
++        "y",
++        "size",
++        "rotation"
++      ],
++      "title": "Sticker",
++      "type": "object"
++    }
++  },
++  "additionalProperties": false,
++  "properties": {
++    "vehicle_id": {
++      "enum": [
++        "compact",
++        "pickup",
++        "classic",
++        "formula",
++        "kart"
++      ],
++      "title": "Vehicle Id",
++      "type": "string"
++    },
++    "livery": {
++      "$ref": "#/$defs/Livery"
++    },
++    "customisation": {
++      "$ref": "#/$defs/Parts"
++    }
++  },
++  "required": [
++    "vehicle_id",
++    "livery",
++    "customisation"
++  ],
++  "title": "Vehicle appearance v1 (presentation only)",
++  "type": "object",
++  "$id": "urn:bmt:vehicle-appearance-v1"
++}
+diff --git a/docs/schemas/weekly-rivalry-v1.schema.json b/docs/schemas/weekly-rivalry-v1.schema.json
+index 6a757aa..ef4bcaf 100644
+--- a/docs/schemas/weekly-rivalry-v1.schema.json
++++ b/docs/schemas/weekly-rivalry-v1.schema.json
+@@ -82,7 +82,8 @@
+         "is_test_driver": {"type": "boolean", "default": false},
+         "rank": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+         "points": {"type": "integer", "minimum": 0, "maximum": 150},
+-        "completed": {"type": "integer", "minimum": 0, "maximum": 5}
++        "completed": {"type": "integer", "minimum": 0, "maximum": 5},
++        "appearance": {"$ref": "vehicle-appearance-v1.schema.json", "description": "Optional current appearance for the championship car, shared by that driver. No dirt, washing or scoring data."}
+       }
+     }
+   }
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+index 573ccf4..3b38096 100644
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -2,6 +2,8 @@ extends Node
+ ## Authenticated rivalry adapter. All points and results come from the server.
+ signal changed
+ var client: Node
++var appearance_provider: Callable
++var _synced_appearance: String = ""
+ var model := WeeklyRivalry.new()
+ var busy: bool = false
+ var error: String = ""
+@@ -68,6 +70,7 @@ func set_test_population(enabled: bool) -> void:
+ 
+ func reset() -> void:
+ 	_generation += 1
++	_synced_appearance = ""
+ 	model = WeeklyRivalry.new()
+ 	snapshot_scope = ""
+ 	request_scope = ""
+@@ -125,6 +128,18 @@ static func valid_outcome(value: Dictionary) -> bool:
+ func has_snapshot() -> bool:
+ 	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
+ 
++func _sync_appearance() -> void:
++	if not appearance_provider.is_valid() or not client.signed_in(): return
++	var value: Variant = appearance_provider.call(VehicleCatalog.selected)
++	if not value is Dictionary or not value.has_all(["vehicle_id","livery","customisation"]): return
++	if not VehicleLivery.valid(value.livery) or not VehicleCustomisation.valid(value.customisation): return
++	var original: String = scope()
++	var generation: int = _generation
++	var signature: String = original+"/"+JSON.stringify(value,"",true).sha256_text()
++	if signature == _synced_appearance: return
++	var response: Dictionary = await client.request_api("/rivalry/appearance",HTTPClient.METHOD_PUT,value,"",true)
++	if generation == _generation and original == scope() and response.get("ok",false): _synced_appearance = signature
++
+ func refresh(force: bool = true) -> void:
+ 	# Development rivalries use the server capability automatically. Release
+ 	# and ordinary services retain the real-player population.
+@@ -142,10 +157,22 @@ func refresh(force: bool = true) -> void:
+ 		return
+ 	_restore_snapshot()
+ 	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
++	var original: String = scope()
++	var generation: int = _generation
++	busy = true
++	request_scope = original
++	await _sync_appearance()
++	if generation != _generation or original != scope(): return
+ 	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode()+("&test_population=true" if test_population else ""))
+ 
+ func join() -> void:
+ 	if busy: return
++	var original: String = scope()
++	var generation: int = _generation
++	busy = true
++	request_scope = original
++	await _sync_appearance()
++	if generation != _generation or original != scope(): return
+ 	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
+ 
+ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
+@@ -185,6 +212,8 @@ func ticket(slot: int) -> Dictionary:
+ 	if busy or cached_snapshot or model.completed or model.status != "active" or snapshot_scope != scope(): return {}
+ 	var original: String = scope()
+ 	var generation: int = _generation
++	# Cosmetic sharing must not queue fresh race authorization behind uploads.
++	_sync_appearance()
+ 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tickets",HTTPClient.METHOD_POST,{"slot":slot},client.new_operation_key(),true)
+ 	if original != scope() or generation != _generation: return {}
+ 	if not response.ok:
+diff --git a/game/core/app.gd b/game/core/app.gd
+index 72a8c18..d13b492 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -251,6 +251,8 @@ func _ready() -> void:
+ 	cloud.load_cached()
+ 	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
+ 	rivalry.client = online.client
++	rivalry.appearance_provider = func(id: String) -> Dictionary:
++		return {"vehicle_id":id,"livery":VehicleLivery.for_car(records.settings,id),"customisation":VehicleCustomisation.for_car(records.settings,id)}
+ 	rivalry.cache_directory = cloud.cache_root().path_join("menu/rivalry")
+ 	add_child(rivalry)
+ 	rivalry.changed.connect(_rivalry_changed)
+diff --git a/game/tests/test_rivalry_custom_cars.gd b/game/tests/test_rivalry_custom_cars.gd
+new file mode 100644
+index 0000000..fb4102e
+--- /dev/null
++++ b/game/tests/test_rivalry_custom_cars.gd
+@@ -0,0 +1,178 @@
++extends "res://tests/test_rivalry_result.gd"
++## Player-specific native podiums, bounded static rendering and scoped sync.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++
++class AppearanceClient extends Node:
++	var player: Dictionary = {"id":"alice"}
++	var calls: Array[Dictionary] = []
++	var accepted: bool = true
++	var pending: bool = false
++	func base_url() -> String: return "http://fixture.invalid"
++	func signed_in() -> bool: return not player.is_empty()
++	func new_operation_key() -> String: return "fixture-ticket"
++	func request_api(path: String, method: int, value: Dictionary, _key: String, _authenticated: bool) -> Dictionary:
++		calls.append({"path":path,"method":method,"value":value.duplicate(true)})
++		if path.ends_with("/tickets"): return {"ok":true,"data":{"marker":"fresh-race"}}
++		if pending: await get_tree().process_frame
++		return {"ok":accepted,"data":value.duplicate(true)}
++
++func appearance(index: int, id: String = "compact") -> Dictionary:
++	var livery: Dictionary = VehicleLivery.defaults(id)
++	livery.colors.body = ["c43c28","247995","819c55"][index]
++	livery.pattern = str(LiveryCatalog.patterns[[33,40,12][index]].id)
++	livery.stickers.hood.id = str(LiveryCatalog.stickers[12+index].id)
++	livery.stickers.hood.rotation = -90.0
++	var parts: Dictionary = VehicleCustomisation.defaults()
++	if id == "compact":
++		parts.hood = ["cowl","louvres","scoop"][index]
++		parts.aero = ["splitwing","whale","drag"][index]
++		parts.rims = ["mesh","five","rallydisc"][index]
++		parts.body = ["wide","street","gravel"][index]
++	return {"vehicle_id":id,"livery":livery,"customisation":parts}
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-custom-cars-2026-10-14/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	var snapshot: Dictionary = fixture()
++	for index: int in range(3): snapshot.standings[index].appearance = appearance(index)
++	var original: String = JSON.stringify(snapshot)
++	var model := WeeklyRivalry.new()
++	model.apply_snapshot(JSON.parse_string(original))
++	check(VehicleLivery.normalize(model.standing()[0].appearance.livery,"compact") == appearance(0).livery,"remote JSON pigments, wrap and panel sticker survive model mapping")
++	check(JSON.stringify(snapshot) == original,"appearance projection retains source standings and scoring")
++	await sync_checks()
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
++		root.size = dimensions
++		var page := WeeklyRivalryPage.new()
++		page.model = model
++		page.signed_in = true
++		page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++		root.add_child(page)
++		for _frame: int in range(12): await process_frame
++		for index: int in range(3):
++			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
++			check(car != null,"all three ranked players get their own native car")
++			check(car.car.vehicle_id == "compact" and car.car.livery == appearance(index).livery,"podium uses that player's complete paint, livery and stickers")
++			check(car.car.customisation == appearance(index).customisation,"podium uses that player's four fitted part IDs")
++			check(car.condition.is_empty(),"remote podium never receives local dirt or washing")
++			check(Rect2(Vector2.ZERO,Vector2(dimensions)).encloses(car.get_global_rect()),"native cars remain within the smaller hub bounds")
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			for index: int in range(3):
++				var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
++				check(car.viewport.render_target_update_mode <= SubViewport.UPDATE_ONCE,"podium requests only bounded one-shot draws")
++			if dimensions.x == 1280:
++				var static_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
++				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++				for _frame: int in range(4): await process_frame
++				await RenderingServer.frame_post_draw
++				var live_draws: int = RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
++				check(live_draws > static_draws,"settled one-shot podiums omit the native car draw work")
++				for index: int in range(3): page.find_child("RivalryPodiumCar_"+str(index+1),true,false).viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++				for _frame: int in range(4): await process_frame
++				await RenderingServer.frame_post_draw
++				check(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME) == static_draws,"static render work returns after bounded refresh")
++				print("PODIUM_DRAW_WORK: static=%d live=%d" % [static_draws,live_draws])
++			check(root.get_texture().get_image().save_png(evidence.path_join("hub-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"native hub evidence saved")
++		page.free()
++		await process_frame
++	var own := WeeklyRivalryPage.new()
++	own.model = model
++	own.finale_livery = VehicleLivery.defaults("compact")
++	own.finale_livery.colors.body = "4d2bb8"
++	own.finale_customisation = VehicleCustomisation.defaults()
++	own.finale_customisation.aero = "wing"
++	own.finale_condition = {"dirt":1.0}
++	root.add_child(own)
++	var leaders: Array[Dictionary] = model.standing()
++	for index: int in range(3):
++		if leaders[index].id != WeeklyRivalry.SELF: continue
++		var car: Control = own.find_child("RivalryPodiumCar_"+str(index+1),true,false)
++		check(car.livery == own.finale_livery and car.customisation == own.finale_customisation,"self podium immediately reflects current local Garage edits")
++		check(car.condition.is_empty(),"local dirt stays out of podium appearance payloads")
++	own.free()
++	var legacy: Dictionary = fixture()
++	legacy.standings[0].appearance = {"vehicle_id":"pickup","livery":appearance(0).livery,"customisation":appearance(0).customisation}
++	legacy.standings[1].appearance = {"vehicle_id":"compact","livery":{"colors":"malformed"},"customisation":{"aero":"unknown"}}
++	model.apply_snapshot(legacy)
++	var fallback := WeeklyRivalryPage.new()
++	fallback.model = model
++	root.add_child(fallback)
++	for index: int in range(3):
++		var car: Control = fallback.find_child("RivalryPodiumCar_"+str(index+1),true,false)
++		check(car.livery.is_empty() and car.customisation.is_empty(),"missing, mismatched or malformed remote appearances safely retain stock models")
++	fallback.free()
++	if DisplayServer.get_name() != "headless": await all_vehicle_views()
++	print("RIVALRY_CUSTOM_CARS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func all_vehicle_views() -> void:
++	root.size = Vector2i(1280,720)
++	for id: String in VehicleCatalog.IDS:
++		var value: Dictionary = fixture()
++		value.vehicle_id = id
++		for index: int in range(3): value.standings[index].appearance = appearance(index,id)
++		var model := WeeklyRivalry.new()
++		model.apply_snapshot(JSON.parse_string(JSON.stringify(value)))
++		var page := WeeklyRivalryPage.new()
++		page.model = model
++		page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++		root.add_child(page)
++		for _frame: int in range(12): await process_frame
++		await RenderingServer.frame_post_draw
++		for index: int in range(3):
++			var car: Control = page.find_child("RivalryPodiumCar_"+str(index+1),true,false)
++			check(car.car.vehicle_id == id and car.car.livery == appearance(index,id).livery,id+" renders each player's actual chassis and livery")
++			var picture: Image = car.viewport.get_texture().get_image()
++			var occupied: int = 0
++			for y: int in range(picture.get_height()):
++				for x: int in range(picture.get_width()):
++					if picture.get_pixel(x,y).a > 0.5: occupied += 1
++			check(occupied > picture.get_width()*picture.get_height()*0.02,id+" native car appears in the bounded render")
++		check(root.get_texture().get_image().save_png(evidence.path_join("car-"+id+".png")) == OK,id+" native podium evidence saved")
++		page.free()
++		await process_frame
++
++func sync_checks() -> void:
++	var client := AppearanceClient.new()
++	root.add_child(client)
++	var adapter: Node = Adapter.new()
++	adapter.client = client
++	var current: Dictionary = appearance(0)
++	adapter.appearance_provider = func(_id: String) -> Dictionary: return current.duplicate(true)
++	root.add_child(adapter)
++	await adapter._sync_appearance()
++	await adapter._sync_appearance()
++	check(client.calls.size() == 1 and client.calls[0].value == current,"unchanged appearance sync is reused within its authenticated scope")
++	check(client.calls[0].method == HTTPClient.METHOD_PUT and client.calls[0].path == "/rivalry/appearance","cosmetics use the dedicated self-only endpoint")
++	check(not client.calls[0].value.has("condition"),"network appearance contains no dirt, washing or canonical tuning")
++	current.customisation.aero = "whale"
++	await adapter._sync_appearance()
++	check(client.calls.size() == 2,"a changed fitted part is uploaded")
++	client.player.id = "bob"
++	await adapter._sync_appearance()
++	check(client.calls.size() == 3,"account switching cannot reuse another player's sync")
++	client.accepted = false
++	current.livery.colors.body = "000001"
++	await adapter._sync_appearance()
++	client.accepted = true
++	await adapter._sync_appearance()
++	check(client.calls.size() == 5,"failed or older-server sync can retry without claiming it was saved")
++	client.pending = true
++	current.livery.colors.body = "000002"
++	adapter._sync_appearance()
++	adapter.reset()
++	await process_frame
++	check(adapter._synced_appearance.is_empty(),"late response after reset cannot seed the next session")
++	client.player = {}
++	await adapter._sync_appearance()
++	check(client.calls.size() == 6,"signed-out local cosmetics never upload")
++	client.player = {"id":"bob"}
++	current.livery.colors.body = "000003"
++	adapter.model.status = "active"
++	adapter.snapshot_scope = adapter.scope()
++	var ticket: Dictionary = await adapter.ticket(0)
++	check(ticket.get("marker") == "fresh-race","cosmetic sharing never delays fresh race authorization")
++	await process_frame
++	adapter.free()
++	client.free()
+diff --git a/game/tests/test_rivalry_custom_cars.gd.uid b/game/tests/test_rivalry_custom_cars.gd.uid
+new file mode 100644
+index 0000000..efba480
+--- /dev/null
++++ b/game/tests/test_rivalry_custom_cars.gd.uid
+@@ -0,0 +1 @@
++uid://b7s5bfbtyaid2
+diff --git a/game/tests/test_weekly_rivalry.gd b/game/tests/test_weekly_rivalry.gd
+index f0cf5e8..3bc9d23 100644
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -99,8 +99,8 @@ func run() -> void:
+ 		var winner: Control = app.root_ui.find_child("RivalryPodium_1",true,false)
+ 		var runner: Control = app.root_ui.find_child("RivalryPodium_2",true,false)
+ 		check(winner.size.y > runner.size.y and winner.position.y < runner.position.y,"centre winner has a taller podium card")
+-		check(winner.size.y <= 128,"the podium remains compact enough to prioritize standings")
+-		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) == null,"podium omits car pictures")
++		check(winner.size.y <= 194,"the car podium remains compact enough to prioritize standings")
++		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) != null,"podium shows the winner's native car")
+ 		var left_panel: Control = app.root_ui.find_child("RivalryDriversPanel",true,false)
+ 		var right_panel: Control = app.root_ui.find_child("RivalryTracksPanel",true,false)
+ 		check(absf(left_panel.get_global_rect().end.y-right_panel.get_global_rect().end.y) < 1.0,"main panel bottom edges align")
+@@ -108,7 +108,7 @@ func run() -> void:
+ 		check(player_points.text == str(int(WeeklyRivalry.self_row(app.rivalry.model.standing()).points)),"highlighted player row shows the model points")
+ 		var player_row: Control = app.root_ui.find_child("Driver_you",true,false)
+ 		var table_scroll: Control = app.root_ui.find_child("RivalryStandingsScroll",true,false)
+-		check(table_scroll.size.y >= winner.size.y*1.65,"standings have substantially more vertical room than the podium")
++		check(table_scroll.size.y >= winner.size.y,"standings retain more vertical room than the car podium")
+ 		print("RIVALRY_HUB_LAYOUT: ",dimensions," podium=",winner.size.y," standings=",table_scroll.size.y)
+ 		check(table_scroll.get_global_rect().grow(1).encloses(player_row.get_global_rect()),"the highlighted player row is visible within the standings viewport")
+ 		var gap_header: Control = app.root_ui.find_child("RivalryColumn_GAP",true,false)
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+index 066b6da..8c1c4ae 100644
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -251,10 +251,10 @@ func _loading(parent: Control) -> void:
+ 	field.add_theme_constant_override("separation",12)
+ 	parent.add_child(field)
+ 	var podium := HBoxContainer.new()
+-	podium.custom_minimum_size.y = 116
++	podium.custom_minimum_size.y = 184
+ 	podium.add_theme_constant_override("separation",10)
+ 	field.add_child(podium)
+-	for position: int in [1,0,2]: _loading_block(podium,116 if position == 0 else 104).size_flags_vertical = Control.SIZE_SHRINK_END
++	for position: int in [1,0,2]: _loading_block(podium,184 if position == 0 else 172).size_flags_vertical = Control.SIZE_SHRINK_END
+ 	var standings: VBoxContainer = _card(field,"",12)
+ 	_copy(standings,"STANDINGS",27)
+ 	_copy(standings,"Loading…",18,MenuStyle.MUTED)
+@@ -466,7 +466,7 @@ func _medal_color(position: int) -> Color:
+ func _podium(parent: Control) -> void:
+ 	var podium := HBoxContainer.new()
+ 	podium.name = "RivalryPodium"
+-	podium.custom_minimum_size.y = 116
++	podium.custom_minimum_size.y = 184
+ 	podium.add_theme_constant_override("separation",10)
+ 	parent.add_child(podium)
+ 	var leaders: Array[Dictionary] = []
+@@ -486,7 +486,7 @@ func _podium(parent: Control) -> void:
+ 		var card: VBoxContainer = _card(podium,"",9)
+ 		var panel: PanelContainer = card.get_parent()
+ 		panel.name = "RivalryPodium_"+str(position+1)
+-		panel.custom_minimum_size.y = 116 if position == 0 else 104
++		panel.custom_minimum_size.y = 184 if position == 0 else 172
+ 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
+ 		panel.size_flags_stretch_ratio = 1.08 if position == 0 else 1.0
+ 		var style: StyleBoxFlat = MenuStyle.card(9)
+@@ -506,6 +506,20 @@ func _podium(parent: Control) -> void:
+ 		icon.modulate = color
+ 		rank.add_child(icon)
+ 		_copy(rank,rank_text(driver),32 if position == 0 else 29,color)
++		var car: Control = preload("res://ui/rivalry_victory_car.gd").new()
++		car.name = "RivalryPodiumCar_"+str(position+1)
++		car.vehicle_id = model.vehicle_id
++		var appearance: Variant = driver.get("appearance",{})
++		if appearance is Dictionary and appearance.get("vehicle_id") == model.vehicle_id:
++			if VehicleLivery.valid(appearance.get("livery")): car.livery = VehicleLivery.normalize(appearance.livery,model.vehicle_id)
++			if VehicleCustomisation.valid(appearance.get("customisation")):
++				car.customisation = appearance.customisation.duplicate(true)
++				car.customisation.version = VehicleCustomisation.VERSION
++		if driver.id == WeeklyRivalry.SELF:
++			if VehicleLivery.valid(finale_livery): car.livery = finale_livery.duplicate(true)
++			if VehicleCustomisation.valid(finale_customisation): car.customisation = finale_customisation.duplicate(true)
++		car.custom_minimum_size.y = 68
++		card.add_child(car)
+ 		var identity := HBoxContainer.new()
+ 		identity.add_theme_constant_override("separation",6)
+ 		card.add_child(identity)

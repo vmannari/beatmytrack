@@ -34,6 +34,7 @@ from .track_models import (
     replay_response,
 )
 from .tracks import DB, Auth, Key, track_payload
+from .vehicle_appearance import Appearance
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["weekly rivalry"])
 TRACK_COUNT = 5
@@ -52,6 +53,19 @@ class Join(BaseModel):
 class Race(BaseModel):
     model_config = ConfigDict(extra="forbid")
     slot: int = Field(strict=True, ge=0, lt=TRACK_COUNT)
+
+
+@router.put("/rivalry/appearance")
+def save_appearance(payload: Appearance, session: DB, player: Auth):
+    # Serialize per-player car updates with other devices and account erasure.
+    owner = session.scalar(select(Player).where(Player.id == player.id).with_for_update()
+                           .execution_options(populate_existing=True))
+    if owner is None or owner.deleted_at is not None or owner.disabled:
+        raise HTTPException(401, "INVALID_SESSION")
+    value = payload.model_dump()
+    owner.vehicle_appearances = {**owner.vehicle_appearances, payload.vehicle_id: value}
+    session.commit()
+    return value
 
 
 def week_window(timestamp: int) -> tuple[int, int, int, int]:
@@ -221,6 +235,12 @@ def standings_data(session, group):
 def snapshot(session, group, player_id, timestamp=None):
     timestamp = now() if timestamp is None else timestamp
     tracks, overall = standings_data(session, group)
+    appearances = dict(session.execute(select(Player.id, Player.vehicle_appearances)
+        .where(Player.id.in_([row["id"] for row in overall]), Player.deleted_at.is_(None))).all())
+    for row in overall:
+        appearance = appearances.get(row["id"], {}).get(group.vehicle_id)
+        if appearance is not None:
+            row["appearance"] = appearance
     pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
         .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
     state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
@@ -242,7 +262,16 @@ def snapshot(session, group, player_id, timestamp=None):
         .join(Track).join(Player, Player.id == Track.owner_id)
         .where(TrackVersion.id.in_([item["version_id"] for item in group.tracks]))).all())
     for slot, pinned in enumerate(group.tracks):
-        result["tracks"].append({"slot": slot, "entry": pinned["entry"], "board_id": pinned["board_id"],
+        entry = pinned["entry"]
+        version = session.get(TrackVersion, pinned["version_id"])
+        if version is not None:
+            owner = session.get(Player, session.get(Track, version.track_id).owner_id)
+            if owner.deleted_at is not None:
+                # Refresh redacted source hashes as well as names for retained
+                # cohort snapshots; their board/score pins remain unchanged.
+                entry = {**entry, "creator": "Removed account", "content_hash": version.content_hash,
+                    "redacted_track_hash": version.redacted_track_hash, "canonical_track_hash": version.manifest.get("track_content_hash")}
+        result["tracks"].append({"slot": slot, "entry": entry, "board_id": pinned["board_id"],
                                  "available": not group.archived and availability.get(pinned["version_id"], False),
                                  "entries": tracks[slot]})
     return result

@@ -66,11 +66,10 @@ func set_night_headlights(enabled: bool) -> void:
 	lens.albedo_color = Color("fff0d2")
 	for side: float in [-1.0,1.0]:
 		if vehicle_id == "compact":
-			for offset: float in [0.405,0.651]:
-				var x: float = side*offset
-				var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.071,0.018,Vector3(x,0.798,CompactDetail._nose_z(x)-0.04),lens)
-				round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
-				round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			var x: float = side*CompactFrontLamps.OFFSET
+			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
+			round_lens.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
+			round_lens.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			continue
 		if vehicle_id == "classic":
 			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.14,0.012,Vector3(side*mount.x,mount.y,mount.z),lens)
@@ -195,6 +194,14 @@ func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bo
 func _ready() -> void:
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
+	if preload("res://vehicle/prepared_car_cache.gd").restore(self):
+		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+		apply_livery(livery)
+		_update_rear_lights()
+		graphics.configure(self)
+		force_update_transform()
+		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+		return
 	if vehicle_id != "compact":
 		VehicleModels.build(self, vehicle_id)
 		if not livery.is_empty(): apply_livery(livery)
@@ -246,6 +253,7 @@ func _finish_render_model() -> void:
 		VisualGeometry.batch_static_parts(self)
 		VisualGeometry.batch_car_parts(self)
 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+	preload("res://vehicle/prepared_car_cache.gd").remember(self)
 	graphics.configure(self)
 
 func new_kit_frame(category: String, parent: Node3D) -> Node3D:
@@ -455,11 +463,18 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 	var outline: Array[Vector2] = ROLL_OUTLINE
 	if vehicle_id=="compact" and customisation != VehicleCustomisation.defaults():
 		outline = ROLL_OUTLINE.duplicate()
-		if customisation.body in ["rally","club"]:
-			outline.append_array([Vector2(-1.10,0.37),Vector2(1.10,0.37),Vector2(-1.10,0.85),Vector2(1.10,0.85)])
+		if customisation.body in ["rally","club"] or customisation.body in CompactKitVariants.BODIES:
+			if customisation.body in CompactKitVariants.BODIES:
+				outline.append_array([Vector2(-1.15,0.25),Vector2(1.15,0.25),Vector2(-1.15,0.90),Vector2(1.15,0.90)])
+			else:
+				outline.append_array([Vector2(-1.10,0.37),Vector2(1.10,0.37),Vector2(-1.10,0.85),Vector2(1.10,0.85)])
 		if customisation.aero!="stock":
 			var half: float = 0.92 if customisation.aero=="wing" else 0.65
 			var height: float = 1.89 if customisation.aero=="wing" else 1.64
+			if customisation.aero in CompactAero.PROFILES:
+				var extent: Vector2 = CompactAero.roll_extent(customisation.aero)
+				half = extent.x
+				height = extent.y
 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
 	if vehicle_id != "compact":
 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96

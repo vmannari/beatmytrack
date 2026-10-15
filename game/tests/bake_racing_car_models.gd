@@ -10,7 +10,10 @@ func _bake() -> void:
 	glazing.use_baked = false
 	glazing.sheets.clear()
 	var report: Dictionary = {"engine":Engine.get_version_info().string,"provenance":"Reduced sampling of original authored car shapes; offline positions-only shadow LODs.","cars":{}}
+	var front_only: bool = "--compact-front-only" in OS.get_cmdline_user_args()
+	if front_only: report = JSON.parse_string(FileAccess.get_file_as_string(RacingCarModels.ASSET_ROOT.path_join("manifest.json")))
 	for id: String in VehicleCatalog.IDS:
+		if front_only and id!="compact": continue
 		var car := CarVisual.new()
 		car.vehicle_id = id
 		car.simple_model = true
@@ -18,7 +21,9 @@ func _bake() -> void:
 		var frames: Array[Node3D] = [car.body]
 		frames.append_array(car.rolling_wheels)
 		var details: Array[Dictionary] = []
+		if front_only: details.assign(report.cars.compact)
 		for index: int in range(frames.size()):
+			if front_only and index!=0: continue
 			var source: ArrayMesh = RacingCarModels.shadow_source(frames[index])
 			var arrays: Array = source.surface_get_arrays(0)
 			var original_count: int = arrays[Mesh.ARRAY_INDEX].size()/3
@@ -53,7 +58,9 @@ func _bake() -> void:
 			mesh.custom_aabb = source.get_aabb()
 			var path: String = RacingCarModels.ASSET_ROOT.path_join(id+"_shadow_"+str(index)+".res")
 			assert(ResourceSaver.save(mesh,path,ResourceSaver.FLAG_COMPRESS) == OK)
-			details.append({"frame":index,"source_triangles":original_count,"triangles":chosen.size()/3,"lod_error":error,"vertices":compact.size()})
+			var detail: Dictionary = {"frame":index,"source_triangles":original_count,"triangles":chosen.size()/3,"lod_error":error,"vertices":compact.size()}
+			if front_only: details[index] = detail
+			else: details.append(detail)
 		report.cars[id] = details
 		print("RACING_SHADOW_BAKE ",id," ",details)
 		car.queue_free()
@@ -65,7 +72,7 @@ func _bake() -> void:
 	for key: String in resources:
 		if not key.ends_with("_simple"): continue
 		var path: String = RacingCarModels.COACH_ROOT.path_join(key+".res")
-		assert(ResourceSaver.save(resources[key],path,ResourceSaver.FLAG_COMPRESS) == OK)
+		if not front_only or key=="front_coachwork_simple": assert(ResourceSaver.save(resources[key],path,ResourceSaver.FLAG_COMPRESS) == OK)
 		bytes += FileAccess.get_file_as_bytes(path).size()
 		count += 1
 	report.compact_meshes = count

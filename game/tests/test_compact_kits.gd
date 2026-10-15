@@ -4,6 +4,7 @@ var checks: int = 0
 var failures: int = 0
 var output: String = "res://../docs/evidence/compact-kits-2026-10-13/compatibility"
 var metrics: Array[Dictionary] = []
+var page: GaragePage
 
 func _initialize() -> void: _run.call_deferred()
 func check(ok: bool, label: String) -> void:
@@ -12,6 +13,7 @@ func check(ok: bool, label: String) -> void:
 		failures += 1
 		print("FAIL: "+label)
 func settle() -> void:
+	while is_instance_valid(page) and page._menu_motion != null: await process_frame
 	for i: int in range(10): await process_frame
 	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
 func capture(label: String) -> void:
@@ -67,7 +69,7 @@ func _run() -> void:
 	VehicleCatalog.selected = "compact"
 	app._show_screen("garage")
 	await settle()
-	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
+	page = app.root_ui.find_child("GaragePage",true,false)
 	page.open_car(0)
 	page._show_section("tuning")
 	await settle()
@@ -83,7 +85,10 @@ func _run() -> void:
 	for category: String in VehicleCustomisation.CATEGORIES:
 		await tap(page.kit_categories[category])
 		check(page.kit_category==category,"touch category "+category)
-		for index: int in range(4):
+		check(page.kit_cards.get_child_count()==(13 if category=="aero" else 10),"all choices for "+category)
+		for index: int in range(VehicleCustomisation.OPTIONS[category].size()):
+			page.kit_scroll.ensure_control_visible(page.kit_cards.get_child(index))
+			await settle()
 			await tap(page.kit_cards.get_child(index))
 			var id: String = VehicleCustomisation.OPTIONS[category][index][0]
 			check(page.showroom.car.customisation[category]==id,"touch installs "+category+"/"+id)
@@ -104,9 +109,38 @@ func _run() -> void:
 	check(app.records.key_for(app.selected_track,VehicleCatalog.config("compact"))==pb_key,"cosmetic kit leaves PB key")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
 		root.size = dimensions
+		root.content_scale_size = dimensions
 		await settle()
+		page._show_section("customise")
+		await settle()
+		var paint_preview: Rect2 = page.preview.get_rect()
+		var paint_tools: Rect2 = page.tools_panel.get_rect()
+		var retained_viewport: SubViewport = page.showroom.showroom_viewport
+		var retained_car: CarVisual = page.showroom.car
+		var retained_camera: Transform3D = page.showroom.camera.transform
+		await capture("painting-"+str(dimensions.x))
+		page._show_section("tuning")
+		await settle()
+		check(page.preview.get_rect().is_equal_approx(paint_preview) and page.tools_panel.get_rect().is_equal_approx(paint_tools),"Tuning matches Painting pane sizes and positions "+str(dimensions))
+		check(page.showroom.showroom_viewport==retained_viewport and page.showroom.car==retained_car and page.showroom.camera.transform==retained_camera,"Painting/Tuning transfer retains actual car viewport and camera")
+		check(page.tools_panel.position.x>=page.preview.get_rect().end.x,"kit workbench stays beside the car")
+		check(page.kit_scroll.horizontal_scroll_mode==ScrollContainer.SCROLL_MODE_DISABLED and page.kit_scroll.vertical_scroll_mode==ScrollContainer.SCROLL_MODE_AUTO,"vertical gallery avoids horizontal card clipping")
+		check(page.kit_cards.columns==2,"two columns match the Painting gallery")
+		var reset: Button = page.tools_panel.find_child("GarageResetKits",true,false)
+		check(reset!=null and reset.get_global_rect().size.is_equal_approx(Vector2(48,48)) and reset.get_global_rect().position.y<page.kit_scroll.global_position.y,"Reset stays in the workbench header")
+		page._select_kit_category("aero")
+		await settle()
+		var last: Control = page.kit_cards.get_child(page.kit_cards.get_child_count()-1)
+		page.kit_scroll.scroll_vertical = 0
+		root.gui_release_focus()
+		last.grab_focus()
+		await settle()
+		if not page.kit_scroll.get_global_rect().encloses(last.get_global_rect()):
+			print("KIT_FOCUS_BOUNDS ",dimensions," scroll=",page.kit_scroll.get_global_rect()," card=",last.get_global_rect()," value=",page.kit_scroll.scroll_vertical," focused=",root.gui_get_focus_owner()==last)
+		check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"focus reveals last of thirteen aero choices")
+		check(CompactKitThumbnail.images.size()<=16,"retained native-photo cache stays bounded")
 		check(app.root_ui.get_global_rect().encloses(page.actions.get_global_rect()),"actions fit "+str(dimensions))
-		check(app.root_ui.get_global_rect().encloses(page.kit_cards.get_global_rect()),"parts fit "+str(dimensions))
+		check(app.root_ui.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"scrolling parts fit "+str(dimensions))
 		check(page.showroom.size.y>=250,"usable showroom "+str(dimensions))
 		await capture("tuning-"+str(dimensions.x))
 	var saved: Dictionary = page.kit_draft.duplicate(true)
@@ -152,6 +186,12 @@ func _run() -> void:
 	root.add_child(game)
 	check(game.car.customisation==saved,"actual race uses local fitted kits")
 	check(game.handling.snapshot()==VehicleCatalog.config("compact").snapshot(),"handling remains canonical")
+	# Current race startup defers optional ghost geometry until an actual target.
+	# Exercise that same preparation path with an isolated presentation fixture.
+	game.ghost_mode = "race"
+	game.ghost_bests.race = {}
+	game._prepare_personal_ghost()
+	game.ghost_mode = "off"
 	check(game.personal_ghost!=null and game.personal_ghost.mesh!=null,"race ghost uses fitted silhouette")
 	app.root_ui.hide()
 	await capture("race-installed-kits")

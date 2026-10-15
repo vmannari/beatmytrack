@@ -9,7 +9,18 @@ func _run() -> void:
 	viewport.msaa_3d = Viewport.MSAA_4X
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	root.add_child(viewport)
+	var total: int = 0
+	var plain_count: int = GaragePage.LIVERY_NAMES.size()
+	var recipe_count: int = plain_count+LiveryCatalog.patterns.size()
+	var only: PackedStringArray = []
+	var only_vehicle: String = ""
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--patterns="): only = argument.trim_prefix("--patterns=").split(",",false)
+		if argument.begins_with("--vehicle="): only_vehicle = argument.trim_prefix("--vehicle=")
+	assert(only_vehicle.is_empty() or only_vehicle in VehicleCatalog.IDS)
 	for id: String in VehicleCatalog.IDS:
+		if not only_vehicle.is_empty() and id!=only_vehicle: continue
+		var captured: int = 0
 		var world := Node3D.new()
 		viewport.add_child(world)
 		var car := CarVisual.new()
@@ -27,14 +38,15 @@ func _run() -> void:
 		camera.look_at(target)
 		var directory: String = "res://assets/liveries/previews_v2/"+id
 		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
-		for index: int in range(24):
+		for index: int in range(recipe_count):
 			var value: Dictionary = VehicleLivery.defaults(id)
-			var key: String = "original" if index == 0 else "rally" if index == 1 else "midnight" if index == 2 else "sandstone"
-			if index > 0 and index < 4:
+			var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index < plain_count else LiveryCatalog.patterns[index-plain_count].id
+			if not only.is_empty() and key not in only: continue
+			if index < plain_count:
 				value.colors.body = GaragePage.LIVERY_COLORS[index][0]
 				value.colors.accent = GaragePage.LIVERY_COLORS[index][1]
-			elif index >= 4:
-				var pattern: Dictionary = LiveryCatalog.patterns[index-4]
+			else:
+				var pattern: Dictionary = LiveryCatalog.patterns[index-plain_count]
 				key = pattern.id
 				value.pattern = key
 				for slot: int in range(3): value.colors[VehicleLivery.SLOTS[slot]] = pattern.colours[slot]
@@ -48,10 +60,12 @@ func _run() -> void:
 				push_error("Livery preview save failed: "+id+"/"+key)
 				quit(1)
 				return
+			total += 1
+			captured += 1
 		world.queue_free()
 		await process_frame
-		print("LIVERY_PREVIEWS: "+id+" 24 actual model captures")
+		print("LIVERY_PREVIEWS: "+id+" "+str(captured)+" actual model captures")
 	viewport.queue_free()
 	await process_frame
-	print("LIVERY_PREVIEWS: 120 captures complete")
+	print("LIVERY_PREVIEWS: "+str(total)+" captures complete")
 	quit()

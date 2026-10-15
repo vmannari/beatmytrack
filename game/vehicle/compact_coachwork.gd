@@ -444,6 +444,17 @@ static func _patch(car: CarVisual, label: String, columns: int, rows: int, sampl
 			var uv: Array[Vector2] = [Vector2(float(column)/columns,float(row)/rows),Vector2(float(column+1)/columns,float(row)/rows),Vector2(float(column+1)/columns,float(row+1)/rows),Vector2(float(column)/columns,float(row+1)/rows)]
 			var points: Array[Vector3] = []
 			for t: Vector2 in uv: points.append(sample.call(t.x,t.y))
+			if label=="FrontCoachwork" and CompactGrille.overlaps(points):
+				var normals: Array[Vector3] = []
+				var mapped_uv: Array[Vector2] = []
+				for t: Vector2 in uv:
+					var du: Vector3 = sample.call(minf(1,t.x+0.001),t.y)-sample.call(maxf(0,t.x-0.001),t.y)
+					var dv: Vector3 = sample.call(t.x,minf(1,t.y+0.001))-sample.call(t.x,maxf(0,t.y-0.001))
+					var normal: Vector3 = du.cross(dv).normalized()
+					normals.append(-normal if normal.dot(normal_hint)<0 else normal)
+					mapped_uv.append(uv_region.position+t*uv_region.size)
+				CompactGrille.cut_quad(tool,points,normals,mapped_uv)
+				continue
 			var order: Array[int] = [0,1,2,0,2,3]
 			if closed_profile or (points[1]-points[0]).cross(points[2]-points[0]).dot(normal_hint)>0: order=[0,2,1,0,3,2]
 			for vertex_index: int in range(order.size()):

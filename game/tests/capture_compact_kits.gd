@@ -36,11 +36,14 @@ func _run() -> void:
 	control.add_child(showroom)
 	MenuStyle.fill(showroom)
 	await settle()
-	var profiles: Array[Dictionary] = [VehicleCustomisation.defaults(),
-		{"version":1,"hood":"louvres","aero":"lip","rims":"five","body":"street"},
-		{"version":1,"hood":"scoop","aero":"ducktail","rims":"split","body":"rally"},
-		{"version":1,"hood":"dome","aero":"wing","rims":"turbine","body":"club"}]
-	var labels: Array[String] = ["original","street","rally","club"]
+	var profiles: Array[Dictionary] = []
+	var labels: Array[String] = []
+	for option_index: int in range(10):
+		var profile: Dictionary = VehicleCustomisation.defaults()
+		for category: String in VehicleCustomisation.CATEGORIES:
+			profile[category] = VehicleCustomisation.OPTIONS[category][option_index][0]
+		profiles.append(profile)
+		labels.append(str(VehicleCustomisation.OPTIONS.body[option_index][0]))
 	for index: int in range(profiles.size()):
 		showroom.apply_customisation(profiles[index])
 		showroom.zoom = 0.55

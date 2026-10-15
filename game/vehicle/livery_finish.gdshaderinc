@@ -2,6 +2,7 @@ uniform bool graphics_enabled = false;
 uniform bool pattern_enabled = false;
 uniform sampler2D livery_mask : filter_linear_mipmap_anisotropic, repeat_disable;
 uniform sampler2D sticker_atlas : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform vec2 sticker_atlas_size = vec2(1024.0,1536.0);
 uniform vec4 livery_body : source_color;
 uniform vec4 livery_accent : source_color;
 uniform vec4 livery_detail : source_color;
@@ -39,7 +40,7 @@ vec3 panel_emblem(vec3 pigment, vec3 p, vec3 n, vec4 panel, float level, vec4 pl
 	vec2 sticker_uv = vec2(c*delta.x+s*delta.y,-s*delta.x+c*delta.y)/placement.z + vec2(0.5);
 	if (any(lessThan(sticker_uv,vec2(0.0))) || any(greaterThan(sticker_uv,vec2(1.0)))) return pigment;
 	vec2 tile = vec2(float(emblem % 4),float(emblem / 4));
-	vec2 atlas_uv = (tile*256.0+16.0+sticker_uv*224.0)/vec2(1024.0,768.0);
+	vec2 atlas_uv = (tile*256.0+16.0+sticker_uv*224.0)/sticker_atlas_size;
 	vec4 ink = texture(sticker_atlas,atlas_uv);
 	return mix(pigment,ink.rgb,ink.a);
 }

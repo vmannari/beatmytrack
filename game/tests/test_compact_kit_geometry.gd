@@ -11,6 +11,9 @@ func check(value: bool, label: String) -> void:
 		print("FAIL: "+label)
 func _run() -> void:
 	var parts_only: bool = "--parts-only" in OS.get_cmdline_user_args()
+	if "--source" in OS.get_cmdline_user_args():
+		CompactKits.use_baked = false
+		preload("res://vehicle/prepared_car_cache.gd").enabled = false
 	var stock := CarVisual.new()
 	root.add_child(stock)
 	var stock_wear := VehicleWeathering.new()
@@ -30,7 +33,7 @@ func _run() -> void:
 							var selected: int = 0
 							for id: String in [str(hood[0]),str(aero[0]),str(rims[0]),str(body[0])]:
 								if id!="stock": selected += 1
-							if selected>1: continue
+							if selected>1 and not (hood[0]=="dome" and aero[0]=="wing" and rims[0]=="turbine" and body[0]=="club"): continue
 						var car := CarVisual.new()
 						car.simple_model = simple
 						car.customisation = {"version":1,"hood":hood[0],"aero":aero[0],"rims":rims[0],"body":body[0]}
@@ -91,7 +94,8 @@ func _run() -> void:
 		check(finite,"finite unit normals "+key)
 		check(wrong==0,"clockwise shaded triangles "+key+" wrong="+str(wrong))
 		if key=="aero/wing/airfoil": check(absf(volume)>0.004,"GT blade has solid airfoil volume")
-	for kind: String in ["louvres","scoop","dome"]:
+	for option: Array in VehicleCustomisation.OPTIONS.hood:
+		var kind: String = option[0]
 		for edge: float in [0.0,1.0]:
 			for index: int in range(89):
 				var t: float = index/88.0

@@ -43,7 +43,9 @@ static func uniforms(finish: ShaderMaterial, value: Dictionary, id: String, enab
 	if not decorated: return
 	finish.set_shader_parameter("pattern_enabled",value.pattern != "plain")
 	if value.pattern != "plain": finish.set_shader_parameter("livery_mask",LiveryCatalog.texture(value.pattern))
-	finish.set_shader_parameter("sticker_atlas",LiveryCatalog.texture("stickers"))
+	var atlas: Texture2D = LiveryCatalog.texture("stickers")
+	finish.set_shader_parameter("sticker_atlas",atlas)
+	finish.set_shader_parameter("sticker_atlas_size",atlas.get_size())
 	for slot: String in VehicleLivery.SLOTS: finish.set_shader_parameter("livery_"+slot,Color(str(value.colors[slot])))
 	var projection: Dictionary = LiveryCatalog.projection(id)
 	finish.set_shader_parameter("graphic_bounds",projection.bounds)

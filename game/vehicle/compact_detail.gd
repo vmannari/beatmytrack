@@ -48,8 +48,6 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 	var rubber := VisualGeometry.material(Color("303234"))
 	var bright := CompactFinish.alloy(Color("b5b8ae"))
 	var amber := VisualGeometry.material(Color("d58b32"))
-	var lens := VisualGeometry.material(Color("e7e4d2"))
-	var shade := VisualGeometry.material(Color("384e55"))
 	_front(car, blue, cream, trim, alloy)
 	# The arch rolls out from the actual body skin to a narrow dark opening lip.
 	for side: float in [-1.0,1.0]:
@@ -74,17 +72,8 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 		slot.rotation.x=-atan2(slope.y,slope.z)
 	_wrap_bumper(car,trim,true)
 	CompactRearDesign.build(car,blue,trim,bright)
-	# Twin round lamps per side share the gently curved, recessed dark fascia.
+	CompactFrontLamps.build(car)
 	for side: float in [-1.0,1.0]:
-		for offset: float in [0.405,0.651]:
-			var x: float = side*offset
-			for layer: int in range(4):
-				var radii: Array[float] = [0.122,0.107,0.094,0.064]
-				var materials: Array[Material] = [trim,bright,shade,lens]
-				var light := VisualGeometry.cylinder(car.body,radii[layer],0.018,Vector3(x,0.798,_nose_z(x)-layer*0.009),materials[layer],true)
-				light.rotation = Vector3(PI*0.5,-atan(0.40625*x),0)
-			var glint := VisualGeometry.cylinder(car.body,0.028,0.009,Vector3(x-0.022,0.841,_nose_z(x)-0.038),lens,true)
-			glint.rotation.x = PI*0.5
 		var bumper_u: float=CompactCoachwork.front_bumper_parameter(side*0.61)
 		var mount: Vector3=CompactCoachwork._bumper_point(false,bumper_u,0)
 		var tangent: Vector2=(CompactCoachwork._bumper_path(false,bumper_u+0.0002)-CompactCoachwork._bumper_path(false,bumper_u-0.0002)).normalized()
@@ -157,8 +146,7 @@ static func _front(car: CarVisual, blue: Material, cream: Material, trim: Materi
 	_nose_band(car,0.783,0.660,0.932,-0.009,trim)
 	for side: float in [-1,1]:
 		_nose_tile(car,minf(side*0.79,side*0.828),maxf(side*0.79,side*0.828),0.688,0.908,-0.012,6,16,VisualGeometry.material(Color("b77929")))
-	for row: int in range(5):
-		_nose_band(car,0.280,0.691+row*0.046,0.702+row*0.046,-0.017,alloy)
+	CompactGrille.build(car)
 	_wrap_bumper(car,trim)
 	CompactCoachwork.build_hood(car,blue,cream)
 
@@ -255,7 +243,10 @@ static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float,
 			var b:=Vector3(x1,y0,CompactCoachwork.front_skin(x1,y0)+offset)
 			var c:=Vector3(x1,y1,CompactCoachwork.front_skin(x1,y1)+offset)
 			var d:=Vector3(x0,y1,CompactCoachwork.front_skin(x0,y1)+offset)
-			_tile_quad(tool,[a,b,c,d],Vector3((b.z-a.z)/(x1-x0),(d.z-a.z)/(y1-y0),-1).normalized())
+			var normal:=Vector3((b.z-a.z)/(x1-x0),(d.z-a.z)/(y1-y0),-1).normalized()
+			if left<-0.7 and right>0.7 and CompactGrille.overlaps([a,b,c,d]):
+				CompactGrille.cut_quad(tool,[a,b,c,d],[normal,normal,normal,normal],[Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN],false)
+			else: _tile_quad(tool,[a,b,c,d],normal)
 			if row==0:_tile_quad(tool,[a,b,b+inset,a+inset],Vector3.DOWN)
 			if row==rows-1:_tile_quad(tool,[d,c,c+inset,d+inset],Vector3.UP)
 			if column==0:_tile_quad(tool,[a,d,d+inset,a+inset],Vector3.LEFT)

@@ -1,0 +1,1026 @@
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -4,7 +4,7 @@
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.56"
++const PHYSICS_VERSION: String = "arcade-planar-0.57"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+ const TICK_RATE: int = 120
+@@ -227,6 +227,14 @@
+ 	# Stronger high-speed scrub makes a full off-track excursion costly while
+ 	# averaging the probes keeps one or two escaped wheels proportional.
+ 	var soil_drag: float = soil_contact * soil_drag_rate
++	# Grass has a separate rolling penalty. Reuse the four material contacts
++	# (grass pickup is 0.5, sand is 1.0) so resistance begins at the first wheel,
++	# without changing contamination or adding another set of ground probes.
++	var grass_contact: float = _grass_contact(wheel_soil, pickup)
++	# Retain the tuned low-speed powered escape, especially for the kart.
++	# Above 24 m/s grass takes the full penalty even with throttle held.
++	var grass_drive: float = 1.0 - throttle * (1.0-smoothstep(14.0,24.0,speed))
++	soil_drag += grass_contact * (1.5 + speed * 0.75) * smoothstep(0.0, 2.0, speed) * config.soil_drag_multiplier * grass_drive
+ 	next_lateral = move_toward(next_lateral, 0.0, soil_drag * STEP)
+ 	resistance += soil_drag
+ 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
+@@ -335,6 +343,11 @@
+ 	return contacts
+ 
+ 
++func _grass_contact(contacts: Vector4, center: float) -> float:
++	var wheels: float = (float(contacts.x == 0.5) + float(contacts.y == 0.5) + float(contacts.z == 0.5) + float(contacts.w == 0.5)) * 0.25
++	return maxf(float(center == 0.5), wheels)
++
++
+ func _soil_rough_yaw_acceleration(contacts: Vector4, speed: float) -> float:
+ 	var contact_count: float = float(contacts.x>0.0)+float(contacts.y>0.0)+float(contacts.z>0.0)+float(contacts.w>0.0)
+ 	if contact_count == 0.0: return 0.0
+--- a/game/track/bridge_elevation.gd
++++ b/game/track/bridge_elevation.gd
+@@ -3,7 +3,8 @@
+ ## Pure spatial elevation shared by client presentation and verified ghosts.
+ ## Presentation only: no temporal easing and no changes to canonical handling.
+ 
+-const VERSION: String = "bridge-ramps-4"
++const VERSION: String = "bridge-ramps-5"
++const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const APPROACH: float = 4.0
+ const INSET: float = 4.0
+ var track: NativeTrack
+@@ -12,10 +13,12 @@
+ var minimum: float = INF
+ var maximum: float = -INF
+ var inset: float = 0.0
++var road_surface: RefCounted
+ 
+ 
+ func _init(data: NativeTrack) -> void:
+ 	track = data
++	road_surface = ROAD_HEIGHT.new(track)
+ 	roles = track.deck_cells.duplicate()
+ 	if track.metadata.has("legacy_deck"):
+ 		roles.fill(-1)
+@@ -97,10 +100,10 @@
+ 	for span: Dictionary in track.creator_bridges:
+ 		if CreatorBridges.contains(span,p):
+ 			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
+-			return CreatorBridges.height(span,p) if elevated else 0.0
++			return CreatorBridges.height(span,p) if elevated else road_surface.ground(p)
+ 	if route_index < 0 or upper_route[route_index] == 0:
+-		return 0.0
++		return road_surface.ground(p)
+ 	var cell: Vector2i = cell_for(p)
+ 	if not inside(cell) or roles[cell.y * track.grid_width + cell.x] < 0:
+-		return 0.0
++		return road_surface.ground(p)
+ 	return profile_height(p)
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,8 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-194"
++const VERSION: String = "track-kit-195"
++const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -330,8 +331,7 @@
+ 	var ground := MeshInstance3D.new()
+ 	ground.mesh = plane
+ 	ground.material_override = surface
+-	if not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty():
+-		ground.position.y = -0.06
++	ground.position.y = ROAD_HEIGHT.TERRAIN
+ 	# The flat coverage sheet must not cast a rectangular map-border shadow.
+ 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	if theme_id == "night_city" and partition_night_ground:
+@@ -339,6 +339,56 @@
+ 		ground.free()
+ 	else:
+ 		add_child(ground)
++	_build_raster_roads(track,surface)
++
++func _build_raster_roads(track: NativeTrack, material: Material) -> void:
++	# Native and explicitly painted asphalt also sit on the road datum. Share
++	# the exact terrain material/UVs, and merge each horizontal cell run.
++	var authored: bool = not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty()
++	var overlay: Image = _creator_overlay_mask(track,track.metadata.get("creator_document",{}).get("paint",[])) if authored else null
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var count: int = 0
++	for y: int in range(track.grid_height):
++		var x: int = 0
++		while x < track.grid_width:
++			if track.cells[y*track.grid_width+x] != 0 or (authored and overlay.get_pixel(x,y).r > 0.5):
++				x += 1
++				continue
++			var start: int = x
++			x += 1
++			while x < track.grid_width and track.cells[y*track.grid_width+x] == 0 and (not authored or overlay.get_pixel(x,y).r < 0.5): x += 1
++			var a := Vector2(start*track.cell_size-track.half_extent.x,y*track.cell_size-track.half_extent.y)
++			var b := Vector2(x*track.cell_size-track.half_extent.x,(y+1)*track.cell_size-track.half_extent.y)
++			for p: Vector2 in [a,b,Vector2(a.x,b.y),a,Vector2(b.x,a.y),b]:
++				tool.set_normal(Vector3.UP)
++				tool.set_uv((p+track.half_extent)/(track.half_extent*2.0))
++				tool.add_vertex(Vector3(p.x,ROAD_HEIGHT.ROAD,p.y))
++			count += 1
++	if count == 0: return
++	# Close exposed raster edges down to the terrain; do not leave floating
++	# road sheets or add internal walls between contiguous asphalt cells.
++	for y: int in range(track.grid_height):
++		for x: int in range(track.grid_width):
++			if track.cells[y*track.grid_width+x] != 0 or (authored and overlay.get_pixel(x,y).r > 0.5): continue
++			var a := Vector2(x*track.cell_size-track.half_extent.x,y*track.cell_size-track.half_extent.y)
++			var corners: Array[Vector2] = [a,a+Vector2(track.cell_size,0),a+Vector2.ONE*track.cell_size,a+Vector2(0,track.cell_size)]
++			for edge: int in range(4):
++				var neighbor: Vector2i = Vector2i(x,y)+[Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][edge]
++				if neighbor.x >= 0 and neighbor.y >= 0 and neighbor.x < track.grid_width and neighbor.y < track.grid_height and track.cells[neighbor.y*track.grid_width+neighbor.x] == 0: continue
++				var p: Vector2 = corners[edge]
++				var q: Vector2 = corners[(edge+1)%4]
++				var normal := Vector3(q.y-p.y,0,p.x-q.x).normalized()
++				for v: Vector3 in [Vector3(p.x,ROAD_HEIGHT.ROAD,p.y),Vector3(q.x,ROAD_HEIGHT.TERRAIN,q.y),Vector3(q.x,ROAD_HEIGHT.ROAD,q.y),Vector3(p.x,ROAD_HEIGHT.ROAD,p.y),Vector3(p.x,ROAD_HEIGHT.TERRAIN,p.y),Vector3(q.x,ROAD_HEIGHT.TERRAIN,q.y)]:
++					tool.set_normal(normal)
++					tool.set_uv((Vector2(v.x,v.z)+track.half_extent)/(track.half_extent*2.0))
++					tool.add_vertex(v)
++	var roads := MeshInstance3D.new()
++	roads.name = "RasterRoadSurface"
++	roads.mesh = tool.commit()
++	roads.material_override = material
++	roads.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(roads)
+ 
+ func _lamps_inside_terrain(track: NativeTrack) -> bool:
+ 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+@@ -489,7 +539,7 @@
+ 		var skirt_margin: float = 3.7 if theme_id == "desert" else 1.8
+ 		var skirts: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,skirt_margin)) if swept else Geometry2D.offset_polygon(road_contours[0],skirt_margin,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in skirts:
+-			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
++			ground_count += _road_polygon(ground_skirt,polygon,ROAD_HEIGHT.TERRAIN)
+ 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if swept else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in surfaces:
+ 			if theme_id == "desert": desert_road_union.add(polygon,points,axis_cache)
+@@ -739,7 +789,7 @@
+ 	# Broad erosion lobes instead of a serrated fringe. World position keeps
+ 	# neighbouring sections continuous; only the cosmetic outer edge moves.
+ 	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
+-	return (3.0 if theme_id == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
++	return ROAD_HEIGHT.width(point,theme_id)
+ 
+ 
+ func _berm_envelope(point: Vector2, points: PackedVector2Array) -> float:
+@@ -797,7 +847,11 @@
+ 			tool.set_uv2(preload("res://track/desert_road_union.gd").coordinates(axis_cache.desert_fringe_uvs[vertices[i]],axis_cache))
+ 			tool.set_color(axis_cache.desert_blend_sampler.blend(vertices[i],int(axis_cache.desert_piece_index)))
+ 		else: tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
+-		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
++		# The fringe follows the same sloping shoulder rather than covering it
++		# with a flat grass-coloured sheet at road height.
++		var outward: float = lerpf(-1.25,0.70,across[i]) if theme_id == "desert" else lerpf(0.36,0.56,across[i])
++		var height: float = ROAD_HEIGHT.shoulder(outward/_shoulder_width(vertices[i]))+0.001
++		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*height)
+ 
+ 
+ func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
+--- a/game/track/shoulder_mesh.gd
++++ b/game/track/shoulder_mesh.gd
+@@ -6,6 +6,7 @@
+ var triangles: Array[Dictionary] = []
+ var bins: Dictionary = {}
+ const CELL: float = 4.0
++const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ 
+ func add_quad(a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
+ 	_add_triangle(PackedVector2Array([a,outer_b,b]),Vector3(0,1,0))
+@@ -54,7 +55,7 @@
+ 		var uv: PackedVector2Array = result.uv
+ 		for index: int in range(points.size()):
+ 			tool.set_uv(uv[index])
+-			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*-0.02)
++			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*ROAD_HEIGHT.shoulder(uv[index].y))
+ 		vertices += points.size()
+ 	return vertices/3
+ 
+@@ -72,7 +73,7 @@
+ 			for vertex: int in indices:
+ 				var point: Vector2 = polygon[vertex]
+ 				tool.set_uv(Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
+-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
++				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*ROAD_HEIGHT.shoulder(clampf(source.gradient.dot(point)+source.offset,0,1)))
+ 			count += indices.size()/3
+ 	return count
+ 
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -133,7 +133,8 @@
+ 		# Bridge geometry uses the opposite transverse basis. Correct the UV
+ 		# before applying shared phase/sign, including reverse-authored spans.
+ 		tool.set_uv(preload("res://track/desert_road_union.gd").coordinates(Vector2(uv.x,-uv.y),road_phase) if not road_phase.is_empty() else uv)
+-		tool.add_vertex(vertex(span,uv.x,uv.y,offset))
++		var height_offset: float = preload("res://track/road_surface_height.gd").bridge_offset(uv.x,float(span.length)) if is_equal_approx(offset,0.025) else offset
++		tool.add_vertex(vertex(span,uv.x,uv.y,height_offset))
+ 
+ static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:
+ 	tool.set_color(color)
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -30,7 +30,7 @@
+ 				var vertices: Array[Vector3] = []
+ 				for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x+1,y+1),Vector2(x,y+1)]:
+ 					var p: Vector2 = point(corner)
+-					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else 0.015)))
++					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else ROAD_HEIGHT.ROAD)))
+ 				surface.set_color(CreatorBridgeVisual.RAIL_TOP if kind == 4 else Color.WHITE)
+ 				for i: int in [0,1,2,0,2,3]:
+ 					var p := Vector2(vertices[i].x,-vertices[i].z)
+@@ -40,7 +40,7 @@
+ 				for i: int in range(4):
+ 					var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
+ 					if inside(neighbor) and roles[neighbor.y * track.grid_width + neighbor.x] >= 0: continue
+-					var drop: float = 0.85 if kind == 4 else 0.015
++					var drop: float = 0.85 if kind == 4 else ROAD_HEIGHT.ROAD
+ 					var a: Vector3 = vertices[i] - Vector3.UP * drop
+ 					var b: Vector3 = vertices[(i+1)%4] - Vector3.UP * drop
+ 					CreatorBridgeVisual.quad(fascia,a,b,b-Vector3.UP*0.34,a-Vector3.UP*0.34,Color("817e70"))
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -16,6 +16,7 @@
+         "creator_objects",
+         "container_paint",
+         "creator_scenery",
++        "prepared_track_cache",
+         "object_runs",
+         "road_pieces",
+         "roadside_boundary",
+@@ -27,7 +28,7 @@
+         "track_document",
+     ),
+     "input": ("drive_frame", "route_driver", "profiled_route_driver", "racing_trajectory", "trajectory_mpc", "conservative_trajectory_mpc", "trajectory_handbrake", "trajectory_planner"),
+-    "persistence": ("track_library",),
++    "persistence": ("track_library", "document_encoding", "document_read_cache"),
+     "race": ("race_rules", "track_session", "rewind_history", "lap_telemetry", "personal_ghost_run"),
+     "track": (
+         "builtin_tracks",
+@@ -37,6 +38,8 @@
+         "playground_data",
+         "road_edges",
+         "road_kerbs",
++        "road_surface_height",
++        "visual_road_join",
+         "snow_banks",
+         "track_theme",
+     ),
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -57,6 +57,15 @@
+     archive = Path(__file__).parent / "fixtures/physics_050"
+     for name, folder in (("native_track", "track"), ("playground_data", "track"), ("vehicle_simulation", "vehicle")):
+         shutil.copyfile(archive / (name + ".gd.txt"), project / folder / (name + ".gd"))
++    # Current compiler preparation passes optional immutable cell buffers.
++    # The historical loader deliberately ignores them and retains its original
++    # rectangle expansion, so no .50 simulation or replay bytes are changed.
++    historical_track = project / "track/native_track.gd"
++    historical_track.write_text(historical_track.read_text().replace(
++        "hash_value: String) -> NativeTrack:",
++        "hash_value: String, _prepared_cells: PackedInt32Array = PackedInt32Array(), "
++        "_prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:",
++    ))
+     subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--editor", "--import"],
+                    check=True, capture_output=True, timeout=90)
+     return GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary, game_project=project,
+@@ -68,7 +77,7 @@
+     fixtures = ROOT / "game/tests/fixtures"
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.56"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.57"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+ 
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64413,7 +64413,7 @@
+     "engine_version": "4.7.2.stable.official.ed1daf0bf",
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.56",
++    "physics_version": "arcade-planar-0.57",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+     "rules_key": "standing-5-road-gates-v20",
+--- /dev/null
++++ b/game/track/road_surface_height.gd
+@@ -0,0 +1,100 @@
++extends RefCounted
++## Shared cosmetic road datum. Canonical driving remains planar.
++const ROAD: float = 0.012
++const RISE: float = 0.05
++const TERRAIN: float = ROAD - RISE
++const BUCKET: float = 8.0
++var track: NativeTrack
++var floors: Array[PackedVector2Array] = []
++var floor_bins: Dictionary = {}
++var triangles: Array[Dictionary] = []
++var shoulder_bins: Dictionary = {}
++
++func _init(data: NativeTrack) -> void:
++	track = data
++	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	var theme: String = str(track.metadata.get("theme","pine"))
++	for index: int in range(pieces.size()):
++		if pieces[index].kind == "bridge": continue
++		var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
++		var contours: Array[PackedVector2Array] = RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else shape.contours
++		var swept: bool = pieces[index].kind == "spline" or shape.get("swept",false)
++		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(contours,0.16)) if swept else Geometry2D.offset_polygon(contours[0],0.16,Geometry2D.JOIN_ROUND)
++		for polygon: PackedVector2Array in surfaces:
++			var slot: int = floors.size()
++			floors.append(polygon)
++			var bounds := Rect2(polygon[0],Vector2.ZERO)
++			for p: Vector2 in polygon: bounds = bounds.expand(p)
++			for y: int in range(floori(bounds.position.y/BUCKET),floori(bounds.end.y/BUCKET)+1):
++				for x: int in range(floori(bounds.position.x/BUCKET),floori(bounds.end.x/BUCKET)+1):
++					var cell := Vector2i(x,y)
++					if not floor_bins.has(cell): floor_bins[cell] = []
++					floor_bins[cell].append(slot)
++		var border: Dictionary = VisualRoadJoin.build(pieces,index,-0.20,topology)
++		var borders: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if pieces[index].kind == "spline" else border.contours
++		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology) if pieces[index].kind == "spline" else border.cuts
++		for polygon: PackedVector2Array in borders:
++			var hole: bool = swept and Geometry2D.is_polygon_clockwise(polygon)
++			for edge: int in range(polygon.size()):
++				var a: Vector2 = polygon[edge]
++				var b: Vector2 = polygon[(edge+1)%polygon.size()]
++				if RoadEdges._on_join_cut(a,b,cuts) or (swept and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,swept)
++				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,swept)
++				if hole: na = -na; nb = -nb
++				var steps: int = maxi(1,ceili(a.distance_to(b)/(0.28 if theme == "winter" else 0.20)))
++				for step: int in range(steps):
++					var p: Vector2 = a.lerp(b,float(step)/steps)
++					var q: Vector2 = a.lerp(b,float(step+1)/steps)
++					var outer_p: Vector2 = p+na.lerp(nb,float(step)/steps)*width(p,theme)
++					var outer_q: Vector2 = q+na.lerp(nb,float(step+1)/steps)*width(q,theme)
++					_add_triangle(PackedVector2Array([p,outer_q,q]),Vector3(0,1,0))
++					_add_triangle(PackedVector2Array([p,outer_p,outer_q]),Vector3(0,1,1))
++
++func _add_triangle(p: PackedVector2Array, weights: Vector3) -> void:
++	var u: Vector2 = p[1]-p[0]
++	var v: Vector2 = p[2]-p[0]
++	var determinant: float = u.cross(v)
++	if absf(determinant) < 0.000001: return
++	var gradient := Vector2((weights.y-weights.x)*v.y-(weights.z-weights.x)*u.y,u.x*(weights.z-weights.x)-v.x*(weights.y-weights.x))/determinant
++	var bounds := Rect2(p[0],Vector2.ZERO).expand(p[1]).expand(p[2])
++	var index: int = triangles.size()
++	triangles.append({"polygon":p,"gradient":gradient,"offset":weights.x-gradient.dot(p[0])})
++	for y: int in range(floori(bounds.position.y/BUCKET),floori(bounds.end.y/BUCKET)+1):
++		for x: int in range(floori(bounds.position.x/BUCKET),floori(bounds.end.x/BUCKET)+1):
++			var cell := Vector2i(x,y)
++			if not shoulder_bins.has(cell): shoulder_bins[cell] = []
++			shoulder_bins[cell].append(index)
++
++static func shoulder(fraction: float) -> float:
++	return lerpf(ROAD, TERRAIN, clampf(fraction, 0.0, 1.0))
++
++static func width(point: Vector2, theme: String) -> float:
++	return (3.0 if theme == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
++
++static func bridge_offset(along: float, length: float, original: float = 0.025) -> float:
++	# Match ground asphalt exactly at both mouths, retaining the deck finish.
++	return lerpf(ROAD, original, smoothstep(0.0, 1.0, minf(along, length-along)))
++
++func ground(point: Vector2) -> float:
++	var kind: int = track.cell_at(point)
++	if kind in [0,5]: return 0.0
++	# Explicit paint wins over authored road geometry, exactly as in rendering.
++	var cell := Vector2i(floori((point.x+track.half_extent.x)/track.cell_size),floori((track.half_extent.y-point.y)/track.cell_size))
++	var slot: int = cell.y*track.grid_width+cell.x
++	var painted: bool = cell.x >= 0 and cell.y >= 0 and cell.x < track.grid_width and cell.y < track.grid_height and slot < track.kerbs.blocked.size() and track.kerbs.blocked[slot] != 0
++	if not painted:
++		for index: int in floor_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
++			if Geometry2D.is_point_in_polygon(point,floors[index]): return 0.0
++		var height: float = -RISE
++		for index: int in shoulder_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
++			var triangle: Dictionary = triangles[index]
++			if Geometry2D.is_point_in_polygon(point,triangle.polygon): height = maxf(height,shoulder(triangle.gradient.dot(point)+triangle.offset)-ROAD)
++		if height > -RISE: return height
++	# Four local samples soften the five-centimetre change at raster boundaries.
++	# Keep the existing road datum (zero for the car), including painted roads.
++	var coverage: float = 0.0
++	for offset: Vector2 in [Vector2(-0.15,-0.15),Vector2(0.15,-0.15),Vector2(-0.15,0.15),Vector2(0.15,0.15)]:
++		coverage += 0.25 if track.cell_at(point+offset) in [0,5] else 0.0
++	return -RISE * (1.0-coverage)
+--- /dev/null
++++ b/game/tests/test_grass_road_height.gd
+@@ -0,0 +1,186 @@
++extends SceneTree
++
++const HEIGHT = preload("res://track/road_surface_height.gd")
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func field(kind: int) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.cell_size = 10.0
++	track.grid_width = 100
++	track.grid_height = 100
++	track.half_extent = Vector2(500,500)
++	track.cells.resize(10000)
++	track.cells.fill(kind)
++	track.deck_cells.resize(10000)
++	track.deck_cells.fill(-1)
++	track.route = PackedVector2Array([Vector2(0,-400),Vector2(0,400)])
++	return track
++
++func circuit(theme: String) -> NativeTrack:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = theme
++	var points: Array[Vector2] = [Vector2(-48,0),Vector2(-30,0),Vector2(30,0),Vector2(50,26),Vector2(0,42),Vector2(0,-42),Vector2(-50,-26)]
++	for i: int in range(points.size()):
++		var a: Vector2 = points[i]
++		var b: Vector2 = points[(i+1)%points.size()]
++		var piece: Dictionary = RoadPieces.create("bridge" if i == 1 else "straight",a,fposmod(rad_to_deg((b-a).angle()),360),10)
++		piece.length = a.distance_to(b)
++		doc.pieces.append(piece)
++	var result: Dictionary = RoadPieces.route_from_pieces(doc)
++	check(result.ok,"bridge circuit generates its ordinary route")
++	return TrackCompiler.compile(result.document)
++
++func run() -> void:
++	var previous := GDScript.new()
++	previous.source_code = FileAccess.get_file_as_string("res://../docs/evidence/grass-road-height-2026-10-14/before/game/vehicle/vehicle_simulation.gd").replace("\r\n","\n").replace("class_name VehicleSimulation\n","")
++	check(previous.reload() == OK,"saved physics 0.56 loads for measured comparison")
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		for kind: int in [0,2]:
++			var track: NativeTrack = field(kind)
++			var current := VehicleSimulation.new(config)
++			var old: RefCounted = previous.new(config)
++			current.state.velocity = Vector2(0,24)
++			old.state.velocity = current.state.velocity
++			for tick: int in range(600):
++				var frame: DriveFrame = DriveFrame.sample(sin(tick*0.031)*0.35,0.7 if tick < 200 else 0.0,0.4 if tick > 400 else 0.0)
++				current.step(frame,track)
++				old.step(frame,track)
++			check(current.state.snapshot() == old.state.snapshot(),id+" road/sand physics remain exact, kind "+str(kind))
++		var grass: NativeTrack = field(1)
++		for direction: float in [-1.0,1.0]:
++			var current := VehicleSimulation.new(config)
++			var old: RefCounted = previous.new(config)
++			var replay := VehicleSimulation.new(config)
++			current.state.velocity = Vector2(0,24*direction)
++			old.state.velocity = current.state.velocity
++			replay.state.velocity = current.state.velocity
++			var distance: float = 0.0
++			var old_distance: float = 0.0
++			var stopped: int = 0
++			var old_stopped: int = 0
++			for tick: int in range(1200):
++				var before: Vector2 = current.state.position
++				var old_before: Vector2 = old.state.position
++				current.step(DriveFrame.new(),grass)
++				replay.step(DriveFrame.new(),grass)
++				old.step(DriveFrame.new(),grass)
++				distance += current.state.position.distance_to(before)
++				old_distance += old.state.position.distance_to(old_before)
++				if stopped == 0 and current.state.velocity.length() == 0.0: stopped = tick+1
++				if old_stopped == 0 and old.state.velocity.length() == 0.0: old_stopped = tick+1
++			check(stopped > 0 and stopped < old_stopped*0.8,id+" grass stops at least 20% sooner in either direction")
++			check(distance < old_distance*0.8,id+" grass stops over at least 20% less distance")
++			check(current.state.snapshot() == replay.state.snapshot(),id+" new grass handling replays exactly")
++			measurements.append({"car":id,"direction":direction,"old_seconds":old_stopped*VehicleSimulation.STEP,"seconds":stopped*VehicleSimulation.STEP,"old_metres":old_distance,"metres":distance})
++		for pedal: DriveFrame in [DriveFrame.sample(0,1,0),DriveFrame.sample(0,0,1)]:
++			var escape := VehicleSimulation.new(config)
++			for tick: int in range(240): escape.step(pedal,grass)
++			check(escape.state.position.length() > 0.5,id+" can drive forward and reverse out of grass from rest")
++	var edge: NativeTrack = field(0)
++	for y: int in range(50,100):
++		for x: int in range(50,100): edge.cells[y*100+x] = 1
++	var partial := VehicleSimulation.new(HandlingConfig.new())
++	var old_partial: RefCounted = previous.new(partial.config)
++	partial.reset(Vector2(-0.2,0.2))
++	old_partial.reset(partial.state.position)
++	partial.state.velocity = Vector2(0,24)
++	old_partial.state.velocity = partial.state.velocity
++	var contacts: Vector4 = partial._wheel_soil_contacts(edge)
++	check(contacts.x+contacts.y+contacts.z+contacts.w == 0.5,"spatial fixture catches exactly one tyre on grass before the centre")
++	partial.step(DriveFrame.new(),edge)
++	old_partial.step(DriveFrame.new(),edge)
++	check(partial.state.velocity.length() < old_partial.state.velocity.length()-0.03,"first grass wheel sheds more speed immediately before the centre leaves asphalt")
++	check(is_equal_approx(HEIGHT.ROAD-HEIGHT.TERRAIN,0.05),"road datum is exactly five centimetres above terrain")
++	var native: NativeTrack = field(1)
++	for y: int in range(48,52):
++		for x: int in range(40,60): native.cells[y*100+x] = 0
++	var raster := NativeTrackVisual.new()
++	root.add_child(raster)
++	raster.colors = TrackTheme.palette("pine")
++	await raster._build_terrain(native)
++	var road: MeshInstance3D = raster.get_node("RasterRoadSurface")
++	var verts: PackedVector3Array = road.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var low: float = INF
++	var high: float = -INF
++	for p: Vector3 in verts:
++		low = minf(low,p.y)
++		high = maxf(high,p.y)
++	check(is_equal_approx(high-low,0.05),"actual native road has closed five-centimetre edge faces")
++	check(is_equal_approx(high,HEIGHT.ROAD) and is_equal_approx(low,HEIGHT.TERRAIN),"native raster road uses the same road and terrain datums")
++	raster.queue_free()
++	await process_frame
++	for theme: String in ["pine","storm","winter","desert"]:
++		var track: NativeTrack = circuit(theme)
++		var bridge := BridgePresentation.new(track)
++		var span: Dictionary = track.creator_bridges[0]
++		for end: float in [0.0,float(span.length)]:
++			var p := Vector2(span.position[0],span.position[1])+Vector2(end,0).rotated(deg_to_rad(span.heading))
++			check(absf(CreatorBridgeVisual.vertex(span,end,0,HEIGHT.bridge_offset(end,span.length)).y-HEIGHT.ROAD) < 0.000001,theme+" actual bridge mouth meets ground mesh")
++			check(absf(bridge.height_at(p,0,1)) < 0.000001,theme+" car support has no step at either bridge mouth")
++		check(bridge.height_at(Vector2(-40,0),0,0) == 0.0,theme+" car/ghost/trail remain on raised ground road")
++		check(is_equal_approx(bridge.height_at(Vector2(-40,8),0,0),-0.05),theme+" grass/terrain support follows lower datum")
++		check(bridge.height_at(Vector2(-40,5.5),0,0) > -0.05,theme+" shoulder wheel support follows shallow slope")
++		var world := NativeTrackVisual.new()
++		world.cache_road_meshes = false
++		world.cache_race_world = false
++		root.add_child(world)
++		await world.build(track,bridge)
++		var found: bool = false
++		for child: Node in world.get_children():
++			if child is MeshInstance3D and child.mesh is PlaneMesh:
++				found = true
++				check(is_equal_approx(child.position.y,HEIGHT.TERRAIN),theme+" actual terrain mesh is at the five-centimetre datum")
++		check(found,theme+" production terrain mesh inspected")
++		if DisplayServer.get_name() != "headless": await capture(world,track,bridge,theme)
++		world.queue_free()
++		await process_frame
++	print("GRASS_ROAD_MEASUREMENTS ",JSON.stringify(measurements))
++	print("GRASS_ROAD_HEIGHT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func capture(world: Node3D, track: NativeTrack, bridge: BridgePresentation, theme: String) -> void:
++	root.size = Vector2i(1280,720)
++	var sun := DirectionalLight3D.new()
++	sun.rotation_degrees = TrackTheme.DESERT_SUN_ROTATION if theme == "desert" else Vector3(-48,-32,0)
++	sun.shadow_enabled = true
++	world.add_child(sun)
++	var environment := WorldEnvironment.new()
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color("aab8b8")
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_color = Color("d9e4eb")
++	environment.environment.ambient_light_energy = 0.7
++	world.add_child(environment)
++	var car := CarVisual.new()
++	world.add_child(car)
++	var state := VehicleState.new()
++	state.position = Vector2(-34,0)
++	state.heading = PI*0.5
++	car.present(state.position,state.heading,state,DriveFrame.new())
++	car.position.y = bridge.height_at(state.position,0,0)
++	var camera := Camera3D.new()
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 22.0
++	world.add_child(camera)
++	camera.current = true
++	var folder: String = "res://../docs/evidence/grass-road-height-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	for view: String in ["overhead","seam"]:
++		camera.position = Vector3(-37,21,18) if view == "overhead" else Vector3(-34,2.0,13)
++		camera.look_at(Vector3(-30,0.3,0))
++		for frame: int in range(5): await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(folder+theme+"-"+view+".png") == OK,"actual "+theme+" "+view+" capture saved")
+--- /dev/null
++++ b/docs/GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md
+@@ -0,0 +1,46 @@
++# Grass slowdown and five-centimetre road height
++
++Owner request, 2026-10-14: lose speed faster when entering grass, set the road slightly above terrain (about 5 cm), and account for bridge seams.
++
++Requirements: GRH01 stronger grass resistance from the first wheel; GRH02 escape from rest and exact replay; GRH03 shared 5 cm road/terrain datum with sloped shoulders; GRH04 continuous bridge mouths and shared car/ghost/trail support; R01 versioned canonical contracts; Q01 actual regression and renderer evidence.
++
++Grass adds a speed-dependent dissipative resistance using the existing four contacts and each car's existing soil multiplier. The grass pickup value remains 0.5 and sand remains 1.0; neither contamination nor the shared soil torque changes. Coasting resistance fades below 2 m/s. Under throttle, the added resistance fades between 24 and 14 m/s to retain the approved low-speed powered escape, including the kart's more-than-10-metre escape in two seconds. Physics is now `arcade-planar-0.57`; the saved record/ticket keys already include physics versions. The handling profiles, five-lap rules, compiler-27, track documents, and road/sand dynamics stay unchanged.
++
++The road surface stays at its existing 0.012 m datum. The terrain/road skirts use -0.038 m, exactly 0.05 m below it. Existing shoulder geometry slopes between those datums; the decorative fringe follows the shoulder instead of covering it with a flat sheet at road height. Native and explicitly painted asphalt use a single merged-run mesh, with closed exposed edges and the unchanged terrain shader/UVs. This adds at most one native/painted-road draw; ordinary authored roads retain their existing draws. Existing cache budgets are retained and track-kit-195 invalidates old road/world artifacts.
++
++Creator bridge asphalt matches 0.012 m at both mouths and smoothly returns to the existing 0.025 m finish offset over the first/last metre. Native bridge asphalt uses the same road datum. Rails, bridge height/clearance, collision layers and ramp shapes remain unchanged. `BridgeElevation` now owns a pure, spatially indexed ground/shoulder support sampler shared by car presentation, recorded/verified ghosts, contact shadows, dust and tire marks. It owns no scene or GPU resources and does not change canonical vertical physics.
++
++Measured coasting from 24 m/s (86.4 km/h), all four wheels on grass:
++
++| Car | Previous stop time | New stop time | Previous distance | New distance |
++| --- | ---: | ---: | ---: | ---: |
++| Compact | 4.96 s | 1.64 s | 18.58 m | 10.61 m |
++| Pickup | 6.80 s | 2.19 s | 21.88 m | 15.40 m |
++| Classic | 5.61 s | 1.54 s | 17.91 m | 9.77 m |
++| Formula | 4.18 s | 1.26 s | 15.66 m | 7.62 m |
++| Kart | 2.81 s | 0.63 s | 9.39 m | 2.87 m |
++
++These are deterministic desktop simulation measurements, not phone performance measurements. Reverse coasting also passes; all five cars escape grass from rest under both pedals. The spatial one-wheel test confirms greater speed loss before the centre leaves asphalt. Five-car road/sand snapshots are exact against the saved physics-0.56 source.
++
++Changed runtime files: `game/vehicle/vehicle_simulation.gd`; `game/track/road_surface_height.gd`, `bridge_elevation.gd`, `native_track_visual.gd`, `shoulder_mesh.gd`, `creator_bridge_visual.gd`, and `bridge_presentation.gd`. Regression/contract files: `game/tests/test_grass_road_height.gd`, `backend/deploy/stage_verifier.py`, `backend/tests/test_verifier.py`, and `backend/tests/fixtures/verified_oval.json`. Project instructions/status and this report document the change.
++
++Verification uses pinned Godot 4.7.2 through `scripts/dev.ps1`, with isolated workspace APPDATA. Commands actually run:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File build/grass-road-height/run-regressions.ps1
++.tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q --junitxml=build/grass-road-height/verifier-final.xml
++git diff --check -- <changed tracked runtime/contract files>
++```
++
++Final focused headless checks: 96 pass. Final Compatibility and Mobile/Vulkan checks: 104 pass each, including actual closed native road edges. All 26 native regression commands pass; they cover driving/handling, launch, five-lap route/bridge gates, bridge contacts, shallow collisions, all-car replays, soil, hazards/speed bumps/props, suspension/kerbs/snow, rewind/ghosts and records. The final parser checks 725 scripts with zero failures. Ruff and scoped `git diff --check` pass. All eight native-world overhead/seam photographs per renderer are under `docs/evidence/grass-road-height-2026-10-14/{gl_compatibility,mobile}/`. They use inspection cameras and simple fixture lighting, not a changed gameplay camera. Pine and Desert close views and Winter transition views were visually inspected on Compatibility; the final Mobile Pine overhead view was inspected as well. Actual outcomes are retained in `regressions.json`, `validation.json` and the individual logs.
++
++Backend verifier: final 70 pass, including unchanged historical .50 replay/lap times and standalone canonical staging. Initial staging failed because concurrent editor work added three pure-script dependencies and a four-argument prepared-cell loader. Staging now includes those dependencies and the new support sampler. The historical test adapts only its loader signature, ignores prepared buffers, and retains original rectangle expansion and physics; assertions and replay bytes are unchanged. The existing Starlette deprecation warning remains.
++
++Initial sandbox runs could not write normal user logs/read Windows certificates; workspace APPDATA and approved certificate-store access resolved these. A transient concurrent compact-kit refactor omitted its old `BODIES` interface, blocking one graphical attempt; that concurrent work restored it and the affected checks passed without modifying kit source in this task.
++
++The first full native regression batch exposed the kart's powered grass escape and soil tradeoff checks. The added drag now follows the existing per-car soil multiplier and fades under low-speed throttle. The original assertions are retained: both kart soil entry comparisons still require at least 15% stronger slowing, and powered escape still requires more than 10 m in two seconds. Final kart handling checks pass; the initial failures are retained under `initial-regressions/`.
++
++No physical-phone driving test, Android export/install, live backend write or deployment was performed. Phone attachment was not checked. Owner acceptance of grass balance, subtle road height/edge appearance and phone motion/performance remains. Matching client/verifier rollout is required before new .57 online attempts; existing .56 records must not be relabelled. The source-only review checkpoint is `docs/evidence/grass-road-height-2026-10-14/change.patch`, with exact final source hashes in `source-receipt.json`; the existing Git index and concurrent edits are retained. Its reverse Git applicability check passes with `--ignore-space-change` for the current Windows line endings. No rollout was published.
+--- /dev/null
++++ b/docs/evidence/grass-road-height-2026-10-14/before/game/vehicle/vehicle_simulation.gd
+@@ -0,0 +1,351 @@
++class_name VehicleSimulation
++extends RefCounted
++## Canonical core: no nodes, input polling, wall clock, file I/O or random numbers.
++## Float replay equivalence is measured on one engine/platform only at this gate.
++
++const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
++const PHYSICS_VERSION: String = "arcade-planar-0.56"
++const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
++const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
++const TICK_RATE: int = 120
++const STEP: float = 1.0 / TICK_RATE
++const ROLL_DURATION_TICKS: int = 72 # 0.6 s per revolution; shared with presentation.
++const ROLL_CONTINUE_SPEED: float = 18.0 # Remaining lateral m/s needed for another flip.
++
++var state := VehicleState.new()
++var config: HandlingConfig
++var kerb_probe := VehicleState.new()
++
++
++func _init(handling: HandlingConfig) -> void:
++	config = handling
++
++
++func reset(point: Vector2, direction: float = 0.0) -> void:
++	state = VehicleState.new()
++	state.position = point
++	state.heading = direction
++
++
++func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
++	state.collision_impulse = Vector2.ZERO
++	state.scrape_strength = 0.0
++	state.scrape_normal = Vector2.ZERO
++	state.scrape_speed = 0.0
++	LaunchStart.advance(state, frame)
++	# Brake pressure is only input driven; no automatic drift latch.
++	var requested_handbrake: float = frame.handbrake / 255.0
++	state.handbrake_pressure = move_toward(state.handbrake_pressure, requested_handbrake,
++		(30.0 if requested_handbrake > state.handbrake_pressure else 3.0) * STEP)
++	var old_position: Vector2 = state.position
++	var old_heading: float = state.heading
++	var old_velocity: Vector2 = state.velocity
++	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
++	if state.roll_ticks > 0:
++		state.roll_ticks -= 1
++		state.velocity = state.velocity.move_toward(Vector2.ZERO, 28.0 * STEP)
++		state.position += state.velocity * STEP
++		if ground != null:
++			ground.resolve(state, old_position, config)
++			ground.step_props(state, old_position, config, STEP)
++		# Decide at tire contact using velocity AFTER collision resolution. Momentum
++		# can carry another revolution, even onto asphalt, but a stop/rebound cannot.
++		var continuing_speed: float = -state.roll_direction * state.velocity.dot(state.right())
++		if state.roll_ticks == 0 and continuing_speed >= ROLL_CONTINUE_SPEED:
++			state.roll_ticks = ROLL_DURATION_TICKS
++			state.roll_cooldown = ROLL_DURATION_TICKS + 2 * TICK_RATE
++		state.yaw_rate = 0.0
++		state.tick += 1
++		return
++	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
++	if state.jump_height > 0.0:
++		var previous: Vector2 = state.position
++		state.position += state.velocity*STEP
++		state.jump_velocity -= 9.81*STEP
++		state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
++		if ground != null:
++			ground.resolve(state,previous,config)
++			ground.step_props(state,previous,config,STEP)
++		if state.jump_height == 0.0:
++			state.jump_velocity = 0.0
++			state.velocity *= 0.88
++		_step_kerbs(old_position,old_heading,null)
++		state.tick += 1
++		return
++	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
++	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
++	if pickup > 0.0:
++		surface.x = minf(1.0, surface.x * config.loose_surface_grip)
++	var fluids: Vector2 = ground.tire_fluids(state) if ground != null else Vector2.ZERO
++	# Loose ground can trip a fast broadside slide; remaining lateral momentum determines the number of rolls.
++	if pickup > 0.0 and state.roll_cooldown == 0 and state.velocity.length() >= 24.0 and absf(state.slip_angle()) >= deg_to_rad(65.0):
++		state.roll_ticks = ROLL_DURATION_TICKS
++		state.roll_direction = -signf(state.velocity.dot(state.right()))
++		state.roll_cooldown = ROLL_DURATION_TICKS + 2 * TICK_RATE
++		state.tick += 1
++		return
++	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
++	var throttle: float = frame.throttle / 255.0
++	var brake: float = frame.brake / 255.0
++	var handbrake: float = state.handbrake_pressure
++	if config.progressive_handling and brake > 0.0:
++		throttle = 0.0
++	# Automatic clutch disconnects drive while pulling the rear brake.
++	throttle *= 1.0 - requested_handbrake
++	var requested_steering: float = frame.steer / 127.0
++	var steering_response: float = config.steering_rate
++	if config.progressive_handling and state.steering != 0.0 and (signf(requested_steering) != signf(state.steering) or absf(requested_steering) < absf(state.steering)):
++		steering_response = maxf(steering_response, config.countersteering_rate)
++	state.steering = move_toward(state.steering, requested_steering, steering_response * STEP)
++	var forward: Vector2 = state.forward()
++	var right: Vector2 = state.right()
++	var longitudinal: float = state.velocity.dot(forward)
++	var lateral: float = state.velocity.dot(right)
++	var speed: float = state.velocity.length()
++	var slip: float = state.slip_angle()
++	var speed_fraction: float = clampf(absf(longitudinal) / 24.0, 0.0, 1.0)
++	var steer_angle: float = state.steering * config.steering_angle * (1.0 - config.high_speed_steering_reduction * speed_fraction)
++	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
++	target_yaw *= config.front_grip / config.rear_grip
++	var wheel_soil: Vector4 = _wheel_soil_contacts(ground) if config.wheel_soil_drag else Vector4(pickup,pickup,pickup,pickup)
++	# Unequal resistance across the car pulls it toward the wheels that left the
++	# road. This is a bounded continuous yaw demand rather than an impulse, so a
++	# one-wheel excursion is noticeable and settles immediately after rejoining.
++	var left_soil: float = (wheel_soil.x + wheel_soil.z) * 0.5
++	var right_soil: float = (wheel_soil.y + wheel_soil.w) * 0.5
++	var soil_drag_rate: float = (7.5 + speed * 0.38) * smoothstep(3.0,14.0,speed) * config.soil_drag_multiplier
++	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
++	var lift: float = (1.0 - throttle) * (1.0 - brake) * smoothstep(8.0, 24.0, longitudinal)
++	# Explicit rear braking replaces lift-off unloading rather than stacking with it.
++	lift *= 1.0 - handbrake
++	target_yaw += state.steering * lift * config.lift_off_rotation
++	if config.progressive_handling:
++		# Front traction saturates smoothly: excess entry speed widens the path
++		# instead of continuing to rotate the chassis into an involuntary drift.
++		var grip_yaw: float = config.lateral_grip * config.front_grip * surface.x * tire_grip / maxf(speed, 1.0)
++		var demand: float = absf(target_yaw) / maxf(grip_yaw, 0.01)
++		target_yaw /= pow(1.0 + pow(demand, 6.0), 1.0 / 6.0)
++		# Sustained, bounded weight transfer; repeated taps cannot stack impulses.
++		target_yaw += signf(state.steering) * brake_turn * config.brake_rotation
++	# Power rotates the rear; lifting restores rear grip and reduces rotation.
++	target_yaw += state.steering * throttle * config.throttle_rotation * speed_fraction * signf(longitudinal)
++	if longitudinal > 1.0 and not config.progressive_handling:
++		target_yaw += slip * config.countersteer_assistance
++	# Rear lock changes tire forces, not the front steering angle or a target radius.
++	var axle: Vector3 = _handbrake_axles(longitudinal, lateral, steer_angle, surface.x * tire_grip, requested_handbrake) if handbrake > 0.0 else Vector3.ZERO
++	var axle_acceleration: Vector2 = right * axle.x + forward * axle.y
++	# Retain low-speed hairpin rotation while limiting fast rear-lock spins.
++	var rear_lock_yaw_limit: float = lerpf(4.0, 3.2, smoothstep(12.0, 24.0, speed))
++	var yaw_limit: float = lerpf(config.maximum_yaw_rate, rear_lock_yaw_limit, handbrake)
++	target_yaw = clampf(target_yaw, -config.maximum_yaw_rate, config.maximum_yaw_rate)
++	var yaw_response: float = config.mass / config.rotational_inertia * 7.0
++	if config.progressive_handling and requested_steering * state.yaw_rate < 0.0:
++		# Follow the player's correction sooner; no road/heading target or speed gift.
++		yaw_response *= 1.0 + config.countersteer_assistance * smoothstep(0.04, 0.3, absf(slip))
++	var normal_yaw: float = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
++	state.yaw_rate = lerpf(normal_yaw, state.yaw_rate + axle.z * STEP, handbrake)
++	# Differential wheel drag creates a moment about the centre of mass. This is
++	# applied as angular acceleration after steering response, so it adds to or
++	# opposes a corner instead of being hidden inside the requested steering yaw.
++	var differential_deceleration: float = (right_soil-left_soil) * soil_drag_rate * 0.5
++	var soil_angular_acceleration: float = differential_deceleration * config.mass * config.track_width * 0.5 / config.rotational_inertia * SOIL_TORQUE_GAIN
++	state.yaw_rate += soil_angular_acceleration * STEP * signf(longitudinal)
++	state.yaw_rate += _soil_rough_yaw_acceleration(wheel_soil,speed) * STEP
++	state.yaw_rate = clampf(state.yaw_rate,-yaw_limit,yaw_limit)
++	state.heading = wrapf(state.heading + state.yaw_rate * STEP, -PI, PI)
++	# Use the newly turned chassis frame while retaining world-space momentum.
++	forward = state.forward()
++	right = state.right()
++	longitudinal = state.velocity.dot(forward)
++	lateral = state.velocity.dot(right)
++	var slide_amount: float = smoothstep(config.slip_threshold, config.slip_threshold * 2.0, absf(slip)) if speed > 3.0 else 0.0
++	var target_grip: float = lerpf(1.0, config.sliding_grip, slide_amount)
++	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
++	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
++	grip_limit *= surface.x * tire_grip
++	grip_limit *= 1.0 - lift * absf(state.steering) * config.lift_off_grip_loss
++	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
++	if config.progressive_handling:
++		grip_limit *= 1.0 - brake_turn * config.brake_grip_loss
++	var lateral_acceleration: float = clampf(-lateral * config.lateral_response * tire_grip, -grip_limit, grip_limit)
++	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
++	if handbrake > 0.0:
++		next_lateral = lerpf(next_lateral, lateral + axle_acceleration.dot(right) * STEP, handbrake)
++	# Grip redirects most scrubbed lateral energy into travel instead of deleting it.
++	# Fade for broadside slides; retain direction in reverse. Apply before pedals so
++	# braking and drag still remove energy, and collisions never get compensated.
++	var removed_energy: float = maxf(0.0, lateral * lateral - next_lateral * next_lateral)
++	# During rear-grip recovery, sideways scrub must not feed backward travel
++	# after the nose has turned through the hairpin.
++	if handbrake > 0.0 and longitudinal < 0.0: removed_energy = 0.0
++	var alignment: float = clampf(absf(longitudinal) / maxf(absf(lateral), 0.01), 0.0, 1.0)
++	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment * (1.0 - requested_handbrake))
++	var drive_acceleration: float = _pedal_acceleration(longitudinal, frame.throttle / 255.0, brake)
++	if handbrake > 0.0:
++		state.reverse_wait = 0.0
++		if brake > 0.0:
++			drive_acceleration = -signf(longitudinal) * config.braking_force / config.mass * brake
++		else:
++			drive_acceleration = _pedal_acceleration(longitudinal, throttle, 0.0)
++	if config.progressive_handling and throttle > 0.0 and longitudinal > 0.0:
++		drive_acceleration *= 1.0 - config.slide_drive_loss * smoothstep(0.10, 0.55, absf(slip))
++	# Combined traction budgets make braking and acceleration compete with cornering.
++	var lateral_usage: float = absf(lateral_acceleration) / maxf(grip_limit, 0.01)
++	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))
++	# Fade coating-related longitudinal loss at crawling speed so soil cannot
++	# strand the car against movable props; full penalty applies above 12 m/s.
++	var drive_tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
++	longitudinal_limit *= surface.x * drive_tire_grip
++	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
++	# Temporary forward drive only; braking/reverse and maximum speed stay unchanged.
++	if drive_acceleration > 0.0 and throttle > 0.0 and longitudinal >= 0.0:
++		if state.tick < state.launch_delay_until: drive_acceleration = 0.0
++		elif state.tick < state.launch_end_tick: drive_acceleration *= 1.0 + state.launch_gain
++	# Impact recoil may exceed powered reverse speed. Preserve that momentum,
++	# but the reverse pedal cannot sustain or increase an overspeed recoil.
++	if longitudinal < -config.reverse_speed:
++		drive_acceleration = maxf(0.0, drive_acceleration)
++	var next_longitudinal: float = longitudinal + (drive_acceleration + axle_acceleration.dot(forward) * handbrake) * STEP
++	if requested_handbrake > 0.0 and longitudinal * next_longitudinal < 0.0: next_longitudinal = 0.0
++	if requested_handbrake == 0.0 and brake == 0.0 and handbrake > 0.0 and next_longitudinal < 0.0:
++		# Brief, dissipative exit assistance catches reverse chassis slip while
++		# rear traction recovers. It does not reverse momentum or supply power.
++		next_longitudinal = RALLY_HANDBRAKE.catch_backward(next_longitudinal,handbrake,surface.x*tire_grip,STEP)
++	# Braking never crosses zero into reverse until the stopped hold delay elapses.
++	if brake > 0.0 and longitudinal > 0.0 and next_longitudinal < 0.0:
++		next_longitudinal = 0.0
++	# Tiny negative projections while the chassis finishes rotating are inside
++	# the stopped band; repeatedly clamping them strands a powered exit at zero.
++	var forward_crossing_threshold: float = -0.15 if handbrake > 0.0 and requested_handbrake == 0.0 else 0.0
++	if throttle > 0.0 and longitudinal < forward_crossing_threshold and next_longitudinal > 0.0:
++		next_longitudinal = 0.0
++	var resistance: float = (config.rolling_resistance + config.drag * speed * speed) / config.mass
++	resistance += surface.y
++	# Soil drag dissipates sideways momentum too, including under throttle.
++	var average_soil: float = (wheel_soil.x+wheel_soil.y+wheel_soil.z+wheel_soil.w)*0.25
++	var soil_contact: float = maxf(pickup,average_soil)
++	# Stronger high-speed scrub makes a full off-track excursion costly while
++	# averaging the probes keeps one or two escaped wheels proportional.
++	var soil_drag: float = soil_contact * soil_drag_rate
++	next_lateral = move_toward(next_lateral, 0.0, soil_drag * STEP)
++	resistance += soil_drag
++	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
++	next_longitudinal = clampf(next_longitudinal, -maxf(config.reverse_speed, -longitudinal), config.maximum_speed)
++	state.velocity = forward * next_longitudinal + right * next_lateral
++	state.velocity = state.velocity.limit_length(config.maximum_speed)
++	if handbrake > 0.0 and throttle == 0.0: state.velocity = state.velocity.limit_length(speed)
++	var previous_position: Vector2 = state.position
++	state.position += state.velocity * STEP
++	if ground != null:
++		ground.resolve(state, previous_position, config)
++		ground.step_props(state,previous_position,config,STEP)
++		ground.slow_in_snow(state,previous_position,config,STEP)
++		ground.launch_jump(state,previous_position)
++	# Only actual resolved travel coats/cleans tires. Waiting or pushing a wall
++	# cannot clean them, and reverse travel counts just like forward travel.
++	var distance: float = state.position.distance_to(previous_position)
++	if pickup > 0.0:
++		state.tire_dirt = minf(1.0, state.tire_dirt + distance * pickup / config.tire_pickup_distance)
++	else:
++		state.tire_dirt = maxf(0.0, state.tire_dirt - distance / config.tire_clean_distance)
++	state.tire_oil = clampf(state.tire_oil + (distance / 3.0 if fluids.x > 0.0 else -distance / 180.0), 0.0, 1.0)
++	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
++	_step_kerbs(old_position,old_heading,ground)
++	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
++	state.tick += 1
++
++
++func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
++	if brake > 0.0:
++		if absf(speed) < 0.15 and throttle == 0.0:
++			state.reverse_wait += STEP
++		elif speed > 0.15 or throttle > 0.0:
++			state.reverse_wait = 0.0
++		if speed > 0.15 or throttle > 0.0:
++			# Brake wins simultaneous pedals; no accidental burnout/boost.
++			return -signf(speed) * config.braking_force / config.mass * brake
++		if state.reverse_wait >= config.reverse_delay or speed < -0.15:
++			return -config.engine_force / config.mass * 0.55 * brake
++		return -speed / STEP
++	state.reverse_wait = 0.0
++	if speed < -0.15 and throttle > 0.0:
++		return config.braking_force / config.mass * throttle
++	var power_falloff: float = 1.0 - 0.45 * clampf(speed / config.maximum_speed, 0.0, 1.0)
++	if config.slide_power_recovery > 0.0 and speed > 0.0:
++		# Optional original-based tune: retain more of the engine's normal force
++		# while sideways. It still acts only along the chassis, requires throttle,
++		# and remains below full engine force and the surface traction budget.
++		var slide: float = smoothstep(0.06, 0.30, absf(state.slip_angle()))
++		power_falloff += (1.0 - power_falloff) * config.slide_power_recovery * slide
++	return config.engine_force / config.mass * throttle * power_falloff
++
++
++func _step_kerbs(previous: Vector2, previous_heading: float, ground: PlaygroundData) -> void:
++	var heights := Vector4.ZERO
++	var rise: float = 0.0
++	if ground != null and not state.track_elevated and state.jump_height == 0.0:
++		kerb_probe.position = previous
++		kerb_probe.heading = previous_heading
++		var last: Vector4 = ground.kerb_heights(kerb_probe,config)
++		# Sample actual resolved tyre travel at <=10 cm to detect short crossings
++		# at ordinary top speed and during reverse travel.
++		var travel: float = previous.distance_to(state.position)+absf(angle_difference(previous_heading,state.heading))*config.wheelbase*0.5
++		var samples: int = maxi(1,ceili(travel/0.10))
++		for sample: int in range(1,samples+1):
++			var t: float = float(sample)/samples
++			kerb_probe.position = previous.lerp(state.position,t)
++			kerb_probe.heading = lerp_angle(previous_heading,state.heading,t)
++			heights = ground.kerb_heights(kerb_probe,config)
++			for wheel: int in range(4): rise += maxf(0.0,heights[wheel]-last[wheel])*0.25
++			last = heights
++	var speed: float = state.velocity.length()
++	# A low kerb dissipates a little speed. It never supplies a collision impulse,
++	# airborne mode, steering kick or forward energy. Capped for long rumble runs.
++	var loss: float = minf(0.65*STEP,speed*rise*0.10)*smoothstep(1.0,8.0,speed)
++	if speed > 0.0: state.velocity *= maxf(0.0,speed-loss)/speed
++	var target := Vector3((heights.x+heights.y+heights.z+heights.w)*0.25,
++		atan2((heights.x+heights.y-heights.z-heights.w)*0.5,config.wheelbase),
++		atan2((heights.y+heights.w-heights.x-heights.z)*0.5,config.track_width))
++	state.kerb_velocity.x += minf(0.30,rise*speed*0.12)
++	state.kerb_velocity += ((target-state.kerb_offset)*324.0-state.kerb_velocity*24.0)*STEP
++	state.kerb_offset += state.kerb_velocity*STEP
++	state.kerb_offset.x = clampf(state.kerb_offset.x,-0.015,0.14)
++	state.kerb_offset.y = clampf(state.kerb_offset.y,-0.08,0.08)
++	state.kerb_offset.z = clampf(state.kerb_offset.z,-0.10,0.10)
++
++
++func _wheel_soil_contact(ground: PlaygroundData, center_contact: float) -> float:
++	var contacts: Vector4 = _wheel_soil_contacts(ground)
++	return maxf(center_contact,maxf(maxf(contacts.x,contacts.y),maxf(contacts.z,contacts.w)))
++
++
++func _wheel_soil_contacts(ground: PlaygroundData) -> Vector4:
++	if ground == null: return Vector4.ZERO
++	# Fixed order: front-left, front-right, rear-left, rear-right. Probes use
++	# canonical axle dimensions and the current deck for deterministic replays.
++	var contacts := Vector4.ZERO
++	var probe := VehicleState.new()
++	probe.track_elevated = state.track_elevated
++	var index: int = 0
++	for axle: float in [0.5, -0.5]:
++		for side: float in [-0.5, 0.5]:
++			probe.position = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
++			contacts[index] = ground.tire_pickup(probe)
++			index += 1
++	return contacts
++
++
++func _soil_rough_yaw_acceleration(contacts: Vector4, speed: float) -> float:
++	var contact_count: float = float(contacts.x>0.0)+float(contacts.y>0.0)+float(contacts.z>0.0)+float(contacts.w>0.0)
++	if contact_count == 0.0: return 0.0
++	# Two incommensurate spatial waves approximate small terrain-driven tyre
++	# deflections. World-space sampling feels irregular but remains replay-safe
++	# and independent of simulation/display rate.
++	var roughness: float = sin(state.position.x*2.71+state.position.y*1.83)
++	roughness += sin(state.position.x*5.17-state.position.y*3.29+0.73)*0.45
++	return roughness/1.45 * SOIL_ROUGH_YAW_ACCELERATION * contact_count*0.25 * smoothstep(3.0,18.0,speed)
++
++
++# Rear braking acts through axle contact velocities, not a desired slip angle.
++func _handbrake_axles(longitudinal: float, lateral: float, steering: float, surface_grip: float, pressure: float) -> Vector3:
++	return RALLY_HANDBRAKE.forces(config, longitudinal, lateral, state.yaw_rate, steering, surface_grip, pressure, state.handbrake_pressure, STEP)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Faster grass slowdown and five-centimetre road override (2026-10-14)
++The owner requests faster speed loss when entering grass and roads about5cm above terrain, including bridge seams. Physics0.57 adds grass-specific resistance from the existing four contacts while retaining pickup, soil torque, sand/road dynamics and powered escape. Keep road datum0.012m/terrain-0.038m, sloped shoulders/fringes, closed native/painted asphalt edges and matched bridge mouths. The pure shared support sampler serves actual cars/ghosts/contact shadows/dust/trails; retain bridge collision/clearance, handling profiles, five laps, compiler27 and bounded caches, with kit195/bridge-ramps5 artifact fences. See `docs/GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md` for measured stopping distances/times, actual regressions/captures and remaining owner/phone/matching-verifier rollout acceptance. No APK or deployment is implied.
+ 
+ ## Compact spoiler silhouette and lower rear wings override (2026-10-14)
+ The owner rejects similar spoilers/wings and requests more variation, including big wings farther aft and lower. Keep the previous saved IDs and add Whale tail/Drag deck/Split wing for thirteen aero choices; other kit categories retain ten. Use varied hatch roots, roof/low rear supports, blade spans/chords/sweeps, split/twin elements and machined endplates. Rear saddles follow actual metal below the glass and are closed beveled solids. Preserve independent part updates, sixteen-photo cache, native prepared geometry, paint/condition/camera/reflections and canonical behavior. See `docs/COMPACT_AERO_VARIETY_2026_10_14.md` for matched side/rear views, actual checks/timings, scoped checkpoint and remaining owner/phone acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1901,4 +1901,4 @@
+ 
+ 
+ 2026-10-14 FM02-FM04/R01/T01-T04/Q01: owner reports failed-save heading above successful creator-lap readiness. Reproduced exact notice: broad saved-substring classification caused the false storage warning. Explicit saved-test success/checkmark plus failed-write storage wording; recording/publication contracts unchanged. Baseline95/6 expected failures, fixed Compatibility95/MobileVulkan95/local-publication31 all pass; actual saved-lap restart/readiness and native before/after captures checked. No phone test/APK/export-install/live publication/deployment; phone attachment unchecked. Cause, commands, limitations and task-only review checkpoint: docs/TEST_LAP_NOTICE_2026_10_14.md.
+-
++2026-10-14 GRH01-GRH04/R01/V04-V05/Q01: owner requests faster grass slowdown and road5cm above terrain including bridge seams. Physics0.57 uses existing four contacts/per-car soil multiplier with strong coasting resistance and powered low-speed escape; road/sand snapshots exact against0.56. Compact86.4km/h coast stops1.64s/10.61m versus4.96s/18.58m. Shared road0.012m/terrain-0.038m/sloping shoulders/fringe/closed native-painted asphalt edges; both bridge mouths match road and pure indexed support serves car/ghost/shadow/dust/trails. Kit195/bridge-ramps5 preserve bounded caches/bridge collision/clearance/camera/handling/five laps/compiler27. Final96 headless/104+104 graphical,26 native regression commands incl725-script parse, verifier70, Ruff/scoped diff pass. Kart recovery and staging/historical-loader integration corrected without weaker assertions; initial failures retained. No phone check/test/APK/export-install/livewrites/deploy; owner balance/edge appearance/phone acceptance and matching .57 client-verifier rollout remain. Actual commands/captures/scoped source checkpoint: docs/GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md.

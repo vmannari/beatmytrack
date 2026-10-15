@@ -71,7 +71,8 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 	var s: float = progress
 	var travel_speed: float = maxf(2.0,state.velocity.length())
 	var nominal_side: float = state.velocity.dot(state.right())
-	var tire_grip: float = 1.0-maxf(state.tire_dirt*config.dirty_tire_grip_loss,maxf(state.tire_oil*0.65,state.tire_water*0.18))
+	var loose_contact: bool = track != null and track.tire_pickup(state) > 0.0
+	var tire_grip: float = 1.0-maxf(VehicleSimulation.dirt_grip_loss(state.tire_dirt,config.dirty_tire_grip_loss,loose_contact),maxf(state.tire_oil*0.65,state.tire_water*0.18))
 	for i: int in range(HORIZON):
 		var ref: Dictionary = trajectory.at(s)
 		ref.speed = minf(_speed_limit(ref.curvature,float(ref.grip)*state.grip),float(ref.speed)*pace)

@@ -4,7 +4,7 @@ extends RefCounted
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.56"
+const PHYSICS_VERSION: String = "arcade-planar-0.59"
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -84,7 +84,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		state.roll_cooldown = ROLL_DURATION_TICKS + 2 * TICK_RATE
 		state.tick += 1
 		return
-	var tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
+	var dirt_loss: float = dirt_grip_loss(state.tire_dirt, config.dirty_tire_grip_loss, pickup > 0.0)
+	var tire_grip: float = 1.0 - maxf(dirt_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
 	var handbrake: float = state.handbrake_pressure
@@ -143,7 +144,13 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		# Follow the player's correction sooner; no road/heading target or speed gift.
 		yaw_response *= 1.0 + config.countersteer_assistance * smoothstep(0.04, 0.3, absf(slip))
 	var normal_yaw: float = lerpf(state.yaw_rate, target_yaw, 1.0 - exp(-yaw_response * STEP))
-	state.yaw_rate = lerpf(normal_yaw, state.yaw_rate + axle.z * STEP, handbrake)
+	var axle_yaw: float = state.yaw_rate + axle.z * STEP
+	if handbrake > 0.0 and longitudinal > 1.0 and target_yaw * axle_yaw < 0.0:
+		# Rear lock must retain the existing steering correction while the wheels
+		# unwind rotation from the previous turn. Add only that bounded response;
+		# axle forces and angular momentum still determine the resulting yaw.
+		axle_yaw += normal_yaw - state.yaw_rate
+	state.yaw_rate = lerpf(normal_yaw, axle_yaw, handbrake)
 	# Differential wheel drag creates a moment about the centre of mass. This is
 	# applied as angular acceleration after steering response, so it adds to or
 	# opposes a corner instead of being hidden inside the requested steering yaw.
@@ -194,7 +201,7 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var longitudinal_limit: float = config.longitudinal_grip * sqrt(maxf(0.25, 1.0 - lateral_usage * lateral_usage * 0.65))
 	# Fade coating-related longitudinal loss at crawling speed so soil cannot
 	# strand the car against movable props; full penalty applies above 12 m/s.
-	var drive_tire_grip: float = 1.0 - maxf(state.tire_dirt * config.dirty_tire_grip_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
+	var drive_tire_grip: float = 1.0 - maxf(dirt_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	longitudinal_limit *= surface.x * drive_tire_grip
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
 	# Temporary forward drive only; braking/reverse and maximum speed stay unchanged.
@@ -227,6 +234,14 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	# Stronger high-speed scrub makes a full off-track excursion costly while
 	# averaging the probes keeps one or two escaped wheels proportional.
 	var soil_drag: float = soil_contact * soil_drag_rate
+	# Grass has a separate rolling penalty. Reuse the four material contacts
+	# (grass pickup is 0.5, sand is 1.0) so resistance begins at the first wheel,
+	# without changing contamination or adding another set of ground probes.
+	var grass_contact: float = _grass_contact(wheel_soil, pickup)
+	# Retain the tuned low-speed powered escape, especially for the kart.
+	# Above 24 m/s grass takes the full penalty even with throttle held.
+	var grass_drive: float = 1.0 - throttle * (1.0-smoothstep(14.0,24.0,speed))
+	soil_drag += grass_contact * (1.5 + speed * 0.75) * smoothstep(0.0, 2.0, speed) * config.soil_drag_multiplier * grass_drive
 	next_lateral = move_toward(next_lateral, 0.0, soil_drag * STEP)
 	resistance += soil_drag
 	next_longitudinal = move_toward(next_longitudinal, 0.0, resistance * STEP)
@@ -253,6 +268,14 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	_step_kerbs(old_position,old_heading,ground)
 	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
 	state.tick += 1
+
+
+static func dirt_grip_loss(dirt: float, sensitivity: float, loose_contact: bool = false) -> float:
+	# Road contamination bites early after a short excursion, then continuously
+	# recovers with the existing distance-cleaned coating. Preserve loose-ground
+	# balance and at least 30% road traction even at a full coating.
+	if loose_contact: return dirt * sensitivity
+	return clampf(sensitivity * 2.0, 0.45, 0.70) * sqrt(clampf(dirt, 0.0, 1.0)) if sensitivity > 0.0 else 0.0
 
 
 func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
@@ -333,6 +356,11 @@ func _wheel_soil_contacts(ground: PlaygroundData) -> Vector4:
 			contacts[index] = ground.tire_pickup(probe)
 			index += 1
 	return contacts
+
+
+func _grass_contact(contacts: Vector4, center: float) -> float:
+	var wheels: float = (float(contacts.x == 0.5) + float(contacts.y == 0.5) + float(contacts.z == 0.5) + float(contacts.w == 0.5)) * 0.25
+	return maxf(float(center == 0.5), wheels)
 
 
 func _soil_rough_yaw_acceleration(contacts: Vector4, speed: float) -> float:

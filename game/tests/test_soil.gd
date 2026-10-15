@@ -256,7 +256,7 @@ func _run() -> void:
 	var dirt_style: Vector4 = trails._surface_style(2,0.0)
 	var water_style: Vector4 = trails._surface_style(3,0.0)
 	check(asphalt_style != grass_style and grass_style != dirt_style and dirt_style != water_style,"asphalt, grass, dirt and wet surfaces have distinct trail treatments")
-	check(grass_style.x > grass_style.z and grass_style.y > grass_style.x and grass_style.w >= 0.59,"grass tracks use a dark opaque brown-green crushed-vegetation treatment")
+	check(grass_style.x > grass_style.y and grass_style.y > grass_style.z and grass_style.w >= 0.59,"grass tracks use warm brown exposed soil with the original opacity")
 	check(trails._surface_width(1) > trails._surface_width(0) and trails._surface_width(2) > trails._surface_width(0),"soft-ground tracks are wider than asphalt rubber")
 	check(trails._surface_relief(1) >= 0.07 and trails._surface_relief(2) >= 0.055,"grass and dirt tracks have deep faceted rut relief")
 	check(trails._surface_relief(1) > trails._surface_relief(0) * 20.0 and trails._surface_relief(2) > trails._surface_relief(0) * 16.0,"loose-surface relief remains visually distinct from nearly-flat asphalt")

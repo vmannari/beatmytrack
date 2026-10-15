@@ -1,0 +1,206 @@
+extends SceneTree
+var checks: int = 0
+var failures: int = 0
+func _initialize() -> void: call_deferred("run")
+func check(ok: bool, label: String) -> void:
+	checks += 1
+	if not ok:
+		failures += 1
+		print("FAIL: "+label)
+func run() -> void:
+	var capture: bool = "--capture-hazards" in OS.get_cmdline_user_args()
+	root.size = Vector2i(1280,720)
+	var config: HandlingConfig = load("res://resources/balanced.tres")
+	for kind: String in CreatorObjects.KINDS:
+		var doc: Dictionary = TrackDocument.create_blank()
+		var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":30,"scale":1.0 if kind in ["tyre_wall","tyre_stack"] or kind in CreatorCatalog.DECORATIVE else 2.0}
+		doc.objects = [object]
+		check(TrackDocument.validate(doc).is_empty(),kind+" validates with scale")
+		var track: NativeTrack = TrackCompiler.compile(doc)
+		check(track != null,kind+" compiles")
+		if kind in ["tree","rock","boulder","slate","cliff","barrier","fence"]:
+			check(track.cell_at(Vector2.ZERO)==4,kind+" has a solid footprint")
+		object.scale = 4.0
+		check(not TrackDocument.validate(doc).is_empty(),kind+" rejects oversized footprint")
+	var doc: Dictionary = TrackDocument.create_blank()
+	doc.objects = [{"kind":"rock","position":[0,0],"rotation":0,"scale":2.0}]
+	check(TrackCompiler.compile(doc).cell_at(Vector2(1.4,0))==4,"scaled rock extends collision")
+	doc.objects[0].scale = 0.5
+	check(TrackCompiler.compile(doc).cell_at(Vector2(1.4,0))!=4,"shrinking rock shrinks collision")
+	doc.paint = [{"surface":0,"width":40.0,"shape":"square","points":[[0,0]]}]
+	doc.objects = []
+	var dry: NativeTrack = TrackCompiler.compile(doc)
+	var state := VehicleState.new(); state.velocity = Vector2(0,12)
+	var normal: Vector2 = dry.surface_factors(state)
+	for kind: String in ["oil","puddle"]:
+		doc.objects = [{"kind":kind,"position":[0,0],"rotation":0}]
+		var track: NativeTrack = TrackCompiler.compile(doc)
+		var wet: Vector2 = track.surface_factors(state)
+		check(wet.x<normal.x*0.5,kind+" reduces grip")
+		var sim: RefCounted = handbrake_baseline.new(config); sim.reset(Vector2.ZERO); sim.state.velocity=Vector2(0,12)
+		var baseline: RefCounted = handbrake_baseline.new(config); baseline.reset(Vector2.ZERO); baseline.state.velocity=Vector2(0,12)
+		for i: int in range(20):
+			sim.step(DriveFrame.new(),track); baseline.step(DriveFrame.new(),dry)
+		if kind == "puddle": check(sim.state.velocity.length()<baseline.state.velocity.length()-0.5,"water slows a moving car")
+		state.track_elevated = true
+		check(TrackHazards.factors(state,doc.objects)==Vector2(1,0),"ground hazard does not affect bridge deck")
+		state.track_elevated = false
+	# Full coatings clear in water < dirt < oil order on identical dry travel.
+	var coated: RefCounted = handbrake_baseline.new(config)
+	coated.state.tire_dirt = 1.0; coated.state.tire_oil = 1.0; coated.state.tire_water = 1.0
+	coated.state.velocity = Vector2(0,10)
+	for i: int in range(60): coated.step(DriveFrame.new())
+	check(coated.state.tire_oil > coated.state.tire_dirt and coated.state.tire_dirt > coated.state.tire_water,"oil persists longest, dirt medium, water shortest")
+	for kind: String in ["oil","puddle"]:
+		doc.objects = [{"kind":kind,"position":[0,0],"rotation":0}]
+		var fluid_track: NativeTrack = TrackCompiler.compile(doc)
+		var pickup_sim: RefCounted = handbrake_baseline.new(config); pickup_sim.state.velocity = Vector2(0,8)
+		var fluid_replay: RefCounted = handbrake_baseline.new(config); fluid_replay.state.velocity=Vector2(0,8)
+		for i: int in range(20):
+			pickup_sim.step(DriveFrame.new(),fluid_track)
+			fluid_replay.step(DriveFrame.new(),fluid_track)
+		for i: int in range(20):
+			pickup_sim.step(DriveFrame.new())
+			fluid_replay.step(DriveFrame.new())
+		check(pickup_sim.state.snapshot()==fluid_replay.state.snapshot(),kind+" pickup and recovery replay exactly")
+		check(pickup_sim.state.tire_oil > 0.0 if kind == "oil" else pickup_sim.state.tire_water > 0.0,kind+" coats tires")
+		var before: Array = pickup_sim.state.snapshot()
+		pickup_sim.state.velocity = Vector2.ZERO
+		for i: int in range(20): pickup_sim.step(DriveFrame.new())
+		check(pickup_sim.state.snapshot()[17] == before[17],"stationary tires retain fluids")
+	doc.objects = []
+	doc.paint = [{"surface":3,"width":40.0,"shape":"square","points":[[0,0]]}]
+	var pond: NativeTrack = TrackCompiler.compile(doc)
+	var wading: RefCounted = handbrake_baseline.new(config); wading.state.velocity = Vector2(0,20)
+	var power := DriveFrame.new(); power.throttle=255
+	for i: int in range(240): wading.step(power,pond)
+	check(wading.state.collision_count == 0 and wading.state.velocity.length() < 4.0 and wading.state.velocity.length() > 0.1,"pond slows strongly under power without blocking escape")
+	check(pond.water_depth(Vector2.ZERO)>0.4 and pond.water_depth(Vector2(19.8,0))<pond.water_depth(Vector2.ZERO) and pond.water_depth(Vector2(22,0))==0.0,"submersion eases across the shore")
+	doc.paint = [{"surface":0,"width":40.0,"shape":"square","points":[[0,0]]}]
+	doc.objects = [{"kind":"jump","position":[0,0],"rotation":0}]
+	var ramp: NativeTrack = TrackCompiler.compile(doc)
+	var sim: RefCounted = handbrake_baseline.new(config); sim.reset(Vector2(2.9,0),PI*0.5); sim.state.velocity=Vector2(14,0)
+	var replay: RefCounted = handbrake_baseline.new(config); replay.reset(Vector2(2.9,0),PI*0.5); replay.state.velocity=Vector2(14,0)
+	var airborne: bool = false
+	var landed: bool = false
+	var peak: float = 0.0
+	for i: int in range(200):
+		var frame := DriveFrame.new(); frame.throttle=255; frame.steer=127 if i>2 else 0
+		var packed: Array = JSON.parse_string(JSON.stringify(frame.packed()))
+		var decoded := DriveFrame.new(); decoded.steer=packed[0]; decoded.throttle=packed[1]; decoded.brake=packed[2]
+		sim.step(frame,ramp); replay.step(decoded,ramp)
+		peak=maxf(peak,sim.state.jump_height)
+		if sim.state.jump_height>0: airborne=true
+		elif airborne: landed=true
+	check(airborne and landed and peak>1.5,"ramp launches, follows a ballistic arc and lands")
+	check(sim.state.snapshot()==replay.state.snapshot(),"jump state replays exactly through JSON input")
+	print("JUMP peak_m=",peak," final_snapshot=",sim.state.snapshot())
+	var reverse := VehicleState.new(); reverse.position=Vector2(2.9,0); reverse.velocity=Vector2(-14,0)
+	TrackHazards.launch(reverse,Vector2(3.1,0),doc.objects)
+	check(reverse.jump_height==0,"reverse crossing does not launch")
+	var rotated := VehicleState.new(); rotated.position=Vector2(0,3.1); rotated.velocity=Vector2(0,14)
+	TrackHazards.launch(rotated,Vector2(0,2.9),[{"kind":"jump","position":[0,0],"rotation":90}])
+	check(rotated.jump_height>0,"rotating a ramp rotates its launch direction")
+	var coast: RefCounted = handbrake_baseline.new(config); coast.state.jump_height=2.0; coast.state.velocity=Vector2(10,0)
+	var pedal := DriveFrame.new(); pedal.throttle=255; pedal.brake=255; pedal.steer=127
+	coast.step(pedal,dry)
+	check(coast.state.velocity==Vector2(10,0) and coast.state.heading==0,"airborne car preserves momentum without tyre steering or pedal acceleration")
+	var scenery_doc: Dictionary = TrackDocument.create_default()
+	var scenery: NativeTrack = TrackCompiler.compile(scenery_doc)
+	check(not scenery.metadata.scenery_objects.is_empty(),"woodland circuit creates solid scenery")
+	var tree: Dictionary = scenery.metadata.scenery_objects[0]
+	var point := Vector2(tree.position[0],tree.position[1])
+	check(scenery.cell_at(point)==4,"automatic tree occupies collision cells")
+	var approach: RefCounted = handbrake_baseline.new(config); approach.reset(point-Vector2(0,5)); approach.state.velocity=Vector2(0,9)
+	var drive := DriveFrame.new(); drive.throttle=255
+	for i: int in range(120): approach.step(drive,scenery)
+	check(approach.state.collision_count>0 and approach.state.position.y<point.y,"scenery tree stops an approaching car")
+	var folder: String = "user://hazards_"+str(Time.get_ticks_usec())
+	var app: Node = load("res://core/app.tscn").instantiate()
+	app.set("library",TrackLibrary.new(folder)); app.set("records",LocalRecords.new(folder+"/records.json"))
+	root.add_child(app); await process_frame
+	app.set("document",scenery_doc); app.call("_show_screen","create")
+	await process_frame; await process_frame
+	var preview_deadline: int = Time.get_ticks_msec()+15000
+	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
+	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"scenery selection waits for actual collision/scenery preparation")
+	var canvas: EditorCanvas = app.get("canvas")
+	canvas.mode="objects"; canvas._begin(canvas.to_screen(point),-1); canvas._end(-1)
+	check(canvas.selected_object>=0 and scenery_doc.hidden_scenery.has(CreatorScenery.key(tree)),"scenery tree can be selected and adopted into document")
+	app.call("_scale_object",0.5)
+	check(scenery_doc.objects[canvas.selected_object].scale==1.5,"size control changes selected tree")
+	app.call("_delete_selection")
+	var library: TrackLibrary = app.get("library")
+	var save_error: Error = library.save_document(scenery_doc)
+	check(save_error==OK,"deleted tree document saves: "+library.last_error)
+	if save_error!=OK:
+		quit(1)
+		return
+	var restored: Dictionary = library.load_document(scenery_doc.id)
+	var deleted: NativeTrack = TrackCompiler.compile(restored)
+	check(deleted.cell_at(point)!=4,"deleted scenery stays gone after saved file reload")
+	app.call("_undo")
+	check((app.get("document") as Dictionary).objects.size()==1,"undo restores deleted tree")
+	# Original demonstration, never edits the owner's saved circuits.
+	var demo: Dictionary = TrackDocument.create_blank()
+	demo.name="Woodland objects"
+	var road: Dictionary = RoadPieces.create("straight",Vector2(-35,0),0,14)
+	road.length=70.0
+	demo.pieces=[road]
+	var bridge: Dictionary = RoadPieces.create("bridge",Vector2(-25,28),0,12)
+	bridge.length=50.0
+	demo.pieces.append(bridge)
+	demo.objects=[{"kind":"jump","position":[-12,0],"rotation":0},{"kind":"oil","position":[1,0],"rotation":0},{"kind":"puddle","position":[14,0],"rotation":0}]
+	for i: int in range(5): demo.objects.append({"kind":["tree","rock","boulder","slate","cliff"][i],"position":[-24+i*12,-12],"rotation":15,"scale":1.25})
+	app.set("document",demo); app.call("_show_screen","create")
+	await process_frame; await process_frame
+	canvas=app.get("canvas"); canvas.mode="objects"; canvas.selected_object=7; app.call("_build_editor_tools")
+	if capture:
+		for i: int in range(4): await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-editor.png"))==OK,"editor screenshot")
+	await app.call("_start_race",TrackCompiler.compile(demo),true)
+	await process_frame
+	var game: Node = app.get("game"); game.set_physics_process(false)
+	var actual: VehicleSimulation=game.get("sim"); actual.reset(Vector2(-7,0),PI*0.5); actual.state.jump_height=1.9; actual.state.jump_velocity=2.0; actual.state.velocity=Vector2(14,0)
+	game.set("previous_position",actual.state.position); game.set("previous_heading",actual.state.heading)
+	if capture:
+		for i: int in range(4):
+			game.call("_process",0.1)
+			await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-jump.png"))==OK,"jump presentation screenshot")
+	if capture:
+		actual.reset(Vector2(0,28),PI*0.5); actual.state.track_elevated=true
+		game.set("previous_position",actual.state.position); game.set("previous_heading",actual.state.heading)
+		var camera: FollowCamera=game.get("camera")
+		camera.follow(actual.state.position,Vector2.ZERO,actual.state.heading,0.0,true)
+		for i: int in range(4):
+			game.call("_process",0.1)
+			await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/hazards-bridge.png"))==OK,"bridge presentation screenshot")
+	if capture:
+		game.queue_free()
+		await process_frame
+		await app.call("_start_race",pond,true)
+		await process_frame
+		game=app.get("game"); game.set_physics_process(false)
+		actual=game.get("sim"); actual.reset(Vector2(18.7,0),0.0)
+		game.set("previous_position",actual.state.position); game.set("previous_heading",0.0)
+		var water_camera: FollowCamera=game.get("camera")
+		water_camera.follow(actual.state.position,Vector2.ZERO,0.0,0.0,true)
+		for i: int in range(4):
+			game.call("_process",0.1)
+			await RenderingServer.frame_post_draw
+		check(root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/surfaces-water.png"))==OK,"shore submersion screenshot")
+	app.queue_free(); await process_frame
+	var temporary := DirAccess.open(folder)
+	for file: String in temporary.get_files(): DirAccess.remove_absolute(folder+"/"+file)
+	DirAccess.remove_absolute(folder)
+	print("HAZARD_TESTS: %d checks, %d failures" % [checks,failures])
+	quit(0 if failures==0 else 1)
+
+var handbrake_baseline: GDScript = _handbrake_baseline_script()
+func _handbrake_baseline_script() -> GDScript:
+	var script := GDScript.new()
+	script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/handbrake-reversal-2026-10-14/before/vehicle_simulation.gd.txt").replace("\r\n", "\n").replace("class_name VehicleSimulation\n", "")
+	assert(script.reload() == OK)
+	return script

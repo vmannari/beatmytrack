@@ -5,7 +5,7 @@ const DECK_HEIGHT: float = 0.22
 const DECK_RADIUS: float = 3.65
 const ROOF_CUTAWAY_HEIGHT: float = 4.95
 static var surfaces: Dictionary = {}
-static var architecture_scenes: Dictionary = {}
+static var architecture_scene: PackedScene
 static var cabinet_meshes: Dictionary = {}
 
 static func deck_finish() -> ShaderMaterial:
@@ -84,8 +84,8 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
 	floor.position.y = -0.025
 	floor.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	world.add_child(floor)
-	if architecture_scenes.has(thumbnail):
-		shell.add_child((architecture_scenes[thumbnail] as PackedScene).instantiate())
+	if architecture_scene != null:
+		shell.add_child(architecture_scene.instantiate())
 	else:
 		var roof := Node3D.new()
 		roof.name = "GarageRoof"
@@ -113,22 +113,26 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
 		for z: float in [1.0, 5.5, 8.3]:
 			box(roof, Vector3(0, 5.65, z), Vector3(21.2, 0.24, 0.25), steel)
 			box(roof, Vector3(0, 5.48, z), Vector3(6.5, 0.05, 0.34), lamp)
-		if not thumbnail:
-			_workbench(shell, Vector3(6.35, 0, 7.65))
-			_cabinet(shell, Vector3(-6.9, 0, 7.65))
-			_tyre_rack(shell, Vector3(9.2, 0, 7.6))
-			GarageDetails.build(shell)
-			GarageDrain.build(shell)
+		_workbench(shell, Vector3(6.35, 0, 7.65))
+		_cabinet(shell, Vector3(-6.9, 0, 7.65))
+		_tyre_rack(shell, Vector3(9.2, 0, 7.6))
+		GarageDetails.build(shell)
+		GarageDrain.build(shell)
+		preload("res://ui/garage_record_station.gd").build(shell)
 		_batch(roof)
 		_batch(shell)
 		_set_owner(shell, shell)
 		var prepared := PackedScene.new()
-		if prepared.pack(shell) == OK: architecture_scenes[thumbnail] = prepared
+		if prepared.pack(shell) == OK: architecture_scene = prepared
+	build_lighting(world, thumbnail)
+	return build_pedestal(world, car)
+
+static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = false) -> WorldEnvironment:
 	var environment := WorldEnvironment.new()
 	environment.name = "GarageEnvironment"
 	environment.environment = Environment.new()
 	environment.environment.background_mode = Environment.BG_COLOR
-	environment.environment.background_color = Color("101923")
+	environment.environment.background_color = Color.TRANSPARENT if transparent else Color("101923")
 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.environment.ambient_light_color = Color("b6c5d0")
 	environment.environment.ambient_light_energy = 0.34
@@ -165,7 +169,7 @@ static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
 	rim.spot_angle = 54
 	world.add_child(rim)
 	rim.look_at(Vector3(0, 0.8, 0))
-	return build_pedestal(world, car)
+	return environment
 
 static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
 	var inset: Material = surfaces.inset
@@ -230,7 +234,7 @@ static func _batch(root: Node3D) -> void:
 static func _collect(node: Node3D, transform: Transform3D, groups: Dictionary) -> void:
 	for child: Node in node.get_children():
 		if not child is Node3D: continue
-		if child.name == "GarageRoof": continue
+		if child.name in ["GarageRoof","GarageVinyl","GarageRecordSleeves"]: continue
 		var local: Transform3D = transform * child.transform
 		if child is MeshInstance3D:
 			var material: Material = child.material_override

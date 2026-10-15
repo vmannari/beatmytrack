@@ -16,6 +16,8 @@ static func texture(mode: String) -> Texture2D:
 			art = "<path fill-rule='evenodd' d='M45 7a14 14 0 0 0-17 16L10 41a8 8 0 0 0 13 10l16-17A14 14 0 0 0 57 16l-10 9-8-3-2-8ZM17 43a3 3 0 1 0 0 6 3 3 0 1 0 0-6Z'/>"
 		"trophies":
 			art = "<path fill-rule='evenodd' d='M19 9h26v6h11v9c0 9-6 15-15 16-2 3-4 5-6 6v6h11v6H18v-6h11v-6c-3-1-5-3-7-6C13 39 8 33 8 24v-9h11Zm-5 12v3c0 5 2 8 7 10-1-4-2-8-2-13Zm31 0c0 5-1 9-2 13 5-2 7-5 7-10v-3Z'/>"
+		"records":
+			art = "<path fill-rule='evenodd' d='M32 5a27 27 0 1 0 0 54 27 27 0 0 0 0-54Zm0 7a20 20 0 1 1 0 40 20 20 0 0 1 0-40Zm0 4a16 16 0 1 0 0 32 16 16 0 0 0 0-32Zm0 9a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z'/>"
 		_: return null
 	var svg: String = "<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'><g fill='white'>%s</g></svg>" % art
 	var raster := Image.new()

@@ -10,6 +10,8 @@ var cameras: Array[Camera3D] = []
 var floor_material: ShaderMaterial
 var deck_material: ShaderMaterial
 var enabled: bool = true
+var _visible: bool = false
+var _synced: Array = []
 
 func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 	owner = source
@@ -28,8 +30,13 @@ func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 		view.msaa_3d = Viewport.MSAA_2X
 		view.scaling_3d_scale = 1.0
 		view.transparent_bg = true
-		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		view.render_target_update_mode = SubViewport.UPDATE_ONCE
 		holder.add_child(view)
+		# The receiving showroom must draw after its freshly resized captures.
+		RenderingServer.viewport_set_parent_viewport(view.get_viewport_rid(),owner.showroom_viewport.get_viewport_rid())
+		# Native viewport entry restores its inferred parent. A retained Garage
+		# can move between menu slots, so reinstate the same explicit draw order.
+		view.tree_entered.connect(_restore_parent.bind(view))
 		var camera := Camera3D.new()
 		camera.cull_mask = ROOM_LAYER if index == 0 else CAR_LAYER
 		view.add_child(camera)
@@ -40,6 +47,11 @@ func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 	floor_material.set_shader_parameter("reflection_enabled",true)
 	mark_stage(stage)
 	sync()
+
+func _restore_parent(view: SubViewport) -> void:
+	if is_instance_valid(owner) and is_instance_valid(owner.showroom_viewport):
+		RenderingServer.viewport_set_parent_viewport(view.get_viewport_rid(),owner.showroom_viewport.get_viewport_rid())
+		_synced.clear()
 
 func _mark_room(node: Node) -> void:
 	if node is MeshInstance3D: node.layers = 1 | ROOM_LAYER
@@ -64,6 +76,9 @@ func _mark_stage(node: Node, car_part: bool) -> void:
 
 func sync() -> void:
 	if views.is_empty() or owner.camera == null: return
+	var state: Array = [owner.showroom_viewport.size,owner.camera.transform,owner.camera.fov,owner.camera.keep_aspect]
+	if state == _synced: return
+	_synced = state
 	var source_size: Vector2i = owner.showroom_viewport.size
 	var width: int = mini(768,maxi(1,ceili(source_size.x*0.5)))
 	var pixels := Vector2i(width,maxi(1,roundi(float(width)*source_size.y/maxi(1,source_size.x))))
@@ -80,16 +95,27 @@ func sync() -> void:
 		cameras[index].fov = owner.camera.fov
 		cameras[index].keep_aspect = owner.camera.keep_aspect
 	set_visible(owner.is_visible_in_tree())
+	request_draw()
+
+func request_draw() -> void:
+	if not enabled or not owner.is_visible_in_tree(): return
+	for view: SubViewport in views: view.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func set_visible(active: bool) -> void:
-	for view: SubViewport in views:
-		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS if active and enabled else SubViewport.UPDATE_DISABLED
+	if active == _visible: return
+	_visible = active
+	if active: request_draw()
+	else:
+		for view: SubViewport in views: view.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 func set_enabled(active: bool) -> void:
+	if active == enabled: return
 	enabled = active
 	floor_material.set_shader_parameter("reflection_enabled",active)
 	if deck_material != null: deck_material.set_shader_parameter("reflection_enabled",active)
-	set_visible(owner.is_visible_in_tree())
+	if not active:
+		for view: SubViewport in views: view.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	owner.invalidate_render()
 
 func dispose() -> void:
 	if floor_material != null: floor_material.set_shader_parameter("reflection_image",null)

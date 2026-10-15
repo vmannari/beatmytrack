@@ -1,0 +1,720 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 3ecc2d2..c23e24e 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Retained Garage pane and sliding menus override (2026-10-14)
++The owner requests the car visualisation to stay open and move into the selected-car layout while the other menus slide in/out. Keep the live preview permanently attached, use container-managed destination slots and a bounded0.32s transition for native rail/tools/actions/carousel. Preserve actual viewport/car/room/camera transform/zoom/pose, local paint/condition, retained workbench, washing and confirmation. Rapid navigation starts at the displayed pane; hiding settles and clears outgoing input-disabled controls. Parent the two existing reflection render targets to the receiving showroom so their resized draws finish first, retaining original caps/passes/materials. See `docs/GARAGE_MENU_MOTION_2026_10_14.md` for actual both-renderer300+300/72first-draw pixel checks each, reflection25+25/navigation178+178/car-swap23+23,714-script parse/menu48, scoped checkpoint and separate existing asset-test failures. DN2103 attached; no physical-phone run/APK/deployment or phone-performance claim.
++
+ ## Phone desert hitch attribution and hazard preparation (2026-10-14)
+ The owner requests investigation of the recorded first-desert phone hitch. Native DN2103 traces capture matching first-use Mali shader compilation; the expanded context points to the third jump hazard appearing in view. Prepare the original hazard meshes through the existing covered draw and restore exact cull margins before the unchanged full countdown. Preserve mesh/material/pose/shadows, car condition, camera, bounded caches and canonical behavior; retain the parallel bridge/finish preparation. The matching route166 region stays below25ms in the tested cold pass, but separate fresh-cache compiler stalls remain, including a first tire-MultiMesh lead near tick86. Tire geometry/shading/pressure/sampling remain owned by the parallel task and were not changed. Final APK0B5C4045 is installed; both-renderer exact pixels/loading/condition and actual cold/primed phone checks are recorded in `docs/DESERT_HITCH_INVESTIGATION_2026_10_13.md`. This is not a general hitch-free or paired phone-FPS improvement claim.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index d934359..47bed61 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 GMM01-GMM04/GC06-GC28/GCS01-GCS04/GRD01-GRD03/CW13/CW15/CW16/V06/G01/R01/Q01: owner retained Garage selection/menu motion. Permanent live pane plus destination slots, bounded0.32s native panel/carousel slides, current-rectangle interruption and hidden cleanup; actual camera/pose/world/local cosmetics/partial-wash saving/retained workbench preserved. Reflection-parent ordering fixes actual Mobile resize corruption without new passes/caps or changed projection/materials. Final Compatibility300/Mobile300 include72 exact first-resized-versus-settled pixels each; reflections25+25/carousel178+178/car-swap23+23/parser714/menu48 pass. Broader customisation-speed asset preflight remains6fail/1380 Compatibility and1fail/1380 Mobile, before Garage construction; later workflow checks complete, assertions/assets untouched. Native stills/24 motion frames+holds/APNG/scoped checkpoint: docs/GARAGE_MENU_MOTION_2026_10_14.md. DN2103 attached; no phone test/APK/fullValidate/physics/backend/deploy, owner style/device frame pacing remain acceptance.
++
+ 2026-10-14 TLI01-TLI08/Q01/V03-V05/G01/R01/B07: owner-authorised track loading improvements. Oversized Desert/Winter roads now persist through verified bounded v2 disk artifacts without raising32MiB idle road RAM; final restart read69/74ms versus9.6/10.5s generation. Skip unused ghosts; bounded prepared stock detailed Compact assembly, ghost/effect/audio/contact resources; cancellable cold CPU roads and one ordinary metadata overlay; deduplicate verified metadata/selection writes and lighting/buffer reads. Other cars/simple/fitted templates retain original assembly after exact-pixel failures. Final both-renderer224+224 exact/resource checks; headless162; road14+12/70, workflow17, App99, audio1469, condition1383, ghosts38, driving72, rewind61, worlds85, Rivalry29/loading26 and703-script parse pass. Desktop warm new scenes58-105ms; no phone loading/RAM/thermal/APK/deploy/fullValidate/physics change. Actual commands, integration failures, limits and task-only checkpoint: docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md.
+ 
+ 2026-10-14 EDR01-EDR04/R01/T01-T04/V03/V05/Q01: owner fresh editor review only. Confirmed stale queued WIP overwrites a returned-to-saved document while UI/exit claim saved; Populate omits compiler cancellation (525/536ms versus callback6ms); warm selected-draft detail repeats four full workflow reads (44/46ms); eager prop-cache fallback causes needless mesh readback (96-access medians27/74ms versus retained0.023/0.025ms). Both-renderer isolated diagnostics reproduce all four; existing editor123+123 checks still pass and miss these cases. No runtime fixes, phone test/APK/fullValidate/backend/deploy/physics change. New diagnostic script, actual commands, corrected fixture, open fixes and task-only checkpoint: docs/evidence/editor-review-pass-2026-10-14/review.json.
+diff --git a/build/encode_garage_menu_motion.py b/build/encode_garage_menu_motion.py
+new file mode 100644
+index 0000000..4d39293
+--- /dev/null
++++ b/build/encode_garage_menu_motion.py
+@@ -0,0 +1,61 @@
++from pathlib import Path
++import hashlib
++import json
++import struct
++import zlib
++
++root = Path(__file__).resolve().parents[1]
++evidence = root / 'docs/evidence/garage-menu-motion-2026-10-14'
++folder = evidence / 'gl_compatibility/motion'
++frames = [(folder / 'cars-960.png', 700, 1000)]
++frames += [(folder / f'select-960-{i:02d}.png', 2, 75) for i in range(1, 13)]
++frames += [(folder / 'selected-960.png', 700, 1000)]
++frames += [(folder / f'back-960-{i:02d}.png', 2, 75) for i in range(1, 13)]
++frames += [(folder / 'cars-960.png', 700, 1000)]
++
++def parse(path):
++    source = path.read_bytes()
++    assert source[:8] == b'\x89PNG\r\n\x1a\n'
++    parts, at = [], 8
++    while at < len(source):
++        length = struct.unpack('>I', source[at:at+4])[0]
++        kind = source[at+4:at+8]
++        data = source[at+8:at+8+length]
++        assert struct.unpack('>I', source[at+8+length:at+12+length])[0] == zlib.crc32(kind+data) & 0xffffffff
++        parts.append((kind, data))
++        at += length+12
++    return parts
++
++def chunk(kind, data):
++    return struct.pack('>I', len(data))+kind+data+struct.pack('>I', zlib.crc32(kind+data) & 0xffffffff)
++
++first = parse(frames[0][0])
++header = next(data for kind, data in first if kind == b'IHDR')
++width, height = struct.unpack('>II', header[:8])
++result = bytearray(b'\x89PNG\r\n\x1a\n')+chunk(b'IHDR', header)
++for kind, data in first:
++    if kind not in [b'IHDR', b'IDAT', b'IEND']: result += chunk(kind, data)
++result += chunk(b'acTL', struct.pack('>II', len(frames), 0))
++sequence = 0
++for index, (path, delay, denominator) in enumerate(frames):
++    parts = parse(path)
++    assert next(data for kind, data in parts if kind == b'IHDR') == header
++    result += chunk(b'fcTL', struct.pack('>IIIIIHHBB', sequence, width, height, 0, 0, delay, denominator, 0, 0))
++    sequence += 1
++    for kind, data in parts:
++        if kind != b'IDAT': continue
++        if index == 0: result += chunk(b'IDAT', data)
++        else:
++            result += chunk(b'fdAT', struct.pack('>I', sequence)+data)
++            sequence += 1
++result += chunk(b'IEND', b'')
++target = evidence / 'garage-menu-transition.png'
++target.write_bytes(result)
++(evidence / 'motion.json').write_text(json.dumps({
++    'artifact': str(target.relative_to(root)), 'width': width, 'height': height,
++    'rendered_transition_frames': 24, 'endpoint_holds': 3,
++    'seconds': sum(delay/denominator for _, delay, denominator in frames),
++    'bytes': len(result), 'sha256': hashlib.sha256(result).hexdigest(),
++    'note': 'Lossless APNG from actual pinned-Godot renders; production tween stepped deterministically over 0.32 seconds in each direction, with added review holds. Playback is not a frame-time measurement.'
++}, indent=2)+'\n', encoding='utf-8')
++print(f'Garage selection/Back APNG: {width}x{height}, {len(frames)} frames, {len(result)} bytes')
+diff --git a/build/run_garage_menu_motion.ps1 b/build/run_garage_menu_motion.ps1
+new file mode 100644
+index 0000000..ce67aa2
+--- /dev/null
++++ b/build/run_garage_menu_motion.ps1
+@@ -0,0 +1,24 @@
++param([string]$Renderer = 'gl_compatibility', [switch]$MotionOnly, [switch]$ReflectionsOnly)
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++$env:APPDATA = Join-Path $repoRoot 'build/garage-menu-motion-user'
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$evidence = 'res://../docs/evidence/garage-menu-motion-2026-10-14/' + $Renderer
++$logs = Join-Path $repoRoot ('docs/evidence/garage-menu-motion-2026-10-14/'+$Renderer+'/logs')
++New-Item -ItemType Directory -Force -Path $logs | Out-Null
++function Run-GarageCheck([string]$ScriptName, [string[]]$Arguments = @()) {
++    try {
++        & (Join-Path $repoRoot 'scripts/dev.ps1') -Action TestScript -ScriptPath ('res://tests/'+$ScriptName+'.gd') -Graphical -RenderingMethod $Renderer -TestArgument $Arguments
++    } finally {
++        Copy-Item -LiteralPath (Join-Path $repoRoot "build/logs/TestScript-$PID/test-script.log") -Destination (Join-Path $logs ($ScriptName+'.log'))
++    }
++}
++if ($ReflectionsOnly) {
++    Run-GarageCheck 'test_garage_reflections' @("--evidence-root=$evidence/reflections")
++    return
++}
++Run-GarageCheck 'test_garage_menu_motion' @("--evidence-root=$evidence/motion",'--capture-motion')
++if ($MotionOnly) { return }
++Run-GarageCheck 'test_garage_carousel' @("--evidence-root=$evidence/carousel")
++Run-GarageCheck 'test_garage_car_transition' @("--evidence-root=$evidence/car-change")
++Run-GarageCheck 'test_garage_customisation_speed'
+diff --git a/docs/GARAGE_MENU_MOTION_2026_10_14.md b/docs/GARAGE_MENU_MOTION_2026_10_14.md
+new file mode 100644
+index 0000000..bfc076e
+--- /dev/null
++++ b/docs/GARAGE_MENU_MOTION_2026_10_14.md
+@@ -0,0 +1,32 @@
++# Retained Garage car view and sliding menus
++
++Owner request, 2026-10-14. GMM01: keep the live car view attached while selecting a car. GMM02: move that pane into the selected-car layout while menus slide out/in. GMM03: support Back, rapid navigation, resizing and hidden-page cleanup with bounded outgoing controls. GMM04: preserve actual car/camera/room, livery tools, local condition, washing and confirmation behavior. Existing GC06-GC28, GCS01-GCS04, GRD01-GRD03, CW13/CW15/CW16, V06/G01/R01/Q01 remain applicable.
++
++`GaragePage` now uses invisible container-managed layout slots and a permanently attached live preview. Selecting the displayed car keeps its actual viewport, world, model, camera transform, zoom, tilt and turntable pose. The pane moves and resizes over 0.32 seconds. The carousel and action row slide down; the side rail and right-hand tools slide at the edges. Outgoing controls leave before incoming replacements cross their path. Back reverses the layout. Customise/Care/Tuning/Trophy navigation uses the same bounded transition; the established trophy camera movement remains separate.
++
++Only the most recent outgoing rail/tools/action group survives, with mouse and keyboard focus disabled. Rapid navigation starts the car pane from its displayed rectangle; completion or hiding releases departing controls. The native livery workbench is retained and its original input/focus modes restored when reused. Carousel layout does not cancel scrolling every frame. Hidden Garage keeps its original visible-only showroom updates and stops the two existing reflection captures.
++
++Actual intermediate Mobile screenshots exposed corrupt floor/deck reflection pixels after resizing. Rebinding the same sampler did not fix this: the added first-draw-versus-settled check failed 65 of 72 comparisons. Each reflection capture now has an explicit RenderingServer parent pointing to the receiving showroom, so both captures draw before that showroom. This changes draw order without adding a pass, changing the camera/material/geometry, or increasing the original viewport caps. Godot's [RenderingServer API](https://docs.godotengine.org/en/stable/classes/class_renderingserver.html#class-renderingserver-method-viewport-set-parent-viewport) and [viewport sorting source](https://github.com/godotengine/godot/blob/master/servers/rendering/renderer_viewport.cpp) support the relationship; the pinned-engine pixel checks establish the tested result.
++
++The lossless [selection and Back preview](evidence/garage-menu-motion-2026-10-14/garage-menu-transition.png) contains 24 actual transition renders plus three endpoint holds at 960x540. The production tween was stepped deterministically; this playback is not a performance measurement. Native stills and frames at 960x540, 1280x720 and 1600x720 are under `gl_compatibility/motion` and `mobile/motion`. Both final layouts and intermediate movement were visually inspected.
++
++Actual validation uses `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`, isolated records under `build/garage-menu-motion-user`, and separate logs under each renderer's evidence folder. Main player records are not used. Commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -MotionOnly
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile -MotionOnly
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -ReflectionsOnly
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile -ReflectionsOnly
++python build/encode_garage_menu_motion.py
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
++```
++
++Final validation totals are recorded in `docs/evidence/garage-menu-motion-2026-10-14/verification.json`. Motion covers the actual attached viewport, no layout visibility events, car/camera/room identity, 72 exact first-resized-draw comparisons per renderer, native forward/Back motion, retained workbench, partial-wash saving, interruption, resize and hidden-page cleanup. Existing carousel and car-swap tests pass on both renderers. The broader customisation-speed suite has separate asset preflight failures before constructing Garage: its catalogue assertion on both renderers, and intermittently some aero thumbnail comparisons during concurrent asset work. The final saved broad logs show 6 failures of 1,380 checks on Compatibility and 1 on Mobile; all subsequent retained-workbench workflow checks complete. Their assertions and unrelated assets were left intact; the broad suite is not reported green.
++
++The first sandboxed run could not write normal user logs; relocating APPDATA to workspace-only test data resolved that. Graphical startup also required Windows certificate-store access outside the sandbox; the automatic approval review allowed the read. Initial test fixture used an unavailable catalog method and was corrected to the existing selection API. A command-line array was initially flattened into one evidence argument; the local runner now preserves arrays and each test log. These attempts are not counted as passes.
++
++Doctor finds the attached DN2103 and existing Android prerequisites. A Doctor invocation with isolated APPDATA could not see the normal SDK/template settings; the normal-settings read-only Doctor confirms them. No phone interaction, APK export/install, backend action, deployment, full Validate or physics change was performed. Owner transition/style acceptance and physical-phone frame pacing remain outstanding. The two existing half-resolution reflection passes and 2560x1440 main / 768-wide reflection caps remain; no phone performance improvement is claimed.
++
++Changed runtime files: `game/ui/garage_page.gd`, `game/ui/garage_reflections.gd`. Added regression: `game/tests/test_garage_menu_motion.gd` (+UID). Supporting runner/encoder: `build/run_garage_menu_motion.ps1`, `build/encode_garage_menu_motion.py`. Updated this document, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`. A task-only Git checkpoint and patch are recorded in the evidence ledger, preserving the main branch/index and unrelated workspace edits.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 443de34..31ef9f8 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2031,3 +2031,8 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated
+ 
+ 
+ 2026-10-13 GCS01-GCS04/CKT01-CKT06/LV01-LV06/V04-V06/G01/R01/Q01: owner slow customisation switches. Same native offline32photos/exact368prepared meshes and retained per-car tab controls remove multi-second preview stalls; Garage-only independent frames replace changed parts while car/body/tyres/pivots/paint/condition remain. Compatibility first Body8021.066->13.798ms dispatch/8059.966->17.872ms first render; repeat tabs~1-3ms; part installs7.6-34.6ms vs173-241ms. Desktop Mobile20-165ms installs removes3.78s rim outlier; not phone FPS. Sixteen-photo/bounded tool-frame caches, unchanged ordinary racing budgets; menu52vs50 stock/62vs57 fitted draws. Exact prepared/menu450+450/incremental130+130/livery355+355/kits219+219/reflections25/racing85/parser677 pass. Initial stale sticker/roof and digest issues corrected; ineffective whole-car indexing/cache prototypes reverted, final partial update retains original indexed data. No phone test/APK/fullValidate/backend/livewrite/deploy. Actual commands/captures/provenance/task-only checkpoint/remaining device acceptance: docs/GARAGE_CUSTOMISATION_SPEED.md.
++
++
++## Garage retained selection transition (2026-10-14)
++
++2026-10-14 GMM01-GMM04/GC06-GC28/GCS01-GCS04/GRD01-GRD03/CW13/CW15/CW16/V06/G01/R01/Q01: owner retained Garage selection/menu motion. Permanent live pane plus destination slots, bounded0.32s native panel/carousel slides, current-rectangle interruption and hidden cleanup; actual camera/pose/world/local cosmetics/partial-wash saving/retained workbench preserved. Reflection-parent ordering fixes actual Mobile resize corruption without new passes/caps or changed projection/materials. Final Compatibility300/Mobile300 include72 exact first-resized-versus-settled pixels each; reflections25+25/carousel178+178/car-swap23+23/parser714/menu48 pass. Broader customisation-speed asset preflight remains6fail/1380 Compatibility and1fail/1380 Mobile, before Garage construction; later workflow checks complete, assertions/assets untouched. Native stills/24 motion frames+holds/APNG/scoped checkpoint: docs/GARAGE_MENU_MOTION_2026_10_14.md. DN2103 attached; no phone test/APK/fullValidate/physics/backend/deploy, owner style/device frame pacing remain acceptance.
+diff --git a/game/tests/test_garage_menu_motion.gd b/game/tests/test_garage_menu_motion.gd
+new file mode 100644
+index 0000000..ad4736b
+--- /dev/null
++++ b/game/tests/test_garage_menu_motion.gd
+@@ -0,0 +1,164 @@
++extends SceneTree
++## Real retained viewport, sliding native panels, interruption and rendered frames.
++var checks: int = 0
++var failures: int = 0
++var page: GaragePage
++var output: String = "res://../docs/evidence/garage-menu-motion-2026-10-14"
++var motion_capture: bool = false
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	while page._menu_motion != null: await frame()
++	for tick: int in range(5): await frame()
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func check_resize_pixels() -> void:
++	if DisplayServer.get_name() == "headless": return
++	var immediately: PackedByteArray = page.showroom.showroom_viewport.get_texture().get_image().get_data()
++	await frame()
++	check(page.showroom.showroom_viewport.get_texture().get_image().get_data() == immediately,"first resized draw equals settled reflection/car pixels")
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++		if argument == "--capture-motion": motion_capture = true
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://garage_menu_motion_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	app._show_screen("garage")
++	page = app.root_ui.find_child("GaragePage",true,false)
++	await settle()
++	var viewport: SubViewport = page.showroom.showroom_viewport
++	var car: CarVisual = page.showroom.car
++	var room: Node = viewport.find_child("GarageArchitecture",true,false)
++	var preview_parent: Node = page.preview.get_parent()
++	var visibility_events: Array[int] = [0]
++	page.showroom.visibility_changed.connect(func() -> void: visibility_events[0] += 1)
++	page.showroom.zoom_by(0.86)
++	page.showroom.rotate_view(Vector2(28,-6))
++	var camera_pose: Transform3D = page.showroom.camera.transform
++	var deck_pose: Transform3D = page.showroom.turntable.transform
++	var condition: Dictionary = page.showroom.weathering.snapshot()
++	var pigment: Dictionary = page.draft.duplicate(true)
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		await capture("cars-"+str(dimensions.x))
++		var start: Rect2 = page.preview.get_rect()
++		page._confirm_car()
++		check(page._menu_motion != null,"confirmation starts layout motion "+str(dimensions))
++		check(page.preview.get_parent() == preview_parent and page.showroom.showroom_viewport == viewport,"confirmation keeps attached live viewport")
++		page._menu_motion.pause()
++		await frame()
++		check(page.preview.get_rect().is_equal_approx(start),"confirmation retains exact outgoing car pane")
++		check(page.gallery.visible and not page.gallery_slot.visible,"carousel remains drawn during departure")
++		check(not page._departures.is_empty(),"native outgoing menus remain until they slide away")
++		var tween: Tween = page._menu_motion
++		for tick: int in range(1,13):
++			tween.custom_step(GaragePage.MENU_MOVE_SECONDS/12.0)
++			page._present_menu_layout()
++			await frame()
++			await check_resize_pixels()
++			check(page.showroom.is_visible_in_tree() and page.showroom.showroom_viewport == viewport and page.showroom.car == car,"live car remains visible throughout movement")
++			check(page.showroom.camera.transform == camera_pose and page.showroom.turntable.transform == deck_pose,"moving pane preserves actual camera and car pose")
++			if tick == 6: await capture("select-mid-"+str(dimensions.x))
++			if motion_capture: await capture("select-%d-%02d" % [dimensions.x,tick])
++		tween.custom_step(0.001)
++		await settle()
++		check(page.preview.get_rect().is_equal_approx(page._slot_rect(page._preview_slot)),"car pane reaches new layout slot")
++		check(page.preview.size != start.size and not page.gallery.visible,"confirmation reshapes pane and finishes carousel departure")
++		check(page._departing_menus.get_child_count() == 0,"outgoing controls are released")
++		check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"incoming tools finish on screen")
++		await capture("selected-"+str(dimensions.x))
++		var workbench: GarageLiveryMenu = page.livery_menu
++		for destination: String in ["care","tuning","customise"]:
++			page._show_section(destination)
++			await settle()
++			check(page.preview.get_parent() == preview_parent and page.showroom.car == car and viewport.find_child("GarageArchitecture",true,false) == room,"section retains showroom, car and room")
++			check(page.showroom.weathering.snapshot() == condition and page.draft == pigment,"section preserves local condition and pigments")
++			await capture(destination+"-"+str(dimensions.x))
++		check(page.livery_menu == workbench,"sliding away and back retains livery workbench")
++		page._show_section("cars")
++		page._menu_motion.pause()
++		await frame()
++		tween = page._menu_motion
++		for tick: int in range(1,13):
++			tween.custom_step(GaragePage.MENU_MOVE_SECONDS/12.0)
++			page._present_menu_layout()
++			await frame()
++			await check_resize_pixels()
++			if tick == 6: await capture("back-mid-"+str(dimensions.x))
++			if motion_capture: await capture("back-%d-%02d" % [dimensions.x,tick])
++		tween.custom_step(0.001)
++		await settle()
++		check(page.gallery.visible and page._departures.is_empty(),"Back restores carousel and cleans departures")
++	check(visibility_events[0] == 0,"layout never hides or reparents live showroom")
++	page.open_car(0)
++	page._menu_motion.pause()
++	await frame()
++	page._menu_motion.custom_step(0.08)
++	page._present_menu_layout()
++	var interrupted: Rect2 = page.preview.get_rect()
++	page._show_section("care")
++	check(page.preview.get_rect() == interrupted,"rapid navigation continues from displayed car rectangle")
++	page._show_section("tuning")
++	page._show_section("customise")
++	page._show_section("cars")
++	await settle()
++	check(page.section == "cars" and page._departing_menus.get_child_count() == 0,"rapid navigation retains latest destination with bounded panels")
++	page.open_car(0)
++	page._show_section("care")
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 0.75
++	dirty.mud = 0.75
++	check(VehicleCondition.save(app.records,"compact",dirty) == OK,"seed local wash condition")
++	await frame()
++	page._toggle_wash()
++	var before_wash: Dictionary = page.showroom.weathering.snapshot()
++	page.showroom.weathering.wash(Vector3(-0.9,0.5,0.1),0.8)
++	page._show_section("tuning")
++	check(not page.showroom.wash_mode,"navigation stops washing before sliding controls")
++	check(page.showroom.weathering.snapshot() != before_wash,"manual washing changes real local dirt")
++	check(VehicleCondition.read(app.records,"compact").wash == page.showroom.weathering.snapshot().wash,"navigation saves exact partial wash before sliding controls")
++	page.hide()
++	check(page._menu_motion == null and page._departures.is_empty(),"hiding cancels motion and releases outgoing controls")
++	check(viewport.render_target_update_mode == SubViewport.UPDATE_WHEN_VISIBLE,"live viewport retains visible-only updates")
++	page.show()
++	await settle()
++	check(page.preview.get_rect().is_equal_approx(page._slot_rect(page._preview_slot)),"return restores exact final layout")
++	page._show_section("customise")
++	root.size = Vector2i(1280,720)
++	await settle()
++	check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"resize during motion keeps final tools inside shell")
++	page._show_section("cars")
++	await settle()
++	page.gallery.scroll_horizontal = 19
++	page._present_menu_layout()
++	check(page.gallery.scroll_horizontal == 19,"layout presentation does not interrupt carousel scrolling")
++	app.queue_free()
++	await process_frame
++	print("GARAGE_MENU_MOTION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_menu_motion.gd.uid b/game/tests/test_garage_menu_motion.gd.uid
+new file mode 100644
+index 0000000..69f1692
+--- /dev/null
++++ b/game/tests/test_garage_menu_motion.gd.uid
+@@ -0,0 +1 @@
++uid://i3g2mgdyv6as
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index ca017b1..05d133d 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1,5 +1,5 @@
+ class_name GaragePage
+-extends HBoxContainer
++extends Control
+ ## Car discovery and selected-car tools share one local showroom.
+ signal vehicle_selected(index: int)
+ signal race_requested
+@@ -10,6 +10,22 @@ const Carousel = preload("res://ui/track_carousel.gd")
+ const RailIcons = preload("res://ui/garage_mode_icons.gd")
+ const LIVERY_NAMES: Array[String] = ["Midnight"]
+ const LIVERY_COLORS: Array[Array] = [["273b50", "ced7dc"]]
++const MENU_MOVE_SECONDS: float = 0.32
++
++var _layout: HBoxContainer
++var _preview_slot: Control
++var _rail_slot: Control
++var _tools_slot: Control
++var _actions_slot: Control
++var _live_menus: Control
++var _departing_menus: Control
++var _parked_tools: Control
++var _menu_motion: Tween
++var _menu_weight: float = 1.0
++var _menu_starts: Dictionary = {}
++var _departures: Array[Dictionary] = []
++var _gallery_departing: bool = false
++var _layout_presented: bool = false
+ 
+ var records: LocalRecords
+ var showroom: CarShowroom
+@@ -60,23 +76,47 @@ var _sticker_editing: bool = false
+ 
+ func _ready() -> void:
+ 	name = "GaragePage"
+-	add_theme_constant_override("separation", 12)
+-	rail = VBoxContainer.new()
+-	rail.name = "GarageModes"
+-	rail.custom_minimum_size.x = 60
+-	rail.add_theme_constant_override("separation", 12)
+-	add_child(rail)
++	clip_contents = true
++	_layout = HBoxContainer.new()
++	_layout.name = "GarageLayout"
++	_layout.add_theme_constant_override("separation",12)
++	add_child(_layout)
++	MenuStyle.fill(_layout)
++	_rail_slot = Control.new()
++	_rail_slot.custom_minimum_size.x = 60
++	_layout.add_child(_rail_slot)
+ 	main = VBoxContainer.new()
+ 	main.name = "GarageMain"
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation", 8)
+-	add_child(main)
++	_layout.add_child(main)
++	_preview_slot = Control.new()
++	_preview_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	_preview_slot.custom_minimum_size.y = 250
++	main.add_child(_preview_slot)
++	_tools_slot = Control.new()
++	main.add_child(_tools_slot)
++	# The live viewport never leaves this parent when layout slots move.
+ 	preview = Control.new()
+ 	preview.name = "GaragePreview"
+ 	preview.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	preview.custom_minimum_size.y = 250
+ 	preview.clip_contents = true
+-	main.add_child(preview)
++	add_child(preview)
++	_live_menus = Control.new()
++	_live_menus.name = "GarageLiveMenus"
++	_live_menus.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(_live_menus)
++	MenuStyle.fill(_live_menus)
++	_departing_menus = Control.new()
++	_departing_menus.name = "GarageDepartingMenus"
++	_departing_menus.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(_departing_menus)
++	MenuStyle.fill(_departing_menus)
++	_parked_tools = Control.new()
++	_parked_tools.name = "GarageRetainedTools"
++	add_child(_parked_tools)
++	_parked_tools.hide()
+ 	_create_showroom()
+ 	var shade := TextureRect.new()
+ 	shade.name = "ShowroomHeaderShade"
+@@ -98,19 +138,142 @@ func _ready() -> void:
+ 	heading.position = Vector2(24, 14)
+ 	heading.size = Vector2(520, 46)
+ 	_build_view_controls()
++	_build_carousel()
++	_actions_slot = Control.new()
++	main.add_child(_actions_slot)
++	_new_menu_panels()
++	_show_section("cars")
++	visibility_changed.connect(_visibility_changed)
++
++func _new_menu_panels() -> void:
++	rail = VBoxContainer.new()
++	rail.name = "GarageModes"
++	rail.add_theme_constant_override("separation",12)
++	_live_menus.add_child(rail)
+ 	tools_panel = PanelContainer.new()
+ 	tools_panel.name = "GarageTools"
+-	tools_panel.add_theme_stylebox_override("panel", MenuStyle.card(12))
+-	main.add_child(tools_panel)
++	tools_panel.add_theme_stylebox_override("panel",MenuStyle.card(12))
++	_live_menus.add_child(tools_panel)
+ 	tools = VBoxContainer.new()
+-	tools.add_theme_constant_override("separation", 8)
++	tools.add_theme_constant_override("separation",8)
+ 	tools_panel.add_child(tools)
+-	_build_carousel()
+ 	actions = HBoxContainer.new()
+ 	actions.name = "GarageActions"
+-	main.add_child(actions)
+-	_show_section("cars")
+-	visibility_changed.connect(_visibility_changed)
++	_live_menus.add_child(actions)
++	for panel: Control in [rail,tools_panel,actions]:
++		panel.minimum_size_changed.connect(_sync_menu_minimums)
++
++func _sync_menu_minimums() -> void:
++	_rail_slot.custom_minimum_size = rail.get_combined_minimum_size()
++	_tools_slot.custom_minimum_size = tools_panel.get_combined_minimum_size() if tools_panel.visible else Vector2.ZERO
++	_actions_slot.custom_minimum_size = actions.get_combined_minimum_size()
++	custom_minimum_size = _layout.get_combined_minimum_size()
++
++func _slot_rect(slot: Control) -> Rect2:
++	return Rect2(get_global_transform().affine_inverse() * slot.global_position,slot.size)
++
++func _set_panel_input(panel: Node, enabled: bool) -> void:
++	if panel is Control:
++		if enabled and panel.has_meta("garage_motion_mouse"):
++			panel.mouse_filter = panel.get_meta("garage_motion_mouse")
++			panel.focus_mode = panel.get_meta("garage_motion_focus")
++			panel.remove_meta("garage_motion_mouse")
++			panel.remove_meta("garage_motion_focus")
++		elif not enabled and not panel.has_meta("garage_motion_mouse"):
++			panel.set_meta("garage_motion_mouse",panel.mouse_filter)
++			panel.set_meta("garage_motion_focus",panel.focus_mode)
++			panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
++			panel.focus_mode = Control.FOCUS_NONE
++	for child: Node in panel.get_children(): _set_panel_input(child,enabled)
++
++func _clear_departures() -> void:
++	for entry: Dictionary in _departures:
++		var panel: Control = entry.panel
++		if is_instance_valid(_retained_livery) and panel.is_ancestor_of(_retained_livery):
++			_retained_livery.reparent(_parked_tools)
++			_retained_livery.hide()
++			_set_panel_input(_retained_livery,true)
++		panel.get_parent().remove_child(panel)
++		panel.queue_free()
++	_departures.clear()
++
++func _prepare_menu_move() -> void:
++	if _menu_motion != null: _menu_motion.kill()
++	_clear_departures()
++	_menu_starts = {preview:preview.get_rect()}
++	if gallery.visible: _menu_starts[gallery] = gallery.get_rect()
++	for panel: Control in [rail,tools_panel,actions]:
++		if panel.visible and _layout_presented and is_visible_in_tree():
++			var start: Rect2 = panel.get_rect()
++			var finish: Rect2 = start
++			if panel == rail: finish.position.x = -start.size.x-16
++			elif panel == tools_panel: finish.position.x = size.x+16
++			else: finish.position.y = size.y+16
++			panel.reparent(_departing_menus)
++			_set_panel_input(panel,false)
++			_departures.append({"panel":panel,"start":start,"finish":finish})
++		else:
++			if is_instance_valid(_retained_livery) and panel.is_ancestor_of(_retained_livery):
++				_retained_livery.reparent(_parked_tools)
++				_retained_livery.hide()
++			panel.get_parent().remove_child(panel)
++			panel.queue_free()
++	_new_menu_panels()
++
++func _start_menu_move() -> void:
++	_sync_menu_minimums()
++	_gallery_departing = section != "cars" and gallery.visible
++	if section == "cars":
++		gallery.show()
++		_layout_gallery()
++	if not _layout_presented or not is_visible_in_tree():
++		_finish_menu_move()
++		return
++	_menu_weight = 0.0
++	_menu_motion = create_tween()
++	_menu_motion.tween_property(self,"_menu_weight",1.0,MENU_MOVE_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
++	_menu_motion.tween_callback(_finish_menu_move)
++
++func _finish_menu_move() -> void:
++	if _menu_motion != null: _menu_motion.kill()
++	_menu_motion = null
++	_menu_weight = 1.0
++	_menu_starts.clear()
++	_clear_departures()
++	_gallery_departing = false
++	gallery.visible = section == "cars"
++	_present_menu_layout()
++
++func _place_menu_panel(panel: Control, destination: Rect2, direction: String) -> void:
++	var start: Rect2 = _menu_starts.get(panel,destination)
++	var weight: float = _menu_weight
++	if not _menu_starts.has(panel) and _menu_motion != null:
++		# Clear the outgoing controls before the replacement crosses their path.
++		weight = clampf((_menu_weight-0.3)/0.7,0.0,1.0)
++		if direction == "left": start.position.x = -destination.size.x-16
++		elif direction == "right": start.position.x = size.x+16
++		else: start.position.y = size.y+16
++	panel.position = start.position.lerp(destination.position,weight)
++	panel.size = start.size.lerp(destination.size,weight)
++
++func _present_menu_layout() -> void:
++	if size.x <= 0 or _preview_slot.size.x <= 0: return
++	_place_menu_panel(preview,_slot_rect(_preview_slot),"")
++	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
++	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
++	_place_menu_panel(actions,_slot_rect(_actions_slot),"bottom")
++	if section == "cars":
++		var target: Rect2 = _slot_rect(gallery_slot)
++		target.position.x += (target.size.x-gallery.size.x)*0.5
++		target.size = gallery.size
++		_place_menu_panel(gallery,target,"bottom")
++	elif _gallery_departing:
++		var target: Rect2 = _menu_starts[gallery]
++		target.position.y = size.y+16
++		_place_menu_panel(gallery,target,"bottom")
++	for entry: Dictionary in _departures:
++		entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
++	_layout_presented = true
+ 
+ func _build_rail() -> void:
+ 	for child: Node in rail.get_children():
+@@ -205,7 +368,7 @@ func _build_carousel() -> void:
+ 	gallery.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	gallery.scroll_deadzone = 12
+ 	gallery.follow_focus = false
+-	gallery_slot.add_child(gallery)
++	_live_menus.add_child(gallery)
+ 	gallery_content = Control.new()
+ 	gallery_content.custom_minimum_size.y = 140
+ 	gallery.add_child(gallery_content)
+@@ -256,7 +419,6 @@ func _layout_gallery() -> void:
+ 	gallery.call("_stop_snap")
+ 	var slots: int = clampi(floori((gallery_slot.size.x + 12.0) / 240.0), 1, 5)
+ 	tile_stride = floori((gallery_slot.size.x + 12.0) / slots)
+-	gallery.position.x = (gallery_slot.size.x - (slots * tile_stride - 12)) * 0.5
+ 	gallery.size = Vector2(slots * tile_stride - 12, 140)
+ 	gallery.set("snap_stride", tile_stride)
+ 	gallery_content.custom_minimum_size.x = VehicleCatalog.IDS.size() * tile_stride - 12
+@@ -346,6 +508,7 @@ func _show_section(next: String) -> void:
+ 	if next=="customise" and section=="customise" and is_instance_valid(livery_menu) and _retained_livery_vehicle==vehicle_id:
+ 		livery_menu.show_tab(_customise_tab)
+ 		return
++	_prepare_menu_move()
+ 	_set_customise_layout(next == "customise")
+ 	section = next
+ 	if next == "cars": _car_menu_open = false
+@@ -354,13 +517,6 @@ func _show_section(next: String) -> void:
+ 	heading.text = "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
+ 	preview.get_node("GarageViewControls").visible = next != "trophies"
+ 	preview.get_node("GarageViewControls/GarageTopView").visible = next == "customise"
+-	for container: Control in [tools, actions]:
+-		for child: Node in container.get_children():
+-			if child==_retained_livery:
+-				_retained_livery.hide()
+-				continue
+-			container.remove_child(child)
+-			child.queue_free()
+ 	pickers.clear()
+ 	wash_button = null
+ 	_presets = null
+@@ -386,6 +542,7 @@ func _show_section(next: String) -> void:
+ 		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
+ 		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
+ 		actions.add_child(select_button)
++		_start_menu_move()
+ 		return
+ 	if section not in ["customise","tuning"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
+ 	var back := MenuStyle.button("Back to cars", _show_section.bind("cars"))
+@@ -412,6 +569,7 @@ func _show_section(next: String) -> void:
+ 		_build_tuning()
+ 	else:
+ 		tools.add_child(MenuStyle.label("Coming later", 18, true))
++	_start_menu_move()
+ 
+ func _set_customise_layout(active: bool) -> void:
+ 	if active and not is_instance_valid(customise_layout):
+@@ -421,23 +579,22 @@ func _set_customise_layout(active: bool) -> void:
+ 		customise_layout.add_theme_constant_override("separation",16)
+ 		main.add_child(customise_layout)
+ 		main.move_child(customise_layout,0)
+-		preview.reparent(customise_layout)
+-		tools_panel.reparent(customise_layout)
+-		preview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		tools_panel.custom_minimum_size.x = 344
+-		tools_panel.size_flags_horizontal = Control.SIZE_FILL
+-		tools_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++		_preview_slot.reparent(customise_layout)
++		_tools_slot.reparent(customise_layout)
++		_preview_slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		_tools_slot.size_flags_horizontal = Control.SIZE_FILL
++		_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		tools.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	elif not active and is_instance_valid(customise_layout):
+-		preview.reparent(main)
+-		main.move_child(preview,0)
+-		tools_panel.reparent(main)
+-		main.move_child(tools_panel,1)
+-		tools_panel.custom_minimum_size.x = 0
+-		tools_panel.size_flags_vertical = Control.SIZE_FILL
++		_preview_slot.reparent(main)
++		main.move_child(_preview_slot,0)
++		_tools_slot.reparent(main)
++		main.move_child(_tools_slot,1)
++		_tools_slot.size_flags_vertical = Control.SIZE_FILL
+ 		main.remove_child(customise_layout)
+ 		customise_layout.queue_free()
+ 		customise_layout = null
++	tools_panel.custom_minimum_size.x = 344 if active else 0
+ 
+ func _build_tuning() -> void:
+ 	kit_categories.clear()
+@@ -537,6 +694,7 @@ func _build_customise() -> void:
+ 		tools.add_child(_retained_livery)
+ 	elif _retained_livery.get_parent()!=tools:
+ 		_retained_livery.reparent(tools)
++	_set_panel_input(_retained_livery,true)
+ 	livery_menu = _retained_livery
+ 	livery_menu.show()
+ 	livery_menu.show_tab(_customise_tab)
+@@ -695,6 +853,7 @@ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree():
+ 		_finish_tools()
+ 		showroom.finish_car_transition()
++		_finish_menu_move()
+ 
+ func telemetry_exposures() -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+@@ -773,6 +932,7 @@ func _save_condition() -> void:
+ 
+ func _process(_delta: float) -> void:
+ 	if showroom == null or not is_visible_in_tree(): return
++	_present_menu_layout()
+ 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
+ 	if current != _condition_saved:
+ 		showroom.weathering.restore(current)
+@@ -781,3 +941,4 @@ func _process(_delta: float) -> void:
+ 
+ func _exit_tree() -> void:
+ 	_finish_tools()
++	if _menu_motion != null: _menu_motion.kill()
+diff --git a/game/ui/garage_reflections.gd b/game/ui/garage_reflections.gd
+index f10c558..2fa98cd 100644
+--- a/game/ui/garage_reflections.gd
++++ b/game/ui/garage_reflections.gd
+@@ -30,6 +30,8 @@ func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
+ 		view.transparent_bg = true
+ 		view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+ 		holder.add_child(view)
++		# The receiving showroom must draw after its freshly resized captures.
++		RenderingServer.viewport_set_parent_viewport(view.get_viewport_rid(),owner.showroom_viewport.get_viewport_rid())
+ 		var camera := Camera3D.new()
+ 		camera.cull_mask = ROOM_LAYER if index == 0 else CAR_LAYER
+ 		view.add_child(camera)

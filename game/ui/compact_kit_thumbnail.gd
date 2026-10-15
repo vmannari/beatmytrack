@@ -1,6 +1,6 @@
 class_name CompactKitThumbnail
 extends Button
-## Actual fitted-part renders. Sixteen cached textures; completed worlds freed.
+## Native part photographs; at most sixteen textures retained in the cache.
 const SIZE := Vector2i(384,112)
 const CACHE_LIMIT: int = 16
 static var images: Dictionary = {}
@@ -17,7 +17,7 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 	button.tooltip_text = str(option[1])
 	button.pressed.connect(action)
 	button.set_selected(chosen)
-	button.cache_key = category+"/"+str(option[0])+"/kit-preview-2/"+RenderingServer.get_current_rendering_method()
+	button.cache_key = category+"/"+str(option[0])+"/kit-preview-8/"+RenderingServer.get_current_rendering_method()
 	button.image = TextureRect.new()
 	button.image.texture = images.get(button.cache_key)
 	if button.image.texture==null and use_prepared:
@@ -117,9 +117,10 @@ func _build_preview(category: String, option: String) -> void:
 			direction = Vector3(2,2.5,-3)
 			camera.size = 0.88
 		"aero":
-			target = Vector3(0,1.60,1.30)*HandlingConfig.BODY_SCALE
-			direction = Vector3(2,1.4,3)
-			camera.size = 1.0
+			# One common side/rear view compares mounting height and rear overhang.
+			target = Vector3(0,1.39,1.84)*HandlingConfig.BODY_SCALE
+			direction = Vector3(3,0.95,3)
+			camera.size = 1.44
 		"rims":
 			target = Vector3(0.83,0.37,-1.28)*HandlingConfig.BODY_SCALE
 			direction = Vector3(4,0.8,-0.8)

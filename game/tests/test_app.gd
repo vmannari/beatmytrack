@@ -245,6 +245,11 @@ func _check_input_and_history() -> void:
 	check(changed.pieces[0].width != original.pieces[0].width and changed.points == original.points, "mouse drag changes only the selected road width")
 	check((app.get("history") as Array).size() == 1, "one completed drag creates one undo step")
 	var library: TrackLibrary = app.get("library")
+	# Gesture autosaves use the existing ordered background writer. Observe its
+	# completed disk result without forcing the shipping write to be synchronous.
+	var save_deadline: int = Time.get_ticks_msec()+5000
+	while (app.editor_writes.thread != null or not app.editor_writes.pending.is_empty()) and Time.get_ticks_msec() < save_deadline:
+		await process_frame
 	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
 	var expected_preview: NativeTrack = TrackCompiler.compile(changed)
 	while app.get("editor_preview_thread") != null: await process_frame
@@ -428,6 +433,9 @@ func _check_clean_result() -> void:
 	# driving is covered above; it does not claim a second driven race.
 	app._restore_cloud_selection("cloud_fixture-track")
 	var track: NativeTrack = app.get("selected_track")
+	app.call("_show_screen","tracks")
+	for _frame: int in range(6): await process_frame
+	var retained_garage: GaragePage = app.get("_retained_garage")
 	await app.call("_start_race", track, false)
 	var game: Node = app.get("game")
 	game.set_physics_process(false)
@@ -441,6 +449,8 @@ func _check_clean_result() -> void:
 	game.set("paused", true)
 	game.set("attempt_practice", false)
 	game.emit_signal("race_completed")
+	await process_frame
+	check(is_instance_valid(retained_garage) and app.get("_retained_garage")==retained_garage,"normal result construction retains the prepared native Garage")
 	var records: LocalRecords = app.get("records")
 	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ContinueResults",true,false) != null, "a clean normal race result persists its local PB and exposes Continue")
 	check(((app.get("root_ui") as Node).find_child("RaceAchievement",true,false) as Label).text in ["FIRST FINISH","CLEAN RACE"],"a first normal finish is presented as the player's benchmark")
@@ -472,6 +482,7 @@ func _check_clean_result() -> void:
 	await process_frame
 	await process_frame
 	check(app.records.best_for(track,race_handling) == 108.816,"Race return preserves the best time for the active handling")
+	check(is_instance_valid(retained_garage) and app.get("_retained_garage")==retained_garage,"normal race return reuses its original prepared Garage")
 	await _capture("tracks-saved-best")
 	var resumed: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
 	resumed.set("library",app.get("library"))

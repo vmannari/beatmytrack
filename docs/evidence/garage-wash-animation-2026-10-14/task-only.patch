@@ -1,0 +1,787 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 88e187d..f982cf5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Garage washing animation override (2026-10-14)
++The owner requests animation to visualize washing. Use a surface-aligned rocking sponge, short-lived suds and falling droplets from the original nearest mesh hit; retain manual mouse/touch scrubbing, actual progressive cleaning and local-only condition saving. Prepare one lazy bounded effect with 24 suds/32 water slots; reuse existing room/deck reflections, clear on orbit/cancel/navigation/hide/car replacement and free on teardown. Preserve car/kit/livery/condition/camera and canonical behavior. See `docs/GARAGE_WASH_ANIMATION_2026_10_14.md` for actual both-renderer all-car motion/captures, original washing regressions, parser and scoped checkpoint. Owner/physical-phone acceptance remains; no phone test/APK/deployment.
++
+ ## Customised Weekly Rivalry podium override (2026-10-14)
+ The owner requests the cars used by the three leaders on the top podium, superseding the earlier omission of car pictures. Use bounded one-shot native renders with each driver's shared paint/livery/panel stickers/fitted parts and the pinned championship vehicle. Current local self appearance is immediate; missing or malformed remote cosmetics use factory models. Share only validated appearance IDs/pigments, retain local-only dirt/washing, scrollable standings, five-track entry, normal results first and canonical contracts. See `docs/RIVALRY_CUSTOM_CARS_2026_10_14.md` for both-renderer views, actual checks, scoped checkpoint and remaining owner/phone/matching client-backend rollout acceptance. No APK or deployment is implied.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 90b8bd3..f6926d1 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: owner requests washing animation. Lazy native rocking sponge aligns to original nearest car contact;24 suds/32 droplets animate in existing room/deck reflections with bounded reuse, input/orbit/navigation/hide/car/teardown cleanup. Original cleaning rates/local schema/saves/kit/livery/camera/canonical behavior retained. Both-renderer all-car139+139 and original washing1402+1402 checks,754-script parse pass; actual72-frame native motion per renderer. No phone test/attachment check/APK/deploy/FPS/fullValidate/physics merge. Commands, initial fixture/startup/concurrent-class issues, task-only checkpoint and owner/device acceptance: docs/GARAGE_WASH_ANIMATION_2026_10_14.md.
++
+ 2026-10-14 RPC01-RPC04/WR01-WR03/R01/V03-V05/Q01: owner requests customised cars on the top Weekly Rivalry podium. Three native one-shot cars show each leader's actual pinned vehicle, pigments, wrap, panel stickers and fitted kit IDs; current local self edits are immediate. Authenticated, bounded per-car appearance sharing and migration0035 preserve local dirt/washing and canonical scoring; legacy/malformed appearances use factory models. Both-renderer110+110/native all-five-car captures, full-app rivalry1136+1136, backend SQLite55/Ruff and752-script parser pass. PostgreSQL service unavailable; no phone/APK/deployment. Actual commands, scoped checkpoint and owner/device/rollout acceptance: docs/RIVALRY_CUSTOM_CARS_2026_10_14.md.
+ 
+ 2026-10-14 LP01-LP04/MUS35/MUS36/SND05/G01/R01/Q01: native Garage listening console, LP player/speakers/grooved vinyl and actual sleeve collection; retained Records camera/right workbench. Exploration default plus bounded owner MP3/OGG/PCM WAV imports, saved menu/results selection/stop/volume; originals preserved, no rejected music/race score restored. LP33 headless/42+42 graphical checks and actual audio/silence; soundtrack1158/biome42/Garage178/parser749 pass. Startup-only soundtrack fixture wait retains all assertions. Concurrent room/reflection/wash work excluded from task checkpoint. No phone/APK/deploy or musical-quality/FPS claim. Actual captures/commands/scoped checkpoint and remaining owner/phone acceptance: docs/GARAGE_RECORD_PLAYER_2026_10_14.md.
+diff --git a/build/checkpoint_garage_wash_animation.py b/build/checkpoint_garage_wash_animation.py
+new file mode 100644
+index 0000000..c440c97
+--- /dev/null
++++ b/build/checkpoint_garage_wash_animation.py
+@@ -0,0 +1,98 @@
++from pathlib import Path
++import hashlib
++import json
++import re
++import subprocess
++
++root = Path(__file__).resolve().parents[1]
++out = root / 'docs/evidence/garage-wash-animation-2026-10-14'
++repo = root / 'build/garage-wash-animation-checkpoint'
++resume = repo.exists()
++
++def read(name):
++    return (root/name).read_text(encoding='utf-8')
++
++def function(source, name):
++    start = source.index('\nfunc '+name+'(')
++    end = source.find('\nfunc ', start+1)
++    return source[start:end if end >= 0 else len(source)]
++
++final_view = read('game/ui/car_showroom.gd')
++baseline_view = final_view
++for own in (
++    'var wash_effect: Node3D\n',
++    '\tif wash_effect != null: wash_effect.reset()\n',
++    '\tif enabled and wash_effect == null:\n\t\twash_effect = preload("res://ui/garage_wash_effect.gd").new()\n\t\tcamera.get_parent().add_child(wash_effect)\n',
++    '\t\tif wash_effect != null: wash_effect.begin_frame()\n',
++    '\tif wash_effect != null and (wash_effect.visible or (washing and wash_mode)):\n\t\twash_effect.advance(delta, washing and wash_mode)\n',
++):
++    assert own in baseline_view, own
++    baseline_view = baseline_view.replace(own, '')
++baseline_view = baseline_view.replace('\tresume_orbit = false\n\tqueue_redraw()\n', '\tresume_orbit = false\n')
++old_view = (out/'before/game/ui/car_showroom.gd').read_text(encoding='utf-8')
++for name in ('_draw', 'pick_body_point', 'wash_at'):
++    baseline_view = baseline_view.replace(function(baseline_view,name), function(old_view,name))
++baseline_view = baseline_view.replace(function(baseline_view,'pick_body_surface'), '')
++# Preserve concurrent showroom rounding/Records changes in both checkpoint sides.
++baseline_test = read('game/tests/test_car_wash.gd')
++baseline_test = baseline_test.replace('\tfor argument: String in OS.get_cmdline_user_args():\n\t\tif argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=").path_join("existing-wash")\n','')
++baseline_test = re.sub(r'^\t\tview\.wash_effect\.(hide|show)\(\).*\n', '', baseline_test, flags=re.M)
++modified = {'game/ui/car_showroom.gd': baseline_view, 'game/tests/test_car_wash.gd': baseline_test}
++for name in ('AGENTS.md', 'DEVELOPMENT_STATUS.md', 'docs/PHASE_0_PLAN.md'):
++    source = read(name)
++    if name == 'AGENTS.md':
++        stripped, count = re.subn(r'\n## Garage washing animation override \(2026-10-14\)\n[^\n]+\n', '', source)
++    else:
++        stripped, count = re.subn(r'^2026-10-14 GWA01-GWA03/[^\n]+\n\n?', '', source, flags=re.M)
++    assert count == 1, name
++    modified[name] = stripped
++added = [
++    'game/ui/garage_wash_effect.gd', 'game/ui/garage_wash_effect.gd.uid',
++    'game/tests/test_garage_wash_animation.gd', 'game/tests/test_garage_wash_animation.gd.uid',
++    'docs/GARAGE_WASH_ANIMATION_2026_10_14.md',
++    'build/run_garage_wash_animation.ps1', 'build/encode_garage_wash_animation.py',
++    'build/checkpoint_garage_wash_animation.py',
++]
++repo.mkdir(parents=True, exist_ok=True)
++
++def git(*args):
++    return subprocess.run(['git','-C',str(repo),*args], check=True, capture_output=True).stdout.decode().strip()
++
++if resume:
++    assert git('rev-list','--count','HEAD') == '2', 'Preserve unexpected checkpoint history.'
++    assert git('show','-s','--format=%s','HEAD^') == 'Garage washing animation scoped baseline'
++    base = git('rev-parse','HEAD^')
++else:
++    git('init','-q')
++    git('config','user.name','Codex task checkpoint')
++    git('config','user.email','checkpoint@local.invalid')
++    git('config','core.autocrlf','input')
++    for name, text in modified.items():
++        target = repo/name
++        target.parent.mkdir(parents=True,exist_ok=True)
++        target.write_text(text,encoding='utf-8',newline='\n')
++    git('add','-f','.')
++    git('commit','-q','-m','Garage washing animation scoped baseline')
++    base = git('rev-parse','HEAD')
++for name in list(modified)+added:
++    target = repo/name
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_text(read(name),encoding='utf-8',newline='\n')
++git('add','-f','.')
++if resume: git('commit','-q','--amend','--no-edit')
++else: git('commit','-q','-m','Animate Garage washing at actual car contact with sponge suds and droplets')
++patch = subprocess.run(['git','-C',str(repo),'diff','--binary',base,'HEAD'],check=True,capture_output=True).stdout
++(out/'task-only.patch').write_bytes(patch)
++git('diff','--check',base,'HEAD')
++ledger = {
++    'requirements': ['GWA01','GWA02','GWA03','CW13','CW15','CW16','V06','G01','R01','Q01'],
++    'repository': str(repo.relative_to(root)), 'baseline': base, 'checkpoint': git('rev-parse','HEAD'),
++    'patch_sha256': hashlib.sha256(patch).hexdigest(),
++    'files': [{'path':name,'sha256':hashlib.sha256((root/name).read_bytes()).hexdigest()} for name in list(modified)+added],
++    'evidence': [{'path':str(path.relative_to(root)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(out.rglob('*')) if path.is_file() and path.suffix in ('.png','.log') and 'before' not in path.parts],
++    'validation': {'animation': {'gl_compatibility':139,'mobile':139}, 'existing_wash':{'gl_compatibility':1402,'mobile':1402},'script_parse':754,'failures':0,'diff_check':'clean'},
++    'notes': 'Isolated two-commit Git checkpoint; preserves main branch/index. Scoped baseline retains concurrent source/document changes and excludes unrelated showroom rounding and vehicle/Records work. No phone/APK/backend/deployment.'
++}
++(out/'checkpoint.json').write_text(json.dumps(ledger,indent=2)+'\n',encoding='utf-8')
++print(git('show','--stat','--oneline','HEAD'))
++print('DIFF_CHECK: clean')
+diff --git a/build/encode_garage_wash_animation.py b/build/encode_garage_wash_animation.py
+new file mode 100644
+index 0000000..bcc2a05
+--- /dev/null
++++ b/build/encode_garage_wash_animation.py
+@@ -0,0 +1,58 @@
++from pathlib import Path
++import hashlib
++import json
++import struct
++import zlib
++
++root = Path(__file__).resolve().parents[1]
++evidence = root / 'docs/evidence/garage-wash-animation-2026-10-14'
++
++def parse(path):
++    source = path.read_bytes()
++    assert source[:8] == b'\x89PNG\r\n\x1a\n'
++    parts, offset = [], 8
++    while offset < len(source):
++        size = struct.unpack('>I', source[offset:offset+4])[0]
++        kind = source[offset+4:offset+8]
++        data = source[offset+8:offset+8+size]
++        assert struct.unpack('>I', source[offset+8+size:offset+12+size])[0] == zlib.crc32(kind+data) & 0xffffffff
++        parts.append((kind, data))
++        offset += size+12
++    return parts
++
++def chunk(kind, data):
++    return struct.pack('>I', len(data))+kind+data+struct.pack('>I', zlib.crc32(kind+data) & 0xffffffff)
++
++for renderer in ('gl_compatibility', 'mobile'):
++    folder = evidence / renderer
++    paths = sorted((folder / 'motion').glob('frame-*.png'))
++    assert len(paths) == 72, f'Expected 72 actual frames for {renderer}'
++    first = parse(paths[0])
++    header = next(data for kind, data in first if kind == b'IHDR')
++    width, height = struct.unpack('>II', header[:8])
++    result = bytearray(b'\x89PNG\r\n\x1a\n')+chunk(b'IHDR', header)
++    for kind, data in first:
++        if kind not in (b'IHDR', b'IDAT', b'IEND'):
++            result += chunk(kind, data)
++    result += chunk(b'acTL', struct.pack('>II', len(paths), 0))
++    sequence = 0
++    for index, path in enumerate(paths):
++        parts = parse(path)
++        assert next(data for kind, data in parts if kind == b'IHDR') == header
++        result += chunk(b'fcTL', struct.pack('>IIIIIHHBB', sequence, width, height, 0, 0, 1, 30, 0, 0))
++        sequence += 1
++        for kind, data in parts:
++            if kind != b'IDAT': continue
++            if index == 0: result += chunk(b'IDAT', data)
++            else:
++                result += chunk(b'fdAT', struct.pack('>I', sequence)+data)
++                sequence += 1
++    result += chunk(b'IEND', b'')
++    target = folder / 'washing-animation.png'
++    target.write_bytes(result)
++    (folder/'motion.json').write_text(json.dumps({
++        'artifact': str(target.relative_to(root)), 'width': width, 'height': height,
++        'frames': len(paths), 'seconds': len(paths)/30, 'sha256': hashlib.sha256(result).hexdigest(),
++        'note': 'Lossless APNG of actual native renders, stepping production scrub/particle updates at 30 Hz; playback is not a frame-time measurement.'
++    }, indent=2)+'\n', encoding='utf-8')
++    print(renderer, len(paths), 'native frames', len(result), 'bytes')
+diff --git a/build/run_garage_wash_animation.ps1 b/build/run_garage_wash_animation.ps1
+new file mode 100644
+index 0000000..a4f7a27
+--- /dev/null
++++ b/build/run_garage_wash_animation.ps1
+@@ -0,0 +1,15 @@
++param([string]$Renderer = 'gl_compatibility', [string]$Check = 'test_garage_wash_animation', [switch]$Headless)
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++$env:APPDATA = Join-Path $repoRoot 'build/garage-wash-animation-user'
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$evidence = 'res://../docs/evidence/garage-wash-animation-2026-10-14/' + $Renderer
++$logRoot = Join-Path $repoRoot ('docs/evidence/garage-wash-animation-2026-10-14/'+$Renderer+'/logs')
++New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
++try {
++    & (Join-Path $repoRoot 'scripts/dev.ps1') -Action TestScript -ScriptPath ('res://tests/'+$Check+'.gd') -Graphical:(-not $Headless) -RenderingMethod $Renderer -TestArgument @("--evidence-root=$evidence")
++    if ($LASTEXITCODE -ne 0) { throw "Godot check failed with exit $LASTEXITCODE" }
++} finally {
++    $log = Join-Path $repoRoot "build/logs/TestScript-$PID/test-script.log"
++    if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $logRoot ($Check+$(if ($Headless) { '-headless' })+'.log')) }
++}
+diff --git a/docs/GARAGE_WASH_ANIMATION_2026_10_14.md b/docs/GARAGE_WASH_ANIMATION_2026_10_14.md
+new file mode 100644
+index 0000000..2d2931c
+--- /dev/null
++++ b/docs/GARAGE_WASH_ANIMATION_2026_10_14.md
+@@ -0,0 +1,29 @@
++# Garage washing animation
++
++Owner request, 2026-10-14. GWA01: show washing at the actual touched car surface. GWA02: animate scrubbing, suds and falling water while retaining progressive cleaning and mouse/touch controls. GWA03: bound resources and clear feedback on miss, cancellation, orbit, Done, navigation, hiding, car replacement and teardown. Existing CW13/CW15/CW16, V06/G01/R01/Q01 remain applicable.
++
++The existing closest-triangle picker now returns its original condition coordinate plus the actual world contact and outward normal. The same nearest hit still feeds the original wash operation and swipe interpolation. A small closed beveled sponge with a fabric finish and rubber back rocks against that patch. Short-lived ivory suds and pale water droplets emerge there and shrink away. Releasing stops the sponge immediately; remaining particles drain in under one second. Background holds create neither cleaning nor contact feedback. The hover guide remains a quiet ring; no new instructions or player-facing controls were added.
++
++The effect is prepared lazily on the first Wash action, outside the car model. It reuses two fixed MultiMeshes (24 suds and 32 droplets), two small sponge parts and existing native finish shaders. Four extra geometry draws per existing view are active only during feedback; no shadow casters, texture assets, car-material replacements, new viewport or reflection passes are added. The original floor/deck captures include the effect through their existing layers. Slot-index sequences avoid touching global RNG state. Turning/zooming, cancellation, leaving Care, hiding and changing the car clear transient geometry; normal teardown frees it. Cleaning rates, wash volume, local condition schema/saves, actual car/kit/livery/condition, retained room/camera and canonical driving/scoring remain unchanged.
++
++Actual native evidence: [Compatibility door](evidence/garage-wash-animation-2026-10-14/gl_compatibility/washing-door.png), [Mobile door](evidence/garage-wash-animation-2026-10-14/mobile/washing-door.png), [cleaned patch](evidence/garage-wash-animation-2026-10-14/gl_compatibility/cleaned-patch.png). Each renderer also has real contact captures for the Pickup, Classic, Formula and Kart. [Compatibility animation](evidence/garage-wash-animation-2026-10-14/gl_compatibility/washing-animation.png) and [Mobile animation](evidence/garage-wash-animation-2026-10-14/mobile/washing-animation.png) are lossless APNGs assembled from 72 actual native frames. Production updates were stepped at 30 Hz for review; these previews are not performance measurements.
++
++All native checks use pinned `4.7.2.stable.official.ed1daf0bf` via `scripts/dev.ps1`, with APPDATA redirected into `build/garage-wash-animation-user`. Independent local records are used; owner data and backend requests are not used. Actual commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_animation.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_animation.ps1 -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_animation.ps1 -Check test_car_wash
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_animation.ps1 -Check test_car_wash -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_animation.ps1 -Check test_script_parse -Headless
++python build/encode_garage_wash_animation.py
++python build/checkpoint_garage_wash_animation.py
++```
++
++Final animation checks: 139 Compatibility and 139 Mobile/Vulkan, zero failures, including contact alignment, scrub/droplet motion, real cleaning, no background work, fixed pool reuse, input cancellation/orbit, local exact serialized condition persistence, navigation/hiding and release. Existing washing lifecycle/persistence/real-app tests: 1,402 per renderer, zero failures. The original blue-paint pixel assertion is retained; the new transient sponge is hidden alongside the old cursor only for the underlying paint comparison. Native blue channels rise 0.0824→0.2510 Compatibility and 0.1216→0.2627 Mobile. Project parse: 754 scripts, zero failures. Logs are under each renderer's `logs/` directory; existing regression captures are isolated under `existing-wash/`.
++
++Initial attempts are not counted as passes. Direct PowerShell execution hit the host execution policy; the established process-scoped Bypass runner resolves it. Normal user-log access was blocked until APPDATA was isolated. Restricted startup then could not read Windows certificates; automatically approved native runs resolve that startup dependency, and the verified stalled test process was stopped. A test fixture initially referenced a nonexistent clean-condition helper; it now uses the existing weathering snapshot. Two initial diagnostic failures used an already-expired droplet slot and compared pre/post JSON float representations; the final checks inspect the whole live pool and exact serialized save contents. A concurrent new CompactFrontLamps class briefly blocked the existing test; the normal native Import refresh completed and both original regressions subsequently passed. An optional preview attempt lacked Pillow; the final lossless encoder uses only Python's standard library and adds no dependency. Concurrent car geometry and showroom subpixel rounding edits are retained and excluded from this task's scoped checkpoint.
++
++Runtime files: `game/ui/car_showroom.gd`, new `game/ui/garage_wash_effect.gd` (+UID). Tests: new `game/tests/test_garage_wash_animation.gd` (+UID) and existing `game/tests/test_car_wash.gd` (isolated evidence argument and transient-feedback hiding for the original pixel assertion). Supporting runner/encoder/checkpoint live in `build/`; instructions/status/plan have the task follow-up. The isolated two-commit Git checkpoint and task-only patch preserve the main repository index/branch and unrelated edits.
++
++Owner appearance and physical-phone touch/frame-pacing acceptance remain. Manual review: enter Garage → Care → Wash, hold or swipe over each panel/wheel, move off the car, release, turn with two fingers/right mouse, switch sections/car, leave/reopen and confirm local washed areas persist. No phone test/attachment check, APK export/install/deployment, backend write, full Validate or physics merge was performed. Desktop Mobile/Vulkan is not a phone performance measurement.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 67696af..fcad123 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: actual Garage washing visualization implemented with surface-aligned sponge, bounded24-sud/32-droplet pools and existing reflection captures; original manual cleaning/local persistence/car/paint/kits/camera/canonical behavior retained. Both-renderer139+139 animation/all-car and1402+1402 original wash checks,754-script parse pass; native motion/evidence and isolated checkpoint documented. Owner/physical-phone appearance/touch/frame-pacing acceptance remains; no phone/APK/deploy/fullValidate/physics merge: docs/GARAGE_WASH_ANIMATION_2026_10_14.md.
++
+ 2026-10-14 RPC01-RPC04/WR01-WR03/R01/V03-V05/Q01: owner requests customised cars on the top Weekly Rivalry podium. Three native one-shot cars show each leader's actual pinned vehicle, pigments, wrap, panel stickers and fitted kit IDs; current local self edits are immediate. Authenticated, bounded per-car appearance sharing and migration0035 preserve local dirt/washing and canonical scoring; legacy/malformed appearances use factory models. Both-renderer110+110/native all-five-car captures, full-app rivalry1136+1136, backend SQLite55/Ruff and752-script parser pass. PostgreSQL service unavailable; no phone/APK/deployment. Actual commands, scoped checkpoint and owner/device/rollout acceptance: docs/RIVALRY_CUSTOM_CARS_2026_10_14.md.
+ 
+ 2026-10-14 LP01-LP04/MUS35/MUS36/SND05/G01/R01/Q01: native Garage listening console, LP player/speakers/grooved vinyl and actual sleeve collection; retained Records camera/right workbench. Exploration default plus bounded owner MP3/OGG/PCM WAV imports, saved menu/results selection/stop/volume; originals preserved, no rejected music/race score restored. LP33 headless/42+42 graphical checks and actual audio/silence; soundtrack1158/biome42/Garage178/parser749 pass. Startup-only soundtrack fixture wait retains all assertions. Concurrent room/reflection/wash work excluded from task checkpoint. No phone/APK/deploy or musical-quality/FPS claim. Actual captures/commands/scoped checkpoint and remaining owner/phone acceptance: docs/GARAGE_RECORD_PLAYER_2026_10_14.md.
+diff --git a/game/tests/test_car_wash.gd b/game/tests/test_car_wash.gd
+index 10d4eaf..30b7edc 100644
+--- a/game/tests/test_car_wash.gd
++++ b/game/tests/test_car_wash.gd
+@@ -18,6 +18,8 @@ func settle() -> void:
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=").path_join("existing-wash")
+ 	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
+ 	var directory: String = "user://car_wash_" + TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(directory)
+@@ -157,6 +159,7 @@ func garage() -> void:
+ 	var dirty_image: Image
+ 	if DisplayServer.get_name() != "headless":
+ 		view.wash_pointer_valid = false
++		view.wash_effect.hide() # Compare original paint with all transient wash feedback hidden.
+ 		await settle()
+ 		dirty_image = root.get_texture().get_image()
+ 	if DisplayServer.get_name() != "headless": await capture("garage-dirty", page)
+@@ -169,12 +172,14 @@ func garage() -> void:
+ 	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
+ 	if DisplayServer.get_name() != "headless":
+ 		view.wash_pointer_valid = false
++		view.wash_effect.hide()
+ 		await settle()
+ 		var washed_image: Image = root.get_texture().get_image()
+ 		var actual: Vector2i = Vector2i(view.get_global_rect().position + pixel)
+ 		print("WASH_PIXEL: ", actual, " ", dirty_image.get_pixelv(actual), " -> ", washed_image.get_pixelv(actual))
+ 		check(dirty_image.get_pixelv(actual).b < washed_image.get_pixelv(actual).b - 0.02, "washing visibly reveals original blue door paint")
+ 		view.wash_pointer_valid = true
++		view.wash_effect.show()
+ 	if DisplayServer.get_name() != "headless": await capture("garage-partly-washed", page)
+ 	press.pressed = false
+ 	view.gui_input.emit(press)
+diff --git a/game/tests/test_garage_wash_animation.gd b/game/tests/test_garage_wash_animation.gd
+new file mode 100644
+index 0000000..87e075d
+--- /dev/null
++++ b/game/tests/test_garage_wash_animation.gd
+@@ -0,0 +1,229 @@
++extends SceneTree
++## Real Garage input, surface alignment, bounded motion, local persistence and cleanup.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/garage-wash-animation-2026-10-14"
++var page: GaragePage
++var records: LocalRecords
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	while page._menu_motion != null: await frame()
++	for tick: int in range(6): await frame()
++
++func screenshot(label: String) -> void:
++	if DisplayServer.get_name() != "headless":
++		check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK, "capture "+label)
++
++func mouse(view: CarShowroom, position: Vector2, pressed: bool) -> void:
++	var event := InputEventMouseButton.new()
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.position = position
++	event.pressed = pressed
++	view.gui_input.emit(event)
++
++func project(view: CarShowroom, point: Vector3) -> Vector2:
++	return view.camera.unproject_position(view.car.body.global_transform * point) * view.size / Vector2(view.showroom_viewport.size)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	DirAccess.make_dir_recursive_absolute(output.path_join("motion"))
++	var directory: String = "user://wash_animation_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	records = LocalRecords.new(directory.path_join("records.json"))
++	for id: String in VehicleCatalog.IDS:
++		var dirty: Dictionary = VehicleWeathering.new().snapshot()
++		dirty.dirt = 0.93
++		dirty.mud = 0.9
++		dirty.color = Color(0.32,0.25,0.17).to_html(false)
++		check(VehicleCondition.save(records, id, dirty) == OK, id+" isolated dirty fixture")
++	root.size = Vector2i(1280,720)
++	VehicleCatalog.selected = "compact"
++	page = GaragePage.new()
++	page.records = records
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	page.open_car(0)
++	page._show_section("care")
++	await settle()
++	var view: CarShowroom = page.showroom
++	view.set_process(false)
++	view.yaw = -PI * 0.5
++	view.elevation = 0.20
++	view.set_zoom(0.72)
++	var car: CarVisual = view.car
++	var camera_pose: Transform3D = view.camera.transform
++	var pigment: Dictionary = view.livery.duplicate(true)
++	var parts: Dictionary = view.customisation.duplicate(true)
++	check(view.wash_effect == null, "idle garage allocates no wash effect")
++	page._toggle_wash()
++	var effect: Node3D = view.wash_effect
++	check(effect != null and not effect.visible, "Wash prepares one hidden effect")
++	var target: Vector2 = project(view, Vector3(-0.85,0.54,0.05))
++	var surface: Dictionary = view.pick_body_surface(target)
++	check(not surface.is_empty(), "pick actual door surface")
++	check(view.pick_body_point(target) == surface.point, "existing wash coordinates unchanged")
++	check((surface.normal as Vector3).is_normalized(), "surface normal normalized")
++	check((surface.normal as Vector3).dot(view.camera.project_ray_normal(target*Vector2(view.showroom_viewport.size)/view.size)) < 0.0, "normal faces visible side")
++	check(view.pick_body_surface(Vector2(-100,-100)).is_empty(), "miss has no contact")
++	await settle()
++	await screenshot("dirty")
++	var dirty_pixels := PackedByteArray()
++	if DisplayServer.get_name() != "headless": dirty_pixels = view.showroom_viewport.get_texture().get_image().get_data()
++	var mask: PackedByteArray = view.weathering.wash_image.get_data()
++	mouse(view,target,true)
++	view._process(1.0/30.0)
++	check(effect.visible and effect.mitt.visible, "actual held hit shows mitt and particles")
++	check(effect.mitt.global_position.distance_to(surface.position) < 0.06, "mitt centred on picked patch")
++	check(effect.mitt.global_basis.y.dot(surface.normal) > 0.999, "mitt follows panel normal")
++	var first_pose: Transform3D = effect.mitt.global_transform
++	var nodes: int = effect.get_child_count()
++	var resources: Array = [effect.foam.multimesh, effect.water.multimesh]
++	for tick: int in range(18): view._process(1.0/30.0)
++	check(effect.mitt.global_transform != first_pose, "held washing has real scrub motion")
++	check(view.weathering.wash_image.get_data() != mask, "animation accompanies progressive local cleaning")
++	check(view.car == car and view.camera.transform == camera_pose and view.livery == pigment and view.customisation == parts, "retained car camera paint and kits")
++	check(effect.foam.multimesh.instance_count == 24 and effect.water.multimesh.instance_count == 32, "fixed particle budgets")
++	await frame()
++	await screenshot("washing-door")
++	var wet_pixels: PackedFloat32Array = effect.water.multimesh.buffer.duplicate()
++	view._process(1.0/30.0)
++	check(effect.water.multimesh.buffer != wet_pixels, "droplets move during hold")
++	# Remove only transient feedback to compare the underlying original car pixels.
++	mouse(view,target,false)
++	for tick: int in range(30): view._process(1.0/30.0)
++	check(not effect.visible and not effect.mitt.visible, "release drains feedback within one second")
++	check(VehicleCondition.read(records,"compact") == view.weathering.snapshot(), "release persists existing local condition")
++	view.wash_pointer_valid = false
++	view.queue_redraw()
++	await settle()
++	await screenshot("cleaned-patch")
++	if DisplayServer.get_name() != "headless":
++		check(view.showroom_viewport.get_texture().get_image().get_data() != dirty_pixels, "real paint changes beneath transient feedback")
++	# Missing the car gives no false mitt/suds; quick swipes retain existing sampling.
++	var saved: Dictionary = view.weathering.snapshot()
++	mouse(view,Vector2(-100,-100),true)
++	for tick: int in range(5): view._process(1.0/30.0)
++	check(not effect.visible and view.weathering.snapshot() == saved, "background hold never animates or cleans")
++	mouse(view,Vector2(-100,-100),false)
++	await motion(view)
++	saved = view.weathering.snapshot()
++	check(effect.get_child_count() == nodes and [effect.foam.multimesh,effect.water.multimesh] == resources, "motion reuses original nodes and pools")
++	# Second finger changes to orbit and clears contact; lifting needs a fresh stroke.
++	view.yaw = -PI * 0.5
++	view.elevation = 0.20
++	view.set_zoom(0.72)
++	view.set_wash_mode(true)
++	target = project(view, Vector3(-0.85,0.54,0.05))
++	var touch := InputEventScreenTouch.new()
++	touch.index = 0
++	touch.pressed = true
++	touch.position = target
++	view.gui_input.emit(touch)
++	view._process(0.05)
++	check(effect.mitt.visible and view.washing, "one finger animates washing")
++	touch.index = 1
++	touch.position += Vector2(80,0)
++	view.gui_input.emit(touch)
++	view._process(0.05)
++	check(not view.washing and not effect.mitt.visible, "second finger stops scrubbing")
++	var drag := InputEventScreenDrag.new()
++	drag.index = 1
++	drag.position = touch.position + Vector2(10,0)
++	view.gui_input.emit(drag)
++	check(not effect.visible, "orbit clears surface effects")
++	touch.canceled = true
++	view.gui_input.emit(touch)
++	check(not effect.visible and view.touches.is_empty(), "cancel clears all washing feedback")
++	saved = view.weathering.snapshot()
++	view.hide()
++	view._process(0.1)
++	check(not effect.visible, "hidden garage stops effect")
++	view.show()
++	page._toggle_wash()
++	check(not view.wash_mode and not effect.visible, "Done clears effects")
++	page._toggle_wash()
++	check(view.wash_effect == effect, "reopening Wash retains bounded effect")
++	page._show_section("customise")
++	await settle()
++	check(not effect.visible and not view.wash_mode, "navigation clears transient effects")
++	for id: String in VehicleCatalog.IDS:
++		var before: Dictionary = VehicleCondition.read(records,id)
++		if id != "compact": check(before.dirt == 0.93, id+" condition untouched")
++	page.queue_free()
++	await frame()
++	check(not is_instance_valid(effect), "teardown releases effect")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(VehicleCondition.read(reopened,"compact") == JSON.parse_string(JSON.stringify(saved)), "restart retains exact serialized completed wash")
++	await other_cars()
++	print("GARAGE_WASH_ANIMATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func motion(view: CarShowroom) -> void:
++	# Deterministic production updates produce real native screenshots, not a timing claim.
++	view.set_wash_mode(true)
++	view.yaw = -0.95
++	view.elevation = 0.65
++	view.set_zoom(0.68)
++	for tick: int in range(72):
++		var along: float = sin(float(tick) * 0.09) * 0.38
++		var target: Vector2 = project(view,Vector3(-0.40,0.70,-1.0+along))
++		if tick == 0: mouse(view,target,true)
++		var drag := InputEventMouseMotion.new()
++		drag.position = target
++		drag.button_mask = MOUSE_BUTTON_MASK_LEFT
++		view.gui_input.emit(drag)
++		view._process(1.0/30.0)
++		await frame()
++		await screenshot("motion/frame-%03d" % tick)
++		if tick == 30: await screenshot("washing-hood")
++	mouse(view,view.wash_pointer,false)
++	for tick: int in range(30): view._process(1.0/30.0)
++	view.set_wash_mode(false)
++
++func other_cars() -> void:
++	for id: String in VehicleCatalog.IDS:
++		var view := CarShowroom.new()
++		view.garage_mode = true
++		view.vehicle_id = id
++		view.condition = VehicleCondition.read(records,id)
++		view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++		root.add_child(view)
++		view.set_process(false)
++		view.yaw = -PI * 0.5
++		view.elevation = 0.45
++		view.set_zoom(0.72)
++		for tick: int in range(4): await frame()
++		var point: Vector3 = view.weathering.bounds.get_center()
++		var pixel: Vector2 = project(view,point)
++		var surface: Dictionary = view.pick_body_surface(pixel)
++		check(not surface.is_empty(), id+" picks actual geometry")
++		var before: Dictionary = view.weathering.snapshot()
++		view.set_wash_mode(true)
++		mouse(view,pixel,true)
++		view._process(0.05)
++		check(view.wash_effect.mitt.visible and view.wash_effect.mitt.global_basis.y.dot(surface.normal) > 0.999, id+" actual contact animation")
++		check(view.weathering.snapshot() != before, id+" still cleans actual condition")
++		await frame()
++		if id != "compact": await screenshot("washing-"+id)
++		view.set_wash_mode(false)
++		check(not view.wash_effect.visible, id+" Done clears feedback")
++		view.queue_free()
++		await frame()
+diff --git a/game/tests/test_garage_wash_animation.gd.uid b/game/tests/test_garage_wash_animation.gd.uid
+new file mode 100644
+index 0000000..8d57d99
+--- /dev/null
++++ b/game/tests/test_garage_wash_animation.gd.uid
+@@ -0,0 +1 @@
++uid://bda14e0rdfaqy
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index 159775f..dc3a599 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -10,6 +10,7 @@ var wash_pointer := Vector2.ZERO
+ var wash_previous := Vector2.ZERO
+ var wash_pointer_valid: bool = false
+ var wash_elapsed: float = 0.0
++var wash_effect: Node3D
+ var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
+ var read_only: bool = false
+@@ -222,6 +223,7 @@ func finish_car_transition() -> void:
+ 	if is_instance_valid(turntable): turntable.show()
+ 
+ func _orbit() -> void:
++	if wash_effect != null: wash_effect.reset()
+ 	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+ 	if garage_mode:
+ 		distance = (8.5 if read_only else 5.5 * 1.48) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+@@ -366,6 +368,8 @@ func _clear_gesture() -> void:
+ 	pointer = -1
+ 	pinch_distance = 0.0
+ 	resume_orbit = false
++	if wash_effect != null: wash_effect.reset()
++	queue_redraw()
+ 
+ func apply_livery(value: Dictionary) -> void:
+ 	finish_car_transition()
+@@ -377,6 +381,9 @@ func apply_livery(value: Dictionary) -> void:
+ 
+ func set_wash_mode(enabled: bool) -> void:
+ 	if enabled: finish_car_transition()
++	if enabled and wash_effect == null:
++		wash_effect = preload("res://ui/garage_wash_effect.gd").new()
++		camera.get_parent().add_child(wash_effect)
+ 	_clear_gesture()
+ 	washing = false
+ 	wash_pointer_valid = false
+@@ -450,6 +457,7 @@ func _process(delta: float) -> void:
+ 			wash_elapsed = 0.0
+ 			condition_changed.emit()
+ 	if washing and wash_mode:
++		if wash_effect != null: wash_effect.begin_frame()
+ 		# Interpolate a fast swipe to avoid unwashed gaps between render frames.
+ 		var steps: int = clampi(ceili(wash_previous.distance_to(wash_pointer) / 12.0), 1, 32)
+ 		for index: int in range(steps):
+@@ -459,12 +467,13 @@ func _process(delta: float) -> void:
+ 		if wash_elapsed >= 2.0:
+ 			wash_elapsed = 0.0
+ 			condition_changed.emit()
++	if wash_effect != null and (wash_effect.visible or (washing and wash_mode)):
++		wash_effect.advance(delta, washing and wash_mode)
+ 	if wash_mode: queue_redraw()
+ 
+ func _draw() -> void:
+-	if wash_mode and wash_pointer_valid:
+-		draw_circle(wash_pointer, 20.0, Color(0.5, 0.85, 1.0, 0.12 if not washing else 0.25))
+-		draw_arc(wash_pointer, 20.0, 0.0, TAU, 32, Color(0.65, 0.9, 1.0, 0.9), 2.0, true)
++	if wash_mode and wash_pointer_valid and not washing:
++		draw_arc(wash_pointer, 17.0, 0.0, TAU, 32, Color(0.65, 0.9, 1.0, 0.65), 1.5, true)
+ 
+ func _cache_pick_meshes(node: Node3D) -> void:
+ 	if node is MeshInstance3D and node.mesh != null:
+@@ -474,13 +483,17 @@ func _cache_pick_meshes(node: Node3D) -> void:
+ 		if child is Node3D: _cache_pick_meshes(child)
+ 
+ func pick_body_point(location: Vector2) -> Variant:
+-	if camera == null or size.x <= 0.0 or size.y <= 0.0 or not Rect2(Vector2.ZERO, size).has_point(location): return null
++	var surface: Dictionary = pick_body_surface(location)
++	return null if surface.is_empty() else surface.point
++
++func pick_body_surface(location: Vector2) -> Dictionary:
++	if camera == null or size.x <= 0.0 or size.y <= 0.0 or not Rect2(Vector2.ZERO, size).has_point(location): return {}
+ 	if pick_meshes.is_empty(): _cache_pick_meshes(car)
+ 	var pixel: Vector2 = location * Vector2(showroom_viewport.size) / size
+ 	var origin: Vector3 = camera.project_ray_origin(pixel)
+ 	var direction: Vector3 = camera.project_ray_normal(pixel)
+ 	var nearest: float = INF
+-	var result: Variant = null
++	var result: Dictionary = {}
+ 	for entry: Dictionary in pick_meshes:
+ 		var node: MeshInstance3D = entry.node
+ 		var inverse: Transform3D = node.global_transform.affine_inverse()
+@@ -495,13 +508,16 @@ func pick_body_point(location: Vector2) -> Variant:
+ 			var distance: float = origin.distance_squared_to(world)
+ 			if distance < nearest:
+ 				nearest = distance
+-				result = weathering.wash_point(node, hit as Vector3)
++				var normal: Vector3 = (node.global_transform.basis.inverse().transposed() * (faces[index+1]-faces[index]).cross(faces[index+2]-faces[index])).normalized()
++				if normal.dot(direction) > 0.0: normal = -normal
++				result = {"point": weathering.wash_point(node, hit as Vector3), "position": world, "normal": normal}
+ 	return result
+ 
+ func wash_at(location: Vector2, seconds: float) -> bool:
+-	var point: Variant = pick_body_point(location)
+-	if point == null: return false
+-	weathering.wash(point, seconds)
++	var surface: Dictionary = pick_body_surface(location)
++	if surface.is_empty(): return false
++	weathering.wash(surface.point, seconds)
++	if wash_effect != null: wash_effect.set_contact(surface)
+ 	return true
+ 
+ func _exit_tree() -> void:
+diff --git a/game/ui/garage_wash_effect.gd b/game/ui/garage_wash_effect.gd
+new file mode 100644
+index 0000000..1f2c766
+--- /dev/null
++++ b/game/ui/garage_wash_effect.gd
+@@ -0,0 +1,134 @@
++extends Node3D
++## Garage-only contact animation. Fixed pools; no condition or simulation ownership.
++const FOAM_COUNT: int = 24
++const WATER_COUNT: int = 32
++const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
++var mitt: Node3D
++var foam: MultiMeshInstance3D
++var water: MultiMeshInstance3D
++var foam_slots: Array[Dictionary] = []
++var water_slots: Array[Dictionary] = []
++var foam_cursor: int = 0
++var water_cursor: int = 0
++var contact: Dictionary = {}
++var clock: float = 0.0
++var emission: float = 0.0
++
++func _ready() -> void:
++	name = "GarageWashEffect"
++	mitt = Node3D.new()
++	mitt.name = "WashMitt"
++	add_child(mitt)
++	var cloth: Material = GarageMaterials.finish("washmitt", "d4bb78", 0.0, 0.93, 5)
++	var grip: Material = GarageMaterials.finish("washgrip", "304853", 0.0, 0.88, 3)
++	var pad: MeshInstance3D = GarageEnvironment.box(mitt, Vector3(0, 0.027, 0), Vector3(0.25, 0.054, 0.18), cloth)
++	pad.layers = LAYERS
++	var back: MeshInstance3D = GarageEnvironment.box(mitt, Vector3(0, 0.061, 0), Vector3(0.18, 0.025, 0.13), grip)
++	back.layers = LAYERS
++	foam = _pool("Suds", FOAM_COUNT, Color("edf3eb"), 0.68)
++	water = _pool("Droplets", WATER_COUNT, Color("b7d7df"), 0.16)
++	for index: int in range(FOAM_COUNT): foam_slots.append({})
++	for index: int in range(WATER_COUNT): water_slots.append({})
++	reset()
++
++func _pool(label: String, count: int, color: Color, roughness: float) -> MultiMeshInstance3D:
++	var node := MultiMeshInstance3D.new()
++	node.name = label
++	var mesh := SphereMesh.new()
++	mesh.radius = 1.0
++	mesh.height = 2.0
++	mesh.radial_segments = 8
++	mesh.rings = 4
++	var material := StandardMaterial3D.new()
++	material.albedo_color = color
++	material.roughness = roughness
++	material.metallic_specular = 0.65 if label == "Droplets" else 0.25
++	node.material_override = material
++	node.multimesh = MultiMesh.new()
++	node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++	node.multimesh.mesh = mesh
++	node.multimesh.instance_count = count
++	node.layers = LAYERS
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(node)
++	return node
++
++func reset() -> void:
++	contact.clear()
++	clock = 0.0
++	emission = 0.0
++	foam_cursor = 0
++	water_cursor = 0
++	if mitt == null: return
++	mitt.hide()
++	for index: int in range(FOAM_COUNT):
++		foam_slots[index] = {}
++		_hide_slot(foam, index)
++	for index: int in range(WATER_COUNT):
++		water_slots[index] = {}
++		_hide_slot(water, index)
++	hide()
++
++func begin_frame() -> void:
++	contact.clear()
++
++func set_contact(surface: Dictionary) -> void:
++	contact = surface
++
++func advance(delta: float, active: bool) -> void:
++	var step: float = clampf(delta, 0.0, 0.1)
++	clock += step
++	var touching: bool = active and not contact.is_empty()
++	mitt.visible = touching
++	if touching:
++		var normal: Vector3 = contact.normal
++		var tangent: Vector3 = Vector3.UP.cross(normal).normalized() if absf(normal.y) < 0.9 else Vector3.RIGHT
++		var frame := Basis(tangent, normal, tangent.cross(normal))
++		# A short rocking scrub stays centred on the same physically picked patch.
++		mitt.global_transform = Transform3D(frame.rotated(normal, sin(clock * 17.0) * 0.12), contact.position + normal * 0.012 + tangent * sin(clock * 23.0) * 0.025)
++		emission += step * 48.0
++		while emission >= 1.0:
++			emission -= 1.0
++			_emit(frame)
++	else:
++		emission = 0.0
++	var alive: int = _advance_pool(foam, foam_slots, step, false)
++	alive += _advance_pool(water, water_slots, step, true)
++	visible = touching or alive > 0
++
++func _emit(frame: Basis) -> void:
++	# Indexed sequences avoid global RNG side effects and remain bounded forever.
++	var angle: float = float(foam_cursor) * 2.399963
++	var radial: Vector3 = frame.x * cos(angle) + frame.z * sin(angle)
++	var normal: Vector3 = frame.y
++	var size: float = 0.022 + float(foam_cursor % 5) * 0.004
++	foam_slots[foam_cursor] = {"position": contact.position + radial * (0.11 + float(foam_cursor % 3) * 0.022) + normal * size * 0.45,
++		"velocity": radial * 0.028, "basis": frame, "age": 0.0, "life": 0.48 + float(foam_cursor % 4) * 0.045, "radius": size}
++	foam_cursor = (foam_cursor + 1) % FOAM_COUNT
++	water_slots[water_cursor] = {"position": contact.position + normal * 0.07 + radial * 0.1,
++		"velocity": normal * 0.35 + radial * 0.24 + Vector3.DOWN * 0.18, "basis": Basis.IDENTITY,
++		"age": 0.0, "life": 0.36 + float(water_cursor % 5) * 0.028, "radius": 0.008 + float(water_cursor % 3) * 0.002}
++	water_cursor = (water_cursor + 1) % WATER_COUNT
++
++func _advance_pool(node: MultiMeshInstance3D, slots: Array[Dictionary], delta: float, falling: bool) -> int:
++	var alive: int = 0
++	for index: int in range(slots.size()):
++		var slot: Dictionary = slots[index]
++		if slot.is_empty(): continue
++		slot.age += delta
++		if slot.age >= slot.life:
++			slots[index] = {}
++			_hide_slot(node, index)
++			continue
++		if falling: slot.velocity += Vector3.DOWN * 2.8 * delta
++		slot.position += slot.velocity * delta
++		var phase: float = slot.age / slot.life
++		var radius: float = slot.radius * minf(1.0, phase * 9.0) * (1.0 - phase * phase)
++		var scale: Vector3 = Vector3(radius, radius * (1.7 if falling else 0.55), radius)
++		var frame: Basis = (slot.basis as Basis) * Basis.from_scale(scale)
++		node.multimesh.set_instance_transform(index, Transform3D(frame, slot.position))
++		alive += 1
++	return alive
++
++func _hide_slot(node: MultiMeshInstance3D, index: int) -> void:
++	node.multimesh.set_instance_transform(index, Transform3D(Basis.IDENTITY.scaled(Vector3.ZERO), Vector3.ZERO))
+diff --git a/game/ui/garage_wash_effect.gd.uid b/game/ui/garage_wash_effect.gd.uid
+new file mode 100644
+index 0000000..41d11e1
+--- /dev/null
++++ b/game/ui/garage_wash_effect.gd.uid
+@@ -0,0 +1 @@
++uid://ico42ke5bn4y

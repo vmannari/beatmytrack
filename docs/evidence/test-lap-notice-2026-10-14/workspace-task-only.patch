@@ -1,0 +1,155 @@
+--- a/game/ui/fault_dialog.gd
++++ b/game/ui/fault_dialog.gd
+@@ -25,6 +25,7 @@
+ 
+ static func presentation(message: String) -> Dictionary:
+ 	var value: Dictionary = {"category":"PLEASE TRY AGAIN","title":"Something went wrong","message":message,"support_title":"","support":"","symbol":"warning"}
++	var lower: String = message.to_lower()
+ 	if message == "Circuit exported." or message == "Track published." or message.begins_with("Draft saved.") or message.begins_with("Saved on this device."):
+ 		value.category = "PUBLISHED" if message == "Track published." else "SAVED"
+ 		value.title = "Track exported" if message == "Circuit exported." else "Track published" if message == "Track published." else "Draft saved"
+@@ -32,6 +33,11 @@
+ 		if message in ["Circuit exported.","Track published."]:
+ 			value.category = ""
+ 			value.message = ""
++	elif message == "Test lap saved on this device. Ready to publish.":
++		value.category = ""
++		value.title = "Test lap saved"
++		value.message = "Ready to publish."
++		value.symbol = "check"
+ 	elif message.begins_with("Track creator:"):
+ 		value.category = "TRACK INFORMATION"
+ 		value.title = "Track creator"
+@@ -65,7 +71,9 @@
+ 	elif message.contains("game and server versions") or message.contains("different game build") or message.contains("different verification contract"):
+ 		value.category = "UPDATE REQUIRED"
+ 		value.title = "Online racing unavailable"
+-	elif message.contains("storage") or message.contains("saved"):
++	# Saved data also appears in success, recovery and update notices. Require
++	# a storage hint or an explicit failed write before showing a save error.
++	elif lower.contains("storage") or lower.contains("could not save") or lower.contains("couldn't save") or lower.contains("could not be saved") or lower.contains("couldn't be saved") or lower.contains("failed to save") or lower.contains("save failed") or lower.contains("saving failed") or lower.contains("could not finish saving"):
+ 		value.category = "STORAGE PROBLEM"
+ 		value.title = "Couldn't save your changes"
+ 	elif message.contains("changed while preparing"):
+--- a/game/tests/test_fault_dialog.gd
++++ b/game/tests/test_fault_dialog.gd
+@@ -2,6 +2,7 @@
+ ## Actual owned notices: input isolation, dismissal, focus, wrapping and rendered UI.
+ const Fault = preload("res://ui/fault_dialog.gd")
+ const SERVER_UPDATE: String = "This game update needs a matching server update before online racing is available."
++const TEST_LAP_SAVED: String = "Test lap saved on this device. Ready to publish."
+ var app: Node
+ var checks: int = 0
+ var failures: int = 0
+@@ -70,6 +71,14 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
++	var saved_lap: Dictionary = Fault.presentation(TEST_LAP_SAVED)
++	check(saved_lap.title == "Test lap saved" and saved_lap.symbol == "check","completed local test is presented as a saved lap, without a storage error")
++	check(saved_lap.message == "Ready to publish." and saved_lap.category.is_empty(),"saved-lap notice preserves publication readiness without repeating its heading")
++	for message: String in ["Garage changes could not be saved. Check free storage space.","The completed test could not be saved. Free storage, then retry saving it.","Best time saved. Could not save its local ghost.","Draft deleted, but favorite settings could not be saved."]:
++		var failure: Dictionary = Fault.presentation(message)
++		check(failure.category == "STORAGE PROBLEM" and failure.symbol == "warning" and failure.message == message,"real save failures retain their warning and exact cause: "+message)
++	for message: String in ["This saved track could not be read.","The backend needs the local-draft publication update. Your draft and test lap remain saved on this device."]:
++		check(Fault.presentation(message).category != "STORAGE PROBLEM","saved data alone never implies a failed write: "+message)
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
+ 	root.size = Vector2i(1280,720)
+@@ -116,6 +125,15 @@
+ 		check(count.confirmed == 1 and not is_instance_valid(dialog) and not is_instance_valid(scrim),"OK dismisses once and removes both modal and scrim")
+ 		check(prior.has_focus(),"dismissing returns focus to the prior menu control")
+ 	root.size = Vector2i(1280,720)
++	app._notice(TEST_LAP_SAVED)
++	await settle()
++	var saved_notice: AcceptDialog = current()
++	check(saved_notice != null and saved_notice.heading.text == "Test lap saved" and saved_notice.message_label.text == "Ready to publish.","actual completed-test dialog has consistent saved and ready copy")
++	check(saved_notice != null and not saved_notice.eyebrow.visible and not saved_notice.support.visible,"completed-test dialog adds no error category or unrelated recovery advice")
++	await capture("test-lap-saved-1280x720")
++	saved_notice.confirm_button.pressed.emit()
++	await settle()
++	check(current() == null and app.root_ui.find_child("FaultMessageScrim",false,false) == null,"saved-lap OK dismisses the owned dialog and its scrim")
+ 	for message: String in ["Track download failed. Check your connection and try again.","Garage changes could not be saved. Check free storage space.","Race loading timed out. Try again."]:
+ 		app._notice(message)
+ 		await settle()
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1892,3 +1892,6 @@
+ 
+ 
+ 2026-10-12 MC01-MC05/SND05/V04-V06/G01/R01/Q01: owner audio/art compression. Nineteen unchanged long PCM masters -> native Ogg q8/q10 (44.91MB->11.06MB source; SNR>=30.33dB/RMS delta<=0.042dB), short/engine voices PCM; 16 colour imports q0.95/biomes0.98 (PSNR>=38.12/SSIM>=0.9869/exact alpha), 24 images exact. Four obsolete runtime pictures archived, 33 inactive audio files export-excluded; all162 master hashes preserved/19 rebuild hashes exact. Native301/loops208/soundtrack1158/vehicle1454/ambience330/surface246/music-off42/App99/parser574/quick driving72-catalog21-menu48 and actual menu9 pass; fixed headless decoder cleanup/fixture teardown without weaker assertions. Local debug APK227412160bytes (227.4MB), 48.5MB/17.6% below deployed275.9MB despite newer content; native libraries byte-identical. Doctor no phone; no physical listening/performance/install/fullValidate/fullphysics/backend/deploy/release/ABI work. Actual package audit, captures, commands, remaining owner-device acceptance and task-only checkpoint: docs/MEDIA_COMPRESSION.md.
++
++
++2026-10-14 FM02-FM04/R01/T01-T04/Q01: owner reports failed-save heading above successful creator-lap readiness. Reproduced exact notice: broad saved-substring classification caused the false storage warning. Explicit saved-test success/checkmark plus failed-write storage wording; recording/publication contracts unchanged. Baseline95/6 expected failures, fixed Compatibility95/MobileVulkan95/local-publication31 all pass; actual saved-lap restart/readiness and native before/after captures checked. No phone test/APK/export-install/live publication/deployment; phone attachment unchecked. Cause, commands, limitations and task-only review checkpoint: docs/TEST_LAP_NOTICE_2026_10_14.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2052,3 +2052,6 @@
+ ## Garage retained selection transition (2026-10-14)
+ 
+ 2026-10-14 GMM01-GMM04/GC06-GC28/GCS01-GCS04/GRD01-GRD03/CW13/CW15/CW16/V06/G01/R01/Q01: owner retained Garage selection/menu motion. Permanent live pane plus destination slots, bounded0.32s native panel/carousel slides, current-rectangle interruption and hidden cleanup; actual camera/pose/world/local cosmetics/partial-wash saving/retained workbench preserved. Reflection-parent ordering fixes actual Mobile resize corruption without new passes/caps or changed projection/materials. Final Compatibility300/Mobile300 include72 exact first-resized-versus-settled pixels each; reflections25+25/carousel178+178/car-swap23+23/parser714/menu48 pass. Broader customisation-speed asset preflight remains6fail/1380 Compatibility and1fail/1380 Mobile, before Garage construction; later workflow checks complete, assertions/assets untouched. Native stills/24 motion frames+holds/APNG/scoped checkpoint: docs/GARAGE_MENU_MOTION_2026_10_14.md. DN2103 attached; no phone test/APK/fullValidate/physics/backend/deploy, owner style/device frame pacing remain acceptance.
++
++
++2026-10-14 FM02-FM04/R01/T01-T04/Q01: owner reports failed-save heading above successful creator-lap readiness. Reproduced exact notice: broad saved-substring classification caused the false storage warning. Explicit saved-test success/checkmark plus failed-write storage wording; recording/publication contracts unchanged. Baseline95/6 expected failures, fixed Compatibility95/MobileVulkan95/local-publication31 all pass; actual saved-lap restart/readiness and native before/after captures checked. No phone test/APK/export-install/live publication/deployment; phone attachment unchecked. Cause, commands, limitations and task-only review checkpoint: docs/TEST_LAP_NOTICE_2026_10_14.md.
+--- /dev/null
++++ b/docs/TEST_LAP_NOTICE_2026_10_14.md
+@@ -0,0 +1,60 @@
++# Saved creator-lap notice correction — 2026-10-14
++
++Requirements: **FM02–FM04, R01, T01–T04, Q01**. The owner reports a dialog
++with “Couldn't save your changes” above “Test lap saved on this device. Ready
++to publish.”
++
++The contradiction comes from `FaultDialog.presentation()`, which classified any
++unrecognised message containing `saved` as a storage problem. The completed-test
++success message was absent from its success cases. The exact message reproduces
++the supplied screenshot through the real application's owned notice dialog.
++
++`app._complete_draft_test()` emits that success message only after the local
++recording/workflow save and `TrackLibrary.mark_tested()` succeed. In the current
++local-draft publication workflow, the saved trajectory enables explicit Publish;
++sign-in and server acceptance still occur when publishing. The older backend-master
++sequence in `TRACK_LIFECYCLE.md` does not describe this current workflow; see
++`STUDIO_LOCAL_DRAFTS_2026_10_12.md` and `test_local_draft_publication.gd`.
++
++`game/ui/fault_dialog.gd` now presents this success as a checkmark, **Test lap
++saved**, and **Ready to publish.** Storage classification requires a storage hint
++or explicit failed-write wording. Mentioning already saved data cannot imply
++that a write failed. Existing warning text, modal ownership, input isolation and
++dismissal remain covered by the tests.
++
++`game/tests/test_fault_dialog.gd` adds the exact reported success, real save
++failures including partially saved results, non-write messages mentioning saved
++data, actual rendered success controls and owned dismissal. This task changes
++presentation only; it does not alter recording, publication or driving contracts.
++
++Actual commands use `powershell -NoProfile -ExecutionPolicy Bypass -File
++scripts/dev.ps1` and pinned **4.7.2.stable.official.ed1daf0bf**, with process-local
++APPDATA under `build/test-lap-notice-*-userdata`. Live backend access is disabled
++in the UI fixture; publication requests are counted mock responses in the
++existing local-publication fixture.
++
++| Arguments / check | Actual outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_fault_dialog.gd -Graphical -TestArgument '--evidence=res://../docs/evidence/test-lap-notice-2026-10-14/before-ui'` before the runtime fix | 95 checks, 6 expected regression failures; exact contradictory dialog captured |
++| Same fixture with evidence directory `gl_compatibility`, after the fix | 95 checks, zero failures, Compatibility / RTX3090 |
++| Same fixed fixture with `-RenderingMethod mobile -RenderingDriver vulkan` and evidence directory `mobile` | 95 checks, zero failures, desktop Mobile/Vulkan / RTX3090 |
++| `-Action TestScript -ScriptPath res://tests/test_local_draft_publication.gd` | 31 checks, zero failures; actual ordered creator lap completes in 2605 ticks, recording has 436 samples; restart retains readiness and only explicit Publish sends content |
++| `git diff --check -- game/ui/fault_dialog.gd game/tests/test_fault_dialog.gd` | Pass |
++
++Initial restricted engine startup failed on Windows certificate-store access;
++the successful fixtures used approved normal Windows access with disposable
++workspace saves. The first baseline shell also reported an unrelated profile
++execution-policy warning before running the fixture. Assertions were retained.
++
++Visually inspected [before](evidence/test-lap-notice-2026-10-14/before-ui/test-lap-saved-1280x720.png),
++[Compatibility after](evidence/test-lap-notice-2026-10-14/gl_compatibility/test-lap-saved-1280x720.png)
++and [Mobile/Vulkan after](evidence/test-lap-notice-2026-10-14/mobile/test-lap-saved-1280x720.png).
++The real application notice is rendered over an isolated fixture menu; the
++durable completed-lap behavior is checked by the separate publication fixture.
++Logs and a task-only review patch/manifest are in the same evidence directory.
++The patch uses saved pre-task files and excludes existing unrelated edits.
++
++No physical-device test, APK export/install, live publication or deployment was
++performed for this task; phone attachment was not checked. The owner's installed
++phone build and saved files were not inspected. The corrected source needs to
++be included in a subsequent phone build; owner/device confirmation remains open.

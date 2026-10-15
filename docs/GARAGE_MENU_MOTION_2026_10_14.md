@@ -1,0 +1,32 @@
+# Retained Garage car view and sliding menus
+
+Owner request, 2026-10-14. GMM01: keep the live car view attached while selecting a car. GMM02: move that pane into the selected-car layout while menus slide out/in. GMM03: support Back, rapid navigation, resizing and hidden-page cleanup with bounded outgoing controls. GMM04: preserve actual car/camera/room, livery tools, local condition, washing and confirmation behavior. Existing GC06-GC28, GCS01-GCS04, GRD01-GRD03, CW13/CW15/CW16, V06/G01/R01/Q01 remain applicable.
+
+`GaragePage` now uses invisible container-managed layout slots and a permanently attached live preview. Selecting the displayed car keeps its actual viewport, world, model, camera transform, zoom, tilt and turntable pose. The pane moves and resizes over 0.32 seconds. The carousel and action row slide down; the side rail and right-hand tools slide at the edges. Outgoing controls leave before incoming replacements cross their path. Back reverses the layout. Customise/Care/Tuning/Trophy navigation uses the same bounded transition; the established trophy camera movement remains separate.
+
+Only the most recent outgoing rail/tools/action group survives, with mouse and keyboard focus disabled. Rapid navigation starts the car pane from its displayed rectangle; completion or hiding releases departing controls. The native livery workbench is retained and its original input/focus modes restored when reused. Carousel layout does not cancel scrolling every frame. Hidden Garage keeps its original visible-only showroom updates and stops the two existing reflection captures.
+
+Actual intermediate Mobile screenshots exposed corrupt floor/deck reflection pixels after resizing. Rebinding the same sampler did not fix this: the added first-draw-versus-settled check failed 65 of 72 comparisons. Each reflection capture now has an explicit RenderingServer parent pointing to the receiving showroom, so both captures draw before that showroom. This changes draw order without adding a pass, changing the camera/material/geometry, or increasing the original viewport caps. Godot's [RenderingServer API](https://docs.godotengine.org/en/stable/classes/class_renderingserver.html#class-renderingserver-method-viewport-set-parent-viewport) and [viewport sorting source](https://github.com/godotengine/godot/blob/master/servers/rendering/renderer_viewport.cpp) support the relationship; the pinned-engine pixel checks establish the tested result.
+
+The lossless [selection and Back preview](evidence/garage-menu-motion-2026-10-14/garage-menu-transition.png) contains 24 actual transition renders plus three endpoint holds at 960x540. The production tween was stepped deterministically; this playback is not a performance measurement. Native stills and frames at 960x540, 1280x720 and 1600x720 are under `gl_compatibility/motion` and `mobile/motion`. Both final layouts and intermediate movement were visually inspected.
+
+Actual validation uses `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`, isolated records under `build/garage-menu-motion-user`, and separate logs under each renderer's evidence folder. Main player records are not used. Commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -MotionOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile -MotionOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -ReflectionsOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_menu_motion.ps1 -Renderer mobile -ReflectionsOnly
+python build/encode_garage_menu_motion.py
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
+```
+
+Final validation totals are recorded in `docs/evidence/garage-menu-motion-2026-10-14/verification.json`. Motion covers the actual attached viewport, no layout visibility events, car/camera/room identity, 72 exact first-resized-draw comparisons per renderer, native forward/Back motion, retained workbench, partial-wash saving, interruption, resize and hidden-page cleanup. Existing carousel and car-swap tests pass on both renderers. The broader customisation-speed suite has separate asset preflight failures before constructing Garage: its catalogue assertion on both renderers, and intermittently some aero thumbnail comparisons during concurrent asset work. The final saved broad logs show 6 failures of 1,380 checks on Compatibility and 1 on Mobile; all subsequent retained-workbench workflow checks complete. Their assertions and unrelated assets were left intact; the broad suite is not reported green.
+
+The first sandboxed run could not write normal user logs; relocating APPDATA to workspace-only test data resolved that. Graphical startup also required Windows certificate-store access outside the sandbox; the automatic approval review allowed the read. Initial test fixture used an unavailable catalog method and was corrected to the existing selection API. A command-line array was initially flattened into one evidence argument; the local runner now preserves arrays and each test log. These attempts are not counted as passes.
+
+Doctor finds the attached DN2103 and existing Android prerequisites. A Doctor invocation with isolated APPDATA could not see the normal SDK/template settings; the normal-settings read-only Doctor confirms them. No phone interaction, APK export/install, backend action, deployment, full Validate or physics change was performed. Owner transition/style acceptance and physical-phone frame pacing remain outstanding. The two existing half-resolution reflection passes and 2560x1440 main / 768-wide reflection caps remain; no phone performance improvement is claimed.
+
+Changed runtime files: `game/ui/garage_page.gd`, `game/ui/garage_reflections.gd`. Added regression: `game/tests/test_garage_menu_motion.gd` (+UID). Supporting runner/encoder: `build/run_garage_menu_motion.ps1`, `build/encode_garage_menu_motion.py`. Updated this document, `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md`. A task-only Git checkpoint and patch are recorded in the evidence ledger, preserving the main branch/index and unrelated workspace edits.

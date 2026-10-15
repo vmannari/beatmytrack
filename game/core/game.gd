@@ -52,6 +52,7 @@ var rewind_was_paused: bool = false
 var rewind_return := RewindReturn.new()
 var rewind_ghosts: Node3D
 var personal_ghost: PersonalGhost
+var prepared_road_packet: Dictionary = {}
 var ghost_mode: String = "lap"
 var ghost_run := PersonalGhostRun.new()
 var ghost_store: LocalGhosts
@@ -127,6 +128,15 @@ var profile_physics_total_us: int = 0
 var profile_process_total_us: int = 0
 var condition_save_count: int = 0
 var weathering_prepared: bool = false
+var bridge_prepared: bool = false
+var bridge_preparation_meshes: int = 0
+var bridge_preparation_ms: float = 0.0
+var hazards_prepared: bool = false
+var hazard_preparation_meshes: int = 0
+var trails_prepared: bool = false
+var effects_prepared: bool = false
+var effect_preparation_counts: Dictionary = {}
+var night_preparation: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
 var hitch_diagnostics_enabled: bool = true
 var hitch_diagnostics: Node
 var profile_skip_telemetry: bool = false
@@ -187,7 +197,6 @@ func _ready() -> void:
 	world.add_child(environment)
 	biome_light = light
 	biome_environment = environment.environment
-	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",environment.environment,light)
 	_update_weather()
 	checkpoint_marker = CheckpointMarker.new()
 	world.add_child(checkpoint_marker)
@@ -204,7 +213,7 @@ func _ready() -> void:
 	if production_mode and not editor_test and native_track != null and preference_records != null:
 		personal_ghost = PersonalGhost.new()
 		world.add_child(personal_ghost)
-		personal_ghost.configure(car)
+		personal_ghost.configure(car,false)
 	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
 	car_weathering.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine", handling)
@@ -218,6 +227,7 @@ func _ready() -> void:
 	sand_dust.track_width = handling.track_width
 	sand_dust.collision_radius = handling.collision_radius
 	world.add_child(sand_dust)
+	sand_dust.prepare_track(native_track)
 	if native_track != null and native_track.metadata.get("theme", "pine") == "winter":
 		sand_dust.configure_snow_surface(track_ground)
 	vehicle_audio = VehicleAudio.new()
@@ -483,7 +493,7 @@ func _present_frame(delta: float) -> void:
 	if profile_enabled: profile_water_us += Time.get_ticks_usec() - water_start
 	car.present(point, heading, presented.state, frame)
 	var weathering_start: int = Time.get_ticks_usec() if profile_enabled else 0
-	car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
+	var shared_contacts: SurfaceAudioModel = car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
 	if finish_sim != null and not paused: car_weathering.melt(delta)
 	if profile_enabled: profile_weathering_us += Time.get_ticks_usec() - weathering_start
 	condition_save_elapsed += delta
@@ -491,7 +501,7 @@ func _present_frame(delta: float) -> void:
 		_save_condition()
 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
 	var audio_start: int = Time.get_ticks_usec() if profile_enabled else 0
-	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0)
+	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0,shared_contacts)
 	if profile_enabled: profile_audio_us += Time.get_ticks_usec() - audio_start
 	var music_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	GameSoundtrack.instance().present_race(self,sim.state,native_track,handling,track_session,paused,countdown_ticks>0,finish_sim!=null,{"personal":music_personal_ghosts,"rival":ghost_bests.get("race",{}) if bool(get_meta("soundtrack_rivalry",false)) else {}})
@@ -640,6 +650,7 @@ func restart() -> void:
 		music_personal_ghosts = ghost_bests.duplicate()
 		ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
 		personal_ghost.hide()
+		_prepare_personal_ghost()
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
 	trails.clear()
@@ -761,6 +772,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func set_ghost_mode(value: String) -> Error:
 	if value not in PersonalGhostRun.MODES: return ERR_INVALID_PARAMETER
 	ghost_mode = value
+	_prepare_personal_ghost()
 	if preference_records == null: return OK
 	preference_records.settings.ghost_mode = value
 	return preference_records.save_records()
@@ -785,6 +797,10 @@ func _present_personal_ghost(weight: float) -> void:
 		# Boundary ticks reset exactly at the player's accepted finish crossing.
 		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
 	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
+
+
+func _prepare_personal_ghost() -> void:
+	if personal_ghost != null and personal_ghost.mesh == null and ghost_mode != "off" and ghost_bests.has(ghost_mode): personal_ghost.configure(car)
 
 
 func save_personal_ghost() -> Error:
@@ -840,6 +856,8 @@ func _build_ground(world: Node3D) -> void:
 	_refresh_render_scale()
 	if native_track != null:
 		var visual := NativeTrackVisual.new()
+		visual.race_road_packet = prepared_road_packet
+		prepared_road_packet = {}
 		visual.cache_race_world = production_mode and not editor_test
 		bridge_presentation = BridgePresentation.new(native_track)
 		world.add_child(visual)

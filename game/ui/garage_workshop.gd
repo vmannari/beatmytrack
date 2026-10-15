@@ -99,36 +99,4 @@ static func _compressor(root: Node3D) -> void:
 	GarageFurnishings.compressor(compressor)
 
 static func _plant(root: Node3D) -> void:
-	var plant := Node3D.new()
-	plant.name = "GarageDisplayPlant"
-	plant.position = Vector3(-9.55,0,-2.1)
-	root.add_child(plant)
-	var planter: Material = GarageEnvironment.surface("planter","536168",0.15)
-	GarageEnvironment.box(plant,Vector3(0,0.34,0),Vector3(0.52,0.68,0.52),planter)
-	GarageEnvironment.box(plant,Vector3(0,0.69,0),Vector3(0.45,0.018,0.45),GarageEnvironment.surfaces.inset)
-	var leaf: Material = GarageEnvironment.surface("plantleaf","3f5845",0,0.86)
-	leaf.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var tool := SurfaceTool.new()
-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for index: int in range(19):
-		var angle: float = index*2.399
-		var height: float = 0.66+(index%5)*0.14
-		var reach: float = 0.30+(index%4)*0.095
-		var across := Vector3(cos(angle),0,-sin(angle))
-		for segment: int in range(12):
-			var a: float = segment/12.0
-			var b: float = (segment+1)/12.0
-			var ca := Vector3(sin(angle)*reach*a*a,0.70+height*(sin(a*1.9)/sin(1.9)),cos(angle)*reach*a*a)
-			var cb := Vector3(sin(angle)*reach*b*b,0.70+height*(sin(b*1.9)/sin(1.9)),cos(angle)*reach*b*b)
-			for half: int in [-1,1]:
-				var ea: Vector3 = ca+across*sin(a*PI)*0.068*half+Vector3(0,-sin(a*PI)*0.014,0)
-				var eb: Vector3 = cb+across*sin(b*PI)*0.068*half+Vector3(0,-sin(b*PI)*0.014,0)
-				var points: Array[Vector3] = [ca,ea,eb,cb]
-				GarageEnvironment._polygon(tool,points,Vector3(sin(angle),0.3,cos(angle)).normalized())
-	tool.index()
-	var foliage := MeshInstance3D.new()
-	foliage.name = "CurvedDisplayFoliage"
-	foliage.mesh = tool.commit()
-	foliage.material_override = leaf
-	foliage.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	plant.add_child(foliage)
+	preload("res://ui/garage_plant.gd").build(root)

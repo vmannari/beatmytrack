@@ -1,0 +1,132 @@
+{
+  "task": "Menu performance and reliability review",
+  "date": "2026-10-14",
+  "requirements": ["R01", "G01", "V03", "V04", "V05", "Q01"],
+  "scope": "Review of the current shared workspace, including pre-existing uncommitted changes. No production runtime logic was edited. New files are an isolated audit probe, its engine-generated UID, raw measurements, copied command receipts, and this review. scripts/dev.ps1 also refreshes the already-generated build_identity.gd file.",
+  "method": "Source tracing plus actual production menu/control construction, real local track compilation and actual native compact hit-testing. The audit subclass only times the unchanged neighbor-preparation method. Store and Challenges use in-process mock services; all saves and cache writes use an isolated APPDATA directory. Audit assertions confirm the presence of findings; their passing does not mean the findings were fixed.",
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "graphics_device": "Desktop NVIDIA GeForce RTX 3090",
+    "renderers": ["headless", "Compatibility/OpenGL", "Mobile/Vulkan on desktop"],
+    "physical_device_test": false,
+    "network_requests_to_live_services": false,
+    "apk_export_install_deployment": false,
+    "timing_limitations": "Sampled desktop callback wall times on a shared, actively changing workstation. Not isolated CPU-cycle measurements, a phone benchmark, an FPS comparison, or a universal latency bound. Vulkan resource/pipeline setup is included where it occurs synchronously in menu preparation. Cache timing uses the documented synthetic representative payload rather than a real player's data."
+  },
+  "findings": [
+    {
+      "id": "MREV01",
+      "priority": "P1",
+      "title": "Preparing all hidden primary pages blocks the main thread",
+      "locations": ["game/core/app.gd:762", "game/core/app.gd:777", "game/ui/garage_page.gd:304", "game/ui/garage_page.gd:359", "game/ui/car_showroom.gd:50"],
+      "trigger": "Opening Race and rebuilding the primary-menu shell after returning from Settings.",
+      "cause": "One process_frame callback synchronously constructs every other primary page, including the full Garage and all five native car thumbnails. Deferring the callback to a frame does not split this work across frames. Settings destroys the shell and its warm pages, so this large preparation repeats.",
+      "evidence": {"compatibility_preparation_ms": [771.752, 464.627, 614.379], "desktop_mobile_preparation_ms": [4376.097, 2140.486, 1835.481], "retained_nodes": 910, "mesh_nodes": 363, "subviewports": 8},
+      "recommendation": "Retain prepared primary pages across Settings/profile overlays and divide cold construction into cancellable, bounded steps. Prepare only currently needed heavy geometry; retain rendered native thumbnail images when their source cosmetics have not changed. Preserve the existing immediately visible swipe neighbors and live Garage pane."
+    },
+    {
+      "id": "MREV02",
+      "priority": "P1",
+      "title": "Challenges loses a folder change while a refresh is pending",
+      "locations": ["game/ui/challenges_page.gd:102", "game/core/app.gd:1237", "game/backend/challenges_client.gd:106", "game/backend/challenges_client.gd:117"],
+      "trigger": "Start a Received refresh, then press Sent before its response arrives.",
+      "cause": "Folder tabs remain enabled. The handler changes the folder and clears selection, but refresh() immediately returns because busy is true. The old response clears the client busy flag and returns on the folder mismatch without emitting changed or starting the new request.",
+      "evidence": {"reproduced_in": ["headless", "Compatibility", "desktop Mobile/Vulkan"], "requested_paths": ["/challenges?folder=received"], "client_folder_after_reply": "sent", "client_busy_after_reply": false, "displayed_page_folder_after_reply": "received", "displayed_page_busy_after_reply": true},
+      "recommendation": "Supersede the old folder request with a generation/selection token and queue the newest requested folder. Always publish the final busy state. Disabling folder tabs while busy is a smaller alternative, but does not support immediate switching."
+    },
+    {
+      "id": "MREV03",
+      "priority": "P2",
+      "title": "Leaving a browser joins its outstanding compiler worker synchronously",
+      "locations": ["game/ui/track_browser.gd:644", "game/ui/track_browser.gd:664", "game/ui/track_browser.gd:668"],
+      "trigger": "Remove/rebuild a TrackBrowser while it is resolving a local/native or legacy track.",
+      "cause": "_exit_tree() calls wait_to_finish() on the UI thread. The resolver passes no cancellation callback to TrackCompiler.compile, despite the compiler supporting cancellation elsewhere.",
+      "evidence": {"real_local_compile_pending_at_departure": true, "compatibility_remove_child_ms": 81.312, "desktop_mobile_remove_child_ms": 102.963, "headless_remove_child_ms": 148.814},
+      "scope_limit": "Current versioned cloud entries use the metadata-only selection branch and do not start this resolver. The reproduced blocking applies to the local/native/legacy resolver path, rather than every normal cloud selection.",
+      "recommendation": "Give the worker an independent, cancellable job owner. Request cancellation on departure and retire completed work outside the navigation callback, following the editor's existing worker pattern."
+    },
+    {
+      "id": "MREV04",
+      "priority": "P2",
+      "title": "Washing repeatedly scans detailed mesh triangles and uploads masks per substep",
+      "locations": ["game/ui/car_showroom.gd:424", "game/ui/car_showroom.gd:438", "game/ui/car_showroom.gd:445", "game/ui/car_showroom.gd:460", "game/vehicle/vehicle_weathering.gd:296"],
+      "trigger": "The first wash contact and a long mouse/touch movement between rendered frames.",
+      "cause": "The first hit expands every mesh into face arrays. Each of up to 32 interpolated wash samples traverses those arrays after a per-mesh AABB test; each successful wash also recreates and updates two volume images. There is no triangle acceleration structure or once-per-frame upload batch.",
+      "evidence": {"native_compact_meshes_cached": 52, "triangle_vertices_cached": 313674, "uncompressed_face_bytes": 3764088, "compatibility_first_pick_ms": 45.185, "desktop_mobile_first_pick_ms": 102.222, "compatibility_32_step_process_ms": 52.503, "desktop_mobile_32_step_process_ms": 54.892, "compatibility_stationary_process_ms": 4.191, "desktop_mobile_stationary_process_ms": 5.572},
+      "recommendation": "Prepare an accurate immutable triangle acceleration structure for the current body/kit, retain exact per-part transforms, and batch both wash-mask uploads after all samples for a frame. Keep the original sampled wash coverage, resistance, hardware picking and condition persistence."
+    },
+    {
+      "id": "MREV05",
+      "priority": "P2",
+      "title": "Rivalry replaces its whole page on unchanged or busy-only notifications",
+      "locations": ["game/core/app.gd:1504", "game/core/app.gd:1514", "game/backend/weekly_rivalry_client.gd:170"],
+      "trigger": "Rivalry changed notifications, including the start and completion of periodic refreshes.",
+      "cause": "_rivalry_changed() calls _rivalry(), which removes all page children and reconstructs the controls. There is no comparison of the presented model or targeted busy-state update, unlike the retained TrackBrowser sections.",
+      "evidence": {"unchanged_signal_replaces_page": true, "old_page_queued_for_deletion": true, "compatibility_unchanged_signal_dispatch_ms": 19.262, "desktop_mobile_unchanged_signal_dispatch_ms": 26.263},
+      "recommendation": "Keep the page and update only changed rows, values and busy/error states. Preserve focus and scroll, and avoid reconstructing completed-ceremony/native-car content when only refresh state changes."
+    },
+    {
+      "id": "MREV06",
+      "priority": "P2",
+      "title": "A hidden Store starts requests before the owner opens it",
+      "locations": ["game/core/app.gd:762", "game/ui/store_page.gd:76", "game/ui/store_page.gd:95", "game/ui/store_page.gd:105"],
+      "trigger": "Any primary-menu neighbor preparation while signed in, even when Race remains the visible page.",
+      "cause": "The Store is built as an inactive neighbor, but _ready() immediately calls refresh(), which fetches products and entitlements. Disabling node processing does not suppress _ready() or its service calls. The two reads run in sequence and repeat whenever the shell is rebuilt.",
+      "evidence": {"visible_screen": "tracks", "store_visible": false, "mock_service_calls_on_first_preparation": ["/store/products", "/me/entitlements"], "calls_after_two_Settings_roundtrips": 6},
+      "recommendation": "Separate passive Store construction from activation. Use scoped cached products/entitlements and refresh on opening, expiry or an actual purchase/access change; coalesce concurrent refresh requests."
+    },
+    {
+      "id": "MREV07",
+      "priority": "P2",
+      "title": "Every snapshot update serializes and flushes the complete cache on the main thread",
+      "locations": ["game/backend/menu_snapshot_cache.gd:31", "game/backend/menu_snapshot_cache.gd:42", "game/backend/atomic_json.gd:13", "game/backend/comparison_preloader.gd:132", "game/backend/comparison_preloader.gd:170", "game/ui/track_discovery_provider.gd:21"],
+      "trigger": "Comparison and leaderboard replies arrive, or a record snapshot changes.",
+      "cause": "remember()/forget() synchronously serialize all entries, open/write/flush and rename a file. A comparison result and its later leaderboard can each save the same cache, with another save through the presented-record cache. There is no unchanged-value suppression or write coalescing.",
+      "evidence": {"representative_synthetic_fixture": "Two 16-bin distributions and twenty leaderboard rows per entry", "final_entries": 32, "final_file_bytes": 89336, "writes_for_40_remember_calls": 40, "compatibility_remember_ms_range": [1.851, 5.229], "desktop_mobile_remember_ms_range": [1.66, 5.572]},
+      "recommendation": "Update RAM immediately, then coalesce immutable cache snapshots onto one ordered background writer. Preserve atomic replacement, account/origin/rules fences and generation ordering. These are recoverable presentation caches, so they need not flush once per reply."
+    },
+    {
+      "id": "MREV08",
+      "priority": "P2",
+      "title": "A settled clean Garage redraws its unchanged scene and reflections every frame",
+      "locations": ["game/ui/car_showroom.gd:58", "game/ui/car_showroom.gd:410", "game/ui/garage_reflections.gd:67", "game/ui/garage_reflections.gd:88"],
+      "trigger": "Leave an already settled, clean car visible without input.",
+      "cause": "The main view uses UPDATE_WHEN_VISIBLE and both planar captures use UPDATE_ALWAYS. Every _process also rewrites capture transforms/fov/aspect/update modes, whether or not the camera, dimensions or scene changed.",
+      "evidence": {"compatibility_idle_draw_calls_main_floor_pedestal": [133, 112, 52], "desktop_mobile_idle_draw_calls_main_floor_pedestal": [81, 112, 52], "scope": "Actual static native compact with both reflections; counts are per-frame submissions, not CPU/GPU time or a projected FPS gain."},
+      "recommendation": "Use an explicit scene/camera/size/material dirty state. Render continuously during gestures, car/menu motion, washing or snow melt; retain the last completed image while fully settled. Keep reflection-before-showroom ordering and force all required draws before revealing a changed scene. Hidden-page capture gating already exists and should be preserved."
+    },
+    {
+      "id": "MREV09",
+      "priority": "P2",
+      "title": "The in-memory record read model has no eviction bound",
+      "locations": ["game/ui/track_discovery_provider.gd:21", "game/ui/track_discovery_provider.gd:31", "game/backend/menu_snapshot_cache.gd:9"],
+      "trigger": "Browse many distinct track/car/rules combinations during one session.",
+      "cause": "records_by_rules_key retains every remembered or disk-restored snapshot for the life of the provider. The persistent cache's 32-entry bound and the comparison preloader's bounds do not apply to this dictionary. It only clears on a scope change.",
+      "evidence": {"distinct_records_inserted": 40, "ram_records_retained": 40, "independently_bounded_disk_entries": 32, "scope": "Direct production remember_record/cache APIs; structural growth proof, not a measured multi-hour process-memory leak."},
+      "recommendation": "Add LRU entry/byte accounting to the RAM read model, retaining the selected/in-flight records and permitting bounded disk-cache rehydration."
+    }
+  ],
+  "existing_optimizations_confirmed_by_source_and_tests": [
+    "Primary page promotions retain controls during normal tab/swipe navigation.",
+    "TrackBrowser guards unchanged status/detail/hero work and retains overlapping carousel cards.",
+    "Menu themes and biome imagery are shared; prepared kit photographs and comparison caches have explicit bounds.",
+    "Read-only native car thumbnails draw once, and hidden Garage reflection targets are disabled. Their scenes and resources remain allocated, which contributes to MREV01 but is distinct from continuous hidden GPU rendering.",
+    "Existing independent comparison/leaderboard readiness and account/cache fences pass their current suite."
+  ],
+  "verification": [
+    {"command": "scripts/dev.ps1 TestScript -ScriptPath res://tests/review_menu_2026_10_14.gd -CommandTimeoutSeconds 90", "result": "9 audit checks, 0 failures; each asserts an observed finding", "evidence": "headless.json", "log": "commands/headless.log"},
+    {"command": "scripts/dev.ps1 TestScript -ScriptPath res://tests/review_menu_2026_10_14.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -CommandTimeoutSeconds 120", "result": "9 audit checks, 0 failures", "evidence": "compatibility.json", "log": "commands/compatibility.log"},
+    {"command": "scripts/dev.ps1 TestScript -ScriptPath res://tests/review_menu_2026_10_14.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 120", "result": "9 audit checks, 0 failures", "evidence": "mobile.json", "log": "commands/mobile.log"},
+    {"command": "scripts/dev.ps1 TestScript -ScriptPath res://tests/test_menu_quality.gd -CommandTimeoutSeconds 90", "result": "23 checks, 0 failures", "log": "commands/menu-quality.log"},
+    {"command": "scripts/dev.ps1 TestScript -ScriptPath res://tests/test_menu_loading_speed.gd -CommandTimeoutSeconds 90", "result": "27 checks, 0 failures", "log": "commands/menu-loading-speed.log"}
+  ],
+  "initial_attempts_and_limitations": [
+    "The first probe failed parsing because the pinned Viewport.get_render_info requires both a type and statistic argument; corrected in the probe before measurement.",
+    "Sandboxed engine startup could not read the Windows root certificate store; the same offline commands completed using reviewed escalation. No real API URL was enabled.",
+    "An initial probe issued Settings/Tracks reconstruction twice in one frame, exposing an already-connected process_frame callback error and one scheduling-dependent assertion. Retained as initial-scheduling.log. Final measurement separates these navigations with process frames and settlement; production code was not changed. This rapid same-frame scheduler observation is not counted among the nine fully consolidated findings.",
+    "Other agents/processes were actively changing and testing unrelated code in the shared workspace. No unrelated tests, assertions or source changes were reverted. Timings should be repeated on a quiet host and a physical phone before acceptance.",
+    "No fixes, full Validate, physics regression, physical-phone trace, Android export or deployment was performed. The generated build identity was refreshed by the required launcher."
+  ],
+  "suggested_fix_order": ["MREV02", "MREV01", "MREV04", "MREV05", "MREV06", "MREV07", "MREV08", "MREV03", "MREV09"],
+  "remaining_acceptance": "After owner-authorized fixes: retain the swipe and Garage visual/condition/camera invariants, add delayed-folder/navigation regressions, compare exact captures where render scheduling changes, repeat measured callbacks, and verify cold/steady-state frame pacing and memory on a physical phone."
+}

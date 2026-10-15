@@ -168,7 +168,7 @@ func _remove_fixture(path: String) -> void:
 
 class ProbeApp extends "res://core/app.gd":
 	var raced_track: NativeTrack
-	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}) -> void:
+	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}, _prepared_loading: RaceLoading = null) -> void:
 		raced_track = track
 
 class CallbackBrowser extends TrackBrowser:

@@ -1,0 +1,926 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 435253c..840994a 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Garage washing visual quality and connected foam override (2026-10-14)
++The owner requests AAA-target washing refinement and specifically rejects the intermediate foam style. Use the original soft microfiber mitt/thumb/nap and stitched cuff, smooth stroke-aligned pressure/oval scrubbing, translucent gravity-shaped water, and connected creamy lather with actual raised air pockets, irregular edges and trailing streaks. Retain24 lather/32 water slots, shared native meshes, existing reflection views, local-only cleaning/saving and car/kit/livery/camera/canonical behavior. Depth-seated lather must avoid floating edges; cleanup retains caller hit data. See `docs/GARAGE_WASH_POLISH_2026_10_14.md` for actual both-renderer motion/all-car/pixel/work evidence, retained initial failures and scoped checkpoint. Owner/physical-phone style/performance acceptance remains; no phone/APK/deployment.
++
+ ## Full published Free Race phone catalog override (2026-10-14)
+ The owner requires all27 published tracks playable from Free Race. Repair only the backed-up local PC service; retain original identities/documents/owners/revisions/scores and use matching coherent0.59 client/verifier contracts. Actual gallery20+7 pagination, all downloads/native hashes/five-lap tickets pass142 checks; normal Winter/Desert phone launches pass on the preserved parallel APK14542413. Do not overwrite parallel tire/rendering/phone work. Owner active driving interrupted the physical tail sweep; no full27 phone driving, FPS/hitch-free or production rollout claim. A rejected speculative deletion never ran; no track deletion/archiving. See `docs/FREE_RACE_PHONE_CATALOG_2026_10_14.md` for exact hashes, attempts, connection limits and task-only checkpoint.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index e1c35d0..71b6e34 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 GWP01-GWP04/GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: owner AAA-target washing refinement and further foam rejection. Native soft microfiber mitt/thumb/nap/stitched cuff, smooth stroke-aligned pressure/scrub, translucent gravity water and connected creamy raised-bubble froth/trailing streaks. Original24/32 pools/reflection views/local cleaning/saves/car/kits/livery/camera/canonical retained; caller contact ownership fixed. Both-renderer197+197 visual/exact restoration checks,139+139 all-car animation,1402+1402 original wash and760-script parse pass. Actual motion/960 views/work cost/initial failures/scoped checkpoint: docs/GARAGE_WASH_POLISH_2026_10_14.md. No phone/attachment/APK/deploy/FPS/fullValidate/physics merge; owner/device style, first-contact and performance acceptance remains.
++
+ 2026-10-14 FRP01-FRP03/R01/V05/Q01: owner requires all27 published tracks playable from Free Race. Backed-up local PC schema14->34 repair and coherent0.59 verifier/client refresh preserve all30 identities, old revisions and82 personal bests; concurrent schema35 retained. Actual gallery20+7 pagination/download/native hashes/five-lap tickets142 checks pass. Current parallel phone APK14542413 preserved, installed hash/actual0.59 bytecode verified; Guest Winter Lonkero/Desert My way reach ordinary lap1/5 gameplay. Physical tail sweep interrupted by owner driving; no further touch input, full27 phone driving/FPS/hitch-free/production acceptance not claimed. Rejected speculative deletion never ran; zero deletions/archives. Actual attempts, USB local-service limit and task-only checkpoint: docs/FREE_RACE_PHONE_CATALOG_2026_10_14.md.
+ 
+ 2026-10-14 LPB01-LPB03/LP01/LP03/LP04/SND05/MUS35/G01/R01/Q01: owner replaces LP grid/importing with a flippable box. Direct mouse/touch scrubbing, wheel/keys/arrows and0.32s flips mirror seven actual native sleeves/crate; Exploration playable plus six distinct future-music placeholders. No import/file picker/external decoder; legacy metadata migrates safely without deleting source/copy files or changing other preferences/PBs. Retained car/camera/condition/kits/washing/reflections, saved stop/volume and silent racing preserved. LP64 headless/93+93 graphical, soundtrack1158/biome42/Garage178/parser760 pass; actual13-frame lossless flip previews per renderer. Concurrent settled-rectangle fixes excluded. No phone/APK/deploy/new composition or FPS claim. Evidence/scoped checkpoint/owner acceptance: docs/GARAGE_LP_BOX_2026_10_14.md.
+diff --git a/build/checkpoint_garage_wash_polish.py b/build/checkpoint_garage_wash_polish.py
+new file mode 100644
+index 0000000..b3922bc
+--- /dev/null
++++ b/build/checkpoint_garage_wash_polish.py
+@@ -0,0 +1,65 @@
++from pathlib import Path
++import hashlib
++import json
++import re
++import subprocess
++
++root=Path(__file__).resolve().parents[1]
++out=root/'docs/evidence/garage-wash-polish-2026-10-14'
++repo=root/'build/garage-wash-polish-checkpoint'
++assert not repo.exists(), 'Preserve an existing checkpoint.'
++
++def read(name): return (root/name).read_text(encoding='utf-8')
++modified={name:(out/'before'/name).read_text(encoding='utf-8') for name in (
++    'game/ui/garage_wash_effect.gd','game/tests/test_garage_wash_animation.gd')}
++for name in ('AGENTS.md','DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md'):
++    source=read(name)
++    if name=='AGENTS.md':
++        stripped,count=re.subn(r'\n## Garage washing visual quality and connected foam override \(2026-10-14\)\n[^\n]+\n','',source)
++    else:
++        stripped,count=re.subn(r'^2026-10-14 GWP01-GWP04/[^\n]+\n\n?','',source,flags=re.M)
++    assert count==1,name
++    modified[name]=stripped
++added=[
++    'game/ui/garage_wash_geometry.gd','game/ui/garage_wash_geometry.gd.uid',
++    'game/ui/garage_wash_cloth.gdshader','game/ui/garage_wash_cloth.gdshader.uid',
++    'game/ui/garage_wash_lather.gdshader','game/ui/garage_wash_lather.gdshader.uid',
++    'game/ui/garage_wash_water.gdshader','game/ui/garage_wash_water.gdshader.uid',
++    'game/tests/test_garage_wash_polish.gd','game/tests/test_garage_wash_polish.gd.uid',
++    'docs/GARAGE_WASH_POLISH_2026_10_14.md','build/run_garage_wash_polish.ps1',
++    'build/encode_garage_wash_polish.py','build/checkpoint_garage_wash_polish.py',
++]
++repo.mkdir(parents=True)
++def git(*args): return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True).stdout.decode().strip()
++git('init','-q')
++git('config','user.name','Codex task checkpoint')
++git('config','user.email','checkpoint@local.invalid')
++git('config','core.autocrlf','input')
++for name,text in modified.items():
++    target=repo/name
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_text(text,encoding='utf-8',newline='\n')
++git('add','-f','.')
++git('commit','-q','-m','Garage washing quality scoped baseline')
++base=git('rev-parse','HEAD')
++for name in list(modified)+added:
++    target=repo/name
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_text(read(name),encoding='utf-8',newline='\n')
++git('add','-f','.')
++git('commit','-q','-m','Refine Garage wash mitt water and connected frothy lather')
++git('diff','--check',base,'HEAD')
++patch=subprocess.run(['git','-C',str(repo),'diff','--binary',base,'HEAD'],check=True,capture_output=True).stdout
++(out/'task-only.patch').write_bytes(patch)
++ledger={
++    'requirements':['GWP01','GWP02','GWP03','GWP04','GWA01','GWA02','GWA03','CW13','CW15','CW16','V06','G01','R01','Q01'],
++    'repository':str(repo.relative_to(root)),'baseline':base,'checkpoint':git('rev-parse','HEAD'),
++    'patch_sha256':hashlib.sha256(patch).hexdigest(),
++    'files':[{'path':name,'sha256':hashlib.sha256((root/name).read_bytes()).hexdigest()} for name in list(modified)+added],
++    'evidence':[{'path':str(path.relative_to(root)),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(out.rglob('*')) if path.is_file() and path.suffix in ('.png','.webp','.log','.json') and 'before' not in path.parts and path.name!='checkpoint.json'],
++    'validation':{'quality':{'gl_compatibility':197,'mobile':197},'animation':{'gl_compatibility':139,'mobile':139},'original_wash':{'gl_compatibility':1402,'mobile':1402},'script_parse':760,'failures':0,'diff_check':'clean'},
++    'note':'Isolated two-commit Git checkpoint; main branch/index and concurrent LP/room/vehicle work preserved. Final evidence includes user-directed second foam refinement. No phone/APK/backend/deployment or AAA/FPS certification claim.'
++}
++(out/'checkpoint.json').write_text(json.dumps(ledger,indent=2)+'\n',encoding='utf-8')
++print(git('show','--stat','--oneline','HEAD'))
++print('DIFF_CHECK: clean')
+diff --git a/build/encode_garage_wash_polish.py b/build/encode_garage_wash_polish.py
+new file mode 100644
+index 0000000..4fc9be8
+--- /dev/null
++++ b/build/encode_garage_wash_polish.py
+@@ -0,0 +1,35 @@
++from pathlib import Path
++from PIL import Image, ImageDraw, ImageFont, ImageChops
++import hashlib
++import json
++
++root = Path(__file__).resolve().parents[1]
++evidence = root/'docs/evidence/garage-wash-polish-2026-10-14'
++receipts = []
++for renderer in ('gl_compatibility','mobile'):
++    before = evidence/renderer/'before'
++    after = evidence/renderer/'after'
++    paths = sorted((after/'motion').glob('frame-*.png'))
++    assert len(paths)==72, f'Expected 72 native frames for {renderer}'
++    frames = [Image.open(path).convert('RGB').resize((960,540),Image.Resampling.LANCZOS) for path in paths]
++    frames[0].save(after/'washing-animation.webp',save_all=True,append_images=frames[1:],duration=33,loop=0,lossless=True,method=4)
++    if before.exists() and (before/'washing-door.png').exists():
++        sheet = Image.new('RGB',(1280,760),'#172129')
++        draw = ImageDraw.Draw(sheet)
++        font_path = Path('C:/Windows/Fonts/segoeui.ttf')
++        font = ImageFont.truetype(str(font_path),16) if font_path.exists() else ImageFont.load_default()
++        for index,(folder,label) in enumerate(((before,'First pass'),(after,'Refined'),(before,'First pass'),(after,'Refined'))):
++            name = 'washing-door' if index<2 else 'washing-hood'
++            picture = Image.open(folder/(name+'.png')).convert('RGB').resize((640,360),Image.Resampling.LANCZOS)
++            x,y=(index%2)*640,(index//2)*380
++            sheet.paste(picture,(x,y))
++            draw.text((x+12,y+360),label,fill='#edf1f3',font=font)
++        sheet.save(after/'before-after.png')
++        baseline_pixels=Image.open(before/'cleaned-patch.png').convert('RGB')
++        current_pixels=Image.open(after/'cleaned-patch.png').convert('RGB')
++        clean_diff=ImageChops.difference(baseline_pixels,current_pixels)
++        receipts.append({'renderer':renderer,'cleared_patch_equal':clean_diff.getbbox() is None,'cleared_patch_difference_bounds':clean_diff.getbbox()})
++    receipts.append({'renderer':renderer,'frames':len(paths),'animation':str((after/'washing-animation.webp').relative_to(root)),
++                     'bytes':(after/'washing-animation.webp').stat().st_size,'sha256':hashlib.sha256((after/'washing-animation.webp').read_bytes()).hexdigest()})
++(evidence/'visual-review.json').write_text(json.dumps(receipts,indent=2)+'\n',encoding='utf-8')
++print(json.dumps(receipts,indent=2))
+diff --git a/build/run_garage_wash_polish.ps1 b/build/run_garage_wash_polish.ps1
+new file mode 100644
+index 0000000..2b8d7c7
+--- /dev/null
++++ b/build/run_garage_wash_polish.ps1
+@@ -0,0 +1,18 @@
++param([string]$Renderer='gl_compatibility', [string]$Check='test_garage_wash_animation', [switch]$Before, [switch]$Headless)
++$ErrorActionPreference='Stop'
++$repoRoot=Split-Path -Parent $PSScriptRoot
++$env:APPDATA=Join-Path $repoRoot 'build/garage-wash-polish-user'
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$stage=if ($Before) { 'before' } else { 'after' }
++$evidence='res://../docs/evidence/garage-wash-polish-2026-10-14/'+$Renderer+'/'+$stage
++$logRoot=Join-Path $repoRoot ('docs/evidence/garage-wash-polish-2026-10-14/'+$Renderer+'/'+$stage+'/logs')
++New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
++$testArgs=@("--evidence-root=$evidence")
++if ($Before) { $testArgs += '--before-effect=res://../docs/evidence/garage-wash-polish-2026-10-14/before/game/ui/garage_wash_effect.gd' }
++try {
++    & (Join-Path $repoRoot 'scripts/dev.ps1') -Action TestScript -ScriptPath ('res://tests/'+$Check+'.gd') -Graphical:(-not $Headless) -RenderingMethod $Renderer -TestArgument $testArgs
++    if ($LASTEXITCODE -ne 0) { throw "Godot check failed with exit $LASTEXITCODE" }
++} finally {
++    $log=Join-Path $repoRoot "build/logs/TestScript-$PID/test-script.log"
++    if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $logRoot ($Check+$(if ($Headless) { '-headless' })+'.log')) }
++}
+diff --git a/docs/GARAGE_WASH_POLISH_2026_10_14.md b/docs/GARAGE_WASH_POLISH_2026_10_14.md
+new file mode 100644
+index 0000000..1e8dcb2
+--- /dev/null
++++ b/docs/GARAGE_WASH_POLISH_2026_10_14.md
+@@ -0,0 +1,38 @@
++# Garage washing visual refinement
++
++Owner request, 2026-10-14: improve the first washing animation toward the AAA target, followed by a specific rejection of the foam style. GWP01: a believable soft wash mitt and material finish. GWP02: visually richer connected foam. GWP03: natural scrubbing, water and runoff. GWP04: actual surface seating, bounded resources and preserved local cleaning/input/condition. GWA01-GWA03, CW13/CW15/CW16, V06/G01/R01/Q01 remain applicable.
++
++The rectangular sponge is now an original rounded microfiber mitt with a thumb, closed nap tufts and an actual closed ribbed cuff with a stitched finish. Filtered fabric shading preserves a matte, soft appearance. The mitt gently compresses and follows the swipe direction; rapid reversals retain its orientation rather than flipping it. A held stroke uses a smaller, slower oval scrub. Water has smooth translucent dielectric droplets, a restrained Fresnel rim and gravity-shaped elongation, with lower outward velocity.
++
++The owner's foam feedback is incorporated in the final version. It replaces separated speckled stamps and a flat blurred film with connected creamy froth, real raised small air pockets, irregular softened outlines and elongated overlapping streaks behind the mitt. The dense base avoids dark crater-like bubble holes. Tiny aeration is filtered at display scale; the rounded air pockets provide actual highlights and volume. Surface-projected gravity moves side-panel lather downward. Geometry and materials remain native and original, without a generated bitmap, external dependency or runtime service.
++
++The original 24 lather / 32 water pools, one lazily created effect and four geometry draws per receiving view remain. Three immutable mitt/cuff/lather meshes are shared across the five cars; water reuses a smooth sphere in its fixed MultiMesh. The existing two reflection views include the effect, with no new camera or colour capture. Lather reads the current view's opaque depth once to suppress unsupported edges and floating halos. Reconstruction follows [Godot's depth documentation](https://docs.godotengine.org/en/stable/tutorials/shaders/advanced_postprocessing.html); per-instance lifetime data follows [Godot's spatial shader API](https://docs.godotengine.org/en/stable/tutorials/shaders/shader_reference/spatial_shader.html). No extra shadow caster, car material/mesh change, wash-rate change, condition schema/save change, camera change or canonical simulation change is introduced. Visual cleanup now owns a shallow copy of the hit descriptor so it cannot clear the caller's data.
++
++Actual evidence: [before/after](evidence/garage-wash-polish-2026-10-14/gl_compatibility/after/before-after.png), [final Compatibility animation](evidence/garage-wash-polish-2026-10-14/gl_compatibility/after/washing-animation.webp), [final Mobile animation](evidence/garage-wash-polish-2026-10-14/mobile/after/washing-animation.webp), [phone-sized hood view](evidence/garage-wash-polish-2026-10-14/gl_compatibility/after/quality/hood-960.png) and [foam alone on actual paint](evidence/garage-wash-polish-2026-10-14/gl_compatibility/after/quality/lather-only.png). Each animation uses 72 actual native renders, resized to 960x540 for review; production updates are stepped at 30 Hz. This is not a frame-rate measurement. Earlier foam attempts and their sources are retained in `foam-iteration/`. The initial effect is compiled from its saved source only by the explicit test-only `--before-effect` argument. Concurrent LP/room revisions are preserved; the photos use the same camera/input fixture rather than claiming all background assets stayed hash-identical between runs.
++
++Actual commands use the pinned `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`, isolated APPDATA under `build/garage-wash-polish-user` and separate local test records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Before
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Check test_garage_wash_polish
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Check test_garage_wash_polish -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Check test_car_wash
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Check test_car_wash -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_garage_wash_polish.ps1 -Check test_script_parse -Headless
++./.tools/review/Scripts/python.exe build/encode_garage_wash_polish.py
++python build/checkpoint_garage_wash_polish.py
++```
++
++Final passes: visual/surface/reversal checks **197 Compatibility + 197 Mobile**, all-car animation/input/local-saving checks **139 + 139**, original washing/lifecycle/real-app/paint-pixel checks **1,402 + 1,402**, and **760-script parse**, all zero failures. The rendered-face assertion confirms the air-pocket geometry actually appears in the indexed draw. Original paint/camera/kits/condition and pool identities remain; release/navigation/cancel/hide/teardown restore feedback. The original dirty-to-clean blue-paint assertion remains with transient feedback hidden for that comparison.
++
++Exact-pixel controls remain. Ending washing restores the original native render exactly. Unsupported lather contributes zero pixels against an otherwise identical native pass with only its instance opacity set to zero. The first Mobile comparison used an opaque-only baseline and exposed one-level whole-image rounding when the depth-reading transparent pass was present, including far outside the foam. The corrected clipping control retains that same pass; no colour tolerance or relaxed assertion is used. Initial cold target/sky work is settled before capturing the original image. Earlier failure images/logs are retained in the evidence, not counted as passes.
++
++Native aggregate render work across the original main1280x720 and two640x360 views goes from685518 to796686 visible triangles and adds10 visible draws in this pose; ending restores the exact idle counts. Detailed foam therefore has a real render cost. Final shared RTX3090 measurements are in each renderer's `quality/render-work.json`; concurrent desktop load makes timings noisy and no speedup/phone-FPS claim is made. Pools, lifetime and per-view caps remain bounded; no hidden steady-state draws are added.
++
++Other initial issues: copying the contact by reference allowed reset to clear the diagnostic's hit descriptor; the final effect copies it and an ownership check passes. A concurrent records-menu/library interface temporarily blocked one Garage run; its later source revision passes without changes from this task. Indexed SurfaceTool geometry initially omitted appended air pockets; deindexing before append and reindexing afterward includes them, and the rendered-volume assertion is retained. Native Windows runs require the previously authorized certificate-store read. Attempt logs are under `attempts/`; scoped whitespace checking and the isolated two-commit checkpoint are recorded in `checkpoint.json`.
++
++Runtime files: `game/ui/garage_wash_effect.gd`, new `garage_wash_geometry.gd`, `garage_wash_cloth.gdshader`, `garage_wash_lather.gdshader`, `garage_wash_water.gdshader` (+UIDs). Tests: updated `test_garage_wash_animation.gd` (saved-baseline capture, actual hood path, normalized direction comparison with compression), new `test_garage_wash_polish.gd` (+UID). Runner, encoder and checkpoint procedure are in `build/`. Main branch/index and unrelated LP/room/vehicle work are preserved.
++
++Owner foam/style and physical-phone appearance, touch, first-contact shader preparation, frame-pacing and thermal acceptance remain. Manual review: wash the dark door and light hood, sweep rapidly in both directions, hold still, move off the body, rotate with two fingers/right mouse, release and reopen Care; confirm foam looks natural at the actual phone framing and cleaned areas persist. No physical-phone/attachment check, APK export/install/deployment, backend write, full Validate or physics merge was performed. The AAA target is not a certification of final owner/device quality.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 8a61091..cb5933d 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 GWP01-GWP04/GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: refined actual Garage washing toward AAA target, incorporating the owner's further foam feedback. Soft detailed mitt/cuff, natural pressure/stroke/water, connected creamy raised-bubble lather and strict surface/cleanup controls within original pools/reflections/local condition/camera/canonical behavior. Both-renderer197+197/139+139/1402+1402 and760-script parse pass; real native motion, work cost, initial failure receipts and task-only checkpoint: docs/GARAGE_WASH_POLISH_2026_10_14.md. Owner/phone style/first-contact/performance acceptance remains; no phone/APK/deploy/fullValidate/physics merge.
++
+ 2026-10-14 FRP01-FRP03/R01/V05/Q01: owner requires all27 published tracks playable from Free Race. Backed-up local PC schema14->34 repair and coherent0.59 verifier/client refresh preserve all30 identities, old revisions and82 personal bests; concurrent schema35 retained. Actual gallery20+7 pagination/download/native hashes/five-lap tickets142 checks pass. Current parallel phone APK14542413 preserved, installed hash/actual0.59 bytecode verified; Guest Winter Lonkero/Desert My way reach ordinary lap1/5 gameplay. Physical tail sweep interrupted by owner driving; no further touch input, full27 phone driving/FPS/hitch-free/production acceptance not claimed. Rejected speculative deletion never ran; zero deletions/archives. Actual attempts, USB local-service limit and task-only checkpoint: docs/FREE_RACE_PHONE_CATALOG_2026_10_14.md.
+ 
+ 2026-10-14 LPB01-LPB03/LP01/LP03/LP04/SND05/MUS35/G01/R01/Q01: owner replaces LP grid/importing with a flippable box. Direct mouse/touch scrubbing, wheel/keys/arrows and0.32s flips mirror seven actual native sleeves/crate; Exploration playable plus six distinct future-music placeholders. No import/file picker/external decoder; legacy metadata migrates safely without deleting source/copy files or changing other preferences/PBs. Retained car/camera/condition/kits/washing/reflections, saved stop/volume and silent racing preserved. LP64 headless/93+93 graphical, soundtrack1158/biome42/Garage178/parser760 pass; actual13-frame lossless flip previews per renderer. Concurrent settled-rectangle fixes excluded. No phone/APK/deploy/new composition or FPS claim. Evidence/scoped checkpoint/owner acceptance: docs/GARAGE_LP_BOX_2026_10_14.md.
+diff --git a/game/tests/test_garage_wash_animation.gd b/game/tests/test_garage_wash_animation.gd
+index 87e075d..39616b4 100644
+--- a/game/tests/test_garage_wash_animation.gd
++++ b/game/tests/test_garage_wash_animation.gd
+@@ -5,6 +5,7 @@ var failures: int = 0
+ var output: String = "res://../docs/evidence/garage-wash-animation-2026-10-14"
+ var page: GaragePage
+ var records: LocalRecords
++var before_effect: String = ""
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -40,6 +41,7 @@ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++		if argument.begins_with("--before-effect="): before_effect = argument.trim_prefix("--before-effect=")
+ 	output = ProjectSettings.globalize_path(output)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	DirAccess.make_dir_recursive_absolute(output.path_join("motion"))
+@@ -73,6 +75,15 @@ func run() -> void:
+ 	var parts: Dictionary = view.customisation.duplicate(true)
+ 	check(view.wash_effect == null, "idle garage allocates no wash effect")
+ 	page._toggle_wash()
++	if not before_effect.is_empty():
++		var prepared: Node3D = view.wash_effect
++		var baseline := GDScript.new()
++		baseline.source_code = FileAccess.get_file_as_string(before_effect)
++		check(baseline.reload() == OK,"compile saved baseline effect")
++		view.wash_effect = baseline.new()
++		view.camera.get_parent().add_child(view.wash_effect)
++		prepared.queue_free()
++		await frame()
+ 	var effect: Node3D = view.wash_effect
+ 	check(effect != null and not effect.visible, "Wash prepares one hidden effect")
+ 	var target: Vector2 = project(view, Vector3(-0.85,0.54,0.05))
+@@ -91,7 +102,7 @@ func run() -> void:
+ 	view._process(1.0/30.0)
+ 	check(effect.visible and effect.mitt.visible, "actual held hit shows mitt and particles")
+ 	check(effect.mitt.global_position.distance_to(surface.position) < 0.06, "mitt centred on picked patch")
+-	check(effect.mitt.global_basis.y.dot(surface.normal) > 0.999, "mitt follows panel normal")
++	check(effect.mitt.global_basis.y.normalized().dot(surface.normal) > 0.999, "mitt follows panel normal")
+ 	var first_pose: Transform3D = effect.mitt.global_transform
+ 	var nodes: int = effect.get_child_count()
+ 	var resources: Array = [effect.foam.multimesh, effect.water.multimesh]
+@@ -183,8 +194,8 @@ func motion(view: CarShowroom) -> void:
+ 	view.elevation = 0.65
+ 	view.set_zoom(0.68)
+ 	for tick: int in range(72):
+-		var along: float = sin(float(tick) * 0.09) * 0.38
+-		var target: Vector2 = project(view,Vector3(-0.40,0.70,-1.0+along))
++		var along: float = sin(float(tick) * 0.09) * 0.24
++		var target: Vector2 = project(view,Vector3(-0.30,0.62,-1.45+along))
+ 		if tick == 0: mouse(view,target,true)
+ 		var drag := InputEventMouseMotion.new()
+ 		drag.position = target
+@@ -219,7 +230,7 @@ func other_cars() -> void:
+ 		view.set_wash_mode(true)
+ 		mouse(view,pixel,true)
+ 		view._process(0.05)
+-		check(view.wash_effect.mitt.visible and view.wash_effect.mitt.global_basis.y.dot(surface.normal) > 0.999, id+" actual contact animation")
++		check(view.wash_effect.mitt.visible and view.wash_effect.mitt.global_basis.y.normalized().dot(surface.normal) > 0.999, id+" actual contact animation")
+ 		check(view.weathering.snapshot() != before, id+" still cleans actual condition")
+ 		await frame()
+ 		if id != "compact": await screenshot("washing-"+id)
+diff --git a/game/tests/test_garage_wash_polish.gd b/game/tests/test_garage_wash_polish.gd
+new file mode 100644
+index 0000000..ebbe27e
+--- /dev/null
++++ b/game/tests/test_garage_wash_polish.gd
+@@ -0,0 +1,180 @@
++extends SceneTree
++## Real surface seating, exact restored pixels, stroke reversal and aggregate native render work.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/garage-wash-polish-2026-10-14"
++var view: CarShowroom
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++func settle() -> void:
++	for tick: int in range(5): await frame()
++func capture(label: String) -> void:
++	if DisplayServer.get_name() != "headless":
++		check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++func pixels() -> PackedByteArray:
++	return view.showroom_viewport.get_texture().get_image().get_data()
++func project(point: Vector3) -> Vector2:
++	return view.camera.unproject_position(view.car.body.global_transform*point)*view.size/Vector2(view.showroom_viewport.size)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output=argument.trim_prefix("--evidence-root=")
++	output=ProjectSettings.globalize_path(output).path_join("quality")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size=Vector2i(1280,720)
++	view=CarShowroom.new()
++	view.garage_mode=true
++	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(view)
++	view.set_process(false)
++	view.yaw=-PI*0.5
++	view.elevation=0.24
++	view.set_zoom(0.62)
++	await settle()
++	# Finish the native sky/radiance and initial target work before equivalence capture.
++	for tick: int in range(30): await frame()
++	var original := PackedByteArray()
++	if DisplayServer.get_name()!="headless":
++		original=pixels()
++		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("native-baseline.png"))
++	var condition: Dictionary=view.weathering.snapshot()
++	view.set_wash_mode(true)
++	var effect: Node3D=view.wash_effect
++	var resources: Array=[effect.foam.multimesh,effect.water.multimesh]
++	var surface: Dictionary=view.pick_body_surface(project(Vector3(-0.85,0.56,0.05)))
++	check(not surface.is_empty(),"actual door contact")
++	check(effect.foam.multimesh.use_custom_data and effect.water.multimesh.use_custom_data,"fixed pool lifetime attributes")
++	var height: float=0.0
++	for point: Vector3 in effect.foam.multimesh.mesh.get_faces(): height=maxf(height,point.y)
++	check(height>0.095,"rendered lather includes raised rounded air pockets")
++	for tick: int in range(24):
++		effect.set_contact(surface)
++		effect.advance(1.0/30.0,true)
++	await settle()
++	await capture("door-detail")
++	effect.mitt.hide()
++	effect.water.hide()
++	await settle()
++	await capture("lather-only")
++	if DisplayServer.get_name()!="headless": check(pixels()!=original,"lather visible on real opaque paint")
++	# The same lather displaced out from the panel must not paint the air/background.
++	effect.reset()
++	check(surface.has("normal") and surface.has("position"),"effect cleanup leaves caller contact intact")
++	var unsupported: Dictionary=surface.duplicate()
++	unsupported.position += unsupported.normal*0.22
++	for tick: int in range(20):
++		effect.set_contact(unsupported)
++		effect.advance(1.0/30.0,true)
++	effect.mitt.hide()
++	effect.water.hide()
++	await settle()
++	if DisplayServer.get_name()!="headless":
++		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("native-unsupported.png"))
++		var unsupported_pixels: PackedByteArray=pixels()
++		# Keep identical native depth-read/transparent passes for the clipping control.
++		# Mobile's resolve can round the whole image by one level when this pass is used.
++		for index: int in range(effect.foam.multimesh.instance_count):
++			var data: Color=effect.foam.multimesh.get_instance_custom_data(index)
++			data.b=0.0
++			effect.foam.multimesh.set_instance_custom_data(index,data)
++		await settle()
++		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("native-unsupported-control.png"))
++		check(pixels()==unsupported_pixels,"unsupported lather contributes exact zero pixels")
++	await capture("no-floating-lather")
++	effect.water.show()
++	effect.reset()
++	# Rapidly reversing contact cannot snap the mitt half a turn in one rendered step.
++	var previous: Vector3=Vector3.ZERO
++	for tick: int in range(90):
++		var point: Vector3=Vector3(-0.85,0.56,0.05+sin(float(tick)*0.48)*0.25)
++		var contact: Dictionary=view.pick_body_surface(project(point))
++		effect.set_contact(contact)
++		effect.advance(1.0/60.0,true)
++		var axis: Vector3=effect.mitt.global_basis.x.normalized()
++		if tick>0: check(previous.dot(axis)>0.98,"continuous mitt orientation through reversal")
++		check(effect.mitt.global_basis.y.normalized().dot(contact.normal)>0.999,"pressure retains surface normal")
++		previous=axis
++	check(resources==[effect.foam.multimesh,effect.water.multimesh],"reversal reuses fixed resources")
++	check(view.weathering.snapshot()==condition,"visual-only updates never clean or persist condition")
++	effect.reset()
++	view.set_wash_mode(false)
++	await settle()
++	if DisplayServer.get_name()!="headless":
++		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("native-restored.png"))
++		check(pixels()==original,"ending wash restores exact original render")
++	await budget(surface)
++	await responsive()
++	view.queue_free()
++	await frame()
++	check(not is_instance_valid(effect),"teardown releases refined effect")
++	print("GARAGE_WASH_POLISH: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func budget(surface: Dictionary) -> void:
++	if DisplayServer.get_name()=="headless": return
++	var targets: Array[RID]=[view.showroom_viewport.get_viewport_rid()]
++	for target: SubViewport in view.reflections.views: targets.append(target.get_viewport_rid())
++	for target: RID in targets: RenderingServer.viewport_set_measure_render_time(target,true)
++	var rows: Array[Dictionary]=[]
++	for active: bool in [false,true,false]:
++		view.set_wash_mode(active)
++		var cpu: Array[float]=[]
++		var gpu: Array[float]=[]
++		var calls: Array[int]=[]
++		var triangles: Array[int]=[]
++		for tick: int in range(90):
++			if active:
++				view.wash_effect.set_contact(surface)
++				view.wash_effect.advance(1.0/60.0,true)
++			await frame()
++			if tick<30: continue
++			var total_cpu: float=0.0
++			var total_gpu: float=0.0
++			var total_calls: int=0
++			var total_triangles: int=0
++			for target: RID in targets:
++				total_cpu+=RenderingServer.viewport_get_measured_render_time_cpu(target)
++				total_gpu+=RenderingServer.viewport_get_measured_render_time_gpu(target)
++				total_calls+=RenderingServer.viewport_get_render_info(target,RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME)
++				total_triangles+=RenderingServer.viewport_get_render_info(target,RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME)
++			cpu.append(total_cpu)
++			gpu.append(total_gpu)
++			calls.append(total_calls)
++			triangles.append(total_triangles)
++		cpu.sort()
++		gpu.sort()
++		calls.sort()
++		triangles.sort()
++		rows.append({"active":active,"samples":cpu.size(),"cpu_ms":cpu[cpu.size()/2],"gpu_ms":gpu[gpu.size()/2],"draw_calls":calls[calls.size()/2],"triangles":triangles[triangles.size()/2]})
++	check(rows[0].draw_calls==rows[2].draw_calls and rows[0].triangles==rows[2].triangles,"idle render work restores exactly")
++	var report: Dictionary={"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"views":targets.size(),"main":var_to_str(view.showroom_viewport.size),"reflection":var_to_str(view.reflections.views[0].size),"samples":rows,"note":"Aggregate native CPU/GPU render timings across original three views on a shared desktop; not phone FPS or an improvement claim."}
++	var file:=FileAccess.open(output.path_join("render-work.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("WASH_POLISH_RENDER_WORK ",JSON.stringify(report))
++
++func responsive() -> void:
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
++		root.size=dimensions
++		view.yaw=-0.92
++		view.elevation=0.59
++		view.set_zoom(0.55)
++		view.set_wash_mode(true)
++		await settle()
++		var contact: Dictionary=view.pick_body_surface(project(Vector3(-0.28,0.62,-1.5)))
++		check(not contact.is_empty(),"hood contact at "+str(dimensions.x))
++		for tick: int in range(20):
++			view.wash_effect.set_contact(contact)
++			view.wash_effect.advance(1.0/30.0,true)
++		await settle()
++		await capture("hood-"+str(dimensions.x))
++		view.set_wash_mode(false)
+diff --git a/game/tests/test_garage_wash_polish.gd.uid b/game/tests/test_garage_wash_polish.gd.uid
+new file mode 100644
+index 0000000..c221654
+--- /dev/null
++++ b/game/tests/test_garage_wash_polish.gd.uid
+@@ -0,0 +1 @@
++uid://dm1gf3isfd5y5
+diff --git a/game/ui/garage_wash_cloth.gdshader b/game/ui/garage_wash_cloth.gdshader
+new file mode 100644
+index 0000000..515a832
+--- /dev/null
++++ b/game/ui/garage_wash_cloth.gdshader
+@@ -0,0 +1,28 @@
++shader_type spatial;
++render_mode diffuse_burley, specular_schlick_ggx;
++uniform vec4 pigment : source_color = vec4(0.443,0.561,0.584,1.0);
++uniform bool cuff = false;
++varying vec3 local_point;
++
++float hash(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
++float grain(vec2 p) {
++	vec2 cell = floor(p), f = fract(p);
++	f = f*f*(3.0-2.0*f);
++	return mix(mix(hash(cell),hash(cell+vec2(1,0)),f.x),mix(hash(cell+vec2(0,1)),hash(cell+vec2(1,1)),f.x),f.y);
++}
++void vertex() { local_point = VERTEX; }
++void fragment() {
++	vec2 weave_uv = cuff ? UV*vec2(48.0,12.0) : local_point.xz*720.0;
++	float resolved = 1.0-smoothstep(0.35,1.6,length(fwidth(weave_uv)));
++	float weave = (grain(weave_uv)*0.55+sin(weave_uv.x*6.28)*sin(weave_uv.y*6.28)*0.15-0.28)*resolved;
++	float nap = grain(local_point.xz*46.0)-0.5;
++	float seam = cuff ? (1.0-smoothstep(0.035,0.08,abs(UV.y-0.18)))*smoothstep(0.16,0.32,fract(UV.x*24.0))*(1.0-smoothstep(0.70,0.84,fract(UV.x*24.0))) : 0.0;
++	ALBEDO = mix(pigment.rgb*(1.0+weave*0.16+nap*0.10),vec3(0.43,0.48,0.45),seam*0.85);
++	ROUGHNESS = cuff ? 0.88 : 0.96;
++	SPECULAR = 0.18;
++	// Filter the fibre nap before its small physical shading-normal perturbation.
++	vec3 dx = dFdx(VERTEX), dy = dFdy(VERTEX);
++	vec3 r1 = cross(dy,NORMAL), r2 = cross(NORMAL,dx);
++	float determinant = dot(dx,r1);
++	NORMAL = normalize(max(abs(determinant),0.000001)*NORMAL-sign(determinant)*(dFdx(weave)*r1+dFdy(weave)*r2)*0.00045);
++}
+diff --git a/game/ui/garage_wash_cloth.gdshader.uid b/game/ui/garage_wash_cloth.gdshader.uid
+new file mode 100644
+index 0000000..c3883e4
+--- /dev/null
++++ b/game/ui/garage_wash_cloth.gdshader.uid
+@@ -0,0 +1 @@
++uid://cpue8ae4vpbpv
+diff --git a/game/ui/garage_wash_effect.gd b/game/ui/garage_wash_effect.gd
+index 1f2c766..f7534ae 100644
+--- a/game/ui/garage_wash_effect.gd
++++ b/game/ui/garage_wash_effect.gd
+@@ -3,6 +3,7 @@ extends Node3D
+ const FOAM_COUNT: int = 24
+ const WATER_COUNT: int = 32
+ const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
++const Geometry = preload("res://ui/garage_wash_geometry.gd")
+ var mitt: Node3D
+ var foam: MultiMeshInstance3D
+ var water: MultiMeshInstance3D
+@@ -13,39 +14,57 @@ var water_cursor: int = 0
+ var contact: Dictionary = {}
+ var clock: float = 0.0
+ var emission: float = 0.0
++var last_position := Vector3.ZERO
++var last_normal := Vector3.ZERO
++var stroke := Vector3.ZERO
++var mitt_axis := Vector3.ZERO
++var touching_previous: bool = false
+ 
+ func _ready() -> void:
+ 	name = "GarageWashEffect"
+ 	mitt = Node3D.new()
+ 	mitt.name = "WashMitt"
+ 	add_child(mitt)
+-	var cloth: Material = GarageMaterials.finish("washmitt", "d4bb78", 0.0, 0.93, 5)
+-	var grip: Material = GarageMaterials.finish("washgrip", "304853", 0.0, 0.88, 3)
+-	var pad: MeshInstance3D = GarageEnvironment.box(mitt, Vector3(0, 0.027, 0), Vector3(0.25, 0.054, 0.18), cloth)
+-	pad.layers = LAYERS
+-	var back: MeshInstance3D = GarageEnvironment.box(mitt, Vector3(0, 0.061, 0), Vector3(0.18, 0.025, 0.13), grip)
+-	back.layers = LAYERS
+-	foam = _pool("Suds", FOAM_COUNT, Color("edf3eb"), 0.68)
+-	water = _pool("Droplets", WATER_COUNT, Color("b7d7df"), 0.16)
++	var cloth := ShaderMaterial.new()
++	cloth.shader = preload("res://ui/garage_wash_cloth.gdshader")
++	cloth.set_shader_parameter("pigment",Color("b8b09c"))
++	var cuff := ShaderMaterial.new()
++	cuff.shader = cloth.shader
++	cuff.set_shader_parameter("pigment",Color("283e46"))
++	cuff.set_shader_parameter("cuff",true)
++	_part("Microfiber",Geometry.mitt(),cloth)
++	_part("StitchedCuff",Geometry.cuff(),cuff)
++	var lather := ShaderMaterial.new()
++	lather.shader = preload("res://ui/garage_wash_lather.gdshader")
++	foam = _pool("Suds",FOAM_COUNT,Geometry.lather(),lather)
++	var drops := ShaderMaterial.new()
++	drops.shader = preload("res://ui/garage_wash_water.gdshader")
++	var sphere := SphereMesh.new()
++	sphere.radius = 1.0
++	sphere.height = 2.0
++	sphere.radial_segments = 16
++	sphere.rings = 8
++	water = _pool("Droplets",WATER_COUNT,sphere,drops)
+ 	for index: int in range(FOAM_COUNT): foam_slots.append({})
+ 	for index: int in range(WATER_COUNT): water_slots.append({})
+ 	reset()
+ 
+-func _pool(label: String, count: int, color: Color, roughness: float) -> MultiMeshInstance3D:
++func _part(label: String, mesh: Mesh, material: Material) -> void:
++	var node := MeshInstance3D.new()
++	node.name = label
++	node.mesh = mesh
++	node.material_override = material
++	node.layers = LAYERS
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	mitt.add_child(node)
++
++func _pool(label: String, count: int, mesh: Mesh, material: Material) -> MultiMeshInstance3D:
+ 	var node := MultiMeshInstance3D.new()
+ 	node.name = label
+-	var mesh := SphereMesh.new()
+-	mesh.radius = 1.0
+-	mesh.height = 2.0
+-	mesh.radial_segments = 8
+-	mesh.rings = 4
+-	var material := StandardMaterial3D.new()
+-	material.albedo_color = color
+-	material.roughness = roughness
+-	material.metallic_specular = 0.65 if label == "Droplets" else 0.25
+ 	node.material_override = material
+ 	node.multimesh = MultiMesh.new()
+ 	node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++	node.multimesh.use_custom_data = true
+ 	node.multimesh.mesh = mesh
+ 	node.multimesh.instance_count = count
+ 	node.layers = LAYERS
+@@ -59,6 +78,9 @@ func reset() -> void:
+ 	emission = 0.0
+ 	foam_cursor = 0
+ 	water_cursor = 0
++	stroke = Vector3.ZERO
++	mitt_axis = Vector3.ZERO
++	touching_previous = false
+ 	if mitt == null: return
+ 	mitt.hide()
+ 	for index: int in range(FOAM_COUNT):
+@@ -73,7 +95,7 @@ func begin_frame() -> void:
+ 	contact.clear()
+ 
+ func set_contact(surface: Dictionary) -> void:
+-	contact = surface
++	contact = surface.duplicate()
+ 
+ func advance(delta: float, active: bool) -> void:
+ 	var step: float = clampf(delta, 0.0, 0.1)
+@@ -83,15 +105,32 @@ func advance(delta: float, active: bool) -> void:
+ 	if touching:
+ 		var normal: Vector3 = contact.normal
+ 		var tangent: Vector3 = Vector3.UP.cross(normal).normalized() if absf(normal.y) < 0.9 else Vector3.RIGHT
++		var movement: Vector3 = contact.position-last_position if touching_previous and last_normal.dot(normal)>0.75 else Vector3.ZERO
++		movement -= normal*movement.dot(normal)
++		stroke = stroke.lerp(movement/maxf(step,0.001),1.0-exp(-step*12.0)).limit_length(1.0)
++		if stroke.length() > 0.06: tangent = stroke.normalized()
++		if touching_previous and last_normal.dot(normal)>0.75:
++			var axis: Vector3 = (mitt_axis-normal*mitt_axis.dot(normal)).normalized()
++			if axis.dot(tangent)<0.0: tangent = -tangent
++			var angle: float = atan2(normal.dot(axis.cross(tangent)),axis.dot(tangent))
++			tangent = axis.rotated(normal,clampf(angle,-step*6.0,step*6.0))
++		mitt_axis = tangent
+ 		var frame := Basis(tangent, normal, tangent.cross(normal))
+-		# A short rocking scrub stays centred on the same physically picked patch.
+-		mitt.global_transform = Transform3D(frame.rotated(normal, sin(clock * 17.0) * 0.12), contact.position + normal * 0.012 + tangent * sin(clock * 23.0) * 0.025)
+-		emission += step * 48.0
++		# Gentle pressure and an oval scrub keep the soft underside seated on the patch.
++		var phase: float = clock*TAU*1.7
++		mitt.global_transform = Transform3D(frame.rotated(normal,sin(phase)*0.07),contact.position+normal*0.004+tangent*sin(phase)*0.013+frame.z*cos(phase)*0.005)
++		mitt.scale.y = 0.96+sin(phase)*0.035
++		emission += step*36.0
+ 		while emission >= 1.0:
+ 			emission -= 1.0
+ 			_emit(frame)
+ 	else:
+ 		emission = 0.0
++		stroke = Vector3.ZERO
++	if touching:
++		last_position = contact.position
++		last_normal = contact.normal
++	touching_previous = touching
+ 	var alive: int = _advance_pool(foam, foam_slots, step, false)
+ 	alive += _advance_pool(water, water_slots, step, true)
+ 	visible = touching or alive > 0
+@@ -101,13 +140,16 @@ func _emit(frame: Basis) -> void:
+ 	var angle: float = float(foam_cursor) * 2.399963
+ 	var radial: Vector3 = frame.x * cos(angle) + frame.z * sin(angle)
+ 	var normal: Vector3 = frame.y
+-	var size: float = 0.022 + float(foam_cursor % 5) * 0.004
+-	foam_slots[foam_cursor] = {"position": contact.position + radial * (0.11 + float(foam_cursor % 3) * 0.022) + normal * size * 0.45,
+-		"velocity": radial * 0.028, "basis": frame, "age": 0.0, "life": 0.48 + float(foam_cursor % 4) * 0.045, "radius": size}
++	var size: float = 0.078+float(foam_cursor%5)*0.009
++	var gravity: Vector3 = Vector3.DOWN-normal*Vector3.DOWN.dot(normal)
++	foam_slots[foam_cursor] = {"position": contact.position+radial*(0.020+float(foam_cursor%3)*0.012)+normal*0.0015-stroke*0.06+gravity*float(foam_cursor%4)*0.015,
++		"velocity": gravity*0.035, "basis": frame.rotated(normal,sin(float(foam_cursor)*2.399963)*0.32), "age": 0.0, "life": 0.57+float(foam_cursor%4)*0.065,
++		"radius": size, "seed": float((foam_cursor*7)%24)/24.0}
+ 	foam_cursor = (foam_cursor + 1) % FOAM_COUNT
+-	water_slots[water_cursor] = {"position": contact.position + normal * 0.07 + radial * 0.1,
+-		"velocity": normal * 0.35 + radial * 0.24 + Vector3.DOWN * 0.18, "basis": Basis.IDENTITY,
+-		"age": 0.0, "life": 0.36 + float(water_cursor % 5) * 0.028, "radius": 0.008 + float(water_cursor % 3) * 0.002}
++	water_slots[water_cursor] = {"position": contact.position+normal*0.014+radial*0.082,
++		"velocity": normal*0.075+radial*0.07+Vector3.DOWN*0.10+stroke*0.07, "basis": Basis.IDENTITY,
++		"age": 0.0, "life": 0.43+float(water_cursor%5)*0.028, "radius": 0.0045+float(water_cursor%4)*0.0012,
++		"seed": float(water_cursor)/32.0}
+ 	water_cursor = (water_cursor + 1) % WATER_COUNT
+ 
+ func _advance_pool(node: MultiMeshInstance3D, slots: Array[Dictionary], delta: float, falling: bool) -> int:
+@@ -123,12 +165,14 @@ func _advance_pool(node: MultiMeshInstance3D, slots: Array[Dictionary], delta: f
+ 		if falling: slot.velocity += Vector3.DOWN * 2.8 * delta
+ 		slot.position += slot.velocity * delta
+ 		var phase: float = slot.age / slot.life
+-		var radius: float = slot.radius * minf(1.0, phase * 9.0) * (1.0 - phase * phase)
+-		var scale: Vector3 = Vector3(radius, radius * (1.7 if falling else 0.55), radius)
++		var radius: float = slot.radius*(minf(1.0,phase*9.0) if falling else 0.80+phase*0.2)
++		var scale: Vector3 = Vector3(radius*(1.0 if falling else 1.6),radius*(1.0+minf(1.8,(slot.velocity as Vector3).length()*1.8) if falling else 1.0),radius*(1.0 if falling else 0.88))
+ 		var frame: Basis = (slot.basis as Basis) * Basis.from_scale(scale)
+ 		node.multimesh.set_instance_transform(index, Transform3D(frame, slot.position))
++		node.multimesh.set_instance_custom_data(index,Color(slot.seed,phase,0.92,slot.radius))
+ 		alive += 1
+ 	return alive
+ 
+ func _hide_slot(node: MultiMeshInstance3D, index: int) -> void:
+ 	node.multimesh.set_instance_transform(index, Transform3D(Basis.IDENTITY.scaled(Vector3.ZERO), Vector3.ZERO))
++	node.multimesh.set_instance_custom_data(index,Color(0,1,0,0))
+diff --git a/game/ui/garage_wash_geometry.gd b/game/ui/garage_wash_geometry.gd
+new file mode 100644
+index 0000000..f883c55
+--- /dev/null
++++ b/game/ui/garage_wash_geometry.gd
+@@ -0,0 +1,127 @@
++extends RefCounted
++## Original closed microfiber mitt/cuff and a shallow lather surface; shared menu meshes.
++static var meshes: Dictionary = {}
++
++static func mitt() -> ArrayMesh:
++	if meshes.has("mitt"): return meshes.mitt
++	var sphere := SphereMesh.new()
++	sphere.radius = 1.0
++	sphere.height = 2.0
++	sphere.radial_segments = 32
++	sphere.rings = 12
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var centre := Vector3(0,0.027,-0.014)
++	var axes := Vector3(0.083,0.027,0.117)
++	_append(tool,sphere,Transform3D(Basis.from_scale(axes),centre))
++	_append(tool,sphere,Transform3D(Basis(Vector3.UP,-0.38)*Basis.from_scale(Vector3(0.034,0.022,0.061)),Vector3(0.073,0.024,0.019)))
++	# Closed tiny loops give the nap a soft real silhouette, without extra draws.
++	for band: int in range(5):
++		var latitude: float = 0.18 + float(band)*0.25
++		for index: int in range(16):
++			var angle: float = float(index)*TAU/16.0 + float(band)*0.19
++			var n := Vector3(cos(angle)*cos(latitude),sin(latitude),sin(angle)*cos(latitude))
++			var normal: Vector3 = (n/axes).normalized()
++			var at: Vector3 = centre+n*axes
++			var tangent: Vector3 = normal.cross(Vector3.FORWARD).normalized()
++			var across: Vector3 = normal.cross(tangent)
++			var bend: Vector3 = tangent*0.0012
++			var tip: Vector3 = at+normal*(0.0035+float(index%3)*0.0007)+bend
++			var ring: Array[Vector3] = []
++			for side: int in range(3):
++				var phase: float = float(side)*TAU/3.0
++				ring.append(at+(tangent*cos(phase)+across*sin(phase))*0.0015)
++			for side: int in range(3): _face(tool,[ring[side],ring[(side+1)%3],tip],(ring[side]+ring[(side+1)%3])*0.5-at,[Vector2.ZERO,Vector2.RIGHT,Vector2(0.5,1)])
++			_face(tool,[ring[0],ring[2],ring[1]],-normal,[Vector2.ZERO,Vector2.RIGHT,Vector2.ONE])
++	tool.index()
++	meshes.mitt = tool.commit()
++	return meshes.mitt
++
++static func cuff() -> ArrayMesh:
++	if meshes.has("cuff"): return meshes.cuff
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(40):
++		var a: float = float(index)*TAU/40.0
++		var b: float = float(index+1)*TAU/40.0
++		var outer: Array[Vector3] = []
++		var inner: Array[Vector3] = []
++		for angle: float in [a,b]:
++			var rib: float = 1.0+cos(angle*20.0)*0.022
++			outer.append(Vector3(cos(angle)*0.065*rib,0.027+sin(angle)*0.021*rib,0.080))
++			inner.append(Vector3(cos(angle)*0.058,0.027+sin(angle)*0.014,0.080))
++		var span := Vector3(0,0,0.032)
++		var radial := Vector3(cos((a+b)*0.5),sin((a+b)*0.5)*2.0,0).normalized()
++		var uv: Array[Vector2] = [Vector2(float(index)/40.0,0),Vector2(float(index+1)/40.0,0),Vector2(float(index+1)/40.0,1),Vector2(float(index)/40.0,1)]
++		_face(tool,[outer[0],outer[1],outer[1]+span,outer[0]+span],radial,uv)
++		_face(tool,[inner[0],inner[1],inner[1]+span,inner[0]+span],-radial,uv)
++		_face(tool,[inner[0],inner[1],outer[1],outer[0]],Vector3.FORWARD,uv)
++		_face(tool,[inner[0]+span,inner[1]+span,outer[1]+span,outer[0]+span],Vector3.BACK,uv)
++	tool.index()
++	meshes.cuff = tool.commit()
++	return meshes.cuff
++
++static func lather() -> ArrayMesh:
++	if meshes.has("lather"): return meshes.lather
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	tool.set_color(Color(0,0,0,1))
++	for ring: int in range(5):
++		var inner: float = float(ring)/5.0
++		var outer: float = float(ring+1)/5.0
++		for index: int in range(24):
++			var points: Array[Vector3] = []
++			var uv: Array[Vector2] = []
++			for polar: Vector2 in [Vector2(inner,index),Vector2(inner,index+1),Vector2(outer,index+1),Vector2(outer,index)]:
++				var angle: float = polar.y*TAU/24.0
++				var p := Vector2(cos(angle),sin(angle))*polar.x
++				var outline: float = 0.89+sin(angle*5.0)*0.065+sin(angle*9.0+0.4)*0.035
++				var q: Vector2 = p*outline
++				# A connected shallow pillowy volume replaces flat individual bubble stamps.
++				var crown: float = sqrt(maxf(0.0,1.0-polar.x*polar.x))*0.055
++				crown *= 1.0+sin(q.x*5.0+0.7)*cos(q.y*4.0)*0.13
++				points.append(Vector3(q.x,crown,q.y))
++				uv.append(p*0.5+Vector2.ONE*0.5)
++			if ring == 0: _face(tool,[points[0],points[2],points[3]],Vector3.UP,[uv[0],uv[2],uv[3]])
++			else: _face(tool,points,Vector3.UP,uv)
++	tool.index()
++	tool.generate_normals()
++	tool.deindex()
++	# Small rounded air pockets emerge from a continuous dense base, rather than holes.
++	var bubble := SphereMesh.new()
++	bubble.radius = 1.0
++	bubble.height = 2.0
++	bubble.radial_segments = 8
++	bubble.rings = 4
++	tool.set_color(Color(1,0,0,1))
++	var centres: Array[Vector2] = [Vector2(-0.26,0.05),Vector2(0.17,-0.15),Vector2(0.43,0.26),Vector2(-0.02,0.40),Vector2(-0.36,-0.38),Vector2(0.04,-0.52),Vector2(0.63,-0.30),Vector2(-0.60,0.13),Vector2(-0.25,0.66),Vector2(0.48,0.60),Vector2(-0.62,-0.46)]
++	for index: int in range(centres.size()):
++		var at: Vector2 = centres[index]
++		var radius: float = 0.11+float(index%4)*0.018
++		var height: float = sqrt(maxf(0.0,1.0-at.length_squared()))*0.048
++		_append(tool,bubble,Transform3D(Basis.from_scale(Vector3(radius,0.055+float(index%3)*0.01,radius)),Vector3(at.x,height,at.y)),true)
++	tool.index()
++	meshes.lather = tool.commit()
++	return meshes.lather
++
++static func _append(tool: SurfaceTool, mesh: Mesh, pose: Transform3D, projected_uv: bool = false) -> void:
++	var arrays: Array = mesh.surface_get_arrays(0)
++	var points: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++	var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
++	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	var inverse: Basis = pose.basis.inverse().transposed()
++	for index: int in indices:
++		tool.set_normal((inverse*normals[index]).normalized())
++		var point: Vector3 = pose*points[index]
++		tool.set_uv(Vector2(point.x,point.z)*0.5+Vector2.ONE*0.5 if projected_uv else uv[index])
++		tool.add_vertex(point)
++
++static func _face(tool: SurfaceTool, points: Array[Vector3], outward: Vector3, uv: Array[Vector2]) -> void:
++	var normal: Vector3 = outward.normalized()
++	var reverse: bool = (points[1]-points[0]).cross(points[2]-points[0]).dot(normal) > 0.0
++	for triangle: int in range(1,points.size()-1):
++		for index: int in ([0,triangle+1,triangle] if reverse else [0,triangle,triangle+1]):
++			tool.set_normal(normal)
++			tool.set_uv(uv[index])
++			tool.add_vertex(points[index])
+diff --git a/game/ui/garage_wash_geometry.gd.uid b/game/ui/garage_wash_geometry.gd.uid
+new file mode 100644
+index 0000000..6bc48c5
+--- /dev/null
++++ b/game/ui/garage_wash_geometry.gd.uid
+@@ -0,0 +1 @@
++uid://b3lrdi6i4hn04
+diff --git a/game/ui/garage_wash_lather.gdshader b/game/ui/garage_wash_lather.gdshader
+new file mode 100644
+index 0000000..47fd8ce
+--- /dev/null
++++ b/game/ui/garage_wash_lather.gdshader
+@@ -0,0 +1,51 @@
++shader_type spatial;
++render_mode blend_mix, depth_draw_never, cull_disabled, diffuse_lambert_wrap, specular_schlick_ggx;
++uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
++uniform vec4 soap_color : source_color = vec4(0.99,0.985,0.965,1.0);
++varying vec4 patch;
++varying float air;
++vec2 hash2(vec2 p) { return fract(sin(vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3))))*43758.5453); }
++float cells(vec2 p) {
++	vec2 cell = floor(p), f = fract(p);
++	float nearest = 2.0;
++	for (int y=-1; y<=1; y++) {
++		for (int x=-1; x<=1; x++) {
++			vec2 o = vec2(float(x),float(y));
++			vec2 d = o+hash2(cell+o)-f;
++			nearest = min(nearest,dot(d,d));
++		}
++	}
++	return sqrt(nearest);
++}
++void vertex() { patch = INSTANCE_CUSTOM; air = COLOR.r; }
++void fragment() {
++	vec2 p = UV*2.0-1.0;
++	float distance = length(p);
++	float border = 1.0-smoothstep(0.66,1.0,distance);
++	float resolved = 1.0-smoothstep(0.35,1.5,length(fwidth(p*7.0)));
++	float bubble = cells(p*7.0+patch.x*17.0);
++	// Fine aeration stays a quiet surface texture; dense lather has no dark holes.
++	float aeration = smoothstep(0.18,0.46,bubble)*resolved;
++	float edge = smoothstep(0.42,0.95,distance);
++	float age = (1.0-smoothstep(0.30,1.0,patch.y))*smoothstep(0.0,0.09,patch.y);
++	float depth = textureLod(scene_depth,SCREEN_UV,0.0).r;
++	#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
++	vec3 ndc = vec3(SCREEN_UV,depth)*2.0-1.0;
++	#else
++	vec3 ndc = vec3(SCREEN_UV*2.0-1.0,depth);
++	#endif
++	vec4 scene = INV_PROJECTION_MATRIX*vec4(ndc,1.0);
++	float separation = -scene.z/scene.w+VERTEX.z;
++	// Lather hugs opaque car surfaces and cannot draw a floating halo at their edge.
++	float seated = 1.0-smoothstep(0.015,0.040,separation);
++	ALPHA = border*age*seated*patch.z*(0.91-edge*aeration*0.16)*(1.0-air*0.18);
++	if (ALPHA < 0.004) { discard; }
++	ALBEDO = soap_color.rgb*(0.96+air*0.04+aeration*0.012);
++	ROUGHNESS = mix(0.63-edge*aeration*0.20,0.23,air);
++	SPECULAR = mix(0.30+edge*aeration*0.10,0.48,air);
++	float height = (1.0-bubble*bubble)*resolved;
++	vec3 dx = dFdx(VERTEX), dy = dFdy(VERTEX);
++	vec3 r1 = cross(dy,NORMAL), r2 = cross(NORMAL,dx);
++	float determinant = dot(dx,r1);
++	NORMAL = normalize(max(abs(determinant),0.000001)*NORMAL-sign(determinant)*(dFdx(height)*r1+dFdy(height)*r2)*0.00016);
++}
+diff --git a/game/ui/garage_wash_lather.gdshader.uid b/game/ui/garage_wash_lather.gdshader.uid
+new file mode 100644
+index 0000000..dc6c163
+--- /dev/null
++++ b/game/ui/garage_wash_lather.gdshader.uid
+@@ -0,0 +1 @@
++uid://87bjjw0a8srv
+diff --git a/game/ui/garage_wash_water.gdshader b/game/ui/garage_wash_water.gdshader
+new file mode 100644
+index 0000000..f261015
+--- /dev/null
++++ b/game/ui/garage_wash_water.gdshader
+@@ -0,0 +1,14 @@
++shader_type spatial;
++render_mode blend_mix, depth_draw_never, diffuse_burley, specular_schlick_ggx;
++uniform vec4 water_color : source_color = vec4(0.72,0.83,0.84,1.0);
++varying vec4 drop;
++void vertex() { drop = INSTANCE_CUSTOM; }
++void fragment() {
++	float rim = pow(1.0-clamp(dot(normalize(NORMAL),normalize(VIEW)),0.0,1.0),3.0);
++	float fade = (1.0-smoothstep(0.40,1.0,drop.y))*smoothstep(0.0,0.10,drop.y);
++	ALBEDO = water_color.rgb;
++	ROUGHNESS = 0.085;
++	SPECULAR = 0.64;
++	METALLIC = 0.0;
++	ALPHA = fade*(0.18+rim*0.48);
++}
+diff --git a/game/ui/garage_wash_water.gdshader.uid b/game/ui/garage_wash_water.gdshader.uid
+new file mode 100644
+index 0000000..2d94baf
+--- /dev/null
++++ b/game/ui/garage_wash_water.gdshader.uid
+@@ -0,0 +1 @@
++uid://77l8mp77f1mx

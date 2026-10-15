@@ -18,6 +18,8 @@ func settle() -> void:
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL", "")
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=").path_join("existing-wash")
 	if RenderingServer.get_current_rendering_method() == "mobile": output += "/mobile"
 	var directory: String = "user://car_wash_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
@@ -157,6 +159,7 @@ func garage() -> void:
 	var dirty_image: Image
 	if DisplayServer.get_name() != "headless":
 		view.wash_pointer_valid = false
+		view.wash_effect.hide() # Compare original paint with all transient wash feedback hidden.
 		await settle()
 		dirty_image = root.get_texture().get_image()
 	if DisplayServer.get_name() != "headless": await capture("garage-dirty", page)
@@ -169,12 +172,14 @@ func garage() -> void:
 	check(view.weathering.wash_image.get_data() != mask, "held mouse wash cleans real hit")
 	if DisplayServer.get_name() != "headless":
 		view.wash_pointer_valid = false
+		view.wash_effect.hide()
 		await settle()
 		var washed_image: Image = root.get_texture().get_image()
 		var actual: Vector2i = Vector2i(view.get_global_rect().position + pixel)
 		print("WASH_PIXEL: ", actual, " ", dirty_image.get_pixelv(actual), " -> ", washed_image.get_pixelv(actual))
 		check(dirty_image.get_pixelv(actual).b < washed_image.get_pixelv(actual).b - 0.02, "washing visibly reveals original blue door paint")
 		view.wash_pointer_valid = true
+		view.wash_effect.show()
 	if DisplayServer.get_name() != "headless": await capture("garage-partly-washed", page)
 	press.pressed = false
 	view.gui_input.emit(press)

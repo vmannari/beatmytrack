@@ -47,10 +47,15 @@ static func decorate_panel(panel: PanelContainer) -> void:
 	material.set_shader_parameter("scenery",ART)
 	material.set_shader_parameter("scenery_size",ART.get_size())
 	panel.material = material
-	var layout: Callable = func() -> void:
-		material.set_shader_parameter("panel_size",panel.size)
+	var layout: Callable = _layout_panel.bind(weakref(panel),material)
 	panel.item_rect_changed.connect(layout)
 	layout.call_deferred()
+
+static func _layout_panel(panel_ref: WeakRef, material: ShaderMaterial) -> void:
+	var panel: PanelContainer = panel_ref.get_ref() as PanelContainer
+	if panel == null: return
+	if material.get_shader_parameter("panel_size") != panel.size:
+		material.set_shader_parameter("panel_size",panel.size)
 
 func _ready() -> void:
 	set_process(false)

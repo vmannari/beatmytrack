@@ -25,6 +25,7 @@ func _init() -> void:
 
 static func presentation(message: String) -> Dictionary:
 	var value: Dictionary = {"category":"PLEASE TRY AGAIN","title":"Something went wrong","message":message,"support_title":"","support":"","symbol":"warning"}
+	var lower: String = message.to_lower()
 	if message == "Circuit exported." or message == "Track published." or message.begins_with("Draft saved.") or message.begins_with("Saved on this device."):
 		value.category = "PUBLISHED" if message == "Track published." else "SAVED"
 		value.title = "Track exported" if message == "Circuit exported." else "Track published" if message == "Track published." else "Draft saved"
@@ -32,6 +33,11 @@ static func presentation(message: String) -> Dictionary:
 		if message in ["Circuit exported.","Track published."]:
 			value.category = ""
 			value.message = ""
+	elif message == "Test lap saved on this device. Ready to publish.":
+		value.category = ""
+		value.title = "Test lap saved"
+		value.message = "Ready to publish."
+		value.symbol = "check"
 	elif message.begins_with("Track creator:"):
 		value.category = "TRACK INFORMATION"
 		value.title = "Track creator"
@@ -65,7 +71,9 @@ static func presentation(message: String) -> Dictionary:
 	elif message.contains("game and server versions") or message.contains("different game build") or message.contains("different verification contract"):
 		value.category = "UPDATE REQUIRED"
 		value.title = "Online racing unavailable"
-	elif message.contains("storage") or message.contains("saved"):
+	# Saved data also appears in success, recovery and update notices. Require
+	# a storage hint or an explicit failed write before showing a save error.
+	elif lower.contains("storage") or lower.contains("could not save") or lower.contains("couldn't save") or lower.contains("could not be saved") or lower.contains("couldn't be saved") or lower.contains("failed to save") or lower.contains("save failed") or lower.contains("saving failed") or lower.contains("could not finish saving"):
 		value.category = "STORAGE PROBLEM"
 		value.title = "Couldn't save your changes"
 	elif message.contains("changed while preparing"):

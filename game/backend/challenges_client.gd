@@ -18,6 +18,8 @@ var _next_poll: int = 0
 var _failures: int = 0
 var _scope: String = ""
 var _selection_serial: int = 0
+var _busy_serial: int = 0
+var _folder_refresh_pending: bool = false
 var next_cursor: String = ""
 var result_code: String = ""
 
@@ -27,6 +29,8 @@ func scope() -> String:
 func reset() -> void:
 	_generation += 1
 	_selection_serial += 1
+	_busy_serial += 1
+	_folder_refresh_pending = false
 	items.clear()
 	selected = {}
 	busy = false
@@ -103,18 +107,53 @@ func _request(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, p
 			cloud._write(path_to_keys,saved)
 	return response
 
+func select_folder(value: String) -> void:
+	if value not in ["received","sent"]: return
+	if _scope != scope(): reset()
+	if folder == value: return
+	folder = value
+	items.clear()
+	selected = {}
+	next_cursor = ""
+	_selection_serial += 1
+	error = ""
+	if busy:
+		# Keep only the latest folder intent, including changes during detail or
+		# mutation requests. The request owner drains it when that reply arrives.
+		_folder_refresh_pending = true
+		changed.emit()
+	else: refresh()
+
+func _refresh_pending_folder() -> bool:
+	if not _folder_refresh_pending: return false
+	_folder_refresh_pending = false
+	busy = false
+	refresh()
+	return true
+
 func refresh(append: bool = false) -> void:
+	if _scope != scope(): reset()
 	if busy: return
 	if not client.signed_in():
 		items.clear()
 		changed.emit()
 		return
 	busy = true
-	changed.emit()
+	_busy_serial += 1
+	var serial: int = _busy_serial
+	var generation: int = _generation
 	var requested_folder: String = folder
-	var response: Dictionary = await _request("/challenges?folder="+folder+("&cursor="+next_cursor.uri_encode() if append and not next_cursor.is_empty() else ""))
+	var path: String = "/challenges?folder="+requested_folder+("&cursor="+next_cursor.uri_encode() if append and not next_cursor.is_empty() else "")
+	changed.emit()
+	var response: Dictionary = await _request(path)
+	if generation != _generation or serial != _busy_serial or _scope != scope(): return
+	if requested_folder != folder or (append and _folder_refresh_pending):
+		_folder_refresh_pending = true
+		_refresh_pending_folder()
+		return
+	# A burst that returns to the original folder can use its in-flight reply.
+	_folder_refresh_pending = false
 	busy = false
-	if requested_folder != folder: return
 	if response.get("ok",false) and response.data.get("items") is Array and response.data.items.size() <= 50:
 		var incoming: Array[Dictionary] = []
 		for item: Variant in response.data.items:
@@ -135,6 +174,7 @@ func refresh(append: bool = false) -> void:
 		await open(str(selected.code))
 
 func open(value: String) -> void:
+	if _scope != scope(): reset()
 	var code: String = code_from(value)
 	if code.is_empty():
 		error = "Enter a challenge code or invitation link."
@@ -143,8 +183,13 @@ func open(value: String) -> void:
 	_selection_serial += 1
 	var serial: int = _selection_serial
 	busy = true
+	_busy_serial += 1
+	var busy_serial: int = _busy_serial
+	var generation: int = _generation
 	changed.emit()
 	var response: Dictionary = await _request("/challenges/"+code+("/me" if client.signed_in() else ""),HTTPClient.METHOD_GET,{},client.signed_in())
+	if generation != _generation or busy_serial != _busy_serial or _scope != scope(): return
+	if _refresh_pending_folder(): return
 	if serial != _selection_serial: return
 	busy = false
 	if response.get("ok",false) and valid_snapshot(response.data):
@@ -169,11 +214,17 @@ func cancel() -> void:
 	await _mutate("/challenges/"+str(selected.code)+"/cancel")
 
 func _mutate(path: String, payload: Dictionary = {}) -> void:
+	if _scope != scope(): reset()
 	if busy: return
 	busy = true
+	_busy_serial += 1
+	var serial: int = _busy_serial
+	var generation: int = _generation
 	error = ""
 	changed.emit()
 	var response: Dictionary = await _request(path,HTTPClient.METHOD_POST,payload)
+	if generation != _generation or serial != _busy_serial or _scope != scope(): return
+	if _refresh_pending_folder(): return
 	busy = false
 	if response.get("ok",false) and valid_snapshot(response.data): selected = response.data
 	else: error = friendly(str(response.get("error","")))

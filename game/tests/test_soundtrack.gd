@@ -221,7 +221,7 @@ func _test_settings(world: GameSoundtrack) -> void:
 	app.records = LocalRecords.new(directory.path_join("records.json"))
 	app.library = TrackLibrary.new(directory.path_join("tracks"))
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	app._show_screen("settings")
 	await process_frame
 	var page: SettingsPage = app.root_ui.find_child("SettingsPage", true, false)

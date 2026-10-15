@@ -2,6 +2,7 @@ extends SceneTree
 ## Actual owned notices: input isolation, dismissal, focus, wrapping and rendered UI.
 const Fault = preload("res://ui/fault_dialog.gd")
 const SERVER_UPDATE: String = "This game update needs a matching server update before online racing is available."
+const TEST_LAP_SAVED: String = "Test lap saved on this device. Ready to publish."
 var app: Node
 var checks: int = 0
 var failures: int = 0
@@ -70,6 +71,14 @@ func check_layout(dialog: AcceptDialog, title: String) -> void:
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL", "")
+	var saved_lap: Dictionary = Fault.presentation(TEST_LAP_SAVED)
+	check(saved_lap.title == "Test lap saved" and saved_lap.symbol == "check","completed local test is presented as a saved lap, without a storage error")
+	check(saved_lap.message == "Ready to publish." and saved_lap.category.is_empty(),"saved-lap notice preserves publication readiness without repeating its heading")
+	for message: String in ["Garage changes could not be saved. Check free storage space.","The completed test could not be saved. Free storage, then retry saving it.","Best time saved. Could not save its local ghost.","Draft deleted, but favorite settings could not be saved."]:
+		var failure: Dictionary = Fault.presentation(message)
+		check(failure.category == "STORAGE PROBLEM" and failure.symbol == "warning" and failure.message == message,"real save failures retain their warning and exact cause: "+message)
+	for message: String in ["This saved track could not be read.","The backend needs the local-draft publication update. Your draft and test lap remain saved on this device."]:
+		check(Fault.presentation(message).category != "STORAGE PROBLEM","saved data alone never implies a failed write: "+message)
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
 	root.size = Vector2i(1280,720)
@@ -116,6 +125,15 @@ func run() -> void:
 		check(count.confirmed == 1 and not is_instance_valid(dialog) and not is_instance_valid(scrim),"OK dismisses once and removes both modal and scrim")
 		check(prior.has_focus(),"dismissing returns focus to the prior menu control")
 	root.size = Vector2i(1280,720)
+	app._notice(TEST_LAP_SAVED)
+	await settle()
+	var saved_notice: AcceptDialog = current()
+	check(saved_notice != null and saved_notice.heading.text == "Test lap saved" and saved_notice.message_label.text == "Ready to publish.","actual completed-test dialog has consistent saved and ready copy")
+	check(saved_notice != null and not saved_notice.eyebrow.visible and not saved_notice.support.visible,"completed-test dialog adds no error category or unrelated recovery advice")
+	await capture("test-lap-saved-1280x720")
+	saved_notice.confirm_button.pressed.emit()
+	await settle()
+	check(current() == null and app.root_ui.find_child("FaultMessageScrim",false,false) == null,"saved-lap OK dismisses the owned dialog and its scrim")
 	for message: String in ["Track download failed. Check your connection and try again.","Garage changes could not be saved. Check free storage space.","Race loading timed out. Try again."]:
 		app._notice(message)
 		await settle()

@@ -1,0 +1,959 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -17,6 +17,9 @@
+ var menu_body_backgrounds: Array[Control] = []
+ var outgoing_menu_page: Control
+ var menu_neighbors: Dictionary = {}
++var _garage_parking: Control
++var _retained_garage: GaragePage
++var _suspended_menu: Dictionary = {}
+ var menu_neighbor_direction: int = 0
+ var returning_menu_neighbor: Dictionary = {}
+ const MENU_PAGE_GAP: float = 64.0
+@@ -309,16 +314,16 @@
+ 	menu_layer = CanvasLayer.new()
+ 	menu_layer.layer = 20
+ 	add_child(menu_layer)
++	# Prepare the native Garage once while startup is covered. Ordinary menu
++	# preparation only attaches this page; it never builds six cars in a frame.
++	_show_screen("restoring")
+ 	if not capture_path.is_empty():
++		await _prepare_garage_covered()
+ 		_show_screen(capture_screen)
+ 	else:
+-		var restoring: bool = online.client.has_saved_session()
+-		_show_screen("restoring" if restoring else "account")
+ 		await online.start_session()
+-		if restoring:
+-			_show_screen("rivalry" if online.client.signed_in() and not online.needs_username() else "account")
+-		elif screen == "account" and online.client.signed_in() and not online.needs_username():
+-			_show_screen("rivalry")
++		await _prepare_garage_covered()
++		_show_screen("rivalry" if online.client.signed_in() and not online.needs_username() else "account")
+ 	startup_complete = true
+ 	_telemetry_observe("menu_ready",{},"ready")
+ 	_prefetch_discovery()
+@@ -334,6 +339,15 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	# Normalize before deciding whether the retained shell can be promoted.
++	if next == "play": next = "tracks"
++	if not _suspended_menu.is_empty() and _suspended_menu.records != records: _discard_suspended_menu()
++	if next not in ["settings","profile","account","restoring","tracks","rivalry","challenges","biome","garage","store"]: _discard_suspended_menu()
++	# Identity can also change while a race owns the screen. Prepare that new
++	# profile before returning to an interactive menu, never in a warm callback.
++	if startup_complete and next not in ["restoring","account"] and (not is_instance_valid(_retained_garage) or _retained_garage.records != records):
++		_rebuild_profile_menu(next)
++		return
+ 	if screen == "create" and next != "create": _flush_editor_writes()
+ 	if next != "challenge_create" and is_instance_valid(_challenge_return_ui):
+ 		_challenge_return_ui.queue_free()
+@@ -352,10 +366,10 @@
+ 		game.queue_free()
+ 		game = null
+ 		rivalry_racing = false
++	if next in ["tracks","rivalry","challenges","biome","garage","store"] and _restore_suspended_menu(next): return
++	if next in ["settings","profile"] and is_instance_valid(menu_body_slot): _suspend_menu()
+ 	_navigation_generation += 1
+ 	_cancel_rivalry_entry()
+-	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
+-	if next == "play": next = "tracks"
+ 	var drag_offset: float = menu_body.position.x if is_instance_valid(menu_body) and not is_zero_approx(menu_drag_offset) else 0.0
+ 	_stop_menu_page_motion()
+ 	menu_neighbors.clear()
+@@ -397,6 +411,7 @@
+ 			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+ 			outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
+ 			_disable_outgoing_menu(outgoing_menu_page)
++		if is_instance_valid(_retained_garage) and root_ui.is_ancestor_of(_retained_garage): _park_garage()
+ 		menu_layer.remove_child(root_ui)
+ 		root_ui.queue_free()
+ 	menu_body = null
+@@ -587,12 +602,62 @@
+ 		background.position = -inset
+ 		background.size = root_ui.size
+ 
++func _suspend_menu() -> void:
++	if not _suspended_menu.is_empty(): return
++	_stop_menu_page_motion()
++	_suspended_menu = {"root":root_ui,"body":menu_body,"slot":menu_body_slot,"backgrounds":menu_body_backgrounds,"neighbors":menu_neighbors.duplicate(),"content":content,"screen":screen,"records":records}
++	root_ui.hide()
++	root_ui.process_mode = Node.PROCESS_MODE_DISABLED
++	_hide_outgoing_layers(root_ui)
++	root_ui = null
++	menu_body = null
++	menu_body_slot = null
++	menu_body_backgrounds = []
++	menu_neighbors = {}
++	content = null
++
++func _discard_suspended_menu() -> void:
++	if _suspended_menu.is_empty(): return
++	var previous: Control = _suspended_menu.root
++	if is_instance_valid(previous):
++		if is_instance_valid(_retained_garage) and previous.is_ancestor_of(_retained_garage): _park_garage()
++		previous.queue_free()
++	_suspended_menu = {}
++
++func _restore_suspended_menu(destination: String) -> bool:
++	if _suspended_menu.is_empty(): return false
++	_navigation_generation += 1
++	_cancel_rivalry_entry()
++	_stop_menu_page_motion()
++	if is_instance_valid(root_ui):
++		root_ui.get_parent().remove_child(root_ui)
++		root_ui.queue_free()
++	root_ui = _suspended_menu.root
++	menu_body = _suspended_menu.body
++	menu_body_slot = _suspended_menu.slot
++	menu_body_backgrounds = _suspended_menu.backgrounds
++	menu_neighbors = _suspended_menu.neighbors
++	content = _suspended_menu.content
++	screen = _suspended_menu.screen
++	_suspended_menu = {}
++	root_ui.process_mode = Node.PROCESS_MODE_INHERIT
++	root_ui.show()
++	content.queue_sort()
++	account_button = root_ui.find_child("MenuAccount",true,false)
++	if is_instance_valid(account_button): account_button.text = online.player_name() if online.client.signed_in() else "Guest"
++	_layout_menu_body()
++	_navigate_menu_page(destination)
++	_activate_menu_page.call_deferred(_navigation_generation)
++	_prepare_menu_neighbors.call_deferred(_navigation_generation)
++	return true
++
+ func _disable_outgoing_menu(node: Node) -> void:
+-	if node is Control:
+-		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		node.focus_mode = Control.FOCUS_NONE
++	_set_menu_preview_input(node,true)
++	_hide_outgoing_layers(node)
++
++func _hide_outgoing_layers(node: Node) -> void:
+ 	if node is CanvasLayer: node.hide()
+-	for child: Node in node.get_children(): _disable_outgoing_menu(child)
++	for child: Node in node.get_children(): _hide_outgoing_layers(child)
+ 
+ func _stop_menu_page_motion() -> void:
+ 	_stop_menu_edge_motion()
+@@ -611,6 +676,7 @@
+ 			outgoing_menu_page.hide()
+ 			menu_neighbors[int(returning_menu_neighbor.direction)] = returning_menu_neighbor
+ 		else:
++			if is_instance_valid(_retained_garage) and outgoing_menu_page.is_ancestor_of(_retained_garage): _park_garage()
+ 			if outgoing_menu_page.get_parent() != null:
+ 				outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
+ 			outgoing_menu_page.queue_free()
+@@ -757,7 +823,10 @@
+ func _prepare_menu_neighbors(generation: int) -> void:
+ 	# A signal callback drops safely with its owner; a suspended method cannot
+ 	# resume after app teardown. Race loading also cancels unnecessary page work.
+-	get_tree().process_frame.connect(_prepare_menu_neighbors_frame.bind(generation),CONNECT_ONE_SHOT)
++	if generation != _navigation_generation or not is_inside_tree(): return
++	var callback: Callable = _prepare_menu_neighbors_frame.bind(generation)
++	if not get_tree().process_frame.is_connected(callback):
++		get_tree().process_frame.connect(callback,CONNECT_ONE_SHOT)
+ 
+ func _prepare_menu_neighbors_frame(generation: int) -> void:
+ 	if cloud_starting or is_instance_valid(game) or not root_ui.visible: return
+@@ -772,8 +841,8 @@
+ 	var current: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
+ 	var index: int = pages.find(current)
+ 	if index < 0: return
+-	# Keep all primary pages warm too, for another swipe immediately after
+-	# commitment. These are shared textures and inactive controls, not extra apps.
++	# Keep the real swipe pages, but publish at most one per frame. Heavy native
++	# Garage construction has already completed behind the startup cover.
+ 	for destination: int in range(pages.size()):
+ 		var direction: int = destination - index
+ 		if direction == 0: continue
+@@ -811,10 +880,15 @@
+ 		menu_neighbors[direction] = {"body":body,"content":column,"backgrounds":backgrounds,"screen":next}
+ 		body.position.x = menu_body_slot.size.x * direction
+ 		_layout_menu_body()
++		_prepare_menu_neighbors.call_deferred(generation)
++		break
+ 	_hide_warmed_menu_neighbors.call_deferred(generation)
+ 
+ func _hide_warmed_menu_neighbors(generation: int) -> void:
+-	get_tree().process_frame.connect(_hide_warmed_menu_neighbors_frame.bind(generation),CONNECT_ONE_SHOT)
++	if generation != _navigation_generation or not is_inside_tree(): return
++	var callback: Callable = _hide_warmed_menu_neighbors_frame.bind(generation)
++	if not get_tree().process_frame.is_connected(callback):
++		get_tree().process_frame.connect(callback,CONNECT_ONE_SHOT)
+ 
+ func _hide_warmed_menu_neighbors_frame(generation: int) -> void:
+ 	if generation != _navigation_generation: return
+@@ -971,7 +1045,7 @@
+ 	if is_instance_valid(account_button):
+ 		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
+ 	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
+-		_show_screen("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
++		_rebuild_profile_menu("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
+ 	_prefetch_discovery()
+ 	_prefetch_rivalry()
+ 
+@@ -1235,10 +1309,7 @@
+ 	page.outcome = challenges.outcome
+ 	page.mode_requested.connect(_request_race_mode)
+ 	page.folder_requested.connect(func(folder: String) -> void:
+-		challenges.folder = folder
+-		challenges.items.clear()
+-		challenges.selected = {}
+-		challenges.refresh())
++		challenges.select_folder(folder))
+ 	page.selected_requested.connect(func(code: String) -> void: challenges.open(code))
+ 	page.create_requested.connect(func() -> void: _create_challenge_dialog())
+ 	page.code_requested.connect(_challenge_code_dialog)
+@@ -1690,9 +1761,74 @@
+ 	selected_track = track
+ 	await _start_race(track,false,false,issued)
+ 
+-func _garage(parent: VBoxContainer = null) -> void:
++func _ensure_garage_parking() -> void:
++	if not is_instance_valid(_garage_parking):
++		_garage_parking = VBoxContainer.new()
++		_garage_parking.name = "RetainedGarage"
++		_garage_parking.process_mode = Node.PROCESS_MODE_DISABLED
++		menu_layer.add_child(_garage_parking)
++		menu_layer.move_child(_garage_parking,0)
++		MenuStyle.fill(_garage_parking)
++		_set_menu_preview_input(_garage_parking,true)
++		_garage_parking.hide()
++
++func _park_garage() -> void:
++	if not is_instance_valid(_retained_garage): return
++	_ensure_garage_parking()
++	if _retained_garage.get_parent() != _garage_parking:
++		_retained_garage.reparent(_garage_parking,false)
++
++func _prepare_garage_covered() -> void:
++	if is_instance_valid(_retained_garage) and _retained_garage.records == records: return
++	if screen != "restoring": _show_screen("restoring")
++	# Draw the ordinary startup cover before the one-time native construction.
++	# This deliberately pays the original cold cost at startup, not under menu
++	# input. No geometry/material/render settings or preview fidelity changes.
++	var generation: int = _navigation_generation
++	var owner_records: LocalRecords = records
++	await get_tree().process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
++	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
++		_retained_garage.get_parent().remove_child(_retained_garage)
++		_retained_garage.queue_free()
++		_retained_garage = null
++	_ensure_garage_parking()
++	_garage(_garage_parking)
++	# Submit the original views under the opaque cover too, so first menu use
++	# does not inherit their first shader draw. The parking slot cannot take input.
++	_garage_parking.show()
++	for _frame: int in range(2):
++		await get_tree().process_frame
++		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
++		# The parking branch is inactive. Present its container-managed rectangles
++		# explicitly so the covered draws use real view sizes, rather than 1x1s.
++		_retained_garage._present_menu_layout()
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
++	_garage_parking.hide()
++
++func _rebuild_profile_menu(destination: String) -> void:
++	_show_screen("restoring")
++	var generation: int = _navigation_generation
++	var owner_records: LocalRecords = records
++	await _prepare_garage_covered()
++	if not is_inside_tree() or generation != _navigation_generation or owner_records != records or is_instance_valid(game): return
++	_show_screen(destination)
++
++func _garage(parent: Control = null) -> void:
+ 	if parent == null: parent = content
++	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
++		_retained_garage.get_parent().remove_child(_retained_garage)
++		_retained_garage.queue_free()
++		_retained_garage = null
++	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
++		if _retained_garage.get_parent() != parent: _retained_garage.reparent(parent,false)
++		_retained_garage.refresh_selection()
++		_retained_garage.circuit_title = track_title(selected_track).to_upper()
++		return
+ 	var page := GaragePage.new()
++	_retained_garage = page
+ 	page.records = records
+ 	page.circuit_title = track_title(selected_track).to_upper()
+ 	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -3251,6 +3425,7 @@
+ 	# Continue or a background result update can revisit the previous page.
+ 	if screen == "rivalry" and is_instance_valid(content): _remember_rivalry_standings(content)
+ 	_stop_menu_page_motion()
++	if is_instance_valid(_retained_garage) and root_ui.is_ancestor_of(_retained_garage): _park_garage()
+ 	menu_neighbors.clear()
+ 	content = null
+ 	menu_body = null
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -18,6 +18,8 @@
+ var _failures: int = 0
+ var _scope: String = ""
+ var _selection_serial: int = 0
++var _busy_serial: int = 0
++var _folder_refresh_pending: bool = false
+ var next_cursor: String = ""
+ var result_code: String = ""
+ 
+@@ -27,6 +29,8 @@
+ func reset() -> void:
+ 	_generation += 1
+ 	_selection_serial += 1
++	_busy_serial += 1
++	_folder_refresh_pending = false
+ 	items.clear()
+ 	selected = {}
+ 	busy = false
+@@ -103,18 +107,53 @@
+ 			cloud._write(path_to_keys,saved)
+ 	return response
+ 
++func select_folder(value: String) -> void:
++	if value not in ["received","sent"]: return
++	if _scope != scope(): reset()
++	if folder == value: return
++	folder = value
++	items.clear()
++	selected = {}
++	next_cursor = ""
++	_selection_serial += 1
++	error = ""
++	if busy:
++		# Keep only the latest folder intent, including changes during detail or
++		# mutation requests. The request owner drains it when that reply arrives.
++		_folder_refresh_pending = true
++		changed.emit()
++	else: refresh()
++
++func _refresh_pending_folder() -> bool:
++	if not _folder_refresh_pending: return false
++	_folder_refresh_pending = false
++	busy = false
++	refresh()
++	return true
++
+ func refresh(append: bool = false) -> void:
++	if _scope != scope(): reset()
+ 	if busy: return
+ 	if not client.signed_in():
+ 		items.clear()
+ 		changed.emit()
+ 		return
+ 	busy = true
+-	changed.emit()
++	_busy_serial += 1
++	var serial: int = _busy_serial
++	var generation: int = _generation
+ 	var requested_folder: String = folder
+-	var response: Dictionary = await _request("/challenges?folder="+folder+("&cursor="+next_cursor.uri_encode() if append and not next_cursor.is_empty() else ""))
+-	busy = false
+-	if requested_folder != folder: return
++	var path: String = "/challenges?folder="+requested_folder+("&cursor="+next_cursor.uri_encode() if append and not next_cursor.is_empty() else "")
++	changed.emit()
++	var response: Dictionary = await _request(path)
++	if generation != _generation or serial != _busy_serial or _scope != scope(): return
++	if requested_folder != folder or (append and _folder_refresh_pending):
++		_folder_refresh_pending = true
++		_refresh_pending_folder()
++		return
++	# A burst that returns to the original folder can use its in-flight reply.
++	_folder_refresh_pending = false
++	busy = false
+ 	if response.get("ok",false) and response.data.get("items") is Array and response.data.items.size() <= 50:
+ 		var incoming: Array[Dictionary] = []
+ 		for item: Variant in response.data.items:
+@@ -135,6 +174,7 @@
+ 		await open(str(selected.code))
+ 
+ func open(value: String) -> void:
++	if _scope != scope(): reset()
+ 	var code: String = code_from(value)
+ 	if code.is_empty():
+ 		error = "Enter a challenge code or invitation link."
+@@ -143,8 +183,13 @@
+ 	_selection_serial += 1
+ 	var serial: int = _selection_serial
+ 	busy = true
++	_busy_serial += 1
++	var busy_serial: int = _busy_serial
++	var generation: int = _generation
+ 	changed.emit()
+ 	var response: Dictionary = await _request("/challenges/"+code+("/me" if client.signed_in() else ""),HTTPClient.METHOD_GET,{},client.signed_in())
++	if generation != _generation or busy_serial != _busy_serial or _scope != scope(): return
++	if _refresh_pending_folder(): return
+ 	if serial != _selection_serial: return
+ 	busy = false
+ 	if response.get("ok",false) and valid_snapshot(response.data):
+@@ -169,11 +214,17 @@
+ 	await _mutate("/challenges/"+str(selected.code)+"/cancel")
+ 
+ func _mutate(path: String, payload: Dictionary = {}) -> void:
++	if _scope != scope(): reset()
+ 	if busy: return
+ 	busy = true
++	_busy_serial += 1
++	var serial: int = _busy_serial
++	var generation: int = _generation
+ 	error = ""
+ 	changed.emit()
+ 	var response: Dictionary = await _request(path,HTTPClient.METHOD_POST,payload)
++	if generation != _generation or serial != _busy_serial or _scope != scope(): return
++	if _refresh_pending_folder(): return
+ 	busy = false
+ 	if response.get("ok",false) and valid_snapshot(response.data): selected = response.data
+ 	else: error = friendly(str(response.get("error","")))
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -495,7 +495,11 @@
+ 
+ func refresh_selection() -> void:
+ 	# A warmed page may have been built before another page selected a car.
+-	if _selected_vehicle_id == VehicleCatalog.selected: return
++	if _selected_vehicle_id == VehicleCatalog.selected:
++		# A retained page can outlive a race. Refresh changed thumbnail cosmetics
++		# even when the confirmed car did not change; meshes/worlds stay intact.
++		_refresh_thumbnails()
++		return
+ 	_finish_tools()
+ 	vehicle_id = VehicleCatalog.selected
+ 	_selected_vehicle_id = vehicle_id
+--- a/game/ui/garage_reflections.gd
++++ b/game/ui/garage_reflections.gd
+@@ -32,6 +32,9 @@
+ 		holder.add_child(view)
+ 		# The receiving showroom must draw after its freshly resized captures.
+ 		RenderingServer.viewport_set_parent_viewport(view.get_viewport_rid(),owner.showroom_viewport.get_viewport_rid())
++		# Native viewport entry restores its inferred parent. A retained Garage
++		# can move between menu slots, so reinstate the same explicit draw order.
++		view.tree_entered.connect(_restore_parent.bind(view))
+ 		var camera := Camera3D.new()
+ 		camera.cull_mask = ROOM_LAYER if index == 0 else CAR_LAYER
+ 		view.add_child(camera)
+@@ -42,6 +45,10 @@
+ 	floor_material.set_shader_parameter("reflection_enabled",true)
+ 	mark_stage(stage)
+ 	sync()
++
++func _restore_parent(view: SubViewport) -> void:
++	if is_instance_valid(owner) and is_instance_valid(owner.showroom_viewport):
++		RenderingServer.viewport_set_parent_viewport(view.get_viewport_rid(),owner.showroom_viewport.get_viewport_rid())
+ 
+ func _mark_room(node: Node) -> void:
+ 	if node is MeshInstance3D: node.layers = 1 | ROOM_LAYER
+--- a/game/tests/test_app.gd
++++ b/game/tests/test_app.gd
+@@ -433,6 +433,9 @@
+ 	# driving is covered above; it does not claim a second driven race.
+ 	app._restore_cloud_selection("cloud_fixture-track")
+ 	var track: NativeTrack = app.get("selected_track")
++	app.call("_show_screen","tracks")
++	for _frame: int in range(6): await process_frame
++	var retained_garage: GaragePage = app.get("_retained_garage")
+ 	await app.call("_start_race", track, false)
+ 	var game: Node = app.get("game")
+ 	game.set_physics_process(false)
+@@ -446,6 +449,8 @@
+ 	game.set("paused", true)
+ 	game.set("attempt_practice", false)
+ 	game.emit_signal("race_completed")
++	await process_frame
++	check(is_instance_valid(retained_garage) and app.get("_retained_garage")==retained_garage,"normal result construction retains the prepared native Garage")
+ 	var records: LocalRecords = app.get("records")
+ 	check(records.best_for(track, game.get("handling")) == 109.0 and (app.get("root_ui") as Node).find_child("ContinueResults",true,false) != null, "a clean normal race result persists its local PB and exposes Continue")
+ 	check(((app.get("root_ui") as Node).find_child("RaceAchievement",true,false) as Label).text in ["FIRST FINISH","CLEAN RACE"],"a first normal finish is presented as the player's benchmark")
+@@ -477,6 +482,7 @@
+ 	await process_frame
+ 	await process_frame
+ 	check(app.records.best_for(track,race_handling) == 108.816,"Race return preserves the best time for the active handling")
++	check(is_instance_valid(retained_garage) and app.get("_retained_garage")==retained_garage,"normal race return reuses its original prepared Garage")
+ 	await _capture("tracks-saved-best")
+ 	var resumed: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
+ 	resumed.set("library",app.get("library"))
+--- /dev/null
++++ b/game/tests/test_menu_high_priority.gd
+@@ -0,0 +1,449 @@
++extends SceneTree
++## Real app retention, exact native pixels and controlled out-of-order replies.
++var checks: int = 0
++var failures: int = 0
++var output: String
++var report: Dictionary = {}
++var app: Node
++var native_low: PackedByteArray
++var native_high: PackedByteArray
++
++class ProbeApp extends "res://core/app.gd":
++	var preparations: Array[float] = []
++	var constructions: Array[Dictionary] = []
++	func _prepare_menu_neighbors_frame(generation: int) -> void:
++		var began: int = Time.get_ticks_usec()
++		super._prepare_menu_neighbors_frame(generation)
++		preparations.append((Time.get_ticks_usec()-began)/1000.0)
++	func _garage(parent: Control = null) -> void:
++		var old: GaragePage = _retained_garage
++		var began: int = Time.get_ticks_usec()
++		super._garage(parent)
++		if old != _retained_garage:
++			constructions.append({"screen":screen,"ms":(Time.get_ticks_usec()-began)/1000.0})
++
++class Service extends Node:
++	var player: Dictionary = {"id":"audit-a"}
++	var jobs: Array[Dictionary] = []
++	func base_url() -> String: return "http://offline-menu-fixture.invalid"
++	func signed_in() -> bool: return true
++	func new_operation_key() -> String: return "menu-fixture-operation"
++	func request_api(path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		var job: Dictionary = {"path":path,"done":false,"response":{}}
++		jobs.append(job)
++		while not job.done: await get_tree().process_frame
++		return job.response
++	func finish(index: int, response: Dictionary) -> void:
++		jobs[index].response = response
++		jobs[index].done = true
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func frames(count: int = 5) -> void:
++	for _index: int in range(count):
++		await process_frame
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	await create_timer(0.4).timeout
++	await frames()
++
++func fixture(id: String) -> Dictionary:
++	return {"id":id,"code":"AB12CD34EF56AB78" if id=="received" else "CD34EF56AB78CD12","mode":"group","state":"active","entry":{"name":id,"version_id":"version","track_id":"track","content_hash":"hash","points":[[0,0],[10,10]]},"manifest":{"laps":5,"tick_rate":120},"standings":[{"id":"audit-a","name":"Fixture","ticks":null,"ms":null,"rank":null,"run_id":null}],"vehicle_id":"compact","ends_at":604800,"server_now":0,"creator_id":"audit-a","creator":"Fixture","joined":true,"self_id":"audit-a","share_url":"https://offline.invalid/fixture"}
++
++func listing(id: String, cursor: String = "") -> Dictionary:
++	return {"ok":true,"data":{"items":[fixture(id)],"next_cursor":cursor},"error":""}
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_MENU_FIX_OUTPUT")
++	if output.is_empty(): output = ProjectSettings.globalize_path("res://../docs/evidence/menu-high-priority-fixes-2026-10-14/headless")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	var folder: String = "user://menu_high_priority_"+TrackLibrary.unique_id()
++	app = ProbeApp.new()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+20000
++	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.startup_complete and app.screen=="account","guest startup completes on the original account screen")
++	# The concurrently added native record player animates with menu playback.
++	# Pause the test soundtrack so full-frame comparisons use the same pose.
++	# Runtime audio/playback preferences and animation are unchanged.
++	GameSoundtrack.instance().music_enabled = false
++	report.static_pixel_fixture_music_paused = true
++	check(app.constructions.size()==1 and app.constructions[0].screen=="restoring","the one native construction runs behind the startup cover")
++	var garage: GaragePage = app._retained_garage
++	var view: CarShowroom = garage.showroom
++	var world: SubViewport = view.showroom_viewport
++	var model: CarVisual = view.car
++	check(world.size.x>1 and world.size.y>1,"covered preparation lays out the actual native viewport before hiding it")
++	check(not garage.is_visible_in_tree() and not garage.can_process(),"prepared Garage is hidden and inactive")
++	for reflection: SubViewport in view.reflections.views:
++		check(reflection.render_target_update_mode==SubViewport.UPDATE_DISABLED,"startup captures stop after the covered draws")
++	app.race_area_mode = "free"
++	app._show_screen("tracks")
++	await settle()
++	check(app.menu_neighbors.size()==3,"all three real swipe neighbors become ready")
++	check(app._retained_garage==garage and app.constructions.size()==1,"Race preparation reuses the startup Garage")
++	# Repeated scheduling in one frame must coalesce without engine signal errors.
++	app._prepare_menu_neighbors(app._navigation_generation)
++	app._prepare_menu_neighbors(app._navigation_generation)
++	await frames()
++	check(app.menu_neighbors.size()==3,"duplicate preparation leaves the same bounded neighbor set")
++	var dispatch: Array[float] = []
++	for _round: int in range(2):
++		app._show_screen("settings")
++		await frames(2)
++		var began: int = Time.get_ticks_usec()
++		app._show_screen("tracks")
++		dispatch.append((Time.get_ticks_usec()-began)/1000.0)
++		await settle()
++		check(app._retained_garage==garage and app.constructions.size()==1,"Settings round trip does not reconstruct native cars")
++	app._navigate_menu_page("garage")
++	await settle()
++	check(app.content.find_child("GaragePage",true,false)==garage,"Garage navigation attaches the exact prepared page")
++	check(garage.showroom==view and view.car==model and view.showroom_viewport==world,"native car, world and viewport identities survive promotion")
++	check(garage.find_child("GarageCar_compact",true,false).mouse_filter==Control.MOUSE_FILTER_STOP,"retained car cards preserve their authored input state")
++	if DisplayServer.get_name()!="headless": await compare_native_pixels(garage)
++	view.zoom_by(0.84)
++	view.rotate_view(Vector2(19,-5))
++	var camera_pose: Transform3D = view.camera.transform
++	var deck_pose: Transform3D = view.turntable.transform
++	var condition: Dictionary = view.weathering.snapshot()
++	var paint: Dictionary = garage.draft.duplicate(true)
++	await frames()
++	# Measure the native hide/show path at the same zoomed pose before changing
++	# any menu shell. This catches renderer precision separately from retention.
++	var pre_visibility: Image = world.get_texture().get_image() if DisplayServer.get_name()!="headless" else null
++	view.hide()
++	await frames(3)
++	view.show()
++	await frames(8)
++	var before_layout: Dictionary = layout_snapshot(garage)
++	var same_world_image: Image = view.showroom_viewport.get_texture().get_image() if DisplayServer.get_name()!="headless" else null
++	var same_world_pixels: PackedByteArray = same_world_image.get_data() if same_world_image!=null else PackedByteArray()
++	if pre_visibility != null:
++		report.same_world_visibility_control = {"before_size":str(pre_visibility.get_size()),"after_size":str(same_world_image.get_size()),"same_pixels":pre_visibility.get_data()==same_world_pixels}
++		native_low = same_world_pixels.duplicate()
++		native_high = same_world_pixels.duplicate()
++		# Native MSAA/shadow output can vary by a colour level when an unchanged
++		# world is hidden and shown. Measure those exact bytes before navigation;
++		# no fixed tolerance, geometry mask or post-navigation sample is accepted.
++		for _sample: int in range(12):
++			view.hide()
++			await frames(2)
++			view.show()
++			await frames(3)
++			var sample: PackedByteArray = world.get_texture().get_image().get_data()
++			check(sample.size()==native_low.size(),"original native visibility control retains its pixel dimensions")
++			if sample.size()!=native_low.size(): continue
++			for index: int in range(sample.size()):
++				native_low[index] = mini(native_low[index],sample[index])
++				native_high[index] = maxi(native_high[index],sample[index])
++		var varying: int = 0
++		var largest: int = 0
++		for index: int in range(native_low.size()):
++			if native_low[index]!=native_high[index]: varying += 1
++			largest = maxi(largest,native_high[index]-native_low[index])
++		report.same_world_visibility_control.varying_bytes = varying
++		report.same_world_visibility_control.max_delta = largest
++	if DisplayServer.get_name()!="headless": view.showroom_viewport.get_texture().get_image().save_png(output.path_join("before-settings.png"))
++	app._show_screen("settings")
++	check(not app._suspended_menu.is_empty() and app._suspended_menu.root.is_ancestor_of(garage),"Settings keeps the original menu and Garage attached to the tree")
++	app._show_screen("garage")
++	await settle()
++	check(garage.showroom==view and view.car==model and view.showroom_viewport==world,"explicit shell rebuild retains native scene objects")
++	check(view.camera.transform==camera_pose and view.turntable.transform==deck_pose,"shell rebuild preserves exact camera, zoom and car pose")
++	check(view.weathering.snapshot()==condition and garage.draft==paint,"shell rebuild preserves local condition and pigments")
++	if DisplayServer.get_name()!="headless":
++		var restored: Image = view.showroom_viewport.get_texture().get_image()
++		restored.save_png(output.path_join("after-settings.png"))
++		var restored_bytes: PackedByteArray = restored.get_data()
++		var changed: int = 0
++		var maximum: int = 0
++		if restored_bytes.size()==same_world_pixels.size():
++			var stride: int = restored_bytes.size()/(restored.get_width()*restored.get_height())
++			for pixel: int in range(restored.get_width()*restored.get_height()):
++				var delta: int = 0
++				for channel: int in range(stride): delta = maxi(delta,absi(int(restored_bytes[pixel*stride+channel])-int(same_world_pixels[pixel*stride+channel])))
++				if delta>0: changed += 1
++				maximum = maxi(maximum,delta)
++		report.settings_pixels = {"changed":changed,"max_delta":maximum,"same_byte_count":restored_bytes.size()==same_world_pixels.size(),"before_byte_count":same_world_pixels.size(),"after_byte_count":restored_bytes.size(),"before_layout":before_layout,"after_layout":layout_snapshot(garage)}
++		# Preserve exact dimensions; each byte must stay inside the unchanged
++		# world's pre-navigation visibility samples.
++		var projected: Array[Vector2] = []
++		_project_car(view.car,view.camera,projected)
++		var low: Vector2 = projected[0]
++		var high: Vector2 = low
++		for point: Vector2 in projected:
++			low = low.min(point)
++			high = high.max(point)
++		var car_rect: Rect2i = Rect2i(Rect2(low,high-low).grow(2)).intersection(Rect2i(Vector2i.ZERO,restored.get_size()))
++		report.settings_pixels.whole_image_equal = restored_bytes==same_world_pixels
++		report.settings_pixels.car_rect = str(car_rect)
++		check(restored.get_size()==same_world_image.get_size(),"Settings return retains exact display-pixel dimensions")
++		check(in_native_envelope(restored_bytes),"Settings return matches the original native visibility control at every pixel")
++		check(restored.get_size()==same_world_image.get_size() and in_native_envelope(restored_bytes),"Settings return retains actual car pixels within the pre-navigation native control")
++		report.settings_pixels.repeated_returns = []
++		for _round: int in range(6):
++			app._show_screen("settings")
++			app._show_screen("garage")
++			await settle()
++			var repeated: Image = world.get_texture().get_image()
++			report.settings_pixels.repeated_returns.append({"control":str(view.size),"viewport":str(world.size),"same_pixels":repeated.get_data()==same_world_pixels})
++			check(in_native_envelope(repeated.get_data()),"repeated Settings returns preserve viewport dimensions and native-control pixels")
++	app._show_screen("tracks")
++	check(app.outgoing_menu_page.is_ancestor_of(garage),"departing Garage remains drawn throughout its outgoing slide")
++	await settle()
++	app._navigate_menu_page("garage")
++	await settle()
++	check(garage.find_child("GarageCar_compact",true,false).mouse_filter==Control.MOUSE_FILTER_STOP,"outgoing slide does not permanently disable retained car controls")
++	check(app.constructions.size()==1,"ordinary menu traffic still owns one native Garage")
++	app._show_screen("settings")
++	app._show_screen("play")
++	await settle()
++	check(app.screen=="tracks" and app._suspended_menu.is_empty(),"retired Home alias restores the retained Race shell")
++	app._show_screen("settings")
++	app._show_screen("drafts")
++	await settle()
++	check(app._suspended_menu.is_empty(),"leaving Settings for a draft library releases the old shell")
++	app._navigate_menu_page("garage")
++	await settle()
++	check(app.content.find_child("GaragePage",true,false)==garage,"draft-library navigation cannot promote an empty stale Garage slot")
++	var race_wear: Dictionary = view.weathering.snapshot()
++	race_wear.dirt = 0.67
++	check(VehicleCondition.save(app.records,garage.vehicle_id,race_wear)==OK,"post-race cosmetic fixture is saved under the current owner")
++	app._show_screen("tracks")
++	await settle()
++	check(garage.thumbnails[garage.vehicle_id].condition==race_wear,"retained carousel photograph receives newer race condition")
++	app._navigate_menu_page("garage")
++	await settle()
++	check(is_equal_approx(view.weathering.dirt_amount,0.67) and view.car==model,"live native car receives newer race wear without reconstruction")
++	report.menu = {"covered_construction":app.constructions.duplicate(true),"neighbor_callback_ms":app.preparations.duplicate(),"settings_return_dispatch_ms":dispatch,"native_views_retained":6}
++	await test_folders()
++	# Changing storage invalidates retained cosmetics and supersedes old cover work.
++	var next_records := LocalRecords.new(folder.path_join("other/records.json"))
++	app.records = next_records
++	app._show_screen("garage")
++	deadline = Time.get_ticks_msec()+20000
++	while app.screen!="garage" and Time.get_ticks_msec()<deadline: await process_frame
++	await settle()
++	check(app.screen=="garage" and app._retained_garage.records==next_records,"new profile receives its own prepared Garage")
++	check(not is_instance_valid(garage),"previous profile's native page is released")
++	check(app.constructions.size()==2 and app.constructions[1].screen=="restoring","replacement profile construction stays behind its cover")
++	app.queue_free()
++	await frames(3)
++	report.checks = checks
++	report.failures = failures
++	report.renderer = RenderingServer.get_current_rendering_method()
++	report.display = DisplayServer.get_name()
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("MENU_HIGH_PRIORITY ",JSON.stringify(report))
++	quit(1 if failures else 0)
++
++func in_native_envelope(bytes: PackedByteArray) -> bool:
++	if bytes.size()!=native_low.size(): return false
++	for index: int in range(bytes.size()):
++		if bytes[index]<native_low[index] or bytes[index]>native_high[index]: return false
++	return true
++
++func layout_snapshot(garage: GaragePage) -> Dictionary:
++	var values: Dictionary = {}
++	for control: Control in [app.root_ui,app.menu_body_slot,app.menu_body,app.content,garage,garage._layout,garage._rail_slot,garage.main,garage._preview_slot,garage.preview,garage.showroom]:
++		values[control.name] = {"size":str(control.size),"minimum":str(control.get_combined_minimum_size()),"position":str(control.position),"scale_x":"%.14f" % control.scale.x,"scale_y":"%.14f" % control.scale.y}
++	values.viewport = str(garage.showroom.showroom_viewport.size)
++	return values
++
++func compare_native_pixels(garage: GaragePage) -> void:
++	# A fresh synchronous construction is the original native geometry/render path.
++	var reference := GaragePage.new()
++	reference.records = app.records
++	root.add_child(reference)
++	reference.position = garage.global_position
++	reference.size = garage.size
++	await frames(8)
++	var retained: Image = garage.showroom.showroom_viewport.get_texture().get_image()
++	var original: Image = reference.showroom.showroom_viewport.get_texture().get_image()
++	var left: PackedByteArray = retained.get_data()
++	var right: PackedByteArray = original.get_data()
++	var changed: int = 0
++	var maximum: int = 0
++	var total_delta: int = 0
++	var bounds := Rect2i()
++	var stride: int = left.size()/(retained.get_width()*retained.get_height())
++	for pixel: int in range(retained.get_width()*retained.get_height()):
++		var delta: int = 0
++		for channel: int in range(stride): delta = maxi(delta,absi(int(left[pixel*stride+channel])-int(right[pixel*stride+channel])))
++		if delta==0: continue
++		var at := Vector2i(pixel%retained.get_width(),pixel/retained.get_width())
++		bounds = Rect2i(at,Vector2i.ONE) if changed==0 else bounds.merge(Rect2i(at,Vector2i.ONE))
++		changed += 1
++		maximum = maxi(maximum,delta)
++		total_delta += delta
++	report.native_pixels = {"changed":changed,"max_delta":maximum,"bounds":str(bounds),"camera_equal":garage.showroom.camera.transform==reference.showroom.camera.transform,"deck_equal":garage.showroom.turntable.transform==reference.showroom.turntable.transform,"view_sizes_equal":garage.showroom.showroom_viewport.size==reference.showroom.showroom_viewport.size,"condition_equal":garage.showroom.weathering.snapshot()==reference.showroom.weathering.snapshot()}
++	report.native_pixels.reflections = []
++	for index: int in range(2):
++		var retained_rig: GarageReflections = garage.showroom.reflections
++		var fresh_rig: GarageReflections = reference.showroom.reflections
++		report.native_pixels.reflections.append({"sizes":str([retained_rig.views[index].size,fresh_rig.views[index].size]),"camera_equal":retained_rig.cameras[index].transform==fresh_rig.cameras[index].transform,"fov_equal":retained_rig.cameras[index].fov==fresh_rig.cameras[index].fov,"aspect_equal":retained_rig.cameras[index].keep_aspect==fresh_rig.cameras[index].keep_aspect,"pixels_equal":retained_rig.views[index].get_texture().get_image().get_data()==fresh_rig.views[index].get_texture().get_image().get_data()})
++	check(retained.get_size()==original.get_size(),"retained and original native views have identical display-pixel dimensions")
++	# Freeze menu playback above: the actual record-station animation otherwise
++	# makes independently sampled native frames differ in the workshop.
++	report.native_pixels.independent_main_equal = retained.get_data()==original.get_data()
++	check(report.native_pixels.reflections.all(func(rig: Dictionary) -> bool: return rig.pixels_equal),"retained native reflection captures exactly match fresh construction")
++	retained.save_png(output.path_join("retained-garage.png"))
++	original.save_png(output.path_join("fresh-garage.png"))
++	reference.queue_free()
++	await frames(3)
++
++	var control := GaragePage.new()
++	control.records = app.records
++	root.add_child(control)
++	control.position = garage.global_position
++	control.size = garage.size
++	await frames(8)
++	var control_bytes: PackedByteArray = control.showroom.showroom_viewport.get_texture().get_image().get_data()
++	var control_changed: int = 0
++	var control_maximum: int = 0
++	var control_total: int = 0
++	for pixel: int in range(original.get_width()*original.get_height()):
++		var delta: int = 0
++		for channel: int in range(stride): delta = maxi(delta,absi(int(right[pixel*stride+channel])-int(control_bytes[pixel*stride+channel])))
++		if delta>0: control_changed += 1
++		control_maximum = maxi(control_maximum,delta)
++		control_total += delta
++	report.native_pixels.fresh_vs_fresh_changed = control_changed
++	report.native_pixels.fresh_vs_fresh_max_delta = control_maximum
++	report.native_pixels.total_delta = total_delta
++	report.native_pixels.fresh_vs_fresh_total_delta = control_total
++	# Two unchanged independently constructed rooms also differ in a few gallery
++	# light pixels. Neither the changed count nor summed maximum-channel delta
++	# may exceed that contemporaneous original-path control. Complete reflection
++	# captures still require exact byte equality.
++	check(changed<=control_changed and total_delta<=control_total,"retained/fresh native differences do not exceed the original fresh/fresh control")
++	control.hide()
++	await frames(3)
++	control.show()
++	await frames(8)
++	var shown_bytes: PackedByteArray = control.showroom.showroom_viewport.get_texture().get_image().get_data()
++	var visibility_changed_pixels: int = 0
++	var visibility_maximum: int = 0
++	for pixel: int in range(original.get_width()*original.get_height()):
++		var delta: int = 0
++		for channel: int in range(stride): delta = maxi(delta,absi(int(control_bytes[pixel*stride+channel])-int(shown_bytes[pixel*stride+channel])))
++		if delta>0: visibility_changed_pixels += 1
++		visibility_maximum = maxi(visibility_maximum,delta)
++	report.native_pixels.original_visibility_changed = visibility_changed_pixels
++	report.native_pixels.original_visibility_max_delta = visibility_maximum
++	control.queue_free()
++	await frames(3)
++
++func _project_car(node: Node3D, camera: Camera3D, points: Array[Vector2]) -> void:
++	if node is MeshInstance3D and node.mesh != null:
++		var bounds: AABB = node.mesh.get_aabb()
++		for index: int in range(8): points.append(camera.unproject_position(node.global_transform*bounds.get_endpoint(index)))
++	for child: Node in node.get_children():
++		if child is Node3D: _project_car(child,camera,points)
++
++func test_folders() -> void:
++	var service := Service.new()
++	app.add_child(service)
++	var adapter: ChallengesClient = app.challenges
++	adapter.client = service
++	adapter.reset()
++	adapter.folder = "received"
++	app._show_screen("challenges")
++	app._stop_menu_page_motion()
++	adapter.refresh()
++	var page: ChallengesPage = app.content.find_child("ChallengesPage",true,false)
++	(page.find_child("ChallengeTab_sent",true,false) as Button).pressed.emit()
++	page = app.content.find_child("ChallengesPage",true,false)
++	check(page.folder=="sent" and page.busy,"real Sent control immediately publishes the latest folder/loading state")
++	check(service.jobs.size()==1,"pending folder changes coalesce without another concurrent request")
++	service.finish(0,listing("received","old-cursor"))
++	await frames()
++	check(service.jobs.size()==2 and service.jobs[1].path=="/challenges?folder=sent","old completion starts the newest folder without its stale cursor")
++	check(adapter.items.is_empty() and adapter.busy,"stale Received rows never appear under Sent")
++	service.finish(1,listing("sent"))
++	await frames()
++	page = app.content.find_child("ChallengesPage",true,false)
++	check(not page.busy and page.folder=="sent" and page.items.size()==1 and page.items[0].id=="sent","Sent reply clears loading and presents its own rows")
++	var count: int = service.jobs.size()
++	adapter.select_folder("sent")
++	check(service.jobs.size()==count and adapter.items.size()==1,"reselecting the current folder retains rows and performs no call")
++	adapter.select_folder("received")
++	var pending: int = service.jobs.size()-1
++	adapter.select_folder("sent")
++	adapter.select_folder("received")
++	service.finish(pending,listing("received"))
++	await frames()
++	check(service.jobs.size()==pending+1 and not adapter.busy and adapter.items[0].id=="received","rapid return to the in-flight folder reuses that reply")
++	adapter.select_folder("sent")
++	pending = service.jobs.size()-1
++	adapter.select_folder("received")
++	adapter.select_folder("sent")
++	adapter.select_folder("received")
++	service.finish(pending,{"ok":false,"error":"NETWORK_ERROR"})
++	await frames()
++	check(service.jobs[-1].path=="/challenges?folder=received" and adapter.busy,"even an old-folder failure drains only the newest intent")
++	service.finish(service.jobs.size()-1,{"ok":false,"error":"NETWORK_ERROR"})
++	await frames()
++	check(not adapter.busy and not adapter.error.is_empty(),"latest-folder failure clears busy and leaves an actionable error")
++	# Detail requests may overlap a list request; only the current request owns busy.
++	adapter.refresh()
++	pending = service.jobs.size()-1
++	adapter.open(str(fixture("received").code))
++	var detail: int = service.jobs.size()-1
++	service.finish(pending,listing("received"))
++	await frames()
++	check(adapter.busy,"old list response cannot clear a newer detail request's busy state")
++	adapter.select_folder("sent")
++	service.finish(detail,{"ok":true,"data":fixture("received")})
++	await frames()
++	check(adapter.selected.is_empty() and service.jobs[-1].path=="/challenges?folder=sent","folder selection supersedes a pending detail and starts its list")
++	service.finish(service.jobs.size()-1,listing("sent"))
++	await frames()
++	check(not adapter.busy and adapter.items[0].id=="sent","folder change during detail finishes normally")
++	adapter.next_cursor = "old-page-two"
++	adapter.refresh(true)
++	pending = service.jobs.size()-1
++	adapter.select_folder("received")
++	adapter.select_folder("sent")
++	service.finish(pending,listing("sent","old-page-three"))
++	await frames()
++	check(adapter.busy and adapter.items.is_empty() and service.jobs[-1].path=="/challenges?folder=sent","return during pagination restarts at the first page without a stale cursor")
++	service.finish(service.jobs.size()-1,listing("sent"))
++	await frames()
++	adapter.create_challenge({"mode":"group","vehicle_id":"compact","version_id":"version"})
++	pending = service.jobs.size()-1
++	adapter.select_folder("received")
++	service.finish(pending,{"ok":true,"data":fixture("sent")})
++	await frames()
++	check(adapter.busy and adapter.selected.is_empty() and service.jobs[-1].path=="/challenges?folder=received","folder change during a mutation drains after its owned reply")
++	service.finish(service.jobs.size()-1,listing("received"))
++	await frames()
++	check(not adapter.busy and adapter.items[0].id=="received","mutation completion cannot restore an obsolete selection or strand loading")
++	adapter.select_folder("sent")
++	pending = service.jobs.size()-1
++	service.player = {"id":"audit-b"}
++	adapter.reset()
++	adapter.refresh()
++	var new_owner: int = service.jobs.size()-1
++	service.finish(pending,listing("received"))
++	await frames()
++	check(adapter.busy and adapter.items.is_empty(),"previous account reply cannot clear or populate the new account request")
++	service.finish(new_owner,{"ok":true,"data":{"items":[],"next_cursor":""}})
++	await frames()
++	check(not adapter.busy and adapter.items.is_empty(),"new account request completes independently")
++	report.challenge_paths = []
++	for job: Dictionary in service.jobs: report.challenge_paths.append(job.path)
+--- /dev/null
++++ b/game/tests/test_menu_high_priority.gd.uid
+@@ -0,0 +1 @@
++uid://bs8xly6eje27y
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## High-priority menu performance and folder reliability override (2026-10-14)
++The owner requests the high-priority menu audit fixes. Prepare the original native Garage once per storage owner under the loading cover, retain its six car showrooms through Settings/Profile and ordinary race results/returns, and prepare at most one other primary neighbor per frame. Keep one suspended shell, original input preferences, outgoing slides, actual car/camera/condition and reflection caps/passes; restore explicit reflection parents after tree entry and re-sort content on shell return. Challenges publishes the latest folder immediately, coalesces pending choices and fences stale list/detail/mutation/account replies. Both-renderer71+71/headless47/app101/Challenges165/swipe240/quality23/loading27/parser760 pass. Final return dispatch0.8-1.7ms is desktop callback evidence; original cold preparation remains under loading. Final same-world Settings/repeated-return and reflection images are exact; independent-world/native colour precision is separately controlled and reported. Actual commands, initial failures, source hashes and task-only patch: `docs/evidence/menu-high-priority-fixes-2026-10-14/report.json`. Owner/physical-phone latency and memory acceptance remain; no phone test/APK/deployment.
+ 
+ ## Garage washing visual quality and connected foam override (2026-10-14)
+ The owner requests AAA-target washing refinement and specifically rejects the intermediate foam style. Use the original soft microfiber mitt/thumb/nap and stitched cuff, smooth stroke-aligned pressure/oval scrubbing, translucent gravity-shaped water, and connected creamy lather with actual raised air pockets, irregular edges and trailing streaks. Retain24 lather/32 water slots, shared native meshes, existing reflection views, local-only cleaning/saving and car/kit/livery/camera/canonical behavior. Depth-seated lather must avoid floating edges; cleanup retains caller hit data. See `docs/GARAGE_WASH_POLISH_2026_10_14.md` for actual both-renderer motion/all-car/pixel/work evidence, retained initial failures and scoped checkpoint. Owner/physical-phone style/performance acceptance remains; no phone/APK/deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 MREV01-MREV02/R01/G01/V03-V05/Q01: high-priority menu fixes. One owner-bound native Garage prepares behind loading and survives primary menus/Settings/Profile/race results; one retained shell and one neighbor build per frame bound repeated work. Original input preferences, outgoing slides, car/camera/local cosmetics and reflection ordering retained. Challenges follows latest folder choice through pending list/detail/mutation requests with request/account fences. Both-renderer71+71/headless47/app101/Challenges165/swipe240/quality23/loading27/parser760 pass. Final desktop Settings dispatch0.8-1.7ms; cold construction still runs once under loading. Final same-world return/reflection pixels exact; independent native precision controls and initial failures recorded. No phone/APK/deployment; owner/device latency/memory acceptance remains. Actual commands, source hashes and task-only patch: docs/evidence/menu-high-priority-fixes-2026-10-14/report.json.
++
+ 2026-10-14 GWP01-GWP04/GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: owner AAA-target washing refinement and further foam rejection. Native soft microfiber mitt/thumb/nap/stitched cuff, smooth stroke-aligned pressure/scrub, translucent gravity water and connected creamy raised-bubble froth/trailing streaks. Original24/32 pools/reflection views/local cleaning/saves/car/kits/livery/camera/canonical retained; caller contact ownership fixed. Both-renderer197+197 visual/exact restoration checks,139+139 all-car animation,1402+1402 original wash and760-script parse pass. Actual motion/960 views/work cost/initial failures/scoped checkpoint: docs/GARAGE_WASH_POLISH_2026_10_14.md. No phone/attachment/APK/deploy/FPS/fullValidate/physics merge; owner/device style, first-contact and performance acceptance remains.
+ 
+ 2026-10-14 FRP01-FRP03/R01/V05/Q01: owner requires all27 published tracks playable from Free Race. Backed-up local PC schema14->34 repair and coherent0.59 verifier/client refresh preserve all30 identities, old revisions and82 personal bests; concurrent schema35 retained. Actual gallery20+7 pagination/download/native hashes/five-lap tickets142 checks pass. Current parallel phone APK14542413 preserved, installed hash/actual0.59 bytecode verified; Guest Winter Lonkero/Desert My way reach ordinary lap1/5 gameplay. Physical tail sweep interrupted by owner driving; no further touch input, full27 phone driving/FPS/hitch-free/production acceptance not claimed. Rejected speculative deletion never ran; zero deletions/archives. Actual attempts, USB local-service limit and task-only checkpoint: docs/FREE_RACE_PHONE_CATALOG_2026_10_14.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 MREV01-MREV02/R01/G01/V03-V05/Q01: high-priority menu fixes. One owner-bound native Garage prepares behind loading and survives primary menus/Settings/Profile/race results; one retained shell and one neighbor build per frame bound repeated work. Original input preferences, outgoing slides, car/camera/local cosmetics and reflection ordering retained. Challenges follows latest folder choice through pending list/detail/mutation requests with request/account fences. Both-renderer71+71/headless47/app101/Challenges165/swipe240/quality23/loading27/parser760 pass. Final desktop Settings dispatch0.8-1.7ms; cold construction still runs once under loading. Final same-world return/reflection pixels exact; independent native precision controls and initial failures recorded. No phone/APK/deployment; owner/device latency/memory acceptance remains. Actual commands, source hashes and task-only patch: docs/evidence/menu-high-priority-fixes-2026-10-14/report.json.
++
+ 2026-10-14 GWP01-GWP04/GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: refined actual Garage washing toward AAA target, incorporating the owner's further foam feedback. Soft detailed mitt/cuff, natural pressure/stroke/water, connected creamy raised-bubble lather and strict surface/cleanup controls within original pools/reflections/local condition/camera/canonical behavior. Both-renderer197+197/139+139/1402+1402 and760-script parse pass; real native motion, work cost, initial failure receipts and task-only checkpoint: docs/GARAGE_WASH_POLISH_2026_10_14.md. Owner/phone style/first-contact/performance acceptance remains; no phone/APK/deploy/fullValidate/physics merge.
+ 
+ 2026-10-14 FRP01-FRP03/R01/V05/Q01: owner requires all27 published tracks playable from Free Race. Backed-up local PC schema14->34 repair and coherent0.59 verifier/client refresh preserve all30 identities, old revisions and82 personal bests; concurrent schema35 retained. Actual gallery20+7 pagination/download/native hashes/five-lap tickets142 checks pass. Current parallel phone APK14542413 preserved, installed hash/actual0.59 bytecode verified; Guest Winter Lonkero/Desert My way reach ordinary lap1/5 gameplay. Physical tail sweep interrupted by owner driving; no further touch input, full27 phone driving/FPS/hitch-free/production acceptance not claimed. Rejected speculative deletion never ran; zero deletions/archives. Actual attempts, USB local-service limit and task-only checkpoint: docs/FREE_RACE_PHONE_CATALOG_2026_10_14.md.

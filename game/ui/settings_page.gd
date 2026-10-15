@@ -3,6 +3,7 @@ extends HBoxContainer
 ## Presentation and staged preferences; canonical driving stays outside this page.
 signal customize_requested
 signal account_requested
+signal privacy_changed(enabled: bool)
 
 var records: LocalRecords
 var signed_in: bool = false
@@ -18,6 +19,7 @@ var draft_labels: bool = true
 var draft_ghost: String = "lap"
 var draft_show_ads: bool = false
 var draft_simple_models: bool = false
+var draft_analytics: bool = false
 var draft_audio: Dictionary = {}
 var development_available: bool = OS.is_debug_build()
 var ad_test_busy: bool = false
@@ -39,6 +41,7 @@ const TITLES: Dictionary = {
 	"audio": ["Audio", "Balance the soundtrack, car sounds and menu feedback."],
 	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
 	"account": ["Account", "Manage the profile you race with."],
+	"privacy": ["Privacy", "Choose what optional information you share."],
 	"development": ["Development", "Test ads and simulate purchases without payment."],
 }
 
@@ -56,6 +59,7 @@ func _ready() -> void:
 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
 	draft_simple_models = bool(records.settings.get("simple_car_models",false))
+	draft_analytics = bool(records.settings.get("optional_analytics",false))
 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
 	add_child(ad_adapter)
@@ -98,6 +102,7 @@ func _build_sidebar() -> void:
 		["audio", "Audio", "Music and sound", "headphones"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
 		["account", "Account", "Profile and sign-in", "person"],
+		["privacy", "Privacy", "Data and account removal", "gear"],
 		["development", "Development", "Ads and testing", "gear"],
 	]:
 		var id: String = item[0]
@@ -193,7 +198,7 @@ func _show_section(id: String) -> void:
 		(item.button as Button).add_theme_stylebox_override("normal", style)
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
-	reset_button.visible = id != "account"
+	reset_button.visible = id not in ["account","privacy"]
 	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
@@ -206,6 +211,7 @@ func _show_section(id: String) -> void:
 		"audio": _audio()
 		"haptics": _haptics()
 		"account": _account()
+		"privacy": _privacy()
 		"development": _development()
 	_keep_category_visible(id)
 
@@ -488,6 +494,30 @@ func _changed() -> void:
 	status.text = "Unapplied changes"
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
 
+func _privacy() -> void:
+	var row: HBoxContainer = _row("OptionalAnalyticsSettings",18)
+	row.add_child(_copy("Share optional analytics", "Help improve menus, races and connection reliability. Shares usage, device/graphics information and bounded performance/network summaries with our backend. Off stops collection and clears pending observations on this device; online race verification continues."))
+	var toggle := CheckButton.new()
+	toggle.name = "OptionalAnalytics"
+	toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	toggle.text = "On" if draft_analytics else "Off"
+	toggle.button_pressed = draft_analytics
+	toggle.custom_minimum_size = Vector2(150,52)
+	toggle.toggled.connect(func(on: bool) -> void:
+		draft_analytics = on
+		toggle.text = "On" if on else "Off"
+		_changed())
+	row.add_child(toggle)
+	var policy: Button = MenuStyle.button("Read privacy policy",func() -> void:
+		if is_instance_valid(purchase_client): OS.shell_open(purchase_client.base_url()+"/privacy"))
+	policy.name = "PrivacyPolicy"
+	policy.disabled = not is_instance_valid(purchase_client) or purchase_client.base_url().is_empty()
+	body.add_child(policy)
+	var deletion: Button = MenuStyle.button("Manage account / delete account",func() -> void: account_requested.emit())
+	deletion.name = "PrivacyManageAccount"
+	body.add_child(deletion)
+	body.add_child(_label("Published tracks and historical standings remain under Removed account after account deletion. Local tracks, car condition and cosmetics stay on your device.",16,true))
+
 func _reset() -> void:
 	if section == "graphics":
 		draft_simple_models = false
@@ -518,6 +548,7 @@ func _apply() -> bool:
 	records.settings.control_labels = draft_labels
 	records.settings.ghost_mode = draft_ghost
 	records.settings.simple_car_models = draft_simple_models
+	records.settings.optional_analytics = draft_analytics
 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
 	if development_available: records.settings.development_show_ads = draft_show_ads
 	var error: Error = records.save_records()
@@ -525,6 +556,7 @@ func _apply() -> bool:
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
 	if error == OK: GameSoundtrack.instance().apply_settings(records.settings)
 	if error == OK: TouchControls.SteeringHaptics.press(draft_haptics)
+	if error == OK: privacy_changed.emit(draft_analytics)
 	return error == OK
 
 func _customize() -> void:

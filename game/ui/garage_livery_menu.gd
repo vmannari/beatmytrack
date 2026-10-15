@@ -15,6 +15,7 @@ var _contents: Dictionary = {}
 var _content: VBoxContainer
 var _editing_content: VBoxContainer
 var colour_pickers: Dictionary = {}
+var _sticker_category: String = "emblems"
 
 func _ready() -> void:
 	name = "GarageLiveryWorkbench"
@@ -70,7 +71,7 @@ func show_tab(tab: String) -> void:
 		_editing_content.queue_free()
 		_editing_content = null
 	var editing: bool = tab=="stickers" and page._sticker_editing
-	var key: String = tab+"/"+page._sticker_surface if tab=="stickers" else tab
+	var key: String = tab+"/"+page._sticker_surface+"/"+_sticker_category if tab=="stickers" else tab
 	if editing or not _contents.has(key):
 		_content = VBoxContainer.new()
 		_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -100,7 +101,7 @@ func active_control(control_name: String) -> Control:
 	return _content.find_child(control_name,true,false) as Control
 
 func _scroll() -> ScrollContainer:
-	var scroll := ScrollContainer.new()
+	var scroll: ScrollContainer = preload("res://ui/vertical_swipe_scroll.gd").new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
@@ -118,8 +119,9 @@ func _patterns() -> void:
 	grid.add_theme_constant_override("v_separation",10)
 	pattern_scroll.add_child(grid)
 	for index: int in range(page._preset_count()):
-		var title: String = GaragePage.LIVERY_NAMES[index] if index < 4 else LiveryCatalog.patterns[index-4].title
-		var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index < 4 else LiveryCatalog.patterns[index-4].id
+		var plain_count: int = GaragePage.LIVERY_NAMES.size()
+		var title: String = GaragePage.LIVERY_NAMES[index] if index < plain_count else LiveryCatalog.patterns[index-plain_count].title
+		var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index < plain_count else LiveryCatalog.patterns[index-plain_count].id
 		var texture: Texture2D = load("res://assets/liveries/previews_v2/"+page.vehicle_id+"/"+key+".png")
 		var tile: LiveryTile = LiveryTile.make(title,texture,page._select_livery.bind(index))
 		tile.name = "Pattern_"+key
@@ -216,9 +218,14 @@ func _stickers() -> void:
 	if page._sticker_editing:
 		page._build_sticker_tools(_content)
 		return
+	var scroll: ScrollContainer = _scroll()
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("separation",12)
+	scroll.add_child(content)
 	var panels := HBoxContainer.new()
 	panels.add_theme_constant_override("separation",8)
-	_content.add_child(panels)
+	content.add_child(panels)
 	for panel: String in VehicleLivery.SURFACES:
 		if panel == "roof" and not LiveryCatalog.has_roof(page.vehicle_id): continue
 		var button := MenuStyle.tab(panel.capitalize(),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
@@ -226,11 +233,15 @@ func _stickers() -> void:
 		button.custom_minimum_size.y = 48
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panels.add_child(button)
-	var scroll: ScrollContainer = _scroll()
-	var content := VBoxContainer.new()
-	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.add_theme_constant_override("separation",12)
-	scroll.add_child(content)
+	var categories := HBoxContainer.new()
+	categories.add_theme_constant_override("separation",8)
+	content.add_child(categories)
+	for category: String in ["emblems","sponsors"]:
+		var button := MenuStyle.tab(category.capitalize(),_choose_sticker_category.bind(category),category == _sticker_category)
+		button.name = "StickerCategory_"+category
+		button.custom_minimum_size.y = 44
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		categories.add_child(button)
 	var gallery := GridContainer.new()
 	gallery.name = "StickerGallery"
 	gallery.columns = 3
@@ -240,6 +251,7 @@ func _stickers() -> void:
 	content.add_child(gallery)
 	for index: int in range(LiveryCatalog.stickers.size()):
 		var sticker: Dictionary = LiveryCatalog.stickers[index]
+		if sticker.category != _sticker_category: continue
 		var tile: LiveryTile = LiveryTile.make(sticker.title,LiveryCatalog.texture(sticker.id+"_sticker"),page._choose_sticker.bind(index+1),true)
 		tile.name = "Sticker_"+sticker.id
 		tile.custom_minimum_size = Vector2(82,92)
@@ -249,7 +261,7 @@ func _stickers() -> void:
 		sticker_tiles[sticker.id] = tile
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation",8)
-	_content.add_child(footer)
+	content.add_child(footer)
 	var place := MenuStyle.button("Place sticker",page._edit_sticker_position.bind(true),true)
 	place.name = "PlaceSticker"
 	place.custom_minimum_size.y = 48
@@ -264,10 +276,17 @@ func _stickers() -> void:
 	clear.custom_minimum_size = Vector2(48,48)
 	footer.add_child(clear)
 
+func _choose_sticker_category(category: String) -> void:
+	if category not in ["emblems","sponsors"]: return
+	_sticker_category = category
+	page._sticker_editing = false
+	show_tab("stickers")
+
 func refresh() -> void:
 	var selected_index: int = page._preset_index()
 	# A custom colour retains the design's selected card.
-	if page.draft.pattern != "plain": selected_index = 4+LiveryCatalog.pattern_index(page.draft.pattern)
+	if page.draft.pattern != "plain": selected_index = GaragePage.LIVERY_NAMES.size()+LiveryCatalog.pattern_index(page.draft.pattern)
+	else: selected_index = 0 # Custom plain colours still belong to Midnight's design.
 	for index: int in pattern_tiles: pattern_tiles[index].set_selected(index == selected_index)
 	for slot: String in slot_buttons:
 		var button: LiveryColourChip = slot_buttons[slot]

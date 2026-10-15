@@ -84,7 +84,7 @@ func _run() -> void:
 	page = app.root_ui.find_child("GaragePage", true, false)
 	var shell: Control = app.root_ui
 	check(page.section == "cars" and page.gallery_slot.visible, "Garage opens the car carousel")
-	check(page.select_button.text == "Select car" and page.select_button.get_global_rect().position.y >= page.gallery.get_global_rect().end.y, "Select car occupies the action row below the carousel")
+	check(page.select_button.text == "SELECT" and page.select_button.get_global_rect().position.y >= page.gallery.get_global_rect().end.y, "SELECT occupies the action row below the carousel")
 	for id: String in VehicleCatalog.IDS:
 		var model: CarShowroom = page.thumbnails[id]
 		check(model.car.vehicle_id == id and model.read_only and not model.is_processing(), id + " carousel contains actual static 3D model")
@@ -191,11 +191,11 @@ func _run() -> void:
 		check(not page.showroom.trophy_view and page.showroom.camera.transform.is_equal_approx(car_view), "rapid mode changes cancel stale camera motion and return to the car")
 		await tap(page.find_child("GarageCustomise", true, false))
 		await tap(page.find_child("LiveryMenu_livery", true, false))
-		check(page.section == "customise" and page.livery_menu.pattern_tiles.size() == 24, "Patterns opens the named design browser")
-		page._select_livery(1)
+		check(page.section == "customise" and page.livery_menu.pattern_tiles.size() == GaragePage.LIVERY_NAMES.size()+LiveryCatalog.patterns.size(), "Patterns opens the named design browser")
+		page._select_livery(0)
 		var saved_livery: Dictionary = VehicleLivery.for_car(app.records.settings, "compact")
-		check(saved_livery.colors.body == "9a3e50" and saved_livery.colors.accent == "e4b74c", "selecting livery persists both paint slots")
-		check(page.showroom.car.paint_materials.body.albedo_color.to_html(false) == "9a3e50", "livery updates actual model")
+		check(saved_livery.colors.body == "273b50" and saved_livery.colors.accent == "ced7dc", "selecting Midnight persists both paint slots")
+		check(page.showroom.car.paint_materials.body.albedo_color.to_html(false) == "273b50", "Midnight updates actual model")
 		check(VehicleCondition.read(app.records, "compact").dirt == 0.85, "livery leaves accumulated dirt intact")
 		page._set_customise_tab("colours")
 		await settle()
@@ -218,7 +218,7 @@ func _run() -> void:
 		check(not page.showroom.wash_mode and not page.showroom.washing, "leaving Care stops the brush")
 		check(VehicleCondition.read(app.records, "compact").wash == page.showroom.weathering.snapshot().wash, "leaving Care commits exact partial wash")
 		await tap(page.find_child("GarageTuning", true, false))
-		check(page.section == "tuning" and not page.tools.find_children("*", "Range", true, false).any(func(control: Node) -> bool: return (control as Control).is_visible_in_tree()), "Tuning exposes no driving or handling sliders")
+		check(page.section == "tuning" and not page.tools.find_children("*", "Range", true, false).any(func(control: Node) -> bool: return (control is Slider or control is SpinBox) and (control as Control).is_visible_in_tree()), "Tuning exposes no driving or handling sliders")
 		check(app.records.key_for(app.selected_track, VehicleCatalog.config("compact")) == pb_key, "garage tools preserve canonical PB key")
 		await capture("tuning-" + str(dimensions.x))
 		await tap(page.find_child("GarageBack", true, false))
@@ -233,7 +233,7 @@ func _run() -> void:
 		var id: String = VehicleCatalog.IDS[index]
 		check(VehicleCatalog.selected == id and app.records.settings.selected_car == id and page.showroom.car.vehicle_id == id, id + " selection persists and switches actual model")
 		page._show_section("customise")
-		page._select_livery(2)
+		page._select_livery(0)
 		page._show_section("care")
 		check(page.showroom.weathering.dirt_amount == (0.85 if id == "compact" else 0.0), id + " independent local dirt")
 		page._show_section("cars")

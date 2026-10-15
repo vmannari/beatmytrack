@@ -19,7 +19,10 @@ func settle() -> void:
 func _run() -> void:
 	OS.set_environment("BMT_API_URL","")
 	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(CompactKits.ASSET_ROOT.path_join("manifest.json")))
-	check(manifest.meshes.size()==368,"bounded complete authored mesh catalog")
+	var counts_match: bool = manifest.category_counts.size()==4
+	for category: String in VehicleCustomisation.CATEGORIES:
+		if manifest.category_counts.get(category,-1)!=(13 if category=="aero" else 10): counts_match = false
+	check(manifest.version==3 and counts_match and manifest.meshes.size()<1400,"bounded expanded authored mesh catalog")
 	for key: String in manifest.meshes:
 		var resource: ArrayMesh = load(CompactKits.ASSET_ROOT.path_join("meshes/"+str(manifest.meshes[key].file)))
 		check(resource!=null and digest(var_to_bytes(resource.surface_get_arrays(0)))==manifest.meshes[key].surface_sha256,"prepared arrays exact "+key)

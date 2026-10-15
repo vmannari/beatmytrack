@@ -17,6 +17,9 @@ var menu_body_slot: Control
 var menu_body_backgrounds: Array[Control] = []
 var outgoing_menu_page: Control
 var menu_neighbors: Dictionary = {}
+var _garage_parking: Control
+var _retained_garage: GaragePage
+var _suspended_menu: Dictionary = {}
 var menu_neighbor_direction: int = 0
 var returning_menu_neighbor: Dictionary = {}
 const MENU_PAGE_GAP: float = 64.0
@@ -69,10 +72,13 @@ var browser_state: Dictionary = {}
 var discovery_provider := TrackDiscoveryProvider.new()
 var track_catalog: TrackCatalog
 var pending_menu_notice: String = ""
+var editor_preview_cancel: RefCounted
 var editor_preview_thread: Thread
 var editor_preview_document: Dictionary = {}
 var editor_raster_cache: Dictionary = {"enabled":true}
 var editor_compiled_cache: Array[Dictionary] = []
+const EDITOR_COMPILED_BUDGET: int = 16 * 1024 * 1024
+var editor_writes = preload("res://editor/write_queue.gd").new()
 var editor_saved_snapshot: Dictionary = {}
 var editor_route_pieces: Array = []
 var editor_route_fields: Dictionary = {}
@@ -141,16 +147,20 @@ var _telemetry_race_started: bool = false
 var _telemetry_race_finished: bool = false
 
 func _exit_tree() -> void:
+	_flush_editor_writes()
 	if is_instance_valid(_challenge_return_ui): _challenge_return_ui.queue_free()
 	_finish_preview_thread()
 
 func _finish_preview_thread() -> void:
 	if editor_preview_thread != null:
+		if editor_preview_cancel != null: editor_preview_cancel.cancel()
 		editor_preview_thread.wait_to_finish()
 		editor_preview_thread = null
 	editor_preview_document = {}
 
 func _process(_delta: float) -> void:
+	editor_writes.poll()
+	_apply_editor_writes()
 	if is_instance_valid(editor_loading) and is_instance_valid(canvas):
 		editor_loading.visible = editor_preview_thread != null or canvas.native_preview == null or editor_world._building
 	if editor_preview_thread == null or editor_preview_thread.is_alive(): return
@@ -173,10 +183,13 @@ func _process(_delta: float) -> void:
 	_update_editor_issues()
 
 func _queue_editor_preview() -> void:
-	if editor_preview_thread != null: return
+	if editor_preview_thread != null:
+		if editor_preview_cancel != null and document != editor_preview_document: editor_preview_cancel.cancel()
+		return
 	editor_preview_document = document.duplicate(true)
 	editor_preview_thread = Thread.new()
-	var error: Error = editor_preview_thread.start(_compile_editor_preview.bind(editor_preview_document))
+	editor_preview_cancel = preload("res://editor/work_job.gd").new()
+	var error: Error = editor_preview_thread.start(_compile_editor_preview.bind(editor_preview_document,editor_preview_cancel.cancelled))
 	if error != OK:
 		editor_preview_thread = null
 		var track: NativeTrack = _compile_editor_preview(editor_preview_document)
@@ -220,9 +233,12 @@ func _ready() -> void:
 	add_child(online)
 	product_telemetry = ProductTelemetry.new()
 	product_telemetry.client = online.client
+	product_telemetry.enabled = bool(records.settings.get("optional_analytics",false))
+	online.client.analytics_opt_in = product_telemetry.enabled
 	product_telemetry.storage_path = profile_root.path_join("product_telemetry.json")
 	product_telemetry.observations_due.connect(_telemetry_observe_activity)
 	add_child(product_telemetry)
+	online.account_removed.connect(_erase_removed_account)
 	client_quality = preload("res://backend/client_quality.gd").new()
 	client_quality.telemetry = product_telemetry
 	client_quality.app = self
@@ -235,6 +251,8 @@ func _ready() -> void:
 	cloud.load_cached()
 	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
 	rivalry.client = online.client
+	rivalry.appearance_provider = func(id: String) -> Dictionary:
+		return {"vehicle_id":id,"livery":VehicleLivery.for_car(records.settings,id),"customisation":VehicleCustomisation.for_car(records.settings,id)}
 	rivalry.cache_directory = cloud.cache_root().path_join("menu/rivalry")
 	add_child(rivalry)
 	rivalry.changed.connect(_rivalry_changed)
@@ -296,16 +314,16 @@ func _ready() -> void:
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 20
 	add_child(menu_layer)
+	# Prepare the native Garage once while startup is covered. Ordinary menu
+	# preparation only attaches this page; it never builds six cars in a frame.
+	_show_screen("restoring")
 	if not capture_path.is_empty():
+		await _prepare_garage_covered()
 		_show_screen(capture_screen)
 	else:
-		var restoring: bool = online.client.has_saved_session()
-		_show_screen("restoring" if restoring else "account")
 		await online.start_session()
-		if restoring:
-			_show_screen("rivalry" if online.client.signed_in() and not online.needs_username() else "account")
-		elif screen == "account" and online.client.signed_in() and not online.needs_username():
-			_show_screen("rivalry")
+		await _prepare_garage_covered()
+		_show_screen("rivalry" if online.client.signed_in() and not online.needs_username() else "account")
 	startup_complete = true
 	_telemetry_observe("menu_ready",{},"ready")
 	_prefetch_discovery()
@@ -321,6 +339,16 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	# Normalize before deciding whether the retained shell can be promoted.
+	if next == "play": next = "tracks"
+	if not _suspended_menu.is_empty() and _suspended_menu.records != records: _discard_suspended_menu()
+	if next not in ["settings","profile","account","restoring","tracks","rivalry","challenges","biome","garage","store"]: _discard_suspended_menu()
+	# Identity can also change while a race owns the screen. Prepare that new
+	# profile before returning to an interactive menu, never in a warm callback.
+	if startup_complete and next not in ["restoring","account"] and (not is_instance_valid(_retained_garage) or _retained_garage.records != records):
+		_rebuild_profile_menu(next)
+		return
+	if screen == "create" and next != "create": _flush_editor_writes()
 	if next != "challenge_create" and is_instance_valid(_challenge_return_ui):
 		_challenge_return_ui.queue_free()
 		_challenge_return_ui = null
@@ -338,10 +366,10 @@ func _show_screen(next: String) -> void:
 		game.queue_free()
 		game = null
 		rivalry_racing = false
+	if next in ["tracks","rivalry","challenges","biome","garage","store"] and _restore_suspended_menu(next): return
+	if next in ["settings","profile"] and is_instance_valid(menu_body_slot): _suspend_menu()
 	_navigation_generation += 1
 	_cancel_rivalry_entry()
-	# Home was retired; normalize old callers and saved/debug launch arguments to Race.
-	if next == "play": next = "tracks"
 	var drag_offset: float = menu_body.position.x if is_instance_valid(menu_body) and not is_zero_approx(menu_drag_offset) else 0.0
 	_stop_menu_page_motion()
 	menu_neighbors.clear()
@@ -383,6 +411,7 @@ func _show_screen(next: String) -> void:
 			outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
 			outgoing_menu_page.process_mode = Node.PROCESS_MODE_DISABLED
 			_disable_outgoing_menu(outgoing_menu_page)
+		if is_instance_valid(_retained_garage) and root_ui.is_ancestor_of(_retained_garage): _park_garage()
 		menu_layer.remove_child(root_ui)
 		root_ui.queue_free()
 	menu_body = null
@@ -573,12 +602,62 @@ func _layout_menu_body() -> void:
 		background.position = -inset
 		background.size = root_ui.size
 
+func _suspend_menu() -> void:
+	if not _suspended_menu.is_empty(): return
+	_stop_menu_page_motion()
+	_suspended_menu = {"root":root_ui,"body":menu_body,"slot":menu_body_slot,"backgrounds":menu_body_backgrounds,"neighbors":menu_neighbors.duplicate(),"content":content,"screen":screen,"records":records}
+	root_ui.hide()
+	root_ui.process_mode = Node.PROCESS_MODE_DISABLED
+	_hide_outgoing_layers(root_ui)
+	root_ui = null
+	menu_body = null
+	menu_body_slot = null
+	menu_body_backgrounds = []
+	menu_neighbors = {}
+	content = null
+
+func _discard_suspended_menu() -> void:
+	if _suspended_menu.is_empty(): return
+	var previous: Control = _suspended_menu.root
+	if is_instance_valid(previous):
+		if is_instance_valid(_retained_garage) and previous.is_ancestor_of(_retained_garage): _park_garage()
+		previous.queue_free()
+	_suspended_menu = {}
+
+func _restore_suspended_menu(destination: String) -> bool:
+	if _suspended_menu.is_empty(): return false
+	_navigation_generation += 1
+	_cancel_rivalry_entry()
+	_stop_menu_page_motion()
+	if is_instance_valid(root_ui):
+		root_ui.get_parent().remove_child(root_ui)
+		root_ui.queue_free()
+	root_ui = _suspended_menu.root
+	menu_body = _suspended_menu.body
+	menu_body_slot = _suspended_menu.slot
+	menu_body_backgrounds = _suspended_menu.backgrounds
+	menu_neighbors = _suspended_menu.neighbors
+	content = _suspended_menu.content
+	screen = _suspended_menu.screen
+	_suspended_menu = {}
+	root_ui.process_mode = Node.PROCESS_MODE_INHERIT
+	root_ui.show()
+	content.queue_sort()
+	account_button = root_ui.find_child("MenuAccount",true,false)
+	if is_instance_valid(account_button): account_button.text = online.player_name() if online.client.signed_in() else "Guest"
+	_layout_menu_body()
+	_navigate_menu_page(destination)
+	_activate_menu_page.call_deferred(_navigation_generation)
+	_prepare_menu_neighbors.call_deferred(_navigation_generation)
+	return true
+
 func _disable_outgoing_menu(node: Node) -> void:
-	if node is Control:
-		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		node.focus_mode = Control.FOCUS_NONE
+	_set_menu_preview_input(node,true)
+	_hide_outgoing_layers(node)
+
+func _hide_outgoing_layers(node: Node) -> void:
 	if node is CanvasLayer: node.hide()
-	for child: Node in node.get_children(): _disable_outgoing_menu(child)
+	for child: Node in node.get_children(): _hide_outgoing_layers(child)
 
 func _stop_menu_page_motion() -> void:
 	_stop_menu_edge_motion()
@@ -597,6 +676,7 @@ func _stop_menu_page_motion() -> void:
 			outgoing_menu_page.hide()
 			menu_neighbors[int(returning_menu_neighbor.direction)] = returning_menu_neighbor
 		else:
+			if is_instance_valid(_retained_garage) and outgoing_menu_page.is_ancestor_of(_retained_garage): _park_garage()
 			if outgoing_menu_page.get_parent() != null:
 				outgoing_menu_page.get_parent().remove_child(outgoing_menu_page)
 			outgoing_menu_page.queue_free()
@@ -741,8 +821,15 @@ func _return_menu_drag(progress: float, start: float, neighbor: Control, neighbo
 	if is_instance_valid(neighbor): neighbor.position.x = lerpf(neighbor_start, neighbor_end, blend)
 
 func _prepare_menu_neighbors(generation: int) -> void:
-	# Warm actual page controls between gestures, after the viewport has laid out.
-	await get_tree().process_frame
+	# A signal callback drops safely with its owner; a suspended method cannot
+	# resume after app teardown. Race loading also cancels unnecessary page work.
+	if generation != _navigation_generation or not is_inside_tree(): return
+	var callback: Callable = _prepare_menu_neighbors_frame.bind(generation)
+	if not get_tree().process_frame.is_connected(callback):
+		get_tree().process_frame.connect(callback,CONNECT_ONE_SHOT)
+
+func _prepare_menu_neighbors_frame(generation: int) -> void:
+	if cloud_starting or is_instance_valid(game) or not root_ui.visible: return
 	if generation != _navigation_generation or not is_instance_valid(menu_body_slot): return
 	if menu_page_motion != null: return
 	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
@@ -754,8 +841,8 @@ func _prepare_menu_neighbors(generation: int) -> void:
 	var current: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges"] else screen
 	var index: int = pages.find(current)
 	if index < 0: return
-	# Keep all primary pages warm too, for another swipe immediately after
-	# commitment. These are shared textures and inactive controls, not extra apps.
+	# Keep the real swipe pages, but publish at most one per frame. Heavy native
+	# Garage construction has already completed behind the startup cover.
 	for destination: int in range(pages.size()):
 		var direction: int = destination - index
 		if direction == 0: continue
@@ -785,6 +872,7 @@ func _prepare_menu_neighbors(generation: int) -> void:
 			"garage": _garage(column)
 			"store":
 				var store := preload("res://ui/store_page.gd").new()
+				store.page_preview = true
 				store.client = online.client
 				store.sign_in_requested.connect(_open_account)
 				_connect_store_telemetry(store)
@@ -793,12 +881,17 @@ func _prepare_menu_neighbors(generation: int) -> void:
 		menu_neighbors[direction] = {"body":body,"content":column,"backgrounds":backgrounds,"screen":next}
 		body.position.x = menu_body_slot.size.x * direction
 		_layout_menu_body()
+		_prepare_menu_neighbors.call_deferred(generation)
+		break
 	_hide_warmed_menu_neighbors.call_deferred(generation)
 
 func _hide_warmed_menu_neighbors(generation: int) -> void:
-	# Let CanvasItems prepare draw commands and font glyphs once, offscreen and
-	# clipped, so revealing them does not defer that work to the finger's first move.
-	await get_tree().process_frame
+	if generation != _navigation_generation or not is_inside_tree(): return
+	var callback: Callable = _hide_warmed_menu_neighbors_frame.bind(generation)
+	if not get_tree().process_frame.is_connected(callback):
+		get_tree().process_frame.connect(callback,CONNECT_ONE_SHOT)
+
+func _hide_warmed_menu_neighbors_frame(generation: int) -> void:
 	if generation != _navigation_generation: return
 	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
 	if swipe != null and swipe.pointer != -1: return
@@ -873,7 +966,10 @@ func _commit_menu_neighbor(direction: int) -> void:
 	_slide_menu_page(signi(direction), offset)
 
 func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> void:
-	if destination == "rivalry":
+	if destination == "store":
+		var store: Node = column.find_child("StorePage",true,false)
+		if store != null: store.activate()
+	elif destination == "rivalry":
 		_rivalry(column)
 	elif destination == "garage":
 		var garage: GaragePage = column.find_child("GaragePage",true,false) as GaragePage
@@ -932,6 +1028,9 @@ func _activate_menu_page(generation: int) -> void:
 		browser.activate_page()
 	if screen == "rivalry" and not rivalry.model.sample and online.client.signed_in(): rivalry.refresh(false)
 	if screen == "challenges": challenges.refresh()
+	if screen == "store":
+		var store: Node = menu_body.find_child("StorePage",true,false)
+		if store != null: store.activate()
 
 func _account_changed() -> void:
 	if product_telemetry != null:
@@ -939,6 +1038,10 @@ func _account_changed() -> void:
 		if startup_complete: _telemetry_observe("menu_ready",{},"ready")
 	var previous_profile: String = active_profile
 	_select_player_storage()
+	if online.client.signed_in() and not bool(online.client.player.get("analytics_enabled",true)) and bool(records.settings.get("optional_analytics",false)):
+		records.settings.optional_analytics = false
+		records.save_records()
+	_apply_privacy_choice(bool(records.settings.get("optional_analytics",false)))
 	if not challenge_invitation.is_empty() and not is_instance_valid(game):
 		_open_challenges()
 		challenges.open(challenge_invitation)
@@ -949,7 +1052,7 @@ func _account_changed() -> void:
 	if is_instance_valid(account_button):
 		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
 	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
-		_show_screen("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
+		_rebuild_profile_menu("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
 	_prefetch_discovery()
 	_prefetch_rivalry()
 
@@ -991,6 +1094,7 @@ func _select_player_storage() -> void:
 				_profile_draft_recovery[active_profile] = document.duplicate(true)
 				profile_save_error = "The previous draft could not be saved. It remains in memory for that account; check available storage."
 			else: _profile_draft_recovery.erase(active_profile)
+	_flush_editor_writes()
 	_navigation_generation += 1
 	_finish_preview_thread()
 	active_profile = scope
@@ -1212,10 +1316,7 @@ func _challenges(parent: VBoxContainer = null) -> void:
 	page.outcome = challenges.outcome
 	page.mode_requested.connect(_request_race_mode)
 	page.folder_requested.connect(func(folder: String) -> void:
-		challenges.folder = folder
-		challenges.items.clear()
-		challenges.selected = {}
-		challenges.refresh())
+		challenges.select_folder(folder))
 	page.selected_requested.connect(func(code: String) -> void: challenges.open(code))
 	page.create_requested.connect(func() -> void: _create_challenge_dialog())
 	page.code_requested.connect(_challenge_code_dialog)
@@ -1491,10 +1592,13 @@ func _rivalry_changed() -> void:
 func _rivalry(parent: VBoxContainer = null) -> void:
 	if parent == null: parent = content
 	if parent == content and screen == "rivalry": _remember_rivalry_standings(parent)
-	for child: Node in parent.get_children():
-		parent.remove_child(child)
-		child.queue_free()
-	var page := WeeklyRivalryPage.new()
+	var page: WeeklyRivalryPage = parent.find_child("WeeklyRivalryPage",true,false) as WeeklyRivalryPage
+	var retained: bool = page != null
+	if not retained:
+		for child: Node in parent.get_children():
+			parent.remove_child(child)
+			child.queue_free()
+		page = WeeklyRivalryPage.new()
 	page.model = rivalry.model
 	page.finale_livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
 	page.finale_customisation = VehicleCustomisation.for_car(records.settings,rivalry.model.vehicle_id)
@@ -1510,6 +1614,11 @@ func _rivalry(parent: VBoxContainer = null) -> void:
 	page.signed_in = online.client.signed_in()
 	page.pending_result = rivalry_result_pending
 	page.race_details = rivalry_race_details
+	if retained:
+		var rebuilt: bool = page.refresh_presentation()
+		_keep_race_mode_rail_fixed(page)
+		if rebuilt and page.section == "detail" and not rivalry.model.sample and not rivalry.model.tracks.is_empty(): _prepare_rivalry_track_preview(page,rivalry_track)
+		return
 	page.section_requested.connect(func(section: String) -> void:
 		if is_instance_valid(game):
 			remove_child(game)
@@ -1618,13 +1727,13 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 		return
 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
 	loading.stage("Downloading track…")
-	var downloaded: bool = await cloud.download(entry)
+	var downloaded: Dictionary = await cloud.download_document(entry)
 	if not _race_loading_matches(loading_id): return
 	if navigation != _navigation_generation or original_scope != rivalry.scope():
 		cloud_starting = false
 		_close_race_loading(loading_id)
 		return
-	if not downloaded:
+	if downloaded.is_empty():
 		cloud_starting = false
 		_close_race_loading(loading_id)
 		rivalry.error = cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again."
@@ -1638,7 +1747,12 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 		cloud_starting = false
 		_close_race_loading(loading_id)
 		return
-	var track: NativeTrack = cloud.compile_entry(entry)
+	var track: NativeTrack = await online.client._background(cloud.compile_document.bind(entry,downloaded))
+	if not _race_loading_matches(loading_id): return
+	if navigation != _navigation_generation or original_scope != rivalry.scope():
+		cloud_starting = false
+		_close_race_loading(loading_id)
+		return
 	if track == null:
 		cloud_starting = false
 		_close_race_loading(loading_id)
@@ -1662,9 +1776,74 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 	selected_track = track
 	await _start_race(track,false,false,issued)
 
-func _garage(parent: VBoxContainer = null) -> void:
+func _ensure_garage_parking() -> void:
+	if not is_instance_valid(_garage_parking):
+		_garage_parking = VBoxContainer.new()
+		_garage_parking.name = "RetainedGarage"
+		_garage_parking.process_mode = Node.PROCESS_MODE_DISABLED
+		menu_layer.add_child(_garage_parking)
+		menu_layer.move_child(_garage_parking,0)
+		MenuStyle.fill(_garage_parking)
+		_set_menu_preview_input(_garage_parking,true)
+		_garage_parking.hide()
+
+func _park_garage() -> void:
+	if not is_instance_valid(_retained_garage): return
+	_ensure_garage_parking()
+	if _retained_garage.get_parent() != _garage_parking:
+		_retained_garage.reparent(_garage_parking,false)
+
+func _prepare_garage_covered() -> void:
+	if is_instance_valid(_retained_garage) and _retained_garage.records == records: return
+	if screen != "restoring": _show_screen("restoring")
+	# Draw the ordinary startup cover before the one-time native construction.
+	# This deliberately pays the original cold cost at startup, not under menu
+	# input. No geometry/material/render settings or preview fidelity changes.
+	var generation: int = _navigation_generation
+	var owner_records: LocalRecords = records
+	await get_tree().process_frame
+	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+	if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
+		_retained_garage.get_parent().remove_child(_retained_garage)
+		_retained_garage.queue_free()
+		_retained_garage = null
+	_ensure_garage_parking()
+	_garage(_garage_parking)
+	# Submit the original views under the opaque cover too, so first menu use
+	# does not inherit their first shader draw. The parking slot cannot take input.
+	_garage_parking.show()
+	for _frame: int in range(2):
+		await get_tree().process_frame
+		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+		# The parking branch is inactive. Present its container-managed rectangles
+		# explicitly so the covered draws use real view sizes, rather than 1x1s.
+		_retained_garage._present_menu_layout()
+		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+	_garage_parking.hide()
+
+func _rebuild_profile_menu(destination: String) -> void:
+	_show_screen("restoring")
+	var generation: int = _navigation_generation
+	var owner_records: LocalRecords = records
+	await _prepare_garage_covered()
+	if not is_inside_tree() or generation != _navigation_generation or owner_records != records or is_instance_valid(game): return
+	_show_screen(destination)
+
+func _garage(parent: Control = null) -> void:
 	if parent == null: parent = content
+	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
+		_retained_garage.get_parent().remove_child(_retained_garage)
+		_retained_garage.queue_free()
+		_retained_garage = null
+	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
+		if _retained_garage.get_parent() != parent: _retained_garage.reparent(parent,false)
+		_retained_garage.refresh_selection()
+		_retained_garage.circuit_title = track_title(selected_track).to_upper()
+		return
 	var page := GaragePage.new()
+	_retained_garage = page
 	page.records = records
 	page.circuit_title = track_title(selected_track).to_upper()
 	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1683,7 +1862,34 @@ func _settings() -> void:
 	page.country_code = str(online.client.player.get("country_code","")) if page.signed_in else ""
 	page.customize_requested.connect(_customize_controls)
 	page.account_requested.connect(_open_account)
+	page.privacy_changed.connect(_apply_privacy_choice)
 	content.add_child(page)
+
+func _apply_privacy_choice(enabled: bool) -> void:
+	if product_telemetry == null: return
+	online.client.analytics_opt_in = enabled
+	product_telemetry.set_enabled(enabled)
+	if online.client.signed_in() and online.client.deletion_supported() and bool(online.client.player.get("analytics_enabled",true)) != enabled:
+		var result: Dictionary = await online.client.request_api("/privacy/preferences",HTTPClient.METHOD_POST,{"analytics_enabled":enabled},"",true)
+		if result.ok:
+			online.client.player.analytics_enabled = enabled
+			product_telemetry.update_identity()
+		elif not enabled: _notice("Sharing is off on this device. The server preference could not be saved; retry when connected.")
+
+func _erase_removed_account(origin: String, player_id: String) -> void:
+	product_telemetry.erase_account(origin,player_id)
+	var paths: Array[String] = [
+		(root_cloud_path(origin)).path_join("players").path_join(player_id.sha256_text()),
+		online.client.resume_recovery._directory(player_id,origin),
+		library.directory.path_join(".workflow").path_join((origin+"/"+player_id).sha256_text())]
+	# Let pending replay/file preparations settle before a separate menu IO task
+	# removes their old scope. No scene tree or canonical step enters that task.
+	while not online.client._encoding_threads.is_empty(): await get_tree().process_frame
+	var cleaned: Variant = await online.client._background(preload("res://backend/privacy_local.gd").erase_roots.bind(paths))
+	if cleaned != true and is_inside_tree(): _notice("Account removed. Some local recovery files could not be erased; check writable storage.")
+
+func root_cloud_path(origin: String) -> String:
+	return (cloud.root_override if not cloud.root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
 
 func _customize_controls() -> void:
 	var editor := ControlLayoutEditor.new()
@@ -1719,6 +1925,7 @@ func _new_document() -> void:
 	_start_new_document()
 
 func _start_new_document() -> void:
+	_flush_editor_writes()
 	_finish_preview_thread()
 	editor_view.clear()
 	object_browser_state.clear()
@@ -2588,7 +2795,29 @@ func _editor_copy_is_current(snapshot: Dictionary, storage: TrackLibrary, relati
 	var path: String = library.directory.path_join(relative_path)
 	return FileAccess.file_exists(path) and FileAccess.get_sha256(path) == disk_hash
 
+func _apply_editor_writes() -> void:
+	for receipt: Dictionary in editor_writes.completed:
+		var storage: TrackLibrary = receipt.storage
+		if receipt.error == OK: storage.revision += 1
+		if storage != library or receipt.document != document: continue
+		library.last_error = receipt.message
+		if receipt.error != OK or not editor_retry_original:
+			editor_save_error = receipt.error
+			editor_save_message = "Could not save: "+str(receipt.message) if receipt.error != OK else ""
+		if receipt.error == OK:
+			editor_wip_snapshot = receipt.document.duplicate(true); editor_wip_store = storage; editor_wip_disk_hash = receipt.digest
+			editor_wip_saved = TrackLibrary.draft_fingerprint(receipt.document)
+			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = "WIP autosaved. Saved original unchanged."
+		elif is_inside_tree(): _editor_hint(editor_save_message)
+		if is_inside_tree(): _update_editor_save_state()
+	editor_writes.completed.clear()
+
+func _flush_editor_writes() -> void:
+	editor_writes.flush(); _apply_editor_writes()
+
 func _save_draft(background_preview: bool = false) -> Error:
+	var deferred_write: bool = background_preview and is_instance_valid(canvas) and canvas.active_pointer != -99 and library.get_script() == preload("res://persistence/track_library.gd")
+	if not deferred_write: _flush_editor_writes()
 	if not background_preview: _finish_preview_thread()
 	if document.is_empty(): return ERR_INVALID_DATA
 	_stamp_creator()
@@ -2605,18 +2834,21 @@ func _save_draft(background_preview: bool = false) -> Error:
 	var message: String
 	# A successful immutable snapshot belongs to this exact local library.
 	# Missing primaries and failed writes still take the real recovery path.
-	var wip_current: bool = (editor_save_error == OK or editor_retry_original) and _editor_copy_is_current(editor_wip_snapshot,editor_wip_store,"wip/"+str(document.id)+".json",editor_wip_disk_hash) and not library.is_published(str(document.id))
-	var save_error: Error = OK if wip_current else library.save_wip(document)
+	# A durable match can still be overwritten by an older in-flight revision.
+	# Queue this final state after it; enqueue coalesces only unstarted writes.
+	var wip_current: bool = not editor_writes.unsettled(library,str(document.id)) and (editor_save_error == OK or editor_retry_original) and _editor_copy_is_current(editor_wip_snapshot,editor_wip_store,"wip/"+str(document.id)+".json",editor_wip_disk_hash) and not library.is_published(str(document.id))
+	var save_error: Error = OK if wip_current else editor_writes.enqueue(library,document) if deferred_write else library.save_wip(document)
 	if wip_current: library.last_error = ""
 	if save_error != OK or not editor_retry_original:
 		editor_save_error = save_error
 		editor_save_message = "Could not save: "+library.last_error if save_error != OK else ""
-	if save_error == OK and not wip_current:
+	if save_error == OK and not wip_current and not deferred_write:
 		editor_wip_saved = TrackLibrary.draft_fingerprint(document)
 		editor_wip_snapshot = document.duplicate(true)
 		editor_wip_store = library
 		editor_wip_disk_hash = FileAccess.get_sha256(library.directory.path_join("wip/"+str(document.id)+".json"))
 	if save_error != OK: message = "Could not save: " + library.last_error
+	elif deferred_write and not wip_current: message = "Saving..."
 	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
 	else: message = "WIP autosaved. Saved original unchanged."
 	if is_instance_valid(editor_status):
@@ -2866,14 +3098,14 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	await _present_race_loading()
 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
 	overlay.stage("Downloading track...")
-	var downloaded: bool = await cloud.download(entry)
+	var downloaded: Dictionary = await cloud.download_document(entry)
 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
-	if not downloaded:
+	if downloaded.is_empty():
 		_close_race_loading(overlay_id)
 		_notice(cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again.")
 		return
 	overlay.stage("Preparing track…")
-	var ready: Variant = await online.client._background(cloud.compile_entry.bind(entry))
+	var ready: Variant = await online.client._background(cloud.compile_document.bind(entry,downloaded))
 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
 	if not ready is NativeTrack:
 		_close_race_loading(overlay_id)
@@ -2884,12 +3116,12 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	for property: Dictionary in ready.get_property_list():
 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: track.set(property.name,ready.get(property.name))
 	cloud.remember_compiled_entry(entry,track)
+	track_catalog.remember_track(entry,track)
 	cloud_starting = false
-	_close_race_loading(overlay_id)
-	await _start_race(track,from_editor,offline_only,issued)
+	await _start_race(track,from_editor,offline_only,issued,overlay)
 
-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}) -> void:
-	if cloud_starting or is_instance_valid(race_loading): return
+func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null) -> void:
+	if cloud_starting or (is_instance_valid(race_loading) and race_loading != prepared_loading): return
 	if track == null:
 		_notice("Choose a track before starting a race.")
 		return
@@ -2904,10 +3136,10 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	var starting_screen: String = screen
 	var selected_vehicle: String = VehicleCatalog.selected
 	var starting_selection: NativeTrack = selected_track
-	var loading: RaceLoading = _open_race_loading(track, from_editor)
+	var loading: RaceLoading = prepared_loading if is_instance_valid(prepared_loading) else _open_race_loading(track, from_editor)
 	var loading_id: int = loading.get_instance_id()
 	cloud_starting = true
-	await _present_race_loading()
+	if prepared_loading == null: await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	cloud_ticket = {}
@@ -2950,6 +3182,15 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+	var prepared_roads: Dictionary = {}
+	if NativeTrackVisual.race_roads_need_preparation(track):
+		var road_job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
+		while not road_job.done:
+			await get_tree().process_frame
+			if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
+				road_job.cancel()
+				return
+		prepared_roads = road_job.result if road_job.result is Dictionary else {}
 	returning_to_editor = from_editor
 	challenge_racing = rivalry_issued.has("challenge_code")
 	challenge_practice = offline_only and screen == "challenges" and not challenges.selected.is_empty()
@@ -2960,9 +3201,11 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		test_library_snapshot = library
 		test_scope_snapshot = lifecycle.scope() if lifecycle != null else ""
 		test_vehicle_snapshot = VehicleCatalog.selected
-	if not from_editor:
+	if not from_editor and records.settings.get("last_track","") != track.identity:
+		var previous_track: String = str(records.settings.get("last_track",""))
 		records.settings["last_track"] = track.identity
 		if records.save_records() != OK:
+			records.settings["last_track"] = previous_track
 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
@@ -2974,6 +3217,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.set_meta("soundtrack_rivalry", rivalry_racing)
 	game.set_meta("race_offline_only", offline_only)
 	game.set("initial_track", track)
+	game.set("prepared_road_packet",prepared_roads)
 	game.set("production_mode", true)
 	game.set("resume_client",online.client)
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
@@ -2994,6 +3238,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	elif challenge_racing or (offline_only and screen == "challenges"):
 		game.ghost_mode = "race" if not challenge_recording.is_empty() else "off"
 		game.ghost_bests = {"race":challenge_recording} if not challenge_recording.is_empty() else {}
+	game.call("_prepare_personal_ghost")
 	var hud: PlaygroundHUD = game.get("hud")
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
@@ -3005,14 +3250,59 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	loading.stage("Preparing start…")
 	var prepared_finish: VehicleWeathering = game.get("car_weathering")
 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
+	var prepared_personal_ghost: PersonalGhost = game.get("personal_ghost")
+	var ghost_pose: Transform3D = Transform3D.IDENTITY
+	var ghost_visible: bool = false
+	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+		ghost_pose = prepared_personal_ghost.transform
+		ghost_visible = prepared_personal_ghost.visible
+		prepared_personal_ghost.position = game.get("car").position+Vector3.UP*0.05
+		prepared_personal_ghost.rotation = game.get("car").rotation
+		prepared_personal_ghost.show()
+	var bridge_preparation = preload("res://track/bridge_render_preparation.gd")
+	var prepared_bridges: Array[Dictionary] = []
+	if DisplayServer.get_name() != "headless": prepared_bridges = bridge_preparation.begin(game.get("track_ground"), game.get("camera"))
+	var bridge_meshes: int = prepared_bridges.size()
+	var prepared_hazards: Array[Dictionary] = []
+	if DisplayServer.get_name() != "headless": prepared_hazards = bridge_preparation.begin_groups(game.get("track_ground"), game.get("camera"), ["race_hazard_rendering"])
+	var hazard_meshes: int = prepared_hazards.size()
+	var trail_preparation = preload("res://vehicle/trail_render_preparation.gd")
+	var prepared_trail: MultiMeshInstance3D = trail_preparation.begin(game.get("trails"), game.get("camera"), track, game.get("sim").state)
+	var trail_warmed: bool = prepared_trail != null
+	var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")
+	var prepared_effects: Dictionary = effect_preparation.begin(game.get_node("World"),game.get("sand_dust"),game.get("camera"),game.get("impact_cracks"))
+	var effect_counts: Dictionary = {"particles":prepared_effects.particles,"batches":prepared_effects.batches,"damage_meshes":prepared_effects.damage_meshes,"canvas":prepared_effects.canvas}
+	var preparation_started: int = Time.get_ticks_usec()
 	var finish_drawn: bool = await _present_race_loading()
+	var night_preparation: Dictionary = await _prepare_night_lighting(loading_id, prepared_game)
+	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+		prepared_personal_ghost.transform = ghost_pose
+		prepared_personal_ghost.visible = ghost_visible
+	# Restore even if navigation or the loading deadline removed the game.
+	bridge_preparation.end(prepared_bridges)
+	bridge_preparation.end(prepared_hazards)
+	if is_instance_valid(prepared_trail): trail_preparation.end(prepared_trail)
+	effect_preparation.end(prepared_effects)
+	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
 	# Always restore after the bounded draw wait, including cancellation/focus loss.
 	prepared_finish.end_render_warmup()
-	if finish_warmed and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
+	if finish_warmed and night_preparation.contexts > 0:
+		# Clean and weathered car materials can have separate shader RIDs.
+		var clean_night: Dictionary = await _prepare_night_lighting(loading_id, prepared_game)
+		night_preparation.drawn = night_preparation.drawn and clean_night.drawn
+		night_preparation.contexts += clean_night.contexts
+		night_preparation.sets += clean_night.sets
+		night_preparation.elapsed_ms += clean_night.elapsed_ms
+		night_preparation.truncated = maxi(night_preparation.truncated, clean_night.truncated)
+		night_preparation.light_limit = night_preparation.light_limit or clean_night.light_limit
+	if (finish_warmed or night_preparation.contexts > 0) and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
 		game.call("_process", 0.0)
 		# The exact clean/livery finish is visible before releasing the loading cover.
 		await _present_race_loading()
-	if not _race_loading_matches(loading_id): return
+	if not _race_loading_matches(loading_id):
+		if is_instance_valid(prepared_game) and game == prepared_game and prepared_game.process_mode == Node.PROCESS_MODE_DISABLED:
+			_leave_race()
+		return
 	if not is_instance_valid(prepared_game) or game != prepared_game:
 		cloud_starting = false
 		_close_race_loading(loading_id)
@@ -3023,10 +3313,44 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		_leave_race()
 		return
 	game.set("weathering_prepared", finish_drawn)
+	game.set("bridge_prepared", finish_drawn and bridge_meshes > 0)
+	game.set("bridge_preparation_meshes", bridge_meshes)
+	game.set("hazards_prepared", finish_drawn and hazard_meshes > 0)
+	game.set("hazard_preparation_meshes", hazard_meshes)
+	game.set("trails_prepared", finish_drawn and trail_warmed)
+	game.set("effects_prepared", finish_drawn and effect_counts.particles > 0)
+	game.set("effect_preparation_counts",effect_counts)
+	game.set("night_preparation",night_preparation)
+	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
+	game.set("bridge_preparation_ms", preparation_ms)
 	game.process_mode = Node.PROCESS_MODE_INHERIT
 	_telemetry_begin_attempt(track)
 	cloud_starting = false
 	_close_race_loading(loading_id)
+
+func _prepare_night_lighting(loading_id: int, prepared_game: Node) -> Dictionary:
+	var summary: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+	if DisplayServer.get_name() == "headless" or RenderingServer.get_current_rendering_method() != "gl_compatibility": return summary
+	if not _race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or game != prepared_game: return summary
+	var track: NativeTrack = prepared_game.get("native_track")
+	if track == null or track.metadata.get("theme", "pine") != "night_city": return summary
+	var preparation = preload("res://track/night_render_preparation.gd")
+	var started: int = Time.get_ticks_usec()
+	var prepared: Dictionary = preparation.begin(prepared_game.get_node("World"), prepared_game.get("camera"))
+	summary.items = prepared.items
+	summary.truncated = prepared.truncated
+	summary.light_limit = prepared.light_limit
+	if prepared.nodes.size() == 2:
+		for context: int in range(preparation.CONTEXTS):
+			if not _race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or game != prepared_game: break
+			preparation.set_context(prepared, context)
+			if not await _present_race_loading(): break
+			summary.contexts += 1
+		summary.drawn = summary.contexts == preparation.CONTEXTS
+		summary.sets = 1
+	preparation.end(prepared)
+	summary.elapsed_ms = (Time.get_ticks_usec() - started) / 1000.0
+	return summary
 
 func _edit_here(position: Vector2) -> void:
 	_leave_race()
@@ -3116,6 +3440,7 @@ func _results() -> void:
 	# Continue or a background result update can revisit the previous page.
 	if screen == "rivalry" and is_instance_valid(content): _remember_rivalry_standings(content)
 	_stop_menu_page_motion()
+	if is_instance_valid(_retained_garage) and root_ui.is_ancestor_of(_retained_garage): _park_garage()
 	menu_neighbors.clear()
 	content = null
 	menu_body = null
@@ -3256,10 +3581,9 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 	parent.add_child(page)
 
 func _next_result_race(recommendation: Dictionary) -> void:
-	if recommendation.entry.source == "cloud" and not await cloud.download(recommendation.entry):
-		_notice(cloud.last_error)
-		return
-	var next_track: NativeTrack = track_catalog.resolve(recommendation.entry)
+	var next_track: NativeTrack = track_catalog.cached_track(recommendation.entry)
+	if next_track == null:
+		next_track = cloud.presentation_track(recommendation.entry) if recommendation.entry.source == "cloud" else track_catalog.resolve(recommendation.entry)
 	if next_track == null:
 		_notice("This track is no longer available. Choose another track.")
 		return
@@ -3495,6 +3819,7 @@ func _save_track_explicit() -> void:
 	_save_track_now()
 
 func _save_track_now() -> bool:
+	_flush_editor_writes()
 	if not _commit_editor_previews(): return false
 	_stamp_creator()
 	var id: String = str(document.id)
@@ -3543,6 +3868,8 @@ func _editor_has_unsaved_changes() -> bool:
 	return editor_save_error != OK or _has_pending_editor_work() or editor_saved_snapshot.is_empty() or TrackLibrary.draft_fingerprint(document) != TrackLibrary.draft_fingerprint(editor_saved_snapshot)
 
 func _request_editor_exit() -> void:
+	# Apply final write errors before deciding whether departure needs a retry.
+	_flush_editor_writes()
 	if not _editor_has_unsaved_changes():
 		_show_screen("tracks")
 		return
@@ -3783,6 +4110,7 @@ func _confirm_delete_draft(id: String, title: String) -> void:
 	dialog.dialog_text = 'Delete "%s" and its autosave from this device?\nPublished versions stay available.\nThis cannot be undone.' % title
 	dialog.ok_button_text = "Delete draft"
 	dialog.confirmed.connect(func() -> void:
+		_flush_editor_writes()
 		if lifecycle != null and not lifecycle.archive_draft(id):
 			_notice(lifecycle.last_error)
 			return
@@ -3830,19 +4158,25 @@ func _editor_track_preview() -> NativeTrack:
 	_finish_preview_thread()
 	return _compile_editor_preview(document)
 
-func _compile_editor_preview(source: Dictionary) -> NativeTrack:
+func _compile_editor_preview(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
 	# Only the single preview worker (or its joined foreground replacement)
 	# accesses this bounded cache. Undo can reuse collision and route data too.
-	for entry: Dictionary in editor_compiled_cache:
-		if entry.document == source: return entry.track
-	var result: NativeTrack = _compile_editor_preview_uncached(source)
+	for index: int in range(editor_compiled_cache.size()):
+		var entry: Dictionary = editor_compiled_cache[index]
+		if entry.document == source:
+			editor_compiled_cache.remove_at(index); editor_compiled_cache.append(entry); return entry.track
+	var result: NativeTrack = _compile_editor_preview_uncached(source,cancelled)
 	if result != null:
-		editor_compiled_cache.append({"document":source.duplicate(true),"track":result})
-		if editor_compiled_cache.size() > 3: editor_compiled_cache.pop_front()
+		var size: int = var_to_bytes(preload("res://editor/prepared_track_cache.gd").fields(result)).size()+var_to_bytes(source).size()
+		if size <= EDITOR_COMPILED_BUDGET:
+			var total: int = size
+			for entry: Dictionary in editor_compiled_cache: total += int(entry.bytes)
+			while not editor_compiled_cache.is_empty() and (editor_compiled_cache.size() >= 3 or total > EDITOR_COMPILED_BUDGET): total -= int(editor_compiled_cache.pop_front().bytes)
+			editor_compiled_cache.append({"document":source.duplicate(true),"track":result,"bytes":size})
 	return result
 
-func _compile_editor_preview_uncached(source: Dictionary) -> NativeTrack:
-	if TrackDocument.validate(source).is_empty(): return _compile_editor_with_masks(source)
+func _compile_editor_preview_uncached(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
+	if TrackDocument.validate(source).is_empty(): return _compile_editor_with_masks(source,cancelled)
 	if not TrackDocument.validate(source,false).is_empty(): return null
 	# A draft may have an unfinished lap. Render its actual map using a safe
 	# preview-only route; never change the saved route or permit racing it.
@@ -3850,13 +4184,12 @@ func _compile_editor_preview_uncached(source: Dictionary) -> NativeTrack:
 	var fallback: Dictionary = TrackDocument.create_default()
 	for key: String in ["points","widths","corners"]: preview_document[key] = fallback[key]
 	preview_document.route_override = true
-	return _compile_editor_with_masks(preview_document)
+	return _compile_editor_with_masks(preview_document,cancelled)
 
-func _compile_editor_with_masks(source: Dictionary) -> NativeTrack:
-	var track: NativeTrack = TrackCompiler.compile(source,editor_raster_cache)
+func _compile_editor_with_masks(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
+	var track: NativeTrack = TrackCompiler.compile(source,editor_raster_cache,cancelled)
 	if track != null:
-		track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,source.paint)
-		track.editor_road_mask = CreatorPreviewMasks.road(track)
+		CreatorPreviewMasks.prepare(track,source.paint,editor_raster_cache)
 		# Cold road jobs remain separate from compilation: undo/profile changes may
 		# join this preview worker, but must never join seconds of road geometry.
 		if not Thread.is_main_thread(): track.editor_roads = preload("res://editor/road_preparation.gd").prepare(track,false,true)
@@ -3875,6 +4208,7 @@ func _confirm_delete_track(id: String, title: String) -> void:
 	dialog.get_cancel_button().grab_focus()
 
 func _delete_user_track(id: String) -> void:
+	_flush_editor_writes()
 	if library.delete_document(id) != OK:
 		_notice(library.last_error)
 		return

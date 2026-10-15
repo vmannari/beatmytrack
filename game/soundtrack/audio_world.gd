@@ -3,12 +3,17 @@ extends Node
 ## Recorded music and interface feedback, entirely outside canonical simulation.
 const BANK: String = "res://assets/audio/locked_in_v1/"
 const MENU_ASSET: String = "res://assets/audio/menu_exploration_v1/exploration_menu_loop.ogg"
+const RecordLibrary = preload("res://soundtrack/record_library.gd")
 const LAYERS: Array[String] = ["pulse", "lock", "groove", "hook", "wide", "soar"]
 const DEFAULTS: Dictionary = {"music_volume": 0.7, "vehicle_volume": 1.0, "interface_volume": 0.7}
 const BPM: float = 160.0
 const BAR_SECONDS: float = 240.0 / BPM
 const FADE_SECONDS: float = BAR_SECONDS * 2.0
 var menu_player: AudioStreamPlayer
+var menu_record: String = RecordLibrary.DEFAULT_ID
+var music_enabled: bool = true
+var _pending_record: AudioStream
+var _record_fade: float = 1.0
 var race_player: AudioStreamPlayer
 var event_player: AudioStreamPlayer
 var ui_players: Array[AudioStreamPlayer] = []
@@ -89,6 +94,21 @@ func _menu_loop() -> AudioStream:
 
 
 func apply_settings(settings: Dictionary) -> void:
+	music_enabled = settings.get("music_enabled",true) == true
+	var entry: Dictionary = RecordLibrary.selected(settings)
+	if entry.id != menu_record:
+		var next: AudioStream = RecordLibrary.stream(entry)
+		if next == null:
+			entry = RecordLibrary.selected({})
+			next = _menu_loop()
+		if entry.id != menu_record:
+			menu_record = entry.id
+			_pending_record = next
+	if mode == "menu":
+		menu_target = 1.0 if music_enabled else 0.0
+		if music_enabled and output_enabled and not menu_player.playing and _pending_record == null:
+			menu_player.play()
+			menu_player.stream_paused = app_suspended
 	for item: Array in [["Music", "music_volume"], ["Vehicle", "vehicle_volume"], ["Impacts", "vehicle_volume"], ["Interface", "interface_volume"]]:
 		var level: float = preference(settings, item[1])
 		var index: int = AudioServer.get_bus_index(item[0])
@@ -108,11 +128,11 @@ func show_menu() -> void:
 	mode = "menu"
 	race_owner = null
 	blocked = false
-	menu_target = 1.0
+	menu_target = 1.0 if music_enabled else 0.0
 	race_target = 0.0
 	menu_player.stream_paused = app_suspended
 	race_player.stream_paused = app_suspended
-	if output_enabled and not menu_player.playing: menu_player.play()
+	if output_enabled and music_enabled and not menu_player.playing: menu_player.play()
 
 
 func begin_race(owner: Node, theme: String, state: VehicleState) -> void:
@@ -175,6 +195,15 @@ func _process(delta: float) -> void:
 	if app_suspended: return
 	if race_owner != null and race_owner.get_ref() == null: show_menu()
 	if blocked: return
+	if _pending_record != null:
+		_record_fade = move_toward(_record_fade,0.0,delta/0.12)
+		if _record_fade == 0.0:
+			menu_player.stop()
+			menu_player.stream = _pending_record
+			_pending_record = null
+			menu_player.volume_db = -80.0
+			if output_enabled and mode == "menu" and music_enabled: menu_player.play()
+	else: _record_fade = move_toward(_record_fade,1.0,delta/0.25)
 	event_elapsed += delta
 	if event_player.playing:
 		var tail: float = minf(1.0, maxf(0.0, event_length - event_elapsed) / 0.15)
@@ -182,7 +211,7 @@ func _process(delta: float) -> void:
 	var event_duck: float = 0.30 if event_player.playing and event_kind != "breath" else 1.0
 	menu_gain = move_toward(menu_gain, menu_target, delta / 0.85)
 	race_gain = move_toward(race_gain, race_target, delta / 0.85)
-	menu_player.volume_db = linear_to_db(maxf(menu_gain * event_duck, 0.0001))
+	menu_player.volume_db = linear_to_db(maxf(menu_gain * event_duck * _record_fade, 0.0001))
 	var breath_gain: float = 1.0
 	if breath_elapsed >= 0.0:
 		breath_elapsed += delta

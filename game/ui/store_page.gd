@@ -14,6 +14,11 @@ var working: bool = false
 var eligible: bool = false
 var entitlements: Dictionary = {}
 var products: Array = []
+var page_preview: bool = false
+var _pending_revision: int = -1
+var _presented_revision: int = -1
+var _presented_scope: String = ""
+const ACCESS = preload("res://backend/store_access_cache.gd")
 
 const COPY: Dictionary = {
 	"creator_slot_1":"Publish one additional track. A slot stays used after publication.",
@@ -73,27 +78,34 @@ func _ready() -> void:
 	add_child(status)
 	resized.connect(_columns)
 	_columns()
-	refresh()
+	if not page_preview: activate()
+
+func activate() -> void:
+	page_preview = false
+	refresh(false)
 
 func _columns() -> void:
 	if is_instance_valid(grid): grid.columns = 3 if size.x >= 1050 else 2 if size.x >= 650 else 1
 
 static func valid_catalog(data: Variant) -> bool:
-	if not data is Dictionary or not data.get("products") is Array or data.products.size() > 5: return false
-	for product: Variant in data.products:
-		if not product is Dictionary or not product.get("id") in preload("res://platform/purchase_simulator.gd").PRODUCTS or not product.get("title") is String or not product.get("price_eur") is String or not product.get("enabled") is bool: return false
-	return true
+	return ACCESS.valid_catalog(data)
 
-func refresh() -> void:
+func refresh(force: bool = true) -> void:
 	if working: return
+	if not force and is_instance_valid(client):
+		var access: RefCounted = ACCESS.for_service(client)
+		if _presented_scope == ACCESS.identity(client) and _presented_revision == access.refreshed and access.refreshed >= 0 and Time.get_ticks_msec()-access.refreshed < ACCESS.TTL_MS: return
 	working = true
 	status.text = "Loading store…"
 	eligible = false
 	entitlements = {}
 	controls.hide()
 	var result: Dictionary = {"ok":false,"error":"Online services are not configured."}
-	if is_instance_valid(client): result = await client.request_api("/store/products")
-	if not is_inside_tree(): return
+	var scope: String = ACCESS.identity(client)
+	if is_instance_valid(client): result = await ACCESS.for_service(client).fetch(client,force)
+	if not is_inside_tree() or scope != ACCESS.identity(client):
+		working = false
+		return
 	if not result.ok or not valid_catalog(result.get("data")):
 		working = false
 		summary.text = "Access unavailable until reconnected."
@@ -101,12 +113,8 @@ func refresh() -> void:
 		status.text = "Store unavailable. Reconnect and Refresh."
 		return
 	products = result.data.products
-	if client.signed_in():
-		var owned: Dictionary = await client.request_api("/me/entitlements",HTTPClient.METHOD_GET,{},"",true)
-		if not is_inside_tree(): return
-		if owned.ok and adapter.valid_entitlements(owned.data):
-			entitlements = owned.data
-			eligible = OS.is_debug_build() and bool(entitlements.purchase_simulation)
+	entitlements = result.get("entitlements",{})
+	eligible = OS.is_debug_build() and bool(entitlements.get("purchase_simulation",false))
 	controls.visible = eligible
 	if entitlements.is_empty():
 		summary.text = "Sign in to view your publishing slots and ad-free access."
@@ -114,7 +122,11 @@ func refresh() -> void:
 		summary.text = "%d publishing slots · %s" % [int(entitlements.publishing_slots),"Forever ad-free" if entitlements.ad_free_forever else ("Ad-free until "+Time.get_date_string_from_unix_time(int(entitlements.ad_free_until))+" UTC" if entitlements.ad_free else "Ads enabled")]
 	_draw_products()
 	status.text = "Simulated checkout only. No payment is taken. Free rewinds remain limited to three per race." if eligible else "Store billing is not connected yet. Purchases are unavailable."
-	if eligible: await _pending()
+	_presented_scope = scope
+	_presented_revision = int(result.get("revision",-1))
+	if eligible and (force or _pending_revision != _presented_revision):
+		_pending_revision = int(result.revision)
+		await _pending()
 	working = false
 
 func _draw_products() -> void:

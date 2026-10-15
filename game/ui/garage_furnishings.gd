@@ -303,7 +303,6 @@ static func workbench(parent: Node3D) -> void:
 			box(parent,Vector3(x,0.57,z),Vector3(0.105,1.02,0.105),frame)
 			box(parent,Vector3(x,0.035,z),Vector3(0.16,0.06,0.16),rubber())
 			bolt(parent,Vector3(x,0.92,z-0.059),0.02)
-	box(parent,Vector3(0,0.17,0.32),Vector3(4.20,0.055,0.38),frame)
 	box(parent,Vector3(0,0.97,0.50),Vector3(4.20,0.08,0.08),frame)
 	box(parent,Vector3(1.23,0.61,-0.04),Vector3(1.37,0.80,1.0),frame)
 	for index: int in range(3): drawer(parent,Vector3(1.23,0.36+index*0.235,-0.568),1.26,0.204,GarageEnvironment.surface("benchdrawers","3b5661",0.22,0.50))

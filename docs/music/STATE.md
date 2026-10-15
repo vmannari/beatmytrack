@@ -1,8 +1,14 @@
 # Beat My Track - Music State
 
-_Last updated: 2026-10-11_
+_Last updated: 2026-10-14_
 
 ## Current runtime direction
+
+On 2026-10-14 the owner corrects the LP collection to a box of flippable sleeves,
+with no personal-music importing. Exploration remains playable; six authored
+placeholder LPs say music is coming later. Browsing preserves playback, stop/volume
+and silent racing. More music is future work, not generated or approved here.
+Evidence: `../GARAGE_LP_BOX_2026_10_14.md`.
 
 On 2026-10-11 the owner selects `Exploration 3_take-3.mp3` as menu background
 music and requests a loop. The source is preserved unchanged; the prepared
@@ -30,8 +36,6 @@ The clear-theme study is rejected, in addition to performed-flow and earlier mel
 Completed14-source research compares first-person Ori/Trackmania/Forza accounts, published theory and original groove/driving-game studies. Report: `research/2026-10-08-background-racing.md`; source/access register alongside it; delivery: `../MUSIC_THEORY_RESEARCH.md`. Only the restricted driving-study abstract was available. No acoustic reference listening, copyrighted audio download or reference conditioning is claimed/used.
 
 The basis is rhythmic rock underscore with atmospheric depth:160 BPM remains a working target, coordinated bass/kit/guitar groove, controlled syncopation, purposeful gaps, short thematic gestures, four/eight-bar phrase variations, harmony with continuous inner voices, restrained foreground events. Piano becomes occasional colour/response. Warm electric-guitar articulations, played-kit/bass character and credible phrase dynamics are essential. Atmospheric string/analog texture widens the known material; exceptional flow earns a broader melodic focus near60s.
-
-Trackmania's documented process establishes racing feel before deriving menu identity and reduces melodic/harmonic activity for editor background. Ori's accounts support softened continuous movement pulses and sound-effect space. Forza accounts show intense sections can be less busy and that ensemble tone/real performance matter. Theory describes motif/phrase development, syncopation, harmonic rhythm and voice leading; it does not guarantee a desirable cue.
 
 ## Audit and keep
 

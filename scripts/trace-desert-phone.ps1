@@ -4,6 +4,7 @@ param(
     [ValidatePattern('^[a-z0-9-]+$')][string]$RunName = 'warm-01',
     [ValidateRange(30,90)][int]$Seconds = 60,
     [string[]]$Features = @('baseline'),
+    [string]$DocumentFile = '',
     [switch]$NoCpuStacks
 )
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,13 @@ $adb = Join-Path $env:LOCALAPPDATA 'Android/Sdk/platform-tools/adb.exe'
 $package = 'org.circuit01.handlinglab'
 $cacheBackup = "files/diagnostics/desert-hitch-cache-before-$RunName"
 $cacheGenerated = "files/diagnostics/desert-hitch-cache-generated-$RunName"
+$documentRemote = "files/diagnostics/desert-hitch-document-$RunName.json"
+if ($Features.Count -ne 1) { throw 'Use one feature stage per bounded system trace.' }
+$traceDurationMs = ($Seconds + 15) * 1000
+if ($DocumentFile) {
+    $documentSource = (Resolve-Path -LiteralPath $DocumentFile).Path
+    if (-not (Test-Path -LiteralPath $documentSource -PathType Leaf)) { throw 'Diagnostic document must be an existing file.' }
+}
 New-Item -ItemType Directory -Force -Path $evidence,$rawRoot | Out-Null
 function Adb([string[]]$Arguments) {
     $result = & $adb -s $DeviceSerial @Arguments
@@ -26,23 +34,41 @@ $files = @(Adb @('shell','run-as',$package,'ls','files'))
 foreach ($marker in @('mobile_probe.json','mobile_probe_results.json','hitch_ready.json')) {
     if ($files -contains $marker) { throw "Preserve the existing diagnostic $marker before tracing." }
 }
-$diagnosticFiles = @(Adb @('shell','run-as',$package,'ls','files/diagnostics'))
-foreach ($owned in @("desert-hitch-cache-before-$RunName","desert-hitch-cache-generated-$RunName","desert-hitch-record-before-$RunName.json","desert-hitch-record-before-$RunName.bak")) {
+$diagnosticFiles = @()
+if ($files -contains 'diagnostics') { $diagnosticFiles = @(Adb @('shell','run-as',$package,'ls','files/diagnostics')) }
+foreach ($owned in @("desert-hitch-cache-before-$RunName","desert-hitch-cache-generated-$RunName","desert-hitch-record-before-$RunName.json","desert-hitch-record-before-$RunName.bak","desert-hitch-document-$RunName.json")) {
     if ($diagnosticFiles -contains $owned) { throw "Preserve existing task backup $owned before tracing." }
 }
 $cacheMoved = $false
-$recordsSaved = $false
+$savedRecords = @()
+$recordNames = @('local_records.json','local_records.json.bak')
+$originalRecordNames = @($recordNames | Where-Object { $files -contains $_ })
+$documentCopied = $false
 try {
     Adb @('shell','am','force-stop',$package) | Out-Null
-    Adb @('shell','run-as',$package,'cp','files/local_records.json',"files/diagnostics/desert-hitch-record-before-$RunName.json") | Out-Null
-    Adb @('shell','run-as',$package,'cp','files/local_records.json.bak',"files/diagnostics/desert-hitch-record-before-$RunName.bak") | Out-Null
-    $recordsSaved = $true
-    Adb @('shell','run-as',$package,'sha256sum','files/local_records.json','files/local_records.json.bak') | Set-Content "$evidence/records-before.txt"
+    Adb @('shell','run-as',$package,'mkdir','-p','files/diagnostics') | Out-Null
+    @{existing_record_files=$originalRecordNames;document_supplied=[bool]$DocumentFile} | ConvertTo-Json | Set-Content "$evidence/original-state.json"
+    foreach ($recordName in $originalRecordNames) {
+        $suffix = if ($recordName -eq 'local_records.json') {'json'} else {'bak'}
+        Adb @('shell','run-as',$package,'cp',"files/$recordName","files/diagnostics/desert-hitch-record-before-$RunName.$suffix") | Out-Null
+        $savedRecords += @{name=$recordName;backup="files/diagnostics/desert-hitch-record-before-$RunName.$suffix"}
+    }
+    if ($originalRecordNames.Count -gt 0) {
+        Adb (@('shell','run-as',$package,'sha256sum') + @($originalRecordNames | ForEach-Object {"files/$_"})) | Set-Content "$evidence/records-before.txt"
+    }
+    if ($DocumentFile) {
+        Adb @('push',$documentSource,'/data/local/tmp/bmt-hitch-document.json') | Out-Null
+        Adb @('shell','run-as',$package,'cp','/data/local/tmp/bmt-hitch-document.json',$documentRemote) | Out-Null
+        $documentCopied = $true
+        Get-FileHash -LiteralPath $documentSource | Select-Object Hash | ConvertTo-Json | Set-Content "$evidence/document-hash.json"
+    }
     $apkPath = ((Adb @('shell','pm','path',$package)) -replace '^package:','').Trim()
     Adb @('shell','sha256sum',$apkPath) | Set-Content "$evidence/installed-apk.txt"
     if ($Mode -eq 'ColdPair') {
         # Exact known app-private paths; original cache is moved, never deleted.
         Adb @('shell','run-as',$package,'du','-s','files/shader_cache') | Set-Content "$evidence/cache-before.txt"
+        $cacheHashes = @(Adb @('shell','run-as',$package,'find','files/shader_cache','-type','f','-exec','sha256sum','{}','+') | Sort-Object)
+        $cacheHashes | Set-Content "$evidence/cache-hashes-before.txt"
         Adb @('shell','run-as',$package,'mv','files/shader_cache',$cacheBackup) | Out-Null
         $cacheMoved = $true
     }
@@ -68,11 +94,15 @@ data_sources { config {
 '@
         }
         $traceConfig = @"
-buffers { size_kb: 65536 fill_policy: RING_BUFFER }
-duration_ms: 120000
+# Keep metadata/stack intern tables apart from the high-rate kernel stream.
+# DISCARD preserves the early race; health checks must confirm neither fills.
+buffers { size_kb: 65536 fill_policy: DISCARD }
+buffers { size_kb: 262144 fill_policy: DISCARD }
+duration_ms: $traceDurationMs
+incremental_state_config { clear_period_ms: 5000 }
 data_sources { config {
   name: "linux.ftrace"
-  target_buffer: 0
+  target_buffer: 1
   ftrace_config {
     ftrace_events: "sched/sched_switch"
     ftrace_events: "sched/sched_waking"
@@ -93,7 +123,7 @@ data_sources { config {
 data_sources { config {
   name: "linux.process_stats"
   target_buffer: 0
-  process_stats_config { scan_all_processes_on_start: true }
+  process_stats_config { scan_all_processes_on_start: true record_thread_names: true }
 } }
 data_sources { config {
   name: "android.log"
@@ -105,6 +135,7 @@ $cpuSource
 "@
         $traceConfig.TrimEnd() | Set-Content "$evidence/$stage-trace.pbtxt" -Encoding ASCII
         $config = @{track_id='track_3e26605a8a90165e';seconds=$Seconds;sustained=$true;use_game_scale=$true;feature_profile=$true;touch_stress=$false;features=$Features;state_path='user://hitch_ready.json'}
+        if ($DocumentFile) { $config.document_path = "user://diagnostics/desert-hitch-document-$RunName.json" }
         $config | ConvertTo-Json -Depth 4 | Set-Content "$evidence/$stage-probe-config.json" -Encoding ASCII
         Adb @('shell','am','force-stop',$package) | Out-Null
         Adb @('push',"$evidence/$stage-probe-config.json",'/data/local/tmp/bmt-hitch-probe.json') | Out-Null
@@ -116,10 +147,19 @@ $cpuSource
         Adb @('shell','input','keyevent','KEYCODE_WAKEUP') | Out-Null
         Adb @('shell','wm','dismiss-keyguard') | Out-Null
         Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package) | Set-Content "$evidence/$stage-launch.txt"
-        $readyDeadline = (Get-Date).AddSeconds(90)
+        $readyDeadline = (Get-Date).AddSeconds(180)
+        $readyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastWake = -15.0
         do {
             $files = @(Adb @('shell','run-as',$package,'ls','files'))
             if ($files -contains 'hitch_ready.json') { break }
+            if ($readyTimer.Elapsed.TotalSeconds - $lastWake -ge 15) {
+                # Normal wake/dismiss only while startup has not set its keep-on flag.
+                Adb @('shell','input','keyevent','KEYCODE_WAKEUP') | Out-Null
+                Adb @('shell','wm','dismiss-keyguard') | Out-Null
+                $lastWake = $readyTimer.Elapsed.TotalSeconds
+                Write-Host "$RunName/$stage waiting for race readiness ($([int]$lastWake)s)."
+            }
             Start-Sleep -Seconds 1
         } while ((Get-Date) -lt $readyDeadline)
         if ($files -notcontains 'hitch_ready.json') { throw 'Race never reached readiness; system trace not started.' }
@@ -153,7 +193,7 @@ $cpuSource
             Adb @('shell','run-as',$package,'cat',"files/diagnostics/race_hitches/$hitchName") | Set-Content "$evidence/$stage-$hitchName" -Encoding UTF8
         }
         Adb @('shell','dumpsys','thermalservice') | Set-Content "$evidence/$stage-thermal-after.txt"
-        while ($traceTimer.Elapsed.TotalSeconds -lt 123) { Start-Sleep -Seconds 2 }
+        while ($traceTimer.Elapsed.TotalSeconds -lt ($traceDurationMs/1000 + 3)) { Start-Sleep -Seconds 2 }
         Adb @('pull',$traceRemote,$traceFile) | Out-Null
         Adb @('shell','rm','-f',$traceRemote) | Out-Null
         Get-FileHash $traceFile | Select-Object Hash,Path | ConvertTo-Json | Set-Content "$evidence/$stage-trace-hash.json"
@@ -169,14 +209,26 @@ $cpuSource
         }
         Adb @('shell','run-as',$package,'mv',$cacheBackup,'files/shader_cache') | Out-Null
         Adb @('shell','run-as',$package,'du','-s','files/shader_cache') | Set-Content "$evidence/cache-restored.txt"
+        $restoredCacheHashes = @(Adb @('shell','run-as',$package,'find','files/shader_cache','-type','f','-exec','sha256sum','{}','+') | Sort-Object)
+        $restoredCacheHashes | Set-Content "$evidence/cache-hashes-restored.txt"
+        if (($cacheHashes -join "`n") -ne ($restoredCacheHashes -join "`n")) { Write-Error 'Restored shader cache hashes differ; preserve all evidence and backups.' -ErrorAction Continue }
     }
-    if ($recordsSaved) {
-        Adb @('shell','run-as',$package,'cp',"files/diagnostics/desert-hitch-record-before-$RunName.json",'files/local_records.json') | Out-Null
-        Adb @('shell','run-as',$package,'cp',"files/diagnostics/desert-hitch-record-before-$RunName.bak",'files/local_records.json.bak') | Out-Null
-        Adb @('shell','run-as',$package,'rm','-f',"files/diagnostics/desert-hitch-record-before-$RunName.json","files/diagnostics/desert-hitch-record-before-$RunName.bak") | Out-Null
-        Adb @('shell','run-as',$package,'sha256sum','files/local_records.json','files/local_records.json.bak') | Set-Content "$evidence/records-restored.txt"
+    foreach ($record in $savedRecords) {
+        Adb @('shell','run-as',$package,'cp',$record.backup,"files/$($record.name)") | Out-Null
+        Adb @('shell','run-as',$package,'rm','-f',$record.backup) | Out-Null
     }
-    Adb @('shell','rm','-f','/data/local/tmp/bmt-hitch-probe.json','/data/local/tmp/bmt-hitch-trace.pbtxt') | Out-Null
+    foreach ($recordName in $recordNames) {
+        if ($recordName -notin $originalRecordNames) {
+            Adb @('shell','run-as',$package,'rm','-f',"files/$recordName") | Out-Null
+        }
+    }
+    if ($originalRecordNames.Count -gt 0) {
+        Adb (@('shell','run-as',$package,'sha256sum') + @($originalRecordNames | ForEach-Object {"files/$_"})) | Set-Content "$evidence/records-restored.txt"
+    }
+    $restoredFiles = @(Adb @('shell','run-as',$package,'ls','files'))
+    @{existing_record_files=@($recordNames | Where-Object {$restoredFiles -contains $_})} | ConvertTo-Json | Set-Content "$evidence/restored-state.json"
+    if ($documentCopied) { Adb @('shell','run-as',$package,'rm','-f',$documentRemote) | Out-Null }
+    Adb @('shell','rm','-f','/data/local/tmp/bmt-hitch-probe.json','/data/local/tmp/bmt-hitch-trace.pbtxt','/data/local/tmp/bmt-hitch-document.json') | Out-Null
     Adb @('shell','am','start','-W','-a','android.intent.action.MAIN','-c','android.intent.category.LAUNCHER','-p',$package) | Set-Content "$evidence/normal-launch.txt"
     Write-Host 'Original records/cache and normal launch restored; private trace files remain local.'
 }

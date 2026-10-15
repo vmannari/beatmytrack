@@ -31,7 +31,7 @@ var detail_costs: Dictionary = {}
 var selecting: bool = false
 var preview_entry: Dictionary = {}
 var pending_records: Label
-var _resolve_thread: Thread
+var _resolve_job: RefCounted
 var _requested_entry: Dictionary = {}
 var _working_entry: Dictionary = {}
 var _selection_serial: int = 0
@@ -526,7 +526,7 @@ func _warm_visible_comparisons(first: int) -> void:
 func _select(entry: Dictionary) -> void:
 	if selected_track.metadata.get("metadata_only",false) and not preview_entry.is_empty() and preview_entry.get("version_id","") == entry.get("version_id",""): return
 	var cached: NativeTrack = catalog.cached_track(entry)
-	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_thread == null:
+	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_job == null:
 		# The selected track's comparison is a snapshot, not a refresh action.
 		# A newly opened page still hydrates its initially selected track once.
 		if not page_preview and cloud != null and cached.metadata.has("cloud_version") and _comparison_selection != _comparison_selection_key(cached):
@@ -548,13 +548,14 @@ func _select(entry: Dictionary) -> void:
 		if str(matches[index].id) == str(entry.id): next_index = index
 	_hero_direction = -1.0 if previous_index >= 0 and next_index >= 0 and next_index < previous_index else 1.0
 	_selection_serial += 1
+	if _resolve_job != null: _resolve_job.cancel()
 	if entry.get("source","") == "cloud":
 		_detail_wait_started = Time.get_ticks_msec()
 		_detail_wait_key = "metadata:"+str(_selection_serial)
 	_requested_entry = {}
 	if cached != null:
 		_finish_selection({"track":cached,"draft":{}})
-		race_button.disabled = selecting or _resolve_thread != null
+		race_button.disabled = selecting or _resolve_job != null
 		if race_button.disabled: race_button.text = "Loading track..."
 	else:
 		selecting = true
@@ -620,7 +621,7 @@ func _show_preview_comparison(entry: Dictionary, serial: int, vehicle: String) -
 		_show_detail({"comparison_error":value.get("comparison_error","Comparison unavailable")})
 
 func _start_selection() -> void:
-	if _resolve_thread != null or _requested_entry.is_empty(): return
+	if _resolve_job != null or _requested_entry.is_empty(): return
 	_working_entry = _requested_entry
 	_requested_entry = {}
 	_working_serial = _selection_serial
@@ -628,10 +629,9 @@ func _start_selection() -> void:
 	if cached != null:
 		_finish_selection({"track":cached,"draft":{}})
 		return
-	_resolve_thread = Thread.new()
-	var error: Error = _resolve_thread.start(_resolve_track.bind(library.directory,_working_entry.duplicate(true)))
-	if error != OK:
-		_resolve_thread = null
+	_resolve_job = preload("res://editor/work_job.gd").start(_resolve_work.bind(library.directory,_working_entry.duplicate(true)),get_tree())
+	if _resolve_job.done and _resolve_job.thread == null:
+		_resolve_job = null
 		selecting = false
 		pending_records.text = "Track unavailable."
 		race_button.text = "Select track again to retry"
@@ -641,17 +641,21 @@ func _reveal_slow_selection(serial: int) -> void:
 	await get_tree().create_timer(COMPARISON_NOTICE_DELAY_MS/1000.0).timeout
 	if is_inside_tree() and serial == _selection_serial and selecting and not preview_entry.is_empty(): pending_records.text = "Loading..."
 
-static func _resolve_track(directory: String, entry: Dictionary) -> Dictionary:
-	if entry.source == "cloud": return {"track":preload("res://backend/cloud_tracks.gd").compile_entry(entry),"draft":{}}
+static func _resolve_work(cancelled: Callable, directory: String, entry: Dictionary) -> Dictionary:
+	return _resolve_track(directory,entry,cancelled)
+
+static func _resolve_track(directory: String, entry: Dictionary, cancelled: Callable = Callable()) -> Dictionary:
+	if cancelled.is_valid() and cancelled.call(): return {"track":null,"draft":{}}
+	if entry.source == "cloud": return {"track":preload("res://backend/cloud_tracks.gd").compile_entry(entry,cancelled),"draft":{}}
 	var source := TrackLibrary.new(str(entry.get("library_directory", directory)))
 	if entry.source == "builtin": return {"track":NativeTrack.read(entry.path),"draft":{}}
 	var draft: Dictionary = source.load_document(entry.local_id)
-	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft),"draft":draft}
+	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft,{},cancelled),"draft":draft}
 
 func _process(_delta: float) -> void:
-	if _resolve_thread == null or _resolve_thread.is_alive(): return
-	var result: Dictionary = _resolve_thread.wait_to_finish()
-	_resolve_thread = null
+	if _resolve_job == null or not _resolve_job.done: return
+	var result: Dictionary = _resolve_job.result
+	_resolve_job = null
 	if result.track != null: catalog.remember_track(_working_entry,result.track)
 	if _working_serial != _selection_serial:
 		_start_selection()
@@ -664,9 +668,10 @@ func _process(_delta: float) -> void:
 func _exit_tree() -> void:
 	_selection_serial += 1
 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
-	if _resolve_thread != null:
-		_resolve_thread.wait_to_finish()
-		_resolve_thread = null
+	if _resolve_job != null:
+		# The tree-owned reaper joins completed workers independently of this UI.
+		_resolve_job.cancel()
+		_resolve_job = null
 
 func _finish_selection(result: Dictionary) -> void:
 	var track: NativeTrack = result.track
@@ -980,6 +985,7 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 	var metadata_only: bool = not preview_snapshot.is_empty()
 	if (selecting or not preview_entry.is_empty()) and not metadata_only: return
 	var key: String = records.key_for(selected_track,HandlingSelection.config()) if not metadata_only else "preview:"+str(preview_entry.get("version_id",""))
+	discovery.pin_record(key)
 	var pb: Dictionary = records.records.get(key,{}) if not metadata_only else records.records.get(records.key_for(selected_track,HandlingSelection.config()),{}) if not selected_track.content_hash.is_empty() else {}
 	var snapshot: Dictionary = discovery.record_snapshot(key) if not metadata_only else preview_snapshot
 	_align_personal_comparison(snapshot,pb)
@@ -1101,7 +1107,7 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 		actions.add_child(rate)
 		if not str(snapshot.get("board_error","")).is_empty(): scores_button.tooltip_text = "Scores unavailable - retry"
 	race_button.text = "RACE "+title
-	race_button.disabled = selecting or _resolve_thread != null or (metadata_only and not selected_track.metadata.get("metadata_only",false))
+	race_button.disabled = selecting or _resolve_job != null or (metadata_only and not selected_track.metadata.get("metadata_only",false))
 	if race_button.disabled: race_button.text = "Loading track..."
 	detail_costs = {"preview":0.0}
 

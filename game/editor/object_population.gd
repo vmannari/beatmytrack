@@ -12,6 +12,10 @@ const BIN: float = 12.0
 const NATURE: Array[String] = ["tree", "broadleaf", "rock", "boulder"]
 const ROADSIDE: Array[String] = ["shed", "hut", "car_wreck", "container", "parked_car", "barrel", "crate"]
 
+var cancelled: Callable
+
+func _cancelled() -> bool: return cancelled.is_valid() and cancelled.call()
+
 var source: Dictionary
 var terrain: NativeTrack
 var extent: Vector2
@@ -26,6 +30,7 @@ var sample_usec: int = 0
 
 func prepare(document: Dictionary, track: NativeTrack) -> void:
 	var began: int = Time.get_ticks_usec()
+	if _cancelled(): return
 	source = document.duplicate(true)
 	terrain = track
 	occupied = source.objects.duplicate(true)
@@ -38,13 +43,16 @@ func prepare(document: Dictionary, track: NativeTrack) -> void:
 		sections.append({"points":layout.points,"widths":layout.widths,"closed":true})
 	var topology: Dictionary = RoadPieces.prepare_endpoints(source.pieces)
 	for index: int in range(source.pieces.size()):
+		if _cancelled(): return
 		var geometry: Dictionary = RoadPieces.section_geometry(source.pieces,index,topology)
 		sections.append({"points":geometry.points,"widths":geometry.widths,"closed":false})
 	if source.base_track != "" and track != null: extent = track.half_extent
 	for section: Dictionary in sections:
+		if _cancelled(): return
 		for index: int in range(section.points.size()):
 			extent = extent.max(section.points[index].abs()+Vector2.ONE*float(section.widths[index])*0.5)
 	for stroke: Dictionary in source.paint:
+		if _cancelled(): return
 		if int(stroke.surface) != 0: continue
 		for point: Array in stroke.points: extent = extent.max(Vector2(point[0],point[1]).abs()+Vector2.ONE*float(stroke.width)*0.5)
 	if extent == Vector2.ZERO:
@@ -56,24 +64,29 @@ func prepare(document: Dictionary, track: NativeTrack) -> void:
 	mask.resize(grid.x*grid.y); mask.fill(1)
 	if source.base_track != "" and track != null:
 		for y: int in range(grid.y):
+			if _cancelled(): return
 			for x: int in range(grid.x):
 				var point: Vector2 = _point(x,y)
 				if point.abs().x < track.half_extent.x-1.0 and point.abs().y < track.half_extent.y-1.0 and track.cell_at(point) in [0,2,5]: mask[y*grid.x+x] = 0
 	for section: Dictionary in sections:
+		if _cancelled(): return
 		# Include bridges as protected road at every elevation.
-		TrackCompiler._raster_road(section.points,section.widths,0,mask,grid,extent,CELL,section.closed)
+		TrackCompiler._raster_road(section.points,section.widths,0,mask,grid,extent,CELL,section.closed,PackedInt32Array(),cancelled)
 	var road_paint: Array = []
 	for stroke: Dictionary in source.paint:
 		if int(stroke.surface) == 0:
 			var copy: Dictionary = stroke.duplicate(true)
 			copy.protect_road = false
 			road_paint.append(copy)
-	TrackCompiler._paint(road_paint,mask,grid,extent,CELL,mask.duplicate())
+	TrackCompiler._paint(road_paint,mask,grid,extent,CELL,mask.duplicate(),cancelled)
+	if _cancelled(): return
 	if not mask.has(0):
 		error = "Add a road before populating the track."
 		return
-	distances = _distance_field(mask,grid)
+	distances = _distance_field(mask,grid,cancelled)
+	if _cancelled(): return
 	for y: int in range(grid.y):
+		if _cancelled(): return
 		for x: int in range(grid.x):
 			if distances[y*grid.x+x] > CLEARANCE+MASK_ERROR and distances[y*grid.x+x] < 38.0: sites.append(_point(x,y))
 	prepare_usec = Time.get_ticks_usec()-began
@@ -107,6 +120,7 @@ func generate(seed_value: int, density: float, roadside_reach: float) -> Array:
 		var candidates: PackedVector2Array = near_sites if phase == 0 else far_sites
 		if candidates.is_empty(): continue
 		for attempt: int in range(1600):
+			if attempt % 32 == 0 and _cancelled(): return []
 			if result.size() >= (near_target if phase == 0 else target): break
 			var point: Vector2 = candidates[rng.randi_range(0,candidates.size()-1)]+Vector2(rng.randf_range(-0.8,0.8),rng.randf_range(-0.8,0.8))
 			var kind: String
@@ -179,16 +193,18 @@ func _ground_clear(point: Vector2, reach: float) -> bool:
 			if terrain.cells[at] in [3,4,6] or terrain.deck_cells[at] >= 0: return false
 	return true
 
-static func _distance_field(mask: PackedInt32Array, size: Vector2i) -> PackedFloat32Array:
+static func _distance_field(mask: PackedInt32Array, size: Vector2i, stop: Callable = Callable()) -> PackedFloat32Array:
 	var field := PackedFloat32Array()
 	field.resize(mask.size())
 	for y: int in range(size.y):
+		if stop.is_valid() and stop.call(): return PackedFloat32Array()
 		var row := PackedFloat64Array()
 		row.resize(size.x)
 		for x: int in range(size.x): row[x] = 0.0 if mask[y*size.x+x] == 0 else 1.0e12
 		var transformed: PackedFloat64Array = _edt(row)
 		for x: int in range(size.x): field[y*size.x+x] = transformed[x]
 	for x: int in range(size.x):
+		if stop.is_valid() and stop.call(): return PackedFloat32Array()
 		var column := PackedFloat64Array()
 		column.resize(size.y)
 		for y: int in range(size.y): column[y] = field[y*size.x+x]

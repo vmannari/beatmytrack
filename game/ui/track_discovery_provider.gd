@@ -6,11 +6,20 @@ signal changed
 var available: bool = false
 var track_stats: Dictionary = {}
 var records_by_rules_key: Dictionary = {}
+const MAX_RECORDS: int = 32
+const MAX_RECORD_BYTES: int = 2097152
+var _record_sizes: Dictionary = {}
+var _record_bytes: int = 0
+var _pinned_record: String = ""
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 var comparisons = preload("res://backend/comparison_preloader.gd").new()
 
 func configure_cache(path: String, scope: String) -> void:
-	if not snapshot_cache.scope.is_empty() and snapshot_cache.scope != scope: records_by_rules_key.clear()
+	if not snapshot_cache.scope.is_empty() and snapshot_cache.scope != scope:
+		records_by_rules_key.clear()
+		_record_sizes.clear()
+		_record_bytes = 0
+		_pinned_record = ""
 	snapshot_cache.configure(path,scope)
 	if is_instance_valid(comparisons.client): comparisons.configure(comparisons.client,path+".comparisons.json" if not path.is_empty() else "",scope)
 
@@ -19,7 +28,7 @@ func prime_comparisons(client: Node, entries: Array, vehicle: String) -> void:
 	comparisons.prime(entries,vehicle)
 
 func remember_record(rules_key: String, snapshot: Dictionary) -> void:
-	records_by_rules_key[rules_key] = snapshot
+	_remember_ram(rules_key,snapshot)
 	if snapshot.get("comparison_scope","") == "all" and int(snapshot.get("comparison_bins",0)) == RaceComplete.COMPARISON_BINS:
 		var saved: Dictionary = snapshot.duplicate(true)
 		for metric: String in ["race","lap"]:
@@ -39,8 +48,31 @@ func record_snapshot(rules_key: String) -> Dictionary:
 				var edges: Array[float] = []
 				for edge: Variant in distribution.get("edges_ms",[]): edges.append(float(edge))
 				distribution.edges_ms = edges
-			records_by_rules_key[rules_key] = cached
+			_remember_ram(rules_key,cached)
+	if records_by_rules_key.has(rules_key):
+		var value: Dictionary = records_by_rules_key[rules_key]
+		records_by_rules_key.erase(rules_key)
+		records_by_rules_key[rules_key] = value
 	return records_by_rules_key.get(rules_key,{}).duplicate(true)
+
+func pin_record(rules_key: String) -> void:
+	_pinned_record = rules_key
+
+func _remember_ram(key: String, value: Dictionary) -> void:
+	var bytes: int = var_to_bytes(value).size()
+	_record_bytes -= int(_record_sizes.get(key,0))
+	records_by_rules_key.erase(key)
+	_record_sizes.erase(key)
+	if bytes > MAX_RECORD_BYTES: return
+	records_by_rules_key[key] = value.duplicate(true)
+	_record_sizes[key] = bytes
+	_record_bytes += bytes
+	while records_by_rules_key.size() > MAX_RECORDS or _record_bytes > MAX_RECORD_BYTES:
+		var oldest: String = records_by_rules_key.keys()[0]
+		if oldest == _pinned_record and records_by_rules_key.size() > 1: oldest = records_by_rules_key.keys()[1]
+		_record_bytes -= int(_record_sizes[oldest])
+		_record_sizes.erase(oldest)
+		records_by_rules_key.erase(oldest)
 
 static func is_rival(value: Dictionary) -> bool:
 	if bool(value.get("time_beaten",false)): return true

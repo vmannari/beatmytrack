@@ -1,0 +1,179 @@
+{
+  "date": "2026-10-14",
+  "requirements": [
+    "EDR01",
+    "EDR02",
+    "EDR03",
+    "EDR04",
+    "R01",
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "V03",
+    "V05",
+    "Q01"
+  ],
+  "scope": "Fix all four findings from the updated editor review; preserve concurrent racing/loading/phone preparation and canonical behavior",
+  "fixes": {
+    "EDR01": "A verified durable WIP can take the unchanged fast path only when no queued or active write targets that draft. The desired final revision coalesces stale queued writes and follows active writes. Editor exit drains receipts before its Save/Discard decision, so a failed final revision remains retryable instead of being silently dismissed.",
+    "EDR02": "Populate passes its cancellation callback into TrackCompiler, propagates it through road/paint/distance-field preparation and releases retained callbacks on early and normal exits. Obsolete compilation stops cooperatively; completed population geometry remains unchanged.",
+    "EDR03": "Background scans read each lifecycle once and retain only caption/ready/retry/conflict fields alongside the document summary. Detail redraw/search/resize restores no full document and performs no workflow reads. Lifecycle/library/scope changes invalidate actions immediately and refresh the fenced summary. Retry/Fork read the full current document only when clicked; existing Edit/Test/Publish actions retain their full-load path.",
+    "EDR04": "Baked props explicitly select retained pre-upload CPU arrays before evaluating any mesh fallback. The fallback runs only for meshes lacking retained data; original attributes and final rendered output remain exact."
+  },
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "platform": "Windows desktop",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "renderers": [
+      "Compatibility/OpenGL3",
+      "Mobile/Vulkan"
+    ],
+    "size": [
+      1280,
+      720
+    ],
+    "shared_host": true,
+    "phone_test_performed": false
+  },
+  "measurements": {
+    "compatibility": {
+      "draft_detail_before_median_ms": 59.141,
+      "draft_detail_after_median_ms": 5.084,
+      "warm_detail_full_document_reads": 0,
+      "warm_detail_workflow_reads": 0,
+      "cancel_inside_compiler_ms": 13.488,
+      "prop_96_accesses_before_median_ms": 37.774,
+      "prop_96_accesses_after_median_ms": 0.037
+    },
+    "mobile": {
+      "draft_detail_before_median_ms": 57.179,
+      "draft_detail_after_median_ms": 4.543,
+      "warm_detail_full_document_reads": 0,
+      "warm_detail_workflow_reads": 0,
+      "cancel_inside_compiler_ms": 15.911,
+      "prop_96_accesses_before_median_ms": 85.312,
+      "prop_96_accesses_after_median_ms": 0.035
+    }
+  },
+  "measurement_notes": [
+    "New paired UI and mesh-access measurements ran separately for each renderer. Other Godot workloads existed on the shared host. Existing broader regressions ran concurrently; their incidental timings are not a performance comparison.",
+    "Mesh timing isolates 96 accesses to an actual 12863-vertex container resource; it is not a full-placement or phone FPS claim.",
+    "Cancellation uses an ordered token that expires within the actual compiler, proving callback propagation without timing-dependent acceptance. Earlier review timed an expiration at 1ms; those measurements are related but not a strictly paired latency sample."
+  ],
+  "verification": {
+    "new_checks": {
+      "compatibility": 70,
+      "mobile": 70
+    },
+    "new_failures": {
+      "compatibility": 0,
+      "mobile": 0
+    },
+    "detail_pixels": "Byte-exact original/new full-viewport images on both renderers",
+    "prop_pixels": "Zero changed channels and exact pre-upload attributes in four biomes on both renderers",
+    "parser_scripts": 714
+  },
+  "commands": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_review_fixes.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "70 checks, 0 failures; queued/active return-to-saved, failed final-write retry, actual compiler cancellation, immediate rescan invalidation, lazy full actions and exact old/new UI pixels",
+      "log": "build/logs/TestScript-12792/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_review_fixes.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "70 checks, 0 failures; queued/active return-to-saved, failed final-write retry, actual compiler cancellation, immediate rescan invalidation, lazy full actions and exact old/new UI pixels",
+      "log": "build/logs/TestScript-18124/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "51 checks, 0 failures; exact original positions/normals/pigments and zero changed image channels in Pine/Desert/Winter/Night; original durable-save checks",
+      "log": "build/logs/TestScript-7292/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "51 checks, 0 failures; exact original positions/normals/pigments and zero changed image channels in Pine/Desert/Winter/Night; original durable-save checks",
+      "log": "build/logs/TestScript-29092/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "123 checks, 0 failures; exact compiled physical data, bounded caches, maximum map persistence, navigation, queued Save/exit and thumbnails",
+      "log": "build/logs/TestScript-23840/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "123 checks, 0 failures; exact compiled physical data, bounded caches, maximum map persistence, navigation, queued Save/exit and thumbnails",
+      "log": "build/logs/TestScript-10080/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_object_population.gd -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "20581 checks, 0 failures; exact distance transform, deterministic populations, independent footprint separation and actual editor Apply/Cancel",
+      "log": "build/logs/TestScript-27324/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_workflow.gd -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "252 checks, 0 failures; original authoring, Undo/Redo, road/palette/start/save/test workflow",
+      "log": "build/logs/TestScript-12108/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_local_draft_publication.gd -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "31 checks, 0 failures; original local creator proof/publish gating; 2605 creator ticks and 436 trajectory samples",
+      "log": "build/logs/TestScript-2144/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "outcome": "714 scripts, 0 failures",
+      "log": "build/logs/TestScript-15100/test-script.log"
+    }
+  ],
+  "initial_failure": "The first Compatibility UI comparison failed because Back was hovered in only one capture after desktop focus changes. Both captures now receive the same local viewport motion event. The exact whole-image assertion was retained and passes; runtime artwork/layout was not changed to accommodate the test.",
+  "source_sha256": {
+    "game/core/app.gd": "b9d47147e5f25342ae7b5b114507480cfcf3ccfd94921cef0155b3ccb1eff69a",
+    "game/editor/write_queue.gd": "efdfc73df80db370410953862a4338fbf2c4f5f0326b03d4d3f5b54a1755d329",
+    "game/editor/population_job.gd": "35b70ab4eabf29612a8883592bd038a9aa822e38e8cf62093ba8fddd80223717",
+    "game/editor/object_population.gd": "03649edee96ec2a089634ae5d30fb6ef8e866e11067f62190f434b5c2d70570e",
+    "game/ui/draft_browser.gd": "f9ea195363f5a09a9e9128c5cf1f6b8b344892c78ebe597c14d967504869dd63",
+    "game/persistence/draft_scan.gd": "468e7603db5c967b2135009e932155ec4f4f8685e990cfa6175ca9ea4844b436",
+    "game/backend/track_lifecycle.gd": "41a506474170314ca51163af6e8834adc19d264cf4853510e6e8627ed171a4cd",
+    "game/editor/placed_object_batches.gd": "8a37e834303a6e1bbce60317922c33ea651255b7e3b97798f3f11942aa90ab6e"
+  },
+  "changed_files": [
+    "game/core/app.gd",
+    "game/editor/write_queue.gd",
+    "game/editor/population_job.gd",
+    "game/editor/object_population.gd",
+    "game/ui/draft_browser.gd",
+    "game/persistence/draft_scan.gd",
+    "game/backend/track_lifecycle.gd",
+    "game/editor/placed_object_batches.gd",
+    "game/tests/test_editor_review_fixes.gd",
+    "game/tests/fixtures/editor_draft_browser_before_review_fixes.gd",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "docs/evidence/editor-review-fixes-2026-10-14/report.json",
+    "docs/evidence/editor-review-fixes-2026-10-14/compatibility-results.json",
+    "docs/evidence/editor-review-fixes-2026-10-14/mobile-results.json",
+    "docs/evidence/editor-review-fixes-2026-10-14/compatibility-draft-before.png",
+    "docs/evidence/editor-review-fixes-2026-10-14/compatibility-draft-after.png",
+    "docs/evidence/editor-review-fixes-2026-10-14/mobile-draft-before.png",
+    "docs/evidence/editor-review-fixes-2026-10-14/mobile-draft-after.png",
+    "game/tests/test_editor_review_fixes.gd.uid",
+    "game/tests/fixtures/editor_draft_browser_before_review_fixes.gd.uid"
+  ],
+  "checkpoint": "implementation.patch and checkpoint-validation.json beside this report; task-only changes verified in copies, excluding concurrent App race-preparation edits",
+  "limitations": [
+    "No phone tests/commands, APK/export/install/deployment, backend service writes, canonical physics/schema/hash changes or full Validate were performed by this task.",
+    "Cold editor first-view hitches and physical-phone latency/RAM/thermal acceptance remain separate outstanding measurements.",
+    "Cooperative cancellation cannot interrupt a single engine operation; the checked population stages/loops bound superseded work without blocking ordinary panel closure."
+  ]
+}

@@ -4,6 +4,7 @@ const Cloud = preload("res://backend/cloud_tracks.gd")
 const Tracks = preload("res://backend/prepared_track_cache.gd")
 const Worlds = preload("res://track/prepared_world_cache.gd")
 var folder: String
+var output_folder: String = "res://../docs/evidence/track-load-review-2026-10-13"
 var report: Dictionary = {"samples": [], "cache": [], "components": []}
 var game_script: GDScript
 var visual_script: GDScript
@@ -83,7 +84,7 @@ func race(track: NativeTrack, label: String, preferences: bool) -> void:
 	finish.end_render_warmup()
 	if warm and DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
 	assert(game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5)
-	var row: Dictionary = {"label": label, "prefs": preferences, "ready_ms": ready_us / 1000.0, "to_prepared_draw_ms": (Time.get_ticks_usec() - started) / 1000.0, "game_ms": deltas(game.review_marks), "world_ms": deltas(game.track_ground.review_marks), "ghost_mesh_built": game.personal_ghost != null, "ghost_mode": game.ghost_mode, "ghost_recordings": game.ghost_bests.size()}
+	var row: Dictionary = {"label": label, "prefs": preferences, "ready_ms": ready_us / 1000.0, "to_prepared_draw_ms": (Time.get_ticks_usec() - started) / 1000.0, "game_ms": deltas(game.review_marks), "world_ms": deltas(game.track_ground.review_marks), "ghost_mesh_built": game.personal_ghost != null and game.personal_ghost.mesh != null, "ghost_mode": game.ghost_mode, "ghost_recordings": game.ghost_bests.size()}
 	report.samples.append(row)
 	row.road_admission_bytes = game.track_ground.review_road_bytes
 	row.road_cache = []
@@ -97,6 +98,8 @@ func race(track: NativeTrack, label: String, preferences: bool) -> void:
 	await process_frame
 
 func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence="): output_folder = argument.trim_prefix("--evidence=")
 	folder = ProjectSettings.globalize_path("res://../build/track-load-review-2026-10-13")
 	DirAccess.make_dir_recursive_absolute(folder)
 	NativeTrackVisual.ROAD_DISK_CACHE.directory = folder.path_join("roads")
@@ -143,14 +146,14 @@ func run() -> void:
 	report.engine = Engine.get_version_info().string
 	report.renderer = RenderingServer.get_current_rendering_method()
 	report.adapter = RenderingServer.get_video_adapter_name()
-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
+	var output: String = ProjectSettings.globalize_path(output_folder)
 	DirAccess.make_dir_recursive_absolute(output)
 	write_report("review-admission.json")
 	print("LOAD_REVIEW_COMPLETE samples=", report.samples.size(), " zero_tick_countdown_checks=", report.samples.size())
 	quit()
 
 func write_report(filename: String) -> void:
-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
+	var output: String = ProjectSettings.globalize_path(output_folder)
 	DirAccess.make_dir_recursive_absolute(output)
 	var file := FileAccess.open(output.path_join(filename), FileAccess.WRITE)
 	file.store_string(JSON.stringify(report, "\t")); file.close()

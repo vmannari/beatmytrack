@@ -1,0 +1,187 @@
+{
+  "date": "2026-10-14",
+  "task": "Another review pass of the updated track editor",
+  "requirements": [
+    "R01",
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "V03",
+    "V05",
+    "Q01"
+  ],
+  "mode": "Review only; new isolated diagnostics and evidence, no runtime fixes",
+  "coverage": [
+    "Object placement and retained geometry, including raw CPU arrays versus GPU readback",
+    "Road/compiler dependency keys, metadata reuse and cancellation propagation",
+    "Canvas drawing/navigation and editor scene publication",
+    "Draft scans, selected details and lifecycle-status reads",
+    "Ordered autosaves, unchanged-save receipts, original/WIP persistence and actual UI exit"
+  ],
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "platform": "Windows desktop",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "renderers": [
+      "Compatibility/OpenGL3",
+      "Mobile/Vulkan"
+    ],
+    "size": [
+      1280,
+      720
+    ],
+    "shared_host": true,
+    "phone_test_performed": false
+  },
+  "findings": [
+    {
+      "id": "EDR01",
+      "severity": "P1",
+      "area": "Save ordering and recovery",
+      "source": "game/core/app.gd:2680",
+      "related_sources": [
+        "game/core/app.gd:2644",
+        "game/editor/write_queue.gd:8",
+        "game/core/app.gd:3644"
+      ],
+      "finding": "The unchanged-WIP fast path does not supersede an older pending write. After moving an object away and back to the durable position before autosave completes, the old queued revision can overwrite WIP. Its receipt is ignored because it differs from the current document. The UI says Saved on device, exit sees no changes, and Load track restores the wrong position.",
+      "reproduction": "Actual isolated app: save a container at [0,0]; finish a move to [2,0] with the writer still queued; finish a return to [0,0] before advancing a frame; invoke the actual editor exit. Both renderers show queued=1, unsaved=false, save_error=OK and reopen [2,0]. The committed original remains [0,0].",
+      "recommendation": "Order the unchanged fast path against pending/active revisions. Remove or supersede stale queued revisions, and ensure any active write is followed by the desired final revision before acknowledging exit. Add both queued and already-running return-to-saved coverage."
+    },
+    {
+      "id": "EDR02",
+      "severity": "P2",
+      "area": "Populate cancellation",
+      "source": "game/editor/population_job.gd:16",
+      "related_sources": [
+        "game/editor/object_population_panel.gd:113",
+        "game/editor/track_compiler.gd:13"
+      ],
+      "finding": "The population job calls TrackCompiler.compile(candidate) without its cancellation callback. Closing or changing Populate during compilation discards the result only after the full compiler finishes. The panel waits for that obsolete job before starting its next preview.",
+      "reproduction": "A timed token expires 1ms after generation, immediately before the actual 96-piece Winter compile. The population wrapper checks it only before and after compilation: 524.623ms Compatibility / 535.863ms Mobile. The same compiler with the callback returns null in 6.603 / 6.268ms.",
+      "recommendation": "Pass the existing cancellation callback through the compiler and other long population preparation loops; clear retained cancellation references on all exits. Verify cancellation inside real preparation, rather than only with the existing synthetic waiting worker."
+    },
+    {
+      "id": "EDR03",
+      "severity": "P2",
+      "area": "Draft detail refresh",
+      "source": "game/ui/draft_browser.gd:143",
+      "related_sources": [
+        "game/ui/draft_browser.gd:178",
+        "game/ui/draft_browser.gd:195",
+        "game/ui/draft_browser.gd:202",
+        "game/ui/draft_browser.gd:204",
+        "game/backend/cloud_tracks.gd:173"
+      ],
+      "finding": "The gallery scan is off-thread, but every detail refresh reloads/restores the complete selected document and separately reads the same workflow for caption, publish availability, retry and revision-conflict status. Searching, selecting cards and resizing trigger this on the UI thread. A disabled publication can add a fifth status read.",
+      "reproduction": "A supported 16384-point map and its 252KB local workflow, normalized to the actual persisted JSON number representation: five warm detail refreshes each perform four existing workflow reads/parses; median 43.824ms Compatibility / 45.800ms Mobile. These timings include full document restore, fingerprints and control reconstruction; they are not attribution solely to JSON parsing.",
+      "recommendation": "Use the selected summary for presentation and load full documents only for actions that require them. Read lifecycle status once per refresh, reuse its derived fields, and retain verified immutable status data without accepting stale workflow updates."
+    },
+    {
+      "id": "EDR04",
+      "severity": "P2",
+      "area": "Prop cache GPU readback",
+      "source": "game/editor/placed_object_batches.gd:215",
+      "related_sources": [
+        "game/track/native_track_visual.gd:1433",
+        "game/track/native_track_visual.gd:1447"
+      ],
+      "finding": "get_meta(editor_prop_arrays, mesh.surface_get_arrays(0)) evaluates the default argument eagerly. Even props with retained pre-upload arrays read back their just-uploaded mesh when preparing a new pose/model. This bypasses the intended CPU-array reuse.",
+      "reproduction": "Isolated actual 12863-vertex container mesh; five samples of 96 accesses. Median eager expression 27.032ms Compatibility / 73.836ms Mobile, versus retained metadata alone 0.023 / 0.025ms. This is a component benchmark, not a full-placement or frame-rate measurement.",
+      "recommendation": "Branch on has_meta before calling surface_get_arrays, retaining the exact original pre-upload arrays. Where applicable, avoid uploading temporary baked prototype meshes just to recover their CPU geometry."
+    }
+  ],
+  "measurements": {
+    "compatibility": {
+      "population_cancel_ms": 524.623,
+      "compiler_cancel_ms": 6.603,
+      "draft_detail_median_ms": 43.824,
+      "eager_readback_96_median_ms": 27.032,
+      "retained_array_96_median_ms": 0.023
+    },
+    "mobile": {
+      "population_cancel_ms": 535.863,
+      "compiler_cancel_ms": 6.268,
+      "draft_detail_median_ms": 45.8,
+      "eager_readback_96_median_ms": 73.836,
+      "retained_array_96_median_ms": 0.025
+    }
+  },
+  "diagnostics": {
+    "compatibility": {
+      "checks": 976,
+      "probe_failures": 0,
+      "evidence": "compatibility-observations.json"
+    },
+    "mobile": {
+      "checks": 976,
+      "probe_failures": 0,
+      "evidence": "mobile-observations.json"
+    }
+  },
+  "regressions": {
+    "compatibility": {
+      "checks": 123,
+      "failures": 0,
+      "build_evidence": "build/editor-remaining-2026-10-14/gl_compatibility-track_0ee2347313d90d88e77576685fe9d819/results.json"
+    },
+    "mobile": {
+      "checks": 123,
+      "failures": 0,
+      "build_evidence": "build/editor-remaining-2026-10-14/mobile-track_d2fd6d7cc7d9e6b94924bea86ce21376/results.json"
+    }
+  },
+  "commands": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_editor_review_pass.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
+      "exit_code": 0,
+      "log": "build/logs/TestScript-34892/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "log": "build/logs/TestScript-20208/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_editor_review_pass.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 180",
+      "exit_code": 0,
+      "log": "build/logs/TestScript-26268/test-script.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
+      "exit_code": 0,
+      "log": "build/logs/TestScript-3176/test-script.log"
+    }
+  ],
+  "initial_diagnostic_correction": "First Compatibility run used an integer/float-mixed synthetic workflow fingerprint and missed the real saved workflow. The fixture was normalized through JSON before persistence, then rerun on both renderers with assertions that the existing workflow was actually read. Only corrected measurements are reported.",
+  "source_sha256": {
+    "game/core/app.gd": "8ca1a89b83094f391b584ccb6228a250aa4c59a72a7639f01da38f3f92bec72b",
+    "game/editor/write_queue.gd": "85f5549bc128e1b49a9600ce7c6e0a3e02329dfc3b535773f1d37635b86ded1f",
+    "game/editor/population_job.gd": "ffb41855984bbcea311dd71bdeef5a4a9c5bd81c77b0002b94d7ddf3dbd0b89a",
+    "game/editor/object_population_panel.gd": "9782275c2753530839995d3882d065408a80178529dfb588e47eb85698af0290",
+    "game/editor/track_compiler.gd": "141da53bd019563262b2f27c23ba97471b61760abd8515dae4cc58da5c75be31",
+    "game/ui/draft_browser.gd": "6ed0048c43798cd57852c0e203e25e64c78f1977827f32fdceac593e96e2b2da",
+    "game/backend/track_lifecycle.gd": "d20dedee853052f001026eda88ab176b61e8daa36087fe2cf6c1e51ae2ccc3e7",
+    "game/backend/cloud_tracks.gd": "6b6f5b8a679876a53fc7a2360e12e00ce2c5ccc320f70c05ace50daee84017eb",
+    "game/editor/placed_object_batches.gd": "76d5b93fb60b5ce42aa5a03b98664ecc1937022cd6a3e44a528c457bd1aa76fd",
+    "game/track/native_track_visual.gd": "15961c8d2e3d62c01c6f09869fd34feb53a0a9e1794380a41549875a9880c00a"
+  },
+  "changed_files": [
+    "game/tests/profile_editor_review_pass.gd",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "docs/evidence/editor-review-pass-2026-10-14/review.json",
+    "docs/evidence/editor-review-pass-2026-10-14/compatibility-observations.json",
+    "docs/evidence/editor-review-pass-2026-10-14/mobile-observations.json"
+  ],
+  "limitations": [
+    "Runtime source is unchanged by this review; the four findings remain open.",
+    "Diagnostic zero failures means fixture/setup assertions passed and observations were collected; it does not mean the reproduced defects pass an acceptance test.",
+    "The existing 123-check editor suite passed on each renderer. It does not cover these newly identified interleavings and performance paths.",
+    "The two existing regression suites ran concurrently; their incidental timing samples are not used as a new performance comparison.",
+    "Shared desktop measurements do not establish phone latency/FPS/thermal improvements. No phone commands/device tests, APK/export/deployment, backend service mutation, canonical physics/schema changes or full Validate were performed.",
+    "Earlier cold editor frame maxima and physical-phone acceptance remain unresolved; no exhaustive guarantee that every performance issue is now known."
+  ],
+  "checkpoint": "Review-only task patch and round-trip validation alongside this report"
+}

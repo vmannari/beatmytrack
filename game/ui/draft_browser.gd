@@ -72,6 +72,7 @@ func _exit_tree() -> void:
 	if scan != null: scan.cancel()
 
 func _process(_delta: float) -> void:
+	if scan == null and not _summary_is_current(): _load_entries()
 	if scan != null and scan.done:
 		var completed = scan; scan = null
 		if library.directory != scan_directory or library.revision != scan_revision or (lifecycle != null and lifecycle.scope() != scan_scope):
@@ -81,6 +82,9 @@ func _process(_delta: float) -> void:
 		for item: Dictionary in entries:
 			if str(item.id) == selected_id: selection = item
 		scanning = false; _refresh()
+
+func _summary_is_current() -> bool:
+	return library.directory == scan_directory and library.revision == scan_revision and (lifecycle == null or lifecycle.scope() == scan_scope)
 
 func _refresh() -> void:
 	for child: Node in gallery.get_children():
@@ -140,8 +144,10 @@ func _show_detail() -> void:
 	detail.visible = not selection.is_empty()
 	if selection.is_empty(): return
 	var item: Dictionary = selection
-	var doc: Dictionary = library.load_wip(str(item.id)) if item.source == "wip" else library.load_document(str(item.id))
-	if doc.is_empty(): _load_entries(); return
+	var doc: Dictionary = item.document
+	var state: Dictionary = item.get("lifecycle",{})
+	var current: bool = not scanning and _summary_is_current()
+	var caption: String = str(state.get("caption","Saved on this device"))
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",12)
 	var actions: Control = row
@@ -175,7 +181,7 @@ func _show_detail() -> void:
 	info.add_child(MenuStyle.label("Last saved "+_stamp(item),14,true))
 	info.add_child(MenuStyle.label(_counts(doc),14,true))
 	if lifecycle != null:
-		var progress := MenuStyle.label(lifecycle.caption(doc),14,true)
+		var progress := MenuStyle.label(caption,14,true)
 		progress.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info.add_child(progress)
 	var edit: Button = _action("Edit track","edit",func() -> void: edit_requested.emit(str(item.load_id)))
@@ -192,17 +198,17 @@ func _show_detail() -> void:
 	publish.custom_minimum_size.x = 252
 	publish.clip_text = true
 	publish.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	publish.disabled = not lifecycle.ready_to_publish(doc) if lifecycle != null else not bool(item.tested)
+	publish.disabled = not current or (not bool(state.get("ready",false)) if lifecycle != null else not bool(item.tested))
 	if publish.disabled:
-		publish.text = "Publish\n"+(lifecycle.caption(doc) if lifecycle != null else "Complete test run to publish")
+		publish.text = "Publish\n"+(caption if lifecycle != null else "Complete test run to publish")
 		publish.add_theme_font_size_override("font_size",17)
 		publish.add_theme_stylebox_override("disabled",MenuStyle.box(Color("30383f")))
 		publish.add_theme_color_override("font_disabled_color",Color("aeb8bf"))
 	actions.add_child(publish)
-	if lifecycle != null and lifecycle.can_retry(doc):
-		actions.add_child(_action("Retry","refresh",func() -> void: lifecycle.retry(doc)))
-	if lifecycle != null and str(lifecycle.status_for(doc).get("failure","")).contains("REVISION_CONFLICT"):
-		actions.add_child(_action("Save as new track","edit",func() -> void: fork_requested.emit(doc.duplicate(true))))
+	if lifecycle != null and current and bool(state.get("retry",false)):
+		actions.add_child(_action("Retry","refresh",_retry_item.bind(item)))
+	if lifecycle != null and current and bool(state.get("revision_conflict",false)):
+		actions.add_child(_action("Save as new track","edit",_fork_item.bind(item)))
 	var remove: Button = _action("","delete",func() -> void: delete_requested.emit(str(doc.id),str(doc.name)))
 	remove.name = "DeleteDraft"
 	remove.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -214,6 +220,20 @@ func _show_detail() -> void:
 	remove.add_theme_stylebox_override("normal",MenuStyle.box(Color("8d233a")))
 	remove.add_theme_stylebox_override("hover",MenuStyle.box(Color("b3314b")))
 	actions.add_child(remove)
+
+func _document_for_action(item: Dictionary) -> Dictionary:
+	if not _summary_is_current(): _load_entries(); return {}
+	var doc: Dictionary = library.load_wip(str(item.id)) if item.source == "wip" else library.load_document(str(item.id))
+	if doc.is_empty(): _load_entries()
+	return doc
+
+func _retry_item(item: Dictionary) -> void:
+	var doc: Dictionary = _document_for_action(item)
+	if not doc.is_empty(): lifecycle.retry(doc)
+
+func _fork_item(item: Dictionary) -> void:
+	var doc: Dictionary = _document_for_action(item)
+	if not doc.is_empty(): fork_requested.emit(doc)
 
 func _action(caption: String, glyph: String, action: Callable, primary: bool = false) -> Button:
 	var button := MenuStyle.button(caption,action,primary)
@@ -227,11 +247,7 @@ func _action(caption: String, glyph: String, action: Callable, primary: bool = f
 
 func _status_changed() -> void:
 	if not is_inside_tree(): return
-	var selected_id: String = str(selection.get("id",""))
 	_load_entries()
-	for item: Dictionary in entries:
-		if str(item.id) == selected_id: selection = item
-	_refresh()
 
 func _load_entries() -> void:
 	if scan != null: scan.cancel()
@@ -239,6 +255,8 @@ func _load_entries() -> void:
 	scan_directory = library.directory; scan_revision = library.revision
 	scan_scope = lifecycle.scope() if lifecycle != null else ""
 	scan = SCANS.start(scan_directory,get_tree(),lifecycle._root() if lifecycle != null else "")
+	# Keep the selected summary visible, but disable stale workflow actions now.
+	if is_instance_valid(detail): _show_detail()
 
 static func _counts(doc: Dictionary) -> String:
 	return "%d road pieces  ·  %d objects" % [doc.get("piece_count",doc.pieces.size()),doc.get("object_count",doc.get("objects",[]).size())]

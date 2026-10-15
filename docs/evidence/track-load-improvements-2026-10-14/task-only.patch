@@ -1,0 +1,1585 @@
+diff --git a/game/track/road_mesh_disk_cache.gd b/game/track/road_mesh_disk_cache.gd
+--- a/game/track/road_mesh_disk_cache.gd
++++ b/game/track/road_mesh_disk_cache.gd
+@@ -1,8 +1,9 @@
+ extends RefCounted
+ ## Disposable local presentation cache. Canonical track compilation stays separate.
+ const ARTIFACT = preload("res://track/road_mesh_artifact.gd")
+-const FORMAT: String = "road-artifact-1"
++const FORMAT: String = "road-artifact-2"
+ const MAX_FILE_BYTES: int = 32 * 1024 * 1024
++const MAX_RESIDENT_BYTES: int = 96 * 1024 * 1024
+ const MAX_TOTAL_BYTES: int = 96 * 1024 * 1024
+ const MAX_FILES: int = 8
+ const MAX_MESHES: int = 4096 # Night roads are partitioned into light-sized tiles.
+@@ -36,7 +37,7 @@
+ 	# creator documents never provide filenames or serialized engine resources.
+ 	var artifact: Resource = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE)
+ 	if artifact == null or artifact.get_script() != ARTIFACT or artifact.cache_id != id: return {}
+-	if artifact.estimated_bytes <= 0 or artifact.estimated_bytes > MAX_FILE_BYTES or artifact.meshes.is_empty() or artifact.meshes.size() > MAX_MESHES: return {}
++	if artifact.estimated_bytes <= 0 or artifact.estimated_bytes > MAX_RESIDENT_BYTES or artifact.meshes.is_empty() or artifact.meshes.size() > MAX_MESHES: return {}
+ 	for data: Dictionary in artifact.meshes:
+ 		if not data.has_all(["mesh","material","transform","layers","shadow"]): return {}
+ 		if not data.mesh is ArrayMesh or not data.material is ShaderMaterial or not data.transform is Transform3D: return {}
+@@ -44,7 +45,7 @@
+ 
+ static func write_entry(entry: Dictionary) -> bool:
+ 	if directory.is_empty() or not entry.has_all(["key","meshes","metadata","bytes"]): return false
+-	if int(entry.bytes) <= 0 or int(entry.bytes) > MAX_FILE_BYTES: return false
++	if int(entry.bytes) <= 0 or int(entry.bytes) > MAX_RESIDENT_BYTES or entry.meshes.is_empty() or entry.meshes.size() > MAX_MESHES: return false
+ 	if DirAccess.make_dir_recursive_absolute(directory) != OK: return false
+ 	var id: String = identity(entry.key)
+ 	var path: String = directory.path_join(id+".res")
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -67,6 +67,7 @@
+ var _capture_road_arrays: bool = false
+ var _prepared_road_parts: Array = []
+ var prepare_editor_roads: bool = true
++var race_road_packet: Dictionary = {}
+ const EDITOR_ROADS = preload("res://editor/road_preparation.gd")
+ var cache_road_meshes: bool = true
+ var persist_road_meshes: bool = true
+@@ -78,6 +79,20 @@
+ const ROAD_CACHE_MAX_ENTRIES: int = 8
+ static var _road_mesh_cache: Array[Dictionary] = []
+ static var _pending_road_bakes: Dictionary = {}
++
++static func race_roads_need_preparation(track: NativeTrack) -> bool:
++	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return false
++	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
++	var key: Array = [track.content_hash,VERSION,theme,TrackTheme.palette(theme),true]
++	for entry: Dictionary in _road_mesh_cache:
++		if entry.key == key: return false
++	var world_key: Array = [track.content_hash,VERSION,ContactShading.VERSION,CreatorPropVisual.VERSION,theme,TrackTheme.palette(theme),true]
++	for entry: Dictionary in PREPARED_WORLDS.entries:
++		if entry.key == world_key: return false
++	# Presence avoids needlessly generating CPU arrays before a disk hit. The
++	# actual loader still verifies the checksum/format and safely rebuilds a miss.
++	var path: String = ROAD_DISK_CACHE.directory.path_join(ROAD_DISK_CACHE.identity(key)+".res")
++	return ROAD_DISK_CACHE.directory.is_empty() or not (FileAccess.file_exists(path) and FileAccess.file_exists(path+".sha256"))
+ 
+ 
+ func _bind_grass(material: ShaderMaterial) -> void:
+@@ -112,6 +127,7 @@
+ 	var world_key: Array = [track.content_hash,visual_version,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
+ 	var reuse_world: bool = cache_race_world and not editor_preview
+ 	if reuse_world and PREPARED_WORLDS.restore(world_key,self):
++		race_road_packet = {}
+ 		world_built = true
+ 		return
+ 	var ground := ShaderMaterial.new()
+@@ -361,13 +377,19 @@
+ 	var pieces: Array = document.get("pieces",[])
+ 	if pieces.is_empty(): return
+ 	var cache_key: Array = [track.content_hash,VERSION,theme_id,colors,partition_night_ground]
+-	var packet: Dictionary = track.editor_roads if editor_preview and prepare_editor_roads else {}
++	var packet: Dictionary = track.editor_roads if editor_preview and prepare_editor_roads else race_road_packet
+ 	var geometry_key: String = str(packet.get("key",""))
+ 	if editor_preview and prepare_editor_roads and geometry_key.is_empty(): geometry_key = EDITOR_ROADS.key_for(track)
+ 	var first_child: int = get_child_count()
+ 	if cache_road_meshes and _restore_road_meshes(cache_key,geometry_key,track):
+ 		track.editor_roads = {}
++		race_road_packet = {}
+ 		if not geometry_key.is_empty(): _remember_road_meshes(cache_key,first_child,track,geometry_key)
++		return
++	if not editor_preview and not packet.get("parts",[]).is_empty():
++		await _install_prepared_roads(track,packet)
++		race_road_packet = {}
++		if cache_road_meshes: _remember_road_meshes(cache_key,first_child,track,geometry_key)
+ 		return
+ 	if editor_preview and prepare_editor_roads and not _capture_road_arrays:
+ 		if packet.get("parts",[]).is_empty():
+@@ -386,7 +408,8 @@
+ 		var stored: Dictionary = ROAD_DISK_CACHE.read_entry(cache_key)
+ 		if not stored.is_empty():
+ 			_admit_road_entry(stored)
+-			if _restore_road_meshes(cache_key): return
++			_install_road_entry(stored,cache_key)
++			return
+ 	var mask: Image = _creator_overlay_mask(track,document.get("paint",[]))
+ 	var texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(mask)
+ 	var road_texture: ImageTexture = null if _capture_road_arrays else ImageTexture.create_from_image(_creator_road_mask(track))
+@@ -591,34 +614,38 @@
+ 		if entry.key != key and (geometry_key.is_empty() or entry.get("geometry_key","") != geometry_key): continue
+ 		_road_mesh_cache.remove_at(index)
+ 		_road_mesh_cache.append(entry)
+-		var rebound: Dictionary = {}
+-		var textures: Dictionary = {}
+-		for data: Dictionary in entry.meshes:
+-			# Only immutable road resources are shared. Every scene owns new nodes.
+-			var instance := MeshInstance3D.new()
+-			instance.mesh = data.mesh
+-			instance.material_override = data.material
+-			if entry.key != key and target != null:
+-				var source_id: int = data.material.get_instance_id()
+-				if not rebound.has(source_id):
+-					rebound[source_id] = data.material.duplicate()
+-					_rebind_road_masks(rebound[source_id],target,textures)
+-				instance.material_override = rebound[source_id]
+-			instance.transform = data.transform
+-			instance.layers = data.layers
+-			instance.cast_shadow = data.shadow
+-			add_child(instance)
+-		for name: String in entry.metadata: set_meta(name,entry.metadata[name])
++		_install_road_entry(entry,key,target)
+ 		return true
+ 	return false
+ 
+ 
++func _install_road_entry(entry: Dictionary, key: Array, target: NativeTrack = null) -> void:
++	var rebound: Dictionary = {}
++	var textures: Dictionary = {}
++	for data: Dictionary in entry.meshes:
++		# Only immutable road resources are shared. Every scene owns new nodes.
++		var instance := MeshInstance3D.new()
++		instance.mesh = data.mesh
++		instance.material_override = data.material
++		if entry.key != key and target != null:
++			var source_id: int = data.material.get_instance_id()
++			if not rebound.has(source_id):
++				rebound[source_id] = data.material.duplicate()
++				_rebind_road_masks(rebound[source_id],target,textures)
++			instance.material_override = rebound[source_id]
++		instance.transform = data.transform
++		instance.layers = data.layers
++		instance.cast_shadow = data.shadow
++		add_child(instance)
++	for name: String in entry.metadata: set_meta(name,entry.metadata[name])
++
++
+ func _remember_road_meshes(key: Array, first_child: int, track: NativeTrack, geometry_key: String = "") -> void:
+ 	var meshes: Array[Dictionary] = []
+-	# Conservative vertex/index plus CPU/GPU mask allowance; cap both bytes
+-	# and entries. Oversized roads still use the ordinary uncached builder.
++	# Disk artifacts may be larger than the idle memory LRU, while remaining
++	# bounded. They are restored directly into the active world, never retained.
+ 	var bytes: int = track.grid_width * track.grid_height * 16
+-	if bytes > ROAD_CACHE_BUDGET: return
++	if bytes > ROAD_DISK_CACHE.MAX_RESIDENT_BYTES: return
+ 	for index: int in range(first_child,get_child_count()):
+ 		var instance: MeshInstance3D = get_child(index) as MeshInstance3D
+ 		if instance == null or not instance.mesh is ArrayMesh: return
+@@ -626,7 +653,7 @@
+ 		for surface: int in range(mesh.get_surface_count()):
+ 			bytes += mesh.surface_get_array_len(surface)*96 + mesh.surface_get_array_index_len(surface)*4
+ 		meshes.append({"mesh":instance.mesh,"material":instance.material_override,"transform":instance.transform,"layers":instance.layers,"shadow":instance.cast_shadow})
+-	if meshes.is_empty() or bytes > ROAD_CACHE_BUDGET: return
++	if meshes.is_empty() or bytes > ROAD_DISK_CACHE.MAX_RESIDENT_BYTES: return
+ 	var metadata: Dictionary = {}
+ 	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
+ 		if has_meta(name): metadata[name] = get_meta(name)
+@@ -654,6 +681,7 @@
+ 
+ 
+ static func _admit_road_entry(entry: Dictionary) -> void:
++	if int(entry.bytes) <= 0 or int(entry.bytes) > ROAD_CACHE_BUDGET: return
+ 	for index: int in range(_road_mesh_cache.size()-1,-1,-1):
+ 		if _road_mesh_cache[index].key == entry.key or (not str(entry.get("geometry_key","")).is_empty() and _road_mesh_cache[index].get("geometry_key","") == entry.geometry_key): _road_mesh_cache.remove_at(index)
+ 	var total: int = int(entry.bytes)
+diff --git a/game/track/prepared_world_cache.gd b/game/track/prepared_world_cache.gd
+--- a/game/track/prepared_world_cache.gd
++++ b/game/track/prepared_world_cache.gd
+@@ -70,7 +70,8 @@
+ 		copy.instance_count = source.instance_count
+ 		copy.visible_instance_count = source.visible_instance_count
+ 		# Dummy/headless rendering has no backing instance buffer.
+-		if not source.buffer.is_empty(): copy.buffer = source.buffer
++		var buffer: PackedFloat32Array = source.buffer
++		if not buffer.is_empty(): copy.buffer = buffer
+ 		node.multimesh = copy
+ 	for child: Node in node.get_children(): _isolate_instances(child)
+ 
+diff --git a/game/vehicle/prepared_car_cache.gd b/game/vehicle/prepared_car_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/prepared_car_cache.gd
+@@ -0,0 +1,179 @@
++extends RefCounted
++## Rest-pose presentation templates. Meshes are immutable; materials/nodes are owned.
++const MAX_ENTRIES: int = 4
++const MAX_BYTES: int = 16 * 1024 * 1024
++static var entries: Array[Dictionary] = []
++static var enabled: bool = true
++static var hits: int = 0
++
++static func rest_scene(car: CarVisual) -> Node3D:
++	var key: Array = key_for(car)
++	for entry: Dictionary in entries:
++		if entry.key == key:
++			var holder: Node3D = _instantiate(entry)
++			for path: NodePath in entry.transforms: holder.get_node(path).transform = entry.transforms[path]
++			return holder
++	return null
++
++static func key_for(car: CarVisual) -> Array:
++	var key: Array = ["prepared-car-2",car.vehicle_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
++	if car.vehicle_id == "compact":
++		for category: String in VehicleCustomisation.CATEGORIES: key.append(car.customisation[category])
++	return key
++
++static func restore(car: CarVisual) -> bool:
++	# Only the stock detailed Compact currently passes exact renderer comparisons.
++	# Other models/kits retain their original material/shadow construction sequence.
++	# All models can still reuse their immutable rest-pose ghost geometry.
++	if not enabled or car.simple_model or car.editable_kits or car.vehicle_id != "compact" or car.customisation != VehicleCustomisation.defaults(): return false
++	var key: Array = key_for(car)
++	for index: int in range(entries.size()):
++		if entries[index].key != key: continue
++		var entry: Dictionary = entries.pop_at(index)
++		entries.append(entry)
++		var copies: Dictionary = {"mutable":_mutable_roles(entry),"snapshots":entry.material_snapshots}
++		var holder: Node3D = _instantiate(entry,copies)
++		for child: Node in holder.get_children():
++			holder.remove_child(child)
++			_own(child,null)
++			_isolate(child,copies)
++			car.add_child(child)
++		holder.free()
++		for path: NodePath in entry.transforms: car.get_node(path).transform = entry.transforms[path]
++		for field: String in ["body"]: car.set(field,car.get_node(entry[field]))
++		for field: String in ["front_wheels","rolling_wheels","brake_lights"]:
++			var nodes: Array = car.get(field)
++			for path: NodePath in entry[field]: nodes.append(car.get_node(path))
++		car.wheel_radii.assign(entry.wheel_radii)
++		car.wheel_rest_positions.assign(entry.wheel_rest_positions)
++		for field: String in ["brake_material","accent_roof","underside_material"]: car.set(field,_material(entry[field],copies))
++		for slot: String in entry.paint_materials: car.paint_materials[slot] = _material(entry.paint_materials[slot],copies)
++		for variant: Dictionary in entry.paint_variants:
++			var copy: Dictionary = variant.duplicate()
++			copy.material = _material(variant.material,copies)
++			car.paint_variants.append(copy)
++		for category: String in entry.kit_frames:
++			car.kit_frames[category] = []
++			for path: NodePath in entry.kit_frames[category]: car.kit_frames[category].append(car.get_node(path))
++		hits += 1
++		return true
++	return false
++
++static func remember(car: CarVisual) -> void:
++	if not enabled: return
++	_stable_names(car)
++	var seen: Dictionary = {}
++	var bytes: int = preload("res://track/prepared_world_cache.gd")._resource_bytes(car,seen)
++	# Include materials and template/property overhead conservatively.
++	bytes += car.find_children("*","MeshInstance3D",true,false).size()*2048
++	if bytes > MAX_BYTES: return
++	var material_snapshots: Dictionary = {}
++	var materials: Array = car.paint_materials.values()+[car.brake_material,car.accent_roof,car.underside_material]
++	for variant: Dictionary in car.paint_variants: materials.append(variant.material)
++	for material: Material in materials:
++		if material == null or material_snapshots.has(material.get_instance_id()): continue
++		var properties: Dictionary = {}
++		for property: Dictionary in material.get_property_list():
++			if int(property.usage)&PROPERTY_USAGE_STORAGE and not str(property.name).begins_with("resource_"): properties[property.name] = material.get(property.name)
++		material_snapshots[material.get_instance_id()] = {"type":material.get_class(),"properties":properties}
++
++	var nodes: Array = car.find_children("*","Node3D",true,false)
++	for node: Node in nodes:
++		if node.get_script() != null or node.get_class() not in ["Node3D","MeshInstance3D"]: return
++	nodes.sort_custom(func(a: Node,b: Node) -> bool: return a.get_instance_id() < b.get_instance_id())
++	var snapshot: Array[Dictionary] = []
++	for node: Node3D in nodes:
++		var properties: Dictionary = {}
++		for property: Dictionary in node.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE or property.name in ["script","owner"]: continue
++			var value: Variant = node.get(property.name)
++			properties[property.name] = value
++		var surfaces: Array[Material] = []
++		if node is MeshInstance3D and node.material_override == null:
++			for surface: int in range(node.mesh.get_surface_count()): surfaces.append(node.get_active_material(surface))
++		snapshot.append({"path":car.get_path_to(node),"parent":car.get_path_to(node.get_parent()),"name":str(node.name),"index":node.get_index(),"type":node.get_class(),"properties":properties,"transform":node.transform,"surfaces":surfaces,"groups":node.get_groups()})
++	var entry: Dictionary = {"key":key_for(car),"nodes":snapshot,"material_snapshots":material_snapshots,"bytes":bytes,"transforms":{},"paint_materials":car.paint_materials.duplicate(),"paint_variants":car.paint_variants.duplicate(true),"kit_frames":{},"wheel_radii":car.wheel_radii.duplicate(),"wheel_rest_positions":car.wheel_rest_positions.duplicate()}
++	for node: Node3D in nodes: entry.transforms[car.get_path_to(node)] = node.transform
++	entry.body = car.get_path_to(car.body)
++	for field: String in ["front_wheels","rolling_wheels","brake_lights"]:
++		entry[field] = []
++		for node: Node in car.get(field): entry[field].append(car.get_path_to(node))
++	for field: String in ["brake_material","accent_roof","underside_material"]: entry[field] = car.get(field)
++	for category: String in car.kit_frames:
++		entry.kit_frames[category] = []
++		for node: Node in car.kit_frames[category]: entry.kit_frames[category].append(car.get_path_to(node))
++	for index: int in range(entries.size()-1,-1,-1):
++		if entries[index].key == entry.key: entries.remove_at(index)
++	var total: int = bytes
++	for old: Dictionary in entries: total += int(old.bytes)
++	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
++	entries.append(entry)
++
++static func _instantiate(entry: Dictionary, copies: Dictionary = {}) -> Node3D:
++	if copies.is_empty(): copies = {"mutable":_mutable_roles(entry),"snapshots":entry.material_snapshots}
++	var holder := Node3D.new()
++	var nodes: Dictionary = {NodePath("."):holder}
++	var parents: Dictionary = {}
++	# Retain construction order, hierarchy and exact matrices separately from
++	# the independent mutable materials created for this instance.
++	for data: Dictionary in entry.nodes:
++		var node: Node3D = ClassDB.instantiate(data.type)
++		node.name = data.name
++		for property: String in data.properties:
++			var value: Variant = data.properties[property]
++			node.set(property,_material(value,copies) if value is Material else value)
++		node.transform = data.transform
++		for group: StringName in data.groups: node.add_to_group(group)
++		if node is MeshInstance3D:
++			for surface: int in range(data.surfaces.size()): node.set_surface_override_material(surface,_material(data.surfaces[surface],copies))
++		nodes[data.path] = node
++		if not parents.has(data.parent): parents[data.parent] = []
++		parents[data.parent].append(data)
++	for path: NodePath in parents:
++		parents[path].sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.index) < int(b.index))
++		for data: Dictionary in parents[path]: nodes[path].add_child(nodes[data.path])
++	return holder
++
++static func _material(source: Material, copies: Dictionary) -> Material:
++	if source == null: return null
++	var id: int = source.get_instance_id()
++	if copies.has("mutable") and not copies.mutable.has(id): return source
++	if not copies.has(id):
++		var copy: Material
++		if copies.has("snapshots") and copies.snapshots.has(id):
++			var declaration: Dictionary = copies.snapshots[id]
++			copy = ClassDB.instantiate(declaration.type)
++			for property: String in declaration.properties: copy.set(property,declaration.properties[property])
++		else: copy = source.duplicate()
++		copies[id] = copy
++		if not copies.has("snapshots"): copy.next_pass = _material(source.next_pass,copies)
++	return copies[id]
++
++static func _mutable_roles(entry: Dictionary) -> Dictionary:
++	var roles: Dictionary = {}
++	for material: Material in entry.paint_materials.values(): roles[material.get_instance_id()] = true
++	for variant: Dictionary in entry.paint_variants: roles[variant.material.get_instance_id()] = true
++	for field: String in ["brake_material","accent_roof","underside_material"]:
++		var material: Material = entry[field]
++		if material != null: roles[material.get_instance_id()] = true
++	return roles
++
++static func _isolate(node: Node, copies: Dictionary) -> void:
++	if node is MeshInstance3D:
++		node.material_override = _material(node.material_override,copies)
++		node.material_overlay = _material(node.material_overlay,copies)
++		# Embedded surface materials stay immutable; mutable bindings live on nodes.
++		for surface: int in range(node.mesh.get_surface_count()):
++			if node.material_override == null: node.set_surface_override_material(surface,_material(node.get_active_material(surface),copies))
++	for child: Node in node.get_children(): _isolate(child,copies)
++
++static func _own(node: Node, owner_node: Node) -> void:
++	node.owner = owner_node
++	for child: Node in node.get_children(): _own(child,owner_node)
++
++static func _stable_names(node: Node) -> void:
++	# Stored articulation paths need explicit sibling names before restoration.
++	for child: Node in node.get_children():
++		if str(child.name).begins_with("@"):
++			child.name = "PreparedNode_"+str(child.get_index())
++		_stable_names(child)
+diff --git a/game/vehicle/prepared_car_cache.gd.uid b/game/vehicle/prepared_car_cache.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/prepared_car_cache.gd.uid
+@@ -0,0 +1 @@
++uid://l3o3hbkda2vp
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -195,6 +195,14 @@
+ func _ready() -> void:
+ 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+ 	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
++	if preload("res://vehicle/prepared_car_cache.gd").restore(self):
++		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
++		apply_livery(livery)
++		_update_rear_lights()
++		graphics.configure(self)
++		force_update_transform()
++		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
++		return
+ 	if vehicle_id != "compact":
+ 		VehicleModels.build(self, vehicle_id)
+ 		if not livery.is_empty(): apply_livery(livery)
+@@ -246,6 +254,7 @@
+ 		VisualGeometry.batch_static_parts(self)
+ 		VisualGeometry.batch_car_parts(self)
+ 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
++	preload("res://vehicle/prepared_car_cache.gd").remember(self)
+ 	graphics.configure(self)
+ 
+ func new_kit_frame(category: String, parent: Node3D) -> Node3D:
+diff --git a/game/vehicle/personal_ghost.gd b/game/vehicle/personal_ghost.gd
+--- a/game/vehicle/personal_ghost.gd
++++ b/game/vehicle/personal_ghost.gd
+@@ -1,8 +1,10 @@
+ class_name PersonalGhost
+ extends MeshInstance3D
+ ## One non-colliding mesh, with the rewind silhouette treatment in neutral grey.
+-func configure(car: CarVisual) -> void:
+-	mesh = mesh_for(car)
++const MAX_BYTES: int = 16 * 1024 * 1024
++static var prepared_meshes: Array[Dictionary] = []
++func configure(car: CarVisual, prepare_mesh: bool = true) -> void:
++	if prepare_mesh: _prepare_mesh(car)
+ 	scale = car.scale
+ 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	var surface := ShaderMaterial.new()
+@@ -11,6 +13,31 @@
+ 	surface.shader = shader
+ 	material_override = surface
+ 	hide()
++
++func _prepare_mesh(car: CarVisual) -> void:
++	var key: Array = preload("res://vehicle/prepared_car_cache.gd").key_for(car)
++	for index: int in range(prepared_meshes.size()):
++		if prepared_meshes[index].key != key: continue
++		var entry: Dictionary = prepared_meshes.pop_at(index)
++		prepared_meshes.append(entry)
++		mesh = entry.mesh
++		break
++	if mesh == null:
++		var rest: Node3D = preload("res://vehicle/prepared_car_cache.gd").rest_scene(car)
++		if rest == null: mesh = mesh_for(car)
++		else:
++			var tool := SurfaceTool.new()
++			tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++			_append_local(rest,car.global_transform,car.global_transform.affine_inverse(),tool)
++			tool.generate_normals()
++			mesh = tool.commit()
++			rest.free()
++		var bytes: int = (mesh as ArrayMesh).surface_get_array_len(0)*24
++		if bytes <= MAX_BYTES:
++			var total: int = bytes
++			for entry: Dictionary in prepared_meshes: total += int(entry.bytes)
++			while not prepared_meshes.is_empty() and (prepared_meshes.size() >= 4 or total > MAX_BYTES): total -= int(prepared_meshes.pop_front().bytes)
++			prepared_meshes.append({"key":key,"mesh":mesh,"bytes":bytes})
+ 
+ func present(pose: Array) -> void:
+ 	visible = not pose.is_empty()
+@@ -25,6 +52,20 @@
+ 	tool.generate_normals()
+ 	return tool.commit()
+ 
++static func _append_local(node: Node3D, transform: Transform3D, inverse: Transform3D, tool: SurfaceTool) -> void:
++	if not node.visible: return
++	if node is MeshInstance3D and node.mesh != null and node.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
++		var relative: Transform3D = inverse*transform
++		for surface: int in range(node.mesh.get_surface_count()):
++			var arrays: Array = node.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			if indices.is_empty():
++				for vertex: Vector3 in vertices: tool.add_vertex(relative*vertex)
++			else:
++				for index: int in indices: tool.add_vertex(relative*vertices[index])
++	for child: Node3D in node.get_children(): _append_local(child,transform*child.transform,inverse,tool)
++
+ static func _append_meshes(node: Node, inverse: Transform3D, tool: SurfaceTool) -> void:
+ 	if node is MeshInstance3D and node.is_visible_in_tree() and node.mesh != null and node.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
+ 		for surface: int in range(node.mesh.get_surface_count()):
+diff --git a/game/vehicle/sand_dust.gd b/game/vehicle/sand_dust.gd
+--- a/game/vehicle/sand_dust.gd
++++ b/game/vehicle/sand_dust.gd
+@@ -1,5 +1,8 @@
+ class_name SandDust
+ extends Node3D
++# Sixteen small authored emitter resource templates; no simulation state.
++static var prepared_emitters: Array[Dictionary] = []
++const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
+ ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
+ ## never feeds back into the fixed-step vehicle simulation.
+ const PRESENTATION_VERSION: String = "desert-dust-21"
+@@ -318,9 +321,17 @@
+ 
+ 
+ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: Color, mode: int) -> GPUParticles3D:
+-	var spray: bool = mode in [MODE_SAND_SPRAY,MODE_CLIPPING,MODE_MUD]
++	var key: Array = [amount,lifetime,size,tint,mode]
+ 	var particles := GPUParticles3D.new()
+ 	particles.name = label
++	for entry: Dictionary in prepared_emitters:
++		if entry.key != key: continue
++		for property: String in entry.properties: particles.set(property,entry.properties[property])
++		particles.process_material = entry.process.duplicate()
++		particles.draw_pass_1 = entry.mesh.duplicate()
++		particles.draw_pass_1.surface_set_material(0,entry.material.duplicate())
++		return particles
++	var spray: bool = mode in [MODE_SAND_SPRAY,MODE_CLIPPING,MODE_MUD]
+ 	particles.amount = amount
+ 	particles.lifetime = lifetime
+ 	particles.randomness = 0.58
+@@ -380,6 +391,22 @@
+ 	mesh.surface_set_material(0,_particle_material(mode))
+ 	particles.draw_pass_1 = mesh
+ 	particles.emitting = false
++	# Detached immutable resources only. Each live emitter owns every mutable
++	# process/material/mesh wrapper, including bridge and desert-profile uniforms.
++	var properties: Dictionary = {}
++	for property: String in ["amount","lifetime","randomness","fixed_fps","interpolate","fract_delta","local_coords","visibility_aabb","emitting"]: properties[property] = particles.get(property)
++	var template_mesh: Mesh = mesh.duplicate()
++	var template_material: Material = mesh.surface_get_material(0).duplicate()
++	template_mesh.surface_set_material(0,template_material)
++	var arrays: Array = mesh.surface_get_arrays(0)
++	var bytes: int = arrays[Mesh.ARRAY_VERTEX].size()*96+template_material.shader.code.to_utf8_buffer().size()+8192
++	for texture: Texture2D in [process.color_ramp,process.scale_curve]:
++		if texture != null: bytes += texture.get_width()*texture.get_height()*16
++	if bytes <= PREPARED_EMITTER_BYTES:
++		var total: int = bytes
++		for entry: Dictionary in prepared_emitters: total += int(entry.bytes)
++		while not prepared_emitters.is_empty() and (prepared_emitters.size() >= 16 or total > PREPARED_EMITTER_BYTES): total -= int(prepared_emitters.pop_front().bytes)
++		prepared_emitters.append({"key":key,"properties":properties,"process":process.duplicate(),"mesh":template_mesh,"material":template_material,"bytes":bytes})
+ 	return particles
+ 
+ 
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -7,6 +7,8 @@
+ const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis"]
+ const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
+ const GRIT_SPACING: Array[float] = [4.2,6.6,5.1,3.7]
++const STREAM_CACHE_BYTES: int = 24 * 1024 * 1024
++static var prepared_streams: Array[Dictionary] = []
+ var model := VehicleAudioModel.new()
+ var surface_model := SurfaceAudioModel.new()
+ var engine_load: Array[AudioStreamPlayer] = []
+@@ -94,9 +96,28 @@
+ 
+ func _stream(clip: String, looping: bool) -> AudioStream:
+ 	if streams.has(clip): return streams[clip] as AudioStream
++	var key: Array = [clip,looping]
++	for index: int in range(prepared_streams.size()):
++		if prepared_streams[index].key != key: continue
++		var entry: Dictionary = prepared_streams.pop_at(index)
++		prepared_streams.append(entry)
++		streams[clip] = entry.stream
++		return entry.stream
+ 	var suffix: String = ".ogg" if clip in COMPRESSED_LOOPS else ".wav"
+ 	var source: AudioStream = load(BANK+clip+suffix) as AudioStream
+ 	var sample: AudioStream = AudioLoop.prepare(source) if looping else source.duplicate() as AudioStream
++	var bytes: int = 4096
++	if sample is AudioStreamWAV: bytes += sample.data.size()
++	else:
++		var file := FileAccess.open(BANK+clip+suffix,FileAccess.READ)
++		if file != null:
++			bytes += file.get_length()*2
++			file.close()
++	if bytes <= STREAM_CACHE_BYTES:
++		var total: int = bytes
++		for entry: Dictionary in prepared_streams: total += int(entry.bytes)
++		while not prepared_streams.is_empty() and (prepared_streams.size() >= 48 or total > STREAM_CACHE_BYTES): total -= int(prepared_streams.pop_front().bytes)
++		prepared_streams.append({"key":key,"stream":sample,"bytes":bytes})
+ 	streams[clip] = sample
+ 	return sample
+ 
+@@ -104,7 +125,7 @@
+ 	model.configure(id,config.maximum_speed)
+ 	surface_model.configure(config)
+ 	contact_radius = config.collision_radius
+-	if car!=null: visible_contact.configure(car)
++	if car!=null: visible_contact.configure(car,car is CarVisual)
+ 	else: visible_contact.outline = PackedVector2Array()
+ 	# Only the selected vehicle's six engine loops are retained by this race.
+ 	for i: int in range(3):
+diff --git a/game/vehicle/visible_contact_audio.gd b/game/vehicle/visible_contact_audio.gd
+--- a/game/vehicle/visible_contact_audio.gd
++++ b/game/vehicle/visible_contact_audio.gd
+@@ -7,11 +7,24 @@
+ var cue_requested: bool = false
+ var normal := Vector2.ZERO
+ const MAX_PROBES: int = 128
++const CACHE_BYTES: int = 1024 * 1024
++static var prepared_outlines: Array[Dictionary] = []
+ 
+-func configure(car: Node3D) -> void:
++func configure(car: Node3D, prepared: bool = false) -> void:
+ 	var points := PackedVector2Array()
+ 	var inverse: Transform3D = car.global_transform.affine_inverse()
+-	for node: Node in car.find_children("*","MeshInstance3D",true,false):
++	var parts: Array = car.find_children("*","MeshInstance3D",true,false)
++	var key: Array = [car.scale]
++	if prepared:
++		for node: MeshInstance3D in parts:
++			if node.mesh != null: key.append([node.mesh.get_instance_id(),inverse*node.global_transform])
++		for index: int in range(prepared_outlines.size()):
++			if prepared_outlines[index].key != key: continue
++			var entry: Dictionary = prepared_outlines.pop_at(index); prepared_outlines.append(entry)
++			outline = entry.outline
++			reset()
++			return
++	for node: Node in parts:
+ 		var part: MeshInstance3D = node as MeshInstance3D
+ 		if part.mesh==null: continue
+ 		var transform: Transform3D = inverse*part.global_transform
+@@ -22,6 +35,13 @@
+ 				var local: Vector3 = transform*vertex
+ 				points.append(Vector2(local.x*car.scale.x,-local.z*car.scale.z))
+ 	outline = Geometry2D.convex_hull(points) if points.size()>2 else PackedVector2Array()
++	if prepared:
++		var bytes: int = var_to_bytes(key).size()+outline.size()*8+512
++		if bytes <= CACHE_BYTES:
++			var total: int = bytes
++			for entry: Dictionary in prepared_outlines: total += int(entry.bytes)
++			while not prepared_outlines.is_empty() and (prepared_outlines.size() >= 8 or total > CACHE_BYTES): total -= int(prepared_outlines.pop_front().bytes)
++			prepared_outlines.append({"key":key,"outline":outline,"bytes":bytes})
+ 	reset()
+ 
+ func reset() -> void:
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -52,6 +52,7 @@
+ var rewind_return := RewindReturn.new()
+ var rewind_ghosts: Node3D
+ var personal_ghost: PersonalGhost
++var prepared_road_packet: Dictionary = {}
+ var ghost_mode: String = "lap"
+ var ghost_run := PersonalGhostRun.new()
+ var ghost_store: LocalGhosts
+@@ -192,7 +193,6 @@
+ 	world.add_child(environment)
+ 	biome_light = light
+ 	biome_environment = environment.environment
+-	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",environment.environment,light)
+ 	_update_weather()
+ 	checkpoint_marker = CheckpointMarker.new()
+ 	world.add_child(checkpoint_marker)
+@@ -209,7 +209,7 @@
+ 	if production_mode and not editor_test and native_track != null and preference_records != null:
+ 		personal_ghost = PersonalGhost.new()
+ 		world.add_child(personal_ghost)
+-		personal_ghost.configure(car)
++		personal_ghost.configure(car,false)
+ 	contact_shadow = ContactShading.car_shadow(world)
+ 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
+ 	car_weathering.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine", handling)
+@@ -645,6 +645,7 @@
+ 		music_personal_ghosts = ghost_bests.duplicate()
+ 		ghost_run.capture(sim.state,track_session,native_track,bridge_presentation,handling,true)
+ 		personal_ghost.hide()
++		_prepare_personal_ghost()
+ 	previous_position = sim.state.position
+ 	previous_heading = sim.state.heading
+ 	trails.clear()
+@@ -766,6 +767,7 @@
+ func set_ghost_mode(value: String) -> Error:
+ 	if value not in PersonalGhostRun.MODES: return ERR_INVALID_PARAMETER
+ 	ghost_mode = value
++	_prepare_personal_ghost()
+ 	if preference_records == null: return OK
+ 	preference_records.settings.ghost_mode = value
+ 	return preference_records.save_records()
+@@ -790,6 +792,10 @@
+ 		# Boundary ticks reset exactly at the player's accepted finish crossing.
+ 		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
+ 	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
++
++
++func _prepare_personal_ghost() -> void:
++	if personal_ghost != null and personal_ghost.mesh == null and ghost_mode != "off" and ghost_bests.has(ghost_mode): personal_ghost.configure(car)
+ 
+ 
+ func save_personal_ghost() -> Error:
+@@ -845,6 +851,8 @@
+ 	_refresh_render_scale()
+ 	if native_track != null:
+ 		var visual := NativeTrackVisual.new()
++		visual.race_road_packet = prepared_road_packet
++		prepared_road_packet = {}
+ 		visual.cache_race_world = production_mode and not editor_test
+ 		bridge_presentation = BridgePresentation.new(native_track)
+ 		world.add_child(visual)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -755,8 +755,12 @@
+ 	if is_instance_valid(neighbor): neighbor.position.x = lerpf(neighbor_start, neighbor_end, blend)
+ 
+ func _prepare_menu_neighbors(generation: int) -> void:
+-	# Warm actual page controls between gestures, after the viewport has laid out.
+-	await get_tree().process_frame
++	# A signal callback drops safely with its owner; a suspended method cannot
++	# resume after app teardown. Race loading also cancels unnecessary page work.
++	get_tree().process_frame.connect(_prepare_menu_neighbors_frame.bind(generation),CONNECT_ONE_SHOT)
++
++func _prepare_menu_neighbors_frame(generation: int) -> void:
++	if cloud_starting or is_instance_valid(game) or not root_ui.visible: return
+ 	if generation != _navigation_generation or not is_instance_valid(menu_body_slot): return
+ 	if menu_page_motion != null: return
+ 	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+@@ -810,9 +814,9 @@
+ 	_hide_warmed_menu_neighbors.call_deferred(generation)
+ 
+ func _hide_warmed_menu_neighbors(generation: int) -> void:
+-	# Let CanvasItems prepare draw commands and font glyphs once, offscreen and
+-	# clipped, so revealing them does not defer that work to the finger's first move.
+-	await get_tree().process_frame
++	get_tree().process_frame.connect(_hide_warmed_menu_neighbors_frame.bind(generation),CONNECT_ONE_SHOT)
++
++func _hide_warmed_menu_neighbors_frame(generation: int) -> void:
+ 	if generation != _navigation_generation: return
+ 	var swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
+ 	if swipe != null and swipe.pointer != -1: return
+@@ -1637,13 +1641,13 @@
+ 		return
+ 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
+ 	loading.stage("Downloading track…")
+-	var downloaded: bool = await cloud.download(entry)
++	var downloaded: Dictionary = await cloud.download_document(entry)
+ 	if not _race_loading_matches(loading_id): return
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+ 		return
+-	if not downloaded:
++	if downloaded.is_empty():
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+ 		rivalry.error = cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again."
+@@ -1657,7 +1661,12 @@
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+ 		return
+-	var track: NativeTrack = cloud.compile_entry(entry)
++	var track: NativeTrack = await online.client._background(cloud.compile_document.bind(entry,downloaded))
++	if not _race_loading_matches(loading_id): return
++	if navigation != _navigation_generation or original_scope != rivalry.scope():
++		cloud_starting = false
++		_close_race_loading(loading_id)
++		return
+ 	if track == null:
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+@@ -2936,14 +2945,14 @@
+ 	await _present_race_loading()
+ 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+ 	overlay.stage("Downloading track...")
+-	var downloaded: bool = await cloud.download(entry)
++	var downloaded: Dictionary = await cloud.download_document(entry)
+ 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+-	if not downloaded:
++	if downloaded.is_empty():
+ 		_close_race_loading(overlay_id)
+ 		_notice(cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again.")
+ 		return
+ 	overlay.stage("Preparing track…")
+-	var ready: Variant = await online.client._background(cloud.compile_entry.bind(entry))
++	var ready: Variant = await online.client._background(cloud.compile_document.bind(entry,downloaded))
+ 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+ 	if not ready is NativeTrack:
+ 		_close_race_loading(overlay_id)
+@@ -2954,12 +2963,12 @@
+ 	for property: Dictionary in ready.get_property_list():
+ 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: track.set(property.name,ready.get(property.name))
+ 	cloud.remember_compiled_entry(entry,track)
++	track_catalog.remember_track(entry,track)
+ 	cloud_starting = false
+-	_close_race_loading(overlay_id)
+-	await _start_race(track,from_editor,offline_only,issued)
+-
+-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}) -> void:
+-	if cloud_starting or is_instance_valid(race_loading): return
++	await _start_race(track,from_editor,offline_only,issued,overlay)
++
++func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null) -> void:
++	if cloud_starting or (is_instance_valid(race_loading) and race_loading != prepared_loading): return
+ 	if track == null:
+ 		_notice("Choose a track before starting a race.")
+ 		return
+@@ -2974,10 +2983,10 @@
+ 	var starting_screen: String = screen
+ 	var selected_vehicle: String = VehicleCatalog.selected
+ 	var starting_selection: NativeTrack = selected_track
+-	var loading: RaceLoading = _open_race_loading(track, from_editor)
++	var loading: RaceLoading = prepared_loading if is_instance_valid(prepared_loading) else _open_race_loading(track, from_editor)
+ 	var loading_id: int = loading.get_instance_id()
+ 	cloud_starting = true
+-	await _present_race_loading()
++	if prepared_loading == null: await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+ 	cloud_ticket = {}
+@@ -3020,6 +3029,15 @@
+ 	await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
++	var prepared_roads: Dictionary = {}
++	if NativeTrackVisual.race_roads_need_preparation(track):
++		var road_job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
++		while not road_job.done:
++			await get_tree().process_frame
++			if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
++				road_job.cancel()
++				return
++		prepared_roads = road_job.result if road_job.result is Dictionary else {}
+ 	returning_to_editor = from_editor
+ 	challenge_racing = rivalry_issued.has("challenge_code")
+ 	challenge_practice = offline_only and screen == "challenges" and not challenges.selected.is_empty()
+@@ -3030,9 +3048,11 @@
+ 		test_library_snapshot = library
+ 		test_scope_snapshot = lifecycle.scope() if lifecycle != null else ""
+ 		test_vehicle_snapshot = VehicleCatalog.selected
+-	if not from_editor:
++	if not from_editor and records.settings.get("last_track","") != track.identity:
++		var previous_track: String = str(records.settings.get("last_track",""))
+ 		records.settings["last_track"] = track.identity
+ 		if records.save_records() != OK:
++			records.settings["last_track"] = previous_track
+ 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
+ 	if is_instance_valid(canvas):
+ 		canvas.cancel_gesture()
+@@ -3044,6 +3064,7 @@
+ 	game.set_meta("soundtrack_rivalry", rivalry_racing)
+ 	game.set_meta("race_offline_only", offline_only)
+ 	game.set("initial_track", track)
++	game.set("prepared_road_packet",prepared_roads)
+ 	game.set("production_mode", true)
+ 	game.set("resume_client",online.client)
+ 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
+@@ -3064,6 +3085,7 @@
+ 	elif challenge_racing or (offline_only and screen == "challenges"):
+ 		game.ghost_mode = "race" if not challenge_recording.is_empty() else "off"
+ 		game.ghost_bests = {"race":challenge_recording} if not challenge_recording.is_empty() else {}
++	game.call("_prepare_personal_ghost")
+ 	var hud: PlaygroundHUD = game.get("hud")
+ 	hud.touch.control_scale = ui_touch_scale
+ 	hud.touch.left_handed = ui_left_handed
+@@ -3075,14 +3097,27 @@
+ 	loading.stage("Preparing start…")
+ 	var prepared_finish: VehicleWeathering = game.get("car_weathering")
+ 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
++	var prepared_personal_ghost: PersonalGhost = game.get("personal_ghost")
++	var ghost_pose: Transform3D = Transform3D.IDENTITY
++	var ghost_visible: bool = false
++	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
++		ghost_pose = prepared_personal_ghost.transform
++		ghost_visible = prepared_personal_ghost.visible
++		prepared_personal_ghost.position = game.get("car").position+Vector3.UP*0.05
++		prepared_personal_ghost.rotation = game.get("car").rotation
++		prepared_personal_ghost.show()
+ 	var bridge_preparation = preload("res://track/bridge_render_preparation.gd")
+ 	var prepared_bridges: Array[Dictionary] = []
+ 	if DisplayServer.get_name() != "headless": prepared_bridges = bridge_preparation.begin(game.get("track_ground"), game.get("camera"))
+ 	var bridge_meshes: int = prepared_bridges.size()
+-	var prepared_hazards: Array[Dictionary] = bridge_preparation.begin_groups(game.get("track_ground"), game.get("camera"), ["race_hazard_rendering"]) if DisplayServer.get_name() != "headless" else []
++	var prepared_hazards: Array[Dictionary] = []
++	if DisplayServer.get_name() != "headless": prepared_hazards = bridge_preparation.begin_groups(game.get("track_ground"), game.get("camera"), ["race_hazard_rendering"])
+ 	var hazard_meshes: int = prepared_hazards.size()
+ 	var preparation_started: int = Time.get_ticks_usec()
+ 	var finish_drawn: bool = await _present_race_loading()
++	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
++		prepared_personal_ghost.transform = ghost_pose
++		prepared_personal_ghost.visible = ghost_visible
+ 	# Restore even if navigation or the loading deadline removed the game.
+ 	bridge_preparation.end(prepared_bridges)
+ 	bridge_preparation.end(prepared_hazards)
+@@ -3343,10 +3378,9 @@
+ 	parent.add_child(page)
+ 
+ func _next_result_race(recommendation: Dictionary) -> void:
+-	if recommendation.entry.source == "cloud" and not await cloud.download(recommendation.entry):
+-		_notice(cloud.last_error)
+-		return
+-	var next_track: NativeTrack = track_catalog.resolve(recommendation.entry)
++	var next_track: NativeTrack = track_catalog.cached_track(recommendation.entry)
++	if next_track == null:
++		next_track = cloud.presentation_track(recommendation.entry) if recommendation.entry.source == "cloud" else track_catalog.resolve(recommendation.entry)
+ 	if next_track == null:
+ 		_notice("This track is no longer available. Choose another track.")
+ 		return
+diff --git a/game/backend/cloud_tracks.gd b/game/backend/cloud_tracks.gd
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -346,7 +346,9 @@
+ 	if previous.get("version_id","") == metadata.get("version_id","") and previous.get("content_hash","") == metadata.get("content_hash",""):
+ 		for key: String in ["_compiled_hash","_compiled_version","_compiled_engine","_compiled_source_hash"]:
+ 			if not metadata.has(key) and previous.has(key): metadata[key] = previous[key]
+-	return _write(directory.path_join(identity.sha256_text()+".json"),metadata) and _write(directory.path_join(("cloud_"+str(metadata.version_id)).sha256_text()+".json"),{"alias":identity})
++	var alias_path: String = directory.path_join(("cloud_"+str(metadata.version_id)).sha256_text()+".json")
++	var alias: Dictionary = {"alias":identity}
++	return (previous == metadata or _write(directory.path_join(identity.sha256_text()+".json"),metadata)) and (_read(alias_path) == alias or _write(alias_path,alias))
+ 
+ static func metadata_track(entry: Dictionary) -> NativeTrack:
+ 	# Presentation only; _start_race must hydrate this before any simulation.
+@@ -518,33 +520,42 @@
+ 	return doc
+ 
+ func download(entry: Dictionary) -> bool:
+-	if not cached_document(entry).is_empty(): return _retain_metadata(entry)
++	return not (await download_document(entry)).is_empty()
++
++func download_document(entry: Dictionary) -> Dictionary:
++	var cached: Dictionary = cached_document(entry)
++	if not cached.is_empty(): return cached if _retain_metadata(entry) else {}
+ 	var response: Dictionary = await client.request_api("/track-versions/"+str(entry.version_id).uri_encode()+"/document")
+ 	if not response.ok:
+ 		last_error = "This track is not cached. Connect and retry. " + str(response.error)
+-		return false
++		return {}
+ 	var body: String = str(response.get("body",""))
+ 	if body.to_utf8_buffer().size() > TrackDocument.MAX_BYTES or body.sha256_text() != str(entry.content_hash) or not TrackDocument.validate(response.data).is_empty():
+ 		last_error = "Downloaded track failed its integrity check."
+-		return false
++		return {}
+ 	var path: String = str(entry.cache_path)
+ 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+ 	var file := FileAccess.open(path+".tmp",FileAccess.WRITE)
+ 	if file == null:
+ 		last_error = "Not enough writable storage to cache this track."
+-		return false
++		return {}
+ 	file.store_string(body)
+ 	file.flush()
+ 	var ok: bool = file.get_error() == OK
+ 	file.close()
+ 	if not ok or DirAccess.rename_absolute(path+".tmp",path) != OK:
+ 		last_error = "The downloaded track could not be saved."
+-		return false
+-	return _retain_metadata(entry)
++		return {}
++	return response.data if _retain_metadata(entry) else {}
+ 
+ static func compile_entry(entry: Dictionary) -> NativeTrack:
+ 	var doc: Dictionary = cached_document(entry)
+ 	if doc.is_empty(): return null
++	return compile_document(entry,doc)
++
++static func compile_document(entry: Dictionary, doc: Dictionary) -> NativeTrack:
++	# Only an already hash-checked/validated request snapshot enters this path.
++	# Independent calls still use compile_entry and check actual cache bytes.
+ 	var key: Array = [str(entry.get("cache_path","")),str(entry.content_hash),TrackCompiler.VERSION]
+ 	var redacted_hash: String = str(entry.get("redacted_track_hash","")) if entry.get("redacted_track_hash") is String else ""
+ 	var canonical_hash: String = str(entry.get("canonical_track_hash","")) if entry.get("canonical_track_hash") is String else ""
+diff --git a/game/editor/track_compiler.gd b/game/editor/track_compiler.gd
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -53,7 +53,8 @@
+ 	else:
+ 		var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
+ 		for piece_index: int in range(document.pieces.size()):
+-			if _cancelled(cancelled): return null			var piece: Dictionary = document.pieces[piece_index]
++			if _cancelled(cancelled): return null
++			var piece: Dictionary = document.pieces[piece_index]
+ 			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
+ 			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
+ 			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
+@@ -184,7 +185,8 @@
+ 
+ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
+ 	for authored: Dictionary in strokes:
+-		if _cancelled(cancelled): return		var stroke: Dictionary = SurfacePaint.prepared(authored)
++		if _cancelled(cancelled): return
++		var stroke: Dictionary = SurfacePaint.prepared(authored)
+ 		if stroke.get("mode","") == "area":
+ 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+ 			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
+diff --git a/game/tests/test_prepared_race_resources.gd b/game/tests/test_prepared_race_resources.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_prepared_race_resources.gd
+@@ -0,0 +1,187 @@
++extends SceneTree
++const CARS = preload("res://vehicle/prepared_car_cache.gd")
++const SandDustEffect = preload("res://vehicle/sand_dust.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String
++var metrics: Array = []
++var viewport: SubViewport
++var stage: Node3D
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func value_key(value: Variant) -> Variant:
++	if value is Shader: return value.code
++	if value is Texture2D: return value.resource_path if not value.resource_path.is_empty() else [value.get_image().get_format(),value.get_image().get_data()]
++	if value is Material: return material_key(value)
++	return value
++
++func material_key(material: Material) -> Array:
++	if material == null: return []
++	var result: Array = [material.get_class()]
++	if material is ShaderMaterial:
++		result.append(material.shader.code)
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			var value: Variant = material.get_shader_parameter(uniform.name)
++			if value == null: value = RenderingServer.shader_get_parameter_default(material.shader.get_rid(),uniform.name)
++			result.append([uniform.name,value_key(value)])
++	else:
++		for property: Dictionary in material.get_property_list():
++			if int(property.usage)&PROPERTY_USAGE_STORAGE and not str(property.name).begins_with("resource_"): result.append([property.name,value_key(material.get(property.name))])
++	return result
++
++func geometry(node: Node3D) -> Array:
++	var result: Array = [node.transform,node.visible,node.global_transform]
++	if node is MeshInstance3D:
++		result.append([node.cast_shadow,node.layers,node.mesh.get_aabb()])
++		for surface: int in range(node.mesh.get_surface_count()): result.append([node.mesh.surface_get_arrays(surface),material_key(node.get_active_material(surface))])
++	for child: Node3D in node.get_children(): result.append(geometry(child))
++	return result
++
++func first_diff(a: Variant, b: Variant, path: String = "") -> bool:
++	if var_to_bytes(a) == var_to_bytes(b): return false
++	if a is Array and b is Array and a.size() == b.size():
++		for index: int in range(a.size()):
++			if first_diff(a[index],b[index],path+"/"+str(index)): return true
++	else: print("RESOURCE_DIFFERENCE ",path," ",str(a).left(240)," vs ",str(b).left(240))
++	return true
++
++func gpu_materials(car: CarVisual) -> Array:
++	var result: Array = []
++	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		for surface: int in range(node.mesh.get_surface_count()):
++			var material: Material = node.get_active_material(surface)
++			if material == null: continue
++			var values: Array = [material.get_class()]
++			if material.has_method("get_shader_rid"): values.append(RenderingServer.shader_get_code(material.call("get_shader_rid")))
++			for key: String in ["albedo","roughness","specular","metallic","emission","emission_energy","uv1_scale","uv1_offset","finish_color"]: values.append([key,RenderingServer.material_get_param(material.get_rid(),key)])
++			result.append(values)
++	return result
++
++func photo(car: CarVisual, label: String, frames: int) -> PackedByteArray:
++	if DisplayServer.get_name() == "headless": return PackedByteArray()
++	car.show()
++	for frame: int in range(frames): await RenderingServer.frame_post_draw
++	await create_timer(1.0).timeout
++	await RenderingServer.frame_post_draw
++	var image: Image = viewport.get_texture().get_image()
++	check(image.save_png(output.path_join(label+".png")) == OK,"actual car capture saved")
++	return image.get_data()
++
++func make_car(id: String, simple: bool, parts: Dictionary, livery: Dictionary) -> CarVisual:
++	var car := CarVisual.new()
++	car.vehicle_id = id; car.simple_model = simple; car.customisation = parts.duplicate(true); car.livery = livery.duplicate(true)
++	stage.add_child(car)
++	return car
++
++func car_case(id: String, simple: bool, fitted: bool = false) -> void:
++	var parts: Dictionary = VehicleCustomisation.defaults()
++	if fitted: parts.merge({"hood":"scoop","aero":"wing","rims":"split","body":"rally"},true)
++	var livery: Dictionary = VehicleLivery.defaults(id)
++	var label: String = id+"-"+str(simple)+("-fitted" if fitted else "")
++	var cached: bool = id == "compact" and not simple and not fitted
++	CARS.entries.clear(); CARS.enabled = false
++	var began: int = Time.get_ticks_usec()
++	var baseline: CarVisual = make_car(id,simple,parts,livery)
++	var cold_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	var pixels: PackedByteArray = await photo(baseline,label+"-before",120)
++	var expected: Array = geometry(baseline)
++	CARS.enabled = not ("--uncached-control" in OS.get_cmdline_user_args())
++	if CARS.enabled:
++		CARS.remember(baseline)
++		var admitted: PackedByteArray = await photo(baseline,label+"-admitted",8)
++		if not pixels.is_empty(): check(admitted == pixels,label+" cache admission leaves original car pixels exact")
++	baseline.hide()
++	var first: CarVisual = make_car(id,simple,parts,livery)
++	if DisplayServer.get_name() != "headless":
++		for frame: int in range(8): await RenderingServer.frame_post_draw
++	first_diff(expected,geometry(first))
++	check(geometry(first) == expected,label+" cold template preserves exact arrays, frames and finishes")
++	var first_pixels: PackedByteArray = await photo(first,label+"-cold",120)
++	if not pixels.is_empty() and cached: check(first_pixels == pixels,label+" first restored car pixels exact")
++	first.hide()
++	began = Time.get_ticks_usec()
++	var hits: int = CARS.hits
++	var restored: CarVisual = make_car(id,simple,parts,livery)
++	check(CARS.hits == hits+(1 if cached else 0),label+" accepted model restores; other shadow/material sequences retain original builder")
++	if "--clone-meshes" in OS.get_cmdline_user_args():
++		for node: MeshInstance3D in restored.find_children("*","MeshInstance3D",true,false):
++			var original_mesh: Mesh = node.mesh
++			node.mesh = original_mesh.duplicate()
++			if node.mesh is ArrayMesh: node.mesh.custom_aabb = original_mesh.get_aabb()
++	var warm_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	first_diff(expected,geometry(restored),"RESTORE")
++	check(geometry(restored) == expected,label+" restored car preserves exact arrays, frames and finishes")
++	var after: PackedByteArray = await photo(restored,label+"-after",120)
++	first_diff(expected,geometry(restored),"STRICT")
++	first_diff(gpu_materials(first),gpu_materials(restored),"GPU")
++	if not pixels.is_empty() and cached: check(after == pixels,label+" framebuffer is byte-exact")
++	check(restored.body != first.body and restored.rolling_wheels.size() == 4 and restored.front_wheels.size() == 2,label+" articulation nodes are independent")
++	check(restored.paint_materials.body != first.paint_materials.body and restored.brake_material != first.brake_material,label+" paint and brakes are independent")
++	var painted: Dictionary = livery.duplicate(true)
++	painted.colors.body = "#cb3049"
++	restored.apply_livery(painted)
++	restored.rolling_wheels[0].rotation.x = 0.5
++	first.show()
++	check(geometry(first) == expected,label+" painting/wheel motion cannot mutate another car or cached mesh")
++	var fresh: CarVisual = make_car(id,simple,parts,livery)
++	check(geometry(fresh) == expected,label+" template remains pristine after live edits")
++	var original_ghost: ArrayMesh = PersonalGhost.mesh_for(fresh)
++	var ghost := PersonalGhost.new()
++	stage.add_child(ghost); ghost.configure(fresh)
++	check(ghost.mesh.surface_get_arrays(0) == original_ghost.surface_get_arrays(0),label+" prepared rest-pose ghost is exact")
++	ghost.free()
++	metrics.append({"case":label,"cold_car_ms":cold_ms,"warm_car_ms":warm_ms})
++	baseline.free(); first.free(); restored.free(); fresh.free()
++	await process_frame
++
++func particles() -> void:
++	SandDustEffect.prepared_emitters.clear()
++	var first := SandDustEffect.new(); stage.add_child(first)
++	var second := SandDustEffect.new(); stage.add_child(second)
++	check(first.get_child_count() == second.get_child_count(),"prepared effects preserve all emitter families")
++	for index: int in range(first.get_child_count()):
++		var a: GPUParticles3D = first.get_child(index); var b: GPUParticles3D = second.get_child(index)
++		check(a.amount == b.amount and a.lifetime == b.lifetime and a.fixed_fps == b.fixed_fps,"particle budgets/cadence unchanged")
++		check(a.draw_pass_1.surface_get_arrays(0) == b.draw_pass_1.surface_get_arrays(0) and material_key(a.draw_pass_1.surface_get_material(0)) == material_key(b.draw_pass_1.surface_get_material(0)),"particle geometry/finish exact")
++		check(a.process_material != b.process_material and a.draw_pass_1 != b.draw_pass_1 and a.draw_pass_1.surface_get_material(0) != b.draw_pass_1.surface_get_material(0),"process and bridge/finish bindings independently owned")
++	first._set_desert_profile(true)
++	check(second.dust_emitters[0].amount == 360 and second.dust_emitters[0].lifetime == 5.2,"desert cannot change another biome's budget")
++	var third := SandDustEffect.new(); stage.add_child(third)
++	check(third.dust_emitters[0].amount == 360 and third.dust_emitters[0].lifetime == 5.2,"cached particle template stays pristine")
++	first.free(); second.free(); third.free()
++
++func audio() -> void:
++	VehicleAudio.prepared_streams.clear()
++	var first := VehicleAudio.new(); first.use_windows_impacts = false; stage.add_child(first); first.configure("compact",VehicleCatalog.config("compact"))
++	var second := VehicleAudio.new(); second.use_windows_impacts = false; stage.add_child(second); second.configure("compact",VehicleCatalog.config("compact"))
++	check(first.engine_load[0] != second.engine_load[0] and first.engine_load[0].stream == second.engine_load[0].stream,"prepared stream shared with independent playback")
++	var before: AudioStream = second.engine_load[0].stream
++	first.configure("pickup",VehicleCatalog.config("pickup")); first.free()
++	check(second.engine_load[0].stream == before and second.model.vehicle_id == "compact","car switch/teardown cannot change another audio bank")
++	var bytes: int = 0
++	for entry: Dictionary in VehicleAudio.prepared_streams: bytes += int(entry.bytes)
++	check(bytes <= VehicleAudio.STREAM_CACHE_BYTES,"audio cache byte budget respected")
++	second.free()
++
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../docs/evidence/track-load-improvements-2026-10-14/"+RenderingServer.get_current_rendering_method())
++	if DisplayServer.get_name() == "headless": output = output.path_join("headless")
++	DirAccess.make_dir_recursive_absolute(output)
++	viewport = SubViewport.new(); viewport.size = Vector2i(640,360); viewport.own_world_3d = true; viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	stage = Node3D.new(); viewport.add_child(stage)
++	var camera := Camera3D.new(); stage.add_child(camera); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 7.0; camera.position = Vector3(5.4,5.8,7.1); camera.look_at(Vector3(0,0.6,0)); camera.current = true
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-58,-35,0); light.shadow_enabled = true; stage.add_child(light)
++	var environment := WorldEnvironment.new(); environment.environment = Environment.new(); environment.environment.background_mode = Environment.BG_COLOR; environment.environment.background_color = Color("647158"); environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; environment.environment.ambient_light_color = Color("bac8ce"); environment.environment.ambient_light_energy = 0.35; stage.add_child(environment)
++	for id: String in ["compact","pickup","classic","formula","kart"]:
++		for simple: bool in [false,true]: await car_case(id,simple)
++	await car_case("compact",false,true); await car_case("compact",true,true)
++	particles(); audio()
++	var file := FileAccess.open(output.path_join("resources.json"),FileAccess.WRITE); file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	viewport.free()
++	print("PREPARED_RACE_RESOURCES: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_prepared_race_resources.gd.uid b/game/tests/test_prepared_race_resources.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_prepared_race_resources.gd.uid
+@@ -0,0 +1 @@
++uid://brlni5ev33xx2
+diff --git a/game/tests/test_large_road_cache.gd b/game/tests/test_large_road_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_large_road_cache.gd
+@@ -0,0 +1,76 @@
++extends SceneTree
++const DISK = preload("res://track/road_mesh_disk_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var metrics: Array = []
++var folder: String
++
++class GuardedRoad extends NativeTrackVisual:
++	var generated: bool = false
++	func _remember_road_meshes(key: Array, first: int, track: NativeTrack, geometry: String = "") -> void:
++		generated = true
++		super._remember_road_meshes(key,first,track,geometry)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func digest(visual: Node3D) -> String:
++	var hash := HashingContext.new(); hash.start(HashingContext.HASH_SHA256)
++	for node: MeshInstance3D in visual.get_children():
++		hash.update(var_to_bytes([node.transform,node.layers,node.cast_shadow]))
++		for surface: int in range(node.mesh.get_surface_count()): hash.update(var_to_bytes(node.mesh.surface_get_arrays(surface)))
++		var material: ShaderMaterial = node.material_override
++		hash.update(material.shader.code.to_utf8_buffer())
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			var value: Variant = material.get_shader_parameter(uniform.name)
++			if value is Texture2D:
++				value = value.resource_path if value.resource_path.begins_with("res://assets/") else [value.get_image().get_format(),value.get_image().get_data()]
++			hash.update(var_to_bytes([uniform.name,value]))
++	return hash.finish().hex_encode()
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../build/large-road-cache-2026-10-14/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(folder); DISK.directory = folder.path_join("roads")
++	var read_only: bool = "--read-only" in OS.get_cmdline_user_args()
++	var expected: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("expected.json"))) if read_only else {}
++	for theme: String in ["desert","winter"]:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json")); document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var key: Array = [track.content_hash,NativeTrackVisual.VERSION,theme,TrackTheme.palette(theme),true]
++		var original := GuardedRoad.new(); original.theme_id = theme; original.colors = TrackTheme.palette(theme)
++		root.add_child(original)
++		if not read_only:
++			original.persist_road_meshes = false
++			var began: int = Time.get_ticks_usec()
++			await original._build_creator_roads(track)
++			var build_ms: float = (Time.get_ticks_usec()-began)/1000.0
++			check(original.generated,"actual cold road geometry was generated")
++			expected[theme] = digest(original)
++			began = Time.get_ticks_usec(); original.persist_road_meshes = true; original._remember_road_meshes(key,0,track)
++			var save_ms: float = (Time.get_ticks_usec()-began)/1000.0
++			metrics.append({"theme":theme,"build_ms":build_ms,"save_ms":save_ms})
++		original.free()
++		NativeTrackVisual._road_mesh_cache.clear()
++		var stored: Dictionary = DISK.read_entry(key)
++		check(not stored.is_empty(),theme+" oversized roads admitted on disk")
++		if not stored.is_empty():
++			check(int(stored.bytes) > NativeTrackVisual.ROAD_CACHE_BUDGET and int(stored.bytes) <= DISK.MAX_RESIDENT_BYTES,theme+" fixture exceeds idle RAM budget but respects serialized expansion bound")
++			NativeTrackVisual._admit_road_entry(stored)
++			check(NativeTrackVisual._road_mesh_cache.is_empty(),"oversized road is never retained in idle memory cache")
++		var restored := GuardedRoad.new(); restored.theme_id = theme; restored.colors = TrackTheme.palette(theme); root.add_child(restored)
++		var began: int = Time.get_ticks_usec(); await restored._build_creator_roads(track)
++		var load_ms: float = (Time.get_ticks_usec()-began)/1000.0
++		check(not restored.generated,theme+" production path loaded instead of regenerating")
++		check(digest(restored) == expected.get(theme,""),theme+" all arrays, shaders, uniforms, textures and render flags exactly round-trip")
++		check(NativeTrackVisual._road_mesh_cache.is_empty(),"active restore leaves idle memory bounded")
++		var file := FileAccess.open(DISK.directory.path_join(DISK.identity(key)+".res"),FileAccess.READ)
++		var bytes: int = file.get_length() if file != null else 0
++		if file != null: file.close()
++		metrics.append({"theme":theme,"load_ms":load_ms,"artifact_bytes":bytes,"restart":read_only})
++		restored.free(); await process_frame
++	var file := FileAccess.open(folder.path_join("expected.json"),FileAccess.WRITE); file.store_string(JSON.stringify(expected)); file.close()
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-improvements-2026-10-14")
++	file = FileAccess.open(output.path_join("large-roads"+("-restart" if read_only else "")+"-"+RenderingServer.get_current_rendering_method()+".json"),FileAccess.WRITE); file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("LARGE_ROAD_CACHE: ",checks," checks, ",failures," failures ",JSON.stringify(metrics))
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_large_road_cache.gd.uid b/game/tests/test_large_road_cache.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_large_road_cache.gd.uid
+@@ -0,0 +1 @@
++uid://bypnonhs8vvsm
+diff --git a/game/tests/test_race_preparation_reuse.gd b/game/tests/test_race_preparation_reuse.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_preparation_reuse.gd
+@@ -0,0 +1,82 @@
++extends SceneTree
++const CLOUD = preload("res://backend/cloud_tracks.gd")
++const DISK = preload("res://track/road_mesh_disk_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var overlay_ids: Dictionary = {}
++var loading_frames: int = 0
++var app: Node
++
++class CountedCloud extends "res://backend/cloud_tracks.gd":
++	var writes: int = 0
++	func _write(path: String, value: Dictionary) -> bool:
++		writes += 1
++		return super._write(path,value)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func observe() -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app.race_loading): return
++	overlay_ids[app.race_loading.get_instance_id()] = true
++	loading_frames += 1
++	if is_instance_valid(app.game) and app.game.process_mode == Node.PROCESS_MODE_DISABLED:
++		check(app.game.sim.state.tick == 0 and app.game.countdown_ticks == 360,"preparation keeps canonical time/countdown frozen")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	var folder: String = ProjectSettings.globalize_path("res://../build/race-preparation-reuse-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder); DISK.directory = folder.path_join("roads")
++	app = load("res://core/app.tscn").instantiate(); app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder.path_join("records.json")); app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var body: String = JSON.stringify(document)
++	var path: String = folder.path_join("document.json")
++	var file := FileAccess.open(path,FileAccess.WRITE); file.store_string(body); file.close()
++	var entry: Dictionary = {"source":"cloud","cache_path":path,"content_hash":body.sha256_text(),"id":"cloud_reuse_fixture","name":"Loading fixture","version_id":"fixture-v1","track_id":"fixture-track","creator":"Fixture","theme":"pine","points":document.points}
++	var counted := CountedCloud.new(); counted.client = app.online.client; counted.root_override = folder.path_join("counted")
++	check(counted._retain_metadata(entry),"first retained metadata is saved")
++	var writes: int = counted.writes
++	check(writes == 2 and counted._retain_metadata(entry) and counted.writes == writes,"identical verified retained/alias files incur zero writes")
++	var changed: Dictionary = entry.duplicate(true); changed.name = "Updated name"
++	check(counted._retain_metadata(changed) and counted.writes == writes+1,"changed metadata writes once and keeps identical alias")
++	var alias: String = counted.cache_root().path_join("retained").path_join(("cloud_"+str(entry.version_id)).sha256_text()+".json")
++	file = FileAccess.open(alias,FileAccess.WRITE); file.store_string("corrupt"); file.close()
++	check(counted._retain_metadata(changed) and counted.writes == writes+2,"corrupt alias is repaired rather than skipped")
++	counted.free()
++	var downloaded: Dictionary = await app.cloud.download_document(entry)
++	check(not downloaded.is_empty(),"download returns a validated request snapshot")
++	file = FileAccess.open(path,FileAccess.WRITE); file.store_string("corrupt"); file.close()
++	check(CLOUD.compile_entry(entry) == null,"independent compilation still rejects corrupt actual file bytes")
++	check(CLOUD.compile_document(entry,downloaded) != null,"in-flight verified snapshot remains independent of later disk damage")
++	file = FileAccess.open(path,FileAccess.WRITE); file.store_string(body); file.close()
++	app.selected_track = CLOUD.metadata_track(entry)
++	check(NativeTrackVisual.race_roads_need_preparation(CLOUD.compile_entry(entry)),"cold published roads require CPU preparation")
++	process_frame.connect(observe)
++	var started: int = Time.get_ticks_usec()
++	await app._start_race(app.selected_track,false,true)
++	check(overlay_ids.size() == 1,"metadata hydration and start share one loading overlay")
++	check(loading_frames >= 4,"CPU preparation allows loading frames to continue")
++	check(is_instance_valid(app.game) and app.game.countdown_ticks == 360 and app.game.track_session.target_laps == 5,"prepared race starts with all five laps and full countdown")
++	check(app.track_catalog.cached_track(entry) == app.selected_track and not app.selected_track.metadata.get("metadata_only",false),"hydrated selection is retained in the bounded catalog")
++	check(not NativeTrackVisual.race_roads_need_preparation(app.selected_track),"completed roads skip another CPU preparation")
++	app.game.set_physics_process(false); app._leave_race()
++	document.pieces[0].width = float(document.pieces[0].width)+0.5
++	for index: int in range(document.pieces[0].point_widths.size()): document.pieces[0].point_widths[index] = document.pieces[0].width
++	var cold: NativeTrack = TrackCompiler.compile(document)
++	check(cold != null,"changed-width cancellation fixture validates")
++	cold.metadata.cloud_version = "fixture-v2"
++	app.selected_track = cold
++	app._start_race(cold,false,true)
++	await process_frame; await process_frame
++	app._show_screen("garage")
++	for frame: int in range(12): await process_frame
++	check(app.game == null and not is_instance_valid(app.race_loading) and not app.cloud_starting,"navigation cancels CPU preparation without publishing a stale race")
++	var elapsed: float = (Time.get_ticks_usec()-started)/1000.0
++	app.free(); await process_frame
++	print("RACE_PREPARATION_REUSE: ",checks," checks, ",failures," failures; loading_frames=",loading_frames," ms=",elapsed)
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_race_preparation_reuse.gd.uid b/game/tests/test_race_preparation_reuse.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_preparation_reuse.gd.uid
+@@ -0,0 +1 @@
++uid://d4e4ad1cvc5yi
+diff --git a/game/tests/test_app.gd b/game/tests/test_app.gd
+--- a/game/tests/test_app.gd
++++ b/game/tests/test_app.gd
+@@ -245,6 +245,11 @@
+ 	check(changed.pieces[0].width != original.pieces[0].width and changed.points == original.points, "mouse drag changes only the selected road width")
+ 	check((app.get("history") as Array).size() == 1, "one completed drag creates one undo step")
+ 	var library: TrackLibrary = app.get("library")
++	# Gesture autosaves use the existing ordered background writer. Observe its
++	# completed disk result without forcing the shipping write to be synchronous.
++	var save_deadline: int = Time.get_ticks_msec()+5000
++	while (app.editor_writes.thread != null or not app.editor_writes.pending.is_empty()) and Time.get_ticks_msec() < save_deadline:
++		await process_frame
+ 	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
+ 	var expected_preview: NativeTrack = TrackCompiler.compile(changed)
+ 	while app.get("editor_preview_thread") != null: await process_frame
+diff --git a/game/tests/test_rivalry_start_failure.gd b/game/tests/test_rivalry_start_failure.gd
+--- a/game/tests/test_rivalry_start_failure.gd
++++ b/game/tests/test_rivalry_start_failure.gd
+@@ -28,6 +28,8 @@
+ 		await get_tree().process_frame
+ 		if not download_ok: last_error = "Track download failed. Check your connection and try again."
+ 		return download_ok
++	func download_document(entry: Dictionary) -> Dictionary:
++		return cached_document(entry) if await download(entry) else {}
+ 
+ func _initialize() -> void: run.call_deferred()
+ func check(ok: bool, message: String) -> void:
+@@ -119,7 +121,7 @@
+ 			"older-server":
+ 				rivalry.issued.manifest.compiler_version = "creator-compiler-22"
+ 				rivalry.issued.manifest.track_content_hash = "0".repeat(64)
+-			"newer-server": rivalry.issued.manifest.compiler_version = "creator-compiler-24"
++			"newer-server": rivalry.issued.manifest.compiler_version = "creator-compiler-"+str(int(TrackCompiler.VERSION.get_slice("-",2))+1)
+ 			"unknown-server": rivalry.issued.manifest.compiler_version = "creator-compiler-unknown"
+ 			"track-mismatch": rivalry.issued.manifest.track_content_hash = "0".repeat(64)
+ 			"ticket-failure": rivalry.issued = {}
+diff --git a/game/tests/review_track_loading_2026_10_13.gd b/game/tests/review_track_loading_2026_10_13.gd
+--- a/game/tests/review_track_loading_2026_10_13.gd
++++ b/game/tests/review_track_loading_2026_10_13.gd
+@@ -4,6 +4,7 @@
+ const Tracks = preload("res://backend/prepared_track_cache.gd")
+ const Worlds = preload("res://track/prepared_world_cache.gd")
+ var folder: String
++var output_folder: String = "res://../docs/evidence/track-load-review-2026-10-13"
+ var report: Dictionary = {"samples": [], "cache": [], "components": []}
+ var game_script: GDScript
+ var visual_script: GDScript
+@@ -83,7 +84,7 @@
+ 	finish.end_render_warmup()
+ 	if warm and DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+ 	assert(game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5)
+-	var row: Dictionary = {"label": label, "prefs": preferences, "ready_ms": ready_us / 1000.0, "to_prepared_draw_ms": (Time.get_ticks_usec() - started) / 1000.0, "game_ms": deltas(game.review_marks), "world_ms": deltas(game.track_ground.review_marks), "ghost_mesh_built": game.personal_ghost != null, "ghost_mode": game.ghost_mode, "ghost_recordings": game.ghost_bests.size()}
++	var row: Dictionary = {"label": label, "prefs": preferences, "ready_ms": ready_us / 1000.0, "to_prepared_draw_ms": (Time.get_ticks_usec() - started) / 1000.0, "game_ms": deltas(game.review_marks), "world_ms": deltas(game.track_ground.review_marks), "ghost_mesh_built": game.personal_ghost != null and game.personal_ghost.mesh != null, "ghost_mode": game.ghost_mode, "ghost_recordings": game.ghost_bests.size()}
+ 	report.samples.append(row)
+ 	row.road_admission_bytes = game.track_ground.review_road_bytes
+ 	row.road_cache = []
+@@ -97,6 +98,8 @@
+ 	await process_frame
+ 
+ func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): output_folder = argument.trim_prefix("--evidence=")
+ 	folder = ProjectSettings.globalize_path("res://../build/track-load-review-2026-10-13")
+ 	DirAccess.make_dir_recursive_absolute(folder)
+ 	NativeTrackVisual.ROAD_DISK_CACHE.directory = folder.path_join("roads")
+@@ -143,14 +146,14 @@
+ 	report.engine = Engine.get_version_info().string
+ 	report.renderer = RenderingServer.get_current_rendering_method()
+ 	report.adapter = RenderingServer.get_video_adapter_name()
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
++	var output: String = ProjectSettings.globalize_path(output_folder)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	write_report("review-admission.json")
+ 	print("LOAD_REVIEW_COMPLETE samples=", report.samples.size(), " zero_tick_countdown_checks=", report.samples.size())
+ 	quit()
+ 
+ func write_report(filename: String) -> void:
+-	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/track-load-review-2026-10-13")
++	var output: String = ProjectSettings.globalize_path(output_folder)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var file := FileAccess.open(output.path_join(filename), FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(report, "\t")); file.close()
+diff --git a/docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md b/docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md
+@@ -0,0 +1,128 @@
++# Track loading improvements, 2026-10-14
++
++Owner authorization: ?OK, proceed with those improvements?, following [the measured loading review](TRACK_LOADING_REVIEW_2026_10_13.md). This implements the proven redundant-work and cache opportunities while retaining the existing covered render preparation. Requirements TLI01?TLI08 / Q01 / V03?V05 / G01 / R01 / B07.
++
++Repeated stock-Compact race construction now takes **58?105 ms** in the twelve-scene desktop probe. Large Desert and Winter roads can persist across restarts instead of being rejected by the idle-memory limit. Unused ghosts no longer allocate a combined mesh. Cold CPU road generation runs through the existing cancellable worker while the loading overlay continues to render. First GPU resource installation and material compilation remain real work under the loading cover.
++
++## Implemented scope
++
++| ID | Change | Ownership and behavior retained |
++| --- | --- | --- |
++| TLI01 | Separate large-road disk admission from the idle road LRU. Install a verified disk artifact directly into the active world, even when it cannot enter the LRU. | Format `road-artifact-2`; private local resources, SHA-256 sidecar, exact engine/content/art key. Idle road RAM remains 32 MiB / eight entries. Files remain at most 32 MiB each, 96 MiB total / eight files. Expanded per-artifact estimate is bounded at 96 MiB; empty/oversized mesh lists are rejected. |
++| TLI02 | Decide whether a compatible ghost can be shown before preparing its geometry; retain a bounded immutable combined ghost mesh. | Pose/PB recording is independent of drawing. Ghost-off/no-recording scenes build no ghost mesh. Nodes/material state remain fresh. Rest-pose ghost arrays match the original builder for all five cars, full/simple models and the tested fitted Compact. |
++| TLI03 | Prepare bounded rest-pose car resources; restore stock detailed Compact assembly where both renderers pass exact pixels. | Four entries / 16 MiB estimate; exact mesh arrays, original construction hierarchy/matrices, original articulation and independently owned paint/brake/underside/livery bindings. Other cars, simpler models and fitted kits keep their original assembly path. Their immutable rest pose can still serve ghost generation. |
++| TLI04 | Reuse particle emitter templates, shaders, curves and immutable finish data. | Sixteen entries / 2 MiB estimate. Fresh particle nodes, process materials, mesh wrappers and shader-material bindings. Original emission, biome profiles, nine-second Desert dust, bridge clipping and pause/reset behavior are retained. |
++| TLI05 | Retain prepared audio streams and presentation-contact outlines. | Forty-eight streams / 24 MiB estimate; fresh playback players and per-race Windows impact adapter. Eight hulls / 1 MiB keyed by exact mesh identity and relative transforms; fresh contact episode state. Canonical collision/handling is untouched. |
++| TLI06 | Run cold CPU road preparation through the existing road job; consume the prepared packet in ordinary race visuals. | Polling allows frames, checks navigation/account/selection/vehicle/overlay scope and cancels stale work. GPU/scene installation remains on the main thread. A superseding world/road-cache hit releases the unused packet. |
++| TLI07 | Use one verified downloaded document snapshot and one ordinary metadata-race overlay; hydrate the bounded catalog. Move cold next-result hydration under the cover and Rivalry compilation to the existing background API. | Actual download SHA/size/document checks, independent cache-file verification, pinned tickets, source/version/account fences and fresh server starts remain. Rivalry still uses its existing overlay lifecycle; ordinary metadata starts are the consolidated case. |
++| TLI08 | Skip identical retained metadata/alias and last-track writes, apply initial lighting once, and fetch copied MultiMesh buffers once. Stop unnecessary neighbour-page warming during a race. | Real updates and corrupt aliases still write; failed last-track saves roll back the in-memory setting so the next start retries. One-shot scene callbacks disconnect on owner teardown. No camera/menu layout or driving/scoring changes. |
++
++The earlier review also identified early shader lookup, count-only world accounting and fresh typed spatial-chunk arrays. Those were implemented by concurrent render work; this task preserves them and does not claim their implementation. Bridge/hazard covered preparation likewise belongs to the parallel hitch investigation and is retained.
++
++New retained caches have byte and entry limits. Their estimates sum to at most 59 MiB (car 16, ghost 16, effects 2, audio 24, outlines 1), in addition to the pre-existing caches. Shared meshes/resources may be counted in multiple estimates; these are policy bounds, not a measured process/GPU-residency figure. This task does not raise the existing road/world idle-memory budgets. Phone peak RAM and thermal behavior remain to be measured.
++
++## Actual desktop measurements
++
++Pinned Godot **4.7.2.stable.official.ed1daf0bf**, Windows, NVIDIA RTX 3090, Compatibility/OpenGL. The host is shared with other work; desktop Mobile/Vulkan is a second renderer, not a phone measurement.
++
++Final [twelve-scene raw timings](evidence/track-load-improvements-2026-10-14/review-admission.json) include preferences, actual ghost mode/recording checks and complete prepared draws:
++
++| Warm new scene | Game ready | Through prepared draws |
++| --- | ---: | ---: |
++| Pine, three repeats | 60.1?70.2 ms | 83.4?93.4 ms |
++| Desert | 68.0 ms | 83.9 ms |
++| Winter | 104.6 ms | 126.2 ms |
++| Storm | 58.0 ms | 74.6 ms |
++| Night | 98.8 ms | 119.9 ms |
++
++Pine repeat components include stock Compact assembly 3.9?4.7 ms, particle construction 11.3?13.6 ms, audio-ready 8.3?10.8 ms, audio configuration 4.3?4.5 ms, and prepared-world restoration 0.9?1.3 ms. All twelve cases retain canonical tick zero, the full 360-tick countdown and five ordinary laps. Every no-recording case reports `ghost_mesh_built=false`; the probe's deliberately independent legacy `mesh_for` timing still builds a mesh for attribution and is not shipping ghost setup.
++
++In the final paired [Compatibility resource fixture](evidence/track-load-improvements-2026-10-14/gl_compatibility/resources.json), original stock detailed Compact construction takes **201.222 ms** and its prepared restore **3.266 ms**. The earlier successful exact run was 200.316 / 3.184 ms. [Desktop Mobile/Vulkan](evidence/track-load-improvements-2026-10-14/mobile/resources.json) observes 675.665 / 3.169 ms on its pass; shared-host conditions differ between renderer runs. Other configurations' timing rows measure the preserved original builder, not a cache-hit speedup.
++
++Final production disk-cache checks use the current visual version, with real Desert/Winter Star roads larger than 32 MiB resident estimate:
++
++| Operation | Desert | Winter |
++| --- | ---: | ---: |
++| Generate exact roads | 10,453.681 ms | 9,566.159 ms |
++| Save production compressed artifact | 87.992 ms | 69.889 ms |
++| Actual artifact bytes | 3,752,055 | 3,559,175 |
++| Same-process verified load/install | 83.947 ms | 69.910 ms |
++| Fresh engine process verified load/install | 73.620 ms | 68.654 ms |
++
++The fresh process shares the OS file cache from the write pass. Earlier fresh-process runs measured 305.826 / 188.064 ms; this is not a cold-storage guarantee. Both final artifacts round-trip exact arrays, transforms, layers, shadow flags, shader source, parameters and texture bytes, without admission into the oversized idle road LRU. The read-only test also checks that a hidden regeneration cannot masquerade as a cache hit. Final rows are [here](evidence/track-load-improvements-2026-10-14/large-roads-gl_compatibility.json) and [here](evidence/track-load-improvements-2026-10-14/large-roads-restart-gl_compatibility.json).
++
++The earlier review's 612?678 ms repeat scenes are historical evidence from a different source checkpoint. Today's pre-change component probe and first optimization pass are retained separately; they are not a fully paired whole-loading benchmark. The final twelve-scene probe constructs Game directly for attribution, so its cold road generation remains synchronous in that diagnostic. The actual App-path test exercises the production worker, observes **200 loading frames**, one metadata overlay, full countdown/five laps and cancellation. That isolated workflow took 3,681.008 ms and is not a universal load-time or network-latency figure.
++
++Immediate Race Again already retained and restarted the existing Game before this work. The new-scene numbers describe entering/reopening a race, not every retry. First scene/GPU preparation, Winter cover/weather, HTTP and pinned-ticket latency remain outside the standalone disk/car timings. A cached road can still need GPU installation/driver compilation. Existing malformed artifacts safely fall back to regeneration; the presence check may let that rare rebuild occur on the main thread.
++
++## Exactness, rejected paths and integration corrections
++
++Car-template admission and resource ownership are checked for all five models, their simple variants and fitted Compact full/simple configurations. Accepted stock detailed Compact restores have byte-exact framebuffer comparisons on both desktop renderers. Immutable geometry/global/local frames and resolved material data remain exact for all tested configurations; paint, wheel motion, brake state and teardown cannot mutate another car or the prepared template.
++
++A broader template-restore attempt failed exact pixel comparisons. An uncached simpler-Compact control also exposed cold-render pixel variation between two original constructions. Neither observation justified weakening the accepted-cache invariant. Runtime restore was restricted to stock detailed Compact; other configurations use the approved original construction path. The renderer/order-dependent cause of those residual comparisons is not conclusively identified. Initial failure crops/control captures and command logs are retained. There is no all-car cached-framebuffer claim.
++
++Integration failures were corrected or recorded rather than suppressed:
++
++- Newly concurrent Compact-kit classes initially required refreshing the global class index with Import. A later concurrent compiler edit concatenated two cancellation returns with the following declarations; this task inserted the missing newlines only, retaining the cancellation work.
++- The parallel hazard-preparation headless ternary yielded an untyped empty Array; an explicitly typed empty array plus the graphical assignment fixes the observed loading crash without changing hazard preparation.
++- App teardown exposed a suspended neighbour-warm coroutine resuming after its owner was gone. One-shot process-frame callbacks retain the same warm/hide work and disconnect safely; races skip unneeded page preparation.
++- The App fixture assumed gesture autosave had reached disk synchronously despite the existing ordered background writer. Its assertion remains exact; it now waits at most five seconds for queued writes to complete. Final App checks pass.
++- Headless audio had one `pause suspends loop playback` failure because dummy output does not start real playback. The original assertion remains; the real graphical audio test passes all 1,469 checks. No shipping audio assertion or behavior was weakened.
++- A headless resource rerun overwrote the graphical timing JSON. Diagnostic output now separates headless results, and the final Compatibility graphical pass regenerated the exact evidence successfully. A 104.743 ms frame in a driving test was captured by the existing hitch logger; this is not evidence that every first-use hitch has been eliminated.
++
++## Commands and observed checks
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Command logs and command-specific build identities are retained in [commands.json](evidence/track-load-improvements-2026-10-14/commands.json) and its referenced folders. Principal commands actually executed:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_resources.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 420
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_resources.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 420
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_resources.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_large_road_cache.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_large_road_cache.gd -TestArgument '--read-only'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_preparation_reuse.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_track_loading_2026_10_13.gd -Graphical -TestArgument '--evidence=res://../docs/evidence/track-load-improvements-2026-10-14'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_vehicle_audio.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_personal_ghosts.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_load.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_start_failure.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action TestRoadCache
++scripts/dev.ps1 -Action TestDriving
++scripts/dev.ps1 -Action TestRewind
++scripts/dev.ps1 -Action TestApp
++scripts/dev.ps1 -Action Import
++scripts/dev.ps1 -Action CheckScript -ScriptPath res://vehicle/prepared_car_cache.gd
++scripts/dev.ps1 -Action Doctor
++```
++
++| Completed check | Outcome |
++| --- | --- |
++| Exact prepared resources, Compatibility | 224 checks, zero failures, final rerun |
++| Exact prepared resources, desktop Mobile/Vulkan | 224 checks, zero failures |
++| Prepared resources, headless | 162 checks, zero failures |
++| Production oversized road build/write/read | 14 checks, zero failures |
++| Production roads, fresh process read-only | 12 checks, zero failures |
++| Metadata integrity/overlay/worker/cancellation | 17 checks, zero failures |
++| Existing road cache | 70 checks, zero failures |
++| Prepared worlds and instance ownership | 85 checks, zero failures |
++| App integration | 99 checks, zero failures, final rerun |
++| Driving | 72 checks, zero failures |
++| Rewind | 61 checks, zero failures |
++| Personal ghosts | 38 checks, zero failures, final rerun |
++| Local condition/washing | 1,383 checks, zero failures |
++| Graphical vehicle audio | 1,469 checks, zero failures |
++| Rivalry failure/pinned starts | 29 checks, zero failures |
++| Over/under loading and deadlines | 26 checks, zero failures; intentional timeout warnings |
++| Full project script compilation | 703 scripts, zero failures |
++| Twelve-scene attribution | 12 complete tick-zero/full-countdown/five-lap checks |
++
++## Files, checkpoint and remaining acceptance
++
++Runtime files: `game/track/road_mesh_disk_cache.gd`, `native_track_visual.gd`, `prepared_world_cache.gd`; `game/vehicle/prepared_car_cache.gd` (new), `car_visual.gd`, `personal_ghost.gd`, `sand_dust.gd`, `vehicle_audio.gd`, `visible_contact_audio.gd`; `game/core/app.gd`, `game.gd`; `game/backend/cloud_tracks.gd`; the two newline repairs in `game/editor/track_compiler.gd`. New diagnostic tests are `test_prepared_race_resources.gd`, `test_large_road_cache.gd`, `test_race_preparation_reuse.gd`, each with UID. Existing App/Rivalry fixtures and the review probe were adapted as described. This report/status/plan and task evidence complete the slice.
++
++The [task-only unified patch](evidence/track-load-improvements-2026-10-14/task-only.patch), [isolated Git bundle](evidence/track-load-improvements-2026-10-14/track-loading.bundle), base/final snapshots and `checkpoint-files.json` form the reviewable checkpoint. Git checks the patch against its isolated LF baseline; checking reverse application directly against several CRLF live files failed on line-ending matches, so the normalized snapshots provide reproducible verification. It includes only this task's runtime/test/document edits. Concurrent editor cancellation/writes, privacy/redaction, expanded kits/liveries, shader/spatial changes and bridge/hazard preparation are preserved in the baseline and excluded as changes; only the observed integration repairs are included. The shared worktree is not a clean task branch, so no broad shared-tree commit/reset was made. The isolated review repository contains only the selected baseline and this slice; its two-commit bundle is not a complete executable project checkout. `manifest.json` hashes retained evidence and source snapshots.
++
++No artwork, racing camera, canonical physics/rules/compiler contract, ordinary five-lap scoring, local car condition, object populations or tire/dust budgets changed in this task. CPU generation remains expensive for a truly new track, and unsupported car-template restores remain deliberately on the original path. Physical-device cold/repeated loading, peak RAM, OS-cache eviction and thermal acceptance remain open. DN2103 was attached when Doctor ran; **no phone profiling/gameplay, APK/export/install/deployment or phone performance test was performed by this loading task** (Doctor only enumerated attached devices). Separate parallel phone-hitch results do not validate these loading changes. No production backend writes, full Validate or physics merge occurred. Existing automatic hitch diagnostics and covered finish/bridge/hazard preparation remain available for future freezes.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 TLI01-TLI08/Q01/V03-V05/G01/R01/B07: owner-authorised track loading improvements. Oversized Desert/Winter roads now persist through verified bounded v2 disk artifacts without raising32MiB idle road RAM; final restart read69/74ms versus9.6/10.5s generation. Skip unused ghosts; bounded prepared stock detailed Compact assembly, ghost/effect/audio/contact resources; cancellable cold CPU roads and one ordinary metadata overlay; deduplicate verified metadata/selection writes and lighting/buffer reads. Other cars/simple/fitted templates retain original assembly after exact-pixel failures. Final both-renderer224+224 exact/resource checks; headless162; road14+12/70, workflow17, App99, audio1469, condition1383, ghosts38, driving72, rewind61, worlds85, Rivalry29/loading26 and703-script parse pass. Desktop warm new scenes58-105ms; no phone loading/RAM/thermal/APK/deploy/fullValidate/physics change. Actual commands, integration failures, limits and task-only checkpoint: docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md.
++
+ 2026-10-14 EDR01-EDR04/R01/T01-T04/V03/V05/Q01: owner fresh editor review only. Confirmed stale queued WIP overwrites a returned-to-saved document while UI/exit claim saved; Populate omits compiler cancellation (525/536ms versus callback6ms); warm selected-draft detail repeats four full workflow reads (44/46ms); eager prop-cache fallback causes needless mesh readback (96-access medians27/74ms versus retained0.023/0.025ms). Both-renderer isolated diagnostics reproduce all four; existing editor123+123 checks still pass and miss these cases. No runtime fixes, phone test/APK/fullValidate/backend/deploy/physics change. New diagnostic script, actual commands, corrected fixture, open fixes and task-only checkpoint: docs/evidence/editor-review-pass-2026-10-14/review.json.
+ 
+ 2026-10-14 COMM-05/B01/B05/B07/Q01: owner-authorised account removal with retained tracks and historical standings under Removed account. Immediate identity/session closure; versioned bounded erasure, reference-aware private evidence cleanup, independent immutable erasure journal before acknowledgement and offline restore reapplication. Published creator metadata redacted with checked hash aliases and unchanged native geometry/manifests/timings; optional first-party analytics off by default with app/server controls. Public app/web deletion and policy resources use owner-approved contact placeholders; no new vendor. Local PG/native/HTTP/browser evidence and scoped source checkpoint: docs/ACCOUNT_PRIVACY_2026_10_14.md and docs/evidence/account-privacy-2026-10-14/. Migration0034 after0033, rebuilt app/matching worker, durable journal/backup lifecycle and official contact/store declarations remain rollout acceptance. No deployment, real account deletion or physical-phone app test.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 TLI01-TLI08/Q01/V03-V05/G01/R01/B07: owner-authorised track loading improvements. Oversized Desert/Winter roads now persist through verified bounded v2 disk artifacts without raising32MiB idle road RAM; final restart read69/74ms versus9.6/10.5s generation. Skip unused ghosts; bounded prepared stock detailed Compact assembly, ghost/effect/audio/contact resources; cancellable cold CPU roads and one ordinary metadata overlay; deduplicate verified metadata/selection writes and lighting/buffer reads. Other cars/simple/fitted templates retain original assembly after exact-pixel failures. Final both-renderer224+224 exact/resource checks; headless162; road14+12/70, workflow17, App99, audio1469, condition1383, ghosts38, driving72, rewind61, worlds85, Rivalry29/loading26 and703-script parse pass. Desktop warm new scenes58-105ms; no phone loading/RAM/thermal/APK/deploy/fullValidate/physics change. Actual commands, integration failures, limits and task-only checkpoint: docs/TRACK_LOADING_IMPROVEMENTS_2026_10_14.md.
++
+ 2026-10-14 EDR01-EDR04/R01/T01-T04/V03/V05/Q01: owner fresh editor review only. Confirmed stale queued WIP overwrites a returned-to-saved document while UI/exit claim saved; Populate omits compiler cancellation (525/536ms versus callback6ms); warm selected-draft detail repeats four full workflow reads (44/46ms); eager prop-cache fallback causes needless mesh readback (96-access medians27/74ms versus retained0.023/0.025ms). Both-renderer isolated diagnostics reproduce all four; existing editor123+123 checks still pass and miss these cases. No runtime fixes, phone test/APK/fullValidate/backend/deploy/physics change. New diagnostic script, actual commands, corrected fixture, open fixes and task-only checkpoint: docs/evidence/editor-review-pass-2026-10-14/review.json.
+ 
+ 2026-10-14 COMM-05/B01/B05/B07/Q01: owner-authorised account removal with retained tracks and historical standings under Removed account. Immediate identity/session closure; versioned bounded erasure, reference-aware private evidence cleanup, independent immutable erasure journal before acknowledgement and offline restore reapplication. Published creator metadata redacted with checked hash aliases and unchanged native geometry/manifests/timings; optional first-party analytics off by default with app/server controls. Public app/web deletion and policy resources use owner-approved contact placeholders; no new vendor. Local PG/native/HTTP/browser evidence and scoped source checkpoint: docs/ACCOUNT_PRIVACY_2026_10_14.md and docs/evidence/account-privacy-2026-10-14/. Migration0034 after0033, rebuilt app/matching worker, durable journal/backup lifecycle and official contact/store declarations remain rollout acceptance. No deployment, real account deletion or physical-phone app test.

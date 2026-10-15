@@ -12,7 +12,7 @@ var density: float = 0.65
 var roadside_reach: float = 22.0
 var generated: Array = []
 var population: ObjectPopulation
-var worker: Thread
+var worker: RefCounted
 var revision: int = 0
 var worker_revision: int = -1
 var pending: bool = true
@@ -78,6 +78,7 @@ func _ready() -> void:
 
 func request_preview() -> void:
 	revision += 1
+	if worker != null: worker.cancel()
 	pending = true; debounce = 0.18; ready_to_apply = false
 	apply_button.disabled = true; status.text = "Preparing scenery…"; status.show()
 
@@ -101,11 +102,11 @@ func _forward_navigation(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	debounce = maxf(0.0,debounce-delta)
-	if worker != null and not worker.is_alive():
-		var result: Dictionary = worker.wait_to_finish()
+	if worker != null and worker.done:
+		var result: Dictionary = worker.result if worker.result is Dictionary else {}
 		worker = null
-		population = result.population
-		if worker_revision == revision:
+		if worker_revision == revision and not result.is_empty():
+			population = result.population
 			generated = result.objects
 			ready_to_apply = not generated.is_empty() and result.track != null
 			apply_button.disabled = not ready_to_apply
@@ -115,30 +116,10 @@ func _process(delta: float) -> void:
 			if result.track != null: preview_changed.emit(result.track)
 	if worker == null and pending and debounce <= 0.0:
 		pending = false; worker_revision = revision
-		worker = Thread.new()
-		var error: Error = worker.start(_generate.bind(seed_value,density,roadside_reach))
-		if error != OK:
+		worker = preload("res://editor/work_job.gd").start(preload("res://editor/population_job.gd").run.bind(source.duplicate(true),terrain,population,seed_value,density,roadside_reach),get_tree())
+		if worker.thread == null:
 			worker = null
 			status.text = "Could not prepare scenery. Close and try again."
-
-func _generate(seed_snapshot: int, density_snapshot: float, reach_snapshot: float) -> Dictionary:
-	var prepared: ObjectPopulation = population
-	if prepared == null:
-		prepared = ObjectPopulation.new()
-		prepared.prepare(source,terrain)
-	var objects: Array = prepared.generate(seed_snapshot,density_snapshot,reach_snapshot)
-	var candidate: Dictionary = source.duplicate(true)
-	candidate.objects.append_array(objects)
-	candidate["automatic_scenery"] = false
-	# An unfinished lap can still have scenery; the temporary route only
-	# renders the editor preview, never enters the authored document.
-	if not TrackDocument.validate(candidate).is_empty() and TrackDocument.validate(candidate,false).is_empty():
-		var fallback: Dictionary = TrackDocument.create_default()
-		for key: String in ["points","widths","corners"]: candidate[key] = fallback[key]
-		candidate.route_override = true
-	var track: NativeTrack
-	if prepared.error.is_empty(): track = TrackCompiler.compile(candidate)
-	return {"population":prepared,"objects":objects,"track":track,"error":prepared.error}
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
@@ -147,5 +128,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _exit_tree() -> void:
 	if worker != null:
-		worker.wait_to_finish()
+		worker.cancel()
 		worker = null

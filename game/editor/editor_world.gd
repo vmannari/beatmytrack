@@ -19,6 +19,8 @@ var _last_scale: float = -1.0
 var _building: bool = false
 var _visual_track: NativeTrack
 var _visual_cache: Array[Dictionary] = []
+const VISUAL_CACHE_BUDGET: int = 32 * 1024 * 1024
+var visual_cache_bytes: int = 0
 
 func _exit_tree() -> void:
 	for entry: Dictionary in _visual_cache: entry.visual.free()
@@ -146,12 +148,15 @@ func _build_track() -> void:
 		var entry: Dictionary = _visual_cache[index]
 		if entry.track.content_hash == target.content_hash:
 			candidate = entry.visual
+			visual_cache_bytes -= int(entry.bytes)
 			_visual_cache.remove_at(index)
 			break
 	if candidate == null:
 		candidate = NativeTrackVisual.new()
 		candidate.editor_preview = true
 		candidate.visible = false
+		var owner: WeakRef = weakref(self)
+		candidate.build_current = func() -> bool: return owner.get_ref() != null and owner.get_ref().track == target
 		world.add_child(candidate)
 		_building = true
 		# Keep the existing scene while the replacement is built in short slices.
@@ -172,10 +177,13 @@ func _build_track() -> void:
 		candidate.refresh_editor_objects(target)
 	if visual != null:
 		world.remove_child(visual)
-		_visual_cache.append({"track":_visual_track,"visual":visual})
-		if _visual_cache.size() > 2:
+		var bytes: int = preload("res://editor/cache_bytes.gd").scene(visual)+var_to_bytes(preload("res://editor/prepared_track_cache.gd").fields(_visual_track)).size()
+		_visual_cache.append({"track":_visual_track,"visual":visual,"bytes":bytes}); visual_cache_bytes += bytes
+		while not _visual_cache.is_empty() and (_visual_cache.size() > 2 or visual_cache_bytes > VISUAL_CACHE_BUDGET):
 			var expired: Dictionary = _visual_cache.pop_front()
+			visual_cache_bytes -= int(expired.bytes)
 			expired.visual.queue_free()
+	candidate.build_current = Callable()
 	visual = candidate
 	visual.visible = true
 	_visual_track = target

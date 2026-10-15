@@ -3,7 +3,7 @@ extends RefCounted
 ## Race meshes and mutable race props stay separate.
 const MODEL_BUDGET: int = 16 * 1024 * 1024
 const MODEL_LIMIT: int = 96
-const BAKED_GROUP_SIZE: int = 8
+const BAKED_GROUP_SIZE: int = 4
 var groups: Dictionary = {}
 var individuals: Dictionary = {}
 var models: Dictionary = {}
@@ -17,12 +17,13 @@ var baked_signature: Dictionary = {}
 var baked_plan: Dictionary = {}
 var shared_vertices: Dictionary = {}
 var shared_vertex_bytes: int = 0
+var ground_key: String = ""
 const SHARED_VERTEX_BUDGET: int = 1024 * 1024
 
 func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: Callable) -> bool:
 	var objects: Array = track.metadata.get("creator_document",{}).get("objects",[]).duplicate(true)
 	var tyres: PackedVector2Array = track.tyre_origins.duplicate()
-	if objects == sources and tyres == tyre_origins and updates > 0: return false
+	if objects == sources and tyres == tyre_origins and updates > 0 and ground_key == track.content_hash: return false
 	var desired: Dictionary = {}
 	var next_models: Dictionary = {}
 	var separate: Dictionary = {}
@@ -51,16 +52,17 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 				entry = {"source":object,"node":node}
 				pending_nodes.append(node)
 			separate[index] = entry
+			if kit.ground_support != null: entry.node.position.y = kit.ground_support.ground(Vector2(object.position[0],object.position[1]))
 		else:
 			# Preserve the original world-space float vertices and generated normals.
 			# Moving a prop prepares that prop; unchanged streams are copied in bulk.
-			var key: String = JSON.stringify(object,"",true)
+			var key: String = JSON.stringify(object,"",true)+"/ground="+str(kit.ground_support.ground(Vector2(object.position[0],object.position[1])) if kit.ground_support != null else 0.0)
 			var model: Dictionary = active_models[key] if active_models.has(key) else _model(kit,object,key)
 			next_models[key] = model
 			for part_index: int in range(model.parts.size()):
 				var part: Dictionary = model.parts[part_index]
 				if part.baked:
-					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+str(index/BAKED_GROUP_SIZE)
+					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+str(Vector2i(floori(float(object.position[0])/32.0),floori(float(object.position[1])/32.0)))+":"+str(index/BAKED_GROUP_SIZE)
 					if not desired.has(role): desired[role] = {"baked":true,"components":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
 					desired[role].components.append(part.arrays)
 					desired[role].sources.append(key+":"+str(part_index))
@@ -83,16 +85,37 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 	if not tyres.is_empty():
 		var tyre: Dictionary = {"kind":"tyre_stack","position":[0.0,0.0],"rotation":0.0}
 		var poses: Array = []
-		for point: Vector2 in tyres: poses.append(Transform3D(Basis.IDENTITY,VisualGeometry.world(point)))
+		for point: Vector2 in tyres: poses.append(Transform3D(Basis.IDENTITY,VisualGeometry.world(point)+Vector3.UP*(kit.ground_support.ground(point) if kit.ground_support != null else 0.0)))
 		var model: Dictionary = _model(kit,tyre,"tyres")
 		var part: Dictionary = model.parts[0].duplicate()
 		part.pose = Transform3D.IDENTITY
 		for index: int in range(poses.size()): poses[index] = poses[index]*model.parts[0].pose
 		desired["tyres"] = {"model":{"parts":[part]},"poses":poses}
-	_prepare_baked_groups(desired)
+	await _prepare_baked_groups(desired,kit,sliced,current)
 	if not is_instance_valid(kit) or not current.is_valid() or not current.call():
 		for pending: NativeTrackVisual in pending_nodes: pending.free()
 		return false
+	for key: String in desired:
+		var entry: Dictionary = desired[key]
+		if not entry.get("baked",false) or (groups.has(key) and groups[key].sources == entry.sources): continue
+		if sliced and kit._menu_yield_due():
+			await kit.get_tree().process_frame
+			kit._slice_started = Time.get_ticks_usec()
+			if not current.is_valid() or not current.call():
+				for pending: NativeTrackVisual in pending_nodes: pending.free()
+				return false
+		var vertices: int = 0
+		for component: Array in entry.components: vertices += component[Mesh.ARRAY_VERTEX].size()
+		if sliced and vertices > 8192:
+			var job = preload("res://editor/work_job.gd").start(_assembly_arrays.bind(entry.components),kit.get_tree())
+			while not job.done:
+				await kit.get_tree().process_frame
+				if not current.call():
+					job.cancel()
+					for pending: NativeTrackVisual in pending_nodes: pending.free()
+					return false
+			entry["prepared_mesh"] = _upload_arrays(job.result) if job.result is Array and not job.result.is_empty() else _assemble(entry.components)
+		else: entry["prepared_mesh"] = _assemble(entry.components)
 	# Publish once, after preparation. A superseded sliced update changes no live groups.
 	for key: String in groups.keys():
 		if desired.has(key): continue
@@ -105,7 +128,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 		var old: Dictionary = groups.get(key,{})
 		if entry.get("baked",false):
 			if not old.is_empty() and old.sources == entry.sources: continue
-			var mesh: ArrayMesh = _assemble(entry.components)
+			var mesh: ArrayMesh = entry.prepared_mesh
 			var node: MeshInstance3D = old.nodes[0] if not old.is_empty() else MeshInstance3D.new()
 			if old.is_empty():
 				node.name = "Authored_"+key.get_slice(":",0)+"_"+str(groups.size())
@@ -160,6 +183,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 	active_models = next_models
 	tyre_origins = tyres
 	updates += 1
+	ground_key = track.content_hash
 	return true
 
 func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictionary:
@@ -168,6 +192,7 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
 	prototype.theme_id = kit.theme_id
 	prototype.colors = kit.colors
 	prototype.editor_preview = true
+	prototype.ground_support = kit.ground_support if key != "tyres" else null
 	prototype._capture_editor_prop_arrays = true
 	var track := NativeTrack.new()
 	track.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
@@ -191,7 +216,7 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
 		var baked: bool = child is MeshInstance3D
 		# Keep pre-upload normals. Decoding/re-encoding a compressed ArrayMesh
 		# introduces an extra quantization step, visible in Mobile lighting.
-		parts.append({"mesh":null if baked else mesh,"arrays":child.get_meta("editor_prop_arrays",mesh.surface_get_arrays(0)) if baked else [],"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
+		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
 	prototype.free()
 	var result: Dictionary = {"parts":parts,"bytes":bytes}
 	if bytes <= MODEL_BUDGET:
@@ -203,7 +228,12 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
 		model_bytes += bytes
 	return result
 
-func _prepare_baked_groups(desired: Dictionary) -> void:
+static func _baked_arrays(node: MeshInstance3D) -> Array:
+	# Default arguments are eager; the retained path must never read back a mesh.
+	if node.has_meta("editor_prop_arrays"): return node.get_meta("editor_prop_arrays")
+	return node.mesh.surface_get_arrays(0)
+
+func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: bool, current: Callable) -> void:
 	var signature: Dictionary = {}
 	for key: String in desired:
 		if desired[key].get("baked",false): signature[key] = desired[key].sources
@@ -221,6 +251,9 @@ func _prepare_baked_groups(desired: Dictionary) -> void:
 			# Shared vertices additionally need their original joined normals.
 			var shared: Dictionary = {}
 			for a: int in range(parts.size()):
+				if sliced and kit._menu_yield_due():
+					await kit.get_tree().process_frame; kit._slice_started = Time.get_ticks_usec()
+					if not current.call(): baked_signature = {}; return
 				for b: int in range(a+1,parts.size()):
 					if not AABB(parts[a].bounds).grow(0.00001).intersects(parts[b].bounds): continue
 					var from: int = parts[b].cluster
@@ -244,7 +277,14 @@ func _prepare_baked_groups(desired: Dictionary) -> void:
 					components.append(part.arrays)
 					baked_plan[key].sources.append(part.source)
 					regenerate = regenerate or shared.has(part.source)
-				if regenerate: baked_plan[key].components.append(_joined_arrays(components))
+				if regenerate:
+					if sliced:
+						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components),kit.get_tree())
+						while not job.done:
+							await kit.get_tree().process_frame
+							if not current.call(): job.cancel(); baked_signature = {}; return
+						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components))
+					else: baked_plan[key].components.append(_joined_arrays(components))
 				else: baked_plan[key].components.append_array(components)
 	for key: String in signature: desired.erase(key)
 	for key: String in baked_plan: desired[key] = baked_plan[key]
@@ -267,10 +307,14 @@ func _shared_vertex(first: Dictionary, second: Dictionary) -> bool:
 		shared_vertex_bytes += bytes
 	return shared
 
-func _joined_arrays(components: Array) -> Array:
+static func _joined_arrays(components: Array) -> Array:
+	return _join_arrays(Callable(),components)
+
+static func _join_arrays(cancelled: Callable, components: Array) -> Array:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for component: Array in components:
+		if cancelled.is_valid() and cancelled.call(): return []
 		var points: PackedVector3Array = component[Mesh.ARRAY_VERTEX]
 		var pigments: PackedColorArray = component[Mesh.ARRAY_COLOR]
 		for index: int in component[Mesh.ARRAY_INDEX]:
@@ -280,13 +324,17 @@ func _joined_arrays(components: Array) -> Array:
 	tool.index()
 	return tool.commit_to_arrays()
 
-func _assemble(components: Array) -> ArrayMesh:
+static func _assemble(components: Array) -> ArrayMesh:
+	return _upload_arrays(_assembly_arrays(Callable(),components))
+
+static func _assembly_arrays(cancelled: Callable, components: Array) -> Array:
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	var vertices := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var pigments := PackedColorArray()
 	var indices := PackedInt32Array()
 	for component: Array in components:
+		if cancelled.is_valid() and cancelled.call(): return []
 		var offset: int = vertices.size()
 		vertices.append_array(component[Mesh.ARRAY_VERTEX])
 		normals.append_array(component[Mesh.ARRAY_NORMAL])
@@ -297,6 +345,9 @@ func _assemble(components: Array) -> ArrayMesh:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_COLOR] = pigments
 	arrays[Mesh.ARRAY_INDEX] = indices
+	return arrays
+
+static func _upload_arrays(arrays: Array) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
 	return mesh

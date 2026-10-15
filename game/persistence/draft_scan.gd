@@ -31,7 +31,10 @@ func run(directory: String, workflow_directory: String) -> Array[Dictionary]:
 	var result: Array[Dictionary] = storage.editable_entries(true,cancelled)
 	for item: Dictionary in result:
 		if cancelled(): return []
-		item.tested = TrackLifecycle.ready_to_publish_fingerprint(item.document.fingerprint,workflow_directory) if not workflow_directory.is_empty() else storage.is_tested_fingerprint(str(item.id),item.document.fingerprint)
+		if not workflow_directory.is_empty():
+			item["lifecycle"] = TrackLifecycle.presentation_for_fingerprint(item.document.fingerprint,workflow_directory)
+			item.tested = item.lifecycle.ready
+		else: item.tested = storage.is_tested_fingerprint(str(item.id),item.document.fingerprint)
 	return result
 
 static func reap() -> void:

@@ -9,21 +9,51 @@ var _viewport: SubViewport
 var _image: TextureRect
 var _cache_key: String
 
-func _ready() -> void:
-	if _viewport != null and DisplayServer.get_name() != "headless": _bake_preview()
+const CACHE_BUDGET: int = 24 * 1024 * 1024
+static var cache_bytes: int = 0
+static var _sizes: Dictionary = {}
+static var _active: WeakRef
+var _kind: String
+var _biome: String
+var _color: String
+
+func _visible() -> bool:
+	if not is_visible_in_tree() or not get_global_rect().intersects(get_viewport_rect()): return false
+	var parent: Node = get_parent()
+	while parent != null:
+		if parent is ScrollContainer and not get_global_rect().intersects(parent.get_global_rect()): return false
+		parent = parent.get_parent()
+	return true
+
+func _process(_delta: float) -> void:
+	if _image.texture != null or DisplayServer.get_name() == "headless" or not _visible(): return
+	if _images.has(_cache_key):
+		var texture: Texture2D = _images[_cache_key]; _images.erase(_cache_key); _images[_cache_key] = texture; _image.texture = texture; return
+	if _active != null and _active.get_ref() != null: return
+	_active = weakref(self)
+	_viewport = _render_preview(self,_kind,_biome,_color)
+	_image.texture = _viewport.get_texture()
+	_bake_preview()
+
+func _exit_tree() -> void:
+	if _active != null and _active.get_ref() == self: _active = null
 
 func _bake_preview() -> void:
 	await RenderingServer.frame_post_draw
 	if not is_inside_tree() or not is_instance_valid(_viewport): return
 	var pixels: Image = _viewport.get_texture().get_image()
-	if pixels == null or pixels.is_empty(): return
-	pixels.generate_mipmaps()
-	var baked: ImageTexture = ImageTexture.create_from_image(pixels)
-	if _images.size() >= CACHE_LIMIT: _images.erase(_images.keys()[0])
-	_images[_cache_key] = baked
-	_image.texture = baked
-	_viewport.queue_free()
-	_viewport = null
+	if pixels != null and not pixels.is_empty():
+		pixels.generate_mipmaps()
+		var baked: ImageTexture = ImageTexture.create_from_image(pixels)
+		var bytes: int = pixels.get_data().size()*2+256
+		while not _images.is_empty() and (_images.size() >= CACHE_LIMIT or cache_bytes+bytes > CACHE_BUDGET):
+			var expired: String = _images.keys()[0]; cache_bytes -= int(_sizes[expired]); _sizes.erase(expired); _images.erase(expired)
+		if bytes <= CACHE_BUDGET:
+			_images[_cache_key] = baked; _sizes[_cache_key] = bytes; cache_bytes += bytes
+		_image.texture = baked
+	else: _image.texture = null
+	_viewport.queue_free(); _viewport = null
+	if _active != null and _active.get_ref() == self: _active = null
 
 static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine", color: String = "") -> Button:
 	var button := ObjectThumbnail.new()
@@ -36,12 +66,10 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	EditorStyle.card(button,chosen)
 	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")
 	var cached: Texture2D = _images.get(button._cache_key)
-	var viewport: SubViewport
-	if cached == null:
-		viewport = _render_preview(button,kind,biome,color)
-		button._viewport = viewport
+	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
+	button._kind = kind; button._biome = biome; button._color = color
 	var image := TextureRect.new()
-	image.texture = cached if cached != null else viewport.get_texture()
+	image.texture = cached
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
 	image.position = Vector2(4,1)
 	image.size = Vector2(96,58)

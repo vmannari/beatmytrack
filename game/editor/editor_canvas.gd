@@ -28,6 +28,31 @@ var endpoint_drag: int = -1
 var spline_point: int = 2
 var spline_point_drag: int = -1
 var _spline_preview_cache: Array[Dictionary] = []
+var _prepared_geometry: Dictionary = {}
+var preparation_counts: Dictionary = {}
+const CANVAS_CACHE_BUDGET: int = 4 * 1024 * 1024
+
+func _prepared(key: String, source: Array, build: Callable) -> Variant:
+	var entry: Dictionary = _prepared_geometry.get(key,{})
+	if not entry.is_empty() and entry.source == source: return entry.value
+	var value: Variant = build.call()
+	var saved_source: Array = source.duplicate(true)
+	var bytes: int = var_to_bytes([saved_source,value]).size()+128
+	_prepared_geometry.erase(key)
+	var total: int = bytes
+	for old: Dictionary in _prepared_geometry.values(): total += int(old.bytes)
+	while not _prepared_geometry.is_empty() and total > CANVAS_CACHE_BUDGET:
+		var expired: String = _prepared_geometry.keys()[0]; total -= int(_prepared_geometry[expired].bytes); _prepared_geometry.erase(expired)
+	if bytes <= CANVAS_CACHE_BUDGET: _prepared_geometry[key] = {"source":saved_source,"value":value,"bytes":bytes}
+	preparation_counts[key] = int(preparation_counts.get(key,0))+1
+	return value
+
+func prepared_route() -> Dictionary:
+	return _prepared("route",[document.points,document.widths,document.corners,document.width],TrackDocument.route_data.bind(document))
+
+func prepared_joins() -> Array:
+	return _prepared("joins",[document.pieces],RoadPieces.joins.bind(document.pieces))
+
 var piece_before_drag: Dictionary = {}
 var desktop_pan: bool = false
 var pending_road_tap: bool = false
@@ -388,7 +413,7 @@ func _move(point: Vector2) -> void:
 	if start_drag:
 		if press_position.distance_to(point) < 3 and not changed_in_gesture: return
 		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
-		if pose.is_empty(): return
+		if pose.is_empty() or pose == document.get("start_line",{}): return
 		if not changed_in_gesture: edit_started.emit()
 		changed_in_gesture = true
 		document["start_line"] = pose
@@ -438,8 +463,8 @@ func _move(point: Vector2) -> void:
 		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
 			edit_started.emit()
 			changed_in_gesture = true
-		if changed_in_gesture:
-			if selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
+		if changed_in_gesture and selected_object >= 0 and document.objects[selected_object].position != [position.x,position.y]:
+			document.objects[selected_object].position = [position.x,position.y]
 			document_changed.emit()
 	elif panning: pan += point-previous_pointer
 	previous_pointer = point
@@ -596,7 +621,7 @@ func _draw() -> void:
 		for y: float in range(ceili(size.y / spacing) + 1):
 			var yy: float = fposmod(origin.y, spacing) + y * spacing
 			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
-	var sampled: Dictionary = TrackDocument.route_data(document)
+	var sampled: Dictionary = prepared_route() if mode == "waypoints" or (native_preview == null and not world_backdrop) else {"points":PackedVector2Array()}
 	var route: PackedVector2Array = sampled.points
 	if native_preview == null and not world_backdrop:
 		for i: int in range(route.size()):
@@ -674,7 +699,7 @@ func _draw() -> void:
 		for i: int in range(document.get("pieces",[]).size()):
 			if i == selected_piece: _draw_piece(document.pieces[i],false)
 		if not ghost.is_empty(): _draw_piece(ghost,true)
-		for join: Dictionary in RoadPieces.joins(document.get("pieces",[])):
+		for join: Dictionary in prepared_joins():
 			draw_circle(to_screen(join.position),5,Color("e2efec"),false,2,true)
 	if document.has("practice_start") and mode in ["waypoints","move","add","start"]:
 		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
@@ -902,10 +927,11 @@ func _move_road(point: Vector2) -> void:
 			target = Vector2(RoadPieces._pose(piece_before_drag,moving_end).position)+to_world(point)-pointer_origin
 		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece if ghost.is_empty() else -1)
 		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,moving_end,target)
+		if trial == piece: return
 		if trial.is_empty():
 			hint_changed.emit("Keep the section inside the map and within its size limits.")
 			return
-		if not _valid_bridge_edit(trial,selected_piece): return
+		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 		changed_in_gesture = true
 		if ghost.is_empty():
@@ -938,7 +964,7 @@ func _move_road(point: Vector2) -> void:
 		if piece.kind == "s_bend" and geometry_drag == "radius": trial.height = RoadPieces.height(piece_before_drag)
 		trial = anchored_change(piece_before_drag,trial,geometry_drag)
 		if not RoadPieces.validate(trial).is_empty(): return
-		if not _valid_bridge_edit(trial,selected_piece): return
+		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 		changed_in_gesture = true
 		if ghost.is_empty(): document.pieces[selected_piece] = trial
@@ -953,7 +979,7 @@ func _move_road(point: Vector2) -> void:
 	if not RoadPieces.validate(moved).is_empty():
 		hint_changed.emit("Keep the whole section inside the map.")
 		return
-	if not _valid_bridge_edit(moved,selected_piece): return
+	if moved == piece or not _valid_bridge_edit(moved,selected_piece): return
 	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
 	changed_in_gesture = true
 	if not ghost.is_empty():
@@ -983,12 +1009,15 @@ func _spline_preview(piece: Dictionary) -> Dictionary:
 		if entry.piece == piece: return entry
 	var contours: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
 	var entry: Dictionary = {"piece":piece.duplicate(true),"contours":contours,"surface":SplineBorders.surface(contours)}
-	if _spline_preview_cache.size() >= 4: _spline_preview_cache.pop_front()
-	_spline_preview_cache.append(entry)
+	var bytes: int = var_to_bytes(entry).size()
+	var total: int = bytes
+	for old: Dictionary in _spline_preview_cache: total += var_to_bytes(old).size()
+	while not _spline_preview_cache.is_empty() and (_spline_preview_cache.size() >= 4 or total > CANVAS_CACHE_BUDGET): total -= var_to_bytes(_spline_preview_cache.pop_front()).size()
+	if bytes <= CANVAS_CACHE_BUDGET: _spline_preview_cache.append(entry)
 	return entry
 
 func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
-	var geometry: Dictionary = RoadPieces.section_geometry([piece],0)
+	var geometry: Dictionary = _prepared("controls",[piece],RoadPieces.section_geometry.bind([piece],0))
 	var points: PackedVector2Array = geometry.points
 	var widths: PackedFloat32Array = geometry.widths
 	var line := PackedVector2Array()
@@ -1260,7 +1289,8 @@ func _paint_position(point: Vector2) -> Array:
 
 func _object_run(start: Vector2, finish: Vector2) -> Array:
 	if not free_run:
-		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale)
+		var paths: Array = _prepared("runs",[document.pieces,document.layout,document.paint],RoadPieces.prepare_run.bind(document))
+		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale,paths)
 		if result.is_empty() and not _run_edge_hint:
 			_run_edge_hint = true
 			hint_changed.emit("Object limit reached. Remove an object to continue." if document.objects.size() >= 96 else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")

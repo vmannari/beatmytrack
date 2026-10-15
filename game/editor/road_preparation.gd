@@ -17,7 +17,7 @@ static func key_for(track: NativeTrack) -> String:
 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
 	return digest.finish().hex_encode()
 
-static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false) -> Dictionary:
+static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable()) -> Dictionary:
 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
 	var key: String = key_for(track)
 	guard.lock()
@@ -33,7 +33,9 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 	builder.colors = TrackTheme.palette(builder.theme_id)
 	builder.cache_road_meshes = false; builder.persist_road_meshes = false
 	builder._capture_road_arrays = true
+	if cancelled.is_valid(): builder.build_current = func() -> bool: return not cancelled.call()
 	builder._build_creator_roads(track)
+	if cancelled.is_valid() and cancelled.call(): builder.free(); return {}
 	var metadata: Dictionary = {}
 	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
 		if builder.has_meta(name): metadata[name] = builder.get_meta(name)
@@ -78,3 +80,6 @@ static func unpack_intermediate(arrays: Array, decode_normals: bool) -> Array:
 			colors[index] = Color(float(clampi(int(c.r*255.0),0,255))/255.0,float(clampi(int(c.g*255.0),0,255))/255.0,float(clampi(int(c.b*255.0),0,255))/255.0,float(clampi(int(c.a*255.0),0,255))/255.0)
 		result[Mesh.ARRAY_COLOR] = colors
 	return result
+
+static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
+	return prepare(track,true,false,cancelled)

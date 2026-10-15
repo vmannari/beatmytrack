@@ -1,0 +1,2296 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -69,10 +69,13 @@
+ var discovery_provider := TrackDiscoveryProvider.new()
+ var track_catalog: TrackCatalog
+ var pending_menu_notice: String = ""
++var editor_preview_cancel: RefCounted
+ var editor_preview_thread: Thread
+ var editor_preview_document: Dictionary = {}
+ var editor_raster_cache: Dictionary = {"enabled":true}
+ var editor_compiled_cache: Array[Dictionary] = []
++const EDITOR_COMPILED_BUDGET: int = 16 * 1024 * 1024
++var editor_writes = preload("res://editor/write_queue.gd").new()
+ var editor_saved_snapshot: Dictionary = {}
+ var editor_route_pieces: Array = []
+ var editor_route_fields: Dictionary = {}
+@@ -141,16 +144,20 @@
+ var _telemetry_race_finished: bool = false
+ 
+ func _exit_tree() -> void:
++	_flush_editor_writes()
+ 	if is_instance_valid(_challenge_return_ui): _challenge_return_ui.queue_free()
+ 	_finish_preview_thread()
+ 
+ func _finish_preview_thread() -> void:
+ 	if editor_preview_thread != null:
++		if editor_preview_cancel != null: editor_preview_cancel.cancel()
+ 		editor_preview_thread.wait_to_finish()
+ 		editor_preview_thread = null
+ 	editor_preview_document = {}
+ 
+ func _process(_delta: float) -> void:
++	editor_writes.poll()
++	_apply_editor_writes()
+ 	if is_instance_valid(editor_loading) and is_instance_valid(canvas):
+ 		editor_loading.visible = editor_preview_thread != null or canvas.native_preview == null or editor_world._building
+ 	if editor_preview_thread == null or editor_preview_thread.is_alive(): return
+@@ -173,10 +180,13 @@
+ 	_update_editor_issues()
+ 
+ func _queue_editor_preview() -> void:
+-	if editor_preview_thread != null: return
++	if editor_preview_thread != null:
++		if editor_preview_cancel != null and document != editor_preview_document: editor_preview_cancel.cancel()
++		return
+ 	editor_preview_document = document.duplicate(true)
+ 	editor_preview_thread = Thread.new()
+-	var error: Error = editor_preview_thread.start(_compile_editor_preview.bind(editor_preview_document))
++	editor_preview_cancel = preload("res://editor/work_job.gd").new()
++	var error: Error = editor_preview_thread.start(_compile_editor_preview.bind(editor_preview_document,editor_preview_cancel.cancelled))
+ 	if error != OK:
+ 		editor_preview_thread = null
+ 		var track: NativeTrack = _compile_editor_preview(editor_preview_document)
+@@ -321,6 +334,7 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
++	if screen == "create" and next != "create": _flush_editor_writes()
+ 	if next != "challenge_create" and is_instance_valid(_challenge_return_ui):
+ 		_challenge_return_ui.queue_free()
+ 		_challenge_return_ui = null
+@@ -991,6 +1009,7 @@
+ 				_profile_draft_recovery[active_profile] = document.duplicate(true)
+ 				profile_save_error = "The previous draft could not be saved. It remains in memory for that account; check available storage."
+ 			else: _profile_draft_recovery.erase(active_profile)
++	_flush_editor_writes()
+ 	_navigation_generation += 1
+ 	_finish_preview_thread()
+ 	active_profile = scope
+@@ -1719,6 +1767,7 @@
+ 	_start_new_document()
+ 
+ func _start_new_document() -> void:
++	_flush_editor_writes()
+ 	_finish_preview_thread()
+ 	editor_view.clear()
+ 	object_browser_state.clear()
+@@ -2588,7 +2637,29 @@
+ 	var path: String = library.directory.path_join(relative_path)
+ 	return FileAccess.file_exists(path) and FileAccess.get_sha256(path) == disk_hash
+ 
++func _apply_editor_writes() -> void:
++	for receipt: Dictionary in editor_writes.completed:
++		var storage: TrackLibrary = receipt.storage
++		if receipt.error == OK: storage.revision += 1
++		if storage != library or receipt.document != document: continue
++		library.last_error = receipt.message
++		if receipt.error != OK or not editor_retry_original:
++			editor_save_error = receipt.error
++			editor_save_message = "Could not save: "+str(receipt.message) if receipt.error != OK else ""
++		if receipt.error == OK:
++			editor_wip_snapshot = receipt.document.duplicate(true); editor_wip_store = storage; editor_wip_disk_hash = receipt.digest
++			editor_wip_saved = TrackLibrary.draft_fingerprint(receipt.document)
++			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = "WIP autosaved. Saved original unchanged."
++		elif is_inside_tree(): _editor_hint(editor_save_message)
++		if is_inside_tree(): _update_editor_save_state()
++	editor_writes.completed.clear()
++
++func _flush_editor_writes() -> void:
++	editor_writes.flush(); _apply_editor_writes()
++
+ func _save_draft(background_preview: bool = false) -> Error:
++	var deferred_write: bool = background_preview and is_instance_valid(canvas) and canvas.active_pointer != -99 and library.get_script() == preload("res://persistence/track_library.gd")
++	if not deferred_write: _flush_editor_writes()
+ 	if not background_preview: _finish_preview_thread()
+ 	if document.is_empty(): return ERR_INVALID_DATA
+ 	_stamp_creator()
+@@ -2606,17 +2677,18 @@
+ 	# A successful immutable snapshot belongs to this exact local library.
+ 	# Missing primaries and failed writes still take the real recovery path.
+ 	var wip_current: bool = (editor_save_error == OK or editor_retry_original) and _editor_copy_is_current(editor_wip_snapshot,editor_wip_store,"wip/"+str(document.id)+".json",editor_wip_disk_hash) and not library.is_published(str(document.id))
+-	var save_error: Error = OK if wip_current else library.save_wip(document)
++	var save_error: Error = OK if wip_current else editor_writes.enqueue(library,document) if deferred_write else library.save_wip(document)
+ 	if wip_current: library.last_error = ""
+ 	if save_error != OK or not editor_retry_original:
+ 		editor_save_error = save_error
+ 		editor_save_message = "Could not save: "+library.last_error if save_error != OK else ""
+-	if save_error == OK and not wip_current:
++	if save_error == OK and not wip_current and not deferred_write:
+ 		editor_wip_saved = TrackLibrary.draft_fingerprint(document)
+ 		editor_wip_snapshot = document.duplicate(true)
+ 		editor_wip_store = library
+ 		editor_wip_disk_hash = FileAccess.get_sha256(library.directory.path_join("wip/"+str(document.id)+".json"))
+ 	if save_error != OK: message = "Could not save: " + library.last_error
++	elif deferred_write and not wip_current: message = "Saving..."
+ 	elif not errors.is_empty(): message = "Draft saved. Before driving: " + errors[0]
+ 	else: message = "WIP autosaved. Saved original unchanged."
+ 	if is_instance_valid(editor_status):
+@@ -3495,6 +3597,7 @@
+ 	_save_track_now()
+ 
+ func _save_track_now() -> bool:
++	_flush_editor_writes()
+ 	if not _commit_editor_previews(): return false
+ 	_stamp_creator()
+ 	var id: String = str(document.id)
+@@ -3783,6 +3886,7 @@
+ 	dialog.dialog_text = 'Delete "%s" and its autosave from this device?\nPublished versions stay available.\nThis cannot be undone.' % title
+ 	dialog.ok_button_text = "Delete draft"
+ 	dialog.confirmed.connect(func() -> void:
++		_flush_editor_writes()
+ 		if lifecycle != null and not lifecycle.archive_draft(id):
+ 			_notice(lifecycle.last_error)
+ 			return
+@@ -3830,19 +3934,25 @@
+ 	_finish_preview_thread()
+ 	return _compile_editor_preview(document)
+ 
+-func _compile_editor_preview(source: Dictionary) -> NativeTrack:
++func _compile_editor_preview(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
+ 	# Only the single preview worker (or its joined foreground replacement)
+ 	# accesses this bounded cache. Undo can reuse collision and route data too.
+-	for entry: Dictionary in editor_compiled_cache:
+-		if entry.document == source: return entry.track
+-	var result: NativeTrack = _compile_editor_preview_uncached(source)
++	for index: int in range(editor_compiled_cache.size()):
++		var entry: Dictionary = editor_compiled_cache[index]
++		if entry.document == source:
++			editor_compiled_cache.remove_at(index); editor_compiled_cache.append(entry); return entry.track
++	var result: NativeTrack = _compile_editor_preview_uncached(source,cancelled)
+ 	if result != null:
+-		editor_compiled_cache.append({"document":source.duplicate(true),"track":result})
+-		if editor_compiled_cache.size() > 3: editor_compiled_cache.pop_front()
++		var size: int = var_to_bytes(preload("res://editor/prepared_track_cache.gd").fields(result)).size()+var_to_bytes(source).size()
++		if size <= EDITOR_COMPILED_BUDGET:
++			var total: int = size
++			for entry: Dictionary in editor_compiled_cache: total += int(entry.bytes)
++			while not editor_compiled_cache.is_empty() and (editor_compiled_cache.size() >= 3 or total > EDITOR_COMPILED_BUDGET): total -= int(editor_compiled_cache.pop_front().bytes)
++			editor_compiled_cache.append({"document":source.duplicate(true),"track":result,"bytes":size})
+ 	return result
+ 
+-func _compile_editor_preview_uncached(source: Dictionary) -> NativeTrack:
+-	if TrackDocument.validate(source).is_empty(): return _compile_editor_with_masks(source)
++func _compile_editor_preview_uncached(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
++	if TrackDocument.validate(source).is_empty(): return _compile_editor_with_masks(source,cancelled)
+ 	if not TrackDocument.validate(source,false).is_empty(): return null
+ 	# A draft may have an unfinished lap. Render its actual map using a safe
+ 	# preview-only route; never change the saved route or permit racing it.
+@@ -3850,13 +3960,12 @@
+ 	var fallback: Dictionary = TrackDocument.create_default()
+ 	for key: String in ["points","widths","corners"]: preview_document[key] = fallback[key]
+ 	preview_document.route_override = true
+-	return _compile_editor_with_masks(preview_document)
+-
+-func _compile_editor_with_masks(source: Dictionary) -> NativeTrack:
+-	var track: NativeTrack = TrackCompiler.compile(source,editor_raster_cache)
++	return _compile_editor_with_masks(preview_document,cancelled)
++
++func _compile_editor_with_masks(source: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
++	var track: NativeTrack = TrackCompiler.compile(source,editor_raster_cache,cancelled)
+ 	if track != null:
+-		track.editor_overlay_mask = CreatorPreviewMasks.overlay(track,source.paint)
+-		track.editor_road_mask = CreatorPreviewMasks.road(track)
++		CreatorPreviewMasks.prepare(track,source.paint,editor_raster_cache)
+ 		# Cold road jobs remain separate from compilation: undo/profile changes may
+ 		# join this preview worker, but must never join seconds of road geometry.
+ 		if not Thread.is_main_thread(): track.editor_roads = preload("res://editor/road_preparation.gd").prepare(track,false,true)
+@@ -3875,6 +3984,7 @@
+ 	dialog.get_cancel_button().grab_focus()
+ 
+ func _delete_user_track(id: String) -> void:
++	_flush_editor_writes()
+ 	if library.delete_document(id) != OK:
+ 		_notice(library.last_error)
+ 		return
+--- /dev/null
++++ b/game/editor/cache_bytes.gd
+@@ -0,0 +1,30 @@
++extends RefCounted
++## Conservative CPU/GPU stream estimates; never read back textures to count them.
++static func mesh(value: Mesh) -> int:
++	var bytes: int = 0
++	for surface: int in range(value.get_surface_count()):
++		if value is ArrayMesh:
++			bytes += value.surface_get_array_len(surface)*128+value.surface_get_array_index_len(surface)*8
++		else:
++			var arrays: Array = value.surface_get_arrays(surface)
++			bytes += arrays[Mesh.ARRAY_VERTEX].size()*128
++			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*8
++	return bytes
++
++static func scene(node: Node, seen: Dictionary = {}) -> int:
++	var bytes: int = 256
++	var value: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	if value != null and not seen.has(value.get_instance_id()):
++		seen[value.get_instance_id()] = true; bytes += mesh(value)
++	if node is MultiMeshInstance3D and node.multimesh != null: bytes += node.multimesh.instance_count*96
++	if node is NativeTrackVisual and node._editor_authored_batches != null:
++		bytes += node._editor_authored_batches.model_bytes+node._editor_authored_batches.shared_vertex_bytes
++	if node is GeometryInstance3D and node.material_override is ShaderMaterial and not seen.has(node.material_override.get_instance_id()):
++		var material: ShaderMaterial = node.material_override
++		seen[material.get_instance_id()] = true
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			var texture: Variant = material.get_shader_parameter(uniform.name)
++			if texture is Texture2D and texture.resource_path.is_empty() and not seen.has(texture.get_instance_id()):
++				seen[texture.get_instance_id()] = true; bytes += texture.get_width()*texture.get_height()*16
++	for child: Node in node.get_children(): bytes += scene(child,seen)
++	return bytes
+--- /dev/null
++++ b/game/editor/cache_bytes.gd.uid
+@@ -0,0 +1 @@
++uid://bvpxr7rh8wbaq
+--- a/game/editor/creator_preview_masks.gd
++++ b/game/editor/creator_preview_masks.gd
+@@ -24,3 +24,14 @@
+ 	pixels.resize(track.cells.size())
+ 	for index: int in range(track.cells.size()): pixels[index] = 255 if track.cells[index] == 0 else 0
+ 	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_L8,pixels)
++
++static func prepare(track: NativeTrack, paint: Array, cache: Dictionary) -> void:
++	var overlay_key: Array = [track.half_extent,track.cell_size,track.grid_width,track.grid_height,track.kerbs.blocked,paint]
++	if cache.get("overlay_key",[]) != overlay_key:
++		cache.overlay_key = overlay_key.duplicate(true); cache.overlay_image = overlay(track,paint)
++	var road_key: Array = [track.grid_width,track.grid_height,track.cells]
++	if cache.get("road_key",[]) != road_key:
++		cache.road_key = road_key.duplicate(true); cache.road_image = road(track)
++	track.editor_overlay_mask = cache.overlay_image.duplicate()
++	track.editor_road_mask = cache.road_image.duplicate()
++	preload("res://editor/prepared_track_cache.gd").trim_auxiliary(cache)
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -28,6 +28,31 @@
+ var spline_point: int = 2
+ var spline_point_drag: int = -1
+ var _spline_preview_cache: Array[Dictionary] = []
++var _prepared_geometry: Dictionary = {}
++var preparation_counts: Dictionary = {}
++const CANVAS_CACHE_BUDGET: int = 4 * 1024 * 1024
++
++func _prepared(key: String, source: Array, build: Callable) -> Variant:
++	var entry: Dictionary = _prepared_geometry.get(key,{})
++	if not entry.is_empty() and entry.source == source: return entry.value
++	var value: Variant = build.call()
++	var saved_source: Array = source.duplicate(true)
++	var bytes: int = var_to_bytes([saved_source,value]).size()+128
++	_prepared_geometry.erase(key)
++	var total: int = bytes
++	for old: Dictionary in _prepared_geometry.values(): total += int(old.bytes)
++	while not _prepared_geometry.is_empty() and total > CANVAS_CACHE_BUDGET:
++		var expired: String = _prepared_geometry.keys()[0]; total -= int(_prepared_geometry[expired].bytes); _prepared_geometry.erase(expired)
++	if bytes <= CANVAS_CACHE_BUDGET: _prepared_geometry[key] = {"source":saved_source,"value":value,"bytes":bytes}
++	preparation_counts[key] = int(preparation_counts.get(key,0))+1
++	return value
++
++func prepared_route() -> Dictionary:
++	return _prepared("route",[document.points,document.widths,document.corners,document.width],TrackDocument.route_data.bind(document))
++
++func prepared_joins() -> Array:
++	return _prepared("joins",[document.pieces],RoadPieces.joins.bind(document.pieces))
++
+ var piece_before_drag: Dictionary = {}
+ var desktop_pan: bool = false
+ var pending_road_tap: bool = false
+@@ -388,7 +413,7 @@
+ 	if start_drag:
+ 		if press_position.distance_to(point) < 3 and not changed_in_gesture: return
+ 		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
+-		if pose.is_empty(): return
++		if pose.is_empty() or pose == document.get("start_line",{}): return
+ 		if not changed_in_gesture: edit_started.emit()
+ 		changed_in_gesture = true
+ 		document["start_line"] = pose
+@@ -438,8 +463,8 @@
+ 		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
+ 			edit_started.emit()
+ 			changed_in_gesture = true
+-		if changed_in_gesture:
+-			if selected_object >= 0: document.objects[selected_object].position = [position.x,position.y]
++		if changed_in_gesture and selected_object >= 0 and document.objects[selected_object].position != [position.x,position.y]:
++			document.objects[selected_object].position = [position.x,position.y]
+ 			document_changed.emit()
+ 	elif panning: pan += point-previous_pointer
+ 	previous_pointer = point
+@@ -596,7 +621,7 @@
+ 		for y: float in range(ceili(size.y / spacing) + 1):
+ 			var yy: float = fposmod(origin.y, spacing) + y * spacing
+ 			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
+-	var sampled: Dictionary = TrackDocument.route_data(document)
++	var sampled: Dictionary = prepared_route() if mode == "waypoints" or (native_preview == null and not world_backdrop) else {"points":PackedVector2Array()}
+ 	var route: PackedVector2Array = sampled.points
+ 	if native_preview == null and not world_backdrop:
+ 		for i: int in range(route.size()):
+@@ -674,7 +699,7 @@
+ 		for i: int in range(document.get("pieces",[]).size()):
+ 			if i == selected_piece: _draw_piece(document.pieces[i],false)
+ 		if not ghost.is_empty(): _draw_piece(ghost,true)
+-		for join: Dictionary in RoadPieces.joins(document.get("pieces",[])):
++		for join: Dictionary in prepared_joins():
+ 			draw_circle(to_screen(join.position),5,Color("e2efec"),false,2,true)
+ 	if document.has("practice_start") and mode in ["waypoints","move","add","start"]:
+ 		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
+@@ -902,10 +927,11 @@
+ 			target = Vector2(RoadPieces._pose(piece_before_drag,moving_end).position)+to_world(point)-pointer_origin
+ 		if snap_enabled: target = RoadPieces.snap_endpoint(target,document.pieces,selected_piece if ghost.is_empty() else -1)
+ 		var trial: Dictionary = RoadPieces.move_endpoint(piece_before_drag,moving_end,target)
++		if trial == piece: return
+ 		if trial.is_empty():
+ 			hint_changed.emit("Keep the section inside the map and within its size limits.")
+ 			return
+-		if not _valid_bridge_edit(trial,selected_piece): return
++		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
+ 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+ 		changed_in_gesture = true
+ 		if ghost.is_empty():
+@@ -938,7 +964,7 @@
+ 		if piece.kind == "s_bend" and geometry_drag == "radius": trial.height = RoadPieces.height(piece_before_drag)
+ 		trial = anchored_change(piece_before_drag,trial,geometry_drag)
+ 		if not RoadPieces.validate(trial).is_empty(): return
+-		if not _valid_bridge_edit(trial,selected_piece): return
++		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
+ 		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+ 		changed_in_gesture = true
+ 		if ghost.is_empty(): document.pieces[selected_piece] = trial
+@@ -953,7 +979,7 @@
+ 	if not RoadPieces.validate(moved).is_empty():
+ 		hint_changed.emit("Keep the whole section inside the map.")
+ 		return
+-	if not _valid_bridge_edit(moved,selected_piece): return
++	if moved == piece or not _valid_bridge_edit(moved,selected_piece): return
+ 	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+ 	changed_in_gesture = true
+ 	if not ghost.is_empty():
+@@ -983,12 +1009,15 @@
+ 		if entry.piece == piece: return entry
+ 	var contours: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
+ 	var entry: Dictionary = {"piece":piece.duplicate(true),"contours":contours,"surface":SplineBorders.surface(contours)}
+-	if _spline_preview_cache.size() >= 4: _spline_preview_cache.pop_front()
+-	_spline_preview_cache.append(entry)
++	var bytes: int = var_to_bytes(entry).size()
++	var total: int = bytes
++	for old: Dictionary in _spline_preview_cache: total += var_to_bytes(old).size()
++	while not _spline_preview_cache.is_empty() and (_spline_preview_cache.size() >= 4 or total > CANVAS_CACHE_BUDGET): total -= var_to_bytes(_spline_preview_cache.pop_front()).size()
++	if bytes <= CANVAS_CACHE_BUDGET: _spline_preview_cache.append(entry)
+ 	return entry
+ 
+ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> void:
+-	var geometry: Dictionary = RoadPieces.section_geometry([piece],0)
++	var geometry: Dictionary = _prepared("controls",[piece],RoadPieces.section_geometry.bind([piece],0))
+ 	var points: PackedVector2Array = geometry.points
+ 	var widths: PackedFloat32Array = geometry.widths
+ 	var line := PackedVector2Array()
+@@ -1260,7 +1289,8 @@
+ 
+ func _object_run(start: Vector2, finish: Vector2) -> Array:
+ 	if not free_run:
+-		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale)
++		var paths: Array = _prepared("runs",[document.pieces,document.layout,document.paint],RoadPieces.prepare_run.bind(document))
++		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale,paths)
+ 		if result.is_empty() and not _run_edge_hint:
+ 			_run_edge_hint = true
+ 			hint_changed.emit("Object limit reached. Remove an object to continue." if document.objects.size() >= 96 else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")
+--- a/game/editor/editor_world.gd
++++ b/game/editor/editor_world.gd
+@@ -19,6 +19,8 @@
+ var _building: bool = false
+ var _visual_track: NativeTrack
+ var _visual_cache: Array[Dictionary] = []
++const VISUAL_CACHE_BUDGET: int = 32 * 1024 * 1024
++var visual_cache_bytes: int = 0
+ 
+ func _exit_tree() -> void:
+ 	for entry: Dictionary in _visual_cache: entry.visual.free()
+@@ -146,12 +148,15 @@
+ 		var entry: Dictionary = _visual_cache[index]
+ 		if entry.track.content_hash == target.content_hash:
+ 			candidate = entry.visual
++			visual_cache_bytes -= int(entry.bytes)
+ 			_visual_cache.remove_at(index)
+ 			break
+ 	if candidate == null:
+ 		candidate = NativeTrackVisual.new()
+ 		candidate.editor_preview = true
+ 		candidate.visible = false
++		var owner: WeakRef = weakref(self)
++		candidate.build_current = func() -> bool: return owner.get_ref() != null and owner.get_ref().track == target
+ 		world.add_child(candidate)
+ 		_building = true
+ 		# Keep the existing scene while the replacement is built in short slices.
+@@ -172,10 +177,13 @@
+ 		candidate.refresh_editor_objects(target)
+ 	if visual != null:
+ 		world.remove_child(visual)
+-		_visual_cache.append({"track":_visual_track,"visual":visual})
+-		if _visual_cache.size() > 2:
++		var bytes: int = preload("res://editor/cache_bytes.gd").scene(visual)+var_to_bytes(preload("res://editor/prepared_track_cache.gd").fields(_visual_track)).size()
++		_visual_cache.append({"track":_visual_track,"visual":visual,"bytes":bytes}); visual_cache_bytes += bytes
++		while not _visual_cache.is_empty() and (_visual_cache.size() > 2 or visual_cache_bytes > VISUAL_CACHE_BUDGET):
+ 			var expired: Dictionary = _visual_cache.pop_front()
++			visual_cache_bytes -= int(expired.bytes)
+ 			expired.visual.queue_free()
++	candidate.build_current = Callable()
+ 	visual = candidate
+ 	visual.visible = true
+ 	_visual_track = target
+--- a/game/editor/object_population.gd
++++ b/game/editor/object_population.gd
+@@ -11,6 +11,10 @@
+ const BIN: float = 12.0
+ const NATURE: Array[String] = ["tree", "broadleaf", "rock", "boulder"]
+ const ROADSIDE: Array[String] = ["shed", "hut", "car_wreck", "container", "parked_car", "barrel", "crate"]
++
++var cancelled: Callable
++
++func _cancelled() -> bool: return cancelled.is_valid() and cancelled.call()
+ 
+ var source: Dictionary
+ var terrain: NativeTrack
+@@ -42,6 +46,7 @@
+ 		sections.append({"points":geometry.points,"widths":geometry.widths,"closed":false})
+ 	if source.base_track != "" and track != null: extent = track.half_extent
+ 	for section: Dictionary in sections:
++		if _cancelled(): return
+ 		for index: int in range(section.points.size()):
+ 			extent = extent.max(section.points[index].abs()+Vector2.ONE*float(section.widths[index])*0.5)
+ 	for stroke: Dictionary in source.paint:
+@@ -60,6 +65,7 @@
+ 				var point: Vector2 = _point(x,y)
+ 				if point.abs().x < track.half_extent.x-1.0 and point.abs().y < track.half_extent.y-1.0 and track.cell_at(point) in [0,2,5]: mask[y*grid.x+x] = 0
+ 	for section: Dictionary in sections:
++		if _cancelled(): return
+ 		# Include bridges as protected road at every elevation.
+ 		TrackCompiler._raster_road(section.points,section.widths,0,mask,grid,extent,CELL,section.closed)
+ 	var road_paint: Array = []
+@@ -107,6 +113,7 @@
+ 		var candidates: PackedVector2Array = near_sites if phase == 0 else far_sites
+ 		if candidates.is_empty(): continue
+ 		for attempt: int in range(1600):
++			if attempt % 32 == 0 and _cancelled(): return []
+ 			if result.size() >= (near_target if phase == 0 else target): break
+ 			var point: Vector2 = candidates[rng.randi_range(0,candidates.size()-1)]+Vector2(rng.randf_range(-0.8,0.8),rng.randf_range(-0.8,0.8))
+ 			var kind: String
+--- a/game/editor/object_population_panel.gd
++++ b/game/editor/object_population_panel.gd
+@@ -12,7 +12,7 @@
+ var roadside_reach: float = 22.0
+ var generated: Array = []
+ var population: ObjectPopulation
+-var worker: Thread
++var worker: RefCounted
+ var revision: int = 0
+ var worker_revision: int = -1
+ var pending: bool = true
+@@ -78,6 +78,7 @@
+ 
+ func request_preview() -> void:
+ 	revision += 1
++	if worker != null: worker.cancel()
+ 	pending = true; debounce = 0.18; ready_to_apply = false
+ 	apply_button.disabled = true; status.text = "Preparing scenery…"; status.show()
+ 
+@@ -101,11 +102,11 @@
+ 
+ func _process(delta: float) -> void:
+ 	debounce = maxf(0.0,debounce-delta)
+-	if worker != null and not worker.is_alive():
+-		var result: Dictionary = worker.wait_to_finish()
++	if worker != null and worker.done:
++		var result: Dictionary = worker.result if worker.result is Dictionary else {}
+ 		worker = null
+-		population = result.population
+-		if worker_revision == revision:
++		if worker_revision == revision and not result.is_empty():
++			population = result.population
+ 			generated = result.objects
+ 			ready_to_apply = not generated.is_empty() and result.track != null
+ 			apply_button.disabled = not ready_to_apply
+@@ -115,30 +116,10 @@
+ 			if result.track != null: preview_changed.emit(result.track)
+ 	if worker == null and pending and debounce <= 0.0:
+ 		pending = false; worker_revision = revision
+-		worker = Thread.new()
+-		var error: Error = worker.start(_generate.bind(seed_value,density,roadside_reach))
+-		if error != OK:
++		worker = preload("res://editor/work_job.gd").start(preload("res://editor/population_job.gd").run.bind(source.duplicate(true),terrain,population,seed_value,density,roadside_reach),get_tree())
++		if worker.thread == null:
+ 			worker = null
+ 			status.text = "Could not prepare scenery. Close and try again."
+-
+-func _generate(seed_snapshot: int, density_snapshot: float, reach_snapshot: float) -> Dictionary:
+-	var prepared: ObjectPopulation = population
+-	if prepared == null:
+-		prepared = ObjectPopulation.new()
+-		prepared.prepare(source,terrain)
+-	var objects: Array = prepared.generate(seed_snapshot,density_snapshot,reach_snapshot)
+-	var candidate: Dictionary = source.duplicate(true)
+-	candidate.objects.append_array(objects)
+-	candidate["automatic_scenery"] = false
+-	# An unfinished lap can still have scenery; the temporary route only
+-	# renders the editor preview, never enters the authored document.
+-	if not TrackDocument.validate(candidate).is_empty() and TrackDocument.validate(candidate,false).is_empty():
+-		var fallback: Dictionary = TrackDocument.create_default()
+-		for key: String in ["points","widths","corners"]: candidate[key] = fallback[key]
+-		candidate.route_override = true
+-	var track: NativeTrack
+-	if prepared.error.is_empty(): track = TrackCompiler.compile(candidate)
+-	return {"population":prepared,"objects":objects,"track":track,"error":prepared.error}
+ 
+ func _unhandled_key_input(event: InputEvent) -> void:
+ 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+@@ -147,5 +128,5 @@
+ 
+ func _exit_tree() -> void:
+ 	if worker != null:
+-		worker.wait_to_finish()
++		worker.cancel()
+ 		worker = null
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -9,21 +9,51 @@
+ var _image: TextureRect
+ var _cache_key: String
+ 
+-func _ready() -> void:
+-	if _viewport != null and DisplayServer.get_name() != "headless": _bake_preview()
++const CACHE_BUDGET: int = 24 * 1024 * 1024
++static var cache_bytes: int = 0
++static var _sizes: Dictionary = {}
++static var _active: WeakRef
++var _kind: String
++var _biome: String
++var _color: String
++
++func _visible() -> bool:
++	if not is_visible_in_tree() or not get_global_rect().intersects(get_viewport_rect()): return false
++	var parent: Node = get_parent()
++	while parent != null:
++		if parent is ScrollContainer and not get_global_rect().intersects(parent.get_global_rect()): return false
++		parent = parent.get_parent()
++	return true
++
++func _process(_delta: float) -> void:
++	if _image.texture != null or DisplayServer.get_name() == "headless" or not _visible(): return
++	if _images.has(_cache_key):
++		var texture: Texture2D = _images[_cache_key]; _images.erase(_cache_key); _images[_cache_key] = texture; _image.texture = texture; return
++	if _active != null and _active.get_ref() != null: return
++	_active = weakref(self)
++	_viewport = _render_preview(self,_kind,_biome,_color)
++	_image.texture = _viewport.get_texture()
++	_bake_preview()
++
++func _exit_tree() -> void:
++	if _active != null and _active.get_ref() == self: _active = null
+ 
+ func _bake_preview() -> void:
+ 	await RenderingServer.frame_post_draw
+ 	if not is_inside_tree() or not is_instance_valid(_viewport): return
+ 	var pixels: Image = _viewport.get_texture().get_image()
+-	if pixels == null or pixels.is_empty(): return
+-	pixels.generate_mipmaps()
+-	var baked: ImageTexture = ImageTexture.create_from_image(pixels)
+-	if _images.size() >= CACHE_LIMIT: _images.erase(_images.keys()[0])
+-	_images[_cache_key] = baked
+-	_image.texture = baked
+-	_viewport.queue_free()
+-	_viewport = null
++	if pixels != null and not pixels.is_empty():
++		pixels.generate_mipmaps()
++		var baked: ImageTexture = ImageTexture.create_from_image(pixels)
++		var bytes: int = pixels.get_data().size()*2+256
++		while not _images.is_empty() and (_images.size() >= CACHE_LIMIT or cache_bytes+bytes > CACHE_BUDGET):
++			var expired: String = _images.keys()[0]; cache_bytes -= int(_sizes[expired]); _sizes.erase(expired); _images.erase(expired)
++		if bytes <= CACHE_BUDGET:
++			_images[_cache_key] = baked; _sizes[_cache_key] = bytes; cache_bytes += bytes
++		_image.texture = baked
++	else: _image.texture = null
++	_viewport.queue_free(); _viewport = null
++	if _active != null and _active.get_ref() == self: _active = null
+ 
+ static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine", color: String = "") -> Button:
+ 	var button := ObjectThumbnail.new()
+@@ -36,12 +66,10 @@
+ 	EditorStyle.card(button,chosen)
+ 	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")
+ 	var cached: Texture2D = _images.get(button._cache_key)
+-	var viewport: SubViewport
+-	if cached == null:
+-		viewport = _render_preview(button,kind,biome,color)
+-		button._viewport = viewport
++	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
++	button._kind = kind; button._biome = biome; button._color = color
+ 	var image := TextureRect.new()
+-	image.texture = cached if cached != null else viewport.get_texture()
++	image.texture = cached
+ 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
+ 	image.position = Vector2(4,1)
+ 	image.size = Vector2(96,58)
+--- a/game/editor/placed_object_batches.gd
++++ b/game/editor/placed_object_batches.gd
+@@ -3,7 +3,7 @@
+ ## Race meshes and mutable race props stay separate.
+ const MODEL_BUDGET: int = 16 * 1024 * 1024
+ const MODEL_LIMIT: int = 96
+-const BAKED_GROUP_SIZE: int = 8
++const BAKED_GROUP_SIZE: int = 4
+ var groups: Dictionary = {}
+ var individuals: Dictionary = {}
+ var models: Dictionary = {}
+@@ -60,7 +60,7 @@
+ 			for part_index: int in range(model.parts.size()):
+ 				var part: Dictionary = model.parts[part_index]
+ 				if part.baked:
+-					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+str(index/BAKED_GROUP_SIZE)
++					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+str(Vector2i(floori(float(object.position[0])/32.0),floori(float(object.position[1])/32.0)))+":"+str(index/BAKED_GROUP_SIZE)
+ 					if not desired.has(role): desired[role] = {"baked":true,"components":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
+ 					desired[role].components.append(part.arrays)
+ 					desired[role].sources.append(key+":"+str(part_index))
+@@ -89,10 +89,31 @@
+ 		part.pose = Transform3D.IDENTITY
+ 		for index: int in range(poses.size()): poses[index] = poses[index]*model.parts[0].pose
+ 		desired["tyres"] = {"model":{"parts":[part]},"poses":poses}
+-	_prepare_baked_groups(desired)
++	await _prepare_baked_groups(desired,kit,sliced,current)
+ 	if not is_instance_valid(kit) or not current.is_valid() or not current.call():
+ 		for pending: NativeTrackVisual in pending_nodes: pending.free()
+ 		return false
++	for key: String in desired:
++		var entry: Dictionary = desired[key]
++		if not entry.get("baked",false) or (groups.has(key) and groups[key].sources == entry.sources): continue
++		if sliced and kit._menu_yield_due():
++			await kit.get_tree().process_frame
++			kit._slice_started = Time.get_ticks_usec()
++			if not current.is_valid() or not current.call():
++				for pending: NativeTrackVisual in pending_nodes: pending.free()
++				return false
++		var vertices: int = 0
++		for component: Array in entry.components: vertices += component[Mesh.ARRAY_VERTEX].size()
++		if sliced and vertices > 8192:
++			var job = preload("res://editor/work_job.gd").start(_assembly_arrays.bind(entry.components),kit.get_tree())
++			while not job.done:
++				await kit.get_tree().process_frame
++				if not current.call():
++					job.cancel()
++					for pending: NativeTrackVisual in pending_nodes: pending.free()
++					return false
++			entry["prepared_mesh"] = _upload_arrays(job.result) if job.result is Array and not job.result.is_empty() else _assemble(entry.components)
++		else: entry["prepared_mesh"] = _assemble(entry.components)
+ 	# Publish once, after preparation. A superseded sliced update changes no live groups.
+ 	for key: String in groups.keys():
+ 		if desired.has(key): continue
+@@ -105,7 +126,7 @@
+ 		var old: Dictionary = groups.get(key,{})
+ 		if entry.get("baked",false):
+ 			if not old.is_empty() and old.sources == entry.sources: continue
+-			var mesh: ArrayMesh = _assemble(entry.components)
++			var mesh: ArrayMesh = entry.prepared_mesh
+ 			var node: MeshInstance3D = old.nodes[0] if not old.is_empty() else MeshInstance3D.new()
+ 			if old.is_empty():
+ 				node.name = "Authored_"+key.get_slice(":",0)+"_"+str(groups.size())
+@@ -203,7 +224,7 @@
+ 		model_bytes += bytes
+ 	return result
+ 
+-func _prepare_baked_groups(desired: Dictionary) -> void:
++func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: bool, current: Callable) -> void:
+ 	var signature: Dictionary = {}
+ 	for key: String in desired:
+ 		if desired[key].get("baked",false): signature[key] = desired[key].sources
+@@ -221,6 +242,9 @@
+ 			# Shared vertices additionally need their original joined normals.
+ 			var shared: Dictionary = {}
+ 			for a: int in range(parts.size()):
++				if sliced and kit._menu_yield_due():
++					await kit.get_tree().process_frame; kit._slice_started = Time.get_ticks_usec()
++					if not current.call(): baked_signature = {}; return
+ 				for b: int in range(a+1,parts.size()):
+ 					if not AABB(parts[a].bounds).grow(0.00001).intersects(parts[b].bounds): continue
+ 					var from: int = parts[b].cluster
+@@ -244,7 +268,14 @@
+ 					components.append(part.arrays)
+ 					baked_plan[key].sources.append(part.source)
+ 					regenerate = regenerate or shared.has(part.source)
+-				if regenerate: baked_plan[key].components.append(_joined_arrays(components))
++				if regenerate:
++					if sliced:
++						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components),kit.get_tree())
++						while not job.done:
++							await kit.get_tree().process_frame
++							if not current.call(): job.cancel(); baked_signature = {}; return
++						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components))
++					else: baked_plan[key].components.append(_joined_arrays(components))
+ 				else: baked_plan[key].components.append_array(components)
+ 	for key: String in signature: desired.erase(key)
+ 	for key: String in baked_plan: desired[key] = baked_plan[key]
+@@ -267,10 +298,14 @@
+ 		shared_vertex_bytes += bytes
+ 	return shared
+ 
+-func _joined_arrays(components: Array) -> Array:
++static func _joined_arrays(components: Array) -> Array:
++	return _join_arrays(Callable(),components)
++
++static func _join_arrays(cancelled: Callable, components: Array) -> Array:
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	for component: Array in components:
++		if cancelled.is_valid() and cancelled.call(): return []
+ 		var points: PackedVector3Array = component[Mesh.ARRAY_VERTEX]
+ 		var pigments: PackedColorArray = component[Mesh.ARRAY_COLOR]
+ 		for index: int in component[Mesh.ARRAY_INDEX]:
+@@ -280,13 +315,17 @@
+ 	tool.index()
+ 	return tool.commit_to_arrays()
+ 
+-func _assemble(components: Array) -> ArrayMesh:
++static func _assemble(components: Array) -> ArrayMesh:
++	return _upload_arrays(_assembly_arrays(Callable(),components))
++
++static func _assembly_arrays(cancelled: Callable, components: Array) -> Array:
+ 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+ 	var vertices := PackedVector3Array()
+ 	var normals := PackedVector3Array()
+ 	var pigments := PackedColorArray()
+ 	var indices := PackedInt32Array()
+ 	for component: Array in components:
++		if cancelled.is_valid() and cancelled.call(): return []
+ 		var offset: int = vertices.size()
+ 		vertices.append_array(component[Mesh.ARRAY_VERTEX])
+ 		normals.append_array(component[Mesh.ARRAY_NORMAL])
+@@ -297,6 +336,9 @@
+ 	arrays[Mesh.ARRAY_NORMAL] = normals
+ 	arrays[Mesh.ARRAY_COLOR] = pigments
+ 	arrays[Mesh.ARRAY_INDEX] = indices
++	return arrays
++
++static func _upload_arrays(arrays: Array) -> ArrayMesh:
+ 	var mesh := ArrayMesh.new()
+ 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+ 	return mesh
+--- /dev/null
++++ b/game/editor/population_job.gd
+@@ -0,0 +1,19 @@
++extends RefCounted
++
++static func run(cancelled: Callable, source: Dictionary, terrain: NativeTrack, population: ObjectPopulation, seed_value: int, density: float, reach: float) -> Dictionary:
++	var prepared: ObjectPopulation = population
++	if prepared == null:
++		prepared = ObjectPopulation.new(); prepared.cancelled = cancelled; prepared.prepare(source,terrain)
++	prepared.cancelled = cancelled
++	if cancelled.call(): return {}
++	var objects: Array = prepared.generate(seed_value,density,reach)
++	if cancelled.call(): return {}
++	var candidate: Dictionary = source.duplicate(true); candidate.objects.append_array(objects); candidate["automatic_scenery"] = false
++	if not TrackDocument.validate(candidate).is_empty() and TrackDocument.validate(candidate,false).is_empty():
++		var fallback: Dictionary = TrackDocument.create_default()
++		for key: String in ["points","widths","corners"]: candidate[key] = fallback[key]
++		candidate.route_override = true
++	var track: NativeTrack = TrackCompiler.compile(candidate) if prepared.error.is_empty() else null
++	prepared.cancelled = Callable()
++	if cancelled.call(): return {}
++	return {"population":prepared,"objects":objects,"track":track,"error":prepared.error}
+--- /dev/null
++++ b/game/editor/population_job.gd.uid
+@@ -0,0 +1 @@
++uid://biw2o6tuk08xb
+--- /dev/null
++++ b/game/editor/prepared_track_cache.gd
+@@ -0,0 +1,68 @@
++extends RefCounted
++## Local preview cache. Plain binary snapshots own their mutable contact data.
++const BUDGET: int = 16 * 1024 * 1024
++const LIMIT: int = 3
++
++static func geometry(document: Dictionary) -> Dictionary:
++	var key: Dictionary = document.duplicate(true)
++	for field: String in ["id","name","creator"]: key.erase(field)
++	return key
++
++static func fields(value: Object) -> Dictionary:
++	var result: Dictionary = {}
++	for property: Dictionary in value.get_property_list():
++		if not int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: continue
++		var name: String = property.name
++		if name.begins_with("editor_"): continue
++		var item: Variant = value.get(name)
++		result[name] = fields(item) if item is RoadKerbs else item
++	return result
++
++static func restore(document: Dictionary, cache: Dictionary) -> NativeTrack:
++	var key: Dictionary = geometry(document)
++	var entries: Array = cache.get("prepared",[])
++	for index: int in range(entries.size()):
++		var entry: Dictionary = entries[index]
++		if entry.key != key: continue
++		entries.remove_at(index); entries.append(entry)
++		var data: Dictionary = bytes_to_var(entry.data)
++		var track := NativeTrack.new()
++		for name: String in data:
++			if name in ["kerbs","snow_banks"]:
++				var contact: RoadKerbs = track.get(name)
++				for field: String in data[name]: contact.set(field,data[name][field])
++			else: track.set(name,data[name])
++		track.metadata.creator_document = document.duplicate(true)
++		track.metadata.identity = "creator_"+str(document.id)
++		track.metadata.name = document.name; track.metadata.title = document.name
++		track.identity = track.metadata.identity
++		track.content_hash = TrackCompiler.document_hash(document,str(track.metadata.provenance.base_hash))
++		cache["prepared_hits"] = int(cache.get("prepared_hits",0))+1
++		return track
++	return null
++
++static func remember(document: Dictionary, track: NativeTrack, cache: Dictionary) -> void:
++	var key: Dictionary = geometry(document)
++	var data: PackedByteArray = var_to_bytes(fields(track))
++	var size: int = data.size()+var_to_bytes(key).size()+256
++	if size > BUDGET: return
++	var entries: Array = cache.get("prepared",[])
++	var total: int = 0
++	for entry: Dictionary in entries: total += int(entry.bytes)
++	while not entries.is_empty() and (entries.size() >= LIMIT or total+size > BUDGET): total -= int(entries.pop_front().bytes)
++	entries.append({"key":key,"data":data,"bytes":size})
++	cache["prepared"] = entries; cache["prepared_bytes"] = total+size
++
++static func trim_auxiliary(cache: Dictionary) -> void:
++	var keys: Array[String] = ["key","cells","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image"]
++	var values: Array = []
++	var bytes: int = 0
++	for key: String in keys:
++		var value: Variant = cache.get(key)
++		if value is Image: bytes += value.get_data().size()
++		else: values.append(value)
++	bytes += var_to_bytes(values).size()
++	if bytes > 8*1024*1024:
++		for key: String in keys: cache.erase(key)
++		bytes = 0
++	cache["auxiliary_bytes"] = bytes
+--- /dev/null
++++ b/game/editor/prepared_track_cache.gd.uid
+@@ -0,0 +1 @@
++uid://djjo7e3gy8ciw
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -357,21 +357,12 @@
+ 	return (value is int or value is float) and is_finite(float(value))
+ 
+ 
+-static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0) -> Array:
++static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0, prepared: Variant = null) -> Array:
+ 	var result: Array = []
+ 	if kind not in CreatorObjects.KINDS: return result
+ 	var capacity: int = maxi(0,96-document.objects.size())
+ 	if capacity == 0: return result
+-	var candidates: Array[Dictionary] = _paths(document.pieces)
+-	if not document.layout.is_empty():
+-		var layout: Dictionary = TrackDocument.route_data(document.layout)
+-		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
+-	for stroke: Dictionary in document.paint:
+-		if int(stroke.surface) not in [0,2] or stroke.get("mode","free") == "area" or stroke.points.size() < 2: continue
+-		var path: PackedVector2Array = SurfacePaint.contour(stroke.points,str(stroke.get("mode","free")))
+-		var widths := PackedFloat32Array()
+-		widths.resize(path.size()); widths.fill(float(stroke.width))
+-		candidates.append({"points":path,"widths":widths,"closed":false})
++	var candidates: Array = prepared if prepared is Array else prepare_run(document)
+ 	if candidates.is_empty(): return result
+ 	var best: Dictionary = {}
+ 	var score: float = INF
+@@ -410,6 +401,20 @@
+ 		var index: int = sample.index
+ 		offset_points.append(edge_points[index].lerp(edge_points[(index+1)%edge_points.size()],float(sample.blend)))
+ 	return ObjectRuns.build(offset_points,kind,scale,capacity)
++
++
++static func prepare_run(document: Dictionary) -> Array[Dictionary]:
++	var candidates: Array[Dictionary] = _paths(document.pieces)
++	if not document.layout.is_empty():
++		var layout: Dictionary = TrackDocument.route_data(document.layout)
++		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
++	for stroke: Dictionary in document.paint:
++		if int(stroke.surface) not in [0,2] or stroke.get("mode","free") == "area" or stroke.points.size() < 2: continue
++		var path: PackedVector2Array = SurfacePaint.contour(stroke.points,str(stroke.get("mode","free")))
++		var widths := PackedFloat32Array()
++		widths.resize(path.size()); widths.fill(float(stroke.width))
++		candidates.append({"points":path,"widths":widths,"closed":false})
++	return candidates
+ 
+ 
+ static func _offset_edge(path: Dictionary, side: float, clearance: float) -> PackedVector2Array:
+--- a/game/editor/road_preparation.gd
++++ b/game/editor/road_preparation.gd
+@@ -17,7 +17,7 @@
+ 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
+ 	return digest.finish().hex_encode()
+ 
+-static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false) -> Dictionary:
++static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable()) -> Dictionary:
+ 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
+ 	var key: String = key_for(track)
+ 	guard.lock()
+@@ -33,7 +33,9 @@
+ 	builder.colors = TrackTheme.palette(builder.theme_id)
+ 	builder.cache_road_meshes = false; builder.persist_road_meshes = false
+ 	builder._capture_road_arrays = true
++	if cancelled.is_valid(): builder.build_current = func() -> bool: return not cancelled.call()
+ 	builder._build_creator_roads(track)
++	if cancelled.is_valid() and cancelled.call(): builder.free(); return {}
+ 	var metadata: Dictionary = {}
+ 	for name: String in ["winter_smooth_sections","winter_deposits","desert_clod_count","desert_bank_sections"]:
+ 		if builder.has_meta(name): metadata[name] = builder.get_meta(name)
+@@ -78,3 +80,6 @@
+ 			colors[index] = Color(float(clampi(int(c.r*255.0),0,255))/255.0,float(clampi(int(c.g*255.0),0,255))/255.0,float(clampi(int(c.b*255.0),0,255))/255.0,float(clampi(int(c.a*255.0),0,255))/255.0)
+ 		result[Mesh.ARRAY_COLOR] = colors
+ 	return result
++
++static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
++	return prepare(track,true,false,cancelled)
+--- a/game/editor/road_preparation_job.gd
++++ b/game/editor/road_preparation_job.gd
+@@ -1,27 +1,3 @@
+ extends RefCounted
+-const PREPARATION = preload("res://editor/road_preparation.gd")
+-static var pending: Array = []
+-static var tree: SceneTree
+-var thread: Thread
+-var packet: Dictionary = {}
+-var done: bool = false
+-
+ static func start(track: NativeTrack, owner_tree: SceneTree) -> RefCounted:
+-	var job = load("res://editor/road_preparation_job.gd").new()
+-	job.thread = Thread.new()
+-	if job.thread.start(PREPARATION.prepare.bind(track,true),Thread.PRIORITY_LOW) != OK: job.done = true; job.thread = null; return job
+-	pending.append(job)
+-	if tree == null:
+-		tree = owner_tree; tree.process_frame.connect(reap); tree.root.tree_exiting.connect(finish)
+-	return job
+-
+-static func reap() -> void:
+-	for index: int in range(pending.size()-1,-1,-1):
+-		var job = pending[index]
+-		if job.thread.is_alive(): continue
+-		job.packet = job.thread.wait_to_finish(); job.thread = null; job.done = true
+-		pending.remove_at(index)
+-
+-static func finish() -> void:
+-	for job in pending: job.thread.wait_to_finish(); job.thread = null; job.done = true
+-	pending.clear(); tree = null
++	return preload("res://editor/work_job.gd").start(preload("res://editor/road_preparation.gd").run.bind(track),owner_tree)
+--- a/game/editor/roadside_boundary.gd
++++ b/game/editor/roadside_boundary.gd
+@@ -3,6 +3,8 @@
+ ## Exposed spline-sweep perimeter; raw inside offsets can reverse or self-cross.
+ ## Small editor-only geometry cache, independent of canonical simulation.
+ static var _cache: Array[Dictionary] = []
++const CACHE_BUDGET: int = 8 * 1024 * 1024
++static var cache_bytes: int = 0
+ 
+ static func run(path: Dictionary, begin: float, delta: float, side: float, clearance: float, single_length: float = 0.0) -> PackedVector2Array:
+ 	var contours: Array[PackedVector2Array] = _contours(path,clearance)
+@@ -80,4 +82,7 @@
+ 		for polygon: PackedVector2Array in SplineBorders.contours(expanded,[]):
+ 			cleaned.append(SplineBorders.simplify(polygon,0.015))
+ 		entry.offsets[clearance] = cleaned
++	cache_bytes = 0
++	for saved: Dictionary in _cache: cache_bytes += var_to_bytes(saved).size()
++	while not _cache.is_empty() and cache_bytes > CACHE_BUDGET: cache_bytes -= var_to_bytes(_cache.pop_front()).size()
+ 	return entry.offsets[clearance]
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -5,10 +5,12 @@
+ const VERSION: String = "creator-compiler-27"
+ const CELL_SIZE: float = 0.5
+ static var bases: Dictionary = {}
+-
+-
+-
+-static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> NativeTrack:
++const PREPARED = preload("res://editor/prepared_track_cache.gd")
++
++
++
++static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancelled: Callable = Callable()) -> NativeTrack:
++	if _cancelled(cancelled): return null
+ 	if not TrackDocument.validate(document).is_empty():
+ 		return null
+ 	# Desert road beds are compacted sand regardless of the saved road option.
+@@ -16,6 +18,9 @@
+ 		document = document.duplicate(true)
+ 		document.surface = "asphalt" # Structural road cell; biome supplies material/traction.
+ 		if not document.layout.is_empty(): document.layout.surface = "asphalt"
++	if preview_cache.get("enabled",false):
++		var retained: NativeTrack = PREPARED.restore(document,preview_cache)
++		if retained != null: return retained
+ 	var base: NativeTrack
+ 	if document.base_track != "":
+ 		if not bases.has(document.base_track):
+@@ -39,14 +44,23 @@
+ 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
+ 	var road_route: PackedVector2Array = road_samples.points
+ 	var road_widths: PackedFloat32Array = road_samples.widths
++	var section_key: Array = [document.pieces]
+ 	var sections: Array[Dictionary] = []
+ 	var bridges: Array = []
+-	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
+-	for piece_index: int in range(document.pieces.size()):
+-		var piece: Dictionary = document.pieces[piece_index]
+-		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
+-		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
+-		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
++	if preview_cache.get("sections_key",[]) == section_key:
++		sections.assign(preview_cache.sections)
++		bridges = preview_cache.bridges.duplicate(true)
++	else:
++		var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
++		for piece_index: int in range(document.pieces.size()):
++			if _cancelled(cancelled): return null
++			var piece: Dictionary = document.pieces[piece_index]
++			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
++			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
++			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
++		if preview_cache.get("enabled",false):
++			preview_cache.sections_key = section_key.duplicate(true)
++			preview_cache.sections = sections.duplicate(true); preview_cache.bridges = bridges.duplicate(true)
+ 	var radius: float = widths[0] * 0.5
+ 	var extent := Vector2.ZERO
+ 	for point: Vector2 in route + road_route:
+@@ -76,12 +90,13 @@
+ 		var road_mask: PackedInt32Array = cells.duplicate()
+ 		_stamp_objects(document,cells,grid,extent,cell_size,true)
+ 		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
+-		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask)
++		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask,cancelled)
+ 		for section: Dictionary in sections:
+ 			if section.bridge: continue
+ 			var section_widths: PackedFloat32Array = section.widths
+-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask)
+-		_paint(document.paint,cells,grid,extent,cell_size,road_mask)
++			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
++		_paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
++		if _cancelled(cancelled): return null
+ 		if preview_cache.get("enabled",false):
+ 			preview_cache.key = raster_key.duplicate(true)
+ 			preview_cache.cells = cells.duplicate()
+@@ -92,6 +107,7 @@
+ 	deck.fill(-1)
+ 	if base != null: deck = base.deck_cells.duplicate()
+ 	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
++	if _cancelled(cancelled): return null
+ 	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
+ 	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
+ 	# A distant perimeter makes the finite authoring area explicit and keeps
+@@ -144,7 +160,15 @@
+ 		data.deck = CreatorBridges.rectangles(deck,grid)
+ 	data.provenance["base_track"] = document.base_track
+ 	data.provenance["base_hash"] = base.content_hash if base != null else ""
+-	return NativeTrack.from_data(data,(VERSION+"\n"+str(data.provenance.base_hash)+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text())
++	if _cancelled(cancelled): return null
++	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck)
++	if _cancelled(cancelled): return null
++	if preview_cache.get("enabled",false):
++		PREPARED.remember(document,compiled,preview_cache); PREPARED.trim_auxiliary(preview_cache)
++	return compiled
++
++static func document_hash(document: Dictionary, base_hash: String) -> String:
++	return (VERSION+"\n"+base_hash+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text()
+ 
+ 
+ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
+@@ -159,8 +183,9 @@
+ 				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
+ 
+ 
+-static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:
++static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
+ 	for authored: Dictionary in strokes:
++		if _cancelled(cancelled): return
+ 		var stroke: Dictionary = SurfacePaint.prepared(authored)
+ 		if stroke.get("mode","") == "area":
+ 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+@@ -174,6 +199,7 @@
+ 			continue
+ 		var radius: float = float(stroke.width)*0.5
+ 		for i: int in range(stroke.points.size()):
++			if i % 32 == 0 and _cancelled(cancelled): return
+ 			var p: Array = stroke.points[i]
+ 			var q: Array = stroke.points[maxi(0,i-1)]
+ 			var a := Vector2(p[0],p[1])
+@@ -190,10 +216,11 @@
+ 						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
+ 
+ 
+-static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array()) -> void:
++static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
+ 	var has_mask: bool = not road_mask.is_empty()
+ 	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
+ 	for i: int in range(segment_count):
++		if i % 16 == 0 and _cancelled(cancelled): return
+ 		var a: Vector2 = road_route[i]
+ 		var b: Vector2 = road_route[(i+1) % road_route.size()]
+ 		var radius_a: float = road_widths[i]*0.5
+@@ -220,3 +247,6 @@
+ 					if cells[at] in [1,2,3] and cells[at] != road_kind: cells[at] = 5
+ 					# Terrain objects affect cells but not the road-protection mask.
+ 					if has_mask and road_mask[at] in [1,2,3] and road_mask[at] != road_kind: road_mask[at] = 5
++
++static func _cancelled(callback: Callable) -> bool:
++	return callback.is_valid() and callback.call()
+--- /dev/null
++++ b/game/editor/work_job.gd
+@@ -0,0 +1,37 @@
++extends RefCounted
++## CPU job lifetime belongs to the tree, independently of a closing editor panel.
++static var pending: Array = []
++static var tree: SceneTree
++var thread: Thread
++var result: Variant
++var done: bool = false
++var aborted: bool = false
++var _guard := Mutex.new()
++var _work: Callable
++
++static func start(work: Callable, owner_tree: SceneTree) -> RefCounted:
++	var job = load("res://editor/work_job.gd").new()
++	job._work = work; job.thread = Thread.new()
++	if job.thread.start(job.run,Thread.PRIORITY_LOW) != OK: job.thread = null; job.done = true; return job
++	pending.append(job)
++	if tree == null:
++		tree = owner_tree; tree.process_frame.connect(reap); tree.root.tree_exiting.connect(finish)
++	return job
++
++func run() -> Variant: return _work.call(cancelled)
++func cancel() -> void:
++	_guard.lock(); aborted = true; _guard.unlock()
++func cancelled() -> bool:
++	_guard.lock(); var value: bool = aborted; _guard.unlock(); return value
++
++static func reap() -> void:
++	for index: int in range(pending.size()-1,-1,-1):
++		var job = pending[index]
++		if job.thread.is_alive(): continue
++		job.result = job.thread.wait_to_finish(); job.thread = null; job._work = Callable(); job.done = true
++		pending.remove_at(index)
++
++static func finish() -> void:
++	for job in pending: job.cancel()
++	for job in pending: job.thread.wait_to_finish(); job.thread = null; job._work = Callable(); job.done = true
++	pending.clear(); tree = null
+--- /dev/null
++++ b/game/editor/work_job.gd.uid
+@@ -0,0 +1 @@
++uid://b2lafr5bappw3
+--- /dev/null
++++ b/game/editor/write_queue.gd
+@@ -0,0 +1,33 @@
++extends RefCounted
++## One ordered writer. Replace only queued revisions of the same local draft.
++var pending: Array = []
++var active: Dictionary = {}
++var thread: Thread
++var completed: Array = []
++
++func enqueue(storage: TrackLibrary, document: Dictionary) -> Error:
++	var key: String = storage.directory+"/"+str(document.id)
++	for index: int in range(pending.size()-1,-1,-1):
++		if pending[index].key == key: pending.remove_at(index)
++	pending.append({"key":key,"storage":storage,"directory":storage.directory,"owner":storage.owner_name,"document":document.duplicate(true)})
++	return OK
++
++static func write(entry: Dictionary) -> Dictionary:
++	var storage := TrackLibrary.new(entry.directory); storage.owner_name = entry.owner
++	var error: Error = storage.save_wip(entry.document)
++	return {"storage":entry.storage,"document":entry.document,"error":error,"message":storage.last_error,"digest":FileAccess.get_sha256(entry.directory.path_join("wip/"+str(entry.document.id)+".json")) if error == OK else ""}
++
++func poll() -> void:
++	if thread != null and not thread.is_alive():
++		completed.append(thread.wait_to_finish()); thread = null; active = {}
++	if thread == null and not pending.is_empty():
++		active = pending.pop_front(); thread = Thread.new()
++		var error: Error = thread.start(write.bind(active),Thread.PRIORITY_LOW)
++		if error != OK:
++			completed.append({"storage":active.storage,"document":active.document,"error":error,"message":"Could not start the draft writer.","digest":""}); active = {}; thread = null
++
++func flush() -> void:
++	while thread != null or not pending.is_empty():
++		poll()
++		if thread != null:
++			completed.append(thread.wait_to_finish()); thread = null; active = {}
+--- /dev/null
++++ b/game/editor/write_queue.gd.uid
+@@ -0,0 +1 @@
++uid://doma7m68d3mrr
+--- /dev/null
++++ b/game/persistence/document_encoding.gd
+@@ -0,0 +1,26 @@
++extends RefCounted
++## One validated compact encoding per immutable authoring value, shared by WIP/original.
++const BUDGET: int = 4 * 1024 * 1024
++static var entries: Dictionary = {}
++static var bytes: int = 0
++static var guard := Mutex.new()
++
++static func prepared(document: Dictionary) -> Dictionary:
++	var buffer: PackedByteArray = var_to_bytes(document)
++	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(buffer)
++	var key: String = digest.finish().hex_encode()
++	guard.lock()
++	var hit: Dictionary = entries.get(key,{})
++	if not hit.is_empty():
++		entries.erase(key); entries[key] = hit
++		guard.unlock(); return hit
++	guard.unlock()
++	var content: String = JSON.stringify(document,"",true)
++	var result: Dictionary = {"content":content,"fingerprint":content.sha256_text(),"errors":TrackDocument.validate(document,false),"bytes":content.to_utf8_buffer().size()+buffer.size()+256}
++	guard.lock()
++	if not entries.has(key) and int(result.bytes) <= BUDGET:
++		while not entries.is_empty() and bytes+int(result.bytes) > BUDGET:
++			var expired: String = entries.keys()[0]; bytes -= int(entries[expired].bytes); entries.erase(expired)
++		entries[key] = result; bytes += int(result.bytes)
++	guard.unlock()
++	return result
+--- /dev/null
++++ b/game/persistence/document_encoding.gd.uid
+@@ -0,0 +1 @@
++uid://ceatdeb6ewkck
+--- a/game/persistence/track_library.gd
++++ b/game/persistence/track_library.gd
+@@ -6,6 +6,7 @@
+ var last_error: String = ""
+ var revision: int = 0
+ var owner_name: String = ""
++const ENCODING = preload("res://persistence/document_encoding.gd")
+ const READ_CACHE = preload("res://persistence/document_read_cache.gd")
+ var last_read_path: String = ""
+ var last_read_digest: String = ""
+@@ -45,7 +46,7 @@
+ 	if is_published(str(document.get("id",""))):
+ 		last_error = "Published tracks are locked against editing."
+ 		return ERR_UNAUTHORIZED
+-	var errors: Array[String] = TrackDocument.validate(document,false)
++	var errors: Array[String] = ENCODING.prepared(document).errors
+ 	if not errors.is_empty():
+ 		last_error = errors[0]
+ 		return ERR_INVALID_DATA
+@@ -145,7 +146,7 @@
+ 
+ 
+ func _atomic_write(document: Dictionary, path: String) -> Error:
+-	var content: String = JSON.stringify(document,"\t",true)
++	var content: String = ENCODING.prepared(document).content
+ 	if content.to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
+ 		last_error = "This creator track exceeds 512 KB."
+ 		return ERR_INVALID_DATA
+@@ -278,7 +279,7 @@
+ 	return TrackLibrary.new(directory.path_join(".tested-"+version))
+ 
+ static func draft_fingerprint(document: Dictionary) -> String:
+-	return JSON.stringify(document,"",true).sha256_text()
++	return ENCODING.prepared(document).fingerprint
+ 
+ func is_tested(document: Dictionary) -> bool:
+ 	if not TrackDocument.valid_id(document.get("id")): return false
+--- /dev/null
++++ b/game/tests/fixtures/editor_compiler_before_remaining.gd
+@@ -0,0 +1,221 @@
++extends RefCounted
++## Pure bounded compiler; native surface cells drive both simulation and art.
++
++const VERSION: String = "creator-compiler-27"
++const CELL_SIZE: float = 0.5
++static var bases: Dictionary = {}
++
++
++
++static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> NativeTrack:
++	if not TrackDocument.validate(document).is_empty():
++		return null
++	# Desert road beds are compacted sand regardless of the saved road option.
++	if document.theme == "desert":
++		document = document.duplicate(true)
++		document.surface = "asphalt" # Structural road cell; biome supplies material/traction.
++		if not document.layout.is_empty(): document.layout.surface = "asphalt"
++	var base: NativeTrack
++	if document.base_track != "":
++		if not bases.has(document.base_track):
++			if bases.size() >= 2: bases.clear()
++			bases[document.base_track] = NativeTrack.read("res://resources/tracks/"+document.base_track+".json")
++		base = bases[document.base_track]
++	var cell_size: float = base.cell_size if base != null else CELL_SIZE
++	var samples: Dictionary = TrackDocument.route_data(document)
++	var route: PackedVector2Array = samples.points
++	var widths: PackedFloat32Array = samples.widths
++	# Put the start/finish on the outgoing road beyond a sharp apex.
++	if document.corners[0] == "sharp":
++		var offset: int = mini(8, maxi(1, floori(Vector2(document.points[0][0],document.points[0][1]).distance_to(Vector2(document.points[1][0],document.points[1][1]))*0.5)))
++		route = route.slice(offset) + route.slice(0,offset)
++		widths = widths.slice(offset) + widths.slice(0,offset)
++	if document.has("start_line"):
++		var start_route: Dictionary = CreatorStartLine.route_from_start(route,widths,document.start_line)
++		route = start_route.points
++		widths = start_route.widths
++	var road_samples: Dictionary = {"points":PackedVector2Array(),"widths":PackedFloat32Array()}
++	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
++	var road_route: PackedVector2Array = road_samples.points
++	var road_widths: PackedFloat32Array = road_samples.widths
++	var sections: Array[Dictionary] = []
++	var bridges: Array = []
++	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
++	for piece_index: int in range(document.pieces.size()):
++		var piece: Dictionary = document.pieces[piece_index]
++		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
++		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
++		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
++	var radius: float = widths[0] * 0.5
++	var extent := Vector2.ZERO
++	for point: Vector2 in route + road_route:
++		extent.x = maxf(extent.x, absf(point.x))
++		extent.y = maxf(extent.y, absf(point.y))
++	for section: Dictionary in sections:
++		for point: Vector2 in section.points: extent = extent.max(point.abs()+Vector2.ONE*float(section.width)*0.5)
++	for object: Dictionary in document.get("objects",[]):
++		var point := Vector2(object.position[0],object.position[1])
++		extent = extent.max(point.abs()+CreatorObjects.size_of(object))
++	for stroke: Dictionary in document.paint:
++		for p: Array in stroke.points: extent = extent.max(Vector2(p[0],p[1]).abs()+Vector2.ONE*float(stroke.width)*0.5)
++	extent = (extent + Vector2.ONE * (float(Array(widths).max())*0.5 + 12.0)).ceil()
++	if base != null: extent = base.half_extent
++	var grid := Vector2i(roundi(extent.x * 2.0 / cell_size), roundi(extent.y * 2.0 / cell_size))
++	var cells := PackedInt32Array()
++	cells.resize(grid.x * grid.y)
++	cells.fill(1)
++	if base != null: cells = base.cells.duplicate()
++	var terrain_objects: Array = []
++	for object: Dictionary in document.objects:
++		if object.kind in ["dirt","water"]: terrain_objects.append(object)
++	var raster_key: Array = [document.base_track,base.content_hash if base != null else "",grid,extent,cell_size,document.layout,document.pieces,document.surface,document.paint,terrain_objects]
++	if raster_key == preview_cache.get("key",[]):
++		cells = preview_cache.cells.duplicate()
++	else:
++		var road_mask: PackedInt32Array = cells.duplicate()
++		_stamp_objects(document,cells,grid,extent,cell_size,true)
++		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
++		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask)
++		for section: Dictionary in sections:
++			if section.bridge: continue
++			var section_widths: PackedFloat32Array = section.widths
++			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask)
++		_paint(document.paint,cells,grid,extent,cell_size,road_mask)
++		if preview_cache.get("enabled",false):
++			preview_cache.key = raster_key.duplicate(true)
++			preview_cache.cells = cells.duplicate()
++	var scenery_cells: PackedInt32Array = cells.duplicate()
++	_stamp_objects(document,cells,grid,extent,cell_size,false)
++	var deck := PackedInt32Array()
++	deck.resize(cells.size())
++	deck.fill(-1)
++	if base != null: deck = base.deck_cells.duplicate()
++	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
++	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
++	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
++	# A distant perimeter makes the finite authoring area explicit and keeps
++	# accidental off-course driving recoverable with the ordinary restart.
++	for y: int in range(grid.y):
++		for x: int in range(grid.x):
++			if base == null and (x < 2 or y < 2 or x >= grid.x-2 or y >= grid.y-2):
++				cells[y*grid.x+x] = 4
++	var surfaces: Array = []
++	for y: int in range(grid.y):
++		var start: int = 0
++		for x: int in range(1,grid.x+1):
++			if x == grid.x or cells[y*grid.x+x] != cells[y*grid.x+start]:
++				surfaces.append([start,y,x-start,1,cells[y*grid.x+start]])
++				start = x
++	var route_data: Array = []
++	for point: Vector2 in route:
++		route_data.append([point.x,point.y])
++	var checkpoints: Array = []
++	for fraction: float in [0.20,0.40,0.60,0.80]:
++		var index: int = floori(route.size()*fraction)
++		var center: Vector2 = route[index]
++		var tangent: Vector2 = (route[(index+1)%route.size()]-center).normalized()
++		var side := Vector2(tangent.y,-tangent.x)
++		var half: Vector2 = side.abs() * widths[index]*0.5 + tangent.abs() * 1.5
++		checkpoints.append([center.x-half.x,center.y-half.y,half.x*2.0,half.y*2.0])
++	var forward: Vector2 = (route[1]-route[0]).normalized()
++	var finish_center: Vector2 = route[0]
++	var frame: Dictionary = RoadPieces.road_frame(document.pieces,finish_center,forward)
++	if not frame.is_empty():
++		forward = frame.tangent
++		finish_center = frame.point
++		radius = float(frame.width)*0.5
++	var heading: float = atan2(forward.x,forward.y)
++	var data: Dictionary = {"schema":"surface-grid-v2", "identity":"creator_"+document.id, "name":document.name, "title":document.name, "version":VERSION,
++		"scenery_objects":scenery, "theme":document.theme, "creator_document":document.duplicate(true), "cell_size":cell_size, "grid_size":[grid.x,grid.y],
++		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
++		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
++		"finish":{"center":[finish_center.x,finish_center.y],"half_width":radius,"heading":heading,"basis":"creator route origin"},
++		"route":route_data,"route_widths":Array(widths),"checkpoints":checkpoints, "debug":{"blocks":[]},
++		"provenance":{"source":"local creator","use":"original route with built-in track kit"}}
++	if base != null:
++		data.deck = base.metadata.deck.duplicate(true)
++		data.bridges = base.metadata.bridges.duplicate(true)
++		if not document.route_override and not document.has("start_line"):
++			for key: String in ["route","checkpoints","spawn","spawn_heading","finish"]: data[key] = base.metadata[key]
++	if not bridges.is_empty():
++		data["creator_bridges"] = bridges
++		data["legacy_deck"] = base.metadata.deck.duplicate(true) if base != null else []
++		data.deck = CreatorBridges.rectangles(deck,grid)
++	data.provenance["base_track"] = document.base_track
++	data.provenance["base_hash"] = base.content_hash if base != null else ""
++	return NativeTrack.from_data(data,(VERSION+"\n"+str(data.provenance.base_hash)+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text())
++
++
++static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
++	for object: Dictionary in document.get("objects",[]):
++		if object.kind in ["tyre_stack","tyre_wall","oil","jump","speed_bump"] or object.kind in CreatorCatalog.DECORATIVE or object.kind in CreatorCatalog.SOFT: continue # Loose stacks are simulated, never baked into a wall.
++		if (object.kind in ["dirt","water"]) != terrain: continue
++		var center := Vector2(object.position[0],object.position[1])
++		var reach: float = CreatorObjects.size_of(object).length()*0.5
++		for y: int in range(maxi(0,floori((extent.y-center.y-reach)/cell_size)),mini(grid.y,ceili((extent.y-center.y+reach)/cell_size))):
++			for x: int in range(maxi(0,floori((center.x-reach+extent.x)/cell_size)),mini(grid.x,ceili((center.x+reach+extent.x)/cell_size))):
++				var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
++
++
++static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:
++	for authored: Dictionary in strokes:
++		var stroke: Dictionary = SurfacePaint.prepared(authored)
++		if stroke.get("mode","") == "area":
++			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
++			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
++			for y: int in range(bounds.position.y,bounds.end.y):
++				for x: int in range(bounds.position.x,bounds.end.x):
++					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++					if Geometry2D.is_point_in_polygon(point,polygon) and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
++						cells[y*grid.x+x] = int(stroke.surface)
++						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++			continue
++		var radius: float = float(stroke.width)*0.5
++		for i: int in range(stroke.points.size()):
++			var p: Array = stroke.points[i]
++			var q: Array = stroke.points[maxi(0,i-1)]
++			var a := Vector2(p[0],p[1])
++			var b := Vector2(q[0],q[1])
++			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
++			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
++			for y: int in range(maxi(0,floori((extent.y-hi.y)/cell_size)),mini(grid.y,ceili((extent.y-lo.y)/cell_size))):
++				for x: int in range(maxi(0,floori((lo.x+extent.x)/cell_size)),mini(grid.x,ceili((hi.x+extent.x)/cell_size))):
++					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
++					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
++					if hit and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
++						cells[y*grid.x+x] = int(stroke.surface)
++						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++
++
++static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array()) -> void:
++	var has_mask: bool = not road_mask.is_empty()
++	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
++	for i: int in range(segment_count):
++		var a: Vector2 = road_route[i]
++		var b: Vector2 = road_route[(i+1) % road_route.size()]
++		var radius_a: float = road_widths[i]*0.5
++		var radius_b: float = road_widths[(i+1)%road_widths.size()]*0.5
++		var margin: float = maxf(radius_a,radius_b) + 1.0
++		var x0: int = maxi(0, floori((minf(a.x,b.x)-margin+extent.x)/cell_size))
++		var x1: int = mini(grid.x-1, ceili((maxf(a.x,b.x)+margin+extent.x)/cell_size))
++		var y0: int = maxi(0, floori((extent.y-maxf(a.y,b.y)-margin)/cell_size))
++		var y1: int = mini(grid.y-1, ceili((extent.y-minf(a.y,b.y)+margin)/cell_size))
++		for y: int in range(y0,y1+1):
++			for x: int in range(x0,x1+1):
++				var at: int = y*grid.x+x
++				# Overlapping samples cannot change an already-painted road cell.
++				# Keep other kinds (including kerbs) in the exact coverage test.
++				if cells[at] == road_kind and (not has_mask or road_mask[at] == road_kind): continue
++				var p := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++				var closest: Vector2 = Geometry2D.get_closest_point_to_segment(p,a,b)
++				var distance: float = p.distance_squared_to(closest)
++				var local_radius: float = lerpf(radius_a,radius_b,clampf((closest-a).dot(b-a)/maxf(0.0001,a.distance_squared_to(b)),0,1))
++				if distance <= local_radius*local_radius:
++					cells[at] = road_kind
++					if has_mask: road_mask[at] = road_kind
++				elif distance <= (local_radius+1.0)*(local_radius+1.0):
++					if cells[at] in [1,2,3] and cells[at] != road_kind: cells[at] = 5
++					# Terrain objects affect cells but not the road-protection mask.
++					if has_mask and road_mask[at] in [1,2,3] and road_mask[at] != road_kind: road_mask[at] = 5
+--- /dev/null
++++ b/game/tests/fixtures/editor_compiler_before_remaining.gd.uid
+@@ -0,0 +1 @@
++uid://cwhaf15g6fwmh
+--- /dev/null
++++ b/game/tests/test_editor_remaining.gd
+@@ -0,0 +1,181 @@
++extends SceneTree
++const BEFORE = preload("res://tests/fixtures/editor_compiler_before_remaining.gd")
++const PREPARED = preload("res://editor/prepared_track_cache.gd")
++const JOBS = preload("res://editor/work_job.gd")
++var checks: int = 0
++var failures: int = 0
++var metrics: Array = []
++var evidence: String
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++func metric(label: String, started: int) -> void:
++	var item: Dictionary = {"operation":label,"ms":(Time.get_ticks_usec()-started)/1000.0}
++	metrics.append(item); print("EDITOR_REMAINING ",JSON.stringify(item))
++
++func circuit() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "remaining"; doc.name = "Remaining editor checks"
++	var position := Vector2(-47,-36); var heading: float = 0
++	for side: int in range(2):
++		for index: int in range(47):
++			var piece: Dictionary = RoadPieces.create("straight",position,heading,6); piece.length = 2
++			doc.pieces.append(piece); position = RoadPieces.end_pose(piece).position
++		var turn: Dictionary = RoadPieces.create("hairpin",position,heading,6); turn.radius = 36; doc.pieces.append(turn)
++		var pose: Dictionary = RoadPieces.end_pose(turn); position = pose.position; heading = pose.heading
++	return RoadPieces.route_from_pieces(doc).document
++
++func equivalent(a: NativeTrack, b: NativeTrack, label: String) -> void:
++	check(a != null and b != null,label+" compiles")
++	if a == null or b == null: return
++	check(PREPARED.fields(a) == PREPARED.fields(b),label+" exact canonical metadata/grids/deck/route/contact/hash")
++
++func compiler() -> void:
++	for theme: String in ["pine","desert","winter","night_city"]:
++		var doc: Dictionary = circuit(); doc.theme = theme
++		var cache: Dictionary = {"enabled":true}
++		var started: int = Time.get_ticks_usec(); var reference: NativeTrack = BEFORE.compile(doc); metric(theme+"_original_compile",started)
++		var fresh: NativeTrack = TrackCompiler.compile(doc,cache)
++		equivalent(reference,fresh,theme+" direct prepared grid")
++		var renamed: Dictionary = doc.duplicate(true); renamed.name = "Changed name"; renamed["creator"] = "Changed creator"; renamed.id = "renamed"
++		started = Time.get_ticks_usec(); var retained: NativeTrack = TrackCompiler.compile(renamed,cache); metric(theme+"_metadata_compile",started)
++		equivalent(BEFORE.compile(renamed),retained,theme+" prepared metadata reuse")
++		check(int(cache.get("prepared_hits",0)) == 1,theme+" metadata uses the prepared snapshot")
++		if retained == null: return
++		retained.cells[0] = 0; retained.metadata.surfaces.clear()
++		if not retained.kerbs.triangles.is_empty(): retained.kerbs.triangles[0].heights[0] = 100.0
++		equivalent(BEFORE.compile(renamed),TrackCompiler.compile(renamed,cache),theme+" mutated result cannot poison prepared data")
++		for mutation: String in ["paint","object","width","start"]:
++			var changed: Dictionary = renamed.duplicate(true)
++			match mutation:
++				"paint": changed.paint.append({"surface":2,"width":4.0,"shape":"round","points":[[0.0,0.0]]})
++				"object": changed.objects.append({"kind":"container","position":[0.0,0.0],"rotation":0.0})
++				"width": changed.pieces[0].width += 1
++				"start": changed["start_line"] = {"position":[0.0,-36.0],"heading":0.0}
++			equivalent(BEFORE.compile(changed),TrackCompiler.compile(changed,cache),theme+" "+mutation+" invalidation")
++		check(int(cache.get("prepared_bytes",0)) <= PREPARED.BUDGET,theme+" prepared bytes stay bounded")
++		check(TrackCompiler.compile(doc,{"enabled":true},func() -> bool: return true) == null,theme+" cancelled compilation never publishes a partial track")
++		CreatorPreviewMasks.prepare(fresh,doc.paint,cache); var original_mask: Image = cache.overlay_image
++		CreatorPreviewMasks.prepare(fresh,doc.paint,cache)
++		check(cache.overlay_image == original_mask,theme+" unchanged mask is retained")
++		fresh.editor_overlay_mask.set_pixel(0,0,Color.RED)
++		CreatorPreviewMasks.prepare(fresh,doc.paint,cache)
++		check(fresh.editor_overlay_mask.get_data() == CreatorPreviewMasks.overlay(fresh,doc.paint).get_data(),theme+" returned masks own their mutable pixels")
++	for id: String in BuiltinTracks.ids():
++		var doc: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/"+id+".json"))
++		equivalent(BEFORE.compile(doc),TrackCompiler.compile(doc,{"enabled":true}),id+" native remix")
++
++func persistence() -> void:
++	var doc: Dictionary = circuit()
++	for stroke_index: int in range(32):
++		var points: Array = []
++		for index: int in range(512): points.append([-100.0+index*0.39,-100.0+stroke_index*6.0])
++		doc.paint.append({"surface":2,"width":2.0,"shape":"round","points":points})
++	check(TrackDocument.validate(doc,false).is_empty(),"maximum supported painted map is valid")
++	check(JSON.stringify(doc,"\t",true).to_utf8_buffer().size() > TrackDocument.MAX_BYTES,"maximum fixture exercises the former pretty-JSON failure")
++	var storage := TrackLibrary.new(evidence+"/drafts")
++	var started: int = Time.get_ticks_usec(); check(storage.save_document(doc) == OK,"maximum supported map saves as bounded compact JSON"); metric("maximum_paint_save",started)
++	check(storage.load_document(doc.id) == JSON.parse_string(JSON.stringify(doc,"",true)),"maximum map round trips exactly")
++	var queue = preload("res://editor/write_queue.gd").new()
++	for revision: int in range(20):
++		var edit: Dictionary = doc.duplicate(true); edit.name = "Revision "+str(revision)
++		check(queue.enqueue(storage,edit) == OK,"queued write accepted")
++	check(queue.pending.size() == 1,"only superseded queued revisions of the same draft coalesce")
++	queue.flush()
++	check(queue.completed.size() == 1 and queue.completed[0].error == OK,"flush waits for the required durable write")
++	check(storage.load_wip(doc.id).name == "Revision 19","latest queued revision persists")
++	var failed := TrackLibrary.new(evidence+"/failed_write")
++	DirAccess.make_dir_recursive_absolute(failed.directory+"/wip/"+str(doc.id)+".json.tmp")
++	queue.completed.clear(); queue.enqueue(failed,doc); queue.flush()
++	check(queue.completed[0].error != OK,"actual asynchronous temporary-file failures remain visible")
++	check(DirAccess.dir_exists_absolute(failed.directory+"/wip/"+str(doc.id)+".json.tmp"),"failed writer preserves obstructing user data")
++	var committed: Dictionary = storage.load_document(doc.id)
++	var revised: Dictionary = committed.duplicate(true); revised.name = "Next committed revision"
++	check(storage.save_document(revised) == OK,"compact writer retains a previous committed backup")
++	var corrupt := FileAccess.open(storage.directory+"/"+doc.id+".json",FileAccess.WRITE); corrupt.store_string("{broken}"); corrupt.close()
++	check(storage.load_document(doc.id) == committed,"corrupt primary recovers the exact previous committed compact map")
++
++func drawing() -> void:
++	var canvas := EditorCanvas.new(); canvas.document = circuit(); canvas.world_backdrop = true; canvas.size = Vector2(1280,720); root.add_child(canvas)
++	canvas.prepared_route(); canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
++	var counts: Dictionary = canvas.preparation_counts.duplicate()
++	var started: int = Time.get_ticks_usec()
++	for index: int in range(100):
++		canvas.pan += Vector2.ONE; canvas.prepared_route(); canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
++	metric("hundred_navigation_preparations",started)
++	check(canvas.preparation_counts == counts,"panning and roadside runs retain source geometry")
++	canvas.document.pieces[0].length += 1; canvas.prepared_joins()
++	check(canvas.preparation_counts.joins == counts.joins+1,"editing a road invalidates retained joins")
++	canvas.document.objects = [{"kind":"container","position":[0.0,0.0],"rotation":0.0}]
++	canvas.mode = "objects"; canvas.selected_object = 0; canvas.dragging = true; canvas.changed_in_gesture = true; canvas.drag_origin = Vector2.ZERO; canvas.pointer_origin = Vector2.ZERO
++	var edits: Array = []; canvas.document_changed.connect(func() -> void: edits.append(true))
++	for index: int in range(10): canvas._move(canvas.to_screen(Vector2(2.1,0.1)))
++	check(edits.size() == 1,"unchanged snapped drag position emits only its first edit")
++	canvas.queue_free(); await process_frame
++
++static func cancellable(cancelled: Callable) -> bool:
++	while not cancelled.call(): OS.delay_usec(1000)
++	return true
++
++func cancellation() -> void:
++	var job = JOBS.start(cancellable,self)
++	var started: int = Time.get_ticks_usec(); job.cancel(); metric("cancel_handler",started)
++	var deadline: int = Time.get_ticks_msec()+5000
++	while not job.done and Time.get_ticks_msec()<deadline: await process_frame
++	check(job.done and job.result == true,"cancelled worker is reaped without joining its caller")
++	var panel := ObjectPopulationPanel.new(); panel.source = circuit(); panel.terrain = TrackCompiler.compile(panel.source); root.add_child(panel)
++	panel.worker = JOBS.start(cancellable,self); var pending_job = panel.worker
++	panel.pending = false; started = Time.get_ticks_usec(); panel.queue_free(); await process_frame; metric("population_panel_close",started)
++	deadline = Time.get_ticks_msec()+5000
++	while not pending_job.done and Time.get_ticks_msec()<deadline: await process_frame
++	check(pending_job.done and pending_job.cancelled(),"closing population cancels and retires its worker")
++
++func actual_editor() -> void:
++	var app: Node = load("res://core/app.tscn").instantiate()
++	var storage := TrackLibrary.new(evidence+"/app_drafts")
++	app.library = storage; app.records = LocalRecords.new(evidence+"/app_records.json"); app.cloud_root_override = evidence+"/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = circuit(); app.canvas = null; app._show_screen("create")
++	var deadline: int = Time.get_ticks_msec()+30000
++	var maximum: float = 0.0
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
++		var frame: int = Time.get_ticks_usec(); await process_frame; maximum = maxf(maximum,(Time.get_ticks_usec()-frame)/1000.0)
++	check(app.editor_preview_thread == null and not app.editor_world._building,"actual initial editor preparation settles")
++	metrics.append({"operation":"maximum_initial_editor_frame_interval","ms":maximum})
++	app.canvas.active_pointer = 0; app.document.name = "Gesture revision"
++	var started: int = Time.get_ticks_usec(); check(app._save_draft(true) == OK,"gesture save queues the immutable revision"); metric("actual_gesture_save_handler",started)
++	check(app.editor_writes.pending.size() == 1,"gesture save defers disk work out of its handler")
++	app.canvas.active_pointer = -99
++	check(app._save_track_now(),"explicit Save drains the required pending WIP before acknowledging the original")
++	check(storage.load_document(app.document.id).name == "Gesture revision" and storage.load_wip(app.document.id).name == "Gesture revision","both durable boundaries contain the acknowledged revision")
++	for window: Node in app.find_children("*","Window",true,false):
++		if window is Window: window.hide(); window.queue_free()
++	app.canvas.active_pointer = 0; app.document.name = "Exit revision"; app._save_draft(true); app.canvas.active_pointer = -99
++	app._show_screen("drafts")
++	check(storage.load_wip(app.document.id).name == "Exit revision","navigation drains the final queued gesture revision")
++	app.queue_free(); await process_frame
++
++func thumbnails() -> void:
++	if DisplayServer.get_name() == "headless": return
++	var hidden: Button = ObjectThumbnail.make("container","Container",false,func() -> void: pass)
++	root.add_child(hidden); hidden.hide()
++	for index: int in range(3): await process_frame
++	check(hidden._viewport == null,"hidden cold card never creates a viewport")
++	var first: Button = ObjectThumbnail.make("container","Container",false,func() -> void: pass)
++	var second: Button = ObjectThumbnail.make("container","Container",false,func() -> void: pass)
++	first.position = Vector2(10,10); second.position = Vector2(130,10); root.add_child(first); root.add_child(second)
++	var deadline: int = Time.get_ticks_msec()+10000
++	while (first._image.texture == null or second._image.texture == null or first._viewport != null or second._viewport != null) and Time.get_ticks_msec()<deadline: await process_frame
++	check(first._image.texture != null and first._image.texture == second._image.texture,"same-key visible cards share one completed bake")
++	check(ObjectThumbnail.cache_bytes <= ObjectThumbnail.CACHE_BUDGET,"thumbnail CPU/GPU estimate stays within bytes")
++	hidden.queue_free(); first.queue_free(); second.queue_free(); await process_frame
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://../build/editor-remaining-2026-10-14/")+RenderingServer.get_current_rendering_method()+"-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(evidence)
++	compiler(); persistence(); await drawing(); await cancellation(); await thumbnails(); await actual_editor()
++	var file := FileAccess.open(evidence+"/results.json",FileAccess.WRITE); file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("EDITOR_REMAINING_TESTS: %d checks, %d failures; evidence=%s" % [checks,failures,evidence]); quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_editor_remaining.gd.uid
+@@ -0,0 +1 @@
++uid://s7piwhoxtyuo
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -5,21 +5,45 @@
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+ static var pine_meshes: Dictionary = {}
++const CACHE_BUDGET: int = 32 * 1024 * 1024
++static var cache_bytes: int = 0
++static var _ages: Dictionary = {}
++static var _clock: int = 0
++
++static func _touch(mesh: Mesh) -> void:
++	_clock += 1; _ages[mesh.get_instance_id()] = _clock
++
++static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
++	var size: int = preload("res://editor/cache_bytes.gd").mesh(mesh)
++	if size > CACHE_BUDGET: return
++	cache_bytes = size
++	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += preload("res://editor/cache_bytes.gd").mesh(stored)
++	while cache.size() >= limit or cache_bytes > CACHE_BUDGET:
++		var victim_cache: Dictionary = cache; var victim: String = ""; var age: int = 9223372036854775807
++		for collection: Dictionary in ([cache] if cache.size() >= limit else [meshes,pine_meshes]):
++			for candidate: String in collection:
++				var candidate_age: int = int(_ages.get(collection[candidate].get_instance_id(),0))
++				if candidate_age < age: age = candidate_age; victim = candidate; victim_cache = collection
++		if victim.is_empty(): break
++		var expired: Mesh = victim_cache[victim]; cache_bytes -= preload("res://editor/cache_bytes.gd").mesh(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
++	cache[key] = mesh; _touch(mesh)
++
+ 
+ static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
+ 	var length: float = section_length/scale if section_length >= 0 else -1.0
+ 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
+ 	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
+-	if not meshes.has(key):
++	var model: Mesh = meshes.get(key)
++	if model == null:
+ 		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0)
+ 		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
+ 		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
+ 		if not found: return false
+ 		local.generate_normals()
+-		if meshes.size() >= CACHE_LIMIT: meshes.erase(meshes.keys()[0])
+-		meshes[key] = local.commit()
+-	tool.append_from(meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++		model = local.commit(); _admit(meshes,key,model,CACHE_LIMIT)
++	_touch(model)
++	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+ 	return true
+ 
+ static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
+@@ -134,13 +158,14 @@
+ 
+ static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
+ 	var key: String = color.to_html()
+-	if not pine_meshes.has(key):
++	var model: Mesh = pine_meshes.get(key)
++	if model == null:
+ 		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 		_pine_model(local,kit,Vector3.ZERO,1,0,color)
+ 		local.generate_normals()
+-		if pine_meshes.size() >= 32: pine_meshes.erase(pine_meshes.keys()[0])
+-		pine_meshes[key] = local.commit()
+-	tool.append_from(pine_meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++		model = local.commit(); _admit(pine_meshes,key,model,32)
++	_touch(model)
++	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+ 
+ static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
+ 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -47,7 +47,7 @@
+ 	return from_data(data, FileAccess.get_sha256(path))
+ 
+ 
+-static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
++static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:
+ 	# Trusted native data only. Creator imports are validated and compiled first.
+ 	var track := NativeTrack.new()
+ 	track.metadata = data
+@@ -70,11 +70,12 @@
+ 	track.islands = []
+ 	track.rectangles = data.surfaces
+ 	track.deck_rectangles = data.deck
+-	track.cells.resize(track.grid_width * track.grid_height)
+-	track.deck_cells.resize(track.cells.size())
+-	track.deck_cells.fill(-1)
+-	track._expand(track.rectangles, track.cells)
+-	track._expand(track.deck_rectangles, track.deck_cells)
++	if prepared_cells.size() == track.grid_width*track.grid_height and prepared_deck.size() == prepared_cells.size():
++		track.cells = prepared_cells; track.deck_cells = prepared_deck
++	else:
++		track.cells.resize(track.grid_width * track.grid_height)
++		track.deck_cells.resize(track.cells.size()); track.deck_cells.fill(-1)
++		track._expand(track.rectangles, track.cells); track._expand(track.deck_rectangles, track.deck_cells)
+ 	for p: Array in data.route:
+ 		track.route.append(Vector2(p[0], p[1]))
+ 	track.route_widths = PackedFloat32Array(data.get("route_widths",[]))
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -40,6 +40,13 @@
+ var partition_static_meshes: bool = true
+ var uniform_terrain_regions: bool = true
+ var _menu_slices: bool = false
++var build_current: Callable
++
++func _build_is_current() -> bool:
++	return is_inside_tree() and (not build_current.is_valid() or build_current.call())
++
++func _cpu_cancelled() -> bool:
++	return build_current.is_valid() and not build_current.call()
+ var _slice_started: int = 0
+ var theme_id: String = "pine"
+ var editor_preview: bool = false
+@@ -138,19 +145,19 @@
+ 		# Keep moon/ambient light, but exclude pointless point-light evaluation.
+ 		(get_child(get_child_count()-1) as MeshInstance3D).layers = 2
+ 	await _build_terrain(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	await _build_creator_roads(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): await _build_kerbs(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	await _build_barriers(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	if editor_preview:
+ 		await refresh_editor_objects(track,true,_menu_slices)
+ 	else:
+ 		await _build_low_cover(track)
+ 		await _build_placed_objects(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	bridge.build(self)
+ 	_build_finish(track)
+ 	_build_snow_banks(track)
+@@ -387,12 +394,12 @@
+ 			var job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
+ 			while not job.done:
+ 				await get_tree().process_frame
+-				if not is_inside_tree(): return
+-			packet = job.packet
++				if not _build_is_current(): job.cancel(); return
++			packet = job.result if job.result is Dictionary else {}
+ 		if not packet.is_empty():
+ 			await _install_prepared_roads(track,packet)
+ 			track.editor_roads = {}
+-			if _menu_slices and not is_inside_tree(): return
++			if _menu_slices and not _build_is_current(): return
+ 			if cache_road_meshes: _remember_road_meshes(cache_key,first_child,track,str(packet.key))
+ 			return
+ 	if cache_road_meshes and persist_road_meshes and not editor_preview:
+@@ -425,6 +432,7 @@
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var desert_phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,topology) if theme_id == "desert" else {}
+ 	for index: int in range(pieces.size()):
++		if _cpu_cancelled(): return
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+ 			if not is_inside_tree(): return
+@@ -443,6 +451,7 @@
+ 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
+ 	if theme_id == "desert": desert_road_union.configure(pieces,outlines,desert_phases)
+ 	for index: int in range(pieces.size()):
++		if _cpu_cancelled(): return
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+ 			if not is_inside_tree(): return
+@@ -504,6 +513,7 @@
+ 				# More cross-bank samples replace along-bank oversampling in Winter.
+ 				var steps: int = maxi(1,ceili(a.distance_to(b)/(0.28 if theme_id == "winter" else 0.20)))
+ 				for step: int in range(steps):
++					if _cpu_cancelled(): return
+ 					if _menu_yield_due():
+ 						await _yield_build()
+ 						if not is_inside_tree(): return
+@@ -551,11 +561,11 @@
+ 		set_meta("winter_smooth_sections",winter_sections)
+ 		set_meta("winter_deposits",winter_piles.size())
+ 	await shoulder_mesh.emit(shoulders,_yield_build if _menu_slices else Callable())
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	set_meta("desert_clod_count",sand_banks.count)
+ 	set_meta("desert_bank_sections",sand_banks.sections)
+ 	await _build_kerbs(track)
+-	if _menu_slices and not is_inside_tree(): return
++	if _menu_slices and not _build_is_current(): return
+ 	if counts[0]: await _commit_creator_road(shoulders,TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+ 	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
+ 	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+@@ -1128,7 +1138,7 @@
+ 		for key: String in ["desert_stones","desert_large_stones","desert_scrub","desert_roadside_stones"]:
+ 			set_meta(key,0)
+ 		await _desert_roadside_cover(scenery,track)
+-		if _menu_slices and not is_inside_tree(): return
++		if _menu_slices and not _build_is_current(): return
+ 	var foliage: Color = TrackTheme.foliage(theme_id)
+ 	var stone: Color = TrackTheme.stone(theme_id)
+ 	# Jittered sites are visited in deterministic mixed order across the map,
+@@ -1663,7 +1673,7 @@
+ 		# the same exposed cosmetic border as their road surface.
+ 		if fair and document.get("base_track","") == "" and document.get("surface","asphalt") != "dirt":
+ 			triangles = await preload("res://track/visual_road_join.gd").kerb_triangles(document,_yield_build if _menu_slices else Callable())
+-			if _menu_slices and not is_inside_tree(): return
++			if _menu_slices and not _build_is_current(): return
+ 		if triangles.is_empty(): return
+ 		var tool := SurfaceTool.new()
+ 		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -1959,8 +1969,8 @@
+ 				tool.add_vertex(point)
+ 
+ func _yield_build() -> bool:
+-	if not is_inside_tree(): return false
++	if not _build_is_current(): return false
+ 	if _menu_yield_due():
+ 		await get_tree().process_frame
+ 		_slice_started = Time.get_ticks_usec()
+-	return is_inside_tree()
++	return _build_is_current()
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 ED05-ED09/R01/T01-T04/V03/V05/Q01: owner fixes remaining editor review. Compact cached encodings save supported16384-point maps within512KiB; ordered/coalesced gesture writes drain on Save/navigation/profile/delete/teardown with real failure receipts. Exact immutable physical snapshots/direct grid construction, reused masks/sections/canvas joins/paths, no-op snapped drags; cancellable population/road/compiler/scene jobs, worker joined normals/large streams and staged four-prop spatial draws. Explicit byte bounds and visible single-flight thumbnails retain artwork/canonical semantics and existing road32MiB/world64MiB limits. Both-renderer123+123 canonical/cache/maximum-map/durable-UI checks and51+51 exact prop pixels, population20581/workflow252/delete23/free48/creator113/tyres75/road70/bridge16/parser701/import/diff pass. Metadata compiles~299-584->19-102ms Compatibility; first-view frame maxima213/160ms remain observed/unattributed. Concurrent headless bridge/type/API changes preserved/excluded; no phone/APK/fullValidate/physics/backend/deploy. Actual commands/captures/limits/task-only checkpoint: docs/evidence/editor-remaining-2026-10-14/report.json.
++
+ 2026-10-14 WIND13-WIND15/V04/V05/G01/R01/Q01: owner Iceland clips request fast thin snow without dense/strong-looking gusts. Winter-wind13 separate motion envelope28-36mps versus former9.288 settled calm/21.6 gust; density floor remains0.24. Narrow aligned streams/trailing grains, existing ground-material integration/local variance/car guard/artwork; same48grains96tri/zero floating surface cards/two reads/camera/vehicle snow clouds/canonical forces/scoring. Kit192 invalidates expanded shader cache. Native78/Mobile78/cache70/finalImport pass; sparse actual travel0.933m per30fps frame, dense/light rendered-change ratios4.168/4.067, restored/paused/roof/canonical exact. Initial inherited-class resolution/account preload registration issue cleared on retry; no backend source or assertion changes. Linked Reddit text readable but direct video/poster403/Facebook fetch blocked: no frame inspection/physical speed measurement/asset reuse claimed. DN2103 attached/no phone run/APK/fullValidate/backend/deploy; bounded raw desktop profiles no FPS gain claim. Files/actual commands/light-motion preview/scoped checkpoint/owner acceptance: docs/WINTER_FAST_SPINDRIFT.md.
+ 
+ 2026-10-14 CKX01-CKX05/CKT01-CKT06/GCS01-GCS04/V04-V06/G01/R01/Q01: owner refines compact kits to ten choices per hood/aero/rim/body category (Original+9;24 additions), original fitted intake/airfoil/spoke/arch geometry, rolled-fender clearance/flush hardware, scrolling focus/reset visibility and retained actual car/tyres/pivots/paint/condition/camera/reflections.80 native photos/1268 exact prepared meshes;16-photo cache;all10000 combinations per quality max167082/64686 visible triangles. Final geometry5228/source-fit1539/workflow487+487/prepared1398+1398/incremental322+322/captures657+657/racing85/reflections25/parser699 pass. Desktop category4-54ms/install10-60ms Compatibility,26-202ms Mobile;shared host/not phoneFPS. Concurrent cache path issue fixed; owner loading/compiler/account repairs retained/excluded. No phone test/APK/livewrites/deploy/full physics merge regression. Actual options/captures/timings/commands/task-only checkpoint and remaining owner/device AAA acceptance: docs/COMPACT_KITS_EXPANDED_2026_10_14.md.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 ED05-ED09/R01/T01-T04/V03/V05/Q01: owner fixes remaining editor review. Compact cached encodings save supported16384-point maps within512KiB; ordered/coalesced gesture writes drain on Save/navigation/profile/delete/teardown with real failure receipts. Exact immutable physical snapshots/direct grid construction, reused masks/sections/canvas joins/paths, no-op snapped drags; cancellable population/road/compiler/scene jobs, worker joined normals/large streams and staged four-prop spatial draws. Explicit byte bounds and visible single-flight thumbnails retain artwork/canonical semantics and existing road32MiB/world64MiB limits. Both-renderer123+123 canonical/cache/maximum-map/durable-UI checks and51+51 exact prop pixels, population20581/workflow252/delete23/free48/creator113/tyres75/road70/bridge16/parser701/import/diff pass. Metadata compiles~299-584->19-102ms Compatibility; first-view frame maxima213/160ms remain observed/unattributed. Concurrent headless bridge/type/API changes preserved/excluded; no phone/APK/fullValidate/physics/backend/deploy. Actual commands/captures/limits/task-only checkpoint: docs/evidence/editor-remaining-2026-10-14/report.json.
++
+ 2026-10-14 WIND13-WIND15/V04/V05/G01/R01/Q01: owner Iceland clips request fast thin snow without dense/strong-looking gusts. Winter-wind13 separate motion envelope28-36mps versus former9.288 settled calm/21.6 gust; density floor remains0.24. Narrow aligned streams/trailing grains, existing ground-material integration/local variance/car guard/artwork; same48grains96tri/zero floating surface cards/two reads/camera/vehicle snow clouds/canonical forces/scoring. Kit192 invalidates expanded shader cache. Native78/Mobile78/cache70/finalImport pass; sparse actual travel0.933m per30fps frame, dense/light rendered-change ratios4.168/4.067, restored/paused/roof/canonical exact. Initial inherited-class resolution/account preload registration issue cleared on retry; no backend source or assertion changes. Linked Reddit text readable but direct video/poster403/Facebook fetch blocked: no frame inspection/physical speed measurement/asset reuse claimed. DN2103 attached/no phone run/APK/fullValidate/backend/deploy; bounded raw desktop profiles no FPS gain claim. Files/actual commands/light-motion preview/scoped checkpoint/owner acceptance: docs/WINTER_FAST_SPINDRIFT.md.
+ 
+ 2026-10-14 CKX01-CKX05/CKT01-CKT06/GCS01-GCS04/V04-V06/G01/R01/Q01: owner refines compact kits to ten choices per hood/aero/rim/body category (Original+9;24 additions), original fitted intake/airfoil/spoke/arch geometry, rolled-fender clearance/flush hardware, scrolling focus/reset visibility and retained actual car/tyres/pivots/paint/condition/camera/reflections.80 native photos/1268 exact prepared meshes;16-photo cache;all10000 combinations per quality max167082/64686 visible triangles. Final geometry5228/source-fit1539/workflow487+487/prepared1398+1398/incremental322+322/captures657+657/racing85/reflections25/parser699 pass. Desktop category4-54ms/install10-60ms Compatibility,26-202ms Mobile;shared host/not phoneFPS. Concurrent cache path issue fixed; owner loading/compiler/account repairs retained/excluded. No phone test/APK/livewrites/deploy/full physics merge regression. Actual options/captures/timings/commands/task-only checkpoint and remaining owner/device AAA acceptance: docs/COMPACT_KITS_EXPANDED_2026_10_14.md.
+--- /dev/null
++++ b/docs/evidence/editor-remaining-2026-10-14/report.json
+@@ -0,0 +1,349 @@
++{
++  "date": "2026-10-14",
++  "requirements": [
++    "R01",
++    "T01",
++    "T02",
++    "T03",
++    "T04",
++    "V03",
++    "V05",
++    "Q01"
++  ],
++  "scope": "Owner requested the rest of the track editor review issues after chat items 1-4. Addresses JSON review priorities 4-8: serialization, repeated compiler preparation, drawing/navigation, cancellation/frame budgeting and cache/thumbnail cold work.",
++  "changes": {
++    "serialization": "A bounded immutable encoding cache retains compact JSON, authoring validation and fingerprints. WIP/original share the encoding; temporary verification and previous-good backups remain. The supported 16384-point painted map now fits the existing 512 KiB file limit.",
++    "ordered_gesture_writes": "Pointer-driven autosaves queue immutable directory/owner/document snapshots in one ordered low-priority writer, coalescing only queued revisions of the same draft. Explicit save/navigation/profile/new-document/deletion/teardown drain required writes; receipts bind to the captured library/document and report actual failures. Non-gesture calls and custom test/storage subclasses retain synchronous error semantics.",
++    "compiler": "Editor dependency keys ignore only id/name/creator. Immutable binary snapshots retain exact compiled grids, native metadata, route/gates, deck, physical kerbs/banks and contact buckets, then independently restore mutable results with current metadata/hash. Native construction accepts already prepared grid arrays, avoiding the RLE-expand round trip. Sections/raster/presentation masks reuse their own dependencies. Canonical schema/compiler version/hash semantics remain unchanged.",
++    "drawing": "Route data is sampled only when needed and retained with joins, local controls and roadside paths until source changes. Repeated snapped object/road/start-line movement suppresses redundant changes. Four-prop spatial batches retain original ordering/connected-normal clusters and original exact attribute/pixel results; update-on-demand viewport behavior remains.",
++    "cancellation_and_publication": "Tree-owned cancellable CPU jobs outlive closing population panels, which no longer join live workers. Obsolete road/scenery candidates stop at stage/loop/yield checks; compiler preview tokens stop stale sampling/raster/paint/preparation. Joined prop normals/indexing and large numeric stream assembly move to workers; changed GPU chunks stage before any live group replacement. Required teardown and durable-write drains still wait safely.",
++    "byte_caches": "Adds explicit byte estimates and reuse-based retention to compiled/editor visual/prop/thumbnail caches, plus bounded canvas/spline/roadside and mask/section preparation. Existing 32 MiB road and 64 MiB prepared-world cache allowances are preserved. Visible cold thumbnails bake one at a time, same-key cards share the result, and hidden/offscreen cards avoid allocating a viewport."
++  },
++  "cache_limits": {
++    "compiled_tracks_mib": 16,
++    "prepared_track_binary_mib": 16,
++    "raster_sections_masks_mib": 8,
++    "inactive_editor_visual_mib": 32,
++    "shared_prop_mesh_mib": 32,
++    "thumbnail_cpu_gpu_estimate_mib": 24,
++    "canvas_geometry_mib": 4,
++    "canvas_spline_mib": 4,
++    "roadside_geometry_mib": 8,
++    "document_encoding_mib": 4,
++    "existing_road_cpu_gpu_mib": 32,
++    "existing_racing_world_mib": 64,
++    "note": "Mesh/node/material/texture figures are conservative accounting estimates, not direct process RSS or driver-allocation measurements. Active scene/card resources are necessary working state; oversized retained entries are omitted/evicted."
++  },
++  "environment": {
++    "engine": "4.7.2.stable.official.ed1daf0bf",
++    "os": "Windows desktop",
++    "gpu": "NVIDIA GeForce RTX 3090",
++    "renderers": [
++      "Compatibility/OpenGL3",
++      "Mobile/Vulkan"
++    ],
++    "size": [
++      1280,
++      720
++    ],
++    "fixture": "96-piece road circuit; four biomes; maximum 32x512 painted points; original/retained all-family props and actual isolated app Save/exit. Shared host with concurrent Godot processes."
++  },
++  "measurements": {
++    "compatibility": {
++      "checks": 123,
++      "failures": 0,
++      "metrics": [
++        {
++          "ms": 328.696,
++          "operation": "pine_original_compile"
++        },
++        {
++          "ms": 18.939,
++          "operation": "pine_metadata_compile"
++        },
++        {
++          "ms": 299.542,
++          "operation": "desert_original_compile"
++        },
++        {
++          "ms": 23.555,
++          "operation": "desert_metadata_compile"
++        },
++        {
++          "ms": 583.906,
++          "operation": "winter_original_compile"
++        },
++        {
++          "ms": 101.926,
++          "operation": "winter_metadata_compile"
++        },
++        {
++          "ms": 311.928,
++          "operation": "night_city_original_compile"
++        },
++        {
++          "ms": 52.51,
++          "operation": "night_city_metadata_compile"
++        },
++        {
++          "ms": 70.185,
++          "operation": "maximum_paint_save"
++        },
++        {
++          "ms": 263.543,
++          "operation": "hundred_navigation_preparations"
++        },
++        {
++          "ms": 0.005,
++          "operation": "cancel_handler"
++        },
++        {
++          "ms": 6.203,
++          "operation": "population_panel_close"
++        },
++        {
++          "ms": 212.604,
++          "operation": "maximum_initial_editor_frame_interval"
++        },
++        {
++          "ms": 16.063,
++          "operation": "actual_gesture_save_handler"
++        }
++      ]
++    },
++    "mobile": {
++      "checks": 123,
++      "failures": 0,
++      "metrics": [
++        {
++          "ms": 290.92,
++          "operation": "pine_original_compile"
++        },
++        {
++          "ms": 18.483,
++          "operation": "pine_metadata_compile"
++        },
++        {
++          "ms": 323.632,
++          "operation": "desert_original_compile"
++        },
++        {
++          "ms": 19.426,
++          "operation": "desert_metadata_compile"
++        },
++        {
++          "ms": 506.33,
++          "operation": "winter_original_compile"
++        },
++        {
++          "ms": 92.617,
++          "operation": "winter_metadata_compile"
++        },
++        {
++          "ms": 317.752,
++          "operation": "night_city_original_compile"
++        },
++        {
++          "ms": 53.292,
++          "operation": "night_city_metadata_compile"
++        },
++        {
++          "ms": 70.554,
++          "operation": "maximum_paint_save"
++        },
++        {
++          "ms": 262.79,
++          "operation": "hundred_navigation_preparations"
++        },
++        {
++          "ms": 0.003,
++          "operation": "cancel_handler"
++        },
++        {
++          "ms": 8.666,
++          "operation": "population_panel_close"
++        },
++        {
++          "ms": 159.557,
++          "operation": "maximum_initial_editor_frame_interval"
++        },
++        {
++          "ms": 16.41,
++          "operation": "actual_gesture_save_handler"
++        }
++      ]
++    }
++  },
++  "measurement_notes": [
++    "Compatibility metadata compiles: Pine328.696->18.939ms, Desert299.542->23.555ms, Winter583.906->101.926ms, Night311.928->52.510ms. Mobile samples290.920->18.483/323.632->19.426/506.330->92.617/317.752->53.292ms. The pre-change compiler and current cache run in the same probe; geometry is tested exactly against the captured pre-change implementation.",
++    "Maximum supported map save70.185/70.554ms; actual queued-gesture handlers16.063/16.410ms. These are desktop operation observations, not device/FPS guarantees.",
++    "Worker cancellation handlers0.003-0.005ms; population page close6.203/8.666ms including a process-frame wait. Reaping checks actual completion rather than a caller-side join.",
++    "Initial actual editor preparation still observed maximum process-frame intervals212.604ms Compatibility/159.557ms Mobile on the shared host. No hard frame-time limit, no attribution of those intervals to a confirmed CPU/GPU cause, and no hitch-free claim. Cold individual resource/driver work still needs physical-device profiling."
++  ],
++  "commands": [
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240",
++      "outcome": "123 checks, 0 failures; exact pre-change canonical fields, cache invalidation/isolation, maximum-map atomic recovery, coalescing/errors, cancellation, cold thumbnails and actual Save/exit durability."
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++      "outcome": "51 checks, 0 failures; exact positions/normals/pigments and zero changed image channels in pine/desert/winter/night_city; earlier save/object regressions retained."
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_remaining.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240",
++      "outcome": "123 checks, 0 failures; exact pre-change canonical fields, cache invalidation/isolation, maximum-map atomic recovery, coalescing/errors, cancellation, cold thumbnails and actual Save/exit durability."
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_incremental_objects.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 180",
++      "outcome": "51 checks, 0 failures; exact positions/normals/pigments and zero changed image channels in pine/desert/winter/night_city; earlier save/object regressions retained."
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestWorkflow -CommandTimeoutSeconds 180",
++      "outcome": "252 checks, 0 failures.",
++      "log": "workflow.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestDeleteTracks -CommandTimeoutSeconds 180",
++      "outcome": "23 checks, 0 failures.",
++      "log": "deletion.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestFreeEditor -CommandTimeoutSeconds 180",
++      "outcome": "48 checks, 0 failures.",
++      "log": "free-editor.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestCreator -CommandTimeoutSeconds 180",
++      "outcome": "113 checks, 0 failures.",
++      "log": "creator.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestRoadCache -CommandTimeoutSeconds 180",
++      "outcome": "70 checks, 0 failures.",
++      "log": "road-cache.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestBridgeContacts -CommandTimeoutSeconds 120",
++      "outcome": "16 checks, 0 failures.",
++      "log": "bridge-contacts.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_object_population.gd -CommandTimeoutSeconds 180",
++      "outcome": "20581 checks, 0 failures; deterministic generation and actual modal workflow.",
++      "log": "population.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_tyres_and_load.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++      "outcome": "75 checks, 0 failures; persisted trajectory completion/publication gates and draft recovery.",
++      "log": "tyres-load.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 120",
++      "outcome": "701 scripts, 0 failures.",
++      "log": "parse.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180",
++      "outcome": "Exit 0; registered concurrent bridge preparation plus new local module UIDs."
++    },
++    {
++      "command": "git diff --check -- <owned runtime/test files>",
++      "outcome": "Passed; CRLF conversion notices only."
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_workflow.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++      "outcome": "252 checks, 0 failures; final actual graphical workflow.",
++      "log": "workflow-graphical.log"
++    }
++  ],
++  "diagnostic_history": [
++    "A parser pass initially encountered a new concurrent BridgeRenderPreparation class that had not been imported; Import completed successfully.",
++    "Primitive BoxMesh lacks ArrayMesh array-length accessors. Byte accounting now uses metadata lengths for ArrayMesh and existing small primitive arrays otherwise; final geometry/scene checks pass.",
++    "The new probe originally used an obsolete from_native API/removed built-in IDs. It now uses current from_builtin/manifest entries and retains exact pre-change compiler comparisons.",
++    "Adding absent authoring fields via GDScript dot syntax creates StringName keys, correctly rejected by the unchanged strict JSON validator. Fixtures now use explicit String keys; no authoring validation was relaxed.",
++    "A failed-save fixture used a file as a parent directory and triggered native engine logging, causing the pinned harness to stop. A temporary-file-path directory now exercises the actual silent FileAccess failure and confirms preservation of the obstruction.",
++    "An intermediate cancellation edit omitted four line breaks and caused a compiler parse error; corrected before final checks.",
++    "One headless tyres/load run met a concurrently unfinished typed-array bridge/hazard preparation branch in race startup. That unrelated source was preserved. Graphical tyres/load75 and later headless workflow252 pass; no race-start fix belongs to this task."
++  ],
++  "limitations": [
++    "No physical-phone commands, phone FPS/thermal/input acceptance, Android export/install, deployment or full Validate.",
++    "Full redraw/GPU shader/resource work and individual cold prop/resource creation are not promised to stay under six milliseconds. Connected overlap clusters retain their required original normals/order even if larger than the usual four-prop chunk.",
++    "No canonical driving/scoring, race rules, artwork, dust/trail/populations or backend protocol changes. Historical creator diagnostic three-lap runs remain; ordinary FreeEditor race explicitly completed five laps.",
++    "Task checkpoint excludes concurrent privacy/account, race/cloud-loading, bridge render preparation, resident road-cache and other work. Concurrent race preparation now consumes the shared cancellable road-job result/cancel API; that merged caller dependency is preserved."
++  ],
++  "remaining_acceptance": "Exercise cold/large editor loads, panning/zooming, rapid geometry changes, population Close/Apply, repeated saves, exit/deletion/profile transitions and sustained memory/frame intervals on supported phones.",
++  "changed_files": [
++    "game/core/app.gd",
++    "game/editor/cache_bytes.gd",
++    "game/editor/cache_bytes.gd.uid",
++    "game/editor/creator_preview_masks.gd",
++    "game/editor/editor_canvas.gd",
++    "game/editor/editor_world.gd",
++    "game/editor/object_population.gd",
++    "game/editor/object_population_panel.gd",
++    "game/editor/object_thumbnail.gd",
++    "game/editor/placed_object_batches.gd",
++    "game/editor/population_job.gd",
++    "game/editor/population_job.gd.uid",
++    "game/editor/prepared_track_cache.gd",
++    "game/editor/prepared_track_cache.gd.uid",
++    "game/editor/road_pieces.gd",
++    "game/editor/road_preparation.gd",
++    "game/editor/road_preparation_job.gd",
++    "game/editor/roadside_boundary.gd",
++    "game/editor/track_compiler.gd",
++    "game/editor/work_job.gd",
++    "game/editor/work_job.gd.uid",
++    "game/editor/write_queue.gd",
++    "game/editor/write_queue.gd.uid",
++    "game/persistence/document_encoding.gd",
++    "game/persistence/document_encoding.gd.uid",
++    "game/persistence/track_library.gd",
++    "game/tests/fixtures/editor_compiler_before_remaining.gd",
++    "game/tests/fixtures/editor_compiler_before_remaining.gd.uid",
++    "game/tests/test_editor_remaining.gd",
++    "game/tests/test_editor_remaining.gd.uid",
++    "game/track/creator_prop_visual.gd",
++    "game/track/native_track.gd",
++    "game/track/native_track_visual.gd",
++    "DEVELOPMENT_STATUS.md",
++    "docs/PHASE_0_PLAN.md"
++  ],
++  "source_sha256": {
++    "game/core/app.gd": "066df9a9c5cf97cbbc843e02c432dbeee98ecb8fcf249005d4d2e308e8cf0e00",
++    "game/editor/cache_bytes.gd": "bc4332b81852ff978f9c682126fc3df7fbdccb17715c0c554b878730f91d499f",
++    "game/editor/cache_bytes.gd.uid": "c44f0ededb085addb01dfb062bc584c6fb202dcdfbcd7d18c72948228fc508e2",
++    "game/editor/creator_preview_masks.gd": "b65614e1eee019d2d18519d258b7fbf29b5939964fb467e03a47bdb8d51b3dda",
++    "game/editor/editor_canvas.gd": "e18fabdbd47d9936e57e45112657de0e692f024981269a90d5fd70cde88e7654",
++    "game/editor/editor_world.gd": "0cd43b751cf0decc50551d10419729cfe0c616fc345db8d21ef67ae4678619a0",
++    "game/editor/object_population.gd": "6f3dd05c076eea7d375a0ed44ae12cc6d120f9e79cf69c4d795ce909581a37a1",
++    "game/editor/object_population_panel.gd": "9782275c2753530839995d3882d065408a80178529dfb588e47eb85698af0290",
++    "game/editor/object_thumbnail.gd": "2e62a9fd7806bea0d12e203a778924bc0a1c43594bc0b6b88f26cf0410a2a800",
++    "game/editor/placed_object_batches.gd": "76d5b93fb60b5ce42aa5a03b98664ecc1937022cd6a3e44a528c457bd1aa76fd",
++    "game/editor/population_job.gd": "ffb41855984bbcea311dd71bdeef5a4a9c5bd81c77b0002b94d7ddf3dbd0b89a",
++    "game/editor/population_job.gd.uid": "95588c54c9d6ea206af9a072456798fc2abac7da29af014106b11d4065ff0a22",
++    "game/editor/prepared_track_cache.gd": "d6ebe77ec94f92bcfa6ea3b4a153d294aa2e226cd655de8c5f27f8a0336a973f",
++    "game/editor/prepared_track_cache.gd.uid": "5d9bb650869ff7938513a4a66e0e2cb9b94ba86ede3e18916d4ff67c6fcc2696",
++    "game/editor/road_pieces.gd": "016287dc25c4b398db4a42715e188b8b5a106ab1f77bddac892a05ee6a2341f6",
++    "game/editor/road_preparation.gd": "3809ebd3b159aa4a3cc5956dbcbe917f33b341c340646595b138a98a22ed441a",
++    "game/editor/road_preparation_job.gd": "c0d77130664c28408a7cd6700a8b6950ce185f82c80be9458274ab8e09a94d95",
++    "game/editor/roadside_boundary.gd": "ae1314a470b572c2642759d553c83a9b044aee795e55f5d7309fb7e4bb7a15b7",
++    "game/editor/track_compiler.gd": "141da53bd019563262b2f27c23ba97471b61760abd8515dae4cc58da5c75be31",
++    "game/editor/work_job.gd": "6aeeeb6a265e95d29cd94c80eaf1b138c036bebb258fe12ae1bb86568797cf61",
++    "game/editor/work_job.gd.uid": "917d68a516b9be7143ffebdb36f15ab16e4fa825235998516e138811f9d2b778",
++    "game/editor/write_queue.gd": "85f5549bc128e1b49a9600ce7c6e0a3e02329dfc3b535773f1d37635b86ded1f",
++    "game/editor/write_queue.gd.uid": "b91b5ee10535d20ca5073ae497200d096ee4ebccce2f8a4b1459722a9fc56de7",
++    "game/persistence/document_encoding.gd": "83d11015d848c0f761885fe3ea23aea4415f905b786e7cc6c53a817bd153d05e",
++    "game/persistence/document_encoding.gd.uid": "36e08d349dd13044dd751ac4e1f03b1dfee1a183d3480f0f2c6c17d935e76b31",
++    "game/persistence/track_library.gd": "ab2d14a32e66ce364a5bd5db8bfa6fdc538a3d3ed77bd695c24c5e012f154cdf",
++    "game/tests/fixtures/editor_compiler_before_remaining.gd": "447774402a0a104ea884e77704ce38a17e17902d5b4cc2c6a7ff901b60044d6a",
++    "game/tests/fixtures/editor_compiler_before_remaining.gd.uid": "d9118af224e5f00442df05221882bb8916e5fe41a7b9a6744c02f3503e7064f0",
++    "game/tests/test_editor_remaining.gd": "9d2b97b229c0f4bd83a2331bd5788fd50da0d508288742c31bb4c00b5d424733",
++    "game/tests/test_editor_remaining.gd.uid": "7f7327f8c8f7c1d000fb5e88f03a8455e2284830a05e9a60333a72561c4aa3e8",
++    "game/track/creator_prop_visual.gd": "8833eb748a5e331607be3ea77e424a728635df80919f7a64549d293f23db83fd",
++    "game/track/native_track.gd": "c838fe6bf359bf443a0f18b5f04cd379d756430483f277f572a1b68c5e0d6bb4",
++    "game/track/native_track_visual.gd": "15961c8d2e3d62c01c6f09869fd34feb53a0a9e1794380a41549875a9880c00a"
++  },
++  "checkpoint": "implementation.patch",
++  "checkpoint_validation": "checkpoint-validation.json"
++}

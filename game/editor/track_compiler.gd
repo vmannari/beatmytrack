@@ -5,10 +5,12 @@ extends RefCounted
 const VERSION: String = "creator-compiler-27"
 const CELL_SIZE: float = 0.5
 static var bases: Dictionary = {}
+const PREPARED = preload("res://editor/prepared_track_cache.gd")
 
 
 
-static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> NativeTrack:
+static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancelled: Callable = Callable()) -> NativeTrack:
+	if _cancelled(cancelled): return null
 	if not TrackDocument.validate(document).is_empty():
 		return null
 	# Desert road beds are compacted sand regardless of the saved road option.
@@ -16,6 +18,9 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 		document = document.duplicate(true)
 		document.surface = "asphalt" # Structural road cell; biome supplies material/traction.
 		if not document.layout.is_empty(): document.layout.surface = "asphalt"
+	if preview_cache.get("enabled",false):
+		var retained: NativeTrack = PREPARED.restore(document,preview_cache)
+		if retained != null: return retained
 	var base: NativeTrack
 	if document.base_track != "":
 		if not bases.has(document.base_track):
@@ -39,14 +44,23 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
 	var road_route: PackedVector2Array = road_samples.points
 	var road_widths: PackedFloat32Array = road_samples.widths
+	var section_key: Array = [document.pieces]
 	var sections: Array[Dictionary] = []
 	var bridges: Array = []
-	var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
-	for piece_index: int in range(document.pieces.size()):
-		var piece: Dictionary = document.pieces[piece_index]
-		var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
-		sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
-		if piece.kind == "bridge": bridges.append(piece.duplicate(true))
+	if preview_cache.get("sections_key",[]) == section_key:
+		sections.assign(preview_cache.sections)
+		bridges = preview_cache.bridges.duplicate(true)
+	else:
+		var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
+		for piece_index: int in range(document.pieces.size()):
+			if _cancelled(cancelled): return null
+			var piece: Dictionary = document.pieces[piece_index]
+			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
+			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
+			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
+		if preview_cache.get("enabled",false):
+			preview_cache.sections_key = section_key.duplicate(true)
+			preview_cache.sections = sections.duplicate(true); preview_cache.bridges = bridges.duplicate(true)
 	var radius: float = widths[0] * 0.5
 	var extent := Vector2.ZERO
 	for point: Vector2 in route + road_route:
@@ -76,12 +90,13 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 		var road_mask: PackedInt32Array = cells.duplicate()
 		_stamp_objects(document,cells,grid,extent,cell_size,true)
 		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
-		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask)
+		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask,cancelled)
 		for section: Dictionary in sections:
 			if section.bridge: continue
 			var section_widths: PackedFloat32Array = section.widths
-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask)
-		_paint(document.paint,cells,grid,extent,cell_size,road_mask)
+			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
+		_paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
+		if _cancelled(cancelled): return null
 		if preview_cache.get("enabled",false):
 			preview_cache.key = raster_key.duplicate(true)
 			preview_cache.cells = cells.duplicate()
@@ -92,6 +107,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 	deck.fill(-1)
 	if base != null: deck = base.deck_cells.duplicate()
 	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
+	if _cancelled(cancelled): return null
 	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
 	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
 	# A distant perimeter makes the finite authoring area explicit and keeps
@@ -144,7 +160,15 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}) -> Nat
 		data.deck = CreatorBridges.rectangles(deck,grid)
 	data.provenance["base_track"] = document.base_track
 	data.provenance["base_hash"] = base.content_hash if base != null else ""
-	return NativeTrack.from_data(data,(VERSION+"\n"+str(data.provenance.base_hash)+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text())
+	if _cancelled(cancelled): return null
+	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck)
+	if _cancelled(cancelled): return null
+	if preview_cache.get("enabled",false):
+		PREPARED.remember(document,compiled,preview_cache); PREPARED.trim_auxiliary(preview_cache)
+	return compiled
+
+static func document_hash(document: Dictionary, base_hash: String) -> String:
+	return (VERSION+"\n"+base_hash+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text()
 
 
 static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
@@ -159,8 +183,9 @@ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: 
 				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
 
 
-static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array) -> void:
+static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
 	for authored: Dictionary in strokes:
+		if _cancelled(cancelled): return
 		var stroke: Dictionary = SurfacePaint.prepared(authored)
 		if stroke.get("mode","") == "area":
 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
@@ -174,6 +199,7 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 			continue
 		var radius: float = float(stroke.width)*0.5
 		for i: int in range(stroke.points.size()):
+			if i % 32 == 0 and _cancelled(cancelled): return
 			var p: Array = stroke.points[i]
 			var q: Array = stroke.points[maxi(0,i-1)]
 			var a := Vector2(p[0],p[1])
@@ -190,10 +216,11 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
 
 
-static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array()) -> void:
+static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
 	var has_mask: bool = not road_mask.is_empty()
 	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
 	for i: int in range(segment_count):
+		if i % 16 == 0 and _cancelled(cancelled): return
 		var a: Vector2 = road_route[i]
 		var b: Vector2 = road_route[(i+1) % road_route.size()]
 		var radius_a: float = road_widths[i]*0.5
@@ -220,3 +247,6 @@ static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloa
 					if cells[at] in [1,2,3] and cells[at] != road_kind: cells[at] = 5
 					# Terrain objects affect cells but not the road-protection mask.
 					if has_mask and road_mask[at] in [1,2,3] and road_mask[at] != road_kind: road_mask[at] = 5
+
+static func _cancelled(callback: Callable) -> bool:
+	return callback.is_valid() and callback.call()

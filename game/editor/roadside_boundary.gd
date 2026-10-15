@@ -3,6 +3,8 @@ extends RefCounted
 ## Exposed spline-sweep perimeter; raw inside offsets can reverse or self-cross.
 ## Small editor-only geometry cache, independent of canonical simulation.
 static var _cache: Array[Dictionary] = []
+const CACHE_BUDGET: int = 8 * 1024 * 1024
+static var cache_bytes: int = 0
 
 static func run(path: Dictionary, begin: float, delta: float, side: float, clearance: float, single_length: float = 0.0) -> PackedVector2Array:
 	var contours: Array[PackedVector2Array] = _contours(path,clearance)
@@ -80,4 +82,7 @@ static func _contours(path: Dictionary, clearance: float) -> Array[PackedVector2
 		for polygon: PackedVector2Array in SplineBorders.contours(expanded,[]):
 			cleaned.append(SplineBorders.simplify(polygon,0.015))
 		entry.offsets[clearance] = cleaned
+	cache_bytes = 0
+	for saved: Dictionary in _cache: cache_bytes += var_to_bytes(saved).size()
+	while not _cache.is_empty() and cache_bytes > CACHE_BUDGET: cache_bytes -= var_to_bytes(_cache.pop_front()).size()
 	return entry.offsets[clearance]

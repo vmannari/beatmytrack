@@ -6,6 +6,7 @@ var directory: String
 var last_error: String = ""
 var revision: int = 0
 var owner_name: String = ""
+const ENCODING = preload("res://persistence/document_encoding.gd")
 const READ_CACHE = preload("res://persistence/document_read_cache.gd")
 var last_read_path: String = ""
 var last_read_digest: String = ""
@@ -45,7 +46,7 @@ func save_document(document: Dictionary) -> Error:
 	if is_published(str(document.get("id",""))):
 		last_error = "Published tracks are locked against editing."
 		return ERR_UNAUTHORIZED
-	var errors: Array[String] = TrackDocument.validate(document,false)
+	var errors: Array[String] = ENCODING.prepared(document).errors
 	if not errors.is_empty():
 		last_error = errors[0]
 		return ERR_INVALID_DATA
@@ -145,7 +146,7 @@ func _read_summary(path: String) -> Dictionary:
 
 
 func _atomic_write(document: Dictionary, path: String) -> Error:
-	var content: String = JSON.stringify(document,"\t",true)
+	var content: String = ENCODING.prepared(document).content
 	if content.to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
 		last_error = "This creator track exceeds 512 KB."
 		return ERR_INVALID_DATA
@@ -278,7 +279,7 @@ func _test_library() -> TrackLibrary:
 	return TrackLibrary.new(directory.path_join(".tested-"+version))
 
 static func draft_fingerprint(document: Dictionary) -> String:
-	return JSON.stringify(document,"",true).sha256_text()
+	return ENCODING.prepared(document).fingerprint
 
 func is_tested(document: Dictionary) -> bool:
 	if not TrackDocument.valid_id(document.get("id")): return false

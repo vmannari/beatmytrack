@@ -24,3 +24,14 @@ static func road(track: NativeTrack) -> Image:
 	pixels.resize(track.cells.size())
 	for index: int in range(track.cells.size()): pixels[index] = 255 if track.cells[index] == 0 else 0
 	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_L8,pixels)
+
+static func prepare(track: NativeTrack, paint: Array, cache: Dictionary) -> void:
+	var overlay_key: Array = [track.half_extent,track.cell_size,track.grid_width,track.grid_height,track.kerbs.blocked,paint]
+	if cache.get("overlay_key",[]) != overlay_key:
+		cache.overlay_key = overlay_key.duplicate(true); cache.overlay_image = overlay(track,paint)
+	var road_key: Array = [track.grid_width,track.grid_height,track.cells]
+	if cache.get("road_key",[]) != road_key:
+		cache.road_key = road_key.duplicate(true); cache.road_image = road(track)
+	track.editor_overlay_mask = cache.overlay_image.duplicate()
+	track.editor_road_mask = cache.road_image.duplicate()
+	preload("res://editor/prepared_track_cache.gd").trim_auxiliary(cache)

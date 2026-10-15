@@ -357,21 +357,12 @@ static func _number(value: Variant) -> bool:
 	return (value is int or value is float) and is_finite(float(value))
 
 
-static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0) -> Array:
+static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0, prepared: Variant = null) -> Array:
 	var result: Array = []
 	if kind not in CreatorObjects.KINDS: return result
 	var capacity: int = maxi(0,96-document.objects.size())
 	if capacity == 0: return result
-	var candidates: Array[Dictionary] = _paths(document.pieces)
-	if not document.layout.is_empty():
-		var layout: Dictionary = TrackDocument.route_data(document.layout)
-		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
-	for stroke: Dictionary in document.paint:
-		if int(stroke.surface) not in [0,2] or stroke.get("mode","free") == "area" or stroke.points.size() < 2: continue
-		var path: PackedVector2Array = SurfacePaint.contour(stroke.points,str(stroke.get("mode","free")))
-		var widths := PackedFloat32Array()
-		widths.resize(path.size()); widths.fill(float(stroke.width))
-		candidates.append({"points":path,"widths":widths,"closed":false})
+	var candidates: Array = prepared if prepared is Array else prepare_run(document)
 	if candidates.is_empty(): return result
 	var best: Dictionary = {}
 	var score: float = INF
@@ -410,6 +401,20 @@ static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, k
 		var index: int = sample.index
 		offset_points.append(edge_points[index].lerp(edge_points[(index+1)%edge_points.size()],float(sample.blend)))
 	return ObjectRuns.build(offset_points,kind,scale,capacity)
+
+
+static func prepare_run(document: Dictionary) -> Array[Dictionary]:
+	var candidates: Array[Dictionary] = _paths(document.pieces)
+	if not document.layout.is_empty():
+		var layout: Dictionary = TrackDocument.route_data(document.layout)
+		candidates.append({"points":layout.points,"widths":layout.widths,"closed":true})
+	for stroke: Dictionary in document.paint:
+		if int(stroke.surface) not in [0,2] or stroke.get("mode","free") == "area" or stroke.points.size() < 2: continue
+		var path: PackedVector2Array = SurfacePaint.contour(stroke.points,str(stroke.get("mode","free")))
+		var widths := PackedFloat32Array()
+		widths.resize(path.size()); widths.fill(float(stroke.width))
+		candidates.append({"points":path,"widths":widths,"closed":false})
+	return candidates
 
 
 static func _offset_edge(path: Dictionary, side: float, clearance: float) -> PackedVector2Array:

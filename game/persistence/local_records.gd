@@ -147,6 +147,10 @@ static func _normalize(data: Variant) -> Dictionary:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "selected_car":
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+		elif field == "music_record":
+			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
+		elif field == "music_records":
+			if not preload("res://soundtrack/record_library.gd").valid_collection(preferences[field]): return {}
 		elif field == "vehicle_conditions":
 			if not VehicleCondition.valid_collection(preferences[field]): return {}
 		elif field == "vehicle_liveries":
@@ -173,7 +177,7 @@ static func _normalize(data: Variant) -> Dictionary:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "control_layout":
 			if not ControlLayout.valid(preferences[field]): return {}
-		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models"]:
+		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "optional_analytics", "music_enabled"]:
 			if not preferences[field] is bool:
 				return {}
 		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:
@@ -208,7 +212,11 @@ static func _normalize(data: Variant) -> Dictionary:
 		if float(race) < 1.0 or float(race) > MAX_TIME_MS or float(flying) < 1.0 or float(flying) > float(race):
 			return {}
 		normalized[key] = {"race_ms":int(race),"flying_ms":int(flying)}
-	return {"schema":SCHEMA,"records":normalized,"settings":preferences.duplicate(true)}
+	var normalized_preferences: Dictionary = preferences.duplicate(true)
+	normalized_preferences.erase("music_records")
+	if normalized_preferences.has("music_record"):
+		normalized_preferences.music_record = preload("res://soundtrack/record_library.gd").selected(normalized_preferences).id
+	return {"schema":SCHEMA,"records":normalized,"settings":normalized_preferences}
 
 
 static func _number(value: Variant) -> bool:

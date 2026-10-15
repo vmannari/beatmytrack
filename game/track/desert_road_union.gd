@@ -163,7 +163,7 @@ static func phases(pieces: Array, topology: Dictionary) -> Dictionary:
 		for index: int in queue: result[index]["desert_scale"] = scale
 	return result
 
-func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
+func emit(visual: NativeTrackVisual, tool: SurfaceTool, height: float = 0.012) -> int:
 	var count: int = 0
 	var candidate_lists: Dictionary = {}
 	var caches: Dictionary = {}
@@ -174,5 +174,5 @@ func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
 		if not caches.has(points_by_triangle[i]): caches[points_by_triangle[i]] = phase_by_triangle[i].duplicate()
 		caches[points_by_triangle[i]]["desert_blend_sampler"] = self
 		for polygon: PackedVector2Array in clipping._fragments(i,source,candidate_lists):
-			count += visual._road_polygon(tool,polygon,0.012,points_by_triangle[i],caches[points_by_triangle[i]])
+			count += visual._road_polygon(tool,polygon,height,points_by_triangle[i],caches[points_by_triangle[i]])
 	return count

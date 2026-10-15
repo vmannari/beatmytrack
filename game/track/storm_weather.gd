@@ -253,8 +253,10 @@ func _update_lens() -> void:
 		var radius: float = maxf(0.01,sample.z*size.y/720.0)
 		var drop: ColorRect = lens_drops[i]
 		var extent := Vector2(radius*2.4,radius*3.2)
-		var at: Vector2 = Vector2(sample.x,sample.y)*size-extent*0.5
 		if drop.size != extent: drop.size = extent
+		# Control offsets can round the requested size; retain the original
+		# read-after-size position arithmetic exactly.
+		var at: Vector2 = Vector2(sample.x,sample.y)*size-drop.size*0.5
 		if drop.position != at: drop.position = at
 		var lens_material: ShaderMaterial = drop.material as ShaderMaterial
 		if _lens_material_ids[i] != lens_material.get_instance_id():

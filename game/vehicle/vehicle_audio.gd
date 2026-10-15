@@ -7,6 +7,8 @@ const IMPACTS: Array[String] = ["impact_0","impact_1","impact_2"]
 const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis"]
 const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
 const GRIT_SPACING: Array[float] = [4.2,6.6,5.1,3.7]
+const STREAM_CACHE_BYTES: int = 24 * 1024 * 1024
+static var prepared_streams: Array[Dictionary] = []
 var model := VehicleAudioModel.new()
 var surface_model := SurfaceAudioModel.new()
 var engine_load: Array[AudioStreamPlayer] = []
@@ -43,6 +45,10 @@ var held_kerb: float = 0.0
 var kerb_touching: bool = false
 var kerb_cooldown: float = 0.0
 var kerb_count: int = 0
+var bridge_layer_known: bool = false
+var bridge_layer: bool = false
+var bridge_tick: int = -1
+var bridge_count: int = 0
 const RUBBING_SKIN: float = 0.025
 var debris_index: int = 0
 var impact_count: int = 0
@@ -94,9 +100,28 @@ func _player(label: String, target_bus: String) -> AudioStreamPlayer:
 
 func _stream(clip: String, looping: bool) -> AudioStream:
 	if streams.has(clip): return streams[clip] as AudioStream
+	var key: Array = [clip,looping]
+	for index: int in range(prepared_streams.size()):
+		if prepared_streams[index].key != key: continue
+		var entry: Dictionary = prepared_streams.pop_at(index)
+		prepared_streams.append(entry)
+		streams[clip] = entry.stream
+		return entry.stream
 	var suffix: String = ".ogg" if clip in COMPRESSED_LOOPS else ".wav"
 	var source: AudioStream = load(BANK+clip+suffix) as AudioStream
 	var sample: AudioStream = AudioLoop.prepare(source) if looping else source.duplicate() as AudioStream
+	var bytes: int = 4096
+	if sample is AudioStreamWAV: bytes += sample.data.size()
+	else:
+		var file := FileAccess.open(BANK+clip+suffix,FileAccess.READ)
+		if file != null:
+			bytes += file.get_length()*2
+			file.close()
+	if bytes <= STREAM_CACHE_BYTES:
+		var total: int = bytes
+		for entry: Dictionary in prepared_streams: total += int(entry.bytes)
+		while not prepared_streams.is_empty() and (prepared_streams.size() >= 48 or total > STREAM_CACHE_BYTES): total -= int(prepared_streams.pop_front().bytes)
+		prepared_streams.append({"key":key,"stream":sample,"bytes":bytes})
 	streams[clip] = sample
 	return sample
 
@@ -104,7 +129,7 @@ func configure(id: String, config: HandlingConfig, car: Node3D = null) -> void:
 	model.configure(id,config.maximum_speed)
 	surface_model.configure(config)
 	contact_radius = config.collision_radius
-	if car!=null: visible_contact.configure(car)
+	if car!=null: visible_contact.configure(car,car is CarVisual)
 	else: visible_contact.outline = PackedVector2Array()
 	# Only the selected vehicle's six engine loops are retained by this race.
 	for i: int in range(3):
@@ -142,6 +167,10 @@ func reset() -> void:
 	kerb_touching = false
 	kerb_cooldown = 0.0
 	kerb_count = 0
+	bridge_layer_known = false
+	bridge_layer = false
+	bridge_tick = -1
+	bridge_count = 0
 	last_tick = -1
 	last_jump = 0.0
 	last_jump_velocity = 0.0
@@ -177,6 +206,7 @@ func resolved_contact(state: VehicleState, track: NativeTrack, incoming: Vector2
 	var count_before: int = impact_count
 	var cooldown_before: float = impact_cooldown
 	var visual_impulse: Vector2 = visible_contact.sample(state,track,incoming)
+	_observe_bridge(state,track,incoming,previous_position,visual_impulse)
 	# Canonical rubbing carries the actual wall normal even on elevated decks.
 	# The outline observer supplies it only for a current visible solid contact.
 	var normal: Vector2 = state.scrape_normal if state.scrape_strength>0.0 else visible_contact.normal
@@ -244,7 +274,15 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
 		# Raise grass on the actual post-step wheel contact, before rendering.
 		(layers.grass as AudioStreamPlayer).stream_paused = false
 		_layer("grass",_grass_gain(state,speed),_grass_pitch(speed),VehicleSimulation.STEP,false)
-	if track==null or state.track_elevated or state.jump_height>0.0 or state.roll_ticks>0:
+	if theme=="desert":
+		# Raised Desert borders are soft sand, never concrete/body impacts.
+		# Clear a queued hard contact too when the presentation theme changes.
+		pending_kerb = 0.0
+		kerb_hold = 0.0
+		held_kerb = 0.0
+		levels.kerb_roll = 0.0
+		(layers.kerb_roll as AudioStreamPlayer).volume_linear = 0.0
+	if track==null or theme=="desert" or state.track_elevated or state.jump_height>0.0 or state.roll_ticks>0:
 		kerb_touching = false
 		return
 	var current: float = surface_model.kerb
@@ -273,6 +311,32 @@ func _grass_gain(state: VehicleState, speed: float) -> float:
 func _grass_pitch(speed: float) -> float:
 	# Rustle pace rises with travel speed while preserving the recorded texture.
 	return .70+.65*smoothstep(.5,32.0,speed)
+
+func _observe_bridge(state: VehicleState, track: NativeTrack, incoming: Vector2, previous: Vector2, visual_impulse: Vector2) -> void:
+	var changed: bool = bridge_layer_known and bridge_layer!=state.track_elevated
+	bridge_layer = state.track_elevated
+	bridge_layer_known = true
+	if not changed or track==null or state.tick<=bridge_tick or state.jump_height>0.0 or state.roll_ticks>0: return
+	if state.collision_impulse!=Vector2.ZERO or visual_impulse!=Vector2.ZERO or visible_contact.touching: return
+	if not is_finite(previous.x) or not is_finite(previous.y) or previous.distance_squared_to(state.position)<.000001: return
+	var speed: float = maxf(incoming.length(),state.velocity.length())
+	if speed<=.5: return
+	var mouth: bool = false
+	for span: Dictionary in track.creator_bridges:
+		var a: Vector2 = CreatorBridges.local_point(span,previous)
+		var b: Vector2 = CreatorBridges.local_point(span,state.position)
+		for end: float in [0.0,float(span.length)]:
+			if (a.x<end and b.x>=end) or (a.x>end and b.x<=end):
+				var along: float = (end-a.x)/(b.x-a.x)
+				if absf(lerpf(a.y,b.y,along))<float(span.width)*.5: mouth = true
+	if track.creator_bridges.is_empty() and track.bridge_height>0.0:
+		mouth = absf((state.position-previous).normalized().dot(track.bridge_axis))>.75
+	if not mouth: return
+	# One quiet recorded body/suspension thump at each real ground/deck
+	# transition. It shares the existing event slots and has no glass source.
+	_event("chassis",lerpf(.09,.22,smoothstep(.5,26.0,speed)),.86)
+	bridge_tick = state.tick
+	bridge_count += 1
 
 func collision(impulse: Vector2, incoming: Vector2 = Vector2.ZERO, normal: Vector2 = Vector2.ZERO) -> void:
 	# Game calls this directly after its canonical step resolves a contact.
@@ -317,7 +381,7 @@ func _event(clip: String, amplitude: float, pitch: float = 1.0, debris: bool = f
 	elif output_enabled: player.play()
 	event_count += 1
 
-func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false) -> void:
+func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false, shared_contacts: SurfaceAudioModel = null) -> void:
 	if not active: return
 	if last_tick>state.tick: reset() # Restored rewind state cannot replay impact/landing events.
 	countdown_active = countdown
@@ -326,6 +390,7 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	for player: AudioStreamPlayer in engine_load+engine_coast+events+debris_events: player.stream_paused = silent
 	for layer: String in layers: (layers[layer] as AudioStreamPlayer).stream_paused = silent
 	if silent:
+		bridge_layer_known = false
 		pending_scrape = 0.0
 		pending_scrape_speed = 0.0
 		scrape_hold = 0.0
@@ -345,6 +410,7 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 		surface_model.has_speed = false
 		return
 	var dt: float = minf(maxf(delta,0.0),0.1)
+	if countdown: bridge_layer_known = false
 	var previous_gear: int = model.gear
 	var changed: bool = model.advance(state,frame,dt)
 	# Smooth acceleration already has the engine's RPM drop and shift cut.
@@ -382,13 +448,13 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	var movement: float = smoothstep(0.35,3.0,speed) if grounded else 0.0
 	var theme: String = str(track.metadata.get("theme","pine")) if track != null else "pine"
 	var desert: bool = theme=="desert"
-	surface_model.sample(state,frame,track,dt,grounded)
-	var kerb_contact: float = maxf(surface_model.kerb,pending_kerb) if grounded and speed>.5 else 0.0
+	surface_model.sample(state,frame,track,dt,grounded,shared_contacts)
+	var kerb_contact: float = maxf(surface_model.kerb,pending_kerb) if grounded and speed>.5 and not desert else 0.0
 	if kerb_contact>0.0:
 		held_kerb = kerb_contact
 		kerb_hold = .04
 	else: kerb_hold = maxf(0.0,kerb_hold-dt)
-	if not grounded or speed<=.5: kerb_hold = 0.0
+	if not grounded or speed<=.5 or desert: kerb_hold = 0.0
 	# Keep recorded rubber/body colour across speeds. Extreme resampling made
 	# slow kerbs sound like separate knocks and fast kerbs like a thin buzz.
 	_layer("kerb_roll",1.5*movement*(.25+rolling*.35)*sqrt(held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
@@ -398,6 +464,7 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	sand_frequency = lerpf(sand_frequency,0.94+clampf(speed/46.0,0.0,1.0)*0.14,1.0-exp(-dt*8.0))
 	# Keep terrain below the engine, including lift-off when the engine quiets.
 	var desert_gain: float = 0.16+load_blend*0.12
+	var sand_depth: float = surface_model.sand_depth if desert else 0.0
 	var scrub: float = TireAudio.scrub_amount(state) if not countdown else 0.0
 	var asphalt: float = scrub*surface_model.pavement*(1.0-clampf(surface_model.water,0.0,1.0)) if theme!="winter" and not desert else 0.0
 	# Desert replaces all tire/rolling beds immediately, including transition tails.
@@ -407,9 +474,11 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	_layer("road",rolling*0.13*surface_model.pavement*(1.0-surface_model.kerb),0.78+clampf(speed/46.0,0.0,1.0)*0.46,dt,tires_silent or theme=="storm" or surface_model.pavement==0.0 or speed<=0.4)
 	_layer("loose",movement*(0.10+rolling*0.25+scrub*0.15)*surface_model.gravel,0.82+clampf(speed/46.0,0,1)*0.28,dt,tires_silent or surface_model.gravel==0.0 or movement==0.0)
 	_layer("grass",_grass_gain(state,speed),_grass_pitch(speed),dt,tires_silent or surface_model.grass==0.0 or movement==0.0)
-	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain if desert else 1.0),sand_frequency*0.90 if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
-	_layer("sand",movement*(0.10+rolling*0.24+scrub*0.24+surface_model.drive*0.22)*surface_model.sand*(0.40*desert_gain if desert else 1.0),sand_frequency if desert else 0.86+clampf(speed/46.0,0,1)*0.20+surface_model.drive*0.06,dt,not sand_contact or movement==0.0)
-	_layer("sand_debris",movement*(0.12+rolling*0.30+scrub*0.16+surface_model.drive*0.24)*surface_model.sand*desert_gain,sand_frequency,dt,not desert or not sand_contact or movement==0.0)
+	# Softer, fuller tire rush in deep sand, with subdued stone detail. The
+	# existing loops blend smoothly instead of adding rhythmic event voices.
+	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain*(1.0+sand_depth*.45) if desert else 1.0),sand_frequency*(.90-sand_depth*.025) if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
+	_layer("sand",movement*(0.10+rolling*0.24+scrub*0.24+surface_model.drive*0.22)*surface_model.sand*((.40+sand_depth*.50)*desert_gain if desert else 1.0),sand_frequency*(1.0-sand_depth*.04) if desert else 0.86+clampf(speed/46.0,0,1)*0.20+surface_model.drive*0.06,dt,not sand_contact or movement==0.0)
+	_layer("sand_debris",movement*(0.12+rolling*0.30+scrub*0.16+surface_model.drive*0.24)*surface_model.sand*desert_gain*(1.0-sand_depth*.15),sand_frequency,dt,not desert or not sand_contact or movement==0.0)
 	# Fine sand/stone contacts merge into a steady noise bed in Desert.
 	# Do not punctuate it with the former distance-spaced pebble one-shots.
 	if desert:

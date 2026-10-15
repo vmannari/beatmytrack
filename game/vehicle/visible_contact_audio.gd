@@ -7,11 +7,24 @@ var sounded: bool = false
 var cue_requested: bool = false
 var normal := Vector2.ZERO
 const MAX_PROBES: int = 128
+const CACHE_BYTES: int = 1024 * 1024
+static var prepared_outlines: Array[Dictionary] = []
 
-func configure(car: Node3D) -> void:
+func configure(car: Node3D, prepared: bool = false) -> void:
 	var points := PackedVector2Array()
 	var inverse: Transform3D = car.global_transform.affine_inverse()
-	for node: Node in car.find_children("*","MeshInstance3D",true,false):
+	var parts: Array = car.find_children("*","MeshInstance3D",true,false)
+	var key: Array = [car.scale]
+	if prepared:
+		for node: MeshInstance3D in parts:
+			if node.mesh != null: key.append([node.mesh.get_instance_id(),inverse*node.global_transform])
+		for index: int in range(prepared_outlines.size()):
+			if prepared_outlines[index].key != key: continue
+			var entry: Dictionary = prepared_outlines.pop_at(index); prepared_outlines.append(entry)
+			outline = entry.outline
+			reset()
+			return
+	for node: Node in parts:
 		var part: MeshInstance3D = node as MeshInstance3D
 		if part.mesh==null: continue
 		var transform: Transform3D = inverse*part.global_transform
@@ -22,6 +35,13 @@ func configure(car: Node3D) -> void:
 				var local: Vector3 = transform*vertex
 				points.append(Vector2(local.x*car.scale.x,-local.z*car.scale.z))
 	outline = Geometry2D.convex_hull(points) if points.size()>2 else PackedVector2Array()
+	if prepared:
+		var bytes: int = var_to_bytes(key).size()+outline.size()*8+512
+		if bytes <= CACHE_BYTES:
+			var total: int = bytes
+			for entry: Dictionary in prepared_outlines: total += int(entry.bytes)
+			while not prepared_outlines.is_empty() and (prepared_outlines.size() >= 8 or total > CACHE_BYTES): total -= int(prepared_outlines.pop_front().bytes)
+			prepared_outlines.append({"key":key,"outline":outline,"bytes":bytes})
 	reset()
 
 func reset() -> void:
@@ -39,6 +59,7 @@ func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vecto
 	var contact_point := Vector2.ZERO
 	var forward: Vector2 = state.forward()
 	var right: Vector2 = state.right()
+	var span_index: int = CreatorBridges.span_at(track.creator_bridges,state.position) if state.track_elevated else -1
 	for index: int in range(outline.size()-1):
 		var a: Vector2 = outline[index]
 		var b: Vector2 = outline[index+1]
@@ -48,7 +69,7 @@ func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vecto
 			if count>MAX_PROBES: break
 			var local: Vector2 = a.lerp(b,float(step)/steps)
 			var point: Vector2 = state.position+right*local.x+forward*local.y
-			if track.cell_at(point,state.track_elevated)==4:
+			if _solid_at(state,track,point,span_index):
 				found = true
 				contact_point = point
 				break
@@ -67,7 +88,7 @@ func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vecto
 		var best: float = -INF
 		normal = Vector2.ZERO
 		for direction: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN]:
-			if track.cell_at(center+direction*track.cell_size,state.track_elevated)==4: continue
+			if _solid_at(state,track,center+direction*track.cell_size,span_index): continue
 			var facing: float = -incoming.dot(direction)
 			if facing>best:
 				best = facing
@@ -82,6 +103,28 @@ func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vecto
 		cue_requested = true
 		return normal*inward
 	return Vector2.ZERO
+
+func _solid_at(state: VehicleState, track: NativeTrack, point: Vector2, span_index: int) -> bool:
+	if track.cell_at(point,state.track_elevated)!=4: return false
+	var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
+	var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
+	var center := Vector2((x+.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+.5)*track.cell_size)
+	if state.track_elevated and span_index>=0:
+		# Match the resolver's supporting-span guard. A nearby disconnected
+		# bridge rail cannot hit a car still leaving its own low ramp.
+		return CreatorBridges.contains(track.creator_bridges[span_index],center) or CreatorBridges.shares_span(track.creator_bridges,state.position,center)
+	if not state.track_elevated:
+		for span: Dictionary in track.creator_bridges:
+			var local: Vector2 = CreatorBridges.local_point(span,state.position)
+			if local.x>=0.0 and local.x<=float(span.length): continue
+			if absf(local.y)>float(span.width)*.5: continue
+			var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
+			if absf(state.forward().dot(axis))<=.75: continue
+			# The visible nose/rear can already be on the sloping road while
+			# the centre is outside its mouth. Its low underside is not a wall.
+			var on_ramp: Vector2 = CreatorBridges.local_point(span,center)
+			if on_ramp.x>=0.0 and on_ramp.x<=float(span.length) and absf(on_ramp.y)<=float(span.width)*.5 and track.cell_at(center,true)==0: return false
+	return true
 
 func duplicate_physical(impulse: Vector2) -> bool:
 	return touching and sounded and impulse.normalized().dot(normal)>.65

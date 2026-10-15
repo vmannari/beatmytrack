@@ -6,7 +6,8 @@ extends Node3D
 const CAPACITY: int = 16384
 const SAMPLE_DISTANCE: float = 0.32
 const MAX_SEGMENT_LENGTH: float = 1.5
-const DESERT_COMPACTION_TONE: float = 0.92
+const GRASS_SOIL_PIGMENT: Color = Color(0.32, 0.205, 0.11, 1.0)
+const ROAD_MUD_PIGMENT: Color = Color(0.43, 0.29, 0.15, 1.0)
 var instances: MultiMesh
 var trail_visibility: TrailVisibility
 var mark_colors := PackedColorArray()
@@ -75,9 +76,13 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, world_vertex_coords;
 #include "res://vehicle/dust_bridge_clip.gdshaderinc"
 uniform bool desert_sand_trails = false;
-uniform vec4 desert_sand_pigment : source_color = vec4(0.60,0.48,0.31,1.0);
+uniform vec4 desert_sand_pigment : source_color = vec4(0.67451,0.54510,0.35294,1.0);
+uniform vec4 grass_soil_pigment : source_color = vec4(0.32,0.205,0.11,1.0);
+uniform vec4 road_mud_pigment : source_color = vec4(0.43,0.29,0.15,1.0);
 
 varying float loose_surface;
+varying float grass_rut;
+varying float road_mud;
 varying float sand_pressure;
 varying float ice_scuff;
 varying vec3 ice_contact_normal;
@@ -93,7 +98,10 @@ float hash21(vec2 p) {
 }
 
 void vertex() {
-	loose_surface = INSTANCE_CUSTOM.b;
+	// Loose surfaces retain 1; road mud uses the otherwise-unused 0..0.49 range.
+	loose_surface = step(0.5,INSTANCE_CUSTOM.b);
+	road_mud = (1.0-loose_surface)*INSTANCE_CUSTOM.b;
+	grass_rut = 1.0-step(0.005,abs(INSTANCE_CUSTOM.r-0.1));
 	sand_pressure = mix(INSTANCE_CUSTOM.g,INSTANCE_CUSTOM.a,UV.y);
 	ice_scuff = 1.0-smoothstep(0.005,0.015,abs(INSTANCE_CUSTOM.r-0.8));
 	// The two side columns carry the start/end cross-sections, not a rigid
@@ -112,6 +120,7 @@ void vertex() {
 	// rather than per fragment. COLOR.a retains the approved average pigment.
 	float mean_pressure = (INSTANCE_CUSTOM.g+INSTANCE_CUSTOM.a)*0.5;
 	float hard = float(abs(INSTANCE_CUSTOM.r)<0.015 || abs(INSTANCE_CUSTOM.r-0.5)<0.015 || abs(INSTANCE_CUSTOM.r-0.8)<0.015 || abs(INSTANCE_CUSTOM.r-0.9)<0.015);
+	hard *= float(road_mud == 0.0);
 	float endpoint_opacity = mix(mix(0.12,1.0,sand_pressure),0.02+0.98*pow(sand_pressure,1.7),hard);
 	float mean_opacity = mix(mix(0.12,1.0,mean_pressure),0.02+0.98*pow(mean_pressure,1.7),hard);
 	pressure_alpha = endpoint_opacity / max(mean_opacity,0.001);
@@ -133,24 +142,20 @@ void fragment() {
 	float asphalt_tone = asphalt_streaks * mix(0.88, 1.08, asphalt_grain);
 	float tone = mix(asphalt_tone, loose_tone, loose_surface);
 	// Analytic rounded groove replaces ten faceted triangles. The contact normal
-	// still follows the bridge slope; sand and ice retain their approved lighting.
+	// still follows the bridge slope; both biomes' sand shares this groove shading.
 	float rise = clamp((across-0.20)/0.45,0.0,1.0);
 	float fall = clamp((across-0.65)/0.35,0.0,1.0);
 	float rut_slope = sign(UV.x-0.5)*rut_ratio*9.84*(rise*(1.0-rise)/0.45-fall*(1.0-fall)/0.35);
 	NORMAL = normalize(ice_contact_normal-trail_lateral_normal*rut_slope);
 	if (desert_sand_trails && loose_surface > 0.5) {
-		// Pressed sand has quiet tread values, rather than dark rubber ribs.
-		tone = mix(0.95,1.01,tread)-center_press*0.02+shoulder*0.025;
-		// Rolling stays quiet; a heavy brake/slide leaves visible compaction.
-		tone *= mix(1.0,0.82,smoothstep(0.45,0.95,sand_pressure));
-		// Match the road/contact light response. The narrow rut's angled
-		// faces otherwise become dark lines under the desert sun.
-		NORMAL = ice_contact_normal;
+		// Retain matte sand while sharing Grass-biome sand's tread and relief.
 		SPECULAR = 0.0;
 	}
 	float chipped_edge = mix(1.0, smoothstep(0.18, 0.62, grain + (1.0 - across) * 0.72), loose_surface * smoothstep(0.76, 1.0, across));
 	float feather = 1.0 - smoothstep(0.72, 1.0, across);
 	ALBEDO = COLOR.rgb * tone;
+	if (grass_rut > 0.5) { ALBEDO = grass_soil_pigment.rgb * tone; }
+	if (road_mud > 0.0) { ALBEDO = road_mud_pigment.rgb * tone; }
 	if (desert_sand_trails && loose_surface > 0.5) { ALBEDO = desert_sand_pigment.rgb * tone; }
 	ROUGHNESS = 1.0;
 	if (ice_scuff > 0.5) {
@@ -165,7 +170,9 @@ void fragment() {
 	var material := ShaderMaterial.new()
 	material.shader = shader
 	material.set_shader_parameter("desert_sand_trails",desert_sand)
-	material.set_shader_parameter("desert_sand_pigment",TrackTheme.DESERT[0]*DESERT_COMPACTION_TONE)
+	material.set_shader_parameter("desert_sand_pigment",TrackTheme.DESERT[0])
+	material.set_shader_parameter("grass_soil_pigment",GRASS_SOIL_PIGMENT)
+	material.set_shader_parameter("road_mud_pigment",ROAD_MUD_PIGMENT)
 	return material
 
 
@@ -349,7 +356,8 @@ func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength
 	if wheel >= 0:
 		# Reuse the deposited endpoint directly. Each new segment owns its end;
 		# the next consumes it, with no uploads or edits to older ring entries.
-		var material_type: int = surface_kind*4+int(dirt>0.025)+(2 if desert_sand else 0)
+		var coated: bool = dirt > 0.0 if surface_kind in [0,9] else dirt > 0.025
+		var material_type: int = surface_kind*4+int(coated)+(2 if desert_sand else 0)
 		var old_side: Vector3 = _previous_sides[wheel]
 		if _previous_marks[wheel] >= 0 and _previous_marks[wheel] != cursor and _previous_types[wheel] == material_type and _previous_ends[wheel].distance_squared_to(a) < 0.000001 and old_side.dot(side) > old_side.length()*0.25:
 			start_side = old_side
@@ -363,6 +371,7 @@ func _mark(a: Vector3, b: Vector3, dirt: float, surface_kind: int = -1, strength
 	mark_transforms[cursor] = Transform3D(basis,(a+b)*0.5)
 	mark_colors[cursor] = tint
 	var loose: float = 1.0 if surface_kind in [1,2,7,10] else 0.0
+	if surface_kind in [0,9]: loose = clampf(dirt,0.0,1.0)*0.49
 	mark_custom[cursor] = Color(float(surface_kind)/10.0,strength if start_strength < 0.0 else start_strength,loose,strength if end_strength < 0.0 else end_strength)
 	if trail_visibility.active:
 		trail_visibility.record(cursor,mark_colors,mark_custom)
@@ -380,7 +389,7 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool 
 	# the canonical tire-cleaning state.
 	var result: Vector4
 	match kind:
-		1: result = Vector4(0.23, 0.285, 0.125, 0.60) # Dark brown-green crushed grass.
+		1: result = Vector4(GRASS_SOIL_PIGMENT.r, GRASS_SOIL_PIGMENT.g, GRASS_SOIL_PIGMENT.b, 0.60) # Warm brown soil exposed through crushed grass.
 		2: result = Vector4(0.68, 0.53, 0.32, 0.52) # Compressed dirt or sand groove.
 		3, 6: result = Vector4(0.12, 0.18, 0.19, 0.42) # Thin wet wake.
 		5: result = Vector4(0.16, 0.17, 0.16, 0.50) # Rubber on painted kerb.
@@ -390,13 +399,18 @@ func _surface_style(kind: int, dirt: float, strength: float = 1.0, desert: bool 
 		11: result = Vector4(0.38,0.51,0.59,0.32) # Wet slush wake.
 		9: result = Vector4(0.07, 0.10, 0.105, 0.48) # Damp rubber on storm asphalt.
 		0:
-			result = Vector4(0.43, 0.29, 0.15, 0.62) if dirt > 0.025 else Vector4(0.12, 0.115, 0.105, 0.46)
+			result = Vector4(0.12, 0.115, 0.105, 0.46)
 		_:
 			result = Vector4(0.49, 0.34, 0.18, 0.78) if dirt > 0.025 else Vector4(0.10, 0.11, 0.105, 0.70)
+	var muddy_road: bool = kind in [0,9] and dirt > 0.0
+	if muddy_road:
+		# Fresh deposits fade all the way to zero with the coating, including
+		# during heavy braking/slip. Existing deposited marks remain immutable.
+		result = Vector4(ROAD_MUD_PIGMENT.r,ROAD_MUD_PIGMENT.g,ROAD_MUD_PIGMENT.b,0.62*clampf(dirt,0.0,1.0))
 	if kind == 2 and desert:
-		var sand: Color = TrackTheme.DESERT[0]*DESERT_COMPACTION_TONE
-		result = Vector4(sand.r,sand.g,sand.b,0.24) # Quiet compaction in the road's warm sand hue.
-	if kind in [0,5,8,9]: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
+		var sand: Color = TrackTheme.DESERT[0]
+		result = Vector4(sand.r,sand.g,sand.b,0.52) # Shared sand opacity in the exact desert road pigment.
+	if kind in [0,5,8,9] and not muddy_road: result.w *= 0.02+0.98*pow(clampf(strength,0.0,1.0),1.7)
 	else: result.w *= lerpf(0.12, 1.0, clampf(strength, 0.0, 1.0))
 	return result
 

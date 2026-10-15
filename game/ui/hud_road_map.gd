@@ -50,15 +50,15 @@ func _rebuild_roads() -> void:
 	road_layer.queue_redraw()
 	queue_redraw()
 
+func _marker_position() -> Vector2:
+	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
+	return (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
+
 func _draw() -> void:
 	if outlines.is_empty(): return
 	var marker: Vector2 = _marker_position()
 	draw_circle(marker,5,Color("f1eee3"))
 	draw_circle(marker,3.5,Color("55a9d9"))
-
-func _marker_position() -> Vector2:
-	var offset: Vector2 = (player-world_bounds.get_center())*cached_scale
-	return (size*0.5+Vector2(offset.x,-offset.y)).clamp(Vector2(6,6),size-Vector2(6,6))
 
 func configure(track: NativeTrack, authored: bool) -> void:
 	outlines.clear()

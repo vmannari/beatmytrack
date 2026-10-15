@@ -1,0 +1,505 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3258,6 +3258,7 @@
+ 	var effect_counts: Dictionary = {"particles":prepared_effects.particles,"batches":prepared_effects.batches,"damage_meshes":prepared_effects.damage_meshes,"canvas":prepared_effects.canvas}
+ 	var preparation_started: int = Time.get_ticks_usec()
+ 	var finish_drawn: bool = await _present_race_loading()
++	var night_preparation: Dictionary = await _prepare_night_lighting(loading_id, prepared_game)
+ 	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+ 		prepared_personal_ghost.transform = ghost_pose
+ 		prepared_personal_ghost.visible = ghost_visible
+@@ -3269,11 +3270,23 @@
+ 	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
+ 	# Always restore after the bounded draw wait, including cancellation/focus loss.
+ 	prepared_finish.end_render_warmup()
+-	if finish_warmed and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
++	if finish_warmed and night_preparation.contexts > 0:
++		# Clean and weathered car materials can have separate shader RIDs.
++		var clean_night: Dictionary = await _prepare_night_lighting(loading_id, prepared_game)
++		night_preparation.drawn = night_preparation.drawn and clean_night.drawn
++		night_preparation.contexts += clean_night.contexts
++		night_preparation.sets += clean_night.sets
++		night_preparation.elapsed_ms += clean_night.elapsed_ms
++		night_preparation.truncated = maxi(night_preparation.truncated, clean_night.truncated)
++		night_preparation.light_limit = night_preparation.light_limit or clean_night.light_limit
++	if (finish_warmed or night_preparation.contexts > 0) and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
+ 		game.call("_process", 0.0)
+ 		# The exact clean/livery finish is visible before releasing the loading cover.
+ 		await _present_race_loading()
+-	if not _race_loading_matches(loading_id): return
++	if not _race_loading_matches(loading_id):
++		if is_instance_valid(prepared_game) and game == prepared_game and prepared_game.process_mode == Node.PROCESS_MODE_DISABLED:
++			_leave_race()
++		return
+ 	if not is_instance_valid(prepared_game) or game != prepared_game:
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+@@ -3291,12 +3304,37 @@
+ 	game.set("trails_prepared", finish_drawn and trail_warmed)
+ 	game.set("effects_prepared", finish_drawn and effect_counts.particles > 0)
+ 	game.set("effect_preparation_counts",effect_counts)
++	game.set("night_preparation",night_preparation)
+ 	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
+ 	game.set("bridge_preparation_ms", preparation_ms)
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+ 	_telemetry_begin_attempt(track)
+ 	cloud_starting = false
+ 	_close_race_loading(loading_id)
++
++func _prepare_night_lighting(loading_id: int, prepared_game: Node) -> Dictionary:
++	var summary: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
++	if DisplayServer.get_name() == "headless" or RenderingServer.get_current_rendering_method() != "gl_compatibility": return summary
++	if not _race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or game != prepared_game: return summary
++	var track: NativeTrack = prepared_game.get("native_track")
++	if track == null or track.metadata.get("theme", "pine") != "night_city": return summary
++	var preparation = preload("res://track/night_render_preparation.gd")
++	var started: int = Time.get_ticks_usec()
++	var prepared: Dictionary = preparation.begin(prepared_game.get_node("World"), prepared_game.get("camera"))
++	summary.items = prepared.items
++	summary.truncated = prepared.truncated
++	summary.light_limit = prepared.light_limit
++	if prepared.nodes.size() == 2:
++		for context: int in range(preparation.CONTEXTS):
++			if not _race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or game != prepared_game: break
++			preparation.set_context(prepared, context)
++			if not await _present_race_loading(): break
++			summary.contexts += 1
++		summary.drawn = summary.contexts == preparation.CONTEXTS
++		summary.sets = 1
++	preparation.end(prepared)
++	summary.elapsed_ms = (Time.get_ticks_usec() - started) / 1000.0
++	return summary
+ 
+ func _edit_here(position: Vector2) -> void:
+ 	_leave_race()
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -136,6 +136,7 @@
+ var trails_prepared: bool = false
+ var effects_prepared: bool = false
+ var effect_preparation_counts: Dictionary = {}
++var night_preparation: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+ var hitch_diagnostics_enabled: bool = true
+ var hitch_diagnostics: Node
+ var profile_skip_telemetry: bool = false
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -107,6 +107,7 @@
+ 	row.bridge_preparation = {"drawn": bool(game.get("bridge_prepared")), "meshes": int(game.get("bridge_preparation_meshes")), "shared_draw_ms": float(game.get("bridge_preparation_ms"))}
+ 	row.hazard_preparation = {"drawn": bool(game.get("hazards_prepared")), "meshes": int(game.get("hazard_preparation_meshes"))}
+ 	row.trails_prepared = bool(game.get("trails_prepared"))
++	row.night_preparation = game.get("night_preparation").duplicate()
+ 	row.effect_preparation = {"drawn":bool(game.get("effects_prepared")),"counts":game.get("effect_preparation_counts").duplicate()}
+ 	row.previous_bridge_context = _bridge_context
+ 	var track: NativeTrack = game.get("native_track")
+@@ -148,6 +149,8 @@
+ 		else:
+ 			var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node.multimesh != null else null
+ 			var materials: Array[String] = []
++			var shader_rids: Array[int] = []
++			var shader_sources: Array[String] = []
+ 			if mesh != null:
+ 				for index: int in range(mini(4, mesh.get_surface_count())):
+ 					var material: Material = node.material_override if node.material_override != null else node.get_active_material(index) if node is MeshInstance3D else mesh.surface_get_material(index)
+@@ -155,10 +158,16 @@
+ 					var key: String = str(material.get_class())
+ 					if material is ShaderMaterial and material.shader != null:
+ 						key += ":" + material.shader.resource_path + ":" + material.shader.code.sha256_text()
++						var shader_rid: int = material.shader.get_rid().get_id()
++						if shader_rid not in shader_rids: shader_rids.append(shader_rid)
++						var source: String = material.shader.resource_path
++						var dynamic: Variant = material.get_meta("surface_dynamic_material") if material.has_meta("surface_dynamic_material") else null
++						if source.is_empty() and dynamic is ShaderMaterial and dynamic.shader != null: source = dynamic.shader.resource_path
++						if not source.is_empty() and source not in shader_sources: shader_sources.append(source)
+ 					elif material is BaseMaterial3D:
+ 						key += ":shade%d/diff%d/spec%d/alpha%d/cull%d/tex%d/normal%d/emission%d/coat%d/vertex%d" % [material.shading_mode, material.diffuse_mode, material.specular_mode, material.transparency, material.cull_mode, int(material.albedo_texture != null), int(material.normal_enabled), int(material.emission_enabled), int(material.clearcoat_enabled), int(material.vertex_color_use_as_albedo)]
+ 					if key not in materials: materials.append(key)
+-			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials})
++			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials, "shader_rids":shader_rids, "shader_sources":shader_sources})
+ 			_render_items.append(node)
+ 			if node.is_in_group("race_bridge_rendering"): _bridge_items.append(_render_items.size() - 1)
+ 	for child: Node in node.get_children(): _collect_render_items(child)
+--- a/game/tests/test_race_hitch_monitor.gd
++++ b/game/tests/test_race_hitch_monitor.gd
+@@ -134,6 +134,8 @@
+ 	monitor._process(0.0)
+ 	check(monitor.latest.effects.tyre_emitters_active_mask == 1 and monitor.latest.effects.spray_emitters_active_mask == 2, "individual cloud and spray activation is identifiable")
+ 	check(monitor.header.render_items.size() > 0 and monitor.header.render_items.size() <= monitor.MAX_RENDER_ITEMS and monitor.latest.previous_render_context.candidate_ids.size() <= monitor.MAX_RENDER_ITEMS, "render inventory and frustum candidates stay bounded")
++	check(monitor.header.render_items.all(func(item: Dictionary) -> bool: return item.shader_rids.size() <= 4 and item.shader_sources.size() <= 4), "shader identity and original source descriptions retain the four-role bound")
++	check(monitor.latest.night_preparation.contexts == 0 and not monitor.latest.night_preparation.drawn, "capture reports when Night lighting contexts have not been prepared")
+ 	check(monitor.latest.previous_render_context.sampling_ms >= 0 and monitor.latest.previous_render_context.width > 0 and monitor.latest.motion.jump_height == game.sim.state.jump_height, "render context and jump state are observed")
+ 	var bridge_probe := MeshInstance3D.new()
+ 	bridge_probe.name = "DiagnosticBridge"
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,6 +1,8 @@
+ 2026-10-14 CGR05-CGR08/V04-V06/G01/R01/Q01: owner rejects grille and supplies classic-front reference. Wide984mm real mouth, six slender metal ribs/48 closed cast uprights, thin rolled edging and one sealed-beam lamp per side with actual reflector/shield/fluted glass. Original indicators/night beam/kits/paint/condition/prepared restore/camera/reflections/canonical retained. Geometry272/catalog1543/models85+85/headlights81/kit workflow346+346 pass;22final native views,86kit+49compact photos. Stock101660/39756; catalog166016/64740, grille1538 below1600;49full/49simple/24other shadows exact. Final reflections25+25/parser758 pass; initial unrelated records dependency resolved without task edits. No phone/APK/deploy/FPS/AAA certification claim. Evidence and task-only checkpoint: docs/COMPACT_GRILLE_REFERENCE_2026_10_14.md.
+ 
+ 2026-10-14 PD01-PD03/R01/V05/Q01: owner phone deployment with drivable tracks. Fresh pinned APK14542413 installed/hash-verified on DN2103;27 current published documents validate closed routes/starts/native compilation and copy into offline Free Race with exact hashes. Nine outdated phone drafts replaced by their current repaired versions with old-copy backups; all9 actual saved Test drive actions start in isolated desktop checks. Physical short driving14/14 passes across all5biomes/1448.7m; owner stops remaining13 checks. Both phone record/condition files restored hash-exact, diagnostic markers/staging removed, normal Guest Free Race restored. PC originals/6 retired files/runtime/backend/competitive scores retained; no full-lap/FPS/thermal/physical-multitouch or backend rollout claim. Actual commands/scoped checkpoint/evidence: docs/PHONE_DRIVE_DEPLOY_2026_10_14.md.
++
++2026-10-14 NH01-NH03/Q01/G01/R01: owner Night/Easy night capture has8 early driving hitches101.867-458.944ms, predominantly rendering; prior finish/tire/effects prepared and no bridges/hazards. Exact-track frozen probe239.019ms first pass/8.279ms repeat;70 terrain sections share one Shader RID. Four covered Compatibility Omni/Spot presence contexts move work into loading, then first/repeat region maxima8.269/8.468ms; clean/weathered finish contexts and cancellation restore exact state. Night19Compatibility/14Mobile/13headless, hitch47+47, parse758, non-Night loading26headless/27graphical pass; first Mobile shutdown hang passed isolated retry, unrelated mesh-normal graphical error retained. No native live stack/general hitch-free claim or phone/APK/deploy/full Validate. See docs/NIGHT_HITCH_2026_10_14.md for actual captures, commands, limits and scoped checkpoint.
+ 
+ 2026-10-14 DSND01-DSND03/SND12/SND13/G01/R01/Q01: owner rejects hard kerb thuds in Desert. Both observer entry events and repeating rumble excluded; same four contacts add presentation-only depth for soft fuller rolling/spray and subdued grains using the original loops. Grass kerbs/crashes/gears/landings, 23 players/24MiB cache, all118 bank hashes and canonical driving retained. Final dedicated72+72/native zero hard-rumble+pause/no-clipping, Desert25/Grass76/continuous28/vehicle1469/parser758 pass. First restricted startup, dummy-output pause failure and initial weak blend retained; no assertion weakened. Desktop sand12.89-14.35dB below engine; no phone/APK/deploy/performance or subjective-listening claim. Actual commands/recordings/scoped checkpoint and owner-phone acceptance: docs/DESERT_SOFT_SAND_AUDIO_2026_10_14.md.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,6 +1,8 @@
+ 2026-10-14 CGR05-CGR08/V04-V06/G01/R01/Q01: reference-led compact front, wide recessed984mm grille/six slender ribs/48 closed uprights/rolled edge, paired sealed-beam optics. Retain kits/IDs/pigments/local condition/prepared restoration/night beam/camera/reflections/canonical behavior. Geometry272/catalog1543/models85+85/lights81/kit346+346 pass;22native views and135 refreshed bounded photos. Catalog166016/64740, grille1538below1600; Final reflections25+25/parser758 pass after the unrelated records dependency update. Owner/phone quality acceptance remains, no APK/deploy/FPS or AAA certification claim. Actual outcomes/receipts/task-only checkpoint: docs/COMPACT_GRILLE_REFERENCE_2026_10_14.md.
+ 
+ 2026-10-14 PD01-PD03/R01/V05/Q01: owner phone deployment with drivable tracks. Fresh pinned APK14542413 installed/hash-verified on DN2103;27 current published documents validate closed routes/starts/native compilation and copy into offline Free Race with exact hashes. Nine outdated phone drafts replaced by their current repaired versions with old-copy backups; all9 actual saved Test drive actions start in isolated desktop checks. Physical short driving14/14 passes across all5biomes/1448.7m; owner stops remaining13 checks. Both phone record/condition files restored hash-exact, diagnostic markers/staging removed, normal Guest Free Race restored. PC originals/6 retired files/runtime/backend/competitive scores retained; no full-lap/FPS/thermal/physical-multitouch or backend rollout claim. Actual commands/scoped checkpoint/evidence: docs/PHONE_DRIVE_DEPLOY_2026_10_14.md.
++
++2026-10-14 NH01-NH03/Q01/G01/R01: owner Night/Easy night capture has8 early driving hitches101.867-458.944ms, predominantly rendering; prior finish/tire/effects prepared and no bridges/hazards. Exact-track frozen probe239.019ms first pass/8.279ms repeat;70 terrain sections share one Shader RID. Four covered Compatibility Omni/Spot presence contexts move work into loading, then first/repeat region maxima8.269/8.468ms; clean/weathered finish contexts and cancellation restore exact state. Night19Compatibility/14Mobile/13headless, hitch47+47, parse758, non-Night loading26headless/27graphical pass; first Mobile shutdown hang passed isolated retry, unrelated mesh-normal graphical error retained. No native live stack/general hitch-free claim or phone/APK/deploy/full Validate. See docs/NIGHT_HITCH_2026_10_14.md for actual captures, commands, limits and scoped checkpoint.
+ 
+ 2026-10-14 DSND01-DSND03/SND12/SND13/G01/R01/Q01: owner rejects hard kerb thuds in Desert. Both observer entry events and repeating rumble excluded; same four contacts add presentation-only depth for soft fuller rolling/spray and subdued grains using the original loops. Grass kerbs/crashes/gears/landings, 23 players/24MiB cache, all118 bank hashes and canonical driving retained. Final dedicated72+72/native zero hard-rumble+pause/no-clipping, Desert25/Grass76/continuous28/vehicle1469/parser758 pass. First restricted startup, dummy-output pause failure and initial weak blend retained; no assertion weakened. Desktop sand12.89-14.35dB below engine; no phone/APK/deploy/performance or subjective-listening claim. Actual commands/recordings/scoped checkpoint and owner-phone acceptance: docs/DESERT_SOFT_SAND_AUDIO_2026_10_14.md.
+ 
+--- /dev/null
++++ b/game/track/night_render_preparation.gd
+@@ -0,0 +1,65 @@
++extends RefCounted
++## Night's local-light presence selects GLES shader variants at draw time.
++## Prepare all four presence combinations under the existing loading cover.
++const MAX_ITEMS: int = 1024
++const MAX_LIGHTS: int = 64
++const CONTEXTS: int = 4
++
++static func begin(world: Node3D, camera: Camera3D) -> Dictionary:
++	var result: Dictionary = {"geometry":[],"lights":[],"nodes":[],"items":0,"truncated":0,"light_limit":false}
++	if world == null or camera == null or DisplayServer.get_name() == "headless" or RenderingServer.get_current_rendering_method() != "gl_compatibility": return result
++	for node: Node in world.find_children("*", "Light3D", true, false):
++		if not node is OmniLight3D and not node is SpotLight3D: continue
++		if result.lights.size() == MAX_LIGHTS:
++			# Do not partially change the lighting context of an unusually large scene.
++			result.light_limit = true
++			result.lights.clear()
++			return result
++		result.lights.append({"node":node,"visible":node.visible})
++	for node: Node in world.find_children("*", "GeometryInstance3D", true, false):
++		if not node.is_visible_in_tree(): continue
++		if result.geometry.size() == MAX_ITEMS:
++			result.truncated += 1
++			continue
++		var geometry: GeometryInstance3D = node
++		var local_camera: Vector3 = geometry.to_local(camera.global_position)
++		var distance: Vector3 = (local_camera-geometry.get_aabb().get_center()).abs()
++		result.geometry.append({"node":geometry,"margin":geometry.extra_cull_margin})
++		geometry.extra_cull_margin = maxf(geometry.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+2.0)
++	result.items = result.geometry.size()
++	if result.items == 0: return result
++	var omni := OmniLight3D.new()
++	omni.name = "CoveredNightOmni"
++	omni.omni_range = 0.5
++	var spot := SpotLight3D.new()
++	spot.name = "CoveredNightSpot"
++	spot.spot_range = 0.5
++	spot.spot_angle = 60.0
++	for light: Light3D in [omni,spot]:
++		light.light_energy = 0.01
++		light.light_cull_mask = 0xFFFFF
++		light.shadow_enabled = false
++		light.visible = false
++		world.add_child(light)
++		light.global_transform = camera.global_transform
++		result.nodes.append(light)
++	for entry: Dictionary in result.lights: entry.node.visible = false
++	return result
++
++static func set_context(prepared: Dictionary, index: int) -> void:
++	if prepared.nodes.size() != 2: return
++	# Bounded artificial lights meet the expanded culling boxes at the camera;
++	# actual vertices, lamp properties and the gameplay camera are untouched.
++	prepared.nodes[0].visible = (index & 1) != 0
++	prepared.nodes[1].visible = (index & 2) != 0
++
++static func end(prepared: Dictionary) -> void:
++	for entry: Dictionary in prepared.geometry:
++		if is_instance_valid(entry.node): entry.node.extra_cull_margin = entry.margin
++	for entry: Dictionary in prepared.lights:
++		if is_instance_valid(entry.node): entry.node.visible = entry.visible
++	for node in prepared.nodes:
++		if is_instance_valid(node): node.free()
++	prepared.geometry.clear()
++	prepared.lights.clear()
++	prepared.nodes.clear()
+--- /dev/null
++++ b/game/track/night_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://cdft6nl2dsa7b
+--- /dev/null
++++ b/game/tests/profile_night_first_use.gd
+@@ -0,0 +1,87 @@
++extends SceneTree
++const NightPreparation = preload("res://track/night_render_preparation.gd")
++## Exact public Night track, frozen simulation and disposable local records.
++var game: Node
++var rows: Array[Dictionary] = []
++var draw_start: int = 0
++var draw_us: int = 0
++func _initialize() -> void: run.call_deferred()
++func pre_draw() -> void: draw_start = Time.get_ticks_usec()
++func post_draw() -> void: draw_us = Time.get_ticks_usec() - draw_start
++func frames(count: int) -> void:
++	for index: int in range(count): await RenderingServer.frame_post_draw
++func run() -> void:
++	if DisplayServer.get_name() == "headless": quit(1); return
++	root.size = Vector2i(1280, 720)
++	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/night-hitch-2026-10-14")
++	var document: Dictionary = TrackLibrary.new().import_document(ProjectSettings.globalize_path("res://../build/night-hitch-2026-10-14/track.json"))
++	var track: NativeTrack = TrackCompiler.compile(document)
++	game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.production_mode = true
++	game.preference_records = LocalRecords.new(ProjectSettings.globalize_path("res://../build/night-hitch-2026-10-14/disposable-records.json"))
++	root.add_child(game)
++	game.paused = true
++	game.hitch_diagnostics.persist_enabled = false
++	game.call("_process", 0.0)
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	var state: Dictionary = RewindHistory.properties(game.sim.state)
++	var condition: Dictionary = game.car_weathering.snapshot()
++	var roles: Dictionary = {}
++	for node: Node in game.get_node("World").find_children("*", "MeshInstance3D", true, false):
++		var material: Material = node.material_override
++		if not material is ShaderMaterial: continue
++		var key: String = material.shader.code.sha256_text()
++		if not roles.has(key): roles[key] = {"meshes":0,"shader_ids":[],"material_ids":[],"source":material.shader.resource_path}
++		roles[key].meshes += 1
++		if material.shader.get_rid().get_id() not in roles[key].shader_ids: roles[key].shader_ids.append(material.shader.get_rid().get_id())
++		if material.get_rid().get_id() not in roles[key].material_ids: roles[key].material_ids.append(material.get_rid().get_id())
++	RenderingServer.frame_pre_draw.connect(pre_draw)
++	RenderingServer.frame_post_draw.connect(post_draw)
++	await frames(60)
++	var preparation: Array[Dictionary] = []
++	if "--warm" in OS.get_cmdline_user_args():
++		var prepared: Dictionary = NightPreparation.begin(game.get_node("World"),game.camera)
++		for index: int in range(NightPreparation.CONTEXTS):
++			NightPreparation.set_context(prepared,index)
++			var started: int = Time.get_ticks_usec()
++			await frames(2)
++			preparation.append({"context":index,"elapsed_ms":(Time.get_ticks_usec()-started)/1000.0,"last_draw_ms":draw_us/1000.0,"items":prepared.items})
++		NightPreparation.end(prepared)
++		await frames(4)
++	var camera: Camera3D = game.camera
++	var pose: Transform3D = camera.transform
++	var car_pose: Transform3D = game.car.transform
++	var start: Vector3 = game.car.position
++	var indices: Array[int] = []
++	var live: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("race-1792001705-19920-2419928861447.json")))
++	for event: Dictionary in live.events:
++		var index: int = event.frame.route_index
++		for offset: int in [-6, 0, 6]:
++			var selected: int = posmod(index + offset, track.route.size())
++			if selected not in indices: indices.append(selected)
++	for pass_index: int in range(2):
++		for index: int in indices:
++			var point: Vector2 = track.route[index]
++			var shift: Vector3 = VisualGeometry.world(point) - start
++			camera.transform = pose
++			camera.position += shift
++			game.car.transform = car_pose
++			game.car.position += shift
++			for frame: int in range(4):
++				var started: int = Time.get_ticks_usec()
++				await RenderingServer.frame_post_draw
++				rows.append({"pass":pass_index,"route_index":index,"frame":frame,"frame_ms":(Time.get_ticks_usec()-started)/1000.0,"draw_ms":draw_us/1000.0})
++	var report: Dictionary = {"renderer":RenderingServer.get_current_rendering_method(),"track_hash":track.content_hash,"matches_live_track":track.content_hash=="9762bcaabbc226d7f18e45769207f9e8bcd0d43e82041cc7ce0de2189e03a391","roles":roles,"rows":rows,"preparation":preparation,"canonical_exact":RewindHistory.properties(game.sim.state)==state,"condition_exact":game.car_weathering.snapshot()==condition,"countdown_ticks":game.countdown_ticks}
++	var file := FileAccess.open(folder.path_join("night-probe-%d.json" % OS.get_process_id()),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"));file.close()
++	var first_max: float = 0.0
++	var repeat_max: float = 0.0
++	for row: Dictionary in rows:
++		if row.pass == 0: first_max = maxf(first_max, row.draw_ms)
++		else: repeat_max = maxf(repeat_max, row.draw_ms)
++	print("NIGHT_FIRST_USE ",JSON.stringify({"matched":report.matches_live_track,"first_max_draw_ms":first_max,"repeat_max_draw_ms":repeat_max,"shader_roles":roles.size(),"preparation":preparation,"canonical_exact":report.canonical_exact,"condition_exact":report.condition_exact,"countdown":game.countdown_ticks}))
++	camera.transform = pose
++	game.car.transform = car_pose
++	game.free()
++	quit(0 if report.matches_live_track and report.canonical_exact and report.condition_exact else 1)
+--- /dev/null
++++ b/game/tests/profile_night_first_use.gd.uid
+@@ -0,0 +1 @@
++uid://w00mgu463oro
+--- /dev/null
++++ b/game/tests/test_night_render_preparation.gd
+@@ -0,0 +1,122 @@
++extends SceneTree
++const Preparation = preload("res://track/night_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String
++class ProbeApp extends "res://core/app.gd":
++	var cancel_night: bool = false
++	func _prepare_night_lighting(loading_id: int, prepared_game: Node) -> Dictionary:
++		if cancel_night:
++			cancel_night = false
++			_show_screen.call_deferred("tracks")
++		return await super._prepare_night_lighting(loading_id,prepared_game)
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func frames(count: int = 4) -> void:
++	for index: int in range(count):
++		if DisplayServer.get_name() == "headless": await process_frame
++		else: await RenderingServer.frame_post_draw
++func fixture() -> NativeTrack:
++	var document: Dictionary = TrackDocument.create_default()
++	document.theme = "night_city"
++	for point: Vector2 in [Vector2(-20,10),Vector2(20,-10)]:
++		document.objects.append({"kind":"light","position":[point.x,point.y],"rotation":0.0,"scale":1.0})
++	return TrackCompiler.compile(document)
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../docs/evidence/night-hitch-2026-10-14/preparation-"+RenderingServer.get_current_rendering_method()+"-"+DisplayServer.get_name())
++	DirAccess.make_dir_recursive_absolute(output)
++	var track: NativeTrack = fixture()
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.production_mode = true
++	game.preference_records = LocalRecords.new(output.path_join("disposable.json"))
++	root.add_child(game)
++	game.hitch_diagnostics.persist_enabled = false
++	game.paused = true
++	game.call("_process",0.0)
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	await frames(120 if DisplayServer.get_name() != "headless" else 4)
++	var state: Dictionary = RewindHistory.properties(game.sim.state)
++	var condition: Dictionary = game.car_weathering.snapshot()
++	var pose: Transform3D = game.camera.transform
++	var size: float = game.camera.size
++	var lights: Array[Dictionary] = []
++	for light: Node in game.get_node("World").find_children("*","Light3D",true,false):
++		lights.append({"node":light,"pose":light.transform,"visible":light.visible,"energy":light.light_energy,"mask":light.light_cull_mask,"shadow":light.shadow_enabled})
++	var snapshots: Array[Dictionary] = []
++	for node: Node in game.get_node("World").find_children("*","GeometryInstance3D",true,false):
++		snapshots.append({"node":node,"margin":node.extra_cull_margin,"pose":node.transform,"visible":node.visible,"layers":node.layers,"shadow":node.cast_shadow,"material":node.material_override,"mesh":node.mesh if node is MeshInstance3D else null,"multimesh":node.multimesh if node is MultiMeshInstance3D else null})
++	var buffer: PackedFloat32Array = game.trails.instances.buffer
++	var cursor: int = game.trails.cursor
++	var before: Image
++	if DisplayServer.get_name() != "headless": before = root.get_texture().get_image()
++	var prepared: Dictionary = Preparation.begin(game.get_node("World"),game.camera)
++	var expected: bool = DisplayServer.get_name() != "headless" and RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	check((prepared.items > 0) == expected and prepared.items <= Preparation.MAX_ITEMS, "Night preparation is graphical Compatibility-only and bounded")
++	for context: int in range(Preparation.CONTEXTS):
++		Preparation.set_context(prepared,context)
++		if expected:
++			check(prepared.nodes[0].visible == ((context & 1) != 0) and prepared.nodes[1].visible == ((context & 2) != 0), "local light presence combination "+str(context))
++		await frames(2)
++	Preparation.end(prepared)
++	Preparation.end(prepared)
++	await frames()
++	check(game.camera.transform == pose and game.camera.size == size, "camera remains exact")
++	check(RewindHistory.properties(game.sim.state) == state and game.countdown_ticks == 360 and game.car_weathering.snapshot() == condition, "canonical state, countdown and condition remain exact")
++	check(game.trails.instances.buffer == buffer and game.trails.cursor == cursor, "original tire GPU buffer and ring cursor remain exact")
++	check(snapshots.all(func(s: Dictionary) -> bool: return s.node.extra_cull_margin == s.margin and s.node.transform == s.pose and s.node.visible == s.visible and s.node.layers == s.layers and s.node.cast_shadow == s.shadow and s.node.material_override == s.material and (not s.node is MeshInstance3D or s.node.mesh == s.mesh) and (not s.node is MultiMeshInstance3D or s.node.multimesh == s.multimesh)), "geometry, material bindings, culling and visibility remain exact")
++	check(lights.all(func(s: Dictionary) -> bool: return s.node.transform == s.pose and s.node.visible == s.visible and s.node.light_energy == s.energy and s.node.light_cull_mask == s.mask and s.node.shadow_enabled == s.shadow), "original lights remain exact")
++	check(game.find_children("CoveredNight*","Light3D",true,false).is_empty(), "temporary lights are released")
++	if before != null:
++		var after: Image = root.get_texture().get_image()
++		check(before.get_data() == after.get_data(), "restored framebuffer is byte-exact")
++		before.save_png(output.path_join("before.png"));after.save_png(output.path_join("after.png"))
++	var cancelled: Dictionary = Preparation.begin(game.get_node("World"),game.camera)
++	game.free()
++	Preparation.end(cancelled)
++	check(cancelled.nodes.is_empty() and cancelled.geometry.is_empty(), "destroyed-scene cleanup is safe")
++	await app_checks(track,expected)
++	print("NIGHT_PREPARATION_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++func app_checks(track: NativeTrack, expected: bool) -> void:
++	OS.set_environment("BMT_API_URL", "")
++	var folder: String = ProjectSettings.globalize_path("res://../build/night-hitch-2026-10-14/app-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.set_script(ProbeApp)
++	app.library = TrackLibrary.new(folder)
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	track.metadata.cloud_version = "isolated-night"
++	app.selected_track = track
++	app._start_race(track,false,true)
++	var revealed: Dictionary = {}
++	app.race_loading.tree_exiting.connect(func() -> void:
++		if is_instance_valid(app.game):
++			revealed.tick = app.game.sim.state.tick
++			revealed.countdown = app.game.countdown_ticks
++			revealed.night = app.game.night_preparation.duplicate())
++	var deadline: int = Time.get_ticks_msec()+40000
++	while app.cloud_starting and Time.get_ticks_msec()<deadline: await process_frame
++	check(is_instance_valid(app.game) and app.race_loading == null and not app.cloud_starting, "actual Night start completes")
++	check(revealed.get("tick",-1) == 0 and revealed.get("countdown",-1) == 360, "actual Night cover reveals the full frozen countdown")
++	if is_instance_valid(app.game):
++		app.game.set_physics_process(false)
++		check(revealed.night.drawn == expected and revealed.night.contexts == (8 if expected else 0), "actual start records weathered and clean light contexts")
++		check(app.game.find_children("CoveredNight*","Light3D",true,false).is_empty(), "actual start releases the temporary lights")
++		check(not app.game.car_weathering._render_warming, "actual start restores clean finish bindings")
++		app._leave_race()
++	if expected:
++		await frames(1)
++		app.cancel_night = true
++		app._start_race(track,false,true)
++		while app.cloud_starting and Time.get_ticks_msec()<deadline: await process_frame
++		await frames(2)
++		check(app.game == null and app.race_loading == null and app.root_ui.visible, "navigation during Night preparation restores menus and cancels the frozen scene")
++	app.free()
++	await frames(1)
+--- /dev/null
++++ b/game/tests/test_night_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://4e44mhtqkti1
+--- /dev/null
++++ b/docs/NIGHT_HITCH_2026_10_14.md
+@@ -0,0 +1,53 @@
++# Night first-use hitches, 2026-10-14
++
++The owner's current PC game (PID **19920**, started **21:12:47 Helsinki**) captured Easy night / Compact / Compatibility / RTX 3090, kit198 and physics0.58. The local file `race-1792001705-19920-2419928861447.json` contains **eight** driving events and no dropped events or contexts:
++
++| Driving time | Observed interval | Render boundary |
++| ---: | ---: | ---: |
++| 0.725 s | 101.867 ms | 94.674 ms |
++| 1.175 s | 155.141 ms | 145.827 ms |
++| 1.758 s | 140.428 ms | 133.016 ms |
++| 3.167 s | 153.318 ms | 143.049 ms |
++| 3.300 s | 129.738 ms | 118.444 ms |
++| 3.433 s | 137.511 ms | 127.186 ms |
++| 4.233 s | 110.997 ms | 96.725 ms |
++| 6.333 s | 458.944 ms | 443.738 ms |
++
++Most of each stall lies between render signals; this is wall time, not GPU execution time. The largest event has 12.978 ms of physics and 0.781 ms of presentation. All eight have zero condition-save time, no telemetry writer/editor worker/recovery callback and no active cloud operation. One event has 0.162 ms of recorded cloud IO. Weathering, tire and effect preparation are already true. There are **no bridges or hazard meshes** to prepare. The shared covered preparation took 9,579.66 ms before the countdown. Smoke/clipping/mud masks change around some later events, so those observations alone cannot exclude dynamic effects.
++
++The old 5 Hz context associates several events with first terrain/road section candidates, but its **128-mesh inventory omits 200 meshes**. The 6.333-second event's last context is before the stall and the next sample is after it; candidate timing alone cannot identify the native call. Compatibility's pipeline counters are unsupported and remain zero.
++
++The public cached Easy night document was copied into ignored `build/night-hitch-2026-10-14/track.json`. Its compiled geometry hash matches the live capture exactly: `9762bcaabbc226d7f18e45769207f9e8bcd0d43e82041cc7ce0de2189e03a391`. An isolated graphical probe freezes simulation, countdown and condition, uses disposable records, and moves only its presentation through public route regions corresponding to the captures. The first pass peaks at **239.019 ms** between render signals; repeating the same regions peaks at **8.279 ms**. The terrain shader identified by hash `e71bb35a…` is shared by **70 meshes using one Shader RID and one material RID**. Two road-role shaders are each shared by 29 meshes. Thus this probe does not support blaming duplicate terrain shader creation.
++
++Godot Compatibility selects shader specialization flags according to whether a geometry instance has Omni or Spot lights; it binds the matching shader variant at draw time. Light counts themselves are uniforms, so the lead is **presence combinations**, not recompilation for every numerical light count. This explains how preloading a material or rendering it only in the starting light context can still miss a later variant. [Pinned GLES renderer source](https://raw.githubusercontent.com/godotengine/godot/4.7-stable/drivers/gles3/rasterizer_scene_gles3.cpp), [Godot compilation guidance](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html).
++
++The diagnostic preparation submits the existing visible geometry through four bounded covered contexts: neither local light type, Omni only, Spot only, and both. It preserves the actual camera, meshes, materials, transforms and original light properties. Temporary cull margins include the current camera; two tiny, shadow-free temporary lights there provide the presence combinations while original Omni/Spot visibility is temporarily suspended. All visibility and culling values are restored before uncovering the scene. The test uses **307** existing geometry instances. The four preparation steps take **14.510 / 474.977 / 777.664 / 130.613 ms** in this run, and the subsequent first-region pass peaks at **8.269 ms**; the repeat peaks at **8.468 ms**. Expensive work is moved into loading.
++
++These are sequential shared-desktop runs with evolving driver caches, not paired cold-cache FPS measurements. The exact native stack for the live 443.738 ms render boundary was not obtained. The reproducible first-region delays, shared shader identity, renderer variant selection and successful preparation identify a missed Night light-context path; they do not prove every recorded event has that one cause or promise generally hitch-free racing.
++
++Production integration is **Night + graphical Compatibility only**, including GLES phone builds when subsequently exported. It uses the existing loading cover and bounded render waits, with at most four contexts for the current finish and four more if restoring a clean finish exposes different car shader RIDs. The original finish/bridge/hazard/personal-ghost/tire/effect preparations remain. Existing geometry/material resources are reused; no racing draw, permanent light, texture or geometry cache is added. Limits are **1,024 geometry instances / 64 original local lights**. Geometry truncation is recorded; exceeding the light bound aborts before changing the scene. Source tire geometry, shading, pressure, encoding, sampling and the full 16,384-slot ring are unchanged.
++
++The observational `night_preparation` capture records completed contexts/sets, item count, elapsed time and bounds/abort status. Mesh descriptors add session-local Shader RIDs and original shader resource paths when fixed-role source metadata exists, within the original four-material-role cap. The inventory still represents initial bindings, not every later cosmetic swap or a native GPU program ID. Existing event/file/byte limits and local-only persistence remain.
++
++Navigation during the longer covered sequence exposed a frozen prepared scene left behind when the loading cover was closed. After restoring all temporary state, `_start_race` now releases only its same still-disabled scene on that cancellation path. It preserves a replacement or already-running game. Actual navigation cancellation is checked; this cleanup finding is not attributed to the original driving stalls.
++
++Actual validation: Night preparation **19 Compatibility / 14 Mobile-Vulkan / 13 headless checks**; exact restored framebuffer bytes, camera, canonical state, condition, geometry/material bindings, lights, culling/visibility and original tire buffer/cursor are retained. Actual App reveals tick0 and all360 countdown ticks, records eight weathered/clean contexts on Compatibility, releases temporary nodes and handles navigation cancellation. Mobile/Vulkan and headless skip the new preparation. Hitch capture **47 headless / 47 Compatibility** checks the new markers, shader bounds and full eight-event file cap. All **758** current scripts parse. Existing non-Night loading **26 headless / 27 graphical** checks pass on final runs.
++
++Commands through the pinned entry point:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_night_first_use.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_night_first_use.gd -Graphical -TestArgument '--warm'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_night_render_preparation.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_night_render_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_night_render_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd -Graphical
++```
++
++Initial issues are preserved: a concurrently added CompactFrontLamps class was initially absent from the class cache; the explicit import then failed because a running Godot process held the audio extension's temporary DLL, after which the running editor registered the class. The new test used an incorrect tire-buffer property and initially omitted the existing published-track prerequisite; both fixtures were corrected without relaxing assertions. Navigation cancellation revealed the frozen-scene cleanup issue and was fixed. Optional shader metadata needed `has_meta` guarding because a null default still emitted an engine error. A Mobile run completed all14 assertions but hung during shutdown and hit the existing300s command limit; its isolated90s-limit retry completed successfully. The non-Night graphical check encountered a mesh-normal construction error before Game's ready marker, and its retry hit an API mismatch while the records menu was being concurrently edited. A later full-parse run encountered a non-static reflection call in that new records test, corrected by the concurrent work; no mesh-builder or records-menu source was changed by this task, and the final current parse and graphical regression pass.
++
++Evidence, paired images, probe JSON, source snapshots, command logs and the scoped review patch/hash manifest are under `docs/evidence/night-hitch-2026-10-14/`. Concurrent track-loading packets and Compact-model/menu work are preserved and excluded from this checkpoint. No user game was restarted or terminated, no driver cache was cleared, and no phone command, APK export/install, full Validate or backend deployment was performed. Restart the PC game to load the preparation and expanded capture. Owner repeat races on Easy night, a matching native trace for any remaining stall, and physical-phone validation remain outstanding.

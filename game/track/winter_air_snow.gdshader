@@ -14,8 +14,9 @@ void vertex() {
 	float along_focus = dot(focus.xz,wind);
 	float across_focus = dot(focus.xz,side);
 	// Wrapping changes only the bounded volume membership; motion is world-space.
-	float grain_speed = 0.72+INSTANCE_CUSTOM.b*0.53;
-	float along = mod(INSTANCE_CUSTOM.r*96.0+travel*grain_speed-along_focus+48.0,96.0)+along_focus-48.0;
+	float grain_speed = 0.65+INSTANCE_CUSTOM.b*0.50;
+	float surge = 0.8*sin(elapsed*1.1+INSTANCE_CUSTOM.r*6.283185);
+	float along = mod(INSTANCE_CUSTOM.r*96.0+travel*grain_speed+surge-along_focus+48.0,96.0)+along_focus-48.0;
 	float across = mod(INSTANCE_CUSTOM.g*64.0-across_focus+32.0,64.0)+across_focus-32.0;
 	vec2 flow_point = snow_grain_position(vec2(along,across),elapsed);
 	vec2 p = wind*flow_point.x+side*flow_point.y+wind*VERTEX.x+side*VERTEX.z;
@@ -32,6 +33,10 @@ void fragment() {
 	// outside the actual vehicle footprint as well as checking solid depth.
 	if (length(snow_world.xz-protected_car) < 2.55) discard;
 	if (grain <= 0.0 || fade <= 0.0 || strength <= 0.0) discard;
+	vec2 wind = vec2(0.91,-0.414608);
+	vec2 point = vec2(dot(snow_world.xz,wind),dot(snow_world.xz,vec2(-wind.y,wind.x)));
+	float local_gust = snow_local_gust(point,elapsed);
+	if (local_gust <= 0.0) discard;
 	float depth = texture(scene_depth,SCREEN_UV).r;
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	vec3 ndc = vec3(SCREEN_UV,depth)*2.0-1.0;
@@ -42,5 +47,5 @@ void fragment() {
 	if (opaque.y/opaque.w > 0.20) discard;
 	ALBEDO = vec3(0.92,0.95,0.98);
 	ROUGHNESS = 1.0;
-	ALPHA = grain*fade*strength*0.72;
+	ALPHA = min(grain*fade*sqrt(clamp(strength,0.0,1.0))*local_gust*0.92,0.85);
 }

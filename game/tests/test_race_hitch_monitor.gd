@@ -134,7 +134,25 @@ func run() -> void:
 	monitor._process(0.0)
 	check(monitor.latest.effects.tyre_emitters_active_mask == 1 and monitor.latest.effects.spray_emitters_active_mask == 2, "individual cloud and spray activation is identifiable")
 	check(monitor.header.render_items.size() > 0 and monitor.header.render_items.size() <= monitor.MAX_RENDER_ITEMS and monitor.latest.previous_render_context.candidate_ids.size() <= monitor.MAX_RENDER_ITEMS, "render inventory and frustum candidates stay bounded")
+	check(monitor.header.render_items.all(func(item: Dictionary) -> bool: return item.shader_rids.size() <= 4 and item.shader_sources.size() <= 4), "shader identity and original source descriptions retain the four-role bound")
+	check(monitor.latest.night_preparation.contexts == 0 and not monitor.latest.night_preparation.drawn, "capture reports when Night lighting contexts have not been prepared")
 	check(monitor.latest.previous_render_context.sampling_ms >= 0 and monitor.latest.previous_render_context.width > 0 and monitor.latest.motion.jump_height == game.sim.state.jump_height, "render context and jump state are observed")
+	var bridge_probe := MeshInstance3D.new()
+	bridge_probe.name = "DiagnosticBridge"
+	bridge_probe.mesh = BoxMesh.new()
+	bridge_probe.add_to_group("race_bridge_rendering")
+	game.get_node("World").add_child(bridge_probe)
+	bridge_probe.global_position = game.camera.global_transform * Vector3(0, 0, -10)
+	monitor._collect_render_items(bridge_probe)
+	monitor._render_next_usec = Time.get_ticks_usec() + 200000
+	monitor._pre_draw()
+	var first_bridge: Dictionary = monitor._bridge_context
+	check(first_bridge.candidate_ids.size() == 1 and first_bridge.first_candidate_ids.size() == 1, "first bridge candidate is sampled immediately before drawing")
+	monitor._pre_draw()
+	check(monitor._bridge_context.sample_wall_ms >= first_bridge.sample_wall_ms and monitor._bridge_context.first_candidate_ids.is_empty(), "bridge sampling refreshes inside the 200 ms world-sampling window")
+	monitor._process(0.0)
+	check(monitor.latest.previous_bridge_context == monitor._bridge_context and monitor.latest.bridge_preparation.meshes == 0, "bridge context and covered preparation markers accompany the measured interval")
+	bridge_probe.free()
 	monitor.events.clear(); monitor.history.clear()
 	for index: int in range(80): monitor.history.append(monitor.latest)
 	for index: int in range(monitor.MAX_EVENTS):

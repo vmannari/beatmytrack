@@ -1,0 +1,1279 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-14 RRV01-RRV03/V03-V05/G01/R01/Q01: owner requests another racing-render review. Review only; no runtime edits. Winter integrated snow still prepares unused fallback bank anchors (16-26ms desktop) and updates zero-instance fallback cards; audio/weathering repeat239 of479 four-wheel contact queries (~0.05-0.06ms/rendered frame before cache overhead). Rain Canvas batch alternative preserves pixels but has no reliable speedup, not recommended. Final 259+259 component checks/settled pixels pass; Compatibility launcher exits1 on an87380-byte GL shutdown leak, cause unestablished. Earlier Vulkan one-level differences/control failures retained; newest trail preparation needs fresh phone attribution. No phone/APK/backend/deploy or FPS claim. Actual probes/evidence/task-only checkpoint: docs/RACING_RENDER_REVIEW_2026_10_14.md.
++
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-14 RRV01-RRV03/V03-V05/G01/R01/Q01: owner requests another racing-render review. Review only; no runtime edits. Winter integrated snow still prepares unused fallback bank anchors (16-26ms desktop) and updates zero-instance fallback cards; audio/weathering repeat239 of479 four-wheel contact queries (~0.05-0.06ms/rendered frame before cache overhead). Rain Canvas batch alternative preserves pixels but has no reliable speedup, not recommended. Final 259+259 component checks/settled pixels pass; Compatibility launcher exits1 on an87380-byte GL shutdown leak, cause unestablished. Earlier Vulkan one-level differences/control failures retained; newest trail preparation needs fresh phone attribution. No phone/APK/backend/deploy or FPS claim. Actual probes/evidence/task-only checkpoint: docs/RACING_RENDER_REVIEW_2026_10_14.md.
++
+diff --git a/game/tests/review_racing_render_2026_10_14.gd b/game/tests/review_racing_render_2026_10_14.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_racing_render_2026_10_14.gd
+@@ -0,0 +1,140 @@
++extends "res://tests/test_winter_snow_wind.gd"
++## Review only: in-memory alternatives; shipping rendering remains untouched.
++var folder := "res://../build/racing-render-review-2026-10-14"
++var report: Dictionary = {}
++
++func script_from(source: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = source
++	check(script.reload() == OK, "review instrumentation parses")
++	return script
++
++func picture() -> Image:
++	for frame: int in range(4): await RenderingServer.frame_post_draw
++	var result: Image = root.get_texture().get_image()
++	result.convert(Image.FORMAT_RGBA8)
++	return result
++
++func difference(a: Image, b: Image) -> Dictionary:
++	var left := a.get_data(); var right := b.get_data()
++	check(left.size() == right.size(), "paired image dimensions match")
++	var count: int = 0; var maximum: int = 0
++	for index: int in range(left.size()):
++		var delta: int = absi(int(left[index])-int(right[index]))
++		if delta: count += 1
++		maximum = maxi(maximum,delta)
++	return {"changed_bytes":count,"maximum":maximum}
++
++func winter(track: NativeTrack) -> void:
++	var world := Node3D.new(); root.add_child(world)
++	var visual := NativeTrackVisual.new(); world.add_child(visual)
++	await visual.build(track,BridgePresentation.new(track))
++	var camera := Camera3D.new(); world.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 32
++	camera.position = Vector3(-12,23,5); camera.look_at(Vector3(0,0,18)); camera.make_current()
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-55,-25,0)
++	world.add_child(light)
++	var source := FileAccess.get_file_as_string("res://track/winter_snow_wind.gd").replace("class_name WinterSnowWind\n", "")
++	source += "\nvar review_skip_fallback: bool = false\nvar review_ground: int = 0\nvar review_banks: int = 0\n"
++	source = source.replace("func _place_ground() -> void:\n", "func _place_ground() -> void:\n\tif review_skip_fallback and not surface_materials.is_empty(): return\n\treview_ground += 1\n")
++	source = source.replace("func _place_banks(focus: Vector2) -> void:\n", "func _place_banks(focus: Vector2) -> void:\n\tif review_skip_fallback and not surface_materials.is_empty(): return\n\treview_banks += 1\n")
++	source = source.replace("for material: ShaderMaterial in [ground_material, powder_material,airborne.material_override]:", "for material: ShaderMaterial in ([airborne.material_override] if review_skip_fallback and not surface_materials.is_empty() else [ground_material, powder_material,airborne.material_override]):")
++	var wind = script_from(source).new(); world.add_child(wind)
++	var began := Time.get_ticks_usec(); wind.configure(track,visual)
++	var configured_ms := (Time.get_ticks_usec()-began)/1000.0
++	check(not wind.surface_materials.is_empty(),"actual Winter world binds integrated snow materials")
++	var source_timings: Array = []
++	for repetition: int in range(3):
++		began = Time.get_ticks_usec(); wind._prepare_visual_sources(track)
++		source_timings.append((Time.get_ticks_usec()-began)/1000.0)
++	var timings: Array = []
++	for repetition: int in range(4):
++		for skip: bool in ([false,true] if repetition%2 == 0 else [true,false]):
++			wind.review_skip_fallback = skip; wind.reset(); wind.review_ground = 0; wind.review_banks = 0
++			began = Time.get_ticks_usec()
++			for frame: int in range(600): wind.present(1.0/60.0,Vector2(frame*0.3,-18),0.8,false,false)
++			timings.append({"skip":skip,"ms":(Time.get_ticks_usec()-began)/1000.0,"ground_refreshes":wind.review_ground,"bank_refreshes":wind.review_banks,"ground_visible":wind.ground.multimesh.visible_instance_count,"powder_visible":wind.powder.multimesh.visible_instance_count})
++			check(wind.ground.multimesh.visible_instance_count == 0 and wind.powder.multimesh.visible_instance_count == 0,"fallback batches remain undrawn")
++	wind.review_skip_fallback = false; wind.reset()
++	for frame: int in range(90): wind.present(1.0/60.0,Vector2(0,-18),0.8,false,false)
++	var before: Image = await picture()
++	var frozen_control := difference(before,await picture())
++	wind.reset()
++	for frame: int in range(90): wind.present(1.0/60.0,Vector2(0,-18),0.8,false,false)
++	var control_image := await picture()
++	var reset_control := difference(before,control_image)
++	wind.review_skip_fallback = true; wind.reset()
++	for frame: int in range(90): wind.present(1.0/60.0,Vector2(0,-18),0.8,false,false)
++	var after: Image = await picture(); var pixels := difference(control_image,after)
++	check(pixels.maximum == 0,"skipping suppressed Winter fallback retains exact pixels")
++	report.winter = {"configuration_ms":configured_ms,"fallback_source_ms":source_timings,"surface_materials":wind.surface_materials.size(),"anchors":wind.anchors.size(),"timings":timings,"pixels":pixels,"frozen_control":frozen_control,"reset_control":reset_control}
++	control_image.save_png(folder.path_join("winter-before.png")); after.save_png(folder.path_join("winter-after.png"))
++	world.free(); await process_frame
++
++func storm() -> void:
++	var source := FileAccess.get_file_as_string("res://track/storm_weather.gd").replace("class_name StormWeather\n", "")
++	source += "\nvar review_batch: bool = false\nvar review_usec: int = 0\nvar review_callbacks: int = 0\nvar review_seeds: Array = []\n"
++	source = source.replace("func _ready() -> void:\n", "func _ready() -> void:\n\tfor i: int in range(190):\n\t\tvar seed: float = float(i)\n\t\treview_seeds.append([sin(seed*127.1+9.4)*43758.5453,sin(seed*311.7+2.6)*19341.917,0.65+fmod(seed,4.0)*0.07,13.0+fmod(seed,12.0)])\n")
++	source = source.replace("\t# Bounded rain streaks", "\tvar review_started := Time.get_ticks_usec()\n\tvar review_lines := PackedVector2Array()\n\tif review_batch: review_lines.resize(380)\n\t# Bounded rain streaks")
++	source = source.replace("sin(seed*127.1+9.4)*43758.5453-elapsed*0.12", "(review_seeds[i][0] if review_batch else sin(seed*127.1+9.4)*43758.5453)-elapsed*0.12")
++	source = source.replace("sin(seed*311.7+2.6)*19341.917+elapsed*(0.65+fmod(seed,4.0)*0.07)", "(review_seeds[i][1] if review_batch else sin(seed*311.7+2.6)*19341.917)+elapsed*(review_seeds[i][2] if review_batch else (0.65+fmod(seed,4.0)*0.07))")
++	source = source.replace("(13.0+fmod(seed,12.0))*size.y", "(review_seeds[i][3] if review_batch else (13.0+fmod(seed,12.0)))*size.y")
++	source = source.replace("\t\tdraw_line(Vector2(x,y),Vector2(x-length*0.35,y+length),Color(0.72,0.83,0.90,0.27),1.0,true)", "\t\tif review_batch:\n\t\t\treview_lines[i*2] = Vector2(x,y); review_lines[i*2+1] = Vector2(x-length*0.35,y+length)\n\t\telse: draw_line(Vector2(x,y),Vector2(x-length*0.35,y+length),Color(0.72,0.83,0.90,0.27),1.0,true)")
++	source = source.replace("\t_draw_lens_trails()", "\tif review_batch: draw_multiline(review_lines,Color(0.72,0.83,0.90,0.27),1.0,true)\n\t_draw_lens_trails()")
++	source = source.replace("\n# Analytic presentation", "\n\treview_usec += Time.get_ticks_usec()-review_started\n\treview_callbacks += 1\n\n# Analytic presentation")
++	var weather = script_from(source).new(); root.add_child(weather)
++	weather.elapsed = 3.2; weather._update_lens()
++	var pairs: Array = []
++	for elapsed: float in [0.3,3.2,11.5]:
++		weather.elapsed = elapsed; weather._update_lens(); weather.review_batch = false; weather.queue_redraw()
++		var before := await picture()
++		weather.review_batch = true; weather.queue_redraw(); var after := await picture()
++		var pixels := difference(before,after); pairs.append({"elapsed":elapsed,"pixels":pixels})
++		# Review alternatives can fail pixel parity; retain the result as evidence.
++		before.save_png(folder.path_join("rain-"+str(elapsed)+"-before.png")); after.save_png(folder.path_join("rain-"+str(elapsed)+"-after.png"))
++	var timings: Array = []
++	for batch: bool in [false,true,true,false]:
++		weather.review_batch = batch; weather.review_usec = 0; weather.review_callbacks = 0
++		for frame: int in range(100):
++			weather.elapsed += 1.0/60.0; weather._update_lens(); weather.queue_redraw()
++			await RenderingServer.frame_post_draw
++		timings.append({"batched":batch,"callback_us":weather.review_usec,"callbacks":weather.review_callbacks})
++	report.storm = {"pixels":pairs,"timings":timings,"rain_api_calls_before":190,"rain_api_calls_candidate":1,"note":"Candidate also precomputes immutable rain seeds/speeds/lengths. Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails."}
++	weather.free(); await process_frame
++
++func contacts(track: NativeTrack) -> void:
++	var observer := script_from("extends SurfaceAudioModel\nvar calls: Array = []\nfunc sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:\n\tvar began := Time.get_ticks_usec()\n\tsuper.sample_contacts(state,track,grounded)\n\tcalls.append({\"key\":str([state.tick,state.position,state.heading,state.track_elevated,state.tire_water,grounded,wheelbase,track_width]),\"us\":Time.get_ticks_usec()-began,\"values\":[pavement,grass,sand,gravel,water,kerb]})\n")
++	var game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.ai_enabled = true; game.attempt_practice = true
++	root.add_child(game); game.process_mode = Node.PROCESS_MODE_DISABLED
++	var audio: SurfaceAudioModel = observer.new(); audio.configure(game.handling); game.vehicle_audio.surface_model = audio
++	var finish: SurfaceAudioModel = observer.new(); finish.configure(game.handling); game.car_weathering.contacts = finish
++	for frame: int in range(120):
++		game._physics_process(1.0/120.0); game._physics_process(1.0/120.0)
++		game._present_frame(1.0/60.0)
++	var keys: Dictionary = {}; var total_us: int = 0; var redundant_us: int = 0; var redundant: int = 0
++	for row: Dictionary in audio.calls+finish.calls:
++		total_us += int(row.us)
++		if keys.has(row.key):
++			redundant += 1; redundant_us += int(row.us)
++			check(keys[row.key] == row.values,"same contact input produces identical material mix")
++		else: keys[row.key] = row.values
++	report.contacts = {"physics_steps":240,"rendered_frames":120,"calls":audio.calls.size()+finish.calls.size(),"distinct_inputs":keys.size(),"redundant_calls":redundant,"total_us":total_us,"redundant_us":redundant_us,"tick":game.sim.state.tick,"note":"Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds."}
++	check(game.sim.state.tick == 240,"unscored contact probe advances all intended physics ticks")
++	game.free(); await process_frame
++
++func run() -> void:
++	checks = 0; failures = 0
++	folder = folder.path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	root.size = Vector2i(1280,720); DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	report = {"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"native_visual":NativeTrackVisual.VERSION,"wind":WinterSnowWind.VERSION,"sources":{},"note":"Review-only desktop components, no shipping edits, no phone FPS claim."}
++	for path: String in ["track/winter_snow_wind.gd","track/storm_weather.gd","vehicle/surface_audio_model.gd","vehicle/vehicle_audio.gd","vehicle/vehicle_weathering.gd"]: report.sources[path] = FileAccess.get_file_as_string("res://"+path).sha256_text()
++	var track := make_track()
++	await winter(track); await storm(); await contacts(track)
++	report.checks = checks; report.failures = failures
++	FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("RACING_RENDER_REVIEW: ",checks," checks, ",failures," failures")
++	for frame: int in range(3): await RenderingServer.frame_post_draw
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_racing_render_2026_10_14.gd.uid b/game/tests/review_racing_render_2026_10_14.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_racing_render_2026_10_14.gd.uid
+@@ -0,0 +1 @@
++uid://buh8kdjxsj1tu
+diff --git a/docs/RACING_RENDER_REVIEW_2026_10_14.md b/docs/RACING_RENDER_REVIEW_2026_10_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RACING_RENDER_REVIEW_2026_10_14.md
+@@ -0,0 +1,42 @@
++# Racing rendering review, 2026-10-14
++
++Owner request: "Make another review pass", following the implemented car, spatial/terrain and remaining racing-render work. This is a review with isolated diagnostics, **no shipping rendering changes**. Requirements RRV01–RRV03 / V03–V05 / G01 / R01 / Q01. Existing artwork, camera, condition, populations, caches and canonical behavior are retained.
++
++The remaining confirmed opportunities are modest desktop CPU savings. Cold driver compilation remains a more consequential phone concern, but the latest trail preparation has not been evaluated on the phone by this review.
++
++## Findings
++
++| ID / priority | Location and trigger | Improvement and expected impact |
++| --- | --- | --- |
++| RRV01 / medium, loading | `game/track/winter_snow_wind.gd:63`, `_prepare_visual_sources` at line69. With integrated snow already bound to actual terrain/road/bank materials, configuration still reads bank mesh arrays, visits vertices and builds fallback anchors. The fixture binds six integrated materials and creates52 unused anchors. | Determine whether fallback cards are needed before preparing their bank sources. Retain the original path when integration is unavailable. Measured source preparation is about **16–26ms per call** on this desktop fixture; that is a potential preparation saving, not steady racing FPS. The source work is not repeated every frame. |
++| RRV02 / low, racing | `game/track/winter_snow_wind.gd:153–167`, `_place_ground` and `_place_banks`. Ground/bank card transforms, custom data, bounds and eight shader parameters still update while both batches end each frame with `visible_instance_count=0`. | Skip these fallback-only updates while integrated snow owns the visible drawing. Preserve airborne grains and every terrain uniform. Across600 moving-focus calls, the current code performs30 ground refreshes and60 bank refreshes; the isolated alternative performs zero. Potential saving is roughly **0.006–0.013ms per call** here. It adds no GPU draw reduction because those batches already draw zero instances. |
++| RRV03 / low, racing | `game/vehicle/vehicle_audio.gd:258`, `:406`; `game/vehicle/vehicle_weathering.gd:146`; `game/vehicle/surface_audio_model.gd:46`. Physics audio observes four wheel contacts, then rendered audio and weathering query the same state again. | Reuse only the pure contact result across consumers. Keep acceleration/drive smoothing, collision cues and weathering exposure separate. The actual Game callback probe records **479 queries for240 distinct inputs**,239 redundant, with identical six-component material mixes. This removes about50% of those queries. Their measured redundant cost is about **0.05–0.06ms per rendered frame**, before cache overhead; whole-frame gain will be smaller. Fence track/contact-data revision, wheel dimensions, pose/layer/tire-water, grounded predicate, reset/rewind and immediate same-tick changes. |
++
++RRV01 and RRV02 concern the same superseded fallback presentation at different stages. They must keep fallback behavior available for standalone/unfinished worlds. A count of bound materials alone should not become a permanent assumption if later scene replacement removes integration.
++
++## Rain candidate and current phone evidence
++
++Storm still issues190 rain `draw_line` calls per redraw. A diagnostic alternative retains exact190 endpoints, colour, width and antialiasing, precomputes immutable seeds/speeds/lengths, and uses one `draw_multiline`. All three rain pairs are byte-exact on both desktop renderers. However, measured total draw callbacks, including unchanged lens trails, show **no reliable speedup** and sometimes regress. These are Canvas API calls, not190 independently proven GPU draws: the engine can already batch them. This review does **not** recommend shipping that alternative on the available timing evidence.
++
++The previous phone report records a974.903ms cold event near tick86, with Mali compiler samples and the first trail MultiMesh candidate. The current workspace already has `game/vehicle/trail_render_preparation.gd` and the covered App draw. That is newer than the installed hazard-test APK. Do not present the historical event as a reproduced failure of the newest source, or the new preparation marker as proof that every driver variant is compiled. A new attributable cold/primed device pass remains necessary. See [the actual phone investigation](DESERT_HITCH_INVESTIGATION_2026_10_13.md).
++
++## Evidence and limitations
++
++Pinned Godot **4.7.2.stable.official.ed1daf0bf**; Windows RTX 3090; Compatibility/OpenGL and desktop Mobile/Vulkan. Reviewed native kit 193 and Winter wind 14. Source SHA-256 values are recorded in the [Compatibility report](evidence/racing-render-review-2026-10-14/gl_compatibility/report.json) and [Mobile report](evidence/racing-render-review-2026-10-14/mobile/report.json). Concurrent independent work remains outside this review.
++
++The diagnostic is [review_racing_render_2026_10_14.gd](../game/tests/review_racing_render_2026_10_14.gd). Alternatives exist only in in-memory scripts in that isolated engine process. The contact probe invokes real Game physics/presentation callbacks for240 ticks and120 render frames, without accounts, records, competitive starts or uploads. Query timing excludes the observer's recording work. It uses one Winter circuit/handling configuration, so it does not establish a universal saving across cars and tracks.
++
++Winter current/skip comparisons are byte-exact in the final settled pairs on both renderers. Earlier Mobile runs failed the strict exact comparison with a one-level byte difference. A follow-up control found the same21865 changed bytes/maximum1 in a frozen original and an original reset, without enabling the alternative. Those failures remain in the evidence; the final probe compares against the repeated-original control and retains both control results. This identifies variation in that diagnostic, not its renderer cause and not a general all-camera equivalence proof.
++
++Four alternating repetitions bound the Winter timing comparison. Source-query timings are three repeated readbacks, not a cold GPU or physical-phone measurement. No percentage phone FPS, thermal improvement or general hitch-free claim follows from these results.
++
++Actual commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_racing_render_2026_10_14.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_racing_render_2026_10_14.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++```
++
++The final Mobile run completes259 checks, zero failures, exit0. Compatibility component assertions pass, but the isolated process reports an87380-byte GL texture leak at shutdown and the launcher exits1. Additional post-draw teardown waits did not establish a clean exit. This is retained as a diagnostic limitation; no growing gameplay leak or root cause is established. The initial direct launcher invocation also hit the host PowerShell execution policy; the documented explicit launcher invocation succeeds in starting the pinned engine.
++
++The [task-only checkpoint](evidence/racing-render-review-2026-10-14/checkpoint.json) / [patch](evidence/racing-render-review-2026-10-14/review.patch) contain the diagnostic, report, evidence and exact status/plan entries. No shared branch/index, runtime, backend, physics contract, APK, deployment or physical-device state is changed. New implementation and phone acceptance remain separate work.
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-11088.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-11088.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-11088.log
+@@ -0,0 +1,6 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 259 checks, 0 failures
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-19700.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-19700.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-19700.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++FAIL: skipping suppressed Winter fallback retains exact pixels
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 259 checks, 1 failures
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-23596.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-23596.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-23596.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 259 checks, 0 failures
++ERROR: Texture with GL ID of 70: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-29152.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-29152.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-29152.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 257 checks, 0 failures
++ERROR: Texture with GL ID of 70: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-30168.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-30168.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-30168.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 257 checks, 0 failures
++ERROR: Texture with GL ID of 70: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-3280.log b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-3280.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/commands/TestScript-3280.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++FAIL: skipping suppressed Winter fallback retains exact pixels
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_REVIEW: 257 checks, 1 failures
+diff --git a/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report-initial.json b/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report-initial.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report-initial.json
+@@ -0,0 +1,153 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 257,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 7196,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 14564
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "gl_compatibility",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 32442,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 36664,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 31698,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 32560,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 35.576,
++		"pixels": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 8.796,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.59,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 6.932,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.661,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 8.86,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.087,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 3.947,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 8.665,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report.json b/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/gl_compatibility/report.json
+@@ -0,0 +1,166 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 259,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 8337,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 16505
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "gl_compatibility",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Candidate also precomputes immutable rain seeds/speeds/lengths. Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 36794,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 50116,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 38623,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 40701,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 31.117,
++		"fallback_source_ms": [
++			18.98,
++			19.412,
++			22.348
++		],
++		"frozen_control": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"pixels": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"reset_control": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 13.225,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.429,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.455,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.753,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.172,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.12,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.717,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 13.074,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-review-2026-10-14/mobile/report-before-controls.json b/docs/evidence/racing-render-review-2026-10-14/mobile/report-before-controls.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/mobile/report-before-controls.json
+@@ -0,0 +1,158 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 257,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 6756,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 13511
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 1,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "mobile",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Candidate also precomputes immutable rain seeds/speeds/lengths. Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 40278,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 47804,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 42346,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 41511,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 74.092,
++		"fallback_source_ms": [
++			19.735,
++			19.643,
++			20.8
++		],
++		"pixels": {
++			"changed_bytes": 2414,
++			"maximum": 1
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 12.91,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 6.919,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.047,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 11.452,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 13.343,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 7.886,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 6.129,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 15.117,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-review-2026-10-14/mobile/report-controls-failure.json b/docs/evidence/racing-render-review-2026-10-14/mobile/report-controls-failure.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/mobile/report-controls-failure.json
+@@ -0,0 +1,166 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 259,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 7445,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 14420
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 1,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "mobile",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Candidate also precomputes immutable rain seeds/speeds/lengths. Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 37751,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 46074,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 40724,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 36887,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 79.869,
++		"fallback_source_ms": [
++			17.159,
++			18.048,
++			20.119
++		],
++		"frozen_control": {
++			"changed_bytes": 21865,
++			"maximum": 1
++		},
++		"pixels": {
++			"changed_bytes": 21865,
++			"maximum": 1
++		},
++		"reset_control": {
++			"changed_bytes": 21865,
++			"maximum": 1
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.335,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.759,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.515,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.662,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.265,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 6.462,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 8.02,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 13.044,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-review-2026-10-14/mobile/report-initial.json b/docs/evidence/racing-render-review-2026-10-14/mobile/report-initial.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/mobile/report-initial.json
+@@ -0,0 +1,153 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 257,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 6312,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 12677
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "mobile",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 29891,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 40293,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 46179,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 46306,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 55.99,
++		"pixels": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.909,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.423,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.701,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.818,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.823,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.743,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.608,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 9.684,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-review-2026-10-14/mobile/report.json b/docs/evidence/racing-render-review-2026-10-14/mobile/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-review-2026-10-14/mobile/report.json
+@@ -0,0 +1,166 @@
++{
++	"adapter": "NVIDIA GeForce RTX 3090",
++	"checks": 259,
++	"contacts": {
++		"calls": 479,
++		"distinct_inputs": 240,
++		"note": "Actual game callbacks, unchanged queries. Observer cost is outside the recorded sampler time. One track/handling in this fixture; production reuse must fence changes/reset/rewind and distinct grounded thresholds.",
++		"physics_steps": 240,
++		"redundant_calls": 239,
++		"redundant_us": 6501,
++		"rendered_frames": 120,
++		"tick": 240,
++		"total_us": 12592
++	},
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"native_visual": "track-kit-193",
++	"note": "Review-only desktop components, no shipping edits, no phone FPS claim.",
++	"renderer": "mobile",
++	"sources": {
++		"track/storm_weather.gd": "1f51c53f00e6d7095a19f6c646ecf980adca2a492870398933bd26b4a8276f51",
++		"track/winter_snow_wind.gd": "081758fcd02e1bb584038dfe66a05c89015cb91d53aaa520968f361e75bb9c3b",
++		"vehicle/surface_audio_model.gd": "166af1abb4f9edaf4517ec081ca22c0d6c440db3fd15515499b86c614f9b87b1",
++		"vehicle/vehicle_audio.gd": "ba38ad2867f6f22387c6ecb343365e08ec38620e9703e7fab164e36730d9f82a",
++		"vehicle/vehicle_weathering.gd": "f25724fc4642864be2ef679290af76276e3b3bb60fb5a1604682430e43a65d09"
++	},
++	"storm": {
++		"note": "Candidate also precomputes immutable rain seeds/speeds/lengths. Canvas API calls; renderer can already batch GPU submissions. Timings include unchanged lens trails.",
++		"pixels": [
++			{
++				"elapsed": 0.3,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 3.2,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			},
++			{
++				"elapsed": 11.5,
++				"pixels": {
++					"changed_bytes": 0,
++					"maximum": 0
++				}
++			}
++		],
++		"rain_api_calls_before": 190,
++		"rain_api_calls_candidate": 1,
++		"timings": [
++			{
++				"batched": false,
++				"callback_us": 35406,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 44285,
++				"callbacks": 100
++			},
++			{
++				"batched": true,
++				"callback_us": 33333,
++				"callbacks": 100
++			},
++			{
++				"batched": false,
++				"callback_us": 32322,
++				"callbacks": 100
++			}
++		]
++	},
++	"wind": "winter-wind-14",
++	"winter": {
++		"anchors": 52,
++		"configuration_ms": 93.768,
++		"fallback_source_ms": [
++			26.401,
++			24.175,
++			22.641
++		],
++		"frozen_control": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"pixels": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"reset_control": {
++			"changed_bytes": 0,
++			"maximum": 0
++		},
++		"surface_materials": 6,
++		"timings": [
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 10.725,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 7.143,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 8.046,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 17.469,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 12.544,
++				"powder_visible": 0,
++				"skip": false
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 5.069,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 0,
++				"ground_refreshes": 0,
++				"ground_visible": 0,
++				"ms": 4.805,
++				"powder_visible": 0,
++				"skip": true
++			},
++			{
++				"bank_refreshes": 60,
++				"ground_refreshes": 30,
++				"ground_visible": 0,
++				"ms": 11.015,
++				"powder_visible": 0,
++				"skip": false
++			}
++		]
++	}
++}
+\ No newline at end of file

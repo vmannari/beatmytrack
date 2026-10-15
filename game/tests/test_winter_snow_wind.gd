@@ -46,12 +46,12 @@ func run() -> void:
 	check(wind.active_banks.size() > 0 and wind.active_banks.size() <= 12, "nearby bank pool bounded")
 	for at: Vector3 in wind.active_banks:
 		check(track.snow_banks.height_at(Vector2(at.x, -at.z)) > 0.19 and at.y < 0.5, "powder source lies on real low snowbank")
-	var start: Array = [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks.duplicate()]
+	var start: Array = [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks.duplicate(), wind.motion_intensity]
 	wind.present(1.0, Vector2(1000, 1000), 0.0, true, false)
-	check(start == [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks], "pause freezes motion and placement")
+	check(start == [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks, wind.motion_intensity], "pause freezes motion and placement")
 	wind.notification(Node.NOTIFICATION_APPLICATION_PAUSED)
 	wind.present(1.0, Vector2.ZERO, 1.0, false, false)
-	check(start == [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks], "background freezes visual wind")
+	check(start == [wind.elapsed, wind.travel, wind.intensity, wind.center, wind.active_banks, wind.motion_intensity], "background freezes visual wind")
 	wind.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 	wind.present(NAN, Vector2.ZERO, 1.0, false, false)
 	check(wind.elapsed == start[0], "invalid delta cannot poison visual uniforms")
@@ -59,9 +59,12 @@ func run() -> void:
 	var strong: float = wind.intensity
 	var gust_start: float = wind.travel
 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
-	check(is_equal_approx(wind.travel - gust_start, 21.6), "shared gust advection slows to 21.6 world metres per second")
+	check(is_equal_approx(wind.travel - gust_start, 18.0), "gust transports restrained powder at 18 world metres per second")
 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 0.0, false, false)
-	check(strong > 0.95 and is_equal_approx(wind.intensity, 0.24), "smooth gust strengthens both effects with light calm floor")
+	check(is_equal_approx(strong,0.45) and is_equal_approx(wind.intensity,0.12), "smoothed powder coverage stays within the new restrained range")
+	var light_start: float = wind.travel
+	for i: int in range(60): wind.present(1.0 / 60.0, Vector2(0, -18), 0.0, false, false)
+	check(is_equal_approx(wind.travel-light_start,12.0) and is_equal_approx(wind.intensity,0.12),"light powder keeps moderate 12mps movement independently of sparse coverage")
 	var pinned: Transform3D = wind.ground.multimesh.get_instance_transform(24)
 	wind.present(0.01, Vector2(0.5, -18), 0.0, false, false)
 	check(wind.ground.multimesh.get_instance_transform(24) == pinned, "sub-cell camera-follow motion cannot drag snow across world")
@@ -69,7 +72,7 @@ func run() -> void:
 	for i: int in range(60): wind.present(1.0 / 60.0, Vector2.ZERO, 1.0, false, true)
 	check(wind.intensity == 0, "finish fades visuals out")
 	wind.reset()
-	check(wind.elapsed == 0 and wind.travel == 0 and wind.powder.multimesh.visible_instance_count == 0, "retry clears visual history")
+	check(wind.elapsed == 0 and wind.travel == 0 and wind.motion_intensity == 0 and wind.powder.multimesh.visible_instance_count == 0, "retry clears visual history")
 	var timer: int = Time.get_ticks_usec()
 	for i: int in range(3600): wind.present(1.0 / 60.0, Vector2(float(i % 120) * 0.25, -18), 0.5, false, false)
 	print("WINTER_WIND_CPU_US_PER_PRESENT: ", float(Time.get_ticks_usec() - timer) / 3600.0)
@@ -94,7 +97,7 @@ func run() -> void:
 	for i: int in range(8): await process_frame
 	fx.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 	fx.present(0.25, Vector2(0, -18), 1.0, false, false)
-	check(fx.sources_from_visual, "actual race emits from visible analytic snowbank geometry")
+	check(not fx.surface_materials.is_empty() and fx.anchors.is_empty() or fx.sources_from_visual, "actual race uses integrated surface snow or prepared analytic bank fallback")
 	for i: int in range(120): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
 	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
 	game.call("_process", 0.1)
@@ -159,7 +162,7 @@ func capture(game: Node, fx: WinterSnowWind) -> void:
 			await RenderingServer.frame_post_draw
 			frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.90)))
 		var preview := FileAccess.open(OUT + "/motion.html", FileAccess.WRITE)
-		preview.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference flow</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference flow</h1><p>Actual Godot captures · 4 seconds at 30 fps · frayed powder fingers and local bank lift</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
+		preview.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference flow</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference flow</h1><p>Actual Godot captures · 4 seconds at 30 fps · thin surface streams and low skimming grains</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
 		preview.close()
 		root.size = Vector2i(1280, 720)
 	camera.position = focus + Vector3(18, 20, 0)
@@ -311,7 +314,7 @@ func driving_preview(game: Node, fx: WinterSnowWind) -> void:
 		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.92)))
 		if frame == 60: check(root.get_texture().get_image().save_png(OUT + "/driving.png") == OK, "actual moving-car wind screenshot")
 	var output := FileAccess.open(OUT + "/driving-motion.html", FileAccess.WRITE)
-	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference-flow driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference-flow driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 4 seconds at 30 fps · reference-led powder flow at 21.6 m/s</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
+	output.store_string("<!doctype html><meta charset='utf-8'><title>Winter reference-flow driving review</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1100px;margin:32px auto}img{width:100%;height:auto}button{padding:10px;margin:12px 0}</style><h1>Winter reference-flow driving review</h1><p>Actual Godot render and canonical driving fixture · normal camera · 4 seconds at 30 fps · restrained powder flow at 12-18 m/s</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;const view=document.getElementById('view'),button=document.getElementById('toggle');view.src=frames[0];button.onclick=()=>{playing=!playing;button.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
 	output.close()
 	game.paused = true
 	game.sim = original_sim

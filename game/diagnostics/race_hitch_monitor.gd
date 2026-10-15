@@ -45,6 +45,9 @@ var _render_seen: Dictionary = {}
 var _render_context: Dictionary = {}
 var _render_next_usec: int = 0
 var _render_truncated: int = 0
+var _bridge_items: Array[int] = []
+var _bridge_seen: Dictionary = {}
+var _bridge_context: Dictionary = {}
 
 class IdleStart extends Node:
 	var monitor: Node
@@ -75,6 +78,7 @@ func _ready() -> void:
 
 func _pre_draw() -> void:
 	_sample_render_context(Time.get_ticks_usec())
+	_sample_bridge_context()
 	_draw_start_usec = Time.get_ticks_usec()
 
 func _post_draw() -> void:
@@ -100,6 +104,12 @@ func _process(_delta: float) -> void:
 	_last_draw_count = _draw_count
 	row.background = _background_context()
 	row.weathering_prepared = bool(game.get("weathering_prepared"))
+	row.bridge_preparation = {"drawn": bool(game.get("bridge_prepared")), "meshes": int(game.get("bridge_preparation_meshes")), "shared_draw_ms": float(game.get("bridge_preparation_ms"))}
+	row.hazard_preparation = {"drawn": bool(game.get("hazards_prepared")), "meshes": int(game.get("hazard_preparation_meshes"))}
+	row.trails_prepared = bool(game.get("trails_prepared"))
+	row.night_preparation = game.get("night_preparation").duplicate()
+	row.effect_preparation = {"drawn":bool(game.get("effects_prepared")),"counts":game.get("effect_preparation_counts").duplicate()}
+	row.previous_bridge_context = _bridge_context
 	var track: NativeTrack = game.get("native_track")
 	row.track_hash = track.content_hash if track != null else ""
 	row.biome = str(track.metadata.get("theme", "pine")) if track != null else "pine"
@@ -139,6 +149,8 @@ func _collect_render_items(node: Node) -> void:
 		else:
 			var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node.multimesh != null else null
 			var materials: Array[String] = []
+			var shader_rids: Array[int] = []
+			var shader_sources: Array[String] = []
 			if mesh != null:
 				for index: int in range(mini(4, mesh.get_surface_count())):
 					var material: Material = node.material_override if node.material_override != null else node.get_active_material(index) if node is MeshInstance3D else mesh.surface_get_material(index)
@@ -146,12 +158,47 @@ func _collect_render_items(node: Node) -> void:
 					var key: String = str(material.get_class())
 					if material is ShaderMaterial and material.shader != null:
 						key += ":" + material.shader.resource_path + ":" + material.shader.code.sha256_text()
+						var shader_rid: int = material.shader.get_rid().get_id()
+						if shader_rid not in shader_rids: shader_rids.append(shader_rid)
+						var source: String = material.shader.resource_path
+						var dynamic: Variant = material.get_meta("surface_dynamic_material") if material.has_meta("surface_dynamic_material") else null
+						if source.is_empty() and dynamic is ShaderMaterial and dynamic.shader != null: source = dynamic.shader.resource_path
+						if not source.is_empty() and source not in shader_sources: shader_sources.append(source)
 					elif material is BaseMaterial3D:
 						key += ":shade%d/diff%d/spec%d/alpha%d/cull%d/tex%d/normal%d/emission%d/coat%d/vertex%d" % [material.shading_mode, material.diffuse_mode, material.specular_mode, material.transparency, material.cull_mode, int(material.albedo_texture != null), int(material.normal_enabled), int(material.emission_enabled), int(material.clearcoat_enabled), int(material.vertex_color_use_as_albedo)]
 					if key not in materials: materials.append(key)
-			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials})
+			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials, "shader_rids":shader_rids, "shader_sources":shader_sources})
 			_render_items.append(node)
+			if node.is_in_group("race_bridge_rendering"): _bridge_items.append(_render_items.size() - 1)
 	for child: Node in node.get_children(): _collect_render_items(child)
+
+func _sample_bridge_context() -> void:
+	if _bridge_items.is_empty() or not is_instance_valid(game): return
+	var camera: Camera3D = game.get("camera")
+	if camera == null: return
+	var started: int = Time.get_ticks_usec()
+	var visible: Array[int] = []
+	var entered: Array[int] = []
+	var planes: Array[Plane] = camera.get_frustum()
+	for index: int in _bridge_items:
+		if not is_instance_valid(_render_items[index]): continue
+		var node: VisualInstance3D = _render_items[index]
+		if not node.is_visible_in_tree(): continue
+		var box: AABB = node.global_transform * node.get_aabb()
+		var outside: bool = false
+		for plane: Plane in planes:
+			if plane.distance_to(box.get_center()) > (box.size * 0.5).dot(plane.normal.abs()):
+				outside = true
+				break
+		if outside: continue
+		visible.append(index)
+		if not _bridge_seen.has(index):
+			_bridge_seen[index] = true
+			entered.append(index)
+	# Actual geometry bounds, ignoring temporary preparation cull margins.
+	# Every pre-draw sample accompanies the following measured render interval;
+	# candidates still do not prove a GPU colour/shadow draw or compilation.
+	_bridge_context = {"sample_wall_ms": (started - _started_usec) / 1000.0, "candidate_ids": visible, "first_candidate_ids": entered, "sampling_ms": (Time.get_ticks_usec() - started) / 1000.0}
 
 func _sample_render_context(now: int) -> void:
 	if now < _render_next_usec or not is_instance_valid(game): return

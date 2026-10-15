@@ -1,8 +1,9 @@
 extends RefCounted
 ## Disposable local presentation cache. Canonical track compilation stays separate.
 const ARTIFACT = preload("res://track/road_mesh_artifact.gd")
-const FORMAT: String = "road-artifact-1"
+const FORMAT: String = "road-artifact-2"
 const MAX_FILE_BYTES: int = 32 * 1024 * 1024
+const MAX_RESIDENT_BYTES: int = 96 * 1024 * 1024
 const MAX_TOTAL_BYTES: int = 96 * 1024 * 1024
 const MAX_FILES: int = 8
 const MAX_MESHES: int = 4096 # Night roads are partitioned into light-sized tiles.
@@ -36,7 +37,7 @@ static func read_entry(key: Array) -> Dictionary:
 	# creator documents never provide filenames or serialized engine resources.
 	var artifact: Resource = ResourceLoader.load(path,"",ResourceLoader.CACHE_MODE_IGNORE)
 	if artifact == null or artifact.get_script() != ARTIFACT or artifact.cache_id != id: return {}
-	if artifact.estimated_bytes <= 0 or artifact.estimated_bytes > MAX_FILE_BYTES or artifact.meshes.is_empty() or artifact.meshes.size() > MAX_MESHES: return {}
+	if artifact.estimated_bytes <= 0 or artifact.estimated_bytes > MAX_RESIDENT_BYTES or artifact.meshes.is_empty() or artifact.meshes.size() > MAX_MESHES: return {}
 	for data: Dictionary in artifact.meshes:
 		if not data.has_all(["mesh","material","transform","layers","shadow"]): return {}
 		if not data.mesh is ArrayMesh or not data.material is ShaderMaterial or not data.transform is Transform3D: return {}
@@ -44,7 +45,7 @@ static func read_entry(key: Array) -> Dictionary:
 
 static func write_entry(entry: Dictionary) -> bool:
 	if directory.is_empty() or not entry.has_all(["key","meshes","metadata","bytes"]): return false
-	if int(entry.bytes) <= 0 or int(entry.bytes) > MAX_FILE_BYTES: return false
+	if int(entry.bytes) <= 0 or int(entry.bytes) > MAX_RESIDENT_BYTES or entry.meshes.is_empty() or entry.meshes.size() > MAX_MESHES: return false
 	if DirAccess.make_dir_recursive_absolute(directory) != OK: return false
 	var id: String = identity(entry.key)
 	var path: String = directory.path_join(id+".res")

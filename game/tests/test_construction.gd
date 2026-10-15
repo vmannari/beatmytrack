@@ -57,7 +57,7 @@ func run() -> void:
 	var wet: NativeTrack = TrackCompiler.compile(water)
 	check(wet.cell_at(Vector2.ZERO) == 3 and wet.cell_at(Vector2.ZERO,true) == 0,"painting ground water preserves the upper road")
 	var bridge := BridgePresentation.new(track)
-	check(is_equal_approx(bridge.height_at(Vector2.ZERO,0,1),3.5) and bridge.height_at(Vector2.ZERO,0,0) == 0,"same crossing has distinct top and bottom visual heights")
+	check(is_equal_approx(bridge.height_at(Vector2.ZERO,0,1),3.55) and is_equal_approx(bridge.height_at(Vector2.ZERO,0,0),0.05),"same crossing has distinct top and bottom asphalt heights with the cosmetic rise")
 	check(CreatorBridges.height(doc.pieces[1],Vector2(-30,0)) == 0 and CreatorBridges.height(doc.pieces[1],Vector2(30,0)) == 0,"both ramp ends meet ground")
 	check(CreatorBridges.height(doc.pieces[1],Vector2(-26,0)) > 0 and CreatorBridges.height(doc.pieces[1],Vector2(-26,0)) < 3.5,"ramp has continuous intermediate elevation")
 	check(not track.collision_elevated_at(Vector2.ZERO,0,1.364,0) and track.collision_elevated_at(Vector2.ZERO,0,1.364,1),"crossing preserves actual driving layer independently of lap tangent")
@@ -88,6 +88,11 @@ func run() -> void:
 	app.set("library",TrackLibrary.new(folder))
 	app.set("records",LocalRecords.new(folder+"/records.json"))
 	root.add_child(app)
+	# Startup now includes asynchronous native Garage preparation. Its final
+	# navigation must finish before opening the editor used by this workflow.
+	var began: int = Time.get_ticks_msec()
+	while not app.get("startup_complete") and Time.get_ticks_msec()-began < 30000: await process_frame
+	check(app.get("startup_complete"),"application startup completes before editor interaction")
 	app.set("document",doc)
 	app.call("_show_screen","create")
 	await process_frame

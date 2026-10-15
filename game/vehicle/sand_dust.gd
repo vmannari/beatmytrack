@@ -1,5 +1,8 @@
 class_name SandDust
 extends Node3D
+# Sixteen small authored emitter resource templates; no simulation state.
+static var prepared_emitters: Array[Dictionary] = []
+const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
 const PRESENTATION_VERSION: String = "desert-dust-21"
@@ -92,6 +95,18 @@ func _ready() -> void:
 		var mud := _emitter("Mud%d" % wheel,90,0.78,Vector2(0.14,0.22),Color(0.25,0.20,0.10,0.86),MODE_MUD)
 		mud_emitters.append(mud)
 		add_child(mud)
+
+
+func prepare_track(track: NativeTrack) -> void:
+	# Prepare dormant resources before the countdown, without sampling a vehicle
+	# or advancing emission, particle ages, bank impact counters or race clocks.
+	if track == null: return
+	_bind_bridges(track)
+	var theme: String = str(track.metadata.get("theme","pine"))
+	_set_desert_profile(theme == "desert")
+	if theme == "storm": _ensure_water()
+	if theme == "winter": _ensure_snow()
+	if not track.creator_bridges.is_empty() or track.bridge_height > 0.0: _ensure_deck_clouds()
 
 
 func _set_desert_profile(enabled: bool) -> void:
@@ -318,9 +333,17 @@ func _configure(emitter: GPUParticles3D, at: Vector3, wheel_velocity: Vector2, s
 
 
 func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: Color, mode: int) -> GPUParticles3D:
-	var spray: bool = mode in [MODE_SAND_SPRAY,MODE_CLIPPING,MODE_MUD]
+	var key: Array = [amount,lifetime,size,tint,mode]
 	var particles := GPUParticles3D.new()
 	particles.name = label
+	for entry: Dictionary in prepared_emitters:
+		if entry.key != key: continue
+		for property: String in entry.properties: particles.set(property,entry.properties[property])
+		particles.process_material = entry.process.duplicate()
+		particles.draw_pass_1 = entry.mesh.duplicate()
+		particles.draw_pass_1.surface_set_material(0,entry.material.duplicate())
+		return particles
+	var spray: bool = mode in [MODE_SAND_SPRAY,MODE_CLIPPING,MODE_MUD]
 	particles.amount = amount
 	particles.lifetime = lifetime
 	particles.randomness = 0.58
@@ -380,6 +403,22 @@ func _emitter(label: String, amount: int, lifetime: float, size: Vector2, tint: 
 	mesh.surface_set_material(0,_particle_material(mode))
 	particles.draw_pass_1 = mesh
 	particles.emitting = false
+	# Detached immutable resources only. Each live emitter owns every mutable
+	# process/material/mesh wrapper, including bridge and desert-profile uniforms.
+	var properties: Dictionary = {}
+	for property: String in ["amount","lifetime","randomness","fixed_fps","interpolate","fract_delta","local_coords","visibility_aabb","emitting"]: properties[property] = particles.get(property)
+	var template_mesh: Mesh = mesh.duplicate()
+	var template_material: Material = mesh.surface_get_material(0).duplicate()
+	template_mesh.surface_set_material(0,template_material)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var bytes: int = arrays[Mesh.ARRAY_VERTEX].size()*96+template_material.shader.code.to_utf8_buffer().size()+8192
+	for texture: Texture2D in [process.color_ramp,process.scale_curve]:
+		if texture != null: bytes += texture.get_width()*texture.get_height()*16
+	if bytes <= PREPARED_EMITTER_BYTES:
+		var total: int = bytes
+		for entry: Dictionary in prepared_emitters: total += int(entry.bytes)
+		while not prepared_emitters.is_empty() and (prepared_emitters.size() >= 16 or total > PREPARED_EMITTER_BYTES): total -= int(prepared_emitters.pop_front().bytes)
+		prepared_emitters.append({"key":key,"properties":properties,"process":process.duplicate(),"mesh":template_mesh,"material":template_material,"bytes":bytes})
 	return particles
 
 

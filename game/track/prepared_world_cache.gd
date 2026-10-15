@@ -70,7 +70,8 @@ static func _isolate_instances(node: Node) -> void:
 		copy.instance_count = source.instance_count
 		copy.visible_instance_count = source.visible_instance_count
 		# Dummy/headless rendering has no backing instance buffer.
-		if not source.buffer.is_empty(): copy.buffer = source.buffer
+		var buffer: PackedFloat32Array = source.buffer
+		if not buffer.is_empty(): copy.buffer = buffer
 		node.multimesh = copy
 	for child: Node in node.get_children(): _isolate_instances(child)
 

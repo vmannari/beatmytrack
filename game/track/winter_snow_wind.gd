@@ -8,9 +8,9 @@ const BANK_SLOTS: int = 12
 const WISPS: int = 3
 const BUCKET: float = 6.0
 const REFRESH: float = 0.25
-const VERSION: String = "winter-wind-12"
-const CALM_SPEED: float = 5.4
-const GUST_SPEED: float = 21.6
+const VERSION: String = "winter-wind-16"
+const CALM_SPEED: float = 12.0
+const GUST_SPEED: float = 18.0
 const AIR_GRAINS: int = 48
 var ground: MultiMeshInstance3D
 var powder: MultiMeshInstance3D
@@ -23,6 +23,7 @@ var center := Vector2.INF
 var elapsed: float = 0.0
 var travel: float = 0.0
 var intensity: float = 0.0
+var motion_intensity: float = 0.0
 var refresh_wait: float = 0.0
 var suspended: bool = false
 var enabled: bool = false
@@ -36,6 +37,8 @@ var surface_instances: Dictionary = {}
 var last_focus: Vector2 = Vector2.ZERO
 var surface_child_count: int = -1
 var car_visual: Node3D
+var _fallback_active: bool = true
+var _contact_sources_prepared: bool = false
 
 func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null) -> void:
 	_release_surfaces()
@@ -46,6 +49,7 @@ func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null
 	active_banks.clear()
 	sources_from_visual = false
 	sources_checked = false
+	_contact_sources_prepared = false
 	bank_visual = visual
 	source_track = track
 	if not enabled:
@@ -59,10 +63,8 @@ func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null
 		ground_material = ground.material_override
 		powder_material = powder.material_override
 	_bind_surfaces()
-	if _prepare_visual_sources(track):
-		reset()
-		return
-	_prepare_contact_sources(track)
+	_fallback_active = surface_materials.is_empty()
+	if _fallback_active and not _prepare_visual_sources(track): _prepare_contact_sources(track)
 	reset()
 
 func _prepare_visual_sources(track: NativeTrack) -> bool:
@@ -75,6 +77,7 @@ func _prepare_visual_sources(track: NativeTrack) -> bool:
 	var prepared: Dictionary = {}
 	var role_found: bool = false
 	for bank_mesh: MeshInstance3D in meshes:
+		if bank_mesh.mesh == null: continue
 		# The visual analytic crest differs from the raster contact bank. Source
 		# powder on the visible snow, once at build, without changing contacts.
 		for surface: int in range(bank_mesh.mesh.get_surface_count()):
@@ -102,6 +105,8 @@ func _prepare_visual_sources(track: NativeTrack) -> bool:
 	return false
 
 func _prepare_contact_sources(track: NativeTrack) -> void:
+	if _contact_sources_prepared: return
+	_contact_sources_prepared = true
 	# One anchor per spatial bucket, on the crest of an exposed upwind bank.
 	# Read prepared geometry once, rather than search the whole track each frame.
 	for triangle: Dictionary in track.snow_banks.triangles:
@@ -124,6 +129,7 @@ func reset() -> void:
 	elapsed = 0.0
 	travel = 0.0
 	intensity = 0.0
+	motion_intensity = 0.0
 	refresh_wait = 0.0
 	center = Vector2.INF
 	active_banks.clear()
@@ -131,6 +137,7 @@ func reset() -> void:
 		ground_material.set_shader_parameter("strength", 0.0)
 		powder_material.set_shader_parameter("strength", 0.0)
 		powder.multimesh.visible_instance_count = 0
+		if not surface_materials.is_empty(): ground.multimesh.visible_instance_count = 0
 		(airborne.material_override as ShaderMaterial).set_shader_parameter("strength",0.0)
 	_sync_surfaces()
 
@@ -140,22 +147,35 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: 
 	var step: float = minf(delta, 0.25)
 	elapsed += step
 	# Share the existing recorded wind's smooth gust envelope, without new audio.
-	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.24, 1.0, clampf(gust, 0.0, 1.0)), step * 1.5)
-	travel += step * lerpf(CALM_SPEED, GUST_SPEED, intensity)
+	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.12, 0.45, clampf(gust, 0.0, 1.0)), step * 1.5)
+	# Snow amount and transport speed stay independent, with restrained
+	# coverage and moderate travel rather than racing sheets of powder.
+	motion_intensity = move_toward(motion_intensity,clampf(gust,0.0,1.0),step*1.5)
+	travel += step * lerpf(CALM_SPEED, GUST_SPEED, motion_intensity)
 	var next_center: Vector2 = (focus / SPACING).floor() * SPACING
-	if center != next_center:
+	var center_changed: bool = center != next_center
+	if center_changed:
 		center = next_center
-		_place_ground()
 		refresh_wait = 0.0
 	refresh_wait -= step
-	if refresh_wait <= 0.0:
+	var refresh: bool = refresh_wait <= 0.0
+	if refresh:
 		_bind_surfaces()
-		# Native road construction may finish a few frames after race startup.
-		if not sources_checked and is_instance_valid(bank_visual):
-			_prepare_visual_sources(source_track)
-		_place_banks(focus)
 		refresh_wait = REFRESH
-	for material: ShaderMaterial in [ground_material, powder_material,airborne.material_override]:
+	var fallback: bool = surface_materials.is_empty()
+	if fallback:
+		if center_changed or not _fallback_active: _place_ground()
+		# Native road construction may finish a few frames after race startup.
+		if refresh or not _fallback_active:
+			if not sources_checked and is_instance_valid(bank_visual):
+				if not _prepare_visual_sources(source_track) and anchors.is_empty(): _prepare_contact_sources(source_track)
+			elif anchors.is_empty(): _prepare_contact_sources(source_track)
+			_place_banks(focus)
+	else:
+		if ground.multimesh.visible_instance_count != 0: ground.multimesh.visible_instance_count = 0
+		if powder.multimesh.visible_instance_count != 0: powder.multimesh.visible_instance_count = 0
+	_fallback_active = fallback
+	for material: ShaderMaterial in ([ground_material, powder_material,airborne.material_override] if fallback else [airborne.material_override]):
 		material.set_shader_parameter("elapsed", elapsed)
 		material.set_shader_parameter("travel", travel)
 		material.set_shader_parameter("strength", intensity)
@@ -163,19 +183,22 @@ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: 
 	airborne.multimesh.custom_aabb = AABB(VisualGeometry.world(focus)+Vector3(-80,-1,-80),Vector3(160,6,160))
 	last_focus = focus
 	_sync_surfaces()
-	if not surface_materials.is_empty():
-		# Actual opaque geometry owns road/terrain/bank powder. No floating cards.
-		ground.multimesh.visible_instance_count = 0
-		powder.multimesh.visible_instance_count = 0
 
 func _bind_surfaces() -> void:
 	if not enabled or not is_instance_valid(bank_visual): return
 	# Let prepared-world recording finish before installing run-owned finishes.
 	if bank_visual is NativeTrackVisual and not (bank_visual as NativeTrackVisual).world_built: return
 	# Native roads/bridges arrive as prepared children. After the sliced build,
-	# stable worlds need only this count check, not recurring scene traversal.
+	# stable worlds validate retained bindings/count without scene traversal.
 	var count: int = bank_visual.get_child_count()
-	if count == surface_child_count: return
+	# A replacement can retain the child count. Validate weak owners and the
+	# installed binding before treating integration as ready for this world.
+	var bindings_live: bool = surface_bindings.all(func(binding: Dictionary) -> bool:
+		var mesh: MeshInstance3D = binding.node.get_ref() as MeshInstance3D
+		if not is_instance_valid(mesh) or mesh.mesh == null or binding.surface >= mesh.mesh.get_surface_count(): return false
+		return (mesh.material_override if binding.surface < 0 else mesh.get_active_material(binding.surface)) == binding.material)
+	if count == surface_child_count and bindings_live and not surface_bindings.is_empty(): return
+	if not bindings_live: _release_surfaces()
 	surface_child_count = count
 	var pending: Array[Node] = [bank_visual]
 	while not pending.is_empty():
@@ -230,7 +253,7 @@ func _release_surfaces() -> void:
 		if not is_instance_valid(mesh): continue
 		var index: int = binding.surface
 		if index < 0 and mesh.material_override == binding.material: mesh.material_override = binding.original
-		elif index >= 0 and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
+		elif index >= 0 and mesh.mesh != null and index < mesh.mesh.get_surface_count() and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
 	surface_materials.clear(); surface_instances.clear(); surface_bindings.clear()
 	surface_child_count = -1
 

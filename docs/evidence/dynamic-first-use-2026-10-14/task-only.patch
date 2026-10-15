@@ -1,0 +1,584 @@
+diff --git a/game/vehicle/sand_dust.gd b/game/vehicle/sand_dust.gd
+--- a/game/vehicle/sand_dust.gd
++++ b/game/vehicle/sand_dust.gd
+@@ -95,6 +95,18 @@
+ 		var mud := _emitter("Mud%d" % wheel,90,0.78,Vector2(0.14,0.22),Color(0.25,0.20,0.10,0.86),MODE_MUD)
+ 		mud_emitters.append(mud)
+ 		add_child(mud)
++
++
++func prepare_track(track: NativeTrack) -> void:
++	# Prepare dormant resources before the countdown, without sampling a vehicle
++	# or advancing emission, particle ages, bank impact counters or race clocks.
++	if track == null: return
++	_bind_bridges(track)
++	var theme: String = str(track.metadata.get("theme","pine"))
++	_set_desert_profile(theme == "desert")
++	if theme == "storm": _ensure_water()
++	if theme == "winter": _ensure_snow()
++	if not track.creator_bridges.is_empty() or track.bridge_height > 0.0: _ensure_deck_clouds()
+ 
+ 
+ func _set_desert_profile(enabled: bool) -> void:
+diff --git a/game/vehicle/effect_render_preparation.gd b/game/vehicle/effect_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/effect_render_preparation.gd
+@@ -0,0 +1,91 @@
++extends RefCounted
++## Temporary draws reuse the actual particle/process/mesh materials. Live effect
++## nodes, GPU particle ages, trail slots and canonical state remain untouched.
++const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","GroundDrifts","BankPowder","AirborneGrains"]
++
++static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
++	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}
++	if DisplayServer.get_name() == "headless" or world == null or camera == null: return prepared
++	var center: Vector3 = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
++	if effects != null and effects.is_visible_in_tree():
++		for source: Node in effects.get_children():
++			if not source is GPUParticles3D or not source.is_visible_in_tree(): continue
++			var particles := GPUParticles3D.new()
++			particles.name = "Covered"+str(source.name)
++			# The enclosing Game is disabled until the full countdown can begin.
++			particles.process_mode = Node.PROCESS_MODE_ALWAYS
++			for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
++				particles.set(property,source.get(property))
++			particles.amount = 1
++			particles.one_shot = true
++			particles.explosiveness = 1.0
++			particles.randomness = 0.0
++			particles.preprocess = minf(source.lifetime*0.2,0.05)
++			particles.process_material = source.process_material
++			particles.draw_passes = source.draw_passes
++			for pass_index: int in range(source.draw_passes): particles.set_draw_pass_mesh(pass_index,source.get_draw_pass_mesh(pass_index))
++			particles.visibility_aabb = source.visibility_aabb
++			world.add_child(particles)
++			particles.global_position = center
++			prepared.nodes.append(particles)
++			prepared.particles += 1
++	# Empty debris and inactive weather batches need their instanced draw path,
++	# not a plain MeshInstance proxy. The original buffers/populations stay exact.
++	for source: Node in world.find_children("*","MultiMeshInstance3D",true,false):
++		if str(source.name) not in BATCH_NAMES or not source.is_visible_in_tree() or source.multimesh.mesh == null: continue
++		var resource: MultiMesh = source.multimesh
++		var instances := MultiMesh.new()
++		instances.transform_format = resource.transform_format
++		instances.use_colors = resource.use_colors
++		instances.use_custom_data = resource.use_custom_data
++		instances.mesh = resource.mesh
++		instances.instance_count = 1
++		instances.set_instance_transform(0,Transform3D(Basis.IDENTITY,source.to_local(center)))
++		if resource.use_colors: instances.set_instance_color(0,Color.WHITE)
++		if resource.use_custom_data: instances.set_instance_custom_data(0,Color(0.5,0.5,0,1))
++		var batch := MultiMeshInstance3D.new()
++		batch.name = "Covered"+str(source.name)
++		batch.multimesh = instances
++		batch.material_override = source.material_override
++		batch.material_overlay = source.material_overlay
++		batch.cast_shadow = source.cast_shadow
++		batch.layers = source.layers
++		world.add_child(batch)
++		batch.global_transform = source.global_transform
++		batch.extra_cull_margin = 2.0
++		prepared.nodes.append(batch)
++		prepared.batches += 1
++	# Damage phases use the prepared originals; only the temporary cull margin
++	# and hidden-child flag are borrowed, then restored even after cancellation.
++	for source: Node in world.find_children("*","MeshInstance3D",true,false):
++		if not source.get_parent().has_meta("breakable_kind") or not str(source.name).begins_with("DamagePhase"): continue
++		if not source.get_parent().is_visible_in_tree(): continue
++		prepared.restore.append({"node":source,"visible":source.visible,"margin":source.extra_cull_margin})
++		source.visible = true
++		var delta: Vector3 = (source.to_local(camera.global_position)-source.get_aabb().get_center()).abs()
++		source.extra_cull_margin = maxf(source.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
++		prepared.damage_meshes += 1
++	# The normally hidden crash glass has its own canvas shader. Draw its actual
++	# texture/material without inventing an impact or changing retained damage.
++	if impact != null and impact.material != null and impact.texture != null:
++		var glass := TextureRect.new()
++		glass.name = "CoveredImpactPreparation"
++		glass.texture = impact.texture
++		glass.material = impact.material
++		for property: String in ["expand_mode","stretch_mode","texture_filter","texture_repeat","light_mask","z_index"]: glass.set(property,impact.get(property))
++		glass.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		impact.get_parent().add_child(glass)
++		glass.position = impact.position
++		glass.size = impact.size
++		prepared.nodes.append(glass)
++		prepared.canvas += 1
++	return prepared
++
++static func end(prepared: Dictionary) -> void:
++	for entry: Dictionary in prepared.get("restore",[]):
++		if is_instance_valid(entry.node):
++			entry.node.visible = entry.visible
++			entry.node.extra_cull_margin = entry.margin
++	for node: Variant in prepared.get("nodes",[]):
++		if is_instance_valid(node): node.free()
++	prepared.clear()
+diff --git a/game/vehicle/effect_render_preparation.gd.uid b/game/vehicle/effect_render_preparation.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/vehicle/effect_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://dlnupu2nwnjaq
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -134,6 +134,8 @@
+ var hazards_prepared: bool = false
+ var hazard_preparation_meshes: int = 0
+ var trails_prepared: bool = false
++var effects_prepared: bool = false
++var effect_preparation_counts: Dictionary = {}
+ var hitch_diagnostics_enabled: bool = true
+ var hitch_diagnostics: Node
+ var profile_skip_telemetry: bool = false
+@@ -224,6 +226,7 @@
+ 	sand_dust.track_width = handling.track_width
+ 	sand_dust.collision_radius = handling.collision_radius
+ 	world.add_child(sand_dust)
++	sand_dust.prepare_track(native_track)
+ 	if native_track != null and native_track.metadata.get("theme", "pine") == "winter":
+ 		sand_dust.configure_snow_surface(track_ground)
+ 	vehicle_audio = VehicleAudio.new()
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3118,6 +3118,9 @@
+ 	var trail_preparation = preload("res://vehicle/trail_render_preparation.gd")
+ 	var prepared_trail: MultiMeshInstance3D = trail_preparation.begin(game.get("trails"), game.get("camera"), track, game.get("sim").state)
+ 	var trail_warmed: bool = prepared_trail != null
++	var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")
++	var prepared_effects: Dictionary = effect_preparation.begin(game.get_node("World"),game.get("sand_dust"),game.get("camera"),game.get("impact_cracks"))
++	var effect_counts: Dictionary = {"particles":prepared_effects.particles,"batches":prepared_effects.batches,"damage_meshes":prepared_effects.damage_meshes,"canvas":prepared_effects.canvas}
+ 	var preparation_started: int = Time.get_ticks_usec()
+ 	var finish_drawn: bool = await _present_race_loading()
+ 	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+@@ -3126,7 +3129,8 @@
+ 	# Restore even if navigation or the loading deadline removed the game.
+ 	bridge_preparation.end(prepared_bridges)
+ 	bridge_preparation.end(prepared_hazards)
+-	trail_preparation.end(prepared_trail)
++	if is_instance_valid(prepared_trail): trail_preparation.end(prepared_trail)
++	effect_preparation.end(prepared_effects)
+ 	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
+ 	# Always restore after the bounded draw wait, including cancellation/focus loss.
+ 	prepared_finish.end_render_warmup()
+@@ -3150,6 +3154,8 @@
+ 	game.set("hazards_prepared", finish_drawn and hazard_meshes > 0)
+ 	game.set("hazard_preparation_meshes", hazard_meshes)
+ 	game.set("trails_prepared", finish_drawn and trail_warmed)
++	game.set("effects_prepared", finish_drawn and effect_counts.particles > 0)
++	game.set("effect_preparation_counts",effect_counts)
+ 	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
+ 	game.set("bridge_preparation_ms", preparation_ms)
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+diff --git a/game/diagnostics/race_hitch_monitor.gd b/game/diagnostics/race_hitch_monitor.gd
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -107,6 +107,7 @@
+ 	row.bridge_preparation = {"drawn": bool(game.get("bridge_prepared")), "meshes": int(game.get("bridge_preparation_meshes")), "shared_draw_ms": float(game.get("bridge_preparation_ms"))}
+ 	row.hazard_preparation = {"drawn": bool(game.get("hazards_prepared")), "meshes": int(game.get("hazard_preparation_meshes"))}
+ 	row.trails_prepared = bool(game.get("trails_prepared"))
++	row.effect_preparation = {"drawn":bool(game.get("effects_prepared")),"counts":game.get("effect_preparation_counts").duplicate()}
+ 	row.previous_bridge_context = _bridge_context
+ 	var track: NativeTrack = game.get("native_track")
+ 	row.track_hash = track.content_hash if track != null else ""
+diff --git a/game/tests/test_dynamic_render_preparation.gd b/game/tests/test_dynamic_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_dynamic_render_preparation.gd
+@@ -0,0 +1,267 @@
++extends SceneTree
++## First-use resource creation, actual instanced/particle draw coverage and exact
++## restore. All vehicle/track/records fixtures belong to this test.
++const EFFECTS = preload("res://vehicle/effect_render_preparation.gd")
++const TRAILS = preload("res://vehicle/trail_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++var metrics: Array[Dictionary] = []
++var output: String
++var world: Node3D
++var camera: Camera3D
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func frames(count: int = 3) -> void:
++	for i: int in range(count):
++		if DisplayServer.get_name() == "headless": await process_frame
++		else: await RenderingServer.frame_post_draw
++
++func value(v: Variant) -> Variant:
++	if v is Shader: return v.code
++	if v is CurveTexture: return value(v.curve)
++	if v is GradientTexture1D: return value(v.gradient)
++	if v is Texture2D:
++		var pixels: Image = v.get_image()
++		return pixels.get_data() if pixels != null else [v.get_class(),v.get_width(),v.get_height()]
++	if v is Resource:
++		var data: Dictionary = {"type":v.get_class()}
++		for property: Dictionary in v.get_property_list():
++			if int(property.usage)&PROPERTY_USAGE_STORAGE and not str(property.name).begins_with("resource_"):
++				data[property.name] = value(v.get(property.name))
++		return data
++	if v is Array:
++		var data: Array = []
++		for item: Variant in v: data.append(value(item))
++		return data
++	if v is Dictionary:
++		var data: Dictionary = {}
++		for key: Variant in v: data[key] = value(v[key])
++		return data
++	return v
++
++func emitters(effects: Node3D) -> Array:
++	var data: Array = []
++	for source: GPUParticles3D in effects.get_children():
++		var entry: Dictionary = {"name":str(source.name),"pose":source.transform,"process":value(source.process_material),"mesh":source.draw_pass_1.surface_get_arrays(0),"material":value(source.draw_pass_1.surface_get_material(0))}
++		for field: String in ["amount","amount_ratio","lifetime","fixed_fps","fract_delta","interpolate","local_coords","visibility_aabb","emitting","speed_scale","one_shot","explosiveness","randomness","cast_shadow","layers"]: entry[field] = source.get(field)
++		data.append(entry)
++	return data
++
++func ring(trails: SkidTrails) -> PackedByteArray:
++	return var_to_bytes([trails.instances.instance_count,trails.instances.visible_instance_count,trails.instances.buffer,trails.cursor,trails.active,trails.mark_transforms,trails.mark_colors,trails.mark_custom,trails._previous_marks,trails._previous_ends,trails._previous_sides,trails._previous_types])
++
++func case(theme: String, bridge: bool, legacy: GDScript) -> void:
++	var label: String = theme+("-bridge" if bridge else "-ground")
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	track.metadata.theme = theme
++	if bridge: track.bridge_height = 2.0
++	var state := VehicleState.new(); state.position = track.spawn; state.velocity = Vector2(0,12)
++	var frame: DriveFrame = DriveFrame.sample(0,1,0)
++	var expected: Node3D = legacy.new(); world.add_child(expected)
++	var effects := SandDust.new(); world.add_child(effects)
++	var began: int = Time.get_ticks_usec()
++	check(effects.snow_burst_count == 0,"initial impact count is empty")
++	effects.prepare_track(track)
++	var prepare_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	var prepared_count: int = effects.get_child_count()
++	# Compare with the approved original resource routines at their first use.
++	expected._bind_bridges(track); expected._set_desert_profile(theme == "desert")
++	if theme == "winter": expected._ensure_snow()
++	if theme == "storm": expected._ensure_water()
++	if bridge: expected._ensure_deck_clouds()
++	check(value(emitters(effects)) == value(emitters(expected)),label+" prepared emitters have exact original geometry, process/materials and budgets")
++	check(effects.snow_burst_count == 0 and not effects.snow_previous_valid and effects.last_strengths == PackedFloat32Array([0,0,0,0]),label+" resource preparation advances no effects/impact state")
++	var poses: Dictionary = RewindHistory.properties(state)
++	began = Time.get_ticks_usec(); effects.sample(state,frame,track)
++	var first_sample_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(effects.get_child_count() == prepared_count,label+" first driving sample allocates no emitter nodes")
++	check(RewindHistory.properties(state) == poses,label+" resource and effect sampling leave the vehicle unchanged")
++	effects.clear(); expected.free()
++	var trails := SkidTrails.new(); world.add_child(trails)
++	var original_ring: PackedByteArray = ring(trails)
++	var before: Array = emitters(effects)
++	var camera_pose: Transform3D = camera.transform
++	await frames(8)
++	var image: Image = root.get_texture().get_image() if DisplayServer.get_name() != "headless" else null
++	var start_draws: float = Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
++	world.process_mode = Node.PROCESS_MODE_DISABLED
++	began = Time.get_ticks_usec()
++	var prepared: Dictionary = EFFECTS.begin(world,effects,camera)
++	var trail: MultiMeshInstance3D = TRAILS.begin(trails,camera,track,state)
++	check(prepared.particles == (prepared_count if image != null else 0),label+" loading prepares every existing particle pipeline")
++	check((trail != null) == (image != null),label+" tire preparation uses an actual MultiMesh draw on graphical renderers")
++	if image != null:
++		check(trail.multimesh.mesh == trails.instances.mesh and trail.multimesh.instance_count == 1,label+" tire proxy retains the exact parallel ribbon mesh and one slot")
++		check((trail.material_override as ShaderMaterial).shader == trails._bridge_material.shader,label+" tire proxy retains the exact live shader")
++		for index: int in range(prepared.particles):
++			var proxy: GPUParticles3D = prepared.nodes[index]; var source: GPUParticles3D = effects.get_child(index)
++			check(proxy.process_material == source.process_material and proxy.draw_pass_1 == source.draw_pass_1 and proxy.amount == 1 and proxy.process_mode == Node.PROCESS_MODE_ALWAYS,label+" bounded particle proxy uses the live compute/draw material while Game is disabled")
++	await frames(3)
++	var draw_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	var warm_draws: float = Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
++	if image != null: check(warm_draws > start_draws,label+" preparation produced real particle/instanced draw calls")
++	TRAILS.end(trail); EFFECTS.end(prepared); EFFECTS.end(prepared)
++	world.process_mode = Node.PROCESS_MODE_INHERIT
++	await frames(3)
++	check(emitters(effects) == before,label+" original particle poses/resources/emission and budgets restore exactly")
++	check(ring(trails) == original_ring and trails.instances.instance_count == 16384,label+" original complete tire ring and sampling state are byte exact")
++	check(camera.transform == camera_pose and RewindHistory.properties(state) == poses,label+" render preparation preserves camera and vehicle state")
++	if image != null:
++		var after: Image = root.get_texture().get_image()
++		check(image.get_data() == after.get_data(),label+" no temporary marks, particles or shadows remain in restored pixels")
++		image.save_png(output.path_join(label+"-before.png")); after.save_png(output.path_join(label+"-after.png"))
++	var first_live_draw_ms: float = 0.0
++	var live_draw_delta: float = 0.0
++	if image != null:
++		var draw_pipelines: float = Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)
++		var pulse: Array[Dictionary] = []
++		var center: Vector3 = camera.global_position-camera.global_basis.z*10.0
++		began = Time.get_ticks_usec()
++		for source: GPUParticles3D in effects.get_children():
++			pulse.append({"node":source,"pose":source.transform,"ratio":source.amount_ratio,"speed":source.speed_scale})
++			source.global_position = center
++			source.speed_scale = 1.0
++			source.amount_ratio = 1.0
++			source.emitting = true
++		await frames(1)
++		first_live_draw_ms = (Time.get_ticks_usec()-began)/1000.0
++		live_draw_delta = Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)-draw_pipelines
++		if RenderingServer.get_current_rendering_method() != "gl_compatibility": check(live_draw_delta == 0,label+" first live emission needs no new on-demand draw pipeline")
++		for entry: Dictionary in pulse:
++			entry.node.restart(true); entry.node.emitting = false
++			entry.node.transform = entry.pose; entry.node.amount_ratio = entry.ratio; entry.node.speed_scale = entry.speed
++		await frames(3)
++		check(emitters(effects) == before,label+" actual first-live emission leaves the original resources/budgets intact")
++	var cancel: Dictionary = EFFECTS.begin(world,effects,camera)
++	for node: Node in cancel.nodes: node.free()
++	EFFECTS.end(cancel)
++	check(cancel.is_empty(),label+" restoration handles deleted temporary nodes")
++	metrics.append({"case":label,"emitters":prepared_count,"prepare_resources_ms":prepare_ms,"first_sample_ms":first_sample_ms,"covered_three_draws_ms":draw_ms,"draws_before":start_draws,"draws_prepared":warm_draws,"first_live_draw_ms":first_live_draw_ms,"live_draw_pipeline_delta":live_draw_delta})
++	trails.free(); effects.free(); await frames(1)
++
++func inactive_batches() -> void:
++	var debris := Node3D.new(); world.add_child(debris)
++	BreakablePropVisual.ensure_debris(debris)
++	var kit := NativeTrackVisual.new()
++	var props: Array[Node3D] = []
++	for kind: String in ["hay_bale","crate"]:
++		var node := Node3D.new(); node.position = Vector3(50,0,0); debris.add_child(node)
++		BreakablePropVisual.build(node,kit,kind,1.0); props.append(node)
++	kit.free()
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json"); track.metadata.theme = "winter"
++	var weather := WinterSnowWind.new(); world.add_child(weather); weather.configure(track)
++	var impact := ImpactCracks.new(); world.add_child(impact)
++	var damage: Vector4 = impact.side_damage
++	var impact_material: Material = impact.material
++	var originals: Array[Dictionary] = []
++	for node: Node in world.find_children("*","MultiMeshInstance3D",true,false):
++		originals.append({"node":node,"mesh":node.multimesh.mesh,"buffer":node.multimesh.buffer,"count":node.multimesh.instance_count,"visible_count":node.multimesh.visible_instance_count,"material":node.material_override})
++	var phases: Array[Dictionary] = []
++	for prop: Node3D in props:
++		for node: MeshInstance3D in prop.get_children(): phases.append({"node":node,"visible":node.visible,"margin":node.extra_cull_margin,"mesh":node.mesh,"material":node.material_override,"pose":node.transform})
++	await frames(8)
++	var image: Image = root.get_texture().get_image() if DisplayServer.get_name() != "headless" else null
++	var prepared: Dictionary = EFFECTS.begin(world,null,camera,impact)
++	check(prepared.canvas == (1 if image != null else 0),"normally hidden crash glass gets its actual canvas shader preparation")
++	check(prepared.batches == (5 if image != null else 0),"empty wood/hay and all three original winter batches receive instanced preparation")
++	check(prepared.damage_meshes == (6 if image != null else 0),"hidden original hay/crate damage phases prepare under cover")
++	await frames(3)
++	EFFECTS.end(prepared)
++	await frames(3)
++	for row: Dictionary in originals:
++		check(row.node.multimesh.mesh == row.mesh and row.node.multimesh.buffer == row.buffer and row.node.multimesh.instance_count == row.count and row.node.multimesh.visible_instance_count == row.visible_count and row.node.material_override == row.material,"weather/debris mesh, complete buffer, populations and material ownership restore exactly")
++	for row: Dictionary in phases:
++		check(row.node.mesh == row.mesh and row.node.material_override == row.material and row.node.transform == row.pose and row.node.visible == row.visible and row.node.extra_cull_margin == row.margin,"damage phase visibility, geometry, finish, transform and cull margins restore exactly")
++	check(not impact.visible and impact.side_damage == damage and impact.strength == 0 and impact.material == impact_material,"crash-glass preparation preserves actual damage, visibility and material ownership")
++	if image != null:
++		var after: Image = root.get_texture().get_image()
++		check(after.get_data() == image.get_data(),"inactive debris/weather and damage preparation restore exact pixels")
++		image.save_png(output.path_join("batches-before.png")); after.save_png(output.path_join("batches-after.png"))
++	prepared = EFFECTS.begin(world,null,camera,impact)
++	debris.free(); weather.free(); impact.free()
++	EFFECTS.end(prepared)
++	check(prepared.is_empty(),"deleted original phase and temporary batch nodes are safe to restore")
++
++func ring_costs() -> void:
++	var trails := SkidTrails.new(); world.add_child(trails); trails.set_process(false)
++	var written: int = 0
++	var rows: Array[Dictionary] = []
++	for target: int in [511,1023,1024,4096,16384,16385]:
++		var began: int = Time.get_ticks_usec()
++		var peak: int = 0
++		while written < target:
++			var at := Vector3((written/512)*100+(written%512)*0.016,0.03,0)
++			var start: int = Time.get_ticks_usec()
++			trails._mark(at,at+Vector3(0,0,0.32),0.0,2,0.58)
++			peak = maxi(peak,Time.get_ticks_usec()-start)
++			written += 1
++		var append_ms: float = (Time.get_ticks_usec()-began)/1000.0
++		began = Time.get_ticks_usec()
++		trails.trail_visibility.present(camera,trails.mark_colors,trails.mark_custom,trails.global_transform)
++		var view_ms: float = (Time.get_ticks_usec()-began)/1000.0
++		check(trails.instances.instance_count == 16384 and trails.get_child_count() == 1,"visibility threshold/wrap retains the full single-batch tire ring")
++		check(trails.trail_visibility.retained_count == mini(target,16384),"visibility threshold/wrap preserves every retained tire slot")
++		rows.append({"written":target,"append_block_ms":append_ms,"slowest_append_ms":peak/1000.0,"view_ms":view_ms,"drawn":trails.instances.visible_instance_count})
++	trails.free()
++	FileAccess.open(output.path_join("ring-costs.json"),FileAccess.WRITE).store_string(JSON.stringify(rows,"\t"))
++
++func app_launch() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var folder: String = ProjectSettings.globalize_path("res://../build/dynamic-preparation-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder.path_join("records.json")); app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json"); track.metadata.theme = "storm"
++	track.metadata.cloud_version = "isolated-effect-preparation"
++	app.selected_track = track
++	var condition := VehicleWeathering.new(); condition.deposit_color = VehicleWeathering.COLORS.storm; condition.dirt_amount = 0.125
++	check(VehicleCondition.save(app.records,VehicleCatalog.selected,condition.snapshot()) == OK,"disposable app starts with real existing local condition")
++	var saved_condition: Dictionary = app.records.settings.vehicle_conditions.duplicate(true)
++	app._start_race(track,false,true)
++	var revealed: Dictionary = {}
++	app.race_loading.tree_exiting.connect(func() -> void:
++		if is_instance_valid(app.game): revealed.tick = app.game.sim.state.tick; revealed.countdown = app.game.countdown_ticks)
++	var started: int = Time.get_ticks_msec()
++	while app.cloud_starting and Time.get_ticks_msec()-started < 15000: await process_frame
++	check(is_instance_valid(app.game) and not app.cloud_starting,"actual covered dynamic preparation completes")
++	if is_instance_valid(app.game):
++		app.game.set_physics_process(false)
++		check(revealed.get("tick",-1) == 0 and revealed.get("countdown",-1) == 360 and app.game.track_session.target_laps == 5,"actual reveal retains tick zero, full countdown and five ordinary laps")
++		check(app.game.effects_prepared == (DisplayServer.get_name() != "headless") and app.game.effect_preparation_counts.particles == (24 if DisplayServer.get_name() != "headless" else 0),"actual loading reports graphical preparation with all water/ordinary effect families")
++		check(app.game.effect_preparation_counts.canvas == (1 if DisplayServer.get_name() != "headless" else 0) and not app.game.impact_cracks.visible and app.game.impact_cracks.side_damage == Vector4.ZERO,"actual loading prepares the crash shader without claiming an impact")
++		check(app.game.sand_dust.water_drops.size() == 4 and not app.game.sand_dust.get_children().any(func(node: GPUParticles3D) -> bool: return node.emitting),"water resources exist while the actual race starts with no artificial emissions")
++		check(app.game.get_node("World").find_children("Covered*","",true,false).is_empty(),"actual reveal contains no temporary preparation nodes")
++		check(app.game.trails.cursor == 0 and app.game.trails.instances.visible_instance_count == 0 and app.game.trails.instances.instance_count == 16384,"actual reveal retains empty complete tire ring")
++		check(app.records.settings.vehicle_conditions == saved_condition,"loading preserves actual saved local condition")
++		app._leave_race()
++	app.free(); await process_frame
++
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../docs/evidence/dynamic-first-use-2026-10-14/"+("headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method()))
++	if "--components-only" in OS.get_cmdline_user_args(): output = output.path_join("components")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(640,360)
++	world = Node3D.new(); root.add_child(world)
++	camera = Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 20; world.add_child(camera); camera.position = Vector3(0,15,10); camera.look_at(Vector3.ZERO); camera.current = true
++	var light := DirectionalLight3D.new(); light.shadow_enabled = true; light.rotation_degrees = Vector3(-58,-35,0); world.add_child(light)
++	VisualGeometry.box(world,Vector3(40,0.1,40),Vector3(0,-0.1,0),VisualGeometry.material(Color("647158")))
++	var legacy := GDScript.new()
++	legacy.source_code = FileAccess.get_file_as_string("res://../docs/evidence/dynamic-first-use-2026-10-14/before/game/vehicle/sand_dust.gd").replace("class_name SandDust","")
++	check(legacy.reload() == OK,"original resource builder compiles as a diagnostic copy")
++	for theme: String in TrackTheme.IDS:
++		await case(theme,false,legacy)
++		await case(theme,true,legacy)
++	await inactive_batches()
++	ring_costs()
++	world.free()
++	if not ("--components-only" in OS.get_cmdline_user_args()): await app_launch()
++	var file := FileAccess.open(output.path_join("resources.json"),FileAccess.WRITE);file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"));file.close()
++	print("DYNAMIC_PREPARATION: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_dynamic_render_preparation.gd.uid b/game/tests/test_dynamic_render_preparation.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_dynamic_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://bu2kei3fyn7at
+diff --git a/docs/DYNAMIC_FIRST_USE_HITCHES_2026_10_14.md b/docs/DYNAMIC_FIRST_USE_HITCHES_2026_10_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DYNAMIC_FIRST_USE_HITCHES_2026_10_14.md
+@@ -0,0 +1,96 @@
++# Dynamic first-use hitch checks ? 2026-10-14
++
++Owner request: ?check that the tire marks and other similar dynamic items won't cause the hitches?. Requirements DRH01?DRH05 / Q01 / G01 / R01 / V03 / V05. The check found real uncovered first-use paths and prepares them during loading. It does **not** establish that every driver/OS stall is impossible.
++
++## Findings and changes
++
++The [previous phone trace](DESERT_HITCH_INVESTIGATION_2026_10_13.md) records a separate 974.903 ms Mali compiler event near tick86/route3. The tire cursor changes4?12 and the following context identifies its first MultiMesh draw. This is a first-visible shader/driver lead; it does not show that the approved ribbon geometry, pressure, sampling or 16,384-slot budget is defective.
++
++Concurrent tire work now adds `TrailRenderPreparation`: one temporary MultiMesh slot uses the **actual original mesh, live Shader RID and the parallel renderer's existing encoder** under the cover. This task preserves that work, independently verifies its exact ring/mesh/shader/pixel invariants, and adds a validity guard at the common teardown call. `skid_trails.gd` and `trail_visibility.gd` are byte-identical to this task's initial snapshots. The tire helper and its own test are excluded from this task's checkpoint as concurrent work.
++
++| ID | Uncovered path | Implemented or verified measure |
++| --- | --- | --- |
++| DRH01 | Tire ring starts with zero visible instances; loading a material does not submit an actual instanced draw. | Verify the concurrent covered tire draw. Retain original full ring, one racing batch, four-wheel/.32 m sampling, geometry, pressure and all artwork. |
++| DRH02 | `_ensure_water`, `_ensure_snow`, `_ensure_deck_clouds` allocate GPU nodes/materials/geometry on the first relevant driving sample. Desert profile also changes cloud/spray geometry and process resources at first sample. | `SandDust.prepare_track` calls the same approved resource routines during Game construction, before the cover is released. Storm water and Winter snow resources are ready; bridge dust is ready for creator and legacy native bridges. No fake vehicle sample, emission, bank impact or race-clock advance is used. |
++| DRH03 | Dormant dust/smoke/clippings/mud/spray/water/snow materials and their particle process shaders can remain undrawn until driving. | Temporary one-particle emitters reuse each original process material and draw mesh. They run while Game is disabled, with bounded .05 s maximum pre-process, in the actual camera/world/render context. Live emitters, particle ages, positions, settings and materials are untouched. Temporary nodes are freed before the clean reveal. |
++| DRH04 | Empty wood/hay MultiMeshes, inactive Winter batches and hidden damage-phase meshes have latent instancing/shadow/material paths. | One temporary instanced draw per existing debris/weather batch preserves its actual mesh/material/instance format. Original damage phases borrow visibility/cull margins only during the covered draw, then restore exactly. No real fragment/population/buffer or prop integrity changes. |
++| DRH05 | Crash-glass shader is attached but its TextureRect remains hidden until the first heavy contact. | One temporary TextureRect uses its actual texture/material under the same cover, without setting damage. Existing glass visibility, side damage, strength and material ownership stay exact. The hitch logger records effect preparation/counts alongside the existing tire/bridge/hazard context. |
++
++All preparation uses the existing covered draw and clean reveal, with the full 360-tick countdown intact. It adds no new visible player UI, renderer/shader source, retained material cache or racing draw budget. Temporary counts are bounded by the actual existing effect population: 20 ordinary emitters; plus4 Storm water,12 Winter snow, and8 deck emitters when a bridge exists. Each temporary emitter has one particle. The temporary batch/canvas/phase resources are released on normal completion and cancellation, including already-deleted nodes.
++
++Resource creation and driver preparation move into loading. This can increase cold loading work, because previously some of that work occurred during driving. It does not eliminate the work. Dormant track-specific GPU resources also exist earlier in the scene; their eventual original emission amounts/lifetimes and the existing prepared-emitter cache bounds stay unchanged. Exact baseline comparisons use the pre-change resource routines, including original nine-second Desert dust.
++
++[Godot's documented Compatibility approach](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html) requires drawing first-use materials/particles in view during loading; preloading a resource alone is insufficient. Modern renderer pipeline counters complement this check. [GPUParticles3D documentation](https://docs.godotengine.org/en/stable/classes/class_gpuparticles3d.html) also distinguishes particle creation/process behavior; `emit_particle` is unavailable in Compatibility, so this implementation uses bounded temporary emitters with the real resources.
++
++## Actual verification and measurements
++
++Pinned Godot **4.7.2.stable.official.ed1daf0bf**, Windows, NVIDIA RTX3090. Desktop Compatibility/OpenGL and Mobile/Vulkan are tested; neither is a physical-phone performance measurement. The shared host and already-warm OS/driver caches limit timing interpretation. No driver cache was deleted.
++
++Final `test_dynamic_render_preparation.gd` checks all five themes, with/without legacy bridge availability, then inactive wood/hay/weather/damage/canvas paths and an actual offline Storm App launch. It compares original emitter geometry/process/material/budgets exactly, checks no first-sample emitter allocation, observes real additional draw calls while the enclosing world is disabled, and requires byte-exact restored pixels, camera and tire-ring data. The actual App reveal requires tick0/full countdown/five laps, an empty original tire ring, no artificial live emissions, no temporary nodes, prepared water resources and unchanged existing saved car condition.
++
++| Completed check | Actual final result |
++| --- | --- |
++| Dynamic preparation, Compatibility | **471 checks, zero failures**, normal exit |
++| Dynamic preparation, desktop Mobile/Vulkan | **481 checks, zero failures**, normal exit |
++| Dynamic preparation, headless | **148 checks, zero failures**, normal exit; no graphical preparation claimed |
++| Existing tire-preparation fixture, headless | 26 checks, zero failures |
++| Bridge dust/masks/layer lifecycle, Compatibility | 121 checks, zero failures |
++| Snow-bank behavior/impact profiles | 51,852 checks, zero failures |
++| Breakable props/debris/replay | 46 checks, zero failures |
++| Local condition/washing | 1,383 checks, zero failures |
++| Hitch logger | 45 checks, zero failures; deliberately delayed persistence remains diagnosed |
++| Over/under loading/deadlines | 26 checks, zero failures; intentional timeout warnings |
++| Driving / rewind | 72 /61 checks, zero failures |
++| App integration | 99 checks, zero failures |
++| Full project script compilation | 714 scripts, zero failures |
++
++Final raw results: [Compatibility](evidence/dynamic-first-use-2026-10-14/gl_compatibility/resources.json), [desktop Mobile/Vulkan](evidence/dynamic-first-use-2026-10-14/mobile/resources.json), [headless](evidence/dynamic-first-use-2026-10-14/headless/resources.json). Final desktop first-live particle draws after covered preparation take **0.995?1.256 ms** in Compatibility and **0.789?1.774 ms** in Mobile/Vulkan across the ten isolated cases. The first CPU driving sample stays below **.213/.304 ms** respectively and creates no emitters. These are fixture frame intervals, not whole-race FPS or a cleared-driver-cache benchmark.
++
++Every Mobile/Vulkan case reports **zero new on-demand draw pipelines** at first live particle emission. Compatibility's counters cannot establish the absence of driver shader compilation; actual visible draw coverage, exact restore and the historical native stack evidence support the preparation approach. Changing lighting/features later can still expose variants beyond the starting render context.
++
++The unchanged tire visibility/append probe checks counts511,1023,1024,4096,16384 and the first ring wrap. The synthetic layout puts successive512-slot pages far apart to force conservative compaction:
++
++| Operation | Compatibility | Desktop Mobile/Vulkan |
++| --- | ---: | ---: |
++| First1024-slot visibility activation/packing | 1.175 ms | .816 ms |
++| View at4096 retained slots | .025 ms | .027 ms |
++| View at16384 retained slots | .030 ms | .054 ms |
++| Single append at first ring wrap | .011 ms | .019 ms |
++| Slowest individual append observed | .164 ms | .190 ms |
++
++All stages retain one batch,16,384 capacity and the exact retained logical count. [Raw ring measurements](evidence/dynamic-first-use-2026-10-14/gl_compatibility/ring-costs.json) distinguish individual append cost from bulk synthetic setup: filling12,288 more marks in one artificial block takes38.420 ms in Compatibility. Gameplay does not append that entire block at once. No new incremental geometry/pressure/sampling algorithm or broad CPU tire optimization was introduced.
++
++Covered three-frame intervals span32?74 ms in final Compatibility and approximately8?16 ms in the earlier final-full Vulkan pass. Creating bridge/snow resource families took up to25.449 ms Compatibility and122.972 ms Vulkan in the final shared-host fixtures. That is the work moved before racing; timings include existing constructors and graphics-resource/API work. No universal upper bound on phone loading or GPU-driver compilation time is claimed.
++
++## Failures retained and resolved
++
++The first diagnostic assigned a legacy script instance to the shipping class type; the fixture now uses its actual Node3D type. Headless Texture2D readback can return null, so curve/gradient source data and available texture dimensions are resolved directly there; graphical tests compare actual pixels. Deleted-node cleanup exposed a real typed Node iterator assigning an already-freed instance: the shipping helper uses Variant plus validity checks, and cancellation fixtures remain strict.
++
++One intermediate full Vulkan fixture printed466 passing checks, then engine shutdown exceeded its240-second wrapper deadline. No crash or failing gameplay invariant was suppressed. A components-only diagnostic completed460 checks and exited normally; subsequent complete final runs completed469 and481 checks with normal exit. The original exit-timeout remains recorded, and its cause is not established. Initial nonexistent `test_winter_spray.gd` invocation was replaced by the actual snow-bank behavior test. No assertion was removed or relaxed.
++
++## Actual commands and checkpoint
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Principal executed commands:
++
++```powershell
++scripts/dev.ps1 -Action CheckScript -ScriptPath res://vehicle/effect_render_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_render_preparation.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_render_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_render_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--components-only' -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_render_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_dust.gd -Graphical -RenderingMethod gl_compatibility
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_trail_render_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_snow_bank_behaviour.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_breakable_props.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action TestDriving
++scripts/dev.ps1 -Action TestRewind
++scripts/dev.ps1 -Action TestApp
++```
++
++The [command index](evidence/dynamic-first-use-2026-10-14/commands.json) retains actual logs/build identities and known failure/timeout notes. The [task-only patch](evidence/dynamic-first-use-2026-10-14/task-only.patch), isolated Git bundle, base/final snapshots, checkpoint metadata and SHA-256 manifest provide a reviewable scoped checkpoint. Changed runtime files are `game/vehicle/sand_dust.gd`, new `effect_render_preparation.gd` (+UID), `game/core/game.gd`, `game/core/app.gd`, and the single observational field in `game/diagnostics/race_hitch_monitor.gd`. New `test_dynamic_render_preparation.gd` (+UID), this report and status/plan notes complete the slice. Concurrent tire/bridge/hazard/wind work is preserved and excluded as changes. The shared Git index/HEAD are untouched.
++
++The renderer can still stall for driver/OS scheduling, first-use variants outside this starting lighting context, GPU load, deferred allocation or persistence. The logger retains first-use effect masks/counts, preparation context and CPU/render-boundary timings for the next event. A fresh cold/primed **physical-phone trace with this build** is the remaining acceptance check; historical phone measurements do not validate this new fix. No phone commands, export/APK/install/deployment, live backend writes or full Validate were performed by this task. Canonical physics, scoring, normal five laps, artwork/camera, source tire ring/sampling, local condition and original gameplay emission/drawing budgets remain unchanged.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 DRH01-DRH05/Q01/G01/R01/V03/V05: owner checks tire marks and similar dynamic hitches. Verified concurrent one-slot actual-shader tire preparation without changing source ring/visibility/geometry/pressure/sampling. Move exact water/snow/deck/desert resources before countdown; bounded temporary actual particle/process/debris/weather/damage/crash-canvas draws join existing covered frame and restore exact state/pixels. Hitch logger adds preparation counts; deleted-node cleanup fixed. Final Compatibility471/MobileVulkan481/headless148, bridge dust121, snow51852, props46, condition1383, logger45, loading26, driving72/rewind61/App99 and714-script parse pass. First live desktop particles~.8-1.8ms/no new Vulkan draw pipelines; tire1024 activation .8-1.2ms, wrap .01-.02ms. Initial Vulkan exit timeout retained; final reruns exit cleanly. Cold loading takes the moved work; no universal hitch-free/phoneFPS claim, phone/APK/export/deploy/fullValidate/physics change. Actual commands, limits, exact captures and task-only checkpoint: docs/DYNAMIC_FIRST_USE_HITCHES_2026_10_14.md.
++
+ 2026-10-14 GMM01-GMM04/GC06-GC28/GCS01-GCS04/GRD01-GRD03/CW13/CW15/CW16/V06/G01/R01/Q01: owner retained Garage selection/menu motion. Permanent live pane plus destination slots, bounded0.32s native panel/carousel slides, current-rectangle interruption and hidden cleanup; actual camera/pose/world/local cosmetics/partial-wash saving/retained workbench preserved. Reflection-parent ordering fixes actual Mobile resize corruption without new passes/caps or changed projection/materials. Final Compatibility300/Mobile300 include72 exact first-resized-versus-settled pixels each; reflections25+25/carousel178+178/car-swap23+23/parser714/menu48 pass. Broader customisation-speed asset preflight remains6fail/1380 Compatibility and1fail/1380 Mobile, before Garage construction; later workflow checks complete, assertions/assets untouched. Native stills/24 motion frames+holds/APNG/scoped checkpoint: docs/GARAGE_MENU_MOTION_2026_10_14.md. DN2103 attached; no phone test/APK/fullValidate/physics/backend/deploy, owner style/device frame pacing remain acceptance.
+ 
+ 2026-10-14 TFH01-TFH03/Q01/V05/G01/R01: owner fixes remaining first tire draw phone stall. One temporary covered MultiMesh slot shares live ribbon mesh/Shader RID/original encoder; exact ring/material/history/pixels/condition/camera/full countdown retained. Parallel tire source hashes unchanged; existing finish/bridge/hazard/ghost/effect preparation preserved. Both-renderer38+38/headless26, loading27/logger45, Android quick checks and714-script parse pass. Installed310E3647 cold/primed visible-tire60s maxima50.414/49.175ms; no100ms cold racing event or first-tire recurrence, separate117.380ms primed countdown event remains. Original records/cache hashes restored; actual trace limits/source-scoped checkpoint: docs/TIRE_FIRST_DRAW_HITCH_2026_10_14.md. No general hitch-free/paired phoneFPS/fullValidate/physics/backend deployment claim.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 DRH01-DRH05/Q01/G01/R01/V03/V05: owner checks tire marks and similar dynamic hitches. Verified concurrent one-slot actual-shader tire preparation without changing source ring/visibility/geometry/pressure/sampling. Move exact water/snow/deck/desert resources before countdown; bounded temporary actual particle/process/debris/weather/damage/crash-canvas draws join existing covered frame and restore exact state/pixels. Hitch logger adds preparation counts; deleted-node cleanup fixed. Final Compatibility471/MobileVulkan481/headless148, bridge dust121, snow51852, props46, condition1383, logger45, loading26, driving72/rewind61/App99 and714-script parse pass. First live desktop particles~.8-1.8ms/no new Vulkan draw pipelines; tire1024 activation .8-1.2ms, wrap .01-.02ms. Initial Vulkan exit timeout retained; final reruns exit cleanly. Cold loading takes the moved work; no universal hitch-free/phoneFPS claim, phone/APK/export/deploy/fullValidate/physics change. Actual commands, limits, exact captures and task-only checkpoint: docs/DYNAMIC_FIRST_USE_HITCHES_2026_10_14.md.
++
+ 2026-10-14 TFH01-TFH03/Q01/V05/G01/R01: owner fixes remaining first tire draw phone stall. One temporary covered MultiMesh slot shares live ribbon mesh/Shader RID/original encoder; exact ring/material/history/pixels/condition/camera/full countdown retained. Parallel tire source hashes unchanged; existing finish/bridge/hazard/ghost/effect preparation preserved. Both-renderer38+38/headless26, loading27/logger45, Android quick checks and714-script parse pass. Installed310E3647 cold/primed visible-tire60s maxima50.414/49.175ms; no100ms cold racing event or first-tire recurrence, separate117.380ms primed countdown event remains. Original records/cache hashes restored; actual trace limits/source-scoped checkpoint: docs/TIRE_FIRST_DRAW_HITCH_2026_10_14.md. No general hitch-free/paired phoneFPS/fullValidate/physics/backend deployment claim.
+ 
+ 2026-10-14 EDR01-EDR04/R01/T01-T04/V03/V05/Q01: owner fixes all four fresh editor findings. Ordered return-to-saved WIP supersession covers queued/active writes and failed final-write retry before exit; Populate propagates compiler/raster/paint/distance cancellation and releases callbacks. Worker lifecycle/document summaries remove all warm detail file reads; immediate revision/scope/status invalidation and full lazy Retry/Fork preserve proof/actions. Retained pre-upload prop arrays avoid eager GPU fallback. Final70+70 checks/exact UI pixels, prop51+51/exact four-biome attributes/pixels, prepared123+123/population20581/workflow252/local publication31/parser714 pass. Paired large-detail medians59.1->5.1ms Compatibility/57.2->4.5ms Mobile;96 prop accesses37.8->0.037ms/85.3->0.035ms; real compiler cancellation14-16ms. Initial hover-state capture mismatch corrected with exact assertion retained. Shared desktop/no phoneFPS claim; no phone/APK/fullValidate/backend/deploy/physics change. Concurrent race/effect preparation preserved and excluded from task-only checkpoint. Actual commands/captures/limits: docs/evidence/editor-review-fixes-2026-10-14/report.json.

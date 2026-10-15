@@ -2,17 +2,17 @@
 // Texture phase is p.x + offset.x - travel: its spatial derivative changes
 // transport speed, without travel*time multipliers stretching the field forever.
 vec2 snow_spatial_offset(vec2 p) {
-	return vec2(3.8*sin(p.x*0.095+p.y*0.12)+0.85*sin(p.x*0.17-p.y*0.08),0.0);
+	return vec2(1.8*sin(p.x*0.095+p.y*0.12)+0.45*sin(p.x*0.17-p.y*0.08),0.0);
 }
 vec2 snow_flow_offset(vec2 p, float clock) {
 	return vec2(
-		4.2*sin(clock*0.92+p.y*0.13)+1.5*sin(clock*1.71-p.y*0.21),
-		1.8*sin(clock*0.81+p.x*0.04+p.y*0.10)
-		+0.7*sin(clock*1.93-p.x*0.06+p.y*0.17))+snow_spatial_offset(p);
+		1.6*sin(clock*0.92+p.y*0.13)+0.6*sin(clock*1.71-p.y*0.21),
+		0.9*sin(clock*0.81+p.x*0.04+p.y*0.10)
+		+0.35*sin(clock*1.93-p.x*0.06+p.y*0.17))+snow_spatial_offset(p);
 }
 float snow_flow_gradient(vec2 p) {
-	// Strictly positive (0.4945–1.5055); no reversed phase or singular folds.
-	return 1.0+0.361*cos(p.x*0.095+p.y*0.12)+0.1445*cos(p.x*0.17-p.y*0.08);
+	// Gentler spatial acceleration; positive gradient (0.7525–1.2475).
+	return 1.0+0.171*cos(p.x*0.095+p.y*0.12)+0.0765*cos(p.x*0.17-p.y*0.08);
 }
 vec2 snow_grain_position(vec2 target, float clock) {
 	// Invert the same phase map for the tiny airborne pool. Bounded iterations
@@ -26,9 +26,41 @@ vec2 snow_grain_position(vec2 target, float clock) {
 	}
 	return point;
 }
+vec3 snow_patch_random(vec2 key) {
+	vec3 q = fract(vec3(key.xyx)*vec3(0.1031,0.1030,0.0973));
+	q += dot(q,q.yxz+33.33);
+	return fract((q.xxy+q.yzz)*q.zyx);
+}
+vec3 snow_local_event(vec2 p, float clock) {
+	// Sparse world-fixed emission windows. Fine snow travels through them;
+	// clear areas have no residual blanket. Each window has its own event clock.
+	vec2 cell_size = vec2(18.0,10.0);
+	vec2 cell = floor(p/cell_size);
+	float seed = snow_patch_random(cell).z;
+	float period = mix(8.0,13.0,seed);
+	float event_clock = clock+seed*period;
+	float cycle = floor(event_clock/period);
+	float age = mod(event_clock,period);
+	vec3 random = snow_patch_random(cell+vec2(cycle*19.19,cycle*7.73)+17.0);
+	float duration = mix(3.2,5.2,random.z);
+	float life = smoothstep(0.0,0.85,age)*(1.0-smoothstep(duration-1.3,duration,age));
+	if (life <= 0.0) return vec3(0.0);
+	vec2 center = (cell+0.5)*cell_size+(random.xy-0.5)*vec2(2.0,1.4);
+	vec2 radius = mix(vec2(6.2,2.4),vec2(7.6,3.6),random.yz);
+	// Support stays inside its cell, so changing an event during the clear
+	// interval cannot pop at a cell seam. Unequal sizes hide the allocation grid.
+	float patch = 1.0-smoothstep(0.45,1.0,length((p-center)/radius));
+	if (patch <= 0.0) return vec3(0.0);
+	// Integrate a different speed for each finite event, plus a gentle surge.
+	// The phase resets only while the event is invisible, so variation cannot
+	// stretch the world field over a long race or cause visible phase jumps.
+	float speed_delta = 12.0*(mix(0.50,1.20,random.x)-1.0);
+	float frequency = mix(0.9,1.4,random.y);
+	float phase = random.z*6.283185;
+	float surge = (2.4/frequency)*(sin(age*frequency+phase)-sin(phase));
+	float distance = age*speed_delta+surge;
+	return vec3(patch*life,distance,speed_delta+2.4*cos(age*frequency+phase));
+}
 float snow_local_gust(vec2 p, float clock) {
-	// Overlapping unequal periods: neighbouring patches surge at different times.
-	float pulse = 0.5+0.30*sin(clock*0.67+dot(p,vec2(0.065,0.14)))
-		+0.20*sin(clock*1.43+dot(p,vec2(-0.12,0.19)));
-	return 0.42+0.58*smoothstep(0.18,0.84,pulse);
+	return snow_local_event(p,clock).x;
 }

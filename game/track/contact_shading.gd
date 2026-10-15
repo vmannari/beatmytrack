@@ -88,6 +88,7 @@ static func build_props(parent: Node3D, track: NativeTrack) -> void:
 static func build_bridges(parent: Node3D, bridges: Array) -> void:
 	for span: Dictionary in bridges:
 		var shade := MeshInstance3D.new()
+		shade.add_to_group("race_bridge_rendering")
 		shade.name = "BridgeUnderShadow"
 		shade.add_to_group("contact_lighting")
 		var mesh := BoxMesh.new()

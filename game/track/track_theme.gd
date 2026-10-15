@@ -5,7 +5,7 @@ extends RefCounted
 
 const IDS: Array[String] = ["pine", "desert", "night_city", "winter", "storm"]
 const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), Color("32565e"), Color("717b72"), Color("d9d2b9"), Color("577c7e"), Color("786f5c")]
-const DESERT: Array[Color] = [Color("9f8052"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
+const DESERT: Array[Color] = [Color("ac8b5a"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 const DESERT_SHOULDER: Color = Color("ad8957")
 const DESERT_SUN_ROTATION: Vector3 = Vector3(-46,-48,0)
 

@@ -2,7 +2,7 @@ class_name SurfaceShaderVariants
 extends RefCounted
 ## Fixed visual-material flags become constants; samples and lighting stay intact.
 const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
-const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low"]
+const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
 const INCLUDES: Dictionary = {
 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
 	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
@@ -73,7 +73,8 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 		source = reads.sub(source,"fixed_" + flag,true)
 		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
 	if source.contains("uniform int terrain_region_channel"):
-		var channel: int = maxi(0,int(material.get_shader_parameter("terrain_region_channel")))
+		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
+		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
 		var reads := RegEx.new()
 		reads.compile("\\bterrain_region_channel\\b")
 		source = reads.sub(source,"fixed_terrain_region_channel",true)

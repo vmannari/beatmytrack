@@ -14,6 +14,7 @@ uniform bool grass = false;
 uniform bool kerb = false;
 uniform bool asphalt_surface = false;
 uniform bool edge_fringe = false;
+uniform bool raised_road_edge = false;
 uniform bool road_marking = false;
 uniform bool winter_width_data = false;
 uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
@@ -78,10 +79,15 @@ void fragment() {
 		// Reuse the grass/sand shoulder's settled + broken fringe blend.
 		// Remap it across a wider band, retaining texture through the transition.
 		float asphalt_coverage = packed_sand ? 1.0-desert_bank_coverage(UV.y,world_position.xz) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
+		// Below the raised lip this is sand, with only sparse asphalt crumbs.
+		if (raised_road_edge) asphalt_coverage = 0.08*(1.0-smoothstep(0.0,0.35,UV.y))*breakup;
 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
+		// Six-centimetre soft contact band, filtered with the existing strip UV.
+		if (raised_road_edge) ALBEDO *= 1.0-0.18*(1.0-smoothstep(0.0,0.30,UV.y))*(0.75+0.25*breakup);
 		wet_coverage *= asphalt_coverage;
 	}
+	if (raised_road_edge && !edge_fringe) ALBEDO *= desert_join.a;
 	if (road_marking) {
 		// Preserve a continuous readable line while breaking up its pigment
 		// with mild fading and sparse asphalt-coloured chips.

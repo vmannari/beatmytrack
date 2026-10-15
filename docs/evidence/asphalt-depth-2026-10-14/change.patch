@@ -1,0 +1,524 @@
+--- /dev/null
++++ b/game/track/asphalt_edge_profile.gd
+@@ -0,0 +1,46 @@
++extends RefCounted
++## A five-millimetre rounded lip and closed dark side in the existing road draw.
++const RADIUS: float = 0.005
++const SIDE_SHADE: float = 0.80
++const STEPS: int = 3
++
++static func append(tool: SurfaceTool, a: Vector3, b: Vector3, outward_a: Vector3, outward_b: Vector3, bottom_a: float, bottom_b: float, uv_a: Vector2 = Vector2.ZERO, uv_b: Vector2 = Vector2.ZERO, uv2: Vector2 = Vector2.RIGHT, wall: bool = true, across_uv: Vector2 = Vector2.ZERO, up: Vector3 = Vector3.UP) -> void:
++	for step: int in range(STEPS):
++		var first: float = PI*0.5*step/STEPS
++		var last: float = PI*0.5*(step+1)/STEPS
++		var d0: float = RADIUS*sin(first)
++		var d1: float = RADIUS*sin(last)
++		var y0: float = RADIUS*(cos(first)-1.0)
++		var y1: float = RADIUS*(cos(last)-1.0)
++		var na0: Vector3 = (outward_a.normalized()*sin(first)+up*cos(first)).normalized()
++		var nb0: Vector3 = (outward_b.normalized()*sin(first)+up*cos(first)).normalized()
++		var na1: Vector3 = (outward_a.normalized()*sin(last)+up*cos(last)).normalized()
++		var nb1: Vector3 = (outward_b.normalized()*sin(last)+up*cos(last)).normalized()
++		var shade0: float = lerpf(SIDE_SHADE,1.0,cos(first))
++		var shade1: float = lerpf(SIDE_SHADE,1.0,cos(last))
++		_quad(tool,[a+outward_a*d0+Vector3.UP*y0,b+outward_b*d0+Vector3.UP*y0,b+outward_b*d1+Vector3.UP*y1,a+outward_a*d1+Vector3.UP*y1],
++			[na0,nb0,nb1,na1],[shade0,shade0,shade1,shade1],[uv_a+across_uv*d0,uv_b+across_uv*d0,uv_b+across_uv*d1,uv_a+across_uv*d1],uv2)
++	if wall:
++		var pa: Vector3 = a+outward_a*RADIUS-Vector3.UP*RADIUS
++		var pb: Vector3 = b+outward_b*RADIUS-Vector3.UP*RADIUS
++		_quad(tool,[pa,pb,Vector3(pb.x,bottom_b,pb.z),Vector3(pa.x,bottom_a,pa.z)],
++			[outward_a.normalized(),outward_b.normalized(),outward_b.normalized(),outward_a.normalized()],
++			[SIDE_SHADE,SIDE_SHADE,SIDE_SHADE,SIDE_SHADE],[uv_a,uv_b,uv_b,uv_a],uv2)
++
++static func _quad(tool: SurfaceTool, points: Array[Vector3], normals: Array[Vector3], shades: Array[float], uv: Array[Vector2], uv2: Vector2) -> void:
++	var order: Array[int] = [0,2,1,0,3,2]
++	if (points[2]-points[0]).cross(points[1]-points[0]).dot(normals[0]+normals[1]+normals[2]) < 0.0: order = [0,1,2,0,2,3]
++	for i: int in order:
++		tool.set_normal(normals[i])
++		tool.set_color(Color(1.0,1.0,1.0,shades[i]))
++		tool.set_uv(uv[i]); tool.set_uv2(uv2)
++		tool.add_vertex(points[i])
++
++static func append_arrays(tool: SurfaceTool, arrays: Array) -> void:
++	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	for i: int in range(vertices.size()):
++		tool.set_normal(arrays[Mesh.ARRAY_NORMAL][i])
++		tool.set_color(arrays[Mesh.ARRAY_COLOR][i])
++		tool.set_uv(arrays[Mesh.ARRAY_TEX_UV][i])
++		tool.set_uv2(arrays[Mesh.ARRAY_TEX_UV2][i])
++		tool.add_vertex(vertices[i])
+--- /dev/null
++++ b/game/track/asphalt_edge_profile.gd.uid
+@@ -0,0 +1 @@
++uid://bwxa2ergcbh7j
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,8 +2,9 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-199"
++const VERSION: String = "track-kit-201"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
++const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+ var ground_support: RefCounted
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+@@ -368,6 +369,8 @@
+ 			var b := Vector2(x*track.cell_size-track.half_extent.x,(y+1)*track.cell_size-track.half_extent.y)
+ 			for p: Vector2 in [a,b,Vector2(a.x,b.y),a,Vector2(b.x,a.y),b]:
+ 				tool.set_normal(Vector3.UP)
++				tool.set_color(Color.WHITE)
++				tool.set_uv2(Vector2.RIGHT)
+ 				tool.set_uv((p+track.half_extent)/(track.half_extent*2.0))
+ 				tool.add_vertex(Vector3(p.x,top,p.y))
+ 			count += 1
+@@ -385,14 +388,16 @@
+ 				var p: Vector2 = corners[edge]
+ 				var q: Vector2 = corners[(edge+1)%4]
+ 				var normal := Vector3(q.y-p.y,0,p.x-q.x).normalized()
+-				for v: Vector3 in [Vector3(p.x,top,p.y),Vector3(q.x,base,q.y),Vector3(q.x,top,q.y),Vector3(p.x,top,p.y),Vector3(p.x,base,p.y),Vector3(q.x,base,q.y)]:
+-					tool.set_normal(normal)
+-					tool.set_uv((Vector2(v.x,v.z)+track.half_extent)/(track.half_extent*2.0))
+-					tool.add_vertex(v)
++				ASPHALT_EDGE.append(tool,Vector3(p.x,top,p.y),Vector3(q.x,top,q.y),normal,normal,base,base,
++					(p+track.half_extent)/(track.half_extent*2.0),(q+track.half_extent)/(track.half_extent*2.0))
+ 	var roads := MeshInstance3D.new()
+ 	roads.name = "RasterRoadSurface"
+ 	roads.mesh = tool.commit()
+-	roads.material_override = material
++	var rim_material: ShaderMaterial = material.duplicate()
++	if rim_material.has_meta("surface_dynamic_material"): rim_material = rim_material.get_meta("surface_dynamic_material").duplicate()
++	rim_material.set_shader_parameter("raised_road_edge",true)
++	SurfaceShaderVariants.specialize(rim_material)
++	roads.material_override = rim_material
+ 	roads.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	add_child(roads)
+ 
+@@ -489,6 +494,8 @@
+ 	var sand_banks := preload("res://track/desert_sand_banks.gd").new()
+ 	var desert_road_union := preload("res://track/desert_road_union.gd").new()
+ 	var raised: float = ROAD_HEIGHT.RISE if ROAD_HEIGHT.is_asphalt(track) else 0.0
++	if raised > 0.0:
++		asphalt.set_normal(Vector3.UP); asphalt.set_color(Color.WHITE); asphalt.set_uv(Vector2.ZERO)
+ 	var union_road: bool = theme_id == "desert" or raised > 0.0
+ 	var outlines: Array[Dictionary] = []
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+@@ -872,6 +879,8 @@
+ 		for i: int in range(polygon.size()):
+ 			var a: Vector2 = polygon[i]
+ 			var b: Vector2 = polygon[(i+1)%polygon.size()]
++			var miter_a: Vector2 = RoadEdges._edge_miter(polygon,i)
++			var miter_b: Vector2 = RoadEdges._edge_miter(polygon,(i+1)%polygon.size())
+ 			var outward: Vector2 = (b-a).normalized().orthogonal()
+ 			if Geometry2D.is_point_in_polygon((a+b)*0.5+outward*0.003,polygon): outward = -outward
+ 			var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+@@ -880,13 +889,9 @@
+ 				var q: Vector2 = a.lerp(b,float(step+1)/steps)
+ 				var probe: Vector2 = (p+q)*0.5+outward*0.003
+ 				if support.on_floor(probe) or CreatorBridges.at_any(support.track.creator_bridges,probe): continue
+-				var normal: Vector3 = Vector3(-(q.y-p.y),0,-(q.x-p.x)).normalized()
+-				if normal.dot(VisualGeometry.world(outward)) < 0.0:
+-					var swap: Vector2 = p; p = q; q = swap
+ 				var top: float = ROAD_HEIGHT.ROAD+support.lift
+-				for v: Vector3 in [VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(q)+Vector3.UP*0.013,VisualGeometry.world(q)+Vector3.UP*top,VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(p)+Vector3.UP*0.013,VisualGeometry.world(q)+Vector3.UP*0.013]:
+-					tool.set_uv2(Vector2(1,0))
+-					tool.add_vertex(v)
++				ASPHALT_EDGE.append(tool,VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(q)+Vector3.UP*top,
++					VisualGeometry.world(miter_a.lerp(miter_b,float(step)/steps)),VisualGeometry.world(miter_a.lerp(miter_b,float(step+1)/steps)),0.013,0.013)
+ 
+ 
+ func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
+@@ -1008,13 +1013,14 @@
+ 
+ 
+ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false, prepared_arrays: Array = []) -> void:
++	var solid: bool = asphalt_surface and not edge_fringe and ground_support != null and ground_support.lift > 0.0
+ 	# Polygon triangulation and edge strips can have opposite winding. All
+ 	# these surfaces are horizontal: normalize clockwise top faces and use
+ 	# explicit up normals instead of inferring lighting from polygon order.
+ 	if prepared_arrays.is_empty():
+ 		var arrays: Array
+ 		if _capture_road_arrays:
+-			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),theme_id == "desert" and gravel)
++			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),(theme_id == "desert" and gravel) or solid)
+ 		else:
+ 			var source: ArrayMesh = tool.commit()
+ 			arrays = source.surface_get_arrays(0)
+@@ -1036,7 +1042,7 @@
+ 			if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+ 				order = [triangle,triangle+2,triangle+1]
+ 			for index: int in order:
+-				flat.set_normal(face if asphalt_surface and not edge_fringe and absf(face.y) < 0.5 else normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
++				flat.set_normal((normals[index] if not normals.is_empty() else face) if solid and absf(face.y) < 0.99999 else face if asphalt_surface and not edge_fringe and absf(face.y) < 0.5 else normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
+ 				if not uv.is_empty(): flat.set_uv(uv[index])
+ 				if not uv2.is_empty(): flat.set_uv2(uv2[index])
+ 				if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+@@ -1078,6 +1084,7 @@
+ 	material.set_shader_parameter("kerb",kerb)
+ 	material.set_shader_parameter("asphalt_surface",asphalt_surface)
+ 	material.set_shader_parameter("edge_fringe",edge_fringe)
++	material.set_shader_parameter("raised_road_edge",asphalt_surface and ground_support != null and ground_support.lift > 0.0)
+ 	material.set_shader_parameter("road_marking",road_marking)
+ 	material.set_shader_parameter("winter_width_data",theme_id == "winter" and asphalt_surface and not edge_fringe)
+ 	SurfaceShaderVariants.specialize(material)
+@@ -1099,6 +1106,7 @@
+ 	var uv2 := PackedVector2Array()
+ 	if arrays[Mesh.ARRAY_TEX_UV] != null: uv = arrays[Mesh.ARRAY_TEX_UV]
+ 	if arrays[Mesh.ARRAY_TEX_UV2] != null: uv2 = arrays[Mesh.ARRAY_TEX_UV2]
++	var vertex_colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR] if arrays[Mesh.ARRAY_COLOR] != null else PackedColorArray()
+ 	var groups: Dictionary = {}
+ 	for first: int in range(0,vertices.size(),3):
+ 		var center: Vector3 = (vertices[first]+vertices[first+1]+vertices[first+2])/3.0
+@@ -1112,6 +1120,7 @@
+ 			tool.set_normal(normals[index])
+ 			if not uv.is_empty(): tool.set_uv(uv[index])
+ 			if not uv2.is_empty(): tool.set_uv2(uv2[index])
++			if not vertex_colors.is_empty(): tool.set_color(vertex_colors[index])
+ 			tool.add_vertex(vertices[index])
+ 	for cell: Vector2i in groups:
+ 		var part := MeshInstance3D.new()
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -4,6 +4,7 @@
+ 
+ const RAIL_TOP: Color = Color("858681")
+ const RAIL_SIDE: Color = Color("60635f")
++const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+ 
+ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = [], raise_asphalt: bool = true) -> void:
+ 	if bridges.is_empty(): return
+@@ -13,6 +14,10 @@
+ 	var deck := SurfaceTool.new()
+ 	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var road_lift: float = preload("res://track/road_surface_height.gd").RISE if raise_asphalt and theme not in ["desert","winter"] else 0.0
++	var lip := SurfaceTool.new()
++	if road_lift > 0.0: lip.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if road_lift > 0.0:
++		deck.set_normal(Vector3.UP); deck.set_uv2(Vector2.RIGHT)
+ 	for span_index: int in range(bridges.size()):
+ 		var span: Dictionary = bridges[span_index]
+ 		if theme == "desert":
+@@ -26,7 +31,20 @@
+ 		for i: int in range(count):
+ 			var a: float = float(span.length)*i/count
+ 			var b: float = float(span.length)*(i+1)/count
+-			strip(deck,span,a,b,-half,half,0.025,Color("343638"),{},road_lift)
++			var radius: float = ASPHALT_EDGE.RADIUS if road_lift > 0.0 else 0.0
++			strip(deck,span,a,b,-half+radius,half-radius,0.025,Color("343638"),{},road_lift)
++			if road_lift > 0.0:
++				var pa: Vector3 = vertex(span,a,-half+radius,preload("res://track/road_surface_height.gd").bridge_offset(a,float(span.length),0.025,road_lift))
++				var pb: Vector3 = vertex(span,b,half-radius,preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift))
++				var pc: Vector3 = vertex(span,b,-half+radius,preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift))
++				var up: Vector3 = (pc-pa).cross(pb-pa).normalized()
++				up /= maxf(up.y,0.001)
++				for side: float in [-1.0,1.0]:
++					var offset_a: float = preload("res://track/road_surface_height.gd").bridge_offset(a,float(span.length),0.025,road_lift)
++					var offset_b: float = preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift)
++					var outward: Vector3 = VisualGeometry.world(Vector2(0.0,side).rotated(deg_to_rad(float(span.heading))))
++					ASPHALT_EDGE.append(lip,vertex(span,a,side*(half-radius),offset_a),vertex(span,b,side*(half-radius),offset_b),
++						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2.RIGHT,false,Vector2(0.0,side),up)
+ 			for side: float in [-1.0,1.0]:
+ 				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
+ 					var inner: float = half*side
+@@ -89,7 +107,11 @@
+ 		mesh.material_override = stone
+ 		mesh.name = "DesertBridgeSandstone"
+ 	parent.add_child(mesh)
++	# Retain the original smooth ramp/deck normals. Only then append the
++	# separately shaded lip to this same surface, so it cannot round the lane.
+ 	deck.generate_normals()
++	if road_lift > 0.0:
++		ASPHALT_EDGE.append_arrays(deck,lip.commit_to_arrays())
+ 	var road := MeshInstance3D.new()
+ 	road.add_to_group("race_bridge_rendering")
+ 	road.name = "BridgeAsphalt"
+@@ -107,6 +129,7 @@
+ 		asphalt.set_shader_parameter("winter_bridge_width_data",true)
+ 	asphalt.set_shader_parameter("wet_road",theme == "storm")
+ 	asphalt.set_shader_parameter("packed_sand",theme == "desert")
++	asphalt.set_shader_parameter("raised_road_edge",road_lift > 0.0)
+ 	asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+ 	asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+ 	if theme == "desert":
+@@ -114,6 +137,7 @@
+ 		asphalt.set_shader_parameter("desert_bridge_width_data",true)
+ 		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
+ 		SurfaceShaderVariants.specialize(asphalt)
++	elif road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+ 	road.material_override = asphalt
+ 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
+ 	parent.add_child(road)
+@@ -125,6 +149,12 @@
+ static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color, road_phase: Dictionary = {}, road_lift: float = 0.0) -> void:
+ 	# Metres along/across this span, so winter wear follows any bridge heading.
+ 	tool.set_color(color)
++	if road_lift > 0.0 and is_equal_approx(offset,0.025):
++		var height = preload("res://track/road_surface_height.gd")
++		var pa: Vector3 = vertex(span,a,left,height.bridge_offset(a,float(span.length),offset,road_lift))
++		var pb: Vector3 = vertex(span,b,right,height.bridge_offset(b,float(span.length),offset,road_lift))
++		var pc: Vector3 = vertex(span,b,left,height.bridge_offset(b,float(span.length),offset,road_lift))
++		tool.set_normal((pc-pa).cross(pb-pa).normalized())
+ 	for uv: Vector2 in [Vector2(a,left),Vector2(b,right),Vector2(b,left),Vector2(a,left),Vector2(a,right),Vector2(b,right)]:
+ 		if not road_phase.is_empty():
+ 			# Continue settled shoulder grains onto the mouth, then let them
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -22,6 +22,11 @@
+ 	for kind: int in [0,4]:
+ 		var surface := SurfaceTool.new()
+ 		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
++		if kind == 0 and road_surface.lift > 0.0:
++			surface.set_normal(Vector3.UP); surface.set_uv2(Vector2.RIGHT)
++		var lip := SurfaceTool.new()
++		lip.begin(Mesh.PRIMITIVE_TRIANGLES)
++		var lip_count: int = 0
+ 		var count: int = 0
+ 		for y: int in range(track.grid_height):
+ 			for x: int in range(track.grid_width):
+@@ -43,7 +48,14 @@
+ 					var drop: float = 0.85 if kind == 4 else ROAD_HEIGHT.ROAD+road_surface.lift
+ 					var a: Vector3 = vertices[i] - Vector3.UP * drop
+ 					var b: Vector3 = vertices[(i+1)%4] - Vector3.UP * drop
+-					if kind == 0 and road_surface.lift > 0.0: CreatorBridgeVisual.quad(fascia,vertices[i],vertices[(i+1)%4],b,a,Color("343638"))
++					if kind == 0 and road_surface.lift > 0.0:
++						var delta: Vector3 = vertices[(i+1)%4]-vertices[i]
++						var outward := Vector3(delta.z,0.0,-delta.x).normalized()
++						var p := Vector2(vertices[i].x,-vertices[i].z)
++						var q := Vector2(vertices[(i+1)%4].x,-vertices[(i+1)%4].z)
++						preload("res://track/asphalt_edge_profile.gd").append(lip,vertices[i],vertices[(i+1)%4],outward,outward,a.y,b.y,
++							Vector2(p.dot(track.bridge_axis),p.dot(track.bridge_axis.orthogonal())),Vector2(q.dot(track.bridge_axis),q.dot(track.bridge_axis.orthogonal())))
++						lip_count += 1
+ 					CreatorBridgeVisual.quad(fascia,a,b,b-Vector3.UP*0.34,a-Vector3.UP*0.34,Color("817e70"))
+ 					CreatorBridgeVisual.quad(fascia,a-Vector3.UP*0.34,b-Vector3.UP*0.34,b-Vector3.UP*0.42,a-Vector3.UP*0.42,Color("403f38"))
+ 					fascia_count += 1
+@@ -60,6 +72,7 @@
+ 				count += 1
+ 		if count:
+ 			surface.generate_normals()
++			if lip_count > 0: preload("res://track/asphalt_edge_profile.gd").append_arrays(surface,lip.commit_to_arrays())
+ 			var mesh := MeshInstance3D.new()
+ 			mesh.add_to_group("race_bridge_rendering")
+ 			mesh.mesh = surface.commit()
+@@ -75,9 +88,10 @@
+ 				if track.metadata.get("theme","pine") == "winter": asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
+ 				asphalt.set_shader_parameter("wet_road",track.metadata.get("theme","pine") == "storm")
+ 				asphalt.set_shader_parameter("packed_sand",track.metadata.get("theme","pine") == "desert")
++				asphalt.set_shader_parameter("raised_road_edge",road_surface.lift > 0.0)
+ 				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+ 				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+-				if theme == "desert": SurfaceShaderVariants.specialize(asphalt)
++				if theme == "desert" or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+ 				mesh.material_override = asphalt
+ 			else:
+ 				mesh.material_override = _structure_material()
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -14,6 +14,7 @@
+ uniform bool kerb = false;
+ uniform bool asphalt_surface = false;
+ uniform bool edge_fringe = false;
++uniform bool raised_road_edge = false;
+ uniform bool road_marking = false;
+ uniform bool winter_width_data = false;
+ uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
+@@ -78,10 +79,15 @@
+ 		// Reuse the grass/sand shoulder's settled + broken fringe blend.
+ 		// Remap it across a wider band, retaining texture through the transition.
+ 		float asphalt_coverage = packed_sand ? 1.0-desert_bank_coverage(UV.y,world_position.xz) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
++		// Below the raised lip this is sand, with only sparse asphalt crumbs.
++		if (raised_road_edge) asphalt_coverage = 0.08*(1.0-smoothstep(0.0,0.35,UV.y))*breakup;
+ 		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
+ 		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
++		// Six-centimetre soft contact band, filtered with the existing strip UV.
++		if (raised_road_edge) ALBEDO *= 1.0-0.18*(1.0-smoothstep(0.0,0.30,UV.y))*(0.75+0.25*breakup);
+ 		wet_coverage *= asphalt_coverage;
+ 	}
++	if (raised_road_edge && !edge_fringe) ALBEDO *= desert_join.a;
+ 	if (road_marking) {
+ 		// Preserve a continuous readable line while breaking up its pigment
+ 		// with mild fading and sparse asphalt-coloured chips.
+--- a/game/track/bridge_road.gdshaderinc
++++ b/game/track/bridge_road.gdshaderinc
+@@ -2,20 +2,24 @@
+ uniform vec4 road_color : source_color = vec4(0.204,0.212,0.220,1.0);
+ uniform bool winter_bridge_width_data = false;
+ uniform bool desert_bridge_width_data = false;
++uniform bool raised_road_edge = false;
+ uniform vec4 sand_color : source_color = vec4(0.60,0.50,0.37,1.0);
+ varying vec3 world_position;
+ varying float winter_half_width;
+ varying vec2 desert_apron_data;
++varying float asphalt_edge_shade;
+ void vertex() {
+     world_position = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
+     winter_half_width = winter_bridge_width_data ? UV2.x : 5.0;
+     desert_apron_data = UV2;
++    asphalt_edge_shade = COLOR.a;
+     if (NORMAL.y < 0.0) { NORMAL = -NORMAL; }
+ }
+ void fragment() {
+     if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
+     else if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
+     else { ALBEDO = surface_detail(road_color.rgb,world_position.xz,true); }
++    if (raised_road_edge) ALBEDO *= asphalt_edge_shade;
+     if (packed_sand && desert_bridge_width_data) {
+         // Same 1.95 m foot as the exposed ground fringe. UV.y already has
+         // the corrected signed cross-road coordinate, independent of phase.
+--- a/game/track/terrain.gdshaderinc
++++ b/game/track/terrain.gdshaderinc
+@@ -7,6 +7,7 @@
+ uniform bool terrain_uniform_enabled = false;
+ uniform int terrain_region_channel = -1;
+ uniform bool terrain_region_low = false;
++uniform bool raised_road_edge = false;
+ uniform ivec4 terrain_slots = ivec4(0,1,2,3);
+ uniform vec2 map_texel;
+ uniform vec4 color_0 : source_color;
+@@ -18,9 +19,11 @@
+ uniform vec4 color_6 : source_color;
+ uniform vec4 color_7 : source_color;
+ varying vec3 world_position;
++varying float asphalt_edge_shade;
+ 
+ void vertex() {
+ 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++	asphalt_edge_shade = COLOR.a;
+ }
+ 
+ vec4 feather(sampler2D source, vec2 uv) {
+@@ -110,6 +113,7 @@
+ 		blended += layer * weights[i];
+ 	}
+ 	ALBEDO = blended;
++	if (raised_road_edge) ALBEDO *= asphalt_edge_shade;
+ 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
+ 	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.b);
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Fixed visual-material flags become constants; samples and lighting stay intact.
+ const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
+-const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
+ const INCLUDES: Dictionary = {
+ 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
+ 	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
+--- a/game/tests/test_grass_road_height.gd
++++ b/game/tests/test_grass_road_height.gd
+@@ -171,16 +171,22 @@
+ 	if theme != "winter": check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
+ 	var bridge: MeshInstance3D = world.get_node("BridgeAsphalt")
+ 	var deck_vertices: PackedVector3Array = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var deck_colors: PackedColorArray = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+ 	var start := Vector2(span.position[0],span.position[1])
+ 	var axis := Vector2.RIGHT.rotated(deg_to_rad(span.heading))
+ 	var mouths: int = 0
+ 	var mouths_match: bool = true
+-	for vertex: Vector3 in deck_vertices:
++	var lip_within_height: bool = true
++	for i: int in range(deck_vertices.size()):
++		var vertex: Vector3 = deck_vertices[i]
+ 		var along: float = (Vector2(vertex.x,-vertex.z)-start).dot(axis)
+ 		if absf(along) < 0.0001 or absf(along-float(span.length)) < 0.0001:
++			lip_within_height = lip_within_height and vertex.y >= 0.012+raised-0.00501 and vertex.y <= 0.012+raised+0.00001
++			if deck_colors[i].a < 0.999: continue
+ 			mouths += 1
+ 			mouths_match = mouths_match and absf(vertex.y-0.012-raised) < 0.00001
+ 	check(mouths >= 6 and mouths_match,theme+" both actual deck meshes meet the asphalt datum")
++	check(lip_within_height,theme+" rounded bridge lips stay within five millimetres of the unchanged mouth height")
+ 	if raised > 0.0:
+ 		var trim: MeshInstance3D = world.get_node("BridgeSteelAndFascia")
+ 		var data: Array = trim.mesh.surface_get_arrays(0)
+--- a/game/tests/test_asphalt_surface_ownership.gd
++++ b/game/tests/test_asphalt_surface_ownership.gd
+@@ -130,6 +130,21 @@
+ 				forwards.append(clone_mesh(data,false)); backwards.append(clone_mesh(data,true))
+ 			var folder: String = "res://../docs/evidence/asphalt-rise-correction-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/"
+ 			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++			# Prime every sampled camera view before comparison. Native prop
++			# formats first visible in the second view can otherwise finish Mobile
++			# background specialization between the two unchanged scenery images.
++			for warm_pose: int in range(6):
++				var warm_center: Vector2 = track.route[track.route.size()*warm_pose/6]
++				if not track.creator_bridges.is_empty() and warm_pose < 2:
++					var warm_span: Dictionary = track.creator_bridges[0]
++					warm_center = Vector2(warm_span.position[0],warm_span.position[1])+Vector2(0 if warm_pose == 0 else warm_span.length,0).rotated(deg_to_rad(warm_span.heading))
++				camera.position = VisualGeometry.world(warm_center)+Vector3(6.0+warm_pose*0.07,16,17.0+warm_pose*0.13)
++				camera.look_at(VisualGeometry.world(warm_center))
++				for i: int in range(nodes.size()): nodes[i].mesh = forwards[i]
++				await settle()
++				for i: int in range(nodes.size()): nodes[i].mesh = backwards[i]
++				await settle()
++			await create_timer(3.0).timeout
+ 			# Let the first native lighting/material preparation finish before the
+ 			# first comparison, just as subsequent views already have settled.
+ 			for frame: int in range(20): await process_frame
+--- /dev/null
++++ b/docs/ASPHALT_DEPTH_CUES_2026_10_14.md
+@@ -0,0 +1,45 @@
++# Asphalt depth cues — 2026-10-14
++
++The owner asks to try the proposed darker asphalt side, small rounded bevel and soft contact shading on sand. ADC01: 20% lower side pigment energy. ADC02: an actual 5 mm quarter-round lip. ADC03: narrow soft sand contact shading and continuity at bridge mouths. V05/G01/R01/Q01: retain flat sand/terrain, the 50 mm asphalt lift, canonical handling/support, cache bounds and actual native renderer evidence.
++
++`asphalt_edge_profile.gd` appends three rounded bands and the closed side into the existing road surface. Explicit normals follow the quarter circle; vertex alpha carries a 1.0-to-0.8 shading weight without making the material transparent. Ground lips extend 5 mm outward (up to 10 mm at bounded corner miters); creator bridge lips fit inside the existing deck width. Native/painted raster asphalt and native bridge rims share the same profile. Bridge deck normals are generated before appending the separately shaded lip, preserving the original smooth ramp response. Night's existing road groups retain the new vertex-colour data.
++
++The existing flat authored blend strip now reads as sand below raised asphalt, with sparse asphalt crumbs. A nominal 60 mm contact band fades smoothly outward with slight variation from the existing grain. The sand pigment and terrain/shoulder heights stay original; no extra shading texture sample, overlay, render target or draw is introduced. Native/painted raster roads share the bevel/dark-side treatment; contact shading follows the authored sand strips. Joined road/bridge mouths get no cross-lane bevel or dark stripe. Ground overlap ownership and bridge cap clipping remain in place.
++
++The immutable `raised_road_edge` material role is compiled through the existing bounded shader preparation cache. Role/source/include fences preserve immediate updates and prevent stale shader reuse. Final kit201 invalidates intermediate kit200 experiments and old road/world artifacts. Physics, compiler27, pure `BridgeElevation`/`road_surface_height` support, camera, source palettes, dust/tire artwork and local condition are not changed by this task.
++
++Actual pinned Godot 4.7.2 results, with isolated workspace APPDATA:
++
++| Verification | Result |
++| --- | --- |
++| Initial full grass/support/actual surface and bridge checks with new depth treatment | Compatibility119/119; Mobile/Vulkan119/119; headless111/111 |
++| Final four-biome bridge-mouth, paint, flat sand/fringe and actual captures | Compatibility69/69; Mobile/Vulkan69/69; unchanged grass simulation loop omitted from this final visual-only pass |
++| Ajorata / Over and under / Star spline actual overlap ownership and six camera views each | Compatibility63/63; Mobile/Vulkan63/63 |
++| Direct/prepared CPU-GPU attributes, retained road reuse, live masks and byte bounds | Editor407/407, including Night colour attributes |
++| Disk material/mesh serialization and revision fences | Road cache70/70 |
++| Prepared world restoration and bounds | 85/85; all-five resources265227248 bytes, one retained entry within67108864-byte cache |
++| Covered bridge rendering preparation/restoration, countdown/condition/state and cancellation | 69/69 headless |
++| Saved Winter / Desert / dirt geometry, normals, colours, UVs and roles | 10/10; prepared arrays byte-exact against saved native callbacks |
++| Final project parse | 765 scripts, zero failures |
++
++All 18 final Vulkan ownership views are pixel-exact after native preparation settles. Compatibility has 17 exact views and one shared-edge sample differing by one 8-bit colour level, within the existing one-sample/one-level bound. Fixed-view stability assertions pass. Actual before/final screenshots and measured image differences are retained; they are presentation comparisons, not bit-exact claims about every unaffected pixel. Initial short captures can include shader specialization and raster-edge differences outside the changed bands. Loose-surface preservation is independently established by byte-exact emitted geometry and disabled material roles.
++
++Initial issues and corrections are retained in the session/evidence: automatic deck normal generation originally let bevel faces influence the broad lane; lips now append after original deck smoothing in the same draw. Priming only the first ownership view allowed a native prop format first visible in the second view to finish Vulkan specialization during comparison; all six sampled views/resources now prime before unchanged-image checks, with original tolerances retained. The preservation comparison found a normal difference on degenerate loose-surface triangles; the original fallback is restored and all three loose surfaces pass byte-exactly. A missing Python imaging package was handled by measuring the PNGs with the installed native Godot Image API, without changing the images.
++
++Commands actually run:
++
++```powershell
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --script ../build/asphalt-depth/capture-before.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --rendering-driver vulkan --script ../build/asphalt-depth/capture-before.gd
++# Final native visual and ownership scripts use the same two render methods.
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --script ../build/asphalt-depth/test_grass_road_height.gd -- --visual-only
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --rendering-driver vulkan --script ../build/asphalt-depth/test_asphalt_surface_ownership.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_loading_roads.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_cache.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_load.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script ../build/asphalt-depth/review-unaffected.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script ../build/asphalt-depth/compare-captures.gd
++```
++
++Native before/after views, ownership JSON, image differences, saved task-start sources, command/result receipt and source-only checkpoint are under `docs/evidence/asphalt-depth-2026-10-14/`. The earlier `after` folder retains the first normal-smoothing experiment; `final` contains the corrected views. Additional rim triangles/vertex-colour data increase geometry work within the existing caches; no paired GPU-time or phone-FPS claim is made. Owner appearance and physical-phone moving-view/performance acceptance remain. No phone test, APK or deployment was performed. Concurrent Garage/music/washing/rivalry/physics/car work is retained and excluded from the checkpoint.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Asphalt depth cues trial override (2026-10-14)
++The owner asks to try darker asphalt sides, a small rounded bevel and soft sand contact shading. Use a5mm three-band lip/closed side in the same road draw, 0.8 side pigment energy and a nominal60mm irregular fading contact band in the existing authored sand strip. Preserve50mm asphalt lift, flat sand/terrain, camera, canonical/support data, markings and overlap/bridge cap ownership. Append bridge lips after original deck normal generation so the lane keeps its smooth ramp shading; preserve Night colour attributes, prepared/disk meshes and shader/cache bounds. Kit201 fences intermediate geometry/materials. Both-renderer119+119 initial/69+69 final visual and63+63 ownership checks, editor407/cache70/prepared85/bridge preparation69 and10 byte-exact Winter/Desert/dirt checks/parser765 pass. See `docs/ASPHALT_DEPTH_CUES_2026_10_14.md` for native before/final captures, initial corrections, commands and task-only checkpoint. No phone/APK/deployment or measured FPS claim; owner/phone moving-view and performance acceptance remain.
+ 
+ ## High-priority menu performance and folder reliability override (2026-10-14)
+ The owner requests the high-priority menu audit fixes. Prepare the original native Garage once per storage owner under the loading cover, retain its six car showrooms through Settings/Profile and ordinary race results/returns, and prepare at most one other primary neighbor per frame. Keep one suspended shell, original input preferences, outgoing slides, actual car/camera/condition and reflection caps/passes; restore explicit reflection parents after tree entry and re-sort content on shell return. Challenges publishes the latest folder immediately, coalesces pending choices and fences stale list/detail/mutation/account replies. Both-renderer71+71/headless47/app101/Challenges165/swipe240/quality23/loading27/parser760 pass. Final return dispatch0.8-1.7ms is desktop callback evidence; original cold preparation remains under loading. Final same-world Settings/repeated-return and reflection images are exact; independent-world/native colour precision is separately controlled and reported. Actual commands, initial failures, source hashes and task-only patch: `docs/evidence/menu-high-priority-fixes-2026-10-14/report.json`. Owner/physical-phone latency and memory acceptance remain; no phone test/APK/deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 ADC01-ADC03/V05/G01/R01/Q01: owner tries asphalt depth cues. Same-draw5mm quarter-round/closed20%-darker side, nominal60mm soft irregular sand contact band, sparse toe crumbs; original smooth bridge deck normals retained separately from lip normals, no cross-lane mouth stripe. Night vertex colours, flat sand/terrain,50mm rise, canonical/support/palettes/camera and cache bounds retained. Initial119+119/headless111; final69+69 native visuals; ownership63+63 (Vulkan18 exact; Compatibility17 exact+one1-code edge sample); editor407/cache70/prepared85/bridge preparation69/byte-exact Winter-Desert-dirt10 pass. Kit201;765-script final parse. Actual captures/initial smoothing-specialization-normal corrections/scoped checkpoint: docs/ASPHALT_DEPTH_CUES_2026_10_14.md. Extra lip triangles/data; no paired GPU/phoneFPS claim, phone/APK/deploy. Owner/device appearance/moving-view/performance remain acceptance.
++
+ 2026-10-14 MREV01-MREV02/R01/G01/V03-V05/Q01: high-priority menu fixes. One owner-bound native Garage prepares behind loading and survives primary menus/Settings/Profile/race results; one retained shell and one neighbor build per frame bound repeated work. Original input preferences, outgoing slides, car/camera/local cosmetics and reflection ordering retained. Challenges follows latest folder choice through pending list/detail/mutation requests with request/account fences. Both-renderer71+71/headless47/app101/Challenges165/swipe240/quality23/loading27/parser760 pass. Final desktop Settings dispatch0.8-1.7ms; cold construction still runs once under loading. Final same-world return/reflection pixels exact; independent native precision controls and initial failures recorded. No phone/APK/deployment; owner/device latency/memory acceptance remains. Actual commands, source hashes and task-only patch: docs/evidence/menu-high-priority-fixes-2026-10-14/report.json.
+ 
+ 2026-10-14 GWP01-GWP04/GWA01-GWA03/CW13/CW15/CW16/V06/G01/R01/Q01: owner AAA-target washing refinement and further foam rejection. Native soft microfiber mitt/thumb/nap/stitched cuff, smooth stroke-aligned pressure/scrub, translucent gravity water and connected creamy raised-bubble froth/trailing streaks. Original24/32 pools/reflection views/local cleaning/saves/car/kits/livery/camera/canonical retained; caller contact ownership fixed. Both-renderer197+197 visual/exact restoration checks,139+139 all-car animation,1402+1402 original wash and760-script parse pass. Actual motion/960 views/work cost/initial failures/scoped checkpoint: docs/GARAGE_WASH_POLISH_2026_10_14.md. No phone/attachment/APK/deploy/FPS/fullValidate/physics merge; owner/device style, first-contact and performance acceptance remains.

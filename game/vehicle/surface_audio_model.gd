@@ -6,6 +6,7 @@ var track_width: float = 1.66 * HandlingConfig.BODY_SCALE
 var pavement: float = 0.0
 var grass: float = 0.0
 var sand: float = 0.0
+var sand_depth: float = 0.0
 var gravel: float = 0.0
 var water: float = 0.0
 var kerb: float = 0.0
@@ -13,6 +14,7 @@ var drive: float = 0.0
 var acceleration: float = 0.0
 var last_speed: float = 0.0
 var has_speed: bool = false
+var contacts_grounded: bool = false
 
 func configure(config: HandlingConfig) -> void:
 	wheelbase = config.wheelbase
@@ -23,6 +25,7 @@ func reset() -> void:
 	pavement = 0.0
 	grass = 0.0
 	sand = 0.0
+	sand_depth = 0.0
 	gravel = 0.0
 	water = 0.0
 	kerb = 0.0
@@ -30,9 +33,22 @@ func reset() -> void:
 	acceleration = 0.0
 	last_speed = 0.0
 	has_speed = false
+	contacts_grounded = false
 
-func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, grounded: bool) -> void:
-	sample_contacts(state,track,grounded)
+func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, grounded: bool, shared_contacts: SurfaceAudioModel = null) -> void:
+	# An explicit result from the same synchronous presentation callback only.
+	# Never retain/reuse it across physics, frames or mutable track edits.
+	if shared_contacts == null or shared_contacts.contacts_grounded != grounded or shared_contacts.wheelbase != wheelbase or shared_contacts.track_width != track_width:
+		sample_contacts(state,track,grounded)
+	else:
+		pavement = shared_contacts.pavement
+		grass = shared_contacts.grass
+		sand = shared_contacts.sand
+		sand_depth = shared_contacts.sand_depth
+		gravel = shared_contacts.gravel
+		water = shared_contacts.water
+		kerb = shared_contacts.kerb
+		contacts_grounded = grounded
 	var speed: float = state.velocity.length()
 	var gain: float = 1.0 - exp(-delta * 9.0)
 	var measured: float = clampf((speed-last_speed)/maxf(delta,0.0001),-15.0,15.0) if has_speed else 0.0
@@ -44,9 +60,11 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: f
 	drive = lerpf(drive,clampf(pedal*0.70+maxf(acceleration,0.0)/15.0*0.30,0.0,1.0),gain)
 
 func sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:
+	contacts_grounded = grounded
 	pavement = 0.0
 	grass = 0.0
 	sand = 0.0
+	sand_depth = 0.0
 	gravel = 0.0
 	water = 0.0
 	kerb = 0.0
@@ -66,6 +84,9 @@ func sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) ->
 				water += 0.25
 			elif theme == "desert" and cell in [0,1,2,5]:
 				sand += 0.25
+				# The same four contacts distinguish compacted road from soft
+				# shoulders/banks and loose sand; no extra terrain queries.
+				sand_depth += 0.25 if raised or cell in [1,2] else (0.125 if cell==5 else 0.0)
 			elif cell == 1:
 				grass += 0.25
 			elif cell == 2:

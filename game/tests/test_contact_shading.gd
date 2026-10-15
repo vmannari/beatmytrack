@@ -65,7 +65,7 @@ func run() -> void:
 	var test_state := VehicleState.new()
 	test_state.track_elevated = true
 	ContactShading.present_car(contact,game.get("car"),test_state,Vector2.ZERO,PI*0.5,track,game.get("bridge_presentation"))
-	check(is_equal_approx(contact.position.y,CreatorBridges.HEIGHT+0.03),"elevated contact stays on deck")
+	check(is_equal_approx(contact.position.y,CreatorBridges.HEIGHT+0.08),"elevated contact stays on the raised asphalt deck")
 	ContactShading.present_car(contact,game.get("car"),test_state,Vector2(-26,0),PI*0.5,track,game.get("bridge_presentation"))
 	check(contact.rotation.x > 0.1,"contact follows ramp pitch")
 	test_state.track_elevated = false
@@ -83,7 +83,10 @@ func run() -> void:
 	for theme: String in ["desert","winter","night_city","storm"]:
 		track.metadata.theme = theme
 		game.call("_update_cloud_shadows")
-		check(game.get("cloud_shadow") == null,theme+" allocates no cloud pass")
+		var shade: MeshInstance3D = game.get("cloud_shadow")
+		if theme == "desert":
+			check(shade != null and (shade.material_override as ShaderMaterial).get_shader_parameter("cloud_coverage") == 0.0,"Desert keeps its existing warm sun veil with no grass cloud coverage")
+		else: check(shade == null,theme+" allocates no cloud pass")
 	track.metadata.theme = "pine"
 	game.call("_update_cloud_shadows")
 	check(game.get("cloud_shadow") != null,"switching back to Grass restores clouds")

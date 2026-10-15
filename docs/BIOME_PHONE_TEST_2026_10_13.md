@@ -1,5 +1,7 @@
 # Winter and desert physical-phone test â€” 2026-10-13
 
+Follow-up2026-10-14: native tracing attributes a matching Desert event to first-use Mali shader compilation. Covered hazard preparation removes the recorded route166 stall in a tested cold pass; other cold-start compiler events remain, including a first tire-draw lead. See [the hitch investigation](DESERT_HITCH_INVESTIGATION_2026_10_13.md) for exact APKs, commands, native evidence and limits. The original display-FPS measurements below remain unchanged and are not compared with instrumented trace timings.
+
 Owner request: test the merged winter/desert performance work on the attached phone. Requirements BPERF01â€“BPERF08, TR01â€“TR04, WSP04â€“WSP06, DS23â€“DS25 and V04/V05/G01/R01/Q01; the parallel tire renderer takes precedence. Both biomes ran close to the display's roughly 59.4 Hz cadence in the clean samples. Occasional missed refreshes remain, and the first desert run captured a genuine early driving hitch. This is a current-build test, not a paired phone improvement measurement or unconditional performance acceptance.
 
 ## Build and method

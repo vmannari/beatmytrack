@@ -1,0 +1,538 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3082,7 +3082,15 @@
+ 	loading.stage("Preparing start…")
+ 	var prepared_finish: VehicleWeathering = game.get("car_weathering")
+ 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
++	var bridge_preparation = preload("res://track/bridge_render_preparation.gd")
++	var prepared_bridges: Array[Dictionary] = []
++	if DisplayServer.get_name() != "headless": prepared_bridges = bridge_preparation.begin(game.get("track_ground"), game.get("camera"))
++	var bridge_meshes: int = prepared_bridges.size()
++	var preparation_started: int = Time.get_ticks_usec()
+ 	var finish_drawn: bool = await _present_race_loading()
++	# Restore even if navigation or the loading deadline removed the game.
++	bridge_preparation.end(prepared_bridges)
++	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
+ 	# Always restore after the bounded draw wait, including cancellation/focus loss.
+ 	prepared_finish.end_render_warmup()
+ 	if finish_warmed and _race_loading_matches(loading_id) and is_instance_valid(prepared_game) and game == prepared_game:
+@@ -3100,6 +3108,10 @@
+ 		_leave_race()
+ 		return
+ 	game.set("weathering_prepared", finish_drawn)
++	game.set("bridge_prepared", finish_drawn and bridge_meshes > 0)
++	game.set("bridge_preparation_meshes", bridge_meshes)
++	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
++	game.set("bridge_preparation_ms", preparation_ms)
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+ 	_telemetry_begin_attempt(track)
+ 	cloud_starting = false
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -128,6 +128,9 @@
+ var profile_process_total_us: int = 0
+ var condition_save_count: int = 0
+ var weathering_prepared: bool = false
++var bridge_prepared: bool = false
++var bridge_preparation_meshes: int = 0
++var bridge_preparation_ms: float = 0.0
+ var hitch_diagnostics_enabled: bool = true
+ var hitch_diagnostics: Node
+ var profile_skip_telemetry: bool = false
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -74,6 +74,7 @@
+ 			for side: float in [-1.0,1.0]: strip(tool,span,u,u+0.18,side*1.0,side*2.0,0.04,Color("d5d6bb"))
+ 	tool.generate_normals()
+ 	var mesh := MeshInstance3D.new()
++	mesh.add_to_group("race_bridge_rendering")
+ 	mesh.name = "BridgeSteelAndFascia"
+ 	mesh.mesh = tool.commit()
+ 	var material := VisualGeometry.material(Color.WHITE)
+@@ -89,6 +90,7 @@
+ 	parent.add_child(mesh)
+ 	deck.generate_normals()
+ 	var road := MeshInstance3D.new()
++	road.add_to_group("race_bridge_rendering")
+ 	road.name = "BridgeAsphalt"
+ 	road.mesh = deck.commit()
+ 	var asphalt := ShaderMaterial.new()
+--- a/game/track/contact_shading.gd
++++ b/game/track/contact_shading.gd
+@@ -88,6 +88,7 @@
+ static func build_bridges(parent: Node3D, bridges: Array) -> void:
+ 	for span: Dictionary in bridges:
+ 		var shade := MeshInstance3D.new()
++		shade.add_to_group("race_bridge_rendering")
+ 		shade.name = "BridgeUnderShadow"
+ 		shade.add_to_group("contact_lighting")
+ 		var mesh := BoxMesh.new()
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -60,6 +60,7 @@
+ 		if count:
+ 			surface.generate_normals()
+ 			var mesh := MeshInstance3D.new()
++			mesh.add_to_group("race_bridge_rendering")
+ 			mesh.mesh = surface.commit()
+ 			if kind == 0:
+ 				var asphalt := ShaderMaterial.new()
+@@ -84,6 +85,7 @@
+ 	if fascia_count > 0:
+ 		fascia.generate_normals()
+ 		var edge := MeshInstance3D.new()
++		edge.add_to_group("race_bridge_rendering")
+ 		edge.name = "NativeBridgeFascia"
+ 		edge.mesh = fascia.commit()
+ 		edge.material_override = _structure_material()
+--- a/game/diagnostics/race_hitch_monitor.gd
++++ b/game/diagnostics/race_hitch_monitor.gd
+@@ -45,6 +45,9 @@
+ var _render_context: Dictionary = {}
+ var _render_next_usec: int = 0
+ var _render_truncated: int = 0
++var _bridge_items: Array[int] = []
++var _bridge_seen: Dictionary = {}
++var _bridge_context: Dictionary = {}
+ 
+ class IdleStart extends Node:
+ 	var monitor: Node
+@@ -75,6 +78,7 @@
+ 
+ func _pre_draw() -> void:
+ 	_sample_render_context(Time.get_ticks_usec())
++	_sample_bridge_context()
+ 	_draw_start_usec = Time.get_ticks_usec()
+ 
+ func _post_draw() -> void:
+@@ -100,6 +104,8 @@
+ 	_last_draw_count = _draw_count
+ 	row.background = _background_context()
+ 	row.weathering_prepared = bool(game.get("weathering_prepared"))
++	row.bridge_preparation = {"drawn": bool(game.get("bridge_prepared")), "meshes": int(game.get("bridge_preparation_meshes")), "shared_draw_ms": float(game.get("bridge_preparation_ms"))}
++	row.previous_bridge_context = _bridge_context
+ 	var track: NativeTrack = game.get("native_track")
+ 	row.track_hash = track.content_hash if track != null else ""
+ 	row.biome = str(track.metadata.get("theme", "pine")) if track != null else "pine"
+@@ -151,7 +157,36 @@
+ 					if key not in materials: materials.append(key)
+ 			_render_descriptors.append({"id": _render_items.size(), "name": str(node.name).left(80), "class": node.get_class(), "materials": materials})
+ 			_render_items.append(node)
++			if node.is_in_group("race_bridge_rendering"): _bridge_items.append(_render_items.size() - 1)
+ 	for child: Node in node.get_children(): _collect_render_items(child)
++
++func _sample_bridge_context() -> void:
++	if _bridge_items.is_empty() or not is_instance_valid(game): return
++	var camera: Camera3D = game.get("camera")
++	if camera == null: return
++	var started: int = Time.get_ticks_usec()
++	var visible: Array[int] = []
++	var entered: Array[int] = []
++	var planes: Array[Plane] = camera.get_frustum()
++	for index: int in _bridge_items:
++		if not is_instance_valid(_render_items[index]): continue
++		var node: VisualInstance3D = _render_items[index]
++		if not node.is_visible_in_tree(): continue
++		var box: AABB = node.global_transform * node.get_aabb()
++		var outside: bool = false
++		for plane: Plane in planes:
++			if plane.distance_to(box.get_center()) > (box.size * 0.5).dot(plane.normal.abs()):
++				outside = true
++				break
++		if outside: continue
++		visible.append(index)
++		if not _bridge_seen.has(index):
++			_bridge_seen[index] = true
++			entered.append(index)
++	# Actual geometry bounds, ignoring temporary preparation cull margins.
++	# Every pre-draw sample accompanies the following measured render interval;
++	# candidates still do not prove a GPU colour/shadow draw or compilation.
++	_bridge_context = {"sample_wall_ms": (started - _started_usec) / 1000.0, "candidate_ids": visible, "first_candidate_ids": entered, "sampling_ms": (Time.get_ticks_usec() - started) / 1000.0}
+ 
+ func _sample_render_context(now: int) -> void:
+ 	if now < _render_next_usec or not is_instance_valid(game): return
+--- a/game/tests/test_over_under_loading.gd
++++ b/game/tests/test_over_under_loading.gd
+@@ -52,6 +52,8 @@
+ 			app.game.set_physics_process(false)
+ 			check(app.game.hud != null and app.game.track_session.target_laps == 5 and revealed.get("countdown", -1) == 360 and revealed.get("tick", -1) == 0, "prepared five-lap bridge race remains at full countdown")
+ 			check(app.game.weathering_prepared == (DisplayServer.get_name() != "headless") and not app.game.car_weathering._render_warming, "preparation records an actual draw and restores clean bindings before racing")
++			check(app.game.bridge_prepared == (DisplayServer.get_name() != "headless") and (app.game.bridge_preparation_meshes > 0) == (DisplayServer.get_name() != "headless"), "bridge preparation records the covered draw before the race")
++			check(app.game.get_tree().get_nodes_in_group("race_bridge_rendering").all(func(node: Node) -> bool: return is_zero_approx(node.extra_cull_margin)), "bridge loading releases every temporary cull margin")
+ 			print("OVER_UNDER_LOAD_MS ", Time.get_ticks_msec()-began)
+ 			app._leave_race()
+ 		await process_frame
+--- a/game/tests/test_race_hitch_monitor.gd
++++ b/game/tests/test_race_hitch_monitor.gd
+@@ -135,6 +135,22 @@
+ 	check(monitor.latest.effects.tyre_emitters_active_mask == 1 and monitor.latest.effects.spray_emitters_active_mask == 2, "individual cloud and spray activation is identifiable")
+ 	check(monitor.header.render_items.size() > 0 and monitor.header.render_items.size() <= monitor.MAX_RENDER_ITEMS and monitor.latest.previous_render_context.candidate_ids.size() <= monitor.MAX_RENDER_ITEMS, "render inventory and frustum candidates stay bounded")
+ 	check(monitor.latest.previous_render_context.sampling_ms >= 0 and monitor.latest.previous_render_context.width > 0 and monitor.latest.motion.jump_height == game.sim.state.jump_height, "render context and jump state are observed")
++	var bridge_probe := MeshInstance3D.new()
++	bridge_probe.name = "DiagnosticBridge"
++	bridge_probe.mesh = BoxMesh.new()
++	bridge_probe.add_to_group("race_bridge_rendering")
++	game.get_node("World").add_child(bridge_probe)
++	bridge_probe.global_position = game.camera.global_transform * Vector3(0, 0, -10)
++	monitor._collect_render_items(bridge_probe)
++	monitor._render_next_usec = Time.get_ticks_usec() + 200000
++	monitor._pre_draw()
++	var first_bridge: Dictionary = monitor._bridge_context
++	check(first_bridge.candidate_ids.size() == 1 and first_bridge.first_candidate_ids.size() == 1, "first bridge candidate is sampled immediately before drawing")
++	monitor._pre_draw()
++	check(monitor._bridge_context.sample_wall_ms >= first_bridge.sample_wall_ms and monitor._bridge_context.first_candidate_ids.is_empty(), "bridge sampling refreshes inside the 200 ms world-sampling window")
++	monitor._process(0.0)
++	check(monitor.latest.previous_bridge_context == monitor._bridge_context and monitor.latest.bridge_preparation.meshes == 0, "bridge context and covered preparation markers accompany the measured interval")
++	bridge_probe.free()
+ 	monitor.events.clear(); monitor.history.clear()
+ 	for index: int in range(80): monitor.history.append(monitor.latest)
+ 	for index: int in range(monitor.MAX_EVENTS):
+--- a/game/tests/test_menu_quality.gd
++++ b/game/tests/test_menu_quality.gd
+@@ -168,7 +168,7 @@
+ 
+ class ProbeApp extends "res://core/app.gd":
+ 	var raced_track: NativeTrack
+-	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}) -> void:
++	func _start_race(track: NativeTrack, _from_editor: bool, _offline_only: bool = false, _rivalry_issued: Dictionary = {}, _prepared_loading: RaceLoading = null) -> void:
+ 		raced_track = track
+ 
+ class CallbackBrowser extends TrackBrowser:
+--- a/game/tests/test_metadata_race_preparation.gd
++++ b/game/tests/test_metadata_race_preparation.gd
+@@ -22,7 +22,7 @@
+ 		cloud = HeldCloud.new();cloud.client = online.client;add_child(cloud)
+ 		lifecycle = TrackLifecycle.new();lifecycle.cloud = cloud;add_child(lifecycle)
+ 	func _notice(message: String) -> void: notices.append(message)
+-	func _start_race(track: NativeTrack, _editor: bool, _offline: bool = false, _issued: Dictionary = {}) -> void:
++	func _start_race(track: NativeTrack, _editor: bool, _offline: bool = false, _issued: Dictionary = {}, _prepared_loading: RaceLoading = null) -> void:
+ 		prepared = track # Actual ticket/world integration remains covered by TestApp.
+ func _initialize() -> void: run.call_deferred()
+ func check(ok: bool, label: String) -> void:
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 RH08-RH10/Q01/G01/R01: bridge first-use investigation matches live Silmukka geometry; original first bridge draw105.256ms, repeat~8ms, diagnostic new road shader998.211ms. Actual bridge meshes now submit during the existing covered finish draw, with exact cull restoration and no camera/material/state change; every-render bridge context and preparation markers retained within existing log caps. Preparation64+Night12 checks per PC renderer, headless58; loading26/27; hitch45/45; parse697; menu23 pass. Native stack for live305ms and owner restart/phone acceptance remain unconfirmed; no APK/deploy/full Validate. See docs/BRIDGE_RENDER_HITCH_2026_10_14.md for exact probes, pixels, failures and scoped checkpoint.
++
+ 2026-10-14 LE01-LE04/LV01-LV06/LM01-LM05/V03-V06/G01/R01/Q01: owner keeps Midnight only; adds twelve original wraps (32 total) and twelve invented sponsor wordmarks (24 decals total). Retained Hood/Roof + Emblems/Sponsors galleries/six-root bound, forward initial sponsor orientation/custom replacement placement, dynamic six-row atlas/old indices,165 native mipmapped recipe PNGs9759080bytes. Local migration/pigments/reset/dirt/actual kits/retained camera/canonical preserved. Final livery546Compatibility+546MobileVulkan/paint115/carousel178/retained1398 pass; all native wraps/sponsors/three-size menus/race captures inspected. Full import hit locked audio DLL; bounded livery-only imports pass. Initial carousel stale-index/scrollbar assumptions corrected without changing handling; parser/cache concurrent-file issues and final regression outcomes are documented. No phone commands/device test/APK/fullValidate/backend/deploy/online writes/phoneFPS claim. Actual commands/provenance/captures/scoped checkpoint/remaining owner-device acceptance: docs/LIVERY_EXPANSION_2026_10_14.md.
+ 
+ 2026-10-14 B01/B05/B07/Q01: owner malicious-backend analysis confirms four open abuse paths: unauthenticated slow-upload slot starvation, unsupported-method parser concurrency bypass, permanent rejected-publication evidence without byte quotas and anonymous fresh full-catalogue snapshot amplification. Offline diagnostics17pass including all26 admin GET denials/private-owner checks; existing security controls240pass/8SQLite-PG-lock skips/106deselected. Initial selection116pass then unchanged old canonical-rewind fixture failed for missing required trajectory; recorded separately, no assertion weakened. Approved trajectory-only design accepts plausible fabricated paths; no new auth/SQL-injection/RCE bypass confirmed. Secure environment pip-check/Ruff pass; older environment installed project metadata is stale. Application source unchanged by this task. No live attacks, production writes/deploy, new PG/native/phone/APK or fresh advisory scan. Findings/reproductions/limits and scoped checkpoint: docs/evidence/backend-attack-review-2026-10-14/review.json.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 RH08-RH10/Q01/G01/R01: bridge first-use investigation matches live Silmukka geometry; original first bridge draw105.256ms, repeat~8ms, diagnostic new road shader998.211ms. Actual bridge meshes now submit during the existing covered finish draw, with exact cull restoration and no camera/material/state change; every-render bridge context and preparation markers retained within existing log caps. Preparation64+Night12 checks per PC renderer, headless58; loading26/27; hitch45/45; parse697; menu23 pass. Native stack for live305ms and owner restart/phone acceptance remain unconfirmed; no APK/deploy/full Validate. See docs/BRIDGE_RENDER_HITCH_2026_10_14.md for exact probes, pixels, failures and scoped checkpoint.
++
+ 2026-10-14 LE01-LE04/LV01-LV06/LM01-LM05/V03-V06/G01/R01/Q01: owner keeps Midnight only; adds twelve original wraps (32 total) and twelve invented sponsor wordmarks (24 decals total). Retained Hood/Roof + Emblems/Sponsors galleries/six-root bound, forward initial sponsor orientation/custom replacement placement, dynamic six-row atlas/old indices,165 native mipmapped recipe PNGs9759080bytes. Local migration/pigments/reset/dirt/actual kits/retained camera/canonical preserved. Final livery546Compatibility+546MobileVulkan/paint115/carousel178/retained1398 pass; all native wraps/sponsors/three-size menus/race captures inspected. Full import hit locked audio DLL; bounded livery-only imports pass. Initial carousel stale-index/scrollbar assumptions corrected without changing handling; parser/cache concurrent-file issues and final regression outcomes are documented. No phone commands/device test/APK/fullValidate/backend/deploy/online writes/phoneFPS claim. Actual commands/provenance/captures/scoped checkpoint/remaining owner-device acceptance: docs/LIVERY_EXPANSION_2026_10_14.md.
+ 
+ 2026-10-14 B01/B05/B07/Q01: owner malicious-backend analysis confirms four open abuse paths: unauthenticated slow-upload slot starvation, unsupported-method parser concurrency bypass, permanent rejected-publication evidence without byte quotas and anonymous fresh full-catalogue snapshot amplification. Offline diagnostics17pass including all26 admin GET denials/private-owner checks; existing security controls240pass/8SQLite-PG-lock skips/106deselected. Initial selection116pass then unchanged old canonical-rewind fixture failed for missing required trajectory; recorded separately, no assertion weakened. Approved trajectory-only design accepts plausible fabricated paths; no new auth/SQL-injection/RCE bypass confirmed. Secure environment pip-check/Ruff pass; older environment installed project metadata is stale. Application source unchanged by this task. No live attacks, production writes/deploy, new PG/native/phone/APK or fresh advisory scan. Findings/reproductions/limits and scoped checkpoint: docs/evidence/backend-attack-review-2026-10-14/review.json.
+--- a/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
++++ b/docs/RACE_HITCH_DIAGNOSTICS_2026_10_13.md
+@@ -177,3 +177,7 @@
+ Final actual validation: hitch tests **42 headless / 42 Compatibility / 42 Mobile-Vulkan**, exact mesh-chunk signature **34**, full parse **671**, pinned import and helper PowerShell AST checks pass. Actual injectable one-second and save stalls, foreground/pause suppression, every added emission context, bounded inventory/deduplication/byte cap and unchanged canonical state remain checked. Initial graphic missed-save assertions, a concurrently added terrain class missing from Godot's class cache, and the unrelated empty-name construction failure are retained; import restored class discovery, the naming bug was fixed, and the original assertions were kept. No visual/gameplay change was made for this Desert follow-up, so no new art screenshots were required.
+ 
+ Evidence/checkpoint is under `docs/evidence/desert-hitch-recurrence-2026-10-13/`: preserved live JSON, cached public track document, source snapshots, actual command outcomes, sampled thread data and a scoped review patch/hash manifest. Doctor found attached DN2103; **no phone logger/performance test, APK export/install, full Validate or backend deployment** was performed. Restart into updated source to obtain the expanded automatic capture; the original reported sessions have exited. Remaining acceptance: another actual recurrence with the new context (and preferably a successful native CPU/GPU trace) to identify the responsible resource/call/wait, then an attributable fix validated on PC and phone.
++
++## Bridge first-use follow-up, 2026-10-14
++
++The 330 ms Pine/Silmukka recurrence was preserved with preparation already active. Further isolated bridge rendering reproduced a 105 ms original first draw and a 998 ms first draw of a new diagnostic road-shader variant; preparing actual offscreen bridges moves the first-use work under the loading cover. Production shaders remain unchanged, with exact restored pixels/state on both PC renderers and finer every-render bridge logging. This does not establish the original native call or explain bridge-free Desert events. See [the full investigation](BRIDGE_RENDER_HITCH_2026_10_14.md) for commands, paired captures, validation, checkpoint and restart/device acceptance.
+--- /dev/null
++++ b/game/track/bridge_render_preparation.gd
+@@ -0,0 +1,26 @@
++class_name BridgeRenderPreparation
++extends RefCounted
++## Submit the actual bridge meshes once under the loading cover. No camera,
++## material, mesh, visibility, simulation or persistent cosmetic changes.
++const NAMES: Array[String] = ["BridgeUnderShadow", "BridgeAsphalt", "BridgeSteelAndFascia", "DesertBridgeSandstone", "NativeBridgeAsphalt", "NativeBridgeRails", "NativeBridgeFascia"]
++const GROUP: String = "race_bridge_rendering"
++
++static func begin(world: Node, camera: Camera3D) -> Array[Dictionary]:
++	var restore: Array[Dictionary] = []
++	if world == null or camera == null: return restore
++	for node: Node in world.find_children("*", "MeshInstance3D", true, false):
++		if (str(node.name) not in NAMES and not node.is_in_group(GROUP)) or not node.is_visible_in_tree(): continue
++		var mesh: MeshInstance3D = node
++		restore.append({"node": mesh, "margin": mesh.extra_cull_margin})
++		# Include the current camera in the local culling box, even for bridges
++		# outside the starting view. Their original vertices remain untouched.
++		var local_camera: Vector3 = mesh.to_local(camera.global_position)
++		var bounds: AABB = mesh.get_aabb()
++		var distance: Vector3 = (local_camera - bounds.get_center()).abs()
++		mesh.extra_cull_margin = maxf(mesh.extra_cull_margin, maxf(distance.x, maxf(distance.y, distance.z)) + camera.near + 1.0)
++	return restore
++
++static func end(restore: Array[Dictionary]) -> void:
++	for entry: Dictionary in restore:
++		if is_instance_valid(entry.node): entry.node.extra_cull_margin = entry.margin
++	restore.clear()
+--- /dev/null
++++ b/game/track/bridge_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://cg02awm3ijwqr
+--- /dev/null
++++ b/game/tests/profile_bridge_first_use.gd
+@@ -0,0 +1,109 @@
++extends SceneTree
++const BridgePreparation = preload("res://track/bridge_render_preparation.gd")
++## Isolate the owner's exact bridge materials; never advance or save a race.
++var game: Node
++var rows: Array[Dictionary] = []
++var bridge_nodes: Array[MeshInstance3D] = []
++var draw_started: int = 0
++var last_draw_us: int = 0
++var output: String = "res://../docs/evidence/bridge-first-use-2026-10-14"
++
++func _initialize() -> void: run.call_deferred()
++
++func pre_draw() -> void: draw_started = Time.get_ticks_usec()
++func post_draw() -> void: last_draw_us = Time.get_ticks_usec() - draw_started
++
++func frames(count: int) -> void:
++	for index: int in range(count): await RenderingServer.frame_post_draw
++
++func measure(label: String, names: Array[String]) -> void:
++	for node: MeshInstance3D in bridge_nodes: node.visible = str(node.name) in names
++	for index: int in range(6):
++		var started: int = Time.get_ticks_usec()
++		await RenderingServer.frame_post_draw
++		rows.append({"phase": label, "frame": index, "interval_ms": (Time.get_ticks_usec() - started) / 1000.0, "draw_ms": last_draw_us / 1000.0})
++	await frames(4)
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless":
++		push_error("Bridge first-use probe needs a graphical renderer")
++		quit(1)
++		return
++	var args: PackedStringArray = OS.get_cmdline_user_args()
++	var only: String = "all"
++	for arg: String in args:
++		if arg.begins_with("--only="): only = arg.trim_prefix("--only=")
++	if only not in ["all", "road", "shadow", "steel"]:
++		push_error("--only must be all, road, shadow or steel")
++		quit(1)
++		return
++	root.size = Vector2i(1346, 720)
++	var document: Dictionary = TrackLibrary.new().import_document(ProjectSettings.globalize_path("res://../build/bridge-first-use-2026-10-14/track-document.json"))
++	var track: NativeTrack = TrackCompiler.compile(document)
++	if track == null or track.creator_bridges.is_empty():
++		push_error("Expected the cached Silmukka bridge track")
++		quit(1)
++		return
++	game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.production_mode = true
++	game.hitch_diagnostics_enabled = false
++	game.preference_records = LocalRecords.new(ProjectSettings.globalize_path("res://../build/bridge-first-use-2026-10-14/disposable-records.json"))
++	root.add_child(game)
++	game.paused = true
++	game.call("_process", 0.0)
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	for name: String in ["BridgeUnderShadow", "BridgeAsphalt", "BridgeSteelAndFascia"]:
++		for node: Node in game.find_children(name, "MeshInstance3D", true, false):
++			bridge_nodes.append(node)
++			node.visible = false
++	var condition: Dictionary = game.car_weathering.snapshot()
++	var state: Dictionary = RewindHistory.properties(game.sim.state)
++	var camera: Camera3D = game.camera
++	var pose: Transform3D = camera.transform
++	var original_size: float = camera.size
++	var span: Dictionary = track.creator_bridges[0]
++	var midpoint: Vector2 = Vector2(span.position[0], span.position[1]) + Vector2(float(span.length) * 0.5, 0).rotated(deg_to_rad(float(span.heading)))
++	camera.position.x = midpoint.x
++	camera.position.z = -midpoint.y + 23.0
++	camera.position.y = 38.0
++	camera.look_at(Vector3(midpoint.x, 1.5, -midpoint.y))
++	camera.size = 54.0
++	RenderingServer.frame_pre_draw.connect(pre_draw)
++	RenderingServer.frame_post_draw.connect(post_draw)
++	await frames(60)
++	await measure("hidden_baseline", [])
++	var selected: Array[String] = ["BridgeUnderShadow", "BridgeAsphalt", "BridgeSteelAndFascia"]
++	if only == "shadow": selected = ["BridgeUnderShadow"]
++	elif only == "road": selected = ["BridgeAsphalt"]
++	elif only == "steel": selected = ["BridgeSteelAndFascia"]
++	if "--specialize" in args:
++		for node: MeshInstance3D in bridge_nodes:
++			if node.name == "BridgeAsphalt": SurfaceShaderVariants.specialize(node.material_override)
++	if "--warm" in args:
++		var bridge_pose: Transform3D = camera.transform
++		camera.transform = pose
++		camera.size = original_size
++		for node: MeshInstance3D in bridge_nodes: node.visible = str(node.name) in selected
++		await frames(4)
++		var restore: Array[Dictionary] = BridgePreparation.begin(game.track_ground, camera)
++		for index: int in range(2):
++			var started: int = Time.get_ticks_usec()
++			await RenderingServer.frame_post_draw
++			rows.append({"phase": "loading_preparation", "frame": index, "interval_ms": (Time.get_ticks_usec() - started) / 1000.0, "draw_ms": last_draw_us / 1000.0, "meshes": restore.size()})
++		BridgePreparation.end(restore)
++		await frames(4)
++		camera.transform = bridge_pose
++		camera.size = 54.0
++	await measure("first_visible", selected)
++	await measure("hidden_again", [])
++	await measure("repeat_visible", selected)
++	var report: Dictionary = {"renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "track_hash": track.content_hash, "matches_live_track": track.content_hash == "11bc2da60320c9b3e047b88c2dbf36ff22a7c20affb2ac03d48873e1ab4f68fb", "bridge_count": track.creator_bridges.size(), "only": only, "warm": "--warm" in args, "specialized": "--specialize" in args, "state_exact": RewindHistory.properties(game.sim.state) == state, "condition_exact": game.car_weathering.snapshot() == condition, "countdown_ticks": game.countdown_ticks, "rows": rows}
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.get_texture().get_image().save_png(output.path_join("probe-%s-%s-%d.png" % [report.renderer, only, OS.get_process_id()]))
++	var file := FileAccess.open(output.path_join("probe-%s-%s-%d.json" % [report.renderer, only, OS.get_process_id()]), FileAccess.WRITE)
++	file.store_string(JSON.stringify(report, "\t")); file.close()
++	print("BRIDGE_FIRST_USE ", JSON.stringify(report))
++	camera.transform = pose
++	game.free()
++	quit(0 if report.state_exact and report.condition_exact and report.matches_live_track else 1)
+--- /dev/null
++++ b/game/tests/profile_bridge_first_use.gd.uid
+@@ -0,0 +1 @@
++uid://d81livpe5c84
+--- /dev/null
++++ b/game/tests/test_bridge_render_preparation.gd
+@@ -0,0 +1,83 @@
++extends SceneTree
++const Preparation = preload("res://track/bridge_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", label)
++func frames(count: int = 4) -> void:
++	for index: int in range(count):
++		if DisplayServer.get_name() == "headless": await process_frame
++		else: await RenderingServer.frame_post_draw
++
++func run() -> void:
++	root.size = Vector2i(960, 540)
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/bridge-first-use-2026-10-14/preparation-" + RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	for theme: String in TrackTheme.IDS + ["native", "no-bridge"]:
++		if "--night-only" in OS.get_cmdline_user_args() and theme != "night_city": continue
++		var track: NativeTrack
++		if theme == "native": track = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_1way_test.json")
++		elif theme == "no-bridge": track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++		else:
++			var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
++			document.theme = theme
++			track = TrackCompiler.compile(document)
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.initial_track = track
++		game.production_mode = true
++		game.preference_records = LocalRecords.new(output.path_join("disposable-records.json"))
++		root.add_child(game)
++		game.hitch_diagnostics.persist_enabled = false
++		game.paused = true
++		game.call("_process", 0.0)
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		await frames(120 if DisplayServer.get_name() != "headless" else 4)
++		var camera: Camera3D = game.camera
++		var camera_pose: Transform3D = camera.transform
++		var camera_size: float = camera.size
++		var state: Dictionary = RewindHistory.properties(game.sim.state)
++		var condition: Dictionary = game.car_weathering.snapshot()
++		var before: Image
++		if DisplayServer.get_name() != "headless": before = root.get_texture().get_image()
++		var restore: Array[Dictionary] = Preparation.begin(game.track_ground, camera)
++		check(not restore.is_empty() if theme != "no-bridge" else restore.is_empty(), theme + " prepares only existing bridge meshes")
++		var snapshots: Array[Dictionary] = []
++		for entry: Dictionary in restore:
++			var node: MeshInstance3D = entry.node
++			snapshots.append({"node": node, "mesh": node.mesh, "material": node.material_override, "pose": node.transform, "margin": entry.margin, "shadow": node.cast_shadow, "layers": node.layers, "visible": node.visible})
++			check(node.extra_cull_margin >= node.to_local(camera.global_position).distance_to(node.get_aabb().get_center()) / sqrt(3.0), theme + " includes the starting camera in the preparation bounds")
++		await frames()
++		Preparation.end(restore)
++		Preparation.end(restore)
++		await frames()
++		var retained: bool = true
++		for snapshot: Dictionary in snapshots:
++			var node: MeshInstance3D = snapshot.node
++			retained = retained and node.mesh == snapshot.mesh and node.material_override == snapshot.material and node.transform == snapshot.pose and node.extra_cull_margin == snapshot.margin and node.cast_shadow == snapshot.shadow and node.layers == snapshot.layers and node.visible == snapshot.visible
++		check(retained and restore.is_empty(), theme + " restores exact bounds, meshes, materials, frames, shadows and visibility")
++		check(camera.transform == camera_pose and camera.size == camera_size, theme + " retains the exact gameplay camera")
++		check(RewindHistory.properties(game.sim.state) == state and game.countdown_ticks == 360 and game.car_weathering.snapshot() == condition, theme + " retains canonical state, full countdown and local condition")
++		if before != null:
++			var after: Image = root.get_texture().get_image()
++			check(before.get_data() == after.get_data(), theme + " restores byte-exact pixels")
++			before.save_png(output.path_join(theme + "-before.png"))
++			after.save_png(output.path_join(theme + "-after.png"))
++		if not snapshots.is_empty():
++			var hidden: MeshInstance3D = snapshots[0].node
++			hidden.visible = false
++			var limited: Array[Dictionary] = Preparation.begin(game.track_ground, camera)
++			check(not limited.any(func(entry: Dictionary) -> bool: return entry.node == hidden), theme + " preserves hidden bridge groups")
++			Preparation.end(limited)
++			hidden.visible = true
++		var cancellation: Array[Dictionary] = Preparation.begin(game.track_ground, camera)
++		game.free()
++		Preparation.end(cancellation)
++		check(cancellation.is_empty(), theme + " safely restores after scene cancellation")
++		await frames(1)
++	print("BRIDGE_PREPARATION_TESTS: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_bridge_render_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://byuuu3p6foim1
+--- /dev/null
++++ b/docs/BRIDGE_RENDER_HITCH_2026_10_14.md
+@@ -0,0 +1,59 @@
++# Bridge first-use rendering investigation, 2026-10-14
++
++The live Pine/Compact/Compatibility freeze was captured at **6.100 s of driving**: **330.171 ms** between observed frames, with **305.045 ms between render signals**. Material preparation had already run. Bridge road, under-shadow and fascia were new candidates in the following 5 Hz visibility sample. See the [preserved live analysis](evidence/race-hitch-recurrence-2026-10-14/findings.md).
++
++The cached public **Silmukka** document was copied into ignored `build/bridge-first-use-2026-10-14/track-document.json`. Compilation matches the live geometry hash exactly: `11bc2da60320c9b3e047b88c2dbf36ff22a7c20affb2ac03d48873e1ab4f68fb`. It contains one bridge. The diagnostic freezes the full countdown, simulation and condition, uses disposable records, disables normal callbacks, and reveals only the selected original bridge meshes. No player race or driver shader cache was reset.
++
++On the RTX 3090 / Godot 4.7.2 / Compatibility renderer:
++
++| Probe | First render boundary | Later/repeat boundaries |
++| --- | ---: | ---: |
++| Original bridge, all three groups | 105.256 ms | about 8 ms |
++| Original road only, subsequent process | 18.052 ms | about 8 ms |
++| Original under-shadow only, subsequent process | 8.230 ms maximum | about 8 ms |
++| Original structure only, subsequent process | 12.279 ms | about 8 ms |
++| Original bridge submitted from the starting camera during preparation | 22.649 ms under preparation | first visible bridge 8.069 ms; maximum of six 8.212 ms |
++| Diagnostic fixed-role bridge-road shader variant, first run | 998.211 ms | about 8 ms |
++| Same diagnostic variant with preparation, subsequent run | 65.212 ms under preparation | maximum of six first visible frames 8.237 ms |
++
++These are separate runs on a shared desktop with evolving shader/driver caches, not a controlled cold-cache speedup comparison. The variant uses the project's existing `SurfaceShaderVariants.specialize` helper only in the probe; **production bridge shaders and material bindings are unchanged**. The measurements establish a bridge first-use delay and a particularly expensive first use of a new road-shader variant. They strengthen shader/program compilation as the explanation, but do not identify the native call responsible for the original 305 ms interval, nor isolate its cost to one of the three original groups. Earlier Desert captures without bridges still need a separate explanation.
++
++The production mitigation submits the **actual existing bridge meshes** during the already-covered finish preparation draw. Their culling boxes temporarily include the starting camera, so offscreen meshes reach the renderer while their original vertices remain in place. The helper restores every original cull margin before releasing the cover, including cancellation and destroyed-scene cleanup. Creator road, fascia/stone, under-shadow and native raster bridge groups are included. It changes no camera, geometry, mesh/material resources, visibility, lighting, shadow settings, persistent condition, countdown or canonical state, and adds no race draw or geometry budget. Loading can still take the compilation time. Headless mode skips the render pass.
++
++This follows Godot's documented Compatibility requirement to actually display/submit resources during loading; ordinary shader resource preload alone cannot avoid this first-use path. [Godot pipeline-compilation documentation](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html).
++
++The automatic local logger now records covered bridge-preparation success, mesh count and shared finish/bridge draw wall time. Bridge camera-frustum candidates and their first appearances are sampled at **every pre-draw boundary**, retaining the existing 5 Hz sampling for the rest of the world. The row's `previous_bridge_context` accompanies its preceding render interval; temporary cull margins are ignored when describing actual geometry candidates. Candidates still do not assert actual GPU/shadow draws or compilation. The inventory cap of 128 meshes and existing file/event/byte limits remain; omitted inventory items remain explicit. No network upload is added.
++
++Actual validation:
++
++- Preparation: **64 Compatibility + 64 Mobile/Vulkan checks** for Pine, Winter, Desert, Storm, native raster bridges and no-bridge scenes; **12 + 12 additional Night City checks**. Before/after framebuffer bytes, camera, meshes/materials/transforms/layers/shadows/visibility, condition, canonical state and full 360-tick countdown are exact. Hidden groups and scene destruction are checked.
++- Headless preparation: **58 checks**. Actual app bridge loading: **26 headless / 27 Compatibility**, including three starts, covered preparation markers, restored margins, cancellation, deadline recovery and suspended rendering.
++- Hitch logger: **45 headless / 45 Compatibility**, including an immediate first bridge candidate, another sample inside the 200 ms world-sampling window, association with the measured interval, injected stalls, pause/focus suppression and the full eight-event file byte cap.
++- Full project parse: **697 scripts**, zero failures. Menu quality **23 checks**, after matching its test override to a concurrent race-start API change.
++
++Commands used through the pinned entry point:
++
++```powershell
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument '--only=road'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument '--only=shadow'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument '--only=steel'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument '--warm'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument '--specialize'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_bridge_first_use.gd -Graphical -TestArgument @('--warm','--specialize')
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd -Graphical -TestArgument '--night-only'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--night-only'
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_render_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_hitch_monitor.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd -Graphical
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_over_under_loading.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_quality.gd
++```
++
++Retained initial issues: the first probe incorrectly used positive world Z for track Y, putting the bridge outside the inspection camera; that run is marked invalid evidence. One native PowerShell `-File` array argument arrived as a single comma-containing string, so the intended specialization was not applied; its result is also marked invalid, and argument validation now rejects that input. Class discovery initially required an explicit script preload; a pinned import attempt failed because another Godot process held the audio extension's temporary DLL. A headless typed-array conditional assignment failed and was corrected to a typed empty array plus explicit graphical assignment; headless loading then passed. One build-identity scan hit a concurrently written kit asset's file lock; the command passed on retry. Full parsing found two old test override signatures affected by the concurrent optional loading parameter; only their signatures were updated. The metadata fixture was parsed, not run as an integration acceptance test for the unrelated API work. No assertions were relaxed.
++
++Raw probe JSON/PNG, paired restoration captures, source snapshots, actual command logs and a scoped review patch/hash manifest are under `docs/evidence/bridge-first-use-2026-10-14/`. Concurrent editor write-queue, track-loading and car-kit changes are preserved and excluded from the bridge checkpoint. The game was neither restarted nor terminated. Restart it to load the new preparation and per-frame bridge diagnostics. Owner acceptance remains repeated Silmukka races after restart; an exact native CPU/GPU stack for any remaining stall and physical-phone validation remain outstanding. No phone test, APK export/install, full Validate or backend deployment was performed.

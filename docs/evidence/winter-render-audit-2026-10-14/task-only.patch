@@ -1,0 +1,226 @@
+diff --git a/game/tests/profile_winter_render_audit.gd b/game/tests/profile_winter_render_audit.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_winter_render_audit.gd
+@@ -0,0 +1,153 @@
++extends "res://tests/test_winter_snow_wind.gd"
++## Read-only, unscored attribution diagnostic. Removal modes are cost bounds,
++## never proposed graphics settings. Each mode retains the same frozen camera.
++var folder: String = "res://../build/winter-render-audit-2026-10-14"
++var seconds: float = 1.5
++var themes: Array[String] = ["winter", "pine", "desert"]
++var modes: Array[String] = ["full", "no_wind", "flat_banks", "flat_terrain", "flat_roads", "no_frost", "no_shadows", "no_car", "flat_world", "full"]
++var resolutions: Array[Vector2i] = [Vector2i(1920,1080), Vector2i(3840,2160)]
++var view: int = 0
++var entries: Array[Dictionary] = []
++var report: Dictionary = {}
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--folder="): folder = argument.trim_prefix("--folder=")
++		if argument.begins_with("--seconds="): seconds = float(argument.trim_prefix("--seconds="))
++		if argument.begins_with("--themes="): themes.assign(argument.trim_prefix("--themes=").split(","))
++		if argument.begins_with("--modes="): modes.assign(argument.trim_prefix("--modes=").split(","))
++		if argument.begins_with("--view="): view = int(argument.trim_prefix("--view="))
++		if argument == "--1080p": resolutions = [Vector2i(1920,1080)]
++		if argument == "--4k": resolutions = [Vector2i(3840,2160)]
++	folder += "/" + RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
++	var viewport: RID = root.get_viewport_rid()
++	RenderingServer.viewport_set_measure_render_time(viewport,true)
++	report = {"engine":Engine.get_version_info().string,"device":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"visual_version":NativeTrackVisual.VERSION,"note":"Frozen same-route native scenes, fixed camera/light/time within each biome; uncapped desktop GPU cost bounds, not phone FPS. Flat materials remove surface shading and masking; geometry and camera stay fixed. Wind uses a fixed active event. Captures/readbacks outside timing windows. Shared host may have other applications running.","themes":{}}
++	var document: Dictionary = make_track().metadata.creator_document.duplicate(true)
++	for theme: String in themes:
++		document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.initial_track = track
++		game.production_mode = true
++		game.attempt_practice = true
++		root.add_child(game)
++		for i: int in range(10): await process_frame
++		check(game.preference_records == null and game.rating_records == null,"no persistent records adapters")
++		game.paused = true
++		game.attempt_practice = true
++		game.set_process(false)
++		game.set_physics_process(false)
++		game.set_process_input(false)
++		game.set_process_unhandled_input(false)
++		game.race_cues.hide()
++		game.hud.hide()
++		game.hud.pause_menu.hide()
++		# Nested CanvasLayers have independent visibility. Focus loss during
++		# startup can open the pause canvas before the diagnostic freezes.
++		for layer: Node in game.find_children("*","CanvasLayer",true,false):
++			if layer != game.weather_layer: (layer as CanvasLayer).hide()
++		game.sand_dust.hide()
++		game.trails.hide()
++		var wind: WinterSnowWind = game.winter_snow_wind
++		var focus: Vector2 = track.route[clampi(view * track.route.size() / 3, 0, track.route.size()-1)]
++		if wind != null:
++			wind.elapsed = 5.0
++			wind.travel = 95.0
++			wind.intensity = 0.45
++			wind.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
++			wind.present(0.0, focus, 1.0, false, false)
++		entries.clear()
++		var inventory: Dictionary = {}
++		for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
++			var material: Material = node.material_override
++			if material == null or node.mesh == null: continue
++			var role: String = "other"
++			if material is ShaderMaterial:
++				var code: String = (material as ShaderMaterial).shader.code
++				if code.contains("smooth_road_bank"): role = "banks"
++				elif code.contains("uniform sampler2D surface_low"): role = "terrain"
++				elif code.contains("uniform sampler2D verge_blend_mask"): role = "roads"
++				elif code.contains("uniform bool winter_bridge_width_data"): role = "roads"
++			var flat := StandardMaterial3D.new()
++			flat.albedo_color = Color(0.65,0.72,0.80)
++			flat.roughness = 1.0
++			flat.cull_mode = BaseMaterial3D.CULL_DISABLED
++			flat.render_priority = material.render_priority
++			entries.append({"node":node,"original":material,"flat":flat,"role":role})
++			if not inventory.has(role): inventory[role] = {"nodes":0,"triangles":0}
++			inventory[role].nodes += 1
++			if node.mesh is ArrayMesh:
++				for surface: int in range(node.mesh.get_surface_count()):
++					var indices: int = node.mesh.surface_get_array_index_len(surface)
++					inventory[role].triangles += (indices if indices > 0 else node.mesh.surface_get_array_len(surface)) / 3
++			else:
++				inventory[role].triangles += node.mesh.get_faces().size() / 3
++		var snapshot: Array = game.sim.state.snapshot().duplicate(true)
++		var saved_condition: Dictionary = game.car_weathering.snapshot()
++		var stages: Array[Dictionary] = []
++		var default_shadow: bool = game.biome_light.shadow_enabled
++		var frost: Node = game.find_child("WinterFrost",true,false)
++		if view != 0:
++			game.car.position.x = focus.x
++			game.car.position.z = -focus.y
++			game.car.force_update_transform()
++			if wind != null: wind._sync_surfaces()
++		game.camera.follow(focus,Vector2.ZERO,0.0,0.0,true)
++		for resolution: Vector2i in resolutions:
++			root.size = resolution
++			for mode: String in modes:
++				if mode == "weathered_car":
++					if theme == "winter":
++						game.car_weathering.snow_amount = 0.45
++						game.car_weathering.slow_snow_amount = 0.15
++					else:
++						game.car_weathering.dirt_amount = 0.45
++						game.car_weathering.slow_dirt_amount = 0.15
++					game.car_weathering._update_finish()
++				elif game.car_weathering.installed:
++					game.car_weathering.restore(saved_condition)
++				for entry: Dictionary in entries:
++					entry.node.material_override = entry.flat if mode == "flat_world" or mode == "flat_" + str(entry.role) else entry.original
++				game.biome_light.shadow_enabled = default_shadow and mode != "no_shadows"
++				game.car.visible = mode != "no_car"
++				if frost != null: frost.visible = mode != "no_frost"
++				if wind != null: wind.visible = mode != "no_wind"
++				await measure(viewport,0.6)
++				var stage: Dictionary = await measure(viewport,seconds)
++				stage["mode"] = mode
++				stages.append(stage)
++				print("WINTER_RENDER_AUDIT_STAGE: ",theme," ",JSON.stringify(stage))
++				if mode in ["full","no_wind","weathered_car"]: root.get_texture().get_image().save_png(folder+"/"+theme+"-"+str(resolution.x)+"-"+mode+".png")
++				check(game.sim.state.snapshot() == snapshot,"frozen diagnostic leaves canonical state unchanged")
++				check(not game.hud.visible and not game.hud.pause_menu.visible and not game.race_cues.visible,"diagnostic has no HUD or pause/countdown cover")
++				report.themes[theme] = {"content_hash":track.content_hash,"view":view,"focus":[focus.x,focus.y],"inventory":inventory,"wind_materials":wind.surface_materials.size() if wind != null else 0,"wind_bindings":wind.surface_bindings.size() if wind != null else 0,"stages":stages}
++				FileAccess.open(folder+"/report.json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++		for entry: Dictionary in entries: entry.node.material_override = entry.original
++		game.queue_free()
++		await process_frame
++	print("WINTER_RENDER_AUDIT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func measure(viewport: RID, duration: float) -> Dictionary:
++	var frames: Array[float] = []
++	var gpu: Array[float] = []
++	var cpu: Array[float] = []
++	var start: int = Time.get_ticks_usec()
++	var previous: int = start
++	while Time.get_ticks_usec()-start < duration*1000000.0:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		frames.append(float(now-previous)/1000.0)
++		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(viewport))
++		cpu.append(RenderingServer.viewport_get_measured_render_time_cpu(viewport))
++		previous = now
++	return {"samples":frames.size(),"frame_ms":quantiles(frames),"gpu_ms":quantiles(gpu),"render_cpu_ms":quantiles(cpu),"viewport":[root.size.x,root.size.y],"scale":root.scaling_3d_scale,"msaa":root.msaa_3d,"draws":Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),"primitives":Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)}
++
++func quantiles(values: Array[float]) -> Dictionary:
++	values.sort()
++	return {"p50":values[values.size()/2],"p95":values[mini(values.size()-1,floori(values.size()*0.95))],"max":values[-1]}
+diff --git a/docs/WINTER_RENDER_AUDIT_2026_10_14.md b/docs/WINTER_RENDER_AUDIT_2026_10_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/WINTER_RENDER_AUDIT_2026_10_14.md
+@@ -0,0 +1,63 @@
++# Current Winter rendering cost audit
++
++2026-10-14. Owner request: investigate what makes Winter slower now. WRA01 identifies current rendering costs, WRA02 compares the same circuit in other biomes, WRA03 retains a repeatable diagnostic and honest measurement limits; G01/R01/Q01/V05 remain unchanged.
++
++The desktop fixture did **not reproduce Winter being slower overall than Grass or Desert**. The strongest measured optimisation targets are terrain/ice surface shading and render submissions. Blowing snow has a smaller cost in the measured views. This is an investigation, not an implemented performance improvement or a diagnosis of a particular phone slowdown.
++
++## Reliable same-circuit results
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, RTX 3090, Windows. Each renderer independently runs the same native circuit in Winter/Pine/Desert, with a frozen camera, car, lighting and wind clock, 2x MSAA, scale 1.0, VSync off and no cap. Warmup is 0.6 s; each main stage samples 1.5 s. HUD, dust and deposited tire marks are hidden to isolate scenery. Readbacks happen outside measurement windows. Winter uses the real surface powder materials plus the original 48 airborne grains; no floating ground/bank cards are active.
++
++GPU values below average the initial and final full-stage medians. Their baseline drift is at most 1.2%. Main Compatibility records kit 200; main Mobile records kit 201, reflecting concurrent work. These are independent component measurements, not a source-frozen comparison between renderers or an incremental before/after optimisation.
++
++| Biome | Compatibility GPU, 1080p / 4K ms | Mobile/Vulkan GPU, 1080p / 4K ms | Total submissions, Compatibility / Mobile |
++|---|---:|---:|---:|
++| Winter | 0.714 / 1.921 | 0.411 / 1.350 | 157 / 157 |
++| Grass/Pine | 0.717 / 2.030 | 0.470 / 1.655 | 140 / 136 |
++| Desert | 0.723 / 2.018 | 0.448 / 1.491 | 127 / 127 |
++
++The removal modes retain the camera and mesh resources. Replacing surface materials with flat materials also changes masking, lighting and depth ownership, so the savings are **cost bounds**, not achievable optimisation percentages, isolated instruction counts or proposed visual settings. Effects overlap; differences must not be added together.
++
++| Winter diagnostic | Compatibility 1080p / 4K GPU reduction | Mobile 1080p / 4K GPU reduction | Implication |
++|---|---:|---:|---|
++| Flat terrain material | 21.1% / 32.7% | 6.0% / 11.2% | Full-screen terrain surface work is a strong GLES investigation target. |
++| Flat road materials | 14.6% / 9.3% | 10.6% / 14.9% | Ice colour, frost, finish and reflective shading are another substantial target. |
++| Hide blowing snow | 1.0% / 1.9% | 3.3% / 7.3% | The tested wind state costs less than the main terrain/road paths; other event phases still need coverage. |
++| Disable directional shadows | 6.0% / 0.9% | 11.3% / 10.2% | Shadow benefit varies by renderer. This is not permission to reduce approved shadows. |
++| Flat bank materials | 8.4% / 4.9% | -0.6% / -1.8% | A flat bank replacement does not reliably improve Mobile; bank detail removal is not supported by these results. |
++| Hide frost border | 3.8% / 4.6% | 5.0% / 4.0% | The border is a smaller full-screen cost. |
++
++## Work attribution and next candidates
++
++The detailed stock car accounts for **109 of Winter's 157 submissions** in the first view, including its colour/shadow work. Hiding it lowers Compatibility render CPU from approximately 0.663 to 0.475 ms at 1080p; Mobile falls from 0.183 to 0.130 ms. This is common car/driver work, not a Winter-specific regression. Without the car, Winter submits 48 draws, Grass 31/27 and Desert 18: Winter has 17–21 more environment submissions than Grass and 30 more than Desert in this view. The profiler counts complete viewport submissions, including shadows and the retained Winter border.
++
++The scene inventory finds nine bank mesh resources containing 87,266 triangles in aggregate. This includes colour/chunk/shadow resource copies and is **not a unique bank geometry count** or a claim that every retained mesh is submitted in every view. Existing adaptive spatial draws and the complete shadow caster are preserved.
++
++Source inspection identifies useful candidates for a follow-up implementation:
++
++1. **Terrain material specialization.** `terrain.gdshaderinc` retains the eight-layer array/loop after exact packed-mask remapping. Investigate compiling the known active kinds into fixed ordered contributions, retaining all-kind fallback, the original weights, region predicate, fringe and accumulation order. Existing mask packing and region skipping already work; do not repeat those changes or replace the artwork.
++2. **Shared ice/frost calculations.** `winter_wear_width()` computes `winter_edge_frost()` for colour, and the road/bridge fragment computes the same frost again for reflectivity. Check whether the driver already eliminates the duplicate work; an explicit shared result is a candidate, not a measured saving. Preserve actual road width, pigment, normals and seam radiance on both renderers.
++3. **Submission overhead.** Further changes must respect immutable geometry, articulated parts, mutable paint/condition roles, original shadow ownership and existing simple-car preference. The current profiler does not establish that reducing bank geometry is necessary.
++
++The existing moving Winter diagnostic completed real canonical AI driving. In its first 1080p full stage, simulation, particle sampling and trail sampling averaged about 0.177 / 0.064 / 0.018 ms per frame. The broader presentation block averaged 0.679 ms. Its `car` subsection includes wind, weathering, audio, support and suspension, so it must not be presented as isolated car animation cost. These short ordinary-driving samples do not cover saturated trails or continuous bank spray. Its moving GPU baselines drifted substantially and are excluded from reliable GPU percentage comparisons.
++
++Second-view snow-covered-car tests keep the **same submission and primitive counts** as the clean car. A Mobile capture exposed an independently visible pause canvas; that attempt is retained as invalid. The corrected diagnostic disables ordinary input, explicitly hides nested non-weather CanvasLayers and asserts that HUD/pause/countdown covers stay hidden. Corrected runs pass on both renderers. The final corrected Compatibility 1080p repetition has stable clean GPU medians 0.728/0.729/0.730 ms versus snow-covered 0.746/0.747 ms: about 2.4% extra GPU time, with 161 submissions/355,483 primitives in every stage. It does not explain a large slowdown. The other second-view timing baselines remain unstable and are excluded from timing conclusions rather than averaged into an apparent gain.
++
++## Actual commands and checks
++
++Engine calls use `powershell -NoProfile -ExecutionPolicy Bypass -Command` and `scripts/dev.ps1 TestScript`. The common diagnostic is `-ScriptPath res://tests/profile_winter_render_audit.gd -Graphical`, with `-RenderingMethod gl_compatibility -RenderingDriver opengl3` or `-RenderingMethod mobile -RenderingDriver vulkan`.
++
++| Actual run | Result |
++|---|---|
++| Main diagnostic; `-TestArgument @('--folder=res://../build/winter-render-audit-2026-10-14','--seconds=1.5')` | 63 + 63 checks, zero failures; same-circuit three-biome attribution and unchanged canonical snapshots |
++| Initial second view; folder `.../view1`, `--view=1`, `--themes=winter`, two seconds and removal/weathered/full repetitions | 23 + 23 checks; Mobile capture contains pause UI and is excluded; later 4K timing drift also excludes timing claims |
++| Corrected second view, Mobile; folder `.../view1-corrected`, modes `full,no_wind,flat_terrain,flat_roads,no_shadows,weathered_car,full,weathered_car,full` | 37 checks, zero failures; explicit hidden-overlay and canonical invariants |
++| Corrected second view, Compatibility; same folder, `--1080p`, modes `full,weathered_car,full,weathered_car,full` | 11 checks, zero failures; same explicit invariants and stable final weathering repetition |
++| `res://tests/profile_winter_desktop.gd`, Compatibility | Completed ordinary unscored AI diagnostic; actual full/no-wind/no-bank/flat/shadow/repeat stages at 1080p and 4K; moving GPU baseline drift excluded |
++| `res://tests/test_script_parse.gd` | Final 765 scripts, zero failures after the visibility correction; corrected fixture also compiles/runs on both renderers |
++
++Initial diagnostic errors are retained: restricted Godot could not write its ordinary `user://` logs; permitted rerun worked. The first existing-profiler CLI invocation passed one comma-joined argument, so its default five-second stages ran; the actual output and unusual folder name are retained, not mislabeled as the requested three seconds. The new inventory initially assumed every mesh was ArrayMesh; BoxMesh handling was corrected without weakening an assertion. An optional Python image-count attempt found no Pillow installation; no pixel-count result is claimed.
++
++Raw [Compatibility](evidence/winter-render-audit-2026-10-14/start/gl_compatibility/report.json) and [Mobile](evidence/winter-render-audit-2026-10-14/start/mobile/report.json) reports retain every sample. The [summary](evidence/winter-render-audit-2026-10-14/summary.json), successful/failing logs, selected actual captures, summarizer and task-only patch/hash checkpoint are in the same evidence tree. The new diagnostic is export-excluded by the existing `tests/*` filter. Changed task files are the diagnostic, this report and its evidence; the shared runtime changes, Git index and HEAD are preserved.
++
++No phone attachment check, physical-device test, APK export/install, backend write or deployment was performed. The reported slowdown on the owner's particular track/device remains unconfirmed. Remaining acceptance is an exact-track driving trace on that device, sustained bank/spray/full-trail workloads, and pixel/driver/phone validation of any subsequent implementation. Earlier phone results and these RTX 3090 figures do not certify current phone FPS or a performance improvement.

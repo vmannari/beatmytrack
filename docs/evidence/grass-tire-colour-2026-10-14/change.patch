@@ -1,0 +1,223 @@
+--- a/game/vehicle/skid_trails.gd
++++ b/game/vehicle/skid_trails.gd
+@@ -7,6 +7,7 @@
+ const SAMPLE_DISTANCE: float = 0.32
+ const MAX_SEGMENT_LENGTH: float = 1.5
+ const DESERT_COMPACTION_TONE: float = 0.92
++const GRASS_SOIL_PIGMENT: Color = Color(0.32, 0.205, 0.11, 1.0)
+ var instances: MultiMesh
+ var trail_visibility: TrailVisibility
+ var mark_colors := PackedColorArray()
+@@ -76,8 +77,10 @@
+ #include "res://vehicle/dust_bridge_clip.gdshaderinc"
+ uniform bool desert_sand_trails = false;
+ uniform vec4 desert_sand_pigment : source_color = vec4(0.60,0.48,0.31,1.0);
++uniform vec4 grass_soil_pigment : source_color = vec4(0.32,0.205,0.11,1.0);
+ 
+ varying float loose_surface;
++varying float grass_rut;
+ varying float sand_pressure;
+ varying float ice_scuff;
+ varying vec3 ice_contact_normal;
+@@ -94,6 +97,7 @@
+ 
+ void vertex() {
+ 	loose_surface = INSTANCE_CUSTOM.b;
++	grass_rut = 1.0-step(0.005,abs(INSTANCE_CUSTOM.r-0.1));
+ 	sand_pressure = mix(INSTANCE_CUSTOM.g,INSTANCE_CUSTOM.a,UV.y);
+ 	ice_scuff = 1.0-smoothstep(0.005,0.015,abs(INSTANCE_CUSTOM.r-0.8));
+ 	// The two side columns carry the start/end cross-sections, not a rigid
+@@ -151,6 +155,7 @@
+ 	float chipped_edge = mix(1.0, smoothstep(0.18, 0.62, grain + (1.0 - across) * 0.72), loose_surface * smoothstep(0.76, 1.0, across));
+ 	float feather = 1.0 - smoothstep(0.72, 1.0, across);
+ 	ALBEDO = COLOR.rgb * tone;
++	if (grass_rut > 0.5) { ALBEDO = grass_soil_pigment.rgb * tone; }
+ 	if (desert_sand_trails && loose_surface > 0.5) { ALBEDO = desert_sand_pigment.rgb * tone; }
+ 	ROUGHNESS = 1.0;
+ 	if (ice_scuff > 0.5) {
+@@ -166,6 +171,7 @@
+ 	material.shader = shader
+ 	material.set_shader_parameter("desert_sand_trails",desert_sand)
+ 	material.set_shader_parameter("desert_sand_pigment",TrackTheme.DESERT[0]*DESERT_COMPACTION_TONE)
++	material.set_shader_parameter("grass_soil_pigment",GRASS_SOIL_PIGMENT)
+ 	return material
+ 
+ 
+@@ -380,7 +386,7 @@
+ 	# the canonical tire-cleaning state.
+ 	var result: Vector4
+ 	match kind:
+-		1: result = Vector4(0.23, 0.285, 0.125, 0.60) # Dark brown-green crushed grass.
++		1: result = Vector4(GRASS_SOIL_PIGMENT.r, GRASS_SOIL_PIGMENT.g, GRASS_SOIL_PIGMENT.b, 0.60) # Warm brown soil exposed through crushed grass.
+ 		2: result = Vector4(0.68, 0.53, 0.32, 0.52) # Compressed dirt or sand groove.
+ 		3, 6: result = Vector4(0.12, 0.18, 0.19, 0.42) # Thin wet wake.
+ 		5: result = Vector4(0.16, 0.17, 0.16, 0.50) # Rubber on painted kerb.
+--- a/game/tests/test_soil.gd
++++ b/game/tests/test_soil.gd
+@@ -256,7 +256,7 @@
+ 	var dirt_style: Vector4 = trails._surface_style(2,0.0)
+ 	var water_style: Vector4 = trails._surface_style(3,0.0)
+ 	check(asphalt_style != grass_style and grass_style != dirt_style and dirt_style != water_style,"asphalt, grass, dirt and wet surfaces have distinct trail treatments")
+-	check(grass_style.x > grass_style.z and grass_style.y > grass_style.x and grass_style.w >= 0.59,"grass tracks use a dark opaque brown-green crushed-vegetation treatment")
++	check(grass_style.x > grass_style.y and grass_style.y > grass_style.z and grass_style.w >= 0.59,"grass tracks use warm brown exposed soil with the original opacity")
+ 	check(trails._surface_width(1) > trails._surface_width(0) and trails._surface_width(2) > trails._surface_width(0),"soft-ground tracks are wider than asphalt rubber")
+ 	check(trails._surface_relief(1) >= 0.07 and trails._surface_relief(2) >= 0.055,"grass and dirt tracks have deep faceted rut relief")
+ 	check(trails._surface_relief(1) > trails._surface_relief(0) * 20.0 and trails._surface_relief(2) > trails._surface_relief(0) * 16.0,"loose-surface relief remains visually distinct from nearly-flat asphalt")
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -9,6 +9,9 @@
+ ## Tuning workbench matches Painting override (2026-10-14)
+ The owner requests Tuning to resemble Painting. Share the retained side-by-side car/workbench slots, with a 344-unit right panel, header reset icon, two-row kit categories, two-column vertically scrolling native-photo choices and matching view controls. Preserve the actual attached viewport/car/room/camera/condition, independent saved part IDs, sixteen-photo cache and existing care/car/trophy layouts. Deferred focus reveal must ignore stale outgoing cards. See `docs/GARAGE_TUNING_LAYOUT_2026_10_14.md` for actual paired Painting/Tuning captures, both-renderer full-app547+547/direct61+61/motion228+228 checks,733-script parse and scoped checkpoint. No asset/canonical/backend/APK/deployment change; physical-phone acceptance remains.
+ 
++
++## Brown grass tire tracks override (2026-10-14)
++The owner requests more brownish tire tracks on grass. Surface-kind1 uses warm brown exposed-soil pigment with renderer-correct source-colour binding and the original0.60 opacity; preserve other surfaces, ribbon geometry/shading/pressure/sampling, bounded draw/first-use preparation and canonical behavior. See `docs/GRASS_TIRE_COLOUR_2026_10_14.md` for actual both-renderer matched grass views/exact asphalt pixels, canonical/source checks, scoped checkpoint and initial dependency/fixture failures. Owner/physical-phone appearance remains acceptance; no phone test/APK/deployment.
+ 
+ ## Compact kit construction and quality review override (2026-10-14)
+ The owner rejects implausible kits and requests a review of every choice at the AAA target. Keep Original plus nine hood/rim/body options and thirteen aero choices, with saved IDs; splitwing is now the continuous Swept wing. Use closed fabricated returns, real hood/cooling openings, seated wheel hardware, complete splitter/diffuser assemblies and fitted wing supports/lips. Original tyre envelopes and the whole rear plate frame must stay clear. Preserve independent prepared part replacement, sixteen cached offline photos, actual full/simple geometry, paint/livery/local condition, articulation, reflections, retained pane and canonical behavior. All 13,000 combinations remain below 170,000 triangles. See `docs/COMPACT_KITS_QUALITY_2026_10_14.md` for the 278 native car views, source/fit/workflow/latency checks, scoped checkpoint and remaining owner/physical-phone quality acceptance.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -3,6 +3,8 @@
+ 2026-10-14 GTL01-GTL03/CKX01-CKX05/GCS01-GCS04/G01/R01/Q01: owner requests Tuning layout similar to Painting. Same retained car/sidebar slots,344-unit workbench/header reset/view tools; four categories in two rows and two-column vertical native-photo grid. Saved/reset/focused choices revealed with deferred instance guard; actual car/viewport/room/camera/condition and16-photo independent replacement retained. Final full-app547+547/direct themed61+61/motion228+228/733-script parse pass; real paired captures at960/1280/1600. Initial focus issue corrected; separate road API edit settled before final full-app runs. No kit assets/canonical/backend/phone/APK/deployment changes. Actual evidence, scoped checkpoint and remaining phone acceptance: docs/GARAGE_TUNING_LAYOUT_2026_10_14.md.
+ 
+ 2026-10-14 WIND22-WIND24/V04/V05/G01/R01/Q01: owner requests varied Winter stream speed, denser grainy snow. Wind16/kit197 finite per-event speed bias/integrated independent surges, variable tiny air-grain speed; resolved irregular filtered grain clumps/skew/random gaps, denser white cores and less faint fill. Retain12-18mps base/independent sparse event gates/48grains96tri/two reads/zero integrated cards/artwork/bank branch/camera/vehicle clouds/local condition/canonical behavior. Final both-renderer88/cache70 pass; GPU calm phase samples5.52-18.45mps, core coefficient0.1412->0.2078, normalized grain contrast~4.9x. Initial weak texture/roof/cross-task interface/matrix failures retained and corrected/retried without weaker checks; concurrent road/render edits excluded from scoped patch. No phone/APK/deploy/fullValidate or FPS/AAA claim. Actual commands/captures/scoped checkpoint and owner acceptance: docs/WINTER_GRAIN_SPEED.md.
++
++2026-10-14 GT01/V05/G01/R01/Q01: owner requests brownish grass tire marks. Grass-only RGB(0.23,0.285,0.125)->(0.32,0.205,0.11) with source-colour binding; original0.60 opacity/pressure/geometry/shading/sampling/ring and all other surfaces unchanged. Existing soil colour requirement updated. Soil163/ribbons14pass; Compatibility/MobileVulkan each six matched native views/396segments per view, exact asphalt pixels/canonical snapshot/cells/hash. Source/whitespace pass; initial road-height dependency/fixture/focus/raw-Mobile-pigment failures retained. Owner/physical-phone appearance remains acceptance; no phone test/APK/fullValidate/deploy. Actual commands/captures/task-only checkpoint: docs/GRASS_TIRE_COLOUR_2026_10_14.md.
+ 
+ 2026-10-14 CQ01-CQ05/CKX01-CKX05/GCS01-GCS04/V04-V06/G01/R01/Q01: owner rejects implausible compact kits. Review all43; closed fitted body/splitter/diffuser/flap sections, lower blended hood intakes/true openings, bevelled wheel faces/real disc vents/crossed lattice/seated hardware and fabricated aero supports/fitted trailing lips. Continuous Swept wing keeps splitwing ID; original tyres/plate frame clear. Exact1260 prepared meshes; all13000 full/simple combinations max168914/64578;16 native photo cache,86 mipmapped PNGs. Geometry5223/construction1354/source1543/aero836/incremental346/workflow520+520/prepared1396+1396/racing85/reflections25+25/parser725 pass.278 actual car views and interactive gallery; actual desktop switching timings. Shared owner menu-motion/livery/tyre/render work preserved. No phone/APK/deploy/FPS or AAA certification claim. Actual evidence/commands/task-only checkpoint and remaining owner/device acceptance: docs/COMPACT_KITS_QUALITY_2026_10_14.md.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -3,6 +3,8 @@
+ 2026-10-14 GTL01-GTL03/CKX01-CKX05/GCS01-GCS04/G01/R01/Q01: owner requests Tuning layout similar to Painting. Same retained car/sidebar slots,344-unit workbench/header reset/view tools; four categories in two rows and two-column vertical native-photo grid. Saved/reset/focused choices revealed with deferred instance guard; actual car/viewport/room/camera/condition and16-photo independent replacement retained. Final full-app547+547/direct themed61+61/motion228+228/733-script parse pass; real paired captures at960/1280/1600. Initial focus issue corrected; separate road API edit settled before final full-app runs. No kit assets/canonical/backend/phone/APK/deployment changes. Actual evidence, scoped checkpoint and remaining phone acceptance: docs/GARAGE_TUNING_LAYOUT_2026_10_14.md.
+ 
+ 2026-10-14 WIND22-WIND24/V04/V05/G01/R01/Q01: owner requests varied Winter stream speed, denser grainy snow. Wind16/kit197 finite per-event speed bias/integrated independent surges, variable tiny air-grain speed; resolved irregular filtered grain clumps/skew/random gaps, denser white cores and less faint fill. Retain12-18mps base/independent sparse event gates/48grains96tri/two reads/zero integrated cards/artwork/bank branch/camera/vehicle clouds/local condition/canonical behavior. Final both-renderer88/cache70 pass; GPU calm phase samples5.52-18.45mps, core coefficient0.1412->0.2078, normalized grain contrast~4.9x. Initial weak texture/roof/cross-task interface/matrix failures retained and corrected/retried without weaker checks; concurrent road/render edits excluded from scoped patch. No phone/APK/deploy/fullValidate or FPS/AAA claim. Actual commands/captures/scoped checkpoint and owner acceptance: docs/WINTER_GRAIN_SPEED.md.
++
++2026-10-14 GT01/V05/G01/R01/Q01: brown grass-tire pigment with renderer-correct source-colour binding; original opacity/geometry/shading/sampling/ring, other surfaces and canonical behavior retained. Soil163/ribbons14pass; six matched views per renderer/396segments, exact asphalt pixels/canonical snapshot/cells/hash; source/whitespace pass. Initial dependency/fixture failures retained. No phone test/export/install/deployment/fullValidate; owner/physical-phone appearance acceptance remains. Actual commands/captures/task-only checkpoint: docs/GRASS_TIRE_COLOUR_2026_10_14.md.
+ 
+ 2026-10-14 CQ01-CQ05/CKX01-CKX05/GCS01-GCS04/V04-V06/G01/R01/Q01: owner rejects implausible compact kits. Review all43; closed fitted body/splitter/diffuser/flap sections, lower blended hood intakes/true openings, bevelled wheel faces/real disc vents/crossed lattice/seated hardware and fabricated aero supports/fitted trailing lips. Continuous Swept wing keeps splitwing ID; original tyres/plate frame clear. Exact1260 prepared meshes; all13000 full/simple combinations max168914/64578;16 native photo cache,86 mipmapped PNGs. Geometry5223/construction1354/source1543/aero836/incremental346/workflow520+520/prepared1396+1396/racing85/reflections25+25/parser725 pass.278 actual car views and interactive gallery; actual desktop switching timings. Shared owner menu-motion/livery/tyre/render work preserved. No phone/APK/deploy/FPS or AAA certification claim. Actual evidence/commands/task-only checkpoint and remaining owner/device acceptance: docs/COMPACT_KITS_QUALITY_2026_10_14.md.
+ 
+--- /dev/null
++++ b/game/tests/capture_grass_tire_marks.gd
+@@ -0,0 +1,88 @@
++extends SceneTree
++## Matched native grass/road colour review using this task's saved renderer.
++const OUTPUT: String = "res://../docs/evidence/grass-tire-colour-2026-10-14"
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	root.size = Vector2i(1600,900)
++	var folder: String = OUTPUT+"/"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	var document: Dictionary = TrackDocument.create_blank()
++	document.theme = "pine"
++	document.objects = []
++	document["automatic_scenery"] = false
++	var road: Dictionary = RoadPieces.create("straight",Vector2(-28,0),0.0,12.0)
++	road.length = 56.0
++	document.pieces = [road]
++	var track: NativeTrack = TrackCompiler.compile(document)
++	var cells: PackedInt32Array = track.cells.duplicate()
++	var content: String = track.content_hash
++	var race: Node = load("res://core/game.tscn").instantiate()
++	race.initial_track = track
++	race.production_mode = true
++	race.hitch_diagnostics_enabled = false
++	root.add_child(race)
++	race.set_process(false)
++	race.set_physics_process(false)
++	race.countdown_ticks = 0
++	race.race_cues.hide()
++	race.sand_dust.hide()
++	if race.cloud_shadow != null: race.cloud_shadow.hide()
++	race.camera.speed_zoom_enabled = false
++	var canonical_state: VehicleState = race.sim.state
++	var canonical_before: Array = canonical_state.snapshot()
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string(OUTPUT+"/before/skid_trails.gd.txt").replace("\r\n","\n").replace("class_name SkidTrails\n","")
++	assert(script.reload() == OK)
++	var baseline: Node3D = script.new()
++	baseline.wheelbase = race.trails.wheelbase
++	baseline.track_width = race.trails.track_width
++	race.add_child(baseline)
++	var effects: Array[Node3D] = [baseline,race.trails]
++	var state := VehicleState.new()
++	race.sim.state = state
++	for effect: Node3D in effects: effect.hide()
++	for profile: String in ["grass-rolling","grass-braking","road-control"]:
++		var pictures: Array[Image] = []
++		for effect: Node3D in effects:
++			effect.clear()
++			effect.show()
++			var drive: DriveFrame = DriveFrame.sample(0,0,0.75 if profile != "grass-rolling" else 0.0)
++			for i: int in range(100):
++				var t: float = float(i)/99.0
++				state.position = Vector2(-18+t*36,(0.0 if profile == "road-control" else 10.0)+sin(t*PI)*1.5)
++				var tangent := Vector2(36,cos(t*PI)*PI*1.5).normalized()
++				state.velocity = tangent*16
++				state.heading = atan2(tangent.x,tangent.y)
++				state.yaw_rate = 0.0
++				state.tire_dirt = 0.0
++				effect.sample(state,drive,race.bridge_presentation,track)
++			assert(effect.instances.visible_instance_count > 100)
++			if effect == baseline:
++				race.previous_position = state.position
++				race.previous_heading = state.heading
++				race.call("_process",0.0)
++				race.camera.follow(Vector2(1,0 if profile == "road-control" else 9),Vector2.ZERO,PI*0.5,0.0,true)
++			for frame: int in range(10):
++				race.paused = false
++				race.hud.pause_menu.hide()
++				race.hud.message_label.text = ""
++				await RenderingServer.frame_post_draw
++			var picture: Image = root.get_texture().get_image()
++			var tag: String = "before" if effect == baseline else "after"
++			assert(picture.save_png(folder+"/"+profile+"-"+tag+".png") == OK)
++			pictures.append(picture)
++			print("GRASS_TIRE_CAPTURE: ",profile," ",tag," segments=",effect.instances.visible_instance_count," first_tint=",effect.mark_colors[0])
++			effect.hide()
++		if profile == "road-control":
++			assert(pictures[0].get_data() == pictures[1].get_data())
++			print("GRASS_TIRE_CAPTURE: road-control pixels exact")
++		else:
++			assert(pictures[0].get_data() != pictures[1].get_data())
++	race.sim.state = canonical_state
++	assert(canonical_state.snapshot() == canonical_before and track.cells == cells and track.content_hash == content)
++	print("GRASS_TIRE_CAPTURE: six matched views; canonical snapshot/cells/hash preserved")
++	race.queue_free()
++	await process_frame
++	quit()
+--- /dev/null
++++ b/game/tests/capture_grass_tire_marks.gd.uid
+@@ -0,0 +1 @@
++uid://dedu8npowdb0t
+--- /dev/null
++++ b/docs/GRASS_TIRE_COLOUR_2026_10_14.md
+@@ -0,0 +1,26 @@
++# Brown grass tire tracks
++
++Owner request, 2026-10-14: tire tracks on grass should be more brownish.
++
++Requirements: GT01 warm brown grass-track pigment; V05 preserve the existing ribbon geometry, shading and bounded draw; G01/R01 preserve canonical driving and other surfaces; Q01 record actual verification and limitations.
++
++`game/vehicle/skid_trails.gd` changes surface-kind 1 RGB from `(0.23, 0.285, 0.125)` to `(0.32, 0.205, 0.11)`, giving the crushed-grass rut a warm exposed-soil tint. A grass-only `source_color` uniform keeps the pigment brown on both renderers; raw instance colour initially appeared pale tan on Mobile. The existing packed surface ID selects this uniform without changing the instance layout or adding textures/draws. Base opacity remains 0.60. Pressure/opacity interpolation, groove lighting, widths, relief, four-wheel sampling, the 16,384-slot ring, visibility and first-draw preparation remain untouched. All other surface styles, including Desert and Winter, are unchanged.
++
++`game/tests/test_soil.gd` updates the existing grass-colour assertion from green-dominant to red > green > blue, retaining its original opacity bound. This reflects the owner's superseding colour requirement. `game/tests/capture_grass_tire_marks.gd` and its UID supply matched native rolling/braking/road views using the saved task baseline, identical live-car wheel dimensions and one held car pose per pair.
++
++Actual commands used pinned Godot 4.7.2 through `scripts/dev.ps1`, with process-local workspace APPDATA after normal user logs were denied:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/grass-tire-colour-userdata'
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_soil.gd
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_tire_ribbons.gd
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_grass_tire_marks.gd -Graphical -RenderingMethod gl_compatibility
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_grass_tire_marks.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++git diff --check -- game/vehicle/skid_trails.gd game/tests/test_soil.gd
++```
++
++Final soil checks: 163 pass, zero failures. Final ribbon checks: 14 pass, zero failures. Final Compatibility and Mobile/Vulkan captures each save six matched native views with 396 segments per view: grass rolling, grass braking and asphalt control, before and after. Both grass profiles change visible pixels; the asphalt controls are byte-exact on each renderer. Canonical state snapshot, track cells and content hash remain exact. The final brown Compatibility rolling/braking and Mobile braking views were visually inspected. Source checkpoints confirm the runtime changes are limited to grass pigment selection/binding; scoped whitespace verification passes. Actual captures and command logs are retained in `docs/evidence/grass-tire-colour-2026-10-14/`.
++
++Initial attempts are not passing results: normal user-log writes were denied, so APPDATA was isolated inside the workspace; Windows certificate-store access required an approved graphical rerun. An in-progress road-height refactor temporarily called removed `ROAD_HEIGHT.shoulder()` and blocked loading; that unrelated code subsequently compiled without changes from this task. Two early road-control comparisons used the baseline renderer's default wheel dimensions instead of the live car's dimensions; matching them restored exact pixels without changing the assertion. A later capture lost window focus and photographed the automatic pause overlay; the frozen fixture now clears that overlay per frame. The initial raw-tint Mobile view was pale tan and prompted the grass-only source-colour binding. A one-off Python pixel-analysis attempt lacked PIL and installed nothing; a System.Drawing diagnostic identified the mismatched road-track bounds. Initial capture source and failed runner logs are retained.
++
++No road-height code was changed by this task. No full regression, phone test, Android export/install or deployment was performed; phone attachment was not checked. Owner review of the brown tint and physical-phone appearance remain acceptance checks. The task-only source checkpoint and saved baseline are under `docs/evidence/grass-tire-colour-2026-10-14/`; unrelated workspace edits and the Git index are retained.

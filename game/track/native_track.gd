@@ -47,7 +47,7 @@ static func read(path: String) -> NativeTrack:
 	return from_data(data, FileAccess.get_sha256(path))
 
 
-static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
+static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:
 	# Trusted native data only. Creator imports are validated and compiled first.
 	var track := NativeTrack.new()
 	track.metadata = data
@@ -70,11 +70,12 @@ static func from_data(data: Dictionary, hash_value: String) -> NativeTrack:
 	track.islands = []
 	track.rectangles = data.surfaces
 	track.deck_rectangles = data.deck
-	track.cells.resize(track.grid_width * track.grid_height)
-	track.deck_cells.resize(track.cells.size())
-	track.deck_cells.fill(-1)
-	track._expand(track.rectangles, track.cells)
-	track._expand(track.deck_rectangles, track.deck_cells)
+	if prepared_cells.size() == track.grid_width*track.grid_height and prepared_deck.size() == prepared_cells.size():
+		track.cells = prepared_cells; track.deck_cells = prepared_deck
+	else:
+		track.cells.resize(track.grid_width * track.grid_height)
+		track.deck_cells.resize(track.cells.size()); track.deck_cells.fill(-1)
+		track._expand(track.rectangles, track.cells); track._expand(track.deck_rectangles, track.deck_cells)
 	for p: Array in data.route:
 		track.route.append(Vector2(p[0], p[1]))
 	track.route_widths = PackedFloat32Array(data.get("route_widths",[]))

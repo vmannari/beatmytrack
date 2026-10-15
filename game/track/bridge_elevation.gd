@@ -3,7 +3,8 @@ extends RefCounted
 ## Pure spatial elevation shared by client presentation and verified ghosts.
 ## Presentation only: no temporal easing and no changes to canonical handling.
 
-const VERSION: String = "bridge-ramps-4"
+const VERSION: String = "bridge-ramps-6"
+const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
 const APPROACH: float = 4.0
 const INSET: float = 4.0
 var track: NativeTrack
@@ -12,10 +13,12 @@ var upper_route := PackedByteArray()
 var minimum: float = INF
 var maximum: float = -INF
 var inset: float = 0.0
+var road_surface: RefCounted
 
 
 func _init(data: NativeTrack) -> void:
 	track = data
+	road_surface = ROAD_HEIGHT.new(track)
 	roles = track.deck_cells.duplicate()
 	if track.metadata.has("legacy_deck"):
 		roles.fill(-1)
@@ -97,10 +100,10 @@ func height_at(p: Vector2, route_index: int, actual_layer: int = -1) -> float:
 	for span: Dictionary in track.creator_bridges:
 		if CreatorBridges.contains(span,p):
 			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
-			return CreatorBridges.height(span,p) if elevated else 0.0
+			return CreatorBridges.height(span,p)+road_surface.lift if elevated else road_surface.ground(p)
 	if route_index < 0 or upper_route[route_index] == 0:
-		return 0.0
+		return road_surface.ground(p)
 	var cell: Vector2i = cell_for(p)
 	if not inside(cell) or roles[cell.y * track.grid_width + cell.x] < 0:
-		return 0.0
-	return profile_height(p)
+		return road_surface.ground(p)
+	return profile_height(p)+road_surface.lift

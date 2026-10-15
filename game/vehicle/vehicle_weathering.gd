@@ -47,6 +47,11 @@ var wheel_radius: float = 0.37
 const FINISH_PARAMETERS: Array[String] = ["amount","snow","slow_amount","slow_snow","deposit_color","mud","smudge","wetness","wash_volume","slow_wash_volume","wash_min","wash_size"]
 var _finish_values: Array = []
 var parameter_uploads: int = 0
+var wash_mask_uploads: int = 0
+var _wash_depth: int = 0
+var _wash_bytes: PackedByteArray
+var _slow_wash_bytes: PackedByteArray
+var _wash_dirty: bool = false
 
 func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 	var retained: Dictionary = snapshot()
@@ -95,7 +100,8 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
 			var active: Material = node.get_active_material(index)
 			var source: StandardMaterial3D = active.get_meta("livery_source") if active is ShaderMaterial and active.has_meta("livery_source") else active as StandardMaterial3D
 			if source == null: continue
-			var rear_trim: bool = not wheel and source not in paints
+			var front_grille: bool = not wheel and source.get_meta("compact_grille_finish",false)==true
+			var rear_trim: bool = not wheel and source not in paints and not front_grille
 			# Bumpers can share a static batch with front trim. Only matte dark
 			# plastics qualify; the shader restricts their deposit to rear faces.
 			if rear_trim and (source.roughness < 0.7 or source.metallic > 0.2 or source.emission_enabled or source.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED or source.albedo_texture != null or maxf(source.albedo_color.r, maxf(source.albedo_color.g, source.albedo_color.b)) > 0.20): continue
@@ -135,14 +141,14 @@ func _bind(node: Node3D, inverse: Transform3D, paints: Array[StandardMaterial3D]
 	for child: Node in node.get_children():
 		if child is Node3D: _bind(child, inverse, paints, height, cache, wheel, wheel_rest)
 
-func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
+func present(state: VehicleState, track: NativeTrack, blocked: bool) -> SurfaceAudioModel:
 	var ticks: int = state.tick - last_tick if last_tick >= 0 else 0
 	last_tick = state.tick
-	if blocked or ticks <= 0 or ticks > 120 or materials.is_empty(): return
+	if blocked or ticks <= 0 or ticks > 120 or materials.is_empty(): return null
 	var seconds: float = ticks * VehicleSimulation.STEP
 	var grounded: bool = state.jump_height <= 0.01 and state.roll_ticks == 0
 	var speed: float = state.velocity.length()
-	if not is_finite(speed): return
+	if not is_finite(speed): return null
 	contacts.sample_contacts(state, track, grounded)
 	var travel: float = minf(speed, 55.0) * seconds if grounded and speed > 0.5 else 0.0
 	if travel > 0.0 and maxf(dirt_amount, slow_dirt_amount) > 0.02:
@@ -185,6 +191,7 @@ func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
 		_slow_scrub_fraction.fill(0.0)
 		_slow_mask_travel = 0.0
 	_update_finish()
+	return contacts
 
 func _age_grime(seconds: float) -> void:
 	_grime_elapsed += seconds
@@ -254,7 +261,7 @@ func snapshot() -> Dictionary:
 	if grime_age.size() != VehicleCondition.CELLS:
 		grime_age.resize(VehicleCondition.CELLS)
 		grime_age.fill(0)
-	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "slow_dirt": slow_dirt_amount, "slow_snow": slow_snow_amount, "slow_recoat": _slow_mask_travel, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(wash_image.get_data()), "slow_wash": Marshalls.raw_to_base64(slow_wash_image.get_data()), "grime_age": Marshalls.raw_to_base64(grime_age), "grime_elapsed": _grime_elapsed}
+	return {"version": 1, "dirt": dirt_amount, "snow": snow_amount, "slow_dirt": slow_dirt_amount, "slow_snow": slow_snow_amount, "slow_recoat": _slow_mask_travel, "wetness": wetness, "color": deposit_color.to_html(false), "mud": mud_amount, "smudge": smudge, "wash": Marshalls.raw_to_base64(_wash_bytes if _wash_depth > 0 else wash_image.get_data()), "slow_wash": Marshalls.raw_to_base64(_slow_wash_bytes if _wash_depth > 0 else slow_wash_image.get_data()), "grime_age": Marshalls.raw_to_base64(grime_age), "grime_elapsed": _grime_elapsed}
 
 func restore(value: Dictionary) -> void:
 	if value.is_empty(): value = snapshot()
@@ -292,12 +299,36 @@ func restore(value: Dictionary) -> void:
 	last_tick = -1
 	_update_finish()
 
+func begin_wash_batch() -> void:
+	if _wash_depth == 0 and wash_image != null:
+		_wash_bytes = wash_image.get_data()
+		_slow_wash_bytes = slow_wash_image.get_data()
+		_wash_dirty = false
+	_wash_depth += 1
+
+func end_wash_batch() -> void:
+	if _wash_depth == 0: return
+	_wash_depth -= 1
+	if _wash_depth != 0: return
+	if _wash_dirty: _upload_wash_masks(_wash_bytes,_slow_wash_bytes)
+	_wash_bytes = PackedByteArray()
+	_slow_wash_bytes = PackedByteArray()
+	_wash_dirty = false
+
+func _upload_wash_masks(bytes: PackedByteArray, slow_bytes: PackedByteArray) -> void:
+	var grid: int = VehicleCondition.GRID
+	wash_image.set_data(grid*grid,grid,false,Image.FORMAT_R8,bytes)
+	wash_texture.update(wash_image)
+	slow_wash_image.set_data(grid*grid,grid,false,Image.FORMAT_R8,slow_bytes)
+	slow_wash_texture.update(slow_wash_image)
+	wash_mask_uploads += 2
+
 func wash(point: Vector3, seconds: float) -> void:
 	if wash_image == null or seconds <= 0.0 or not is_finite(seconds): return
 	var radius: float = 0.48
 	var grid: int = VehicleCondition.GRID
-	var bytes: PackedByteArray = wash_image.get_data()
-	var slow_bytes: PackedByteArray = slow_wash_image.get_data()
+	var bytes: PackedByteArray = _wash_bytes if _wash_depth > 0 else wash_image.get_data()
+	var slow_bytes: PackedByteArray = _slow_wash_bytes if _wash_depth > 0 else slow_wash_image.get_data()
 	var touched: bool = false
 	var lower: Vector3 = ((point - Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).floor().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
 	var upper: Vector3 = ((point + Vector3.ONE * radius - bounds.position) / bounds.size * (grid - 1)).ceil().clamp(Vector3.ZERO, Vector3.ONE * (grid - 1))
@@ -325,10 +356,11 @@ func wash(point: Vector3, seconds: float) -> void:
 	_mask_travel = 0.0
 	_slow_mask_travel = 0.0
 	_grime_elapsed = 0.0
-	wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, bytes)
-	wash_texture.update(wash_image)
-	slow_wash_image = Image.create_from_data(grid * grid, grid, false, Image.FORMAT_R8, slow_bytes)
-	slow_wash_texture.update(slow_wash_image)
+	if _wash_depth > 0:
+		_wash_bytes = bytes
+		_slow_wash_bytes = slow_bytes
+		_wash_dirty = true
+	else: _upload_wash_masks(bytes,slow_bytes)
 
 func wash_point(node: MeshInstance3D, local_point: Vector3) -> Vector3:
 	for frame: Dictionary in _wheel_frames:
@@ -338,6 +370,10 @@ func wash_point(node: MeshInstance3D, local_point: Vector3) -> Vector3:
 	return _body.global_transform.affine_inverse() * node.global_transform * local_point
 
 func reset() -> void:
+	_wash_depth = 0
+	_wash_dirty = false
+	_wash_bytes = PackedByteArray()
+	_slow_wash_bytes = PackedByteArray()
 	_render_warming = false
 	_finish_values.clear()
 	if installed:

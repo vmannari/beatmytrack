@@ -5,21 +5,45 @@ const VERSION: String = "authored-props-3"
 const CACHE_LIMIT: int = 96
 static var meshes: Dictionary = {}
 static var pine_meshes: Dictionary = {}
+const CACHE_BUDGET: int = 32 * 1024 * 1024
+static var cache_bytes: int = 0
+static var _ages: Dictionary = {}
+static var _clock: int = 0
+
+static func _touch(mesh: Mesh) -> void:
+	_clock += 1; _ages[mesh.get_instance_id()] = _clock
+
+static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
+	var size: int = preload("res://editor/cache_bytes.gd").mesh(mesh)
+	if size > CACHE_BUDGET: return
+	cache_bytes = size
+	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += preload("res://editor/cache_bytes.gd").mesh(stored)
+	while cache.size() >= limit or cache_bytes > CACHE_BUDGET:
+		var victim_cache: Dictionary = cache; var victim: String = ""; var age: int = 9223372036854775807
+		for collection: Dictionary in ([cache] if cache.size() >= limit else [meshes,pine_meshes]):
+			for candidate: String in collection:
+				var candidate_age: int = int(_ages.get(collection[candidate].get_instance_id(),0))
+				if candidate_age < age: age = candidate_age; victim = candidate; victim_cache = collection
+		if victim.is_empty(): break
+		var expired: Mesh = victim_cache[victim]; cache_bytes -= preload("res://editor/cache_bytes.gd").mesh(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
+	cache[key] = mesh; _touch(mesh)
+
 
 static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
 	var length: float = section_length/scale if section_length >= 0 else -1.0
 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
 	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
-	if not meshes.has(key):
+	var model: Mesh = meshes.get(key)
+	if model == null:
 		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
 		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0)
 		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
 		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
 		if not found: return false
 		local.generate_normals()
-		if meshes.size() >= CACHE_LIMIT: meshes.erase(meshes.keys()[0])
-		meshes[key] = local.commit()
-	tool.append_from(meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+		model = local.commit(); _admit(meshes,key,model,CACHE_LIMIT)
+	_touch(model)
+	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
 	return true
 
 static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
@@ -134,13 +158,14 @@ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
 
 static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
 	var key: String = color.to_html()
-	if not pine_meshes.has(key):
+	var model: Mesh = pine_meshes.get(key)
+	if model == null:
 		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
 		_pine_model(local,kit,Vector3.ZERO,1,0,color)
 		local.generate_normals()
-		if pine_meshes.size() >= 32: pine_meshes.erase(pine_meshes.keys()[0])
-		pine_meshes[key] = local.commit()
-	tool.append_from(pine_meshes[key],0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+		model = local.commit(); _admit(pine_meshes,key,model,32)
+	_touch(model)
+	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
 
 static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)

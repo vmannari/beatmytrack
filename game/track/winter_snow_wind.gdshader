@@ -13,7 +13,6 @@ varying vec3 world_position;
 varying float variation;
 varying float along_source;
 varying vec2 flow_offset;
-varying float local_gust;
 
 void vertex() {
 	variation = INSTANCE_CUSTOM.y;
@@ -50,8 +49,6 @@ void vertex() {
 	// Interpolate temporal shear; evaluate the stationary warp per fragment
 	// so neighbouring overlapping cards share an exact world-space phase.
 	flow_offset = snow_flow_offset(point,elapsed)-snow_spatial_offset(point);
-	local_gust = snow_local_gust(point,elapsed);
-	if (bank) local_gust *= 0.85+0.15*sin(elapsed*1.07+INSTANCE_CUSTOM.x*6.283185);
 }
 
 void fragment() {
@@ -62,7 +59,10 @@ void fragment() {
 	vec2 wind = vec2(0.91, -0.414608);
 	vec2 side = vec2(-wind.y, wind.x);
 	vec2 point = vec2(dot(world_position.xz, wind), dot(world_position.xz, side));
-	vec2 field = point-vec2(travel,0.0)+flow_offset+snow_spatial_offset(point);
+	vec3 event = snow_local_event(point,elapsed);
+	float local_gust = event.x;
+	if (local_gust <= 0.0) discard;
+	vec2 field = point-vec2(travel+event.y,0.0)+flow_offset+snow_spatial_offset(point);
 	// Reference-led anisotropy: long branching fingers, not round FBM clouds.
 	vec3 curl = texture(flow_texture, field * vec2(0.045, 0.09)).rgb;
 	vec2 flow_uv = field * vec2(0.095, 0.46) + vec2(0.0, (curl.g - 0.5) * 0.40);
@@ -80,8 +80,8 @@ void fragment() {
 	// Reuse the fine channel for concentrated grains and frayed gaps, rather
 	// than a uniform haze. Derivative filtering suppresses distant flicker.
 	float grain_aa = max(fwidth(density.b),0.04);
-	float grains = smoothstep(0.38-grain_aa,0.60+grain_aa,density.b);
-	shape *= mix(0.38,1.0,grains);
+	float grains = smoothstep(0.44-grain_aa*0.45,0.66+grain_aa*0.45,density.b);
+	shape *= mix(0.045,1.0,grains);
 	if (shape <= 0.0) discard;
 	// Soft opaque intersections (terrain/car), with renderer-correct depth reconstruction.
 	float depth = texture(scene_depth, SCREEN_UV).r;
@@ -104,5 +104,5 @@ void fragment() {
 	ROUGHNESS = 1.0;
 	SPECULAR = 0.0;
 	float opacity = bank ? 0.62 + source * 0.18 : 0.65;
-	ALPHA = opacity * strength * local_gust * shape * distance_fade * intersection;
+	ALPHA = min(opacity * sqrt(clamp(strength,0.0,1.0)) * local_gust * shape * distance_fade * intersection,0.85);
 }

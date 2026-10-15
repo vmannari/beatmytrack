@@ -90,6 +90,7 @@ static func build(parent: Node3D, object: Dictionary) -> void:
 	tool.generate_normals()
 	tool.index()
 	var mesh := MeshInstance3D.new()
+	mesh.add_to_group("race_hazard_rendering")
 	mesh.name = "SpeedBump" if object.kind == "speed_bump" else "Hazard"
 	mesh.mesh = tool.commit()
 	mesh.position = Vector3(object.position[0],0,-object.position[1])

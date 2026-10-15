@@ -1,0 +1,1776 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,2 @@
++2026-10-14 RRV01-RRV03/V03-V05/G01/R01/Q01: owner fixes all three review items. Integrated Winter skips unused bank readbacks/anchors and zero-instance fallback updates; weak binding/resource validation restores standalone/late/replaced/removed integration, with one preparation for empty banks. Audio reuses weathering contacts only within the same synchronous callback; exact dimensions/grounded predicate and fresh physics/reset/rewind/same-tick edits retained. Actual479->360 contact queries; paired Winter pixels exact; typical Compatibility configuration~17->1.2ms. Final421 headless/426+426 graphical assertions, audio1469/washing1383/weathering805/rewind61/driving72/Winter34 and725-script parse pass. Compatibility launcher still exits1 on the prior87380-byte GL shutdown leak; initial dummy audio/material and concurrent shader/kit/import failures retained. No artwork/canonical/backend/phone/APK/deploy or phoneFPS claim. Actual commands, limits and task-only checkpoint: docs/RACING_RENDER_REVIEW_FIXES_2026_10_14.md.
++
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,2 @@
++2026-10-14 RRV01-RRV03/V03-V05/G01/R01/Q01: owner fixes all three review items. Integrated Winter skips unused bank readbacks/anchors and zero-instance fallback updates; weak binding/resource validation restores standalone/late/replaced/removed integration, with one preparation for empty banks. Audio reuses weathering contacts only within the same synchronous callback; exact dimensions/grounded predicate and fresh physics/reset/rewind/same-tick edits retained. Actual479->360 contact queries; paired Winter pixels exact; typical Compatibility configuration~17->1.2ms. Final421 headless/426+426 graphical assertions, audio1469/washing1383/weathering805/rewind61/driving72/Winter34 and725-script parse pass. Compatibility launcher still exits1 on the prior87380-byte GL shutdown leak; initial dummy audio/material and concurrent shader/kit/import failures retained. No artwork/canonical/backend/phone/APK/deploy or phoneFPS claim. Actual commands, limits and task-only checkpoint: docs/RACING_RENDER_REVIEW_FIXES_2026_10_14.md.
++
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -495 +495 @@
+-	car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
++	var shared_contacts: SurfaceAudioModel = car_weathering.present(presented.state, native_track, paused or countdown_ticks > 0 or finish_sim != null)
+@@ -503 +503 @@
+-	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0)
++	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0,shared_contacts)
+diff --git a/game/track/winter_snow_wind.gd b/game/track/winter_snow_wind.gd
+--- a/game/track/winter_snow_wind.gd
++++ b/game/track/winter_snow_wind.gd
+@@ -39,0 +40,2 @@
++var _fallback_active: bool = true
++var _contact_sources_prepared: bool = false
+@@ -49,0 +52 @@
++	_contact_sources_prepared = false
+@@ -63,4 +66,2 @@
+-	if _prepare_visual_sources(track):
+-		reset()
+-		return
+-	_prepare_contact_sources(track)
++	_fallback_active = surface_materials.is_empty()
++	if _fallback_active and not _prepare_visual_sources(track): _prepare_contact_sources(track)
+@@ -78,0 +80 @@
++		if bank_mesh.mesh == null: continue
+@@ -105,0 +108,2 @@
++	if _contact_sources_prepared: return
++	_contact_sources_prepared = true
+@@ -135,0 +140 @@
++		if not surface_materials.is_empty(): ground.multimesh.visible_instance_count = 0
+@@ -151 +156,2 @@
+-	if center != next_center:
++	var center_changed: bool = center != next_center
++	if center_changed:
+@@ -153 +158,0 @@
+-		_place_ground()
+@@ -156 +161,2 @@
+-	if refresh_wait <= 0.0:
++	var refresh: bool = refresh_wait <= 0.0
++	if refresh:
+@@ -157,0 +164,4 @@
++		refresh_wait = REFRESH
++	var fallback: bool = surface_materials.is_empty()
++	if fallback:
++		if center_changed or not _fallback_active: _place_ground()
+@@ -159,5 +169,10 @@
+-		if not sources_checked and is_instance_valid(bank_visual):
+-			_prepare_visual_sources(source_track)
+-		_place_banks(focus)
+-		refresh_wait = REFRESH
+-	for material: ShaderMaterial in [ground_material, powder_material,airborne.material_override]:
++		if refresh or not _fallback_active:
++			if not sources_checked and is_instance_valid(bank_visual):
++				if not _prepare_visual_sources(source_track) and anchors.is_empty(): _prepare_contact_sources(source_track)
++			elif anchors.is_empty(): _prepare_contact_sources(source_track)
++			_place_banks(focus)
++	else:
++		if ground.multimesh.visible_instance_count != 0: ground.multimesh.visible_instance_count = 0
++		if powder.multimesh.visible_instance_count != 0: powder.multimesh.visible_instance_count = 0
++	_fallback_active = fallback
++	for material: ShaderMaterial in ([ground_material, powder_material,airborne.material_override] if fallback else [airborne.material_override]):
+@@ -171,4 +185,0 @@
+-	if not surface_materials.is_empty():
+-		# Actual opaque geometry owns road/terrain/bank powder. No floating cards.
+-		ground.multimesh.visible_instance_count = 0
+-		powder.multimesh.visible_instance_count = 0
+@@ -181 +192 @@
+-	# stable worlds need only this count check, not recurring scene traversal.
++	# stable worlds validate retained bindings/count without scene traversal.
+@@ -183 +194,8 @@
+-	if count == surface_child_count: return
++	# A replacement can retain the child count. Validate weak owners and the
++	# installed binding before treating integration as ready for this world.
++	var bindings_live: bool = surface_bindings.all(func(binding: Dictionary) -> bool:
++		var mesh: MeshInstance3D = binding.node.get_ref() as MeshInstance3D
++		if not is_instance_valid(mesh) or mesh.mesh == null or binding.surface >= mesh.mesh.get_surface_count(): return false
++		return (mesh.material_override if binding.surface < 0 else mesh.get_active_material(binding.surface)) == binding.material)
++	if count == surface_child_count and bindings_live and not surface_bindings.is_empty(): return
++	if not bindings_live: _release_surfaces()
+@@ -238 +256 @@
+-		elif index >= 0 and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
++		elif index >= 0 and mesh.mesh != null and index < mesh.mesh.get_surface_count() and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
+diff --git a/game/vehicle/surface_audio_model.gd b/game/vehicle/surface_audio_model.gd
+--- a/game/vehicle/surface_audio_model.gd
++++ b/game/vehicle/surface_audio_model.gd
+@@ -15,0 +16 @@
++var contacts_grounded: bool = false
+@@ -32,0 +34 @@
++	contacts_grounded = false
+@@ -34,2 +36,13 @@
+-func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, grounded: bool) -> void:
+-	sample_contacts(state,track,grounded)
++func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, grounded: bool, shared_contacts: SurfaceAudioModel = null) -> void:
++	# An explicit result from the same synchronous presentation callback only.
++	# Never retain/reuse it across physics, frames or mutable track edits.
++	if shared_contacts == null or shared_contacts.contacts_grounded != grounded or shared_contacts.wheelbase != wheelbase or shared_contacts.track_width != track_width:
++		sample_contacts(state,track,grounded)
++	else:
++		pavement = shared_contacts.pavement
++		grass = shared_contacts.grass
++		sand = shared_contacts.sand
++		gravel = shared_contacts.gravel
++		water = shared_contacts.water
++		kerb = shared_contacts.kerb
++		contacts_grounded = grounded
+@@ -46,0 +60 @@
++	contacts_grounded = grounded
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -341 +341 @@
+-func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false) -> void:
++func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, silent: bool, countdown: bool = false, shared_contacts: SurfaceAudioModel = null) -> void:
+@@ -406 +406 @@
+-	surface_model.sample(state,frame,track,dt,grounded)
++	surface_model.sample(state,frame,track,dt,grounded,shared_contacts)
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -138 +138 @@
+-func present(state: VehicleState, track: NativeTrack, blocked: bool) -> void:
++func present(state: VehicleState, track: NativeTrack, blocked: bool) -> SurfaceAudioModel:
+@@ -141 +141 @@
+-	if blocked or ticks <= 0 or ticks > 120 or materials.is_empty(): return
++	if blocked or ticks <= 0 or ticks > 120 or materials.is_empty(): return null
+@@ -145 +145 @@
+-	if not is_finite(speed): return
++	if not is_finite(speed): return null
+@@ -187,0 +188 @@
++	return contacts
+diff --git a/game/tests/test_winter_snow_wind.gd b/game/tests/test_winter_snow_wind.gd
+--- a/game/tests/test_winter_snow_wind.gd
++++ b/game/tests/test_winter_snow_wind.gd
+@@ -100 +100 @@
+-	check(fx.sources_from_visual, "actual race emits from visible analytic snowbank geometry")
++	check(not fx.surface_materials.is_empty() and fx.anchors.is_empty() or fx.sources_from_visual, "actual race uses integrated surface snow or prepared analytic bank fallback")
+diff --git a/docs/RACING_RENDER_REVIEW_FIXES_2026_10_14.md b/docs/RACING_RENDER_REVIEW_FIXES_2026_10_14.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RACING_RENDER_REVIEW_FIXES_2026_10_14.md
+@@ -0,0 +1,49 @@
++# Racing rendering review fixes, 2026-10-14
++
++Owner authorization: "Fix those items", covering the three findings in [the second racing-render review](RACING_RENDER_REVIEW_2026_10_14.md). RRV01–RRV03 / V03–V05 / G01 / R01 / Q01.
++
++Winter now prepares and updates its ground/bank fallback only when integrated surface snow is unavailable. Rendered audio uses the contact mix that weathering has just computed in the same synchronous callback. Appearance, camera, particle populations, local condition and canonical driving/scoring remain unchanged.
++
++## Implementation
++
++- Completed Winter worlds bind their original terrain/road/bank materials before deciding whether fallback bank anchors are needed. Integrated worlds skip bank mesh-array readbacks and anchor construction entirely.
++- Integrated drawing skips fallback transforms, custom instance data, bounds and eight fallback shader writes. Original airborne grains and all opaque surface uniforms remain. Standalone/unfinished worlds retain exact original fallback buffers, clocks and bank selection. Empty contact-bank results are prepared once per configuration, including retries.
++- Weak material owners and their current bindings are validated during the existing refresh. Late integration, same-count node replacement, removed integration and a cleared/restored material-slot mesh switch safely between the original paths. Resource restoration skips missing surfaces; no camera, geometry, shader artwork or permanent population change is introduced.
++- `VehicleWeathering.present` returns its freshly sampled contact model only when it actually samples. Game passes it directly to rendered audio; the six contact weights are copied only when wheel dimensions and the consumer's grounded predicate agree. Acceleration/drive smoothing remains independent. Early/blocked/invalid weathering, pause, countdown, finish and incompatible predicates/dimensions retain fresh audio sampling.
++- No contact result is cached across physics or rendered callbacks. In-place cell/theme edits at an unchanged tick, reconfiguration, reset and rewind therefore use current data. Physics contact observation still drives immediate surface/impact cues at its original cadence.
++
++The review's roughly50% raw redundancy was an upper bound. The implementation removes **119 of479 queries**, leaving360 in the actual240-tick/120-frame fixture (about25% fewer). It deliberately retains fresh physics observation and avoids a mutable-track cache spanning independent callbacks. The shared argument has the explicit same-callback contract; no general long-lived memoization is added.
++
++## Measured work and exactness
++
++Pinned Godot4.7.2.stable.official.ed1daf0bf, Windows RTX3090, Compatibility/OpenGL and desktop Mobile/Vulkan. Four alternating original/current repetitions are retained in the [OpenGL report](evidence/racing-render-fixes-2026-10-14/gl_compatibility/report.json) and [Vulkan report](evidence/racing-render-fixes-2026-10-14/mobile/report.json).
++
++The native fixture goes from one unused bank readback to zero, and90 fallback placements per600 moving-focus calls to zero. Typical Compatibility configuration changes from roughly17ms to1.2ms; desktop Vulkan samples are more variable, roughly20–65ms to1–2.4ms. Steady presentation savings are a few microseconds per call. These are component CPU measurements on a shared desktop, not phone FPS or a paired whole-race benchmark.
++
++The archived original Winter script and optimized script use the same current world/material artwork. Final paired Winter framebuffers are byte-exact on both renderers. Standalone fallback instance buffers, source anchors, bank selection and clocks match exactly. Contact tests compare the original sampler and smoothing across all five cars, five biomes, twelve surface/layer/grounded combinations, water carryover and mismatched dimensions. Targeted tests also cover same-tick edits, retry, pause, owner replacement, late construction, lost integration, mesh restoration and an empty bank population.
++
++Final targeted checks: **421 headless,426 Compatibility,426 Mobile**, zero assertion failures. Mobile and headless exit cleanly. The Compatibility diagnostic still reports an87380-byte GL texture leak on process shutdown and its launcher exits1, as in the review before these fixes; no growing gameplay leak or root cause is established.
++
++Existing checks: graphical vehicle audio 1469, local washing 1383, weathering 805, rewind 61, driving 72 and standalone Winter 34 pass. Final project parse passes **725 scripts**. The audio adapter retains the original assertions and directs generated recordings to the task's build directory, preserving earlier evidence.
++
++## Actual commands and integration outcomes
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_racing_render_review_fixes.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_racing_render_review_fixes.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_racing_render_review_fixes.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_racing_render_audio_regression.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_vehicle_weathering.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rewind.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_driving.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_snow_wind.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import
++```
++
++Initial failures remain in command evidence. The real mesh-clear case exposed an unchecked null bank mesh, now guarded; the dummy backend cannot perform its null per-surface material lookup, so those three strict assertions run on both real backends. Original audio's headless pause assertion fails because headless loops are not playing; its unmodified graphical assertions pass. An initial adapter outside `res://tests/` was rejected by the standard launcher and moved into the accepted test directory.
++
++Concurrent Winter shader/car-kit edits also interrupted checks: a fragment `INSTANCE_CUSTOM` reference, unregistered kit classes and a temporarily removed `BODIES` constant. The current concurrent shader fix and kit/class changes are preserved. A simultaneous restoration briefly duplicated the exact body-ID constant; only this task's duplicate was removed. No model/refactor/source-artwork fix from those tasks is claimed here. Import completes and the final parse passes. The old integrated-Winter assertion requiring unused analytic anchors was updated to accept actual integrated snow or the retained analytic fallback; standalone anchor/buffer checks remain strict.
++
++The task-only [patch](evidence/racing-render-fixes-2026-10-14/implementation.patch) / [checkpoint](evidence/racing-render-fixes-2026-10-14/checkpoint.json) include only these implementation, diagnostic and documentation changes. Source baselines retain concurrent work. No shared Git index/branch, canonical contract, backend, APK, deployment or physical-phone state is changed by this task. Phone performance and the separate historical OpenGL shutdown warning remain acceptance/diagnostic limits.
+diff --git a/game/tests/test_racing_render_review_fixes.gd b/game/tests/test_racing_render_review_fixes.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_racing_render_review_fixes.gd
+@@ -0,0 +1,196 @@
++extends "res://tests/test_winter_snow_wind.gd"
++## RRV01-RRV03: exact presentation, live fallback and synchronous contact sharing.
++var folder := "res://../build/racing-render-fixes-2026-10-14"
++var report: Dictionary = {}
++
++func script_from(source: String) -> GDScript:
++	var script := GDScript.new(); script.source_code = source
++	check(script.reload() == OK,"diagnostic script compiles")
++	return script
++
++func instrument_wind(path: String) -> GDScript:
++	var source := FileAccess.get_file_as_string(path).replace("\r\n","\n")
++	source = source.substr(source.find("\n")+1)
++	for name: String in ["_place_ground()", "_place_banks(focus: Vector2)"]:
++		source = source.replace("func "+name+" -> void:\n","func "+name+" -> void:\n\tobserved_placements += 1\n")
++	source = source.replace("\t\t\tvar arrays: Array = bank_mesh.mesh.surface_get_arrays(surface)","\t\t\tobserved_readbacks += 1\n\t\t\tvar arrays: Array = bank_mesh.mesh.surface_get_arrays(surface)")
++	source = source.replace("\t# One anchor per spatial bucket", "\tobserved_contact_builds += 1\n\t# One anchor per spatial bucket")
++	source += "\nvar observed_placements: int = 0\nvar observed_readbacks: int = 0\nvar observed_contact_builds: int = 0\n"
++	return script_from(source)
++
++func pixels(a: Image,b: Image) -> Dictionary:
++	var left := a.get_data(); var right := b.get_data()
++	check(left.size() == right.size(),"image dimensions remain equal")
++	var changed: int = 0; var maximum: int = 0
++	for index: int in range(left.size()):
++		var delta := absi(int(left[index])-int(right[index]))
++		maximum = maxi(maximum,delta)
++		if delta: changed += 1
++	return {"changed_bytes":changed,"maximum":maximum}
++
++func picture() -> Image:
++	for frame: int in range(20): await RenderingServer.frame_post_draw
++	var result := root.get_texture().get_image(); result.convert(Image.FORMAT_RGBA8)
++	return result
++
++func winter(track: NativeTrack) -> void:
++	var before := instrument_wind("res://tests/fixtures/racing_render_fixes_before/winter_snow_wind.gd.txt")
++	var after := instrument_wind("res://track/winter_snow_wind.gd")
++	var world := Node3D.new(); root.add_child(world)
++	var visual := NativeTrackVisual.new(); world.add_child(visual)
++	await visual.build(track,BridgePresentation.new(track))
++	var camera := Camera3D.new(); world.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 32
++	camera.position = Vector3(-12,23,5); camera.look_at(Vector3(0,0,18)); camera.make_current()
++	var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-55,-25,0); world.add_child(light)
++	var frames: Array[Image] = []; var metrics: Array = []
++	for repetition: int in range(4):
++		for original: bool in ([true,false] if repetition%2 == 0 else [false,true]):
++			var wind = (before if original else after).new(); world.add_child(wind)
++			var began := Time.get_ticks_usec(); wind.configure(track,visual)
++			var build_ms := (Time.get_ticks_usec()-began)/1000.0
++			var reads: int = wind.observed_readbacks
++			check(not wind.surface_materials.is_empty(),"completed native world integrates snow on actual materials")
++			if not original: check(reads == 0 and wind.anchors.is_empty(),"integrated snow skips all unused bank readbacks/anchors")
++			wind.observed_placements = 0; began = Time.get_ticks_usec()
++			for frame: int in range(600): wind.present(1.0/60.0,Vector2(frame*0.3,-18),0.8,false,false)
++			var elapsed_ms := (Time.get_ticks_usec()-began)/1000.0
++			if not original: check(wind.observed_placements == 0,"integrated snow performs no fallback placements")
++			check(wind.ground.multimesh.visible_instance_count == 0 and wind.powder.multimesh.visible_instance_count == 0,"integrated snow retains zero fallback draws")
++			metrics.append({"original":original,"configure_ms":build_ms,"readbacks":reads,"placements":wind.observed_placements,"600_present_ms":elapsed_ms})
++			wind.reset()
++			for frame: int in range(90): wind.present(1.0/60.0,Vector2(0,-18),0.8,false,false)
++			if repetition == 0 and DisplayServer.get_name() != "headless": frames.append(await picture())
++			wind.free()
++	if not frames.is_empty():
++		var comparison := pixels(frames[0],frames[1]); report.winter_pixels = comparison
++		check(comparison.maximum == 0,"original and optimized native Winter pixels match exactly")
++		frames[0].save_png(folder.path_join("winter-before.png")); frames[1].save_png(folder.path_join("winter-after.png"))
++	report.winter_timings = metrics
++	# Standalone worlds keep the complete original fallback, including uploads.
++	var old = before.new(); var fresh = after.new(); world.add_child(old); world.add_child(fresh)
++	old.configure(track); fresh.configure(track)
++	check(old.anchors == fresh.anchors and not fresh.anchors.is_empty(),"standalone fallback retains original contact anchors")
++	for frame: int in range(80):
++		var focus := Vector2(frame*0.3,-18)
++		old.present(1.0/60.0,focus,0.8,false,false); fresh.present(1.0/60.0,focus,0.8,false,false)
++	check(old.ground.multimesh.buffer == fresh.ground.multimesh.buffer and old.powder.multimesh.buffer == fresh.powder.multimesh.buffer,"standalone fallback retains exact instance buffers")
++	check(old.active_banks == fresh.active_banks and old.elapsed == fresh.elapsed and old.travel == fresh.travel,"standalone fallback retains selection and presentation clocks")
++	old.free(); fresh.free()
++	var empty := NativeTrack.new(); empty.metadata = {"theme":"winter"}
++	var no_banks = after.new(); world.add_child(no_banks); no_banks.configure(empty)
++	for frame: int in range(120): no_banks.present(1.0/60.0,Vector2.ZERO,0.8,false,false)
++	check(no_banks.observed_contact_builds == 1 and no_banks.anchors.is_empty(),"empty bank preparation stays bounded to one scan")
++	no_banks.free()
++	# A sliced world can acquire integrated materials after fallback was used.
++	var late := NativeTrackVisual.new(); world.add_child(late)
++	var wind = after.new(); world.add_child(wind); wind.configure(track,late)
++	wind.present(0.1,Vector2(0,-18),0.8,false,false)
++	check(wind.ground.multimesh.visible_instance_count == 49,"unfinished world retains the fallback")
++	await late.build(track,BridgePresentation.new(track))
++	wind.present(0.25,Vector2(0,-18),0.8,false,false)
++	check(not wind.surface_materials.is_empty() and wind.ground.multimesh.visible_instance_count == 0 and wind.powder.multimesh.visible_instance_count == 0,"late integration disables the original fallback immediately at refresh")
++	check(wind.observed_readbacks == 0,"late integration avoids visual bank readbacks")
++	# Replacing a bound owner with the same root child count must rebind safely.
++	var binding: Dictionary = wind.surface_bindings[0]
++	var removed: MeshInstance3D = binding.node.get_ref(); var parent := removed.get_parent()
++	var replacement := MeshInstance3D.new(); replacement.mesh = removed.mesh
++	replacement.material_override = binding.original if binding.surface < 0 else removed.get_active_material(binding.surface)
++	parent.remove_child(removed); removed.free(); parent.add_child(replacement)
++	wind.present(0.25,Vector2(0,-18),0.8,false,false)
++	check(wind.surface_bindings.any(func(row: Dictionary) -> bool: return row.node.get_ref() == replacement),"same-count mesh replacement gets a fresh run-owned binding")
++	# Removing integration and changing biome must not strand stale materials.
++	for child: Node in late.get_children(): child.free()
++	wind.present(0.25,Vector2(0,-18),0.8,false,false)
++	check(wind.surface_materials.is_empty() and wind.ground.multimesh.visible_instance_count == 49,"removed integration restores fallback at the same focus")
++	var saved: Array = [wind.elapsed,wind.travel,wind.active_banks.duplicate()]
++	wind.present(1.0,Vector2(300,300),0.1,true,false)
++	check(saved == [wind.elapsed,wind.travel,wind.active_banks],"pause retains the exact fallback clock and pose")
++	wind.configure(track,visual); wind.reset()
++	check(wind.ground.multimesh.visible_instance_count == 0 and wind.elapsed == 0.0,"retry keeps integrated fallback undrawn")
++	# Clearing a per-surface material touches renderer instance uniforms; the
++	# dummy backend rejects a null material. Exercise this on both real backends.
++	if DisplayServer.get_name() != "headless":
++		var holder := Node3D.new(); world.add_child(holder)
++		var panel := MeshInstance3D.new(); var shape := BoxMesh.new()
++		shape.material = wind.surface_materials[0].duplicate(); panel.mesh = shape; holder.add_child(panel)
++		wind.configure(track,holder)
++		check(wind.surface_bindings.size() == 1 and wind.surface_bindings[0].surface == 0,"standalone material slot integrates snow")
++		panel.mesh = null; wind.present(0.25,Vector2(0,-18),0.8,false,false)
++		check(wind.surface_materials.is_empty() and wind.ground.multimesh.visible_instance_count == 49,"missing mesh resource safely restores fallback")
++		panel.mesh = shape; wind.present(0.25,Vector2(0,-18),0.8,false,false)
++		check(wind.surface_bindings.size() == 1 and wind.ground.multimesh.visible_instance_count == 0,"same-node mesh restoration safely reinstalls integrated snow")
++	world.free(); await process_frame
++
++func mix(model: SurfaceAudioModel) -> Array:
++	return [model.pavement,model.grass,model.sand,model.gravel,model.water,model.kerb,model.drive,model.acceleration,model.last_speed,model.has_speed]
++
++func contact_equivalence() -> void:
++	var archived := FileAccess.get_file_as_string("res://tests/fixtures/racing_render_fixes_before/surface_audio_model.gd.txt").replace("\r\n","\n")
++	var raw := script_from(archived.substr(archived.find("\n")+1))
++	var current := script_from("extends SurfaceAudioModel\nvar queries: int = 0\nfunc sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:\n\tqueries += 1\n\tsuper.sample_contacts(state,track,grounded)\n")
++	var state := VehicleState.new(); var frame := DriveFrame.sample(0.2,0.7,0.0)
++	var track := NativeTrack.new(); track.metadata = {"theme":"winter"}; track.cell_size = 1.0
++	track.grid_width = 20; track.grid_height = 20; track.half_extent = Vector2(10,10)
++	track.cells.resize(400); track.cells.fill(0); track.deck_cells.resize(400); track.deck_cells.fill(2)
++	for id: String in VehicleCatalog.IDS:
++		for theme: String in ["pine","desert","winter","storm","night_city"]:
++			track.metadata.theme = theme
++			var shared := SurfaceAudioModel.new(); var audio: SurfaceAudioModel = current.new(); var old = raw.new()
++			var config := VehicleCatalog.config(id); shared.configure(config); audio.configure(config); old.configure(config)
++			for step: int in range(12):
++				state.tick = step; state.heading = step*0.2; state.velocity = Vector2(step,step*2)
++				state.track_elevated = step%2 == 0; state.tire_water = (step%3)*0.13
++				track.cells.fill(step%8)
++				var grounded: bool = step%3 != 0
++				shared.sample_contacts(state,track,grounded)
++				audio.sample(state,frame,track,1.0/60.0,grounded,shared); old.sample(state,frame,track,1.0/60.0,grounded)
++				check(mix(audio) == [old.pavement,old.grass,old.sand,old.gravel,old.water,old.kerb,old.drive,old.acceleration,old.last_speed,old.has_speed],"shared contact mix and smoothing remain exact across cars/biomes/layers")
++			check(audio.queries == 0,"compatible explicit samples remove all redundant receiver queries")
++			audio.sample(state,frame,track,1.0/60.0,false,shared)
++			check(audio.contacts_grounded == false,"grounded predicate remains consumer-specific")
++			shared.sample_contacts(state,track,true); audio.track_width += 0.1
++			var count: int = audio.queries; audio.sample(state,frame,track,1.0/60.0,true,shared)
++			check(audio.queries == count+1,"different wheel dimensions use original fresh contact sampling")
++	# No result is retained across calls: edits at an unchanged tick are immediate.
++	var model: SurfaceAudioModel = current.new(); state.track_elevated = false; state.position = Vector2.ZERO
++	track.metadata.theme = "pine"; track.cells.fill(1); model.sample(state,frame,track,0.01,true)
++	check(model.grass == 1.0,"initial edited soil is sampled")
++	track.cells.fill(2); model.sample(state,frame,track,0.01,true)
++	check(model.sand == 1.0 and model.grass == 0.0,"same-tick cell edits cannot reuse a prior result")
++	model.reset(); model.sample(state,frame,track,0.01,true)
++	check(model.sand == 1.0,"reset uses a fresh result")
++	state.tick = 0; track.metadata.theme = "desert"; track.cells.fill(0); model.sample(state,frame,track,0.01,true)
++	check(model.sand == 1.0,"rewind/theme edits use a fresh result")
++
++func game_contacts(track: NativeTrack) -> void:
++	var observer := script_from("extends SurfaceAudioModel\nvar queries: int = 0\nfunc sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:\n\tqueries += 1\n\tsuper.sample_contacts(state,track,grounded)\n")
++	var game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.ai_enabled = true; game.attempt_practice = true
++	root.add_child(game); game.process_mode = Node.PROCESS_MODE_DISABLED
++	var audio: SurfaceAudioModel = observer.new(); audio.configure(game.handling); game.vehicle_audio.surface_model = audio
++	var finish: SurfaceAudioModel = observer.new(); finish.configure(game.handling); game.car_weathering.contacts = finish
++	for frame: int in range(120):
++		game._physics_process(1.0/120.0); game._physics_process(1.0/120.0); game._present_frame(1.0/60.0)
++	var queries: int = audio.queries+finish.queries
++	report.game_contacts = {"original_queries":479,"queries":queries,"physics_ticks":game.sim.state.tick,"rendered_frames":120,"note":"Fresh physics contacts remain; rendered weathering shares only its just-computed result with audio."}
++	check(queries == 360 and game.sim.state.tick == 240,"actual game removes 119 duplicate presentation queries without skipping physics")
++	game.restart(); game.countdown_ticks = 0; game._physics_process(1.0/120.0); game._present_frame(1.0/60.0)
++	check(game.sim.state.tick == 1,"retry resumes ordinary fixed-step simulation")
++	game.free(); await process_frame
++
++func run() -> void:
++	folder = folder.path_join("headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	root.size = Vector2i(1280,720); DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED); Engine.max_fps = 0
++	contact_equivalence(); var track := make_track(); await winter(track); await game_contacts(track)
++	report.engine = Engine.get_version_info().string; report.renderer = RenderingServer.get_current_rendering_method()
++	report.visual_version = NativeTrackVisual.VERSION; report.wind_version = WinterSnowWind.VERSION
++	report.source_sha256 = {}
++	for path: String in ["core/game.gd","track/winter_snow_wind.gd","vehicle/surface_audio_model.gd","vehicle/vehicle_audio.gd","vehicle/vehicle_weathering.gd"]:
++		report.source_sha256[path] = FileAccess.get_file_as_string("res://"+path).sha256_text()
++	report.checks = checks; report.failures = failures
++	FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("RACING_RENDER_FIXES: ",checks," checks, ",failures," failures")
++	for frame: int in range(3): await process_frame
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_racing_render_review_fixes.gd.uid b/game/tests/test_racing_render_review_fixes.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_racing_render_review_fixes.gd.uid
+@@ -0,0 +1 @@
++uid://b8igp0r6xcrec
+diff --git a/game/tests/test_racing_render_audio_regression.gd b/game/tests/test_racing_render_audio_regression.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_racing_render_audio_regression.gd
+@@ -0,0 +1,5 @@
++extends "res://tests/test_vehicle_audio.gd"
++## Existing assertions; isolate generated recordings from earlier evidence.
++func _initialize() -> void:
++	evidence = "res://../build/racing-render-fixes-2026-10-14/audio"
++	super._initialize()
+diff --git a/game/tests/test_racing_render_audio_regression.gd.uid b/game/tests/test_racing_render_audio_regression.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_racing_render_audio_regression.gd.uid
+@@ -0,0 +1 @@
++uid://db1fn7uqjkkhi
+diff --git a/game/tests/fixtures/racing_render_fixes_before/winter_snow_wind.gd.txt b/game/tests/fixtures/racing_render_fixes_before/winter_snow_wind.gd.txt
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/racing_render_fixes_before/winter_snow_wind.gd.txt
+@@ -0,0 +1,340 @@
++class_name WinterSnowWind
++extends Node3D
++## Bounded, world-space presentation. No simulation, input or race-clock writes.
++const WIND: Vector2 = Vector2(0.91, 0.414608)
++const GRID: int = 7
++const SPACING: float = 6.0
++const BANK_SLOTS: int = 12
++const WISPS: int = 3
++const BUCKET: float = 6.0
++const REFRESH: float = 0.25
++const VERSION: String = "winter-wind-14"
++const CALM_SPEED: float = 12.0
++const GUST_SPEED: float = 18.0
++const AIR_GRAINS: int = 48
++var ground: MultiMeshInstance3D
++var powder: MultiMeshInstance3D
++var airborne: MultiMeshInstance3D
++var ground_material: ShaderMaterial
++var powder_material: ShaderMaterial
++var anchors: Dictionary = {}
++var active_banks := PackedVector3Array()
++var center := Vector2.INF
++var elapsed: float = 0.0
++var travel: float = 0.0
++var intensity: float = 0.0
++var motion_intensity: float = 0.0
++var refresh_wait: float = 0.0
++var suspended: bool = false
++var enabled: bool = false
++var sources_from_visual: bool = false
++var sources_checked: bool = false
++var bank_visual: Node3D
++var source_track: NativeTrack
++var surface_materials: Array[ShaderMaterial] = []
++var surface_bindings: Array[Dictionary] = []
++var surface_instances: Dictionary = {}
++var last_focus: Vector2 = Vector2.ZERO
++var surface_child_count: int = -1
++var car_visual: Node3D
++
++func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null) -> void:
++	_release_surfaces()
++	car_visual = vehicle
++	enabled = track != null and track.metadata.get("theme", "pine") == "winter"
++	visible = enabled
++	anchors.clear()
++	active_banks.clear()
++	sources_from_visual = false
++	sources_checked = false
++	bank_visual = visual
++	source_track = track
++	if not enabled:
++		bank_visual = null
++		source_track = null
++		return
++	if ground == null:
++		ground = _batch("GroundDrifts", GRID * GRID, false)
++		powder = _batch("BankPowder", BANK_SLOTS * WISPS, true)
++		airborne = _air_batch()
++		ground_material = ground.material_override
++		powder_material = powder.material_override
++	_bind_surfaces()
++	if _prepare_visual_sources(track):
++		reset()
++		return
++	_prepare_contact_sources(track)
++	reset()
++
++func _prepare_visual_sources(track: NativeTrack) -> bool:
++	if not is_instance_valid(bank_visual): return false
++	var meshes: Array[MeshInstance3D] = []
++	# Prepared-world batching does not preserve original mesh node names.
++	# The bank material is the stable visual role across fresh/cached worlds.
++	for child: Node in bank_visual.get_children():
++		if child is MeshInstance3D: meshes.append(child)
++	var prepared: Dictionary = {}
++	var role_found: bool = false
++	for bank_mesh: MeshInstance3D in meshes:
++		# The visual analytic crest differs from the raster contact bank. Source
++		# powder on the visible snow, once at build, without changing contacts.
++		for surface: int in range(bank_mesh.mesh.get_surface_count()):
++			var material: Material = bank_mesh.material_override if bank_mesh.material_override != null else bank_mesh.mesh.surface_get_material(surface)
++			if not material is ShaderMaterial or not (material as ShaderMaterial).shader.code.contains("smooth_road_bank"): continue
++			role_found = true
++			var arrays: Array = bank_mesh.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++			for index: int in range(vertices.size()):
++				var at: Vector3 = bank_mesh.transform * vertices[index]
++				if at.y < 0.24: continue
++				if normals[index].dot(VisualGeometry.world(WIND)) > -0.08: continue
++				var point := Vector2(at.x, -at.z)
++				if track.cell_at(point + WIND * 2.0) != 0: continue
++				if CreatorBridges.at_any(track.creator_bridges, point): continue
++				var key := Vector2i((point / BUCKET).floor())
++				if not prepared.has(key) or Vector3(prepared[key]).y < at.y:
++					prepared[key] = at + Vector3.UP * 0.06
++	sources_checked = role_found
++	if not prepared.is_empty():
++		anchors = prepared
++		sources_from_visual = true
++		return true
++	return false
++
++func _prepare_contact_sources(track: NativeTrack) -> void:
++	# One anchor per spatial bucket, on the crest of an exposed upwind bank.
++	# Read prepared geometry once, rather than search the whole track each frame.
++	for triangle: Dictionary in track.snow_banks.triangles:
++		var points: PackedVector2Array = triangle.points
++		var heights: PackedFloat32Array = triangle.heights
++		var high: int = 0
++		var low: int = 0
++		for i: int in range(1, 3):
++			if heights[i] > heights[high]: high = i
++			if heights[i] < heights[low]: low = i
++		if heights[high] < 0.20 or heights[low] > 0.01: continue
++		# Outer bank slope rises back toward the road; lift powder downwind.
++		if (points[high] - points[low]).normalized().dot(WIND) < 0.15: continue
++		var point: Vector2 = points[high]
++		if CreatorBridges.at_any(track.creator_bridges, point): continue
++		var key := Vector2i((point / BUCKET).floor())
++		if not anchors.has(key): anchors[key] = VisualGeometry.world(point) + Vector3.UP * (heights[high] + 0.04)
++
++func reset() -> void:
++	elapsed = 0.0
++	travel = 0.0
++	intensity = 0.0
++	motion_intensity = 0.0
++	refresh_wait = 0.0
++	center = Vector2.INF
++	active_banks.clear()
++	if ground != null:
++		ground_material.set_shader_parameter("strength", 0.0)
++		powder_material.set_shader_parameter("strength", 0.0)
++		powder.multimesh.visible_instance_count = 0
++		(airborne.material_override as ShaderMaterial).set_shader_parameter("strength",0.0)
++	_sync_surfaces()
++
++func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: bool) -> void:
++	if not enabled or suspended or paused: return
++	if not is_finite(delta) or delta < 0.0 or not focus.is_finite() or not is_finite(gust): return
++	var step: float = minf(delta, 0.25)
++	elapsed += step
++	# Share the existing recorded wind's smooth gust envelope, without new audio.
++	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.12, 0.45, clampf(gust, 0.0, 1.0)), step * 1.5)
++	# Snow amount and transport speed stay independent, with restrained
++	# coverage and moderate travel rather than racing sheets of powder.
++	motion_intensity = move_toward(motion_intensity,clampf(gust,0.0,1.0),step*1.5)
++	travel += step * lerpf(CALM_SPEED, GUST_SPEED, motion_intensity)
++	var next_center: Vector2 = (focus / SPACING).floor() * SPACING
++	if center != next_center:
++		center = next_center
++		_place_ground()
++		refresh_wait = 0.0
++	refresh_wait -= step
++	if refresh_wait <= 0.0:
++		_bind_surfaces()
++		# Native road construction may finish a few frames after race startup.
++		if not sources_checked and is_instance_valid(bank_visual):
++			_prepare_visual_sources(source_track)
++		_place_banks(focus)
++		refresh_wait = REFRESH
++	for material: ShaderMaterial in [ground_material, powder_material,airborne.material_override]:
++		material.set_shader_parameter("elapsed", elapsed)
++		material.set_shader_parameter("travel", travel)
++		material.set_shader_parameter("strength", intensity)
++		material.set_shader_parameter("focus", VisualGeometry.world(focus))
++	airborne.multimesh.custom_aabb = AABB(VisualGeometry.world(focus)+Vector3(-80,-1,-80),Vector3(160,6,160))
++	last_focus = focus
++	_sync_surfaces()
++	if not surface_materials.is_empty():
++		# Actual opaque geometry owns road/terrain/bank powder. No floating cards.
++		ground.multimesh.visible_instance_count = 0
++		powder.multimesh.visible_instance_count = 0
++
++func _bind_surfaces() -> void:
++	if not enabled or not is_instance_valid(bank_visual): return
++	# Let prepared-world recording finish before installing run-owned finishes.
++	if bank_visual is NativeTrackVisual and not (bank_visual as NativeTrackVisual).world_built: return
++	# Native roads/bridges arrive as prepared children. After the sliced build,
++	# stable worlds need only this count check, not recurring scene traversal.
++	var count: int = bank_visual.get_child_count()
++	if count == surface_child_count: return
++	surface_child_count = count
++	var pending: Array[Node] = [bank_visual]
++	while not pending.is_empty():
++		var node: Node = pending.pop_back()
++		for child: Node in node.get_children(): pending.append(child)
++		if not node is MeshInstance3D: continue
++		var mesh: MeshInstance3D = node
++		if mesh.mesh == null: continue
++		if mesh.material_override is ShaderMaterial:
++			_bind_surface(mesh,-1,mesh.material_override as ShaderMaterial)
++		elif mesh.material_override == null:
++			for index: int in range(mesh.mesh.get_surface_count()):
++				var material: Material = mesh.get_active_material(index)
++				if material is ShaderMaterial: _bind_surface(mesh,index,material as ShaderMaterial)
++
++func _bind_surface(mesh: MeshInstance3D, index: int, original: ShaderMaterial) -> void:
++	if original in surface_materials or original.shader == null: return
++	var code: String = original.shader.code
++	if not code.contains("wind_surface_strength"): return
++	if not (code.contains("const bool winter_snow = true;") or code.contains("const bool icy_road = true;")
++		or original.get_shader_parameter("winter_snow") == true or original.get_shader_parameter("icy_road") == true): return
++	# Cache resources stay immutable. All uses of a material share one run-owned
++	# duplicate, restored exactly when the weather node is removed/reconfigured.
++	var key: int = original.get_instance_id()
++	var material: ShaderMaterial
++	if surface_instances.has(key): material = surface_instances[key]
++	else:
++		material = original.duplicate() as ShaderMaterial
++		material.set_shader_parameter("wind_surface_flow",preload("res://assets/textures/winter_wind_flow_v1.png"))
++		surface_instances[key] = material
++		surface_materials.append(material)
++	var previous: Material = mesh.material_override if index < 0 else mesh.get_surface_override_material(index)
++	surface_bindings.append({"node":weakref(mesh),"surface":index,"original":previous,"material":material})
++	if index < 0: mesh.material_override = material
++	else: mesh.set_surface_override_material(index,material)
++
++func _sync_surfaces() -> void:
++	var car_point := Vector2(last_focus.x,-last_focus.y)
++	if is_instance_valid(car_visual): car_point = Vector2(car_visual.global_position.x,car_visual.global_position.z)
++	if airborne != null: (airborne.material_override as ShaderMaterial).set_shader_parameter("protected_car",car_point)
++	for material: ShaderMaterial in surface_materials:
++		material.set_shader_parameter("wind_surface_elapsed",elapsed)
++		material.set_shader_parameter("wind_surface_travel",travel)
++		material.set_shader_parameter("wind_surface_strength",intensity if enabled and is_visible_in_tree() else 0.0)
++		material.set_shader_parameter("wind_surface_focus",Vector2(last_focus.x,-last_focus.y))
++		material.set_shader_parameter("wind_surface_car",car_point)
++
++func _release_surfaces() -> void:
++	for material: ShaderMaterial in surface_materials: material.set_shader_parameter("wind_surface_strength",0.0)
++	for binding: Dictionary in surface_bindings:
++		var mesh: MeshInstance3D = binding.node.get_ref() as MeshInstance3D
++		if not is_instance_valid(mesh): continue
++		var index: int = binding.surface
++		if index < 0 and mesh.material_override == binding.material: mesh.material_override = binding.original
++		elif index >= 0 and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
++	surface_materials.clear(); surface_instances.clear(); surface_bindings.clear()
++	surface_child_count = -1
++
++func _exit_tree() -> void:
++	_release_surfaces()
++
++func _air_batch() -> MultiMeshInstance3D:
++	var node := MultiMeshInstance3D.new()
++	node.name = "AirborneGrains"
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	var mesh := QuadMesh.new()
++	mesh.orientation = PlaneMesh.FACE_Y
++	mesh.size = Vector2(0.10,0.025)
++	var instances := MultiMesh.new()
++	instances.transform_format = MultiMesh.TRANSFORM_3D
++	instances.use_custom_data = true
++	instances.mesh = mesh
++	instances.instance_count = AIR_GRAINS
++	for i: int in range(AIR_GRAINS):
++		instances.set_instance_transform(i,Transform3D.IDENTITY)
++		instances.set_instance_custom_data(i,Color(_hash(Vector2(i,13)),_hash(Vector2(i,31)),_hash(Vector2(i,47)),1.0))
++	node.multimesh = instances
++	var material := ShaderMaterial.new()
++	material.shader = preload("res://track/winter_air_snow.gdshader")
++	node.material_override = material
++	add_child(node)
++	return node
++
++func _batch(label: String, count: int, bank: bool) -> MultiMeshInstance3D:
++	var node := MultiMeshInstance3D.new()
++	node.name = label
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	var mesh: PlaneMesh = PlaneMesh.new() if bank else QuadMesh.new()
++	mesh.orientation = PlaneMesh.FACE_Y
++	mesh.size = Vector2(12.0, 3.0) if bank else Vector2(14.0, 2.1)
++	if bank:
++		# Six short spans let a connected sheet descend from crest to road.
++		# One reusable mesh, no per-frame surface queries or billboard rotation.
++		mesh.subdivide_width = 5
++	var instances := MultiMesh.new()
++	instances.transform_format = MultiMesh.TRANSFORM_3D
++	instances.use_custom_data = true
++	instances.instance_count = count
++	instances.visible_instance_count = 0
++	instances.mesh = mesh
++	node.multimesh = instances
++	var material := ShaderMaterial.new()
++	material.shader = preload("res://track/winter_snow_wind.gdshader")
++	material.set_shader_parameter("bank", bank)
++	material.set_shader_parameter("flow_texture", load("res://assets/textures/winter_wind_flow_v1.png"))
++	material.set_shader_parameter("snow_albedo", NativeTrackVisual.WINTER_SNOW)
++	node.material_override = material
++	add_child(node)
++	return node
++
++func _basis(_bank: bool = false) -> Basis:
++	var along: Vector3 = VisualGeometry.world(WIND)
++	return Basis(along, Vector3.UP, along.cross(Vector3.UP))
++
++func _place_ground() -> void:
++	var index: int = 0
++	for y: int in range(-3, 4):
++		for x: int in range(-3, 4):
++			var point: Vector2 = center + Vector2(x, y) * SPACING
++			var seed: float = _hash(point)
++			var at: Vector3 = VisualGeometry.world(point + Vector2(seed - 0.5, _hash(point + Vector2.ONE) - 0.5) * 3.5)
++			at.y = 0.065
++			ground.multimesh.set_instance_transform(index, Transform3D(_basis(), at))
++			ground.multimesh.set_instance_custom_data(index, Color(seed, _hash(point + Vector2(3, 7)), 0, 1))
++			index += 1
++	ground.multimesh.visible_instance_count = index
++	ground.multimesh.custom_aabb = AABB(VisualGeometry.world(center) + Vector3(-36, -1, -36), Vector3(72, 5, 72))
++
++func _place_banks(focus: Vector2) -> void:
++	var candidates: Array[Vector3] = []
++	var cell := Vector2i((focus / BUCKET).floor())
++	# At most 81 dictionary lookups, four times per second while stationary.
++	for y: int in range(-4, 5):
++		for x: int in range(-4, 5):
++			var key: Vector2i = cell + Vector2i(x, y)
++			if anchors.has(key): candidates.append(anchors[key])
++	var world_focus: Vector3 = VisualGeometry.world(focus)
++	candidates.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.distance_squared_to(world_focus) < b.distance_squared_to(world_focus))
++	active_banks.clear()
++	var index: int = 0
++	for i: int in range(mini(BANK_SLOTS, candidates.size())):
++		var at: Vector3 = candidates[i]
++		active_banks.append(at)
++		for wisp: int in range(WISPS):
++			powder.multimesh.set_instance_transform(index, Transform3D(_basis(true), at))
++			powder.multimesh.set_instance_custom_data(index, Color(_hash(Vector2(at.x, at.z) + Vector2.ONE * wisp), float(wisp) / WISPS, 0, 1))
++			index += 1
++	powder.multimesh.visible_instance_count = index
++	powder.multimesh.custom_aabb = AABB(world_focus + Vector3(-46, -1, -46), Vector3(92, 6, 92))
++
++func _hash(point: Vector2) -> float:
++	return fposmod(sin(point.dot(Vector2(12.9898, 78.233))) * 43758.5453, 1.0)
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]: suspended = true
++	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]: suspended = false
++	elif what == NOTIFICATION_VISIBILITY_CHANGED: _sync_surfaces()
+diff --git a/game/tests/fixtures/racing_render_fixes_before/surface_audio_model.gd.txt b/game/tests/fixtures/racing_render_fixes_before/surface_audio_model.gd.txt
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/racing_render_fixes_before/surface_audio_model.gd.txt
+@@ -0,0 +1,92 @@
++class_name SurfaceAudioModel
++extends RefCounted
++## Four real wheel locations drive the material mix. Read-only presentation.
++var wheelbase: float = 2.55 * HandlingConfig.BODY_SCALE
++var track_width: float = 1.66 * HandlingConfig.BODY_SCALE
++var pavement: float = 0.0
++var grass: float = 0.0
++var sand: float = 0.0
++var gravel: float = 0.0
++var water: float = 0.0
++var kerb: float = 0.0
++var drive: float = 0.0
++var acceleration: float = 0.0
++var last_speed: float = 0.0
++var has_speed: bool = false
++
++func configure(config: HandlingConfig) -> void:
++	wheelbase = config.wheelbase
++	track_width = config.track_width
++	reset()
++
++func reset() -> void:
++	pavement = 0.0
++	grass = 0.0
++	sand = 0.0
++	gravel = 0.0
++	water = 0.0
++	kerb = 0.0
++	drive = 0.0
++	acceleration = 0.0
++	last_speed = 0.0
++	has_speed = false
++
++func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: float, grounded: bool) -> void:
++	sample_contacts(state,track,grounded)
++	var speed: float = state.velocity.length()
++	var gain: float = 1.0 - exp(-delta * 9.0)
++	var measured: float = clampf((speed-last_speed)/maxf(delta,0.0001),-15.0,15.0) if has_speed else 0.0
++	acceleration = lerpf(acceleration,measured,gain)
++	last_speed = speed
++	has_speed = true
++	var reverse: bool = state.velocity.dot(state.forward()) < -0.6
++	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
++	drive = lerpf(drive,clampf(pedal*0.70+maxf(acceleration,0.0)/15.0*0.30,0.0,1.0),gain)
++
++func sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:
++	pavement = 0.0
++	grass = 0.0
++	sand = 0.0
++	gravel = 0.0
++	water = 0.0
++	kerb = 0.0
++	if not grounded: return
++	var theme: String = str(track.metadata.get("theme","pine")) if track != null else "pine"
++	var document: Dictionary = track.metadata.get("creator_document",{}) if track!=null else {}
++	var grass_shoulder: bool = not state.track_elevated and theme in ["pine","storm"] and not document.get("pieces",[]).is_empty() and str(document.get("base_track",""))==""
++	for axle: float in [-0.5,0.5]:
++		for side: float in [-0.5,0.5]:
++			var point: Vector2 = state.position+state.forward()*wheelbase*axle+state.right()*track_width*side
++			var cell: int = track.cell_at(point,state.track_elevated) if track != null else 0
++			var raised: bool = track!=null and not state.track_elevated and not track.kerbs.triangles.is_empty() and track.kerbs.height_at(point)>.004
++			if raised: kerb += .25
++			if raised and theme!="desert":
++				pavement += .25
++			elif cell in [3,6]:
++				water += 0.25
++			elif theme == "desert" and cell in [0,1,2,5]:
++				sand += 0.25
++			elif cell == 1:
++				grass += 0.25
++			elif cell == 2:
++				sand += 0.25
++			elif cell == 7:
++				gravel += 0.25
++			elif cell == 5 and grass_shoulder:
++				# Creator raster shoulder is a full metre wide, while the rendered
++				# soil/grass fringe starts within it. It is not all raised concrete.
++				grass += .125
++				pavement += .125
++			elif cell in [0,5]:
++				pavement += 0.25
++	if state.tire_water>0.05: water = maxf(water,state.tire_water)
++
++func kerb_at(position: Vector2, heading: float, track: NativeTrack) -> float:
++	if track==null or track.kerbs.triangles.is_empty(): return 0.0
++	var forward := Vector2(sin(heading),cos(heading))
++	var right := Vector2(cos(heading),-sin(heading))
++	var amount: float = 0.0
++	for axle: float in [-.5,.5]:
++		for side: float in [-.5,.5]:
++			if track.kerbs.height_at(position+forward*wheelbase*axle+right*track_width*side)>.004: amount += .25
++	return amount
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10460.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10460.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10460.log
+@@ -0,0 +1,89 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PASS: Space binds only handbrake
++PASS: keyboard handbrake is independent
++PASS: focus/pause clear releases handbrake
++PASS: handbrake quantizes
++PASS: handbrake stops either direction and never engages reverse or throttle
++PASS: handbrake stops either direction and never engages reverse or throttle
++PASS: handbrake initiates a stronger slide
++PASS: handbrake dissipates speed
++PASS: handbrake JSON replay is exact
++PASS: released handbrake recovers grip
++METRIC: quarter-turn at 43 km/h, effective radius 14.55m -> 6.87m
++PASS: actual turning path at 43 km/h is at least 25% tighter
++METRIC: quarter-turn at 65 km/h, effective radius 23.51m -> 9.84m
++PASS: actual turning path at 65 km/h is at least 25% tighter
++METRIC: quarter-turn at 86 km/h, effective radius 37.77m -> 14.60m
++PASS: actual turning path at 86 km/h is at least 25% tighter
++METRIC: 108 km/h coasting turn after 1s: 93.6 -> 99.3 km/h
++PASS: cornering retains some speed while still scrubbing at least 6 km/h
++PASS: corner retention improves forward speed as well as total speed
++PASS: steering and slide recovery never create energy without throttle
++PASS: idle has no creep or stationary steering
++METRIC: speed after 3 seconds = 36.54 m/s
++PASS: throttle accelerates along car heading
++PASS: forward speed cap
++METRIC: achieved top speed = 165.6 km/h
++PASS: full throttle reaches the increased top speed
++METRIC: 0-100 km/h 3.63s -> 2.13s
++PASS: 0-100 acceleration is at least 25% quicker
++PASS: steering changes travel direction from the new top speed
++PASS: high-speed turn recovers after lifting and centering
++PASS: mass changes acceleration under identical engine force
++METRIC: 1.33s braking 16.35m, coasting 31.53m
++PASS: braking materially reduces stopping distance
++PASS: reverse requires a stopped hold delay
++PASS: held brake engages bounded reverse
++PASS: throttle brakes reverse before accelerating forward
++PASS: brake wins simultaneous pedals at rest; no stationary rotation
++PASS: right steering rotates clockwise promptly
++PASS: countersteering reverses yaw
++PASS: reverse reverses steering direction
++METRIC: released slide 24.0 -> 0.0 degrees
++PASS: lifting and centering steering recovers a seeded slide
++METRIC: corner slip power -5.6°, lift -5.8°
++PASS: throttle pulls a slide toward the nose without automatic rotation
++PASS: 50ms steering tap begins turning during the progressive steering ramp
++PASS: trajectory lags behind chassis rotation
++PASS: powered corner stays below 18 degrees slip instead of the previous 27
++PASS: wall confines and reflects car
++PASS: collision loses energy and increments contact count
++PASS: swept island collision prevents tunnelling across an entire obstacle
++PASS: overlap recovery remains finite at island centre
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=1
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=2
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=4
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=8
++PASS: capture includes quantized ticks, state checkpoints and full handling config
++PASS: diagnostic recording saves successfully
++PASS: saved capture contains run identity, all inputs and final tick
++REPLAY: 2400 ticks, zero same-engine state divergence; Android NOT TESTED
++PASS: bounded mixed-input run: Planted
++PASS: bounded mixed-input run: Balanced
++PASS: bounded mixed-input run: Playful
++PLAYGROUND_READY
++PASS: main scene samples keyboard actions into canonical simulation
++PASS: pause stops physics and releases keyboard input
++PASS: three simultaneous touch inputs survive sampling
++PASS: releasing one finger preserves the other pedal
++PASS: canceled touch safely releases its pedal
++PASS: dragging outside touch zone releases action
++PASS: focus loss pauses and releases all fingers
++PASS: restart restores identical initial state immediately
++PASS: profile switch updates simulation and resets
++PASS: on-screen preset button selects its own bound index
++PASS: live tuning writes active handling and resets the run
++PASS: camera retains player at heading 0 degrees
++PASS: camera retains player at heading 90 degrees
++PASS: camera retains player at heading 180 degrees
++PASS: camera retains player at heading -90 degrees
++PLAYGROUND_READY
++PASS: handling selector removed from production, practice=false
++PASS: normal drive defaults to the original-based slide tune
++PASS: production handling remains locked to Original+
++PLAYGROUND_READY
++PASS: handling selector removed from production, practice=true
++PASS: normal drive defaults to the original-based slide tune
++PASS: production handling remains locked to Original+
++DRIVING_TESTS: 72 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10508.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10508.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-10508.log
+@@ -0,0 +1,22 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINTER_WIND_CPU_US_PER_PRESENT: 12.2752777777778
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++WINTER_SNOW_CAR_RECT_CHANGED_PIXELS: 0
++WINTER_SNOW_ROOF_SAMPLES: 719 changed=0
++WINTER_WIND_COVERAGE: 1018/70325 fraction=0.01447564877355
++WINTER_LIGHT_RESPONSE: bright_delta=48.2509775161743 dark_delta=0.0
++WINTER_MOVING_ROOF: frame=0 samples=760 changed=0
++WINTER_MOVING_AA: frame=0 interior=551 changed=0 mixed_boundary_changed=0
++WINTER_MOVING_ROOF: frame=40 samples=750 changed=0
++WINTER_MOVING_AA: frame=40 interior=551 changed=0 mixed_boundary_changed=0
++RACE_HITCH frame_ms=178.953 tick=248 countdown=360 local_log=user://diagnostics/race_hitches/race-1791994056-7048-214865807036.json
++WINTER_MOVING_ROOF: frame=80 samples=746 changed=0
++WINTER_MOVING_AA: frame=80 interior=540 changed=0 mixed_boundary_changed=0
++WINTER_SNOW_RENDER_PROFILE: [{"draw_calls":289.0,"enabled":false,"gpu_ms_median":1.42499995231628,"gpu_ms_p95":1.95799994468689,"primitives":398423.0,"render_cpu_ms_median":1.80799996852875},{"draw_calls":290.0,"enabled":true,"gpu_ms_median":1.3289999961853,"gpu_ms_p95":1.79799997806549,"primitives":398519.0,"render_cpu_ms_median":1.59200000762939},{"draw_calls":290.0,"enabled":true,"gpu_ms_median":1.36000001430511,"gpu_ms_p95":1.77900004386902,"primitives":398519.0,"render_cpu_ms_median":1.73099994659424},{"draw_calls":289.0,"enabled":false,"gpu_ms_median":1.37100005149841,"gpu_ms_p95":1.99100005626678,"primitives":398423.0,"render_cpu_ms_median":1.65600001811981}]
++WINTER_GROUND_POWDER: 10415 changed samples; 6 run-owned materials
++WINTER_LOCAL_WINDOWS: [0.1290625, 0.12003125, 0.137578125, 0.162453125, 0.1290625]
++WINTER_LOCAL_RENDER: changed_samples=[3653, 7180, 12120, 8713]
++WINTER_SNOW_WIND: 83 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-11204.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-11204.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-11204.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 425 checks, 0 failures
++ERROR: Texture with GL ID of 69: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12868.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12868.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12868.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12972.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12972.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-12972.log
+@@ -0,0 +1,22 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINTER_WIND_CPU_US_PER_PRESENT: 18.6677777777778
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++WINTER_SNOW_CAR_RECT_CHANGED_PIXELS: 0
++WINTER_SNOW_ROOF_SAMPLES: 744 changed=0
++WINTER_WIND_COVERAGE: 886/70325 fraction=0.01259864912904
++WINTER_LIGHT_RESPONSE: bright_delta=28.709802210331 dark_delta=0.0
++WINTER_MOVING_ROOF: frame=0 samples=769 changed=0
++WINTER_MOVING_AA: frame=0 interior=595 changed=0 mixed_boundary_changed=0
++WINTER_MOVING_ROOF: frame=40 samples=757 changed=0
++WINTER_MOVING_AA: frame=40 interior=598 changed=0 mixed_boundary_changed=0
++RACE_HITCH frame_ms=179.584 tick=248 countdown=360 local_log=user://diagnostics/race_hitches/race-1791994126-20600-231408142017.json
++WINTER_MOVING_ROOF: frame=80 samples=756 changed=0
++WINTER_MOVING_AA: frame=80 interior=581 changed=0 mixed_boundary_changed=0
++WINTER_SNOW_RENDER_PROFILE: [{"draw_calls":317.0,"enabled":false,"gpu_ms_median":0.266000002622604,"gpu_ms_p95":0.273999989032745,"primitives":398423.0,"render_cpu_ms_median":0.486999988555908},{"draw_calls":318.0,"enabled":true,"gpu_ms_median":0.280000001192093,"gpu_ms_p95":0.291000008583069,"primitives":398519.0,"render_cpu_ms_median":0.425999999046326},{"draw_calls":318.0,"enabled":true,"gpu_ms_median":0.28099998831749,"gpu_ms_p95":0.293999999761581,"primitives":398519.0,"render_cpu_ms_median":0.523999989032745},{"draw_calls":317.0,"enabled":false,"gpu_ms_median":0.273999989032745,"gpu_ms_p95":0.287999987602234,"primitives":398423.0,"render_cpu_ms_median":0.45100000500679}]
++WINTER_GROUND_POWDER: 9428 changed samples; 6 run-owned materials
++WINTER_LOCAL_WINDOWS: [0.1311875, 0.122765625, 0.13965625, 0.164484375, 0.1311875]
++WINTER_LOCAL_RENDER: changed_samples=[3203, 6067, 10401, 7478]
++WINTER_SNOW_WIND: 83 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13224.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13224.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13224.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 420 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13296.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13296.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-13296.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-14312.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-14312.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-14312.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 710 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15100.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15100.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15100.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15900.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15900.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-15900.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 422 checks, 0 failures
++ERROR: Texture with GL ID of 69: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-16536.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-16536.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-16536.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++SCRIPT ERROR: Parse Error: Cannot find member "BODIES" in base "CompactKitVariants".
++   at: GDScript::reload (res://vehicle/car_visual.gd:467)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17136.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17136.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17136.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++SCRIPT ERROR: Parse Error: Cannot find member "BODIES" in base "CompactKitVariants".
++   at: GDScript::reload (res://vehicle/car_visual.gd:467)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17332.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17332.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17332.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17588.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17588.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-17588.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19204.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19204.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19204.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++Rewind: 61 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19576.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19576.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-19576.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++Rewind: 61 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-2020.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-2020.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-2020.log
+@@ -0,0 +1,6 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 425 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20716.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20716.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20716.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++WINTER_WIND_CPU_US_PER_PRESENT: 11.6841666666667
++PLAYGROUND_READY
++WINTER_SNOW_WIND: 34 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20796.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20796.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-20796.log
+@@ -0,0 +1,11 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++--res://track/winter_snow_wind.gdshader--
++   62 |  vec2 point = vec2(dot(world_position.xz, wind), dot(world_position.xz, side));
++   63 |  float local_gust = snow_local_gust(point,elapsed);
++E  64->  if (local_gust <= 0.0) discard;
++   65 |  if (bank) local_gust *= 0.85+0.15*sin(elapsed*1.07+INSTANCE_CUSTOM.x*6.283185);
++   66 |  vec2 field = point-vec2(travel,0.0)+flow_offset+snow_spatial_offset(point);
++SHADER ERROR: Unknown identifier in expression: 'INSTANCE_CUSTOM'.
++   at: (null) (res://track/winter_snow_wind.gdshader:64)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21220.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21220.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21220.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++CAR_WASH: 1383 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21456.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21456.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-21456.log
+@@ -0,0 +1,7 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 426 checks, 0 failures
++ERROR: Texture with GL ID of 69: leaked 87380 bytes.
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22028.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22028.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22028.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 421 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22080.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22080.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22080.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++ERROR: Parameter "material" is null.
++   at: material_get_instance_shader_parameters (servers/rendering/dummy/storage/material_storage.cpp:264)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22152.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22152.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22152.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 723 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22276.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22276.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-22276.log
+@@ -0,0 +1,21 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINTER_WIND_CPU_US_PER_PRESENT: 20.3030555555556
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++WINTER_SNOW_CAR_RECT_CHANGED_PIXELS: 13
++WINTER_SNOW_ROOF_SAMPLES: 719 changed=0
++WINTER_WIND_COVERAGE: 19403/70325 fraction=0.27590472804835
++WINTER_LIGHT_RESPONSE: bright_delta=1004.76464599371 dark_delta=0.0
++WINTER_MOVING_ROOF: frame=0 samples=760 changed=0
++WINTER_MOVING_AA: frame=0 interior=551 changed=0 mixed_boundary_changed=0
++WINTER_MOVING_ROOF: frame=40 samples=750 changed=0
++WINTER_MOVING_AA: frame=40 interior=551 changed=0 mixed_boundary_changed=0
++RACE_HITCH frame_ms=177.327 tick=248 countdown=360 local_log=user://diagnostics/race_hitches/race-1791990756-23764-215520118461.json
++WINTER_MOVING_ROOF: frame=80 samples=746 changed=0
++WINTER_MOVING_AA: frame=80 interior=540 changed=0 mixed_boundary_changed=1
++WINTER_SNOW_RENDER_PROFILE: [{"draw_calls":289.0,"enabled":false,"gpu_ms_median":1.01999998092651,"gpu_ms_p95":1.60699999332428,"primitives":387695.0,"render_cpu_ms_median":1.92799997329712},{"draw_calls":290.0,"enabled":true,"gpu_ms_median":0.723999977111816,"gpu_ms_p95":1.50999999046326,"primitives":387805.0,"render_cpu_ms_median":1.74800002574921},{"draw_calls":290.0,"enabled":true,"gpu_ms_median":1.17700004577637,"gpu_ms_p95":1.65900003910065,"primitives":387805.0,"render_cpu_ms_median":1.81299996376038},{"draw_calls":289.0,"enabled":false,"gpu_ms_median":0.75,"gpu_ms_p95":1.44900000095367,"primitives":387695.0,"render_cpu_ms_median":1.74199998378754}]
++WINTER_GROUND_POWDER: 72874 changed samples; 6 run-owned materials
++WINTER_RESTRAINT: contribution_ratio=0.30890690015719 phase_speed=30 -> 13.5
++WINTER_SNOW_WIND: 84 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23572.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23572.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23572.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT ERROR: Cannot call method 'get_surface_count' on a null value.
++   at: _prepare_visual_sources (gdscript://-9223371922367052092.gd:79)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23712.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23712.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-23712.log
+@@ -0,0 +1,6 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 422 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24296.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24296.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24296.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 725 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24324.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24324.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-24324.log
+@@ -0,0 +1,21 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINTER_WIND_CPU_US_PER_PRESENT: 15.1516666666667
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++WINTER_SNOW_CAR_RECT_CHANGED_PIXELS: 10
++WINTER_SNOW_ROOF_SAMPLES: 744 changed=0
++WINTER_WIND_COVERAGE: 17156/70325 fraction=0.24395307500889
++WINTER_LIGHT_RESPONSE: bright_delta=526.984282582998 dark_delta=0.0
++WINTER_MOVING_ROOF: frame=0 samples=769 changed=0
++WINTER_MOVING_AA: frame=0 interior=595 changed=0 mixed_boundary_changed=0
++WINTER_MOVING_ROOF: frame=40 samples=757 changed=0
++WINTER_MOVING_AA: frame=40 interior=598 changed=0 mixed_boundary_changed=0
++RACE_HITCH frame_ms=189.583 tick=248 countdown=360 local_log=user://diagnostics/race_hitches/race-1791991051-15632-230653167299.json
++WINTER_MOVING_ROOF: frame=80 samples=756 changed=0
++WINTER_MOVING_AA: frame=80 interior=581 changed=0 mixed_boundary_changed=0
++WINTER_SNOW_RENDER_PROFILE: [{"draw_calls":317.0,"enabled":false,"gpu_ms_median":0.368999987840652,"gpu_ms_p95":0.381999999284744,"primitives":398423.0,"render_cpu_ms_median":0.39300000667572},{"draw_calls":320.0,"enabled":true,"gpu_ms_median":0.400000005960464,"gpu_ms_p95":0.416000008583069,"primitives":398519.0,"render_cpu_ms_median":0.379000008106232},{"draw_calls":320.0,"enabled":true,"gpu_ms_median":0.407999992370605,"gpu_ms_p95":0.421999990940094,"primitives":398519.0,"render_cpu_ms_median":0.375999987125397},{"draw_calls":317.0,"enabled":false,"gpu_ms_median":0.398999989032745,"gpu_ms_p95":0.418000012636185,"primitives":398423.0,"render_cpu_ms_median":0.375}]
++WINTER_GROUND_POWDER: 67728 changed samples; 6 run-owned materials
++WINTER_RESTRAINT: contribution_ratio=0.31278638173046 phase_speed=30 -> 13.5
++WINTER_SNOW_WIND: 84 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27496.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27496.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27496.log
+@@ -0,0 +1,13 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 1, "idle_silence_queued": false, "clip_count": 4 }
++VEHICLE_AUDIO: 1469 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27936.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27936.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-27936.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-29412.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-29412.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-29412.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 714 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-32452.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-32452.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-32452.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 723 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-34092.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-34092.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-34092.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++OpenGL API 3.3.0 NVIDIA 616.92 - Compatibility - Using Device: NVIDIA - NVIDIA GeForce RTX 3090
++
++SCRIPT ERROR: Parse Error: Could not resolve class "CompactKitVariants", because of a parser error.
++   at: GDScript::reload (res://vehicle/car_visual.gd:467)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-3448.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-3448.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-3448.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 716 scripts, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-35712.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-35712.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-35712.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 420 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-36244.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-36244.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-36244.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT ERROR: Parse Error: Identifier "CompactKitSurface" not declared in the current scope.
++   at: GDScript::reload (res://vehicle/compact_body_kits.gd:26)
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-4172.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-4172.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-4172.log
+@@ -0,0 +1,89 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PASS: Space binds only handbrake
++PASS: keyboard handbrake is independent
++PASS: focus/pause clear releases handbrake
++PASS: handbrake quantizes
++PASS: handbrake stops either direction and never engages reverse or throttle
++PASS: handbrake stops either direction and never engages reverse or throttle
++PASS: handbrake initiates a stronger slide
++PASS: handbrake dissipates speed
++PASS: handbrake JSON replay is exact
++PASS: released handbrake recovers grip
++METRIC: quarter-turn at 43 km/h, effective radius 14.55m -> 6.87m
++PASS: actual turning path at 43 km/h is at least 25% tighter
++METRIC: quarter-turn at 65 km/h, effective radius 23.51m -> 9.84m
++PASS: actual turning path at 65 km/h is at least 25% tighter
++METRIC: quarter-turn at 86 km/h, effective radius 37.77m -> 14.60m
++PASS: actual turning path at 86 km/h is at least 25% tighter
++METRIC: 108 km/h coasting turn after 1s: 93.6 -> 99.3 km/h
++PASS: cornering retains some speed while still scrubbing at least 6 km/h
++PASS: corner retention improves forward speed as well as total speed
++PASS: steering and slide recovery never create energy without throttle
++PASS: idle has no creep or stationary steering
++METRIC: speed after 3 seconds = 36.54 m/s
++PASS: throttle accelerates along car heading
++PASS: forward speed cap
++METRIC: achieved top speed = 165.6 km/h
++PASS: full throttle reaches the increased top speed
++METRIC: 0-100 km/h 3.63s -> 2.13s
++PASS: 0-100 acceleration is at least 25% quicker
++PASS: steering changes travel direction from the new top speed
++PASS: high-speed turn recovers after lifting and centering
++PASS: mass changes acceleration under identical engine force
++METRIC: 1.33s braking 16.35m, coasting 31.53m
++PASS: braking materially reduces stopping distance
++PASS: reverse requires a stopped hold delay
++PASS: held brake engages bounded reverse
++PASS: throttle brakes reverse before accelerating forward
++PASS: brake wins simultaneous pedals at rest; no stationary rotation
++PASS: right steering rotates clockwise promptly
++PASS: countersteering reverses yaw
++PASS: reverse reverses steering direction
++METRIC: released slide 24.0 -> 0.0 degrees
++PASS: lifting and centering steering recovers a seeded slide
++METRIC: corner slip power -5.6°, lift -5.8°
++PASS: throttle pulls a slide toward the nose without automatic rotation
++PASS: 50ms steering tap begins turning during the progressive steering ramp
++PASS: trajectory lags behind chassis rotation
++PASS: powered corner stays below 18 degrees slip instead of the previous 27
++PASS: wall confines and reflects car
++PASS: collision loses energy and increments contact count
++PASS: swept island collision prevents tunnelling across an entire obstacle
++PASS: overlap recovery remains finite at island centre
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=1
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=2
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=4
++PASS: exact same-engine replay after JSON roundtrip, ticks/render=8
++PASS: capture includes quantized ticks, state checkpoints and full handling config
++PASS: diagnostic recording saves successfully
++PASS: saved capture contains run identity, all inputs and final tick
++REPLAY: 2400 ticks, zero same-engine state divergence; Android NOT TESTED
++PASS: bounded mixed-input run: Planted
++PASS: bounded mixed-input run: Balanced
++PASS: bounded mixed-input run: Playful
++PLAYGROUND_READY
++PASS: main scene samples keyboard actions into canonical simulation
++PASS: pause stops physics and releases keyboard input
++PASS: three simultaneous touch inputs survive sampling
++PASS: releasing one finger preserves the other pedal
++PASS: canceled touch safely releases its pedal
++PASS: dragging outside touch zone releases action
++PASS: focus loss pauses and releases all fingers
++PASS: restart restores identical initial state immediately
++PASS: profile switch updates simulation and resets
++PASS: on-screen preset button selects its own bound index
++PASS: live tuning writes active handling and resets the run
++PASS: camera retains player at heading 0 degrees
++PASS: camera retains player at heading 90 degrees
++PASS: camera retains player at heading 180 degrees
++PASS: camera retains player at heading -90 degrees
++PLAYGROUND_READY
++PASS: handling selector removed from production, practice=false
++PASS: normal drive defaults to the original-based slide tune
++PASS: production handling remains locked to Original+
++PLAYGROUND_READY
++PASS: handling selector removed from production, practice=true
++PASS: normal drive defaults to the original-based slide tune
++PASS: production handling remains locked to Original+
++DRIVING_TESTS: 72 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-6728.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-6728.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-6728.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++CAR_WASH: 1383 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-7828.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-7828.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-7828.log
+@@ -0,0 +1,6 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++Vulkan 1.4.351 - Forward Mobile - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3090
++
++WINDOWS_IMPACT_AUDIO: { "ready": true, "raw": true, "submitted": 0, "mixed_frames": 0, "active_voices": 0, "voice_limit": 4, "period_frames": 480, "buffer_frames": 1056, "queued_period_limit": 1, "error": 0, "queued_frames": 0, "idle_skips": 0, "idle_silence_queued": false, "clip_count": 4 }
++PLAYGROUND_READY
++RACING_RENDER_FIXES: 426 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9704.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9704.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9704.log
+@@ -0,0 +1,5 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++FAIL: pause suspends loop playback
++PLAYGROUND_READY
++VEHICLE_AUDIO: 1454 checks, 1 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9708.log b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9708.log
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/commands/TestScript-9708.log
+@@ -0,0 +1,4 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++PLAYGROUND_READY
++VEHICLE_WEATHERING: 805 checks, 0 failures
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/gl_compatibility/report.json b/docs/evidence/racing-render-fixes-2026-10-14/gl_compatibility/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/gl_compatibility/report.json
+@@ -0,0 +1,84 @@
++{
++	"checks": 426,
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"game_contacts": {
++		"note": "Fresh physics contacts remain; rendered weathering shares only its just-computed result with audio.",
++		"original_queries": 479,
++		"physics_ticks": 240,
++		"queries": 360,
++		"rendered_frames": 120
++	},
++	"renderer": "gl_compatibility",
++	"source_sha256": {
++		"core/game.gd": "f16821eb3c95772bee0adbb2afe16bf498463dd4f6c7cf8a6488a119aba86af0",
++		"track/winter_snow_wind.gd": "1c51d5faca042475a32ebe2af8c54217d3e63f4e7e988a37b4c8343d3e1780bc",
++		"vehicle/surface_audio_model.gd": "628295968f39fb9f6bd9017309275072d434786436572c4c53a821c80d5944ab",
++		"vehicle/vehicle_audio.gd": "c3955d9b0246e08694862769c76e7546be19823718e07f693961ae286354fcf5",
++		"vehicle/vehicle_weathering.gd": "d23e34d4620191f1639b04f2d7e6fdd8d9798cb396f4a30fc7626ef1101fc451"
++	},
++	"visual_version": "track-kit-195",
++	"wind_version": "winter-wind-15",
++	"winter_pixels": {
++		"changed_bytes": 0,
++		"maximum": 0
++	},
++	"winter_timings": [
++		{
++			"600_present_ms": 15.372,
++			"configure_ms": 32.566,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 5.05,
++			"configure_ms": 1.264,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 5.272,
++			"configure_ms": 1.154,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 9.6,
++			"configure_ms": 17.705,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 9.661,
++			"configure_ms": 20.547,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 5.282,
++			"configure_ms": 1.161,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 5.358,
++			"configure_ms": 1.098,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 9.336,
++			"configure_ms": 17.904,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		}
++	]
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/headless/report.json b/docs/evidence/racing-render-fixes-2026-10-14/headless/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/headless/report.json
+@@ -0,0 +1,80 @@
++{
++	"checks": 421,
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"game_contacts": {
++		"note": "Fresh physics contacts remain; rendered weathering shares only its just-computed result with audio.",
++		"original_queries": 479,
++		"physics_ticks": 240,
++		"queries": 360,
++		"rendered_frames": 120
++	},
++	"renderer": "gl_compatibility",
++	"source_sha256": {
++		"core/game.gd": "f16821eb3c95772bee0adbb2afe16bf498463dd4f6c7cf8a6488a119aba86af0",
++		"track/winter_snow_wind.gd": "1c51d5faca042475a32ebe2af8c54217d3e63f4e7e988a37b4c8343d3e1780bc",
++		"vehicle/surface_audio_model.gd": "628295968f39fb9f6bd9017309275072d434786436572c4c53a821c80d5944ab",
++		"vehicle/vehicle_audio.gd": "c3955d9b0246e08694862769c76e7546be19823718e07f693961ae286354fcf5",
++		"vehicle/vehicle_weathering.gd": "d23e34d4620191f1639b04f2d7e6fdd8d9798cb396f4a30fc7626ef1101fc451"
++	},
++	"visual_version": "track-kit-195",
++	"wind_version": "winter-wind-15",
++	"winter_timings": [
++		{
++			"600_present_ms": 9.959,
++			"configure_ms": 23.419,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 4.737,
++			"configure_ms": 1.326,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 5.247,
++			"configure_ms": 1.315,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 8.835,
++			"configure_ms": 17.278,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 8.924,
++			"configure_ms": 18.172,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 6.777,
++			"configure_ms": 1.218,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 8.123,
++			"configure_ms": 1.746,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 9.133,
++			"configure_ms": 18.486,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		}
++	]
++}
+\ No newline at end of file
+diff --git a/docs/evidence/racing-render-fixes-2026-10-14/mobile/report.json b/docs/evidence/racing-render-fixes-2026-10-14/mobile/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/racing-render-fixes-2026-10-14/mobile/report.json
+@@ -0,0 +1,84 @@
++{
++	"checks": 426,
++	"engine": "4.7.2-stable (official)",
++	"failures": 0,
++	"game_contacts": {
++		"note": "Fresh physics contacts remain; rendered weathering shares only its just-computed result with audio.",
++		"original_queries": 479,
++		"physics_ticks": 240,
++		"queries": 360,
++		"rendered_frames": 120
++	},
++	"renderer": "mobile",
++	"source_sha256": {
++		"core/game.gd": "f16821eb3c95772bee0adbb2afe16bf498463dd4f6c7cf8a6488a119aba86af0",
++		"track/winter_snow_wind.gd": "1c51d5faca042475a32ebe2af8c54217d3e63f4e7e988a37b4c8343d3e1780bc",
++		"vehicle/surface_audio_model.gd": "628295968f39fb9f6bd9017309275072d434786436572c4c53a821c80d5944ab",
++		"vehicle/vehicle_audio.gd": "c3955d9b0246e08694862769c76e7546be19823718e07f693961ae286354fcf5",
++		"vehicle/vehicle_weathering.gd": "d23e34d4620191f1639b04f2d7e6fdd8d9798cb396f4a30fc7626ef1101fc451"
++	},
++	"visual_version": "track-kit-195",
++	"wind_version": "winter-wind-15",
++	"winter_pixels": {
++		"changed_bytes": 0,
++		"maximum": 0
++	},
++	"winter_timings": [
++		{
++			"600_present_ms": 18.349,
++			"configure_ms": 108.771,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 9.134,
++			"configure_ms": 2.08,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 5.453,
++			"configure_ms": 1.263,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 15.179,
++			"configure_ms": 19.195,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 32.187,
++			"configure_ms": 36.238,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		},
++		{
++			"600_present_ms": 14.57,
++			"configure_ms": 4.602,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 15.387,
++			"configure_ms": 5.061,
++			"original": false,
++			"placements": 0,
++			"readbacks": 0
++		},
++		{
++			"600_present_ms": 27.575,
++			"configure_ms": 48.061,
++			"original": true,
++			"placements": 90,
++			"readbacks": 1
++		}
++	]
++}
+\ No newline at end of file

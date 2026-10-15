@@ -26,9 +26,19 @@ func original(name: String) -> GDScript:
 		source = "extends PlaygroundHUD\n"+source.substr(source.find("func _ready()"))
 	if name.ends_with("breakable_prop_visual.gd"):
 		source = source.replace("\t\t\tnode.multimesh.set_instance_transform(i,pose)","\t\t\tobserved_uploads += 1\n\t\t\tnode.multimesh.set_instance_transform(i,pose)")+"\nstatic var observed_uploads: int = 0\n"
+	if name.ends_with("storm_weather.gd"): source = count_lens_uploads(source)
 	var script := GDScript.new(); script.source_code = source
 	check(script.reload() == OK,"original archived "+name+" parses")
 	originals[name] = script
+	return script
+
+func count_lens_uploads(source: String) -> String:
+	return source.replace("lens_material.set_shader_parameter(","_observed_parameter(lens_material,").replace("wet_glass_material.set_shader_parameter(","_observed_parameter(wet_glass_material,")+"\nvar observed_uploads: int = 0\nfunc _observed_parameter(material: ShaderMaterial, key: String, value: Variant) -> void:\n\tobserved_uploads += 1\n\tmaterial.set_shader_parameter(key,value)\n"
+
+func instrument_storm() -> GDScript:
+	var source: String = FileAccess.get_file_as_string("res://track/storm_weather.gd")
+	var script := GDScript.new(); script.source_code = count_lens_uploads(source.substr(source.find("\n")+1))
+	check(script.reload() == OK,"instrumented current rain parses")
 	return script
 
 func instrument_debris() -> GDScript:
@@ -72,6 +82,8 @@ func shaders() -> void:
 	# Mutation, explicit cache clearing and eviction must never return stale roles.
 	for index: int in range(80):
 		var a: ShaderMaterial = base.duplicate()
+		a.shader = a.shader.duplicate()
+		a.shader.code += "\n// distinct source "+str(index)
 		a.set_shader_parameter("terrain_uniform_enabled",index%2 == 1)
 		a.set_shader_parameter("terrain_region_channel",index%4)
 		a.set_shader_parameter("terrain_slots",Vector4i(index%8,(index+1)%8,(index+2)%8,(index+3)%8))
@@ -79,8 +91,18 @@ func shaders() -> void:
 		var b: ShaderMaterial = a.duplicate()
 		before.specialize(a); SurfaceShaderVariants.specialize(b)
 		check(a.shader.code == b.shader.code,"channel/remap/role mutation retains exact shader code")
-		if index%13 == 0: SurfaceShaderVariants.cache.clear()
 	check(SurfaceShaderVariants.cache.size() <= 64 and SurfaceShaderVariants.prepared_keys.size() <= 64,"both shader/lookup populations stay bounded")
+	SurfaceShaderVariants.cache.clear()
+	var expected: ShaderMaterial = base.duplicate(); var restored: ShaderMaterial = base.duplicate()
+	before.specialize(expected); SurfaceShaderVariants.specialize(restored)
+	check(expected.shader.code == restored.shader.code,"explicit shader eviction cannot return a stale preparation alias")
+	var include: ShaderInclude = SurfaceShaderVariants.INCLUDES["res://track/terrain.gdshaderinc"]
+	var original_code: String = include.code
+	include.code += "\n// include mutation proof\n"
+	expected = base.duplicate(); restored = base.duplicate()
+	before.specialize(expected); SurfaceShaderVariants.specialize(restored)
+	check(expected.shader.code == restored.shader.code,"changed include content fences prepared source roles")
+	include.code = original_code
 	binding.free()
 
 func make_props(parent: Node3D) -> void:
@@ -149,6 +171,24 @@ func props() -> void:
 	check(wood.multimesh.instance_count == 0,"fragment reset clears the visible population immediately")
 	field.free()
 
+func shadows() -> void:
+	var before: GDScript = original("track/contact_shading.gd")
+	var parent := Node3D.new(); root.add_child(parent)
+	var car := CarVisual.new(); car.vehicle_id = "kart"; parent.add_child(car)
+	var old: MeshInstance3D = ContactShading.car_shadow(parent)
+	var current: MeshInstance3D = ContactShading.car_shadow(parent)
+	var state := VehicleState.new()
+	for vehicle: String in VehicleCatalog.IDS:
+		car.vehicle_id = vehicle
+		for height: float in [0.0,0.3,1.5,2.5]:
+			state.jump_height = height
+			var retained: Array = state.snapshot()
+			before.present_car(old,car,state,Vector2(3,-2),0.3,null,null)
+			ContactShading.present_car(current,car,state,Vector2(3,-2),0.3,null,null)
+			check(old.transform == current.transform and old.visible == current.visible and old.material_override.get_shader_parameter("strength") == current.material_override.get_shader_parameter("strength"),"exact contact volume/strength for "+vehicle+" at jump "+str(height))
+			check(state.snapshot() == retained,"shadow updates preserve canonical state")
+	parent.free()
+
 func pixels(a: Image, b: Image) -> int:
 	a.convert(Image.FORMAT_RGBA8); b.convert(Image.FORMAT_RGBA8)
 	var aa: PackedByteArray = a.get_data(); var bb: PackedByteArray = b.get_data(); var maximum: int = 0
@@ -178,7 +218,9 @@ func graphics() -> void:
 		check(before.race_timer.text == after.race_timer.text and before.lap_timer.text == after.lap_timer.text,"timer formatting and minute-boundary pixels retained")
 	before.show(); after.hide(); var old_frame: Image = await capture("hud-before")
 	before.hide(); after.show(); var new_frame: Image = await capture("hud-after")
-	check(pixels(old_frame,new_frame) == 0,"full HUD before/after pixels match exactly")
+	var maximum: int = pixels(old_frame,new_frame)
+	report.pixel_proofs.append({"fixture":"HUD","max_delta":maximum})
+	check(maximum == 0,"full HUD before/after pixels match exactly")
 	var old_draws: Array[int] = [0]; var new_draws: Array[int] = [0]
 	before.road_map.draw.connect(func() -> void: old_draws[0] += 1)
 	after.road_map.draw.connect(func() -> void: new_draws[0] += 1)
@@ -191,7 +233,23 @@ func graphics() -> void:
 	check(old_draws[0] > 0 and new_draws[0] == 0,"stationary player retains its map marker without repeated draws")
 	report.stationary_map_callbacks = {"before":old_draws[0],"after":new_draws[0]}
 	before.free(); after.free()
-	var old: Control = original("track/storm_weather.gd").new(); var fresh := StormWeather.new()
+	var button := RewindHUDButton.new(); var old_button := RewindHUDButton.new()
+	root.add_child(button); root.add_child(old_button)
+	old_draws[0] = 0; new_draws[0] = 0
+	old_button.draw.connect(func() -> void: old_draws[0] += 1)
+	button.draw.connect(func() -> void: new_draws[0] += 1)
+	button.set_race_state(false,3)
+	for index: int in range(5): await RenderingServer.frame_post_draw
+	old_draws[0] = 0; new_draws[0] = 0
+	for index: int in range(24):
+		old_button.queue_redraw(); button.set_race_state(false,3)
+		await RenderingServer.frame_post_draw
+	check(old_draws[0] == 24 and new_draws[0] == 0,"unchanged rewind eligibility removes all 24 forced button redraws")
+	report.rewind_callbacks = {"before":old_draws[0],"after":new_draws[0]}
+	button.set_race_state(true,2)
+	check(button.disabled and button.race_remaining == 2,"rewind eligibility updates immediately on change")
+	button.free(); old_button.free()
+	var old: Control = original("track/storm_weather.gd").new(); var fresh: Control = instrument_storm().new()
 	root.add_child(old); root.add_child(fresh); old.hide(); fresh.hide()
 	for elapsed: float in [0.3,1.7,3.2,11.5,12.3]:
 		for weather: Control in [old,fresh]:
@@ -202,16 +260,30 @@ func graphics() -> void:
 				check(old.lens_drops[index].material.get_shader_parameter(name) == fresh.lens_drops[index].material.get_shader_parameter(name),"exact lens material values")
 		old.show(); fresh.hide(); old_frame = await capture("storm-"+str(elapsed)+"-before")
 		old.hide(); fresh.show(); new_frame = await capture("storm-"+str(elapsed)+"-after")
-		check(pixels(old_frame,new_frame) <= 2,"original rain/refraction/trail pixels retained")
+		maximum = pixels(old_frame,new_frame)
+		report.pixel_proofs.append({"fixture":"rain","elapsed":elapsed,"max_delta":maximum})
+		check(maximum <= 2,"original rain/refraction/trail pixels retained")
 		fresh.hide()
+	old.observed_uploads = 0; fresh.observed_uploads = 0
+	for index: int in range(24): old._update_lens(); fresh._update_lens()
+	check(old.observed_uploads == 600 and fresh.observed_uploads == 0,"unchanged six lenses/glass remove 600 repeated shader writes")
+	report.stationary_lens_uploads = {"before":old.observed_uploads,"after":fresh.observed_uploads}
 	old.free(); fresh.free()
 
 func run() -> void:
 	root.size = Vector2i(1280,720)
 	output = output.path_join(RenderingServer.get_current_rendering_method())
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
-	report = {"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"note":"Isolated component checks/timings; no account, records, scoring or physical-phone FPS."}
-	shaders(); props()
+	report = {"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"pixel_proofs":[],"note":"Isolated component checks/timings; no account, records, scoring or physical-phone FPS."}
+	shaders(); props(); shadows()
+	# A race can exit before a decorated HUD panel's initial deferred layout.
+	var panel := PanelContainer.new(); root.add_child(panel)
+	preload("res://ui/popup_style.gd").decorate_panel(panel)
+	panel.size = Vector2(300,220)
+	check(panel.material.get_shader_parameter("panel_size") == panel.size,"decorated panel publishes exact live size")
+	panel.free()
+	await process_frame
+	check(true,"pending panel layout safely completes after immediate teardown")
 	if DisplayServer.get_name() != "headless": await graphics()
 	report.checks = checks; report.failures = failures
 	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))

@@ -22,7 +22,7 @@ class ProbeApp extends "res://core/app.gd":
 		cloud = HeldCloud.new();cloud.client = online.client;add_child(cloud)
 		lifecycle = TrackLifecycle.new();lifecycle.cloud = cloud;add_child(lifecycle)
 	func _notice(message: String) -> void: notices.append(message)
-	func _start_race(track: NativeTrack, _editor: bool, _offline: bool = false, _issued: Dictionary = {}) -> void:
+	func _start_race(track: NativeTrack, _editor: bool, _offline: bool = false, _issued: Dictionary = {}, _prepared_loading: RaceLoading = null) -> void:
 		prepared = track # Actual ticket/world integration remains covered by TestApp.
 func _initialize() -> void: run.call_deferred()
 func check(ok: bool, label: String) -> void:

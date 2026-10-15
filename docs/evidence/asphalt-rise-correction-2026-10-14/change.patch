@@ -1,0 +1,1101 @@
+--- a/game/track/road_surface_height.gd
++++ b/game/track/road_surface_height.gd
+@@ -1,20 +1,20 @@
+ extends RefCounted
+-## Shared cosmetic road datum. Canonical driving remains planar.
++## Asphalt-only cosmetic rise. Loose surfaces retain their original geometry.
+ const ROAD: float = 0.012
+ const RISE: float = 0.05
+-const TERRAIN: float = ROAD - RISE
++const TERRAIN: float = -0.06
+ const BUCKET: float = 8.0
+ var track: NativeTrack
+ var floors: Array[PackedVector2Array] = []
+ var floor_bins: Dictionary = {}
+-var triangles: Array[Dictionary] = []
+-var shoulder_bins: Dictionary = {}
++var lift: float = 0.0
+ 
+ func _init(data: NativeTrack) -> void:
+ 	track = data
++	lift = RISE if is_asphalt(track) else 0.0
++	if lift == 0.0: return
+ 	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+-	var theme: String = str(track.metadata.get("theme","pine"))
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+ 		var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
+@@ -22,6 +22,8 @@
+ 		var swept: bool = pieces[index].kind == "spline" or shape.get("swept",false)
+ 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(contours,0.16)) if swept else Geometry2D.offset_polygon(contours[0],0.16,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in surfaces:
++			polygon = clip_bridge_mouths(polygon,pieces,index,topology)
++			if polygon.size() < 3: continue
+ 			var slot: int = floors.size()
+ 			floors.append(polygon)
+ 			var bounds := Rect2(polygon[0],Vector2.ZERO)
+@@ -31,70 +33,43 @@
+ 					var cell := Vector2i(x,y)
+ 					if not floor_bins.has(cell): floor_bins[cell] = []
+ 					floor_bins[cell].append(slot)
+-		var border: Dictionary = VisualRoadJoin.build(pieces,index,-0.20,topology)
+-		var borders: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if pieces[index].kind == "spline" else border.contours
+-		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology) if pieces[index].kind == "spline" else border.cuts
+-		for polygon: PackedVector2Array in borders:
+-			var hole: bool = swept and Geometry2D.is_polygon_clockwise(polygon)
+-			for edge: int in range(polygon.size()):
+-				var a: Vector2 = polygon[edge]
+-				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+-				if RoadEdges._on_join_cut(a,b,cuts) or (swept and RoadEdges._on_join_cap(a,b,cuts)): continue
+-				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,swept)
+-				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,swept)
+-				if hole: na = -na; nb = -nb
+-				var steps: int = maxi(1,ceili(a.distance_to(b)/(0.28 if theme == "winter" else 0.20)))
+-				for step: int in range(steps):
+-					var p: Vector2 = a.lerp(b,float(step)/steps)
+-					var q: Vector2 = a.lerp(b,float(step+1)/steps)
+-					var outer_p: Vector2 = p+na.lerp(nb,float(step)/steps)*width(p,theme)
+-					var outer_q: Vector2 = q+na.lerp(nb,float(step+1)/steps)*width(q,theme)
+-					_add_triangle(PackedVector2Array([p,outer_q,q]),Vector3(0,1,0))
+-					_add_triangle(PackedVector2Array([p,outer_p,outer_q]),Vector3(0,1,1))
+ 
+-func _add_triangle(p: PackedVector2Array, weights: Vector3) -> void:
+-	var u: Vector2 = p[1]-p[0]
+-	var v: Vector2 = p[2]-p[0]
+-	var determinant: float = u.cross(v)
+-	if absf(determinant) < 0.000001: return
+-	var gradient := Vector2((weights.y-weights.x)*v.y-(weights.z-weights.x)*u.y,u.x*(weights.z-weights.x)-v.x*(weights.y-weights.x))/determinant
+-	var bounds := Rect2(p[0],Vector2.ZERO).expand(p[1]).expand(p[2])
+-	var index: int = triangles.size()
+-	triangles.append({"polygon":p,"gradient":gradient,"offset":weights.x-gradient.dot(p[0])})
+-	for y: int in range(floori(bounds.position.y/BUCKET),floori(bounds.end.y/BUCKET)+1):
+-		for x: int in range(floori(bounds.position.x/BUCKET),floori(bounds.end.x/BUCKET)+1):
+-			var cell := Vector2i(x,y)
+-			if not shoulder_bins.has(cell): shoulder_bins[cell] = []
+-			shoulder_bins[cell].append(index)
++static func is_asphalt(data: NativeTrack) -> bool:
++	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and data.metadata.get("creator_document",{}).get("surface","asphalt") == "asphalt"
+ 
+-static func shoulder(fraction: float) -> float:
+-	return lerpf(ROAD, TERRAIN, clampf(fraction, 0.0, 1.0))
++static func clip_bridge_mouths(polygon: PackedVector2Array, pieces: Array, index: int, topology: Dictionary) -> PackedVector2Array:
++	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):
++		var links: Array = RoadPieces._matches(topology,index,int(cut.endpoint))
++		if links.size() != 1 or pieces[int(links[0][0])].kind != "bridge": continue
++		var result := PackedVector2Array()
++		for i: int in range(polygon.size()):
++			var a: Vector2 = polygon[i]
++			var b: Vector2 = polygon[(i+1)%polygon.size()]
++			var da: float = (a-Vector2(cut.point)).dot(cut.normal)
++			var db: float = (b-Vector2(cut.point)).dot(cut.normal)
++			if da >= 0.0: result.append(a)
++			if da*db < 0.0: result.append(a.lerp(b,da/(da-db)))
++		polygon = result
++	return polygon
++
++func on_floor(point: Vector2) -> bool:
++	for index: int in floor_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
++		if Geometry2D.is_point_in_polygon(point,floors[index]): return true
++	return false
+ 
+ static func width(point: Vector2, theme: String) -> float:
+ 	return (3.0 if theme == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
+ 
+-static func bridge_offset(along: float, length: float, original: float = 0.025) -> float:
++static func bridge_offset(along: float, length: float, original: float = 0.025, raised: float = 0.0) -> float:
+ 	# Match ground asphalt exactly at both mouths, retaining the deck finish.
+-	return lerpf(ROAD, original, smoothstep(0.0, 1.0, minf(along, length-along)))
++	return raised+lerpf(ROAD, original, smoothstep(0.0, 1.0, minf(along, length-along)))
+ 
+ func ground(point: Vector2) -> float:
++	if lift == 0.0: return 0.0
+ 	var kind: int = track.cell_at(point)
+-	if kind in [0,5]: return 0.0
++	if kind == 0 or (kind == 5 and track.kerbs.height_at(point) > 0.0): return lift
+ 	# Explicit paint wins over authored road geometry, exactly as in rendering.
+ 	var cell := Vector2i(floori((point.x+track.half_extent.x)/track.cell_size),floori((track.half_extent.y-point.y)/track.cell_size))
+ 	var slot: int = cell.y*track.grid_width+cell.x
+ 	var painted: bool = cell.x >= 0 and cell.y >= 0 and cell.x < track.grid_width and cell.y < track.grid_height and slot < track.kerbs.blocked.size() and track.kerbs.blocked[slot] != 0
+-	if not painted:
+-		for index: int in floor_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
+-			if Geometry2D.is_point_in_polygon(point,floors[index]): return 0.0
+-		var height: float = -RISE
+-		for index: int in shoulder_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
+-			var triangle: Dictionary = triangles[index]
+-			if Geometry2D.is_point_in_polygon(point,triangle.polygon): height = maxf(height,shoulder(triangle.gradient.dot(point)+triangle.offset)-ROAD)
+-		if height > -RISE: return height
+-	# Four local samples soften the five-centimetre change at raster boundaries.
+-	# Keep the existing road datum (zero for the car), including painted roads.
+-	var coverage: float = 0.0
+-	for offset: Vector2 in [Vector2(-0.15,-0.15),Vector2(0.15,-0.15),Vector2(-0.15,0.15),Vector2(0.15,0.15)]:
+-		coverage += 0.25 if track.cell_at(point+offset) in [0,5] else 0.0
+-	return -RISE * (1.0-coverage)
++	return lift if not painted and on_floor(point) else 0.0
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,8 +2,9 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-197"
++const VERSION: String = "track-kit-198"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
++var ground_support: RefCounted
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+ const DESERT_FINISH_COLORS: Array[Color] = [Color("938267"), Color("635b4b")]
+@@ -118,6 +119,7 @@
+ 
+ 
+ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = false) -> void:
++	ground_support = bridge.road_surface
+ 	world_built = false
+ 	_menu_slices = menu_slices
+ 	_slice_started = Time.get_ticks_usec() if menu_slices else 0
+@@ -207,6 +209,7 @@
+ 		add_child(objects)
+ 		editor_objects = objects
+ 	objects._menu_slices = sliced
++	objects.ground_support = ground_support
+ 	objects._slice_started = Time.get_ticks_usec()
+ 	var current: Callable = func() -> bool: return revision == _editor_object_revision and (not sliced or is_inside_tree())
+ 	await objects._editor_authored_batches.refresh(objects,track,sliced,current)
+@@ -331,7 +334,7 @@
+ 	var ground := MeshInstance3D.new()
+ 	ground.mesh = plane
+ 	ground.material_override = surface
+-	ground.position.y = ROAD_HEIGHT.TERRAIN
++	ground.position.y = -0.06 if not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty() else 0.0
+ 	# The flat coverage sheet must not cast a rectangular map-border shadow.
+ 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	if theme_id == "night_city" and partition_night_ground:
+@@ -342,9 +345,12 @@
+ 	_build_raster_roads(track,surface)
+ 
+ func _build_raster_roads(track: NativeTrack, material: Material) -> void:
++	if not ROAD_HEIGHT.is_asphalt(track): return
+ 	# Native and explicitly painted asphalt also sit on the road datum. Share
+ 	# the exact terrain material/UVs, and merge each horizontal cell run.
+ 	var authored: bool = not track.metadata.get("creator_document",{}).get("pieces",[]).is_empty()
++	var top: float = ROAD_HEIGHT.RISE+(ROAD_HEIGHT.ROAD if authored else 0.0)
++	var base: float = -0.06 if authored else 0.0
+ 	var overlay: Image = _creator_overlay_mask(track,track.metadata.get("creator_document",{}).get("paint",[])) if authored else null
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -363,7 +369,7 @@
+ 			for p: Vector2 in [a,b,Vector2(a.x,b.y),a,Vector2(b.x,a.y),b]:
+ 				tool.set_normal(Vector3.UP)
+ 				tool.set_uv((p+track.half_extent)/(track.half_extent*2.0))
+-				tool.add_vertex(Vector3(p.x,ROAD_HEIGHT.ROAD,p.y))
++				tool.add_vertex(Vector3(p.x,top,p.y))
+ 			count += 1
+ 	if count == 0: return
+ 	# Close exposed raster edges down to the terrain; do not leave floating
+@@ -379,7 +385,7 @@
+ 				var p: Vector2 = corners[edge]
+ 				var q: Vector2 = corners[(edge+1)%4]
+ 				var normal := Vector3(q.y-p.y,0,p.x-q.x).normalized()
+-				for v: Vector3 in [Vector3(p.x,ROAD_HEIGHT.ROAD,p.y),Vector3(q.x,ROAD_HEIGHT.TERRAIN,q.y),Vector3(q.x,ROAD_HEIGHT.ROAD,q.y),Vector3(p.x,ROAD_HEIGHT.ROAD,p.y),Vector3(p.x,ROAD_HEIGHT.TERRAIN,p.y),Vector3(q.x,ROAD_HEIGHT.TERRAIN,q.y)]:
++				for v: Vector3 in [Vector3(p.x,top,p.y),Vector3(q.x,base,q.y),Vector3(q.x,top,q.y),Vector3(p.x,top,p.y),Vector3(p.x,base,p.y),Vector3(q.x,base,q.y)]:
+ 					tool.set_normal(normal)
+ 					tool.set_uv((Vector2(v.x,v.z)+track.half_extent)/(track.half_extent*2.0))
+ 					tool.add_vertex(v)
+@@ -423,6 +429,7 @@
+ 
+ 
+ func _build_creator_roads(track: NativeTrack) -> void:
++	if ground_support == null or ground_support.track != track: ground_support = ROAD_HEIGHT.new(track)
+ 	var document: Dictionary = track.metadata.get("creator_document",{})
+ 	var pieces: Array = document.get("pieces",[])
+ 	if pieces.is_empty(): return
+@@ -471,6 +478,7 @@
+ 	var shoulder_mesh := preload("res://track/shoulder_mesh.gd").new()
+ 	var asphalt := SurfaceTool.new()
+ 	var asphalt_fringe := SurfaceTool.new()
++	var fringe_mesh := preload("res://track/road_fringe_mesh.gd").new()
+ 	var markings := SurfaceTool.new()
+ 	var ground_skirt := SurfaceTool.new()
+ 	ground_skirt.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -480,6 +488,8 @@
+ 	var fringe_count: int = 0
+ 	var sand_banks := preload("res://track/desert_sand_banks.gd").new()
+ 	var desert_road_union := preload("res://track/desert_road_union.gd").new()
++	var raised: float = ROAD_HEIGHT.RISE if ROAD_HEIGHT.is_asphalt(track) else 0.0
++	var union_road: bool = theme_id == "desert" or raised > 0.0
+ 	var outlines: Array[Dictionary] = []
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var desert_phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,topology) if theme_id == "desert" else {}
+@@ -501,7 +511,7 @@
+ 			for point: Vector2 in polygon: bounds = bounds.expand(point)
+ 			var swept: bool = pieces[index].kind == "spline" or topology.get("visual_folded",{}).get(index,false)
+ 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":swept and Geometry2D.is_polygon_clockwise(polygon)})
+-	if theme_id == "desert": desert_road_union.configure(pieces,outlines,desert_phases)
++	if union_road: desert_road_union.configure(pieces,outlines,desert_phases)
+ 	for index: int in range(pieces.size()):
+ 		if _cpu_cancelled(): return
+ 		if _menu_yield_due():
+@@ -539,10 +549,12 @@
+ 		var skirt_margin: float = 3.7 if theme_id == "desert" else 1.8
+ 		var skirts: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,skirt_margin)) if swept else Geometry2D.offset_polygon(road_contours[0],skirt_margin,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in skirts:
+-			ground_count += _road_polygon(ground_skirt,polygon,ROAD_HEIGHT.TERRAIN)
++			ground_count += _road_polygon(ground_skirt,polygon,-0.04)
+ 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(road_contours,0.16)) if swept else Geometry2D.offset_polygon(road_contours[0],0.16,Geometry2D.JOIN_ROUND)
+ 		for polygon: PackedVector2Array in surfaces:
+-			if theme_id == "desert": desert_road_union.add(polygon,points,axis_cache)
++			if raised > 0.0: polygon = ROAD_HEIGHT.clip_bridge_mouths(polygon,pieces,index,topology)
++			if polygon.size() < 3: continue
++			if union_road: desert_road_union.add(polygon,points,axis_cache)
+ 			else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 		if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
+ 		var dirt: bool = document.get("surface","asphalt") == "dirt"
+@@ -591,7 +603,7 @@
+ 							_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
+ 					_asphalt_fringe_quad(asphalt_fringe,
+ 						p+normal_p*(-1.25 if theme_id == "desert" else 0.36),q+normal_q*(-1.25 if theme_id == "desert" else 0.36),
+-						p+normal_p*(0.70 if theme_id == "desert" else 0.56),q+normal_q*(0.70 if theme_id == "desert" else 0.56),points,axis_cache)
++						p+normal_p*(0.70 if theme_id == "desert" else 0.56),q+normal_q*(0.70 if theme_id == "desert" else 0.56),points,axis_cache,fringe_mesh if raised > 0.0 else null)
+ 					fringe_count += 1
+ 					# Continuous sand transition around the road.
+ 					# Only the outer contour varies; road/paint stay fixed.
+@@ -604,10 +616,12 @@
+ 					# Retain the authored road-edge marking and keep it smooth;
+ 					# only the asphalt/sand colour transition receives subtle breakup.
+ 					if dirt or theme_id in ["desert","winter"]: continue
+-					_quad(markings,VisualGeometry.world(p-normal_p*0.085)+Vector3.UP*0.018,VisualGeometry.world(q-normal_q*0.085)+Vector3.UP*0.018,
+-						VisualGeometry.world(q+normal_q*0.085)+Vector3.UP*0.018,VisualGeometry.world(p+normal_p*0.085)+Vector3.UP*0.018)
++					_quad(markings,VisualGeometry.world(p-normal_p*0.085)+Vector3.UP*(0.018+raised),VisualGeometry.world(q-normal_q*0.085)+Vector3.UP*(0.018+raised),
++						VisualGeometry.world(q+normal_q*0.085)+Vector3.UP*(0.018+raised),VisualGeometry.world(p+normal_p*0.085)+Vector3.UP*(0.018+raised))
+ 					counts[2] += 1
+-	if theme_id == "desert": counts[1] = await desert_road_union.emit(self,asphalt)
++	if union_road: counts[1] = await desert_road_union.emit(self,asphalt,ROAD_HEIGHT.ROAD+raised)
++	if raised > 0.0: _asphalt_edge_faces(asphalt,ground_support if ground_support != null else ROAD_HEIGHT.new(track))
++	await fringe_mesh.emit(self,asphalt_fringe)
+ 	if winter_sections > 0:
+ 		_commit_winter_bank(winter_bank,texture,track.half_extent,road_texture)
+ 		set_meta("winter_smooth_sections",winter_sections)
+@@ -836,9 +850,12 @@
+ 			tool.add_vertex(vertex)
+ 
+ 
+-func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}) -> void:
++func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}, collector: RefCounted = null) -> void:
+ 	var vertices: Array[Vector2] = [inner_a,outer_b,inner_b,inner_a,outer_a,outer_b]
+ 	var across: Array[float] = [0.0,1.0,0.0,0.0,1.0,1.0]
++	if collector != null:
++		collector.add(vertices,across,points,axis_cache)
++		return
+ 	if theme_id == "desert" and not axis_cache.has("desert_fringe_uvs"): axis_cache["desert_fringe_uvs"] = {}
+ 	for i: int in range(6):
+ 		tool.set_uv(Vector2(0.0,across[i]))
+@@ -847,11 +864,29 @@
+ 			tool.set_uv2(preload("res://track/desert_road_union.gd").coordinates(axis_cache.desert_fringe_uvs[vertices[i]],axis_cache))
+ 			tool.set_color(axis_cache.desert_blend_sampler.blend(vertices[i],int(axis_cache.desert_piece_index)))
+ 		else: tool.set_uv2(_cached_asphalt_axis(vertices[i],points,axis_cache))
+-		# The fringe follows the same sloping shoulder rather than covering it
+-		# with a flat grass-coloured sheet at road height.
+-		var outward: float = lerpf(-1.25,0.70,across[i]) if theme_id == "desert" else lerpf(0.36,0.56,across[i])
+-		var height: float = ROAD_HEIGHT.shoulder(outward/_shoulder_width(vertices[i]))+0.001
+-		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*height)
++		tool.add_vertex(VisualGeometry.world(vertices[i])+Vector3.UP*0.013)
++
++func _asphalt_edge_faces(tool: SurfaceTool, support: RefCounted) -> void:
++	# Close the raised asphalt with side faces only on the exposed union edge.
++	for polygon: PackedVector2Array in support.floors:
++		for i: int in range(polygon.size()):
++			var a: Vector2 = polygon[i]
++			var b: Vector2 = polygon[(i+1)%polygon.size()]
++			var outward: Vector2 = (b-a).normalized().orthogonal()
++			if Geometry2D.is_point_in_polygon((a+b)*0.5+outward*0.003,polygon): outward = -outward
++			var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
++			for step: int in range(steps):
++				var p: Vector2 = a.lerp(b,float(step)/steps)
++				var q: Vector2 = a.lerp(b,float(step+1)/steps)
++				var probe: Vector2 = (p+q)*0.5+outward*0.003
++				if support.on_floor(probe) or CreatorBridges.at_any(support.track.creator_bridges,probe): continue
++				var normal: Vector3 = Vector3(-(q.y-p.y),0,-(q.x-p.x)).normalized()
++				if normal.dot(VisualGeometry.world(outward)) < 0.0:
++					var swap: Vector2 = p; p = q; q = swap
++				var top: float = ROAD_HEIGHT.ROAD+support.lift
++				for v: Vector3 in [VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(q)+Vector3.UP*0.013,VisualGeometry.world(q)+Vector3.UP*top,VisualGeometry.world(p)+Vector3.UP*top,VisualGeometry.world(p)+Vector3.UP*0.013,VisualGeometry.world(q)+Vector3.UP*0.013]:
++					tool.set_uv2(Vector2(1,0))
++					tool.add_vertex(v)
+ 
+ 
+ func _inner_bend_distance(point: Vector2, points: PackedVector2Array) -> float:
+@@ -997,10 +1032,11 @@
+ 			if _menu_yield_due():
+ 				if not await _yield_build(): return
+ 			var order: Array[int] = [triangle,triangle+1,triangle+2]
++			var face: Vector3 = (vertices[triangle+2]-vertices[triangle]).cross(vertices[triangle+1]-vertices[triangle]).normalized()
+ 			if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+ 				order = [triangle,triangle+2,triangle+1]
+ 			for index: int in order:
+-				flat.set_normal(normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
++				flat.set_normal(face if asphalt_surface and not edge_fringe and absf(face.y) < 0.5 else normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
+ 				if not uv.is_empty(): flat.set_uv(uv[index])
+ 				if not uv2.is_empty(): flat.set_uv2(uv2[index])
+ 				if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+@@ -1016,6 +1052,10 @@
+ 	instance.mesh = mesh
+ 	var material := ShaderMaterial.new()
+ 	material.shader = preload("res://track/storm_creator_road.gdshader") if theme_id == "storm" and not grass and not gravel else CREATOR_ROAD_SHADER
++	# The new asphalt rim is a solid with outward-facing normals. Drawing its
++	# hidden backs lets them compete with top-edge samples at equal depth.
++	if asphalt_surface and not edge_fringe and ground_support != null and ground_support.lift > 0.0:
++		material.shader = preload("res://track/raised_wet_asphalt.gdshader") if theme_id == "storm" else preload("res://track/raised_asphalt.gdshader")
+ 	if theme_id == "desert": material.shader = preload("res://track/desert_road.gdshader")
+ 	if theme_id == "winter": material.shader = preload("res://track/winter_creator_road.gdshader")
+ 	material.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+@@ -1421,6 +1461,7 @@
+ 			if not is_inside_tree(): return
+ 			_slice_started = Time.get_ticks_usec()
+ 		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
++		if ground_support != null: center.y += ground_support.ground(Vector2(center.x,-center.z))
+ 		if theme_id == "winter" and str(object.kind) in WinterScenery.TYPES: continue
+ 		var object_scale: float = float(object.get("scale",1.0))
+ 		if object.kind == "light" and theme_id == "night_city":
+@@ -1477,6 +1518,7 @@
+ 					_mound(tool,center+Vector3(size.x*x,0,0).rotated(Vector3.UP,turn),Vector3(size.x*0.19,height*(0.8+x),size.y*0.47),turn+x,TrackTheme.stone(theme_id).darkened(0.08))
+ 		elif object.kind in ["oil","puddle","jump","speed_bump"]:
+ 			HazardVisual.build(self,object)
++			if ground_support != null: (get_child(get_child_count()-1) as Node3D).position.y += ground_support.ground(Vector2(object.position[0],object.position[1]))
+ 			continue
+ 		elif object.kind in ["tyre_wall","tyre_stack"]: continue # Shared instanced mesh below.
+ 		else: continue # Barrier/water/dirt already rendered from exact native cells.
+@@ -1623,7 +1665,7 @@
+ 			var across_wear: float = (float((column*7+row*3)%5)-2.0)*0.008
+ 			var along_wear: float = (float((column*3+row*5)%5)-2.0)*0.007
+ 			var center2: Vector2 = track.finish_center+side*((low+high)*0.5+across_wear)+track.finish_forward*((float(row)-0.5)*cell+along_wear)
+-			var center: Vector3 = VisualGeometry.world(center2)+Vector3.UP*(0.030 if theme_id == "winter" else 0.017)
++			var center: Vector3 = VisualGeometry.world(center2)+Vector3.UP*((0.030 if theme_id == "winter" else 0.017)+(ground_support.ground(center2) if ground_support != null else 0.0))
+ 			var across: Vector3 = VisualGeometry.world(side)*maxf(0.02,across_half)
+ 			var along: Vector3 = VisualGeometry.world(track.finish_forward)*maxf(0.02,along_half)
+ 			var tool: SurfaceTool = pale if (column+row)%2 == 0 else dark
+@@ -1682,7 +1724,7 @@
+ 		if _tyre_positions[i] == p and _tyre_spins[i] == spin: continue
+ 		_tyre_positions[i] = p
+ 		_tyre_spins[i] = spin
+-		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*0.014))
++		tyre_instances.multimesh.set_instance_transform(i,Transform3D(Basis(Vector3.UP,spin),VisualGeometry.world(p)+Vector3.UP*(0.014+(ground_support.ground(p) if ground_support != null else 0.0))))
+ 
+ func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
+ 	tool.generate_normals()
+@@ -1707,7 +1749,7 @@
+ 		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
+ 		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
+ 		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
+-		var at := Vector3(row[0],node.position.y,-float(row[1]))
++		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else node.position.y-0.014),-float(row[1]))
+ 		if node.position != at: node.position = at
+ 		if node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
+ 		else: node.rotation.z = float(row[4])*0.9
+@@ -1744,7 +1786,7 @@
+ 					# Keep the canonical footprint; irregular low sand crowns are cosmetic.
+ 					var rough: float = sin(point.x*8.1+point.z*3.7)*sin(point.z*9.3-point.x*2.1)
+ 					height *= 1.25+rough*0.55
+-				vertices.append(point+Vector3.UP*(0.018+height))
++				vertices.append(point+Vector3.UP*(0.018+height+(ROAD_HEIGHT.RISE if ROAD_HEIGHT.is_asphalt(track) else 0.0)))
+ 			var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
+ 			var order: Array = [0,1,2] if normal.y >= 0.0 else [0,2,1]
+ 			if normal.y < 0.0: normal = -normal
+--- a/game/track/shoulder_mesh.gd
++++ b/game/track/shoulder_mesh.gd
+@@ -6,7 +6,6 @@
+ var triangles: Array[Dictionary] = []
+ var bins: Dictionary = {}
+ const CELL: float = 4.0
+-const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ 
+ func add_quad(a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
+ 	_add_triangle(PackedVector2Array([a,outer_b,b]),Vector3(0,1,0))
+@@ -55,7 +54,7 @@
+ 		var uv: PackedVector2Array = result.uv
+ 		for index: int in range(points.size()):
+ 			tool.set_uv(uv[index])
+-			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*ROAD_HEIGHT.shoulder(uv[index].y))
++			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*-0.02)
+ 		vertices += points.size()
+ 	return vertices/3
+ 
+@@ -73,7 +72,7 @@
+ 			for vertex: int in indices:
+ 				var point: Vector2 = polygon[vertex]
+ 				tool.set_uv(Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
+-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*ROAD_HEIGHT.shoulder(clampf(source.gradient.dot(point)+source.offset,0,1)))
++				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
+ 			count += indices.size()/3
+ 	return count
+ 
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -5,13 +5,14 @@
+ const RAIL_TOP: Color = Color("858681")
+ const RAIL_SIDE: Color = Color("60635f")
+ 
+-static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = []) -> void:
++static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = [], raise_asphalt: bool = true) -> void:
+ 	if bridges.is_empty(): return
+ 	ContactShading.build_bridges(parent,bridges)
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var deck := SurfaceTool.new()
+ 	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var road_lift: float = preload("res://track/road_surface_height.gd").RISE if raise_asphalt and theme not in ["desert","winter"] else 0.0
+ 	for span_index: int in range(bridges.size()):
+ 		var span: Dictionary = bridges[span_index]
+ 		if theme == "desert":
+@@ -25,7 +26,7 @@
+ 		for i: int in range(count):
+ 			var a: float = float(span.length)*i/count
+ 			var b: float = float(span.length)*(i+1)/count
+-			strip(deck,span,a,b,-half,half,0.025,Color("343638"))
++			strip(deck,span,a,b,-half,half,0.025,Color("343638"),{},road_lift)
+ 			for side: float in [-1.0,1.0]:
+ 				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
+ 					var inner: float = half*side
+@@ -44,7 +45,7 @@
+ 					wall(tool,span,run.x,run.y,rail,0.65,0.85,RAIL_SIDE)
+ 					wall(tool,span,run.x,run.y,back,0.65,0.85,RAIL_SIDE)
+ 					strip(tool,span,run.x,run.y,rail,back,0.65,RAIL_SIDE)
+-					strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"))
++					strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
+ 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
+ 		# Sparse slim steel uprights, all within the existing solid rail strip.
+ 		var posts: int = maxi(1,ceili(float(span.length)/8.0))
+@@ -62,8 +63,8 @@
+ 				quad(tool,vertex(span,b,inner,0.10),vertex(span,b,outer,0.10),vertex(span,b,outer,0.85),vertex(span,b,inner,0.85),RAIL_SIDE)
+ 		# Recessed expansion joints at the crest of each ramp.
+ 		for u: float in [CreatorBridges.RAMP,float(span.length)-CreatorBridges.RAMP]:
+-			strip(tool,span,u,u+0.055,-half,half,0.034,Color("182c37"))
+-			strip(tool,span,u+0.055,u+0.085,-half,half,0.035,Color("788382"))
++			strip(tool,span,u,u+0.055,-half,half,0.034,Color("182c37"),{},road_lift)
++			strip(tool,span,u+0.055,u+0.085,-half,half,0.035,Color("788382"),{},road_lift)
+ 		# Plain end caps close the handrail.
+ 		for u: float in [0.0,float(span.length)]:
+ 			for side: float in [-1.0,1.0]:
+@@ -71,7 +72,7 @@
+ 				quad(tool,vertex(span,u,(half+0.14)*side,0.65),vertex(span,u,(half+0.34)*side,0.65),vertex(span,u,(half+0.34)*side,0.85),vertex(span,u,(half+0.14)*side,0.85),RAIL_SIDE)
+ 		# Small approach markings explain which ends can be driven onto.
+ 		for u: float in [2.0,float(span.length)-2.0]:
+-			for side: float in [-1.0,1.0]: strip(tool,span,u,u+0.18,side*1.0,side*2.0,0.04,Color("d5d6bb"))
++			for side: float in [-1.0,1.0]: strip(tool,span,u,u+0.18,side*1.0,side*2.0,0.04,Color("d5d6bb"),{},road_lift)
+ 	tool.generate_normals()
+ 	var mesh := MeshInstance3D.new()
+ 	mesh.add_to_group("race_bridge_rendering")
+@@ -121,7 +122,7 @@
+ 	var p: Vector2 = Vector2(span.position[0],span.position[1])+Vector2(along,across).rotated(deg_to_rad(float(span.heading)))
+ 	return VisualGeometry.world(p)+Vector3.UP*(CreatorBridges.height(span,p)+offset)
+ 
+-static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color, road_phase: Dictionary = {}) -> void:
++static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color, road_phase: Dictionary = {}, road_lift: float = 0.0) -> void:
+ 	# Metres along/across this span, so winter wear follows any bridge heading.
+ 	tool.set_color(color)
+ 	for uv: Vector2 in [Vector2(a,left),Vector2(b,right),Vector2(b,left),Vector2(a,left),Vector2(a,right),Vector2(b,right)]:
+@@ -133,7 +134,9 @@
+ 		# Bridge geometry uses the opposite transverse basis. Correct the UV
+ 		# before applying shared phase/sign, including reverse-authored spans.
+ 		tool.set_uv(preload("res://track/desert_road_union.gd").coordinates(Vector2(uv.x,-uv.y),road_phase) if not road_phase.is_empty() else uv)
+-		var height_offset: float = preload("res://track/road_surface_height.gd").bridge_offset(uv.x,float(span.length)) if is_equal_approx(offset,0.025) else offset
++		var height_offset: float = preload("res://track/road_surface_height.gd").bridge_offset(uv.x,float(span.length),offset,road_lift) if is_equal_approx(offset,0.025) else offset
++		if road_lift > 0.0 and not is_equal_approx(offset,0.025):
++			height_offset = road_lift+lerpf(0.018,offset,smoothstep(0.0,1.0,minf(uv.x,float(span.length)-uv.x)))
+ 		tool.add_vertex(vertex(span,uv.x,uv.y,height_offset))
+ 
+ static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -14,7 +14,7 @@
+ 		var phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,RoadPieces.prepare_endpoints(pieces))
+ 		for i: int in range(pieces.size()):
+ 			if pieces[i].kind == "bridge": bridge_phases.append(phases.get(i,{}))
+-	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases)
++	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases,ROAD_HEIGHT.is_asphalt(track))
+ 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
+ 	var fascia := SurfaceTool.new()
+ 	fascia.begin(Mesh.PRIMITIVE_TRIANGLES)
+@@ -30,7 +30,7 @@
+ 				var vertices: Array[Vector3] = []
+ 				for corner: Vector2 in [Vector2(x,y),Vector2(x+1,y),Vector2(x+1,y+1),Vector2(x,y+1)]:
+ 					var p: Vector2 = point(corner)
+-					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else ROAD_HEIGHT.ROAD)))
++					vertices.append(VisualGeometry.world(p) + Vector3.UP * (profile_height(p) + (0.85 if kind == 4 else ROAD_HEIGHT.ROAD+road_surface.lift)))
+ 				surface.set_color(CreatorBridgeVisual.RAIL_TOP if kind == 4 else Color.WHITE)
+ 				for i: int in [0,1,2,0,2,3]:
+ 					var p := Vector2(vertices[i].x,-vertices[i].z)
+@@ -40,9 +40,10 @@
+ 				for i: int in range(4):
+ 					var neighbor: Vector2i = Vector2i(x,y) + [Vector2i.UP,Vector2i.RIGHT,Vector2i.DOWN,Vector2i.LEFT][i]
+ 					if inside(neighbor) and roles[neighbor.y * track.grid_width + neighbor.x] >= 0: continue
+-					var drop: float = 0.85 if kind == 4 else ROAD_HEIGHT.ROAD
++					var drop: float = 0.85 if kind == 4 else ROAD_HEIGHT.ROAD+road_surface.lift
+ 					var a: Vector3 = vertices[i] - Vector3.UP * drop
+ 					var b: Vector3 = vertices[(i+1)%4] - Vector3.UP * drop
++					if kind == 0 and road_surface.lift > 0.0: CreatorBridgeVisual.quad(fascia,vertices[i],vertices[(i+1)%4],b,a,Color("343638"))
+ 					CreatorBridgeVisual.quad(fascia,a,b,b-Vector3.UP*0.34,a-Vector3.UP*0.34,Color("817e70"))
+ 					CreatorBridgeVisual.quad(fascia,a-Vector3.UP*0.34,b-Vector3.UP*0.34,b-Vector3.UP*0.42,a-Vector3.UP*0.42,Color("403f38"))
+ 					fascia_count += 1
+--- a/game/track/bridge_elevation.gd
++++ b/game/track/bridge_elevation.gd
+@@ -3,7 +3,7 @@
+ ## Pure spatial elevation shared by client presentation and verified ghosts.
+ ## Presentation only: no temporal easing and no changes to canonical handling.
+ 
+-const VERSION: String = "bridge-ramps-5"
++const VERSION: String = "bridge-ramps-6"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const APPROACH: float = 4.0
+ const INSET: float = 4.0
+@@ -100,10 +100,10 @@
+ 	for span: Dictionary in track.creator_bridges:
+ 		if CreatorBridges.contains(span,p):
+ 			var elevated: bool = actual_layer == 1 if actual_layer >= 0 else track.elevated_at(p,route_index)
+-			return CreatorBridges.height(span,p) if elevated else road_surface.ground(p)
++			return CreatorBridges.height(span,p)+road_surface.lift if elevated else road_surface.ground(p)
+ 	if route_index < 0 or upper_route[route_index] == 0:
+ 		return road_surface.ground(p)
+ 	var cell: Vector2i = cell_for(p)
+ 	if not inside(cell) or roles[cell.y * track.grid_width + cell.x] < 0:
+ 		return road_surface.ground(p)
+-	return profile_height(p)
++	return profile_height(p)+road_surface.lift
+--- a/game/track/desert_road_union.gd
++++ b/game/track/desert_road_union.gd
+@@ -163,7 +163,7 @@
+ 		for index: int in queue: result[index]["desert_scale"] = scale
+ 	return result
+ 
+-func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
++func emit(visual: NativeTrackVisual, tool: SurfaceTool, height: float = 0.012) -> int:
+ 	var count: int = 0
+ 	var candidate_lists: Dictionary = {}
+ 	var caches: Dictionary = {}
+@@ -174,5 +174,5 @@
+ 		if not caches.has(points_by_triangle[i]): caches[points_by_triangle[i]] = phase_by_triangle[i].duplicate()
+ 		caches[points_by_triangle[i]]["desert_blend_sampler"] = self
+ 		for polygon: PackedVector2Array in clipping._fragments(i,source,candidate_lists):
+-			count += visual._road_polygon(tool,polygon,0.012,points_by_triangle[i],caches[points_by_triangle[i]])
++			count += visual._road_polygon(tool,polygon,height,points_by_triangle[i],caches[points_by_triangle[i]])
+ 	return count
+--- /dev/null
++++ b/game/track/road_fringe_mesh.gd
+@@ -0,0 +1,33 @@
++extends RefCounted
++## One owner per flat blend fragment, retaining the original local UV roles.
++const ROAD_UNION = preload("res://track/desert_road_union.gd")
++var clipping := ShoulderMesh.new()
++var points: Array[PackedVector2Array] = []
++var settings: Array[Dictionary] = []
++
++func add(vertices: Array[Vector2], across: Array[float], path: PackedVector2Array, cache: Dictionary) -> void:
++	for first: int in [0,3]:
++		var before: int = clipping.triangles.size()
++		clipping._add_triangle(PackedVector2Array(vertices.slice(first,first+3)),Vector3(across[first],across[first+1],across[first+2]))
++		if clipping.triangles.size() > before:
++			points.append(path)
++			settings.append(cache)
++
++func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
++	var count: int = 0
++	var candidates: Dictionary = {}
++	for i: int in range(clipping.triangles.size()):
++		if visual._menu_yield_due() and not await visual._yield_build(): return count
++		var source: Dictionary = clipping.triangles[i]
++		for polygon: PackedVector2Array in clipping._fragments(i,source,candidates):
++			var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
++			for index: int in indices:
++				var p: Vector2 = polygon[index]
++				tool.set_uv(Vector2(0,clampf(source.gradient.dot(p)+source.offset,0,1)))
++				if visual.theme_id == "desert":
++					tool.set_uv2(ROAD_UNION.coordinates(visual._sand_coordinates(p,points[i]),settings[i]))
++					tool.set_color(settings[i].desert_blend_sampler.blend(p,int(settings[i].desert_piece_index)))
++				else: tool.set_uv2(visual._cached_asphalt_axis(p,points[i],settings[i]))
++				tool.add_vertex(VisualGeometry.world(p)+Vector3.UP*0.013)
++			count += indices.size()/3
++	return count
+--- /dev/null
++++ b/game/track/road_fringe_mesh.gd.uid
+@@ -0,0 +1 @@
++uid://4endl6v3eibd
+--- /dev/null
++++ b/game/track/raised_asphalt.gdshader
+@@ -0,0 +1,3 @@
++shader_type spatial;
++render_mode diffuse_toon, specular_schlick_ggx, cull_back;
++#include "res://track/creator_road.gdshaderinc"
+--- /dev/null
++++ b/game/track/raised_asphalt.gdshader.uid
+@@ -0,0 +1 @@
++uid://g2awopjux5f5
+--- /dev/null
++++ b/game/track/raised_wet_asphalt.gdshader
+@@ -0,0 +1,3 @@
++shader_type spatial;
++render_mode diffuse_burley, specular_schlick_ggx, cull_back;
++#include "res://track/creator_road.gdshaderinc"
+--- /dev/null
++++ b/game/track/raised_wet_asphalt.gdshader.uid
+@@ -0,0 +1 @@
++uid://boeylrkgqsvpx
+--- a/game/editor/placed_object_batches.gd
++++ b/game/editor/placed_object_batches.gd
+@@ -17,12 +17,13 @@
+ var baked_plan: Dictionary = {}
+ var shared_vertices: Dictionary = {}
+ var shared_vertex_bytes: int = 0
++var ground_key: String = ""
+ const SHARED_VERTEX_BUDGET: int = 1024 * 1024
+ 
+ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: Callable) -> bool:
+ 	var objects: Array = track.metadata.get("creator_document",{}).get("objects",[]).duplicate(true)
+ 	var tyres: PackedVector2Array = track.tyre_origins.duplicate()
+-	if objects == sources and tyres == tyre_origins and updates > 0: return false
++	if objects == sources and tyres == tyre_origins and updates > 0 and ground_key == track.content_hash: return false
+ 	var desired: Dictionary = {}
+ 	var next_models: Dictionary = {}
+ 	var separate: Dictionary = {}
+@@ -51,10 +52,11 @@
+ 				entry = {"source":object,"node":node}
+ 				pending_nodes.append(node)
+ 			separate[index] = entry
++			if kit.ground_support != null: entry.node.position.y = kit.ground_support.ground(Vector2(object.position[0],object.position[1]))
+ 		else:
+ 			# Preserve the original world-space float vertices and generated normals.
+ 			# Moving a prop prepares that prop; unchanged streams are copied in bulk.
+-			var key: String = JSON.stringify(object,"",true)
++			var key: String = JSON.stringify(object,"",true)+"/ground="+str(kit.ground_support.ground(Vector2(object.position[0],object.position[1])) if kit.ground_support != null else 0.0)
+ 			var model: Dictionary = active_models[key] if active_models.has(key) else _model(kit,object,key)
+ 			next_models[key] = model
+ 			for part_index: int in range(model.parts.size()):
+@@ -83,7 +85,7 @@
+ 	if not tyres.is_empty():
+ 		var tyre: Dictionary = {"kind":"tyre_stack","position":[0.0,0.0],"rotation":0.0}
+ 		var poses: Array = []
+-		for point: Vector2 in tyres: poses.append(Transform3D(Basis.IDENTITY,VisualGeometry.world(point)))
++		for point: Vector2 in tyres: poses.append(Transform3D(Basis.IDENTITY,VisualGeometry.world(point)+Vector3.UP*(kit.ground_support.ground(point) if kit.ground_support != null else 0.0)))
+ 		var model: Dictionary = _model(kit,tyre,"tyres")
+ 		var part: Dictionary = model.parts[0].duplicate()
+ 		part.pose = Transform3D.IDENTITY
+@@ -181,6 +183,7 @@
+ 	active_models = next_models
+ 	tyre_origins = tyres
+ 	updates += 1
++	ground_key = track.content_hash
+ 	return true
+ 
+ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictionary:
+@@ -189,6 +192,7 @@
+ 	prototype.theme_id = kit.theme_id
+ 	prototype.colors = kit.colors
+ 	prototype.editor_preview = true
++	prototype.ground_support = kit.ground_support if key != "tyres" else null
+ 	prototype._capture_editor_prop_arrays = true
+ 	var track := NativeTrack.new()
+ 	track.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
+--- a/game/tests/test_grass_road_height.gd
++++ b/game/tests/test_grass_road_height.gd
+@@ -102,7 +102,7 @@
+ 	partial.step(DriveFrame.new(),edge)
+ 	old_partial.step(DriveFrame.new(),edge)
+ 	check(partial.state.velocity.length() < old_partial.state.velocity.length()-0.03,"first grass wheel sheds more speed immediately before the centre leaves asphalt")
+-	check(is_equal_approx(HEIGHT.ROAD-HEIGHT.TERRAIN,0.05),"road datum is exactly five centimetres above terrain")
++	check(is_equal_approx(HEIGHT.RISE,0.05),"asphalt-only rise is exactly five centimetres")
+ 	var native: NativeTrack = field(1)
+ 	for y: int in range(48,52):
+ 		for x: int in range(40,60): native.cells[y*100+x] = 0
+@@ -118,20 +118,21 @@
+ 		low = minf(low,p.y)
+ 		high = maxf(high,p.y)
+ 	check(is_equal_approx(high-low,0.05),"actual native road has closed five-centimetre edge faces")
+-	check(is_equal_approx(high,HEIGHT.ROAD) and is_equal_approx(low,HEIGHT.TERRAIN),"native raster road uses the same road and terrain datums")
++	check(is_equal_approx(high,0.05) and is_equal_approx(low,0.0),"native asphalt rises while original terrain stays at zero")
+ 	raster.queue_free()
+ 	await process_frame
+ 	for theme: String in ["pine","storm","winter","desert"]:
+ 		var track: NativeTrack = circuit(theme)
+ 		var bridge := BridgePresentation.new(track)
+ 		var span: Dictionary = track.creator_bridges[0]
++		var raised: float = 0.05 if theme in ["pine","storm"] else 0.0
+ 		for end: float in [0.0,float(span.length)]:
+ 			var p := Vector2(span.position[0],span.position[1])+Vector2(end,0).rotated(deg_to_rad(span.heading))
+-			check(absf(CreatorBridgeVisual.vertex(span,end,0,HEIGHT.bridge_offset(end,span.length)).y-HEIGHT.ROAD) < 0.000001,theme+" actual bridge mouth meets ground mesh")
+-			check(absf(bridge.height_at(p,0,1)) < 0.000001,theme+" car support has no step at either bridge mouth")
+-		check(bridge.height_at(Vector2(-40,0),0,0) == 0.0,theme+" car/ghost/trail remain on raised ground road")
+-		check(is_equal_approx(bridge.height_at(Vector2(-40,8),0,0),-0.05),theme+" grass/terrain support follows lower datum")
+-		check(bridge.height_at(Vector2(-40,5.5),0,0) > -0.05,theme+" shoulder wheel support follows shallow slope")
++			check(absf(CreatorBridgeVisual.vertex(span,end,0,HEIGHT.bridge_offset(end,span.length,0.025,raised)).y-HEIGHT.ROAD-raised) < 0.000001,theme+" actual bridge mouth meets ground mesh")
++			check(absf(bridge.height_at(p,0,1)-raised) < 0.000001,theme+" car support has no step at either bridge mouth")
++		check(is_equal_approx(bridge.height_at(Vector2(-40,0),0,0),raised),theme+" only asphalt raises car/ghost/trail support")
++		check(bridge.height_at(Vector2(-40,8),0,0) == 0.0,theme+" grass/terrain retain original support")
++		check(bridge.height_at(Vector2(-40,5.5),0,0) == 0.0,theme+" sand shoulder stays flat and unraised")
+ 		var world := NativeTrackVisual.new()
+ 		world.cache_road_meshes = false
+ 		world.cache_race_world = false
+@@ -141,14 +142,61 @@
+ 		for child: Node in world.get_children():
+ 			if child is MeshInstance3D and child.mesh is PlaneMesh:
+ 				found = true
+-				check(is_equal_approx(child.position.y,HEIGHT.TERRAIN),theme+" actual terrain mesh is at the five-centimetre datum")
++				check(is_equal_approx(child.position.y,-0.06),theme+" actual terrain retains original datum")
+ 		check(found,theme+" production terrain mesh inspected")
++		inspect_surfaces(world,track,span,theme,raised)
+ 		if DisplayServer.get_name() != "headless": await capture(world,track,bridge,theme)
+ 		world.queue_free()
+ 		await process_frame
+ 	print("GRASS_ROAD_MEASUREMENTS ",JSON.stringify(measurements))
+ 	print("GRASS_ROAD_HEIGHT: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
++
++func inspect_surfaces(world: NativeTrackVisual, track: NativeTrack, span: Dictionary, theme: String, raised: float) -> void:
++	var sand_flat: bool = true
++	var fringe_flat: bool = true
++	var sand_vertices: int = 0
++	var fringe_vertices: int = 0
++	for child: Node in world.get_children():
++		if not child is MeshInstance3D or not child.mesh is ArrayMesh or not child.material_override is ShaderMaterial: continue
++		var material: ShaderMaterial = child.material_override
++		var vertices: PackedVector3Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++		if material.get_shader_parameter("gravel") == true and theme in ["pine","storm"]:
++			for vertex: Vector3 in vertices: sand_flat = sand_flat and is_equal_approx(vertex.y,-0.02)
++			sand_vertices += vertices.size()
++		if material.get_shader_parameter("edge_fringe") == true:
++			for vertex: Vector3 in vertices: fringe_flat = fringe_flat and is_equal_approx(vertex.y,0.013)
++			fringe_vertices += vertices.size()
++	if theme in ["pine","storm"]: check(sand_vertices > 0 and sand_flat,theme+" actual sand stays at its original flat height")
++	if theme != "winter": check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
++	var bridge: MeshInstance3D = world.get_node("BridgeAsphalt")
++	var deck_vertices: PackedVector3Array = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var start := Vector2(span.position[0],span.position[1])
++	var axis := Vector2.RIGHT.rotated(deg_to_rad(span.heading))
++	var mouths: int = 0
++	var mouths_match: bool = true
++	for vertex: Vector3 in deck_vertices:
++		var along: float = (Vector2(vertex.x,-vertex.z)-start).dot(axis)
++		if absf(along) < 0.0001 or absf(along-float(span.length)) < 0.0001:
++			mouths += 1
++			mouths_match = mouths_match and absf(vertex.y-0.012-raised) < 0.00001
++	check(mouths >= 6 and mouths_match,theme+" both actual deck meshes meet the asphalt datum")
++	if raised > 0.0:
++		var trim: MeshInstance3D = world.get_node("BridgeSteelAndFascia")
++		var data: Array = trim.mesh.surface_get_arrays(0)
++		var colors: PackedColorArray = data[Mesh.ARRAY_COLOR]
++		var vertices: PackedVector3Array = data[Mesh.ARRAY_VERTEX]
++		var stripe_vertices: int = 0
++		var exposed: bool = true
++		for i: int in range(vertices.size()):
++			var pigment := Color("d9d8cc")
++			if maxf(absf(colors[i].r-pigment.r),maxf(absf(colors[i].g-pigment.g),absf(colors[i].b-pigment.b))) > 0.004: continue
++			var p := Vector2(vertices[i].x,-vertices[i].z)
++			var along: float = (p-start).dot(axis)
++			var top: float = CreatorBridges.height(span,p)+HEIGHT.bridge_offset(along,span.length,0.025,raised)
++			stripe_vertices += 1
++			exposed = exposed and vertices[i].y >= top+0.005
++		check(stripe_vertices > 0 and exposed,theme+" actual bridge paint remains above the raised deck")
+ 
+ func capture(world: Node3D, track: NativeTrack, bridge: BridgePresentation, theme: String) -> void:
+ 	root.size = Vector2i(1280,720)
+@@ -176,7 +224,7 @@
+ 	camera.size = 22.0
+ 	world.add_child(camera)
+ 	camera.current = true
+-	var folder: String = "res://../docs/evidence/grass-road-height-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/"
++	var folder: String = "res://../docs/evidence/asphalt-rise-correction-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/"
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+ 	for view: String in ["overhead","seam"]:
+ 		camera.position = Vector3(-37,21,18) if view == "overhead" else Vector3(-34,2.0,13)
+--- /dev/null
++++ b/game/tests/test_asphalt_surface_ownership.gd
+@@ -0,0 +1,181 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++var report: Array[Dictionary] = []
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func _initialize() -> void: run.call_deferred()
++
++func area(poly: PackedVector2Array) -> float:
++	var result: float = 0.0
++	# Translate before multiplying: world-coordinate cancellation otherwise
++	# reports area for coincident edges far from the origin.
++	for i: int in range(poly.size()): result += (poly[i]-poly[0]).cross(poly[(i+1)%poly.size()]-poly[0])
++	return absf(result)*0.5
++
++func overlap_triangles(nodes: Array[MeshInstance3D], height: float) -> Dictionary:
++	var triangles: Array[PackedVector2Array] = []
++	var bins: Dictionary = {}
++	var checked: Dictionary = {}
++	var overlaps: int = 0
++	var worst: float = 0.0
++	for node: MeshInstance3D in nodes:
++		var vertices: PackedVector3Array = node.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++		for first: int in range(0,vertices.size(),3):
++			var polygon := PackedVector2Array()
++			var flat: bool = true
++			for i: int in range(3):
++				var p: Vector3 = node.transform*vertices[first+i]
++				flat = flat and absf(p.y-height) < 0.00001
++				polygon.append(Vector2(p.x,-p.z))
++			if not flat or area(polygon) < 0.0000001: continue
++			var index: int = triangles.size()
++			triangles.append(polygon)
++			var bounds := Rect2(polygon[0],Vector2.ZERO).expand(polygon[1]).expand(polygon[2])
++			for y: int in range(floori(bounds.position.y/8.0),floori(bounds.end.y/8.0)+1):
++				for x: int in range(floori(bounds.position.x/8.0),floori(bounds.end.x/8.0)+1):
++					var cell := Vector2i(x,y)
++					for other: int in bins.get(cell,[]):
++						var pair := Vector2i(other,index)
++						if checked.has(pair): continue
++						checked[pair] = true
++						for intersection: PackedVector2Array in Geometry2D.intersect_polygons(polygon,triangles[other]):
++							var value: float = area(intersection)
++							worst = maxf(worst,value)
++							if value > 0.0001: overlaps += 1
++					if not bins.has(cell): bins[cell] = []
++					bins[cell].append(index)
++	return {"triangles":triangles.size(),"overlap_pairs":overlaps,"worst_area_m2":worst}
++
++func clone_mesh(arrays: Array, reversed: bool) -> ArrayMesh:
++	var values: Array = arrays.duplicate(true)
++	var count: int = values[Mesh.ARRAY_VERTEX].size()
++	if reversed:
++		# Reverse the competing horizontal surfaces. Keep the solid rim in its
++		# original slots: top/rim silhouette samples have distinct face normals,
++		# so reversing those tests corner rasterisation rather than coplanar ties.
++		var flat_triangles: Array[int] = []
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		for first: int in range(0,count,3):
++			if vertices[first].y == vertices[first+1].y and vertices[first].y == vertices[first+2].y: flat_triangles.append(first)
++		for slot: int in [Mesh.ARRAY_VERTEX,Mesh.ARRAY_NORMAL,Mesh.ARRAY_TEX_UV,Mesh.ARRAY_TEX_UV2,Mesh.ARRAY_COLOR]:
++			if values[slot] == null or values[slot].is_empty(): continue
++			var source: Variant = arrays[slot]
++			for index: int in range(flat_triangles.size()):
++				for i: int in range(3): values[slot][flat_triangles[index]+i] = source[flat_triangles[-1-index]+i]
++	var mesh := ArrayMesh.new()
++	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,values)
++	return mesh
++
++func settle() -> void:
++	for frame: int in range(4): await process_frame
++	await RenderingServer.frame_post_draw
++
++func stable_image(label: String) -> Image:
++	var previous: Image
++	var stable: int = 0
++	var started: int = Time.get_ticks_msec()
++	while Time.get_ticks_msec()-started < 10000:
++		await settle()
++		var current: Image = root.get_texture().get_image()
++		stable = stable+1 if previous != null and previous.get_data() == current.get_data() else 0
++		previous = current
++		if stable >= 3: return current
++	check(false,label+" native material preparation settles within ten seconds")
++	return previous
++
++func run() -> void:
++	root.size = Vector2i(960,540)
++	for fixture: String in ["ajorata","over_and_under","star_spline_lap"]:
++		var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+fixture+".json"))
++		doc.theme = "pine"
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		check(track != null,fixture+" actual track compiles")
++		if track == null: continue
++		var bridge := BridgePresentation.new(track)
++		var world := NativeTrackVisual.new()
++		world.cache_road_meshes = false; world.cache_race_world = false
++		root.add_child(world)
++		await world.build(track,bridge)
++		var road: Array[MeshInstance3D] = []
++		var fringe: Array[MeshInstance3D] = []
++		for child: Node in world.get_children():
++			if not child is MeshInstance3D or not child.material_override is ShaderMaterial: continue
++			var material: ShaderMaterial = child.material_override
++			if material.get_shader_parameter("edge_fringe") == true: fringe.append(child)
++			elif material.get_shader_parameter("asphalt_surface") == true: road.append(child)
++		var top: Dictionary = overlap_triangles(road,0.062)
++		var blend: Dictionary = overlap_triangles(fringe,0.013)
++		check(top.triangles > 0 and top.overlap_pairs == 0,fixture+" actual asphalt has one horizontal owner per area")
++		check(blend.triangles > 0 and blend.overlap_pairs == 0,fixture+" actual flat blend has one horizontal owner per area")
++		var entry: Dictionary = {"fixture":fixture,"asphalt":top,"fringe":blend,"reversed_draw_pixels":[],"max_channel_delta":[]}
++		if DisplayServer.get_name() != "headless":
++			var sun := DirectionalLight3D.new(); sun.rotation_degrees = Vector3(-48,-32,0); world.add_child(sun)
++			var env := WorldEnvironment.new(); env.environment = Environment.new()
++			env.environment.background_mode = Environment.BG_COLOR; env.environment.background_color = Color("8eaaa4")
++			env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; env.environment.ambient_light_color = Color("e0e6e8"); env.environment.ambient_light_energy = 0.7
++			world.add_child(env)
++			var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 28; world.add_child(camera); camera.current = true
++			var nodes: Array[MeshInstance3D] = road+fringe
++			var arrays: Array[Array] = []
++			for node: MeshInstance3D in nodes: arrays.append(node.mesh.surface_get_arrays(0))
++			var forwards: Array[ArrayMesh] = []
++			var backwards: Array[ArrayMesh] = []
++			for data: Array in arrays:
++				forwards.append(clone_mesh(data,false)); backwards.append(clone_mesh(data,true))
++			var folder: String = "res://../docs/evidence/asphalt-rise-correction-2026-10-14/"+RenderingServer.get_current_rendering_method()+"/"
++			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++			# Let the first native lighting/material preparation finish before the
++			# first comparison, just as subsequent views already have settled.
++			for frame: int in range(20): await process_frame
++			for pose: int in range(6):
++				var center: Vector2 = track.route[track.route.size()*pose/6]
++				if not track.creator_bridges.is_empty() and pose < 2:
++					var span: Dictionary = track.creator_bridges[0]
++					center = Vector2(span.position[0],span.position[1])+Vector2(0 if pose == 0 else span.length,0).rotated(deg_to_rad(span.heading))
++				camera.position = VisualGeometry.world(center)+Vector3(6.0+pose*0.07,16,17.0+pose*0.13)
++				camera.look_at(VisualGeometry.world(center))
++				if pose == 0:
++					for i: int in range(nodes.size()): nodes[i].mesh = backwards[i]
++					await settle()
++					await create_timer(1.0).timeout
++				for i: int in range(nodes.size()): nodes[i].mesh = forwards[i]
++				await settle()
++				if pose == 0: await create_timer(1.0).timeout
++				var reference: Image = await stable_image(fixture+" view "+str(pose))
++				await settle()
++				check(reference.get_data() == root.get_texture().get_image().get_data(),fixture+" fixed view has settled before changing coplanar draw order")
++				for i: int in range(nodes.size()): nodes[i].mesh = backwards[i]
++				await settle()
++				var reversed: Image = root.get_texture().get_image()
++				var changed: int = 0
++				var max_delta: float = 0.0
++				var differences: Array = []
++				for y: int in range(reference.get_height()):
++					for x: int in range(reference.get_width()):
++						if reference.get_pixel(x,y) != reversed.get_pixel(x,y):
++							changed += 1
++							var before: Color = reference.get_pixel(x,y)
++							var after: Color = reversed.get_pixel(x,y)
++							for channel: int in range(4): max_delta = maxf(max_delta,absf(before[channel]-after[channel]))
++							differences.append([x,y,reference.get_pixel(x,y).to_html(),reversed.get_pixel(x,y).to_html()])
++				if changed > 0:
++					reference.save_png(folder+fixture+"-reference-%02d.png"%pose)
++					print(fixture," ",pose," changed ",changed," max channel delta ",max_delta," samples ",JSON.stringify(differences.slice(0,10)))
++				entry.reversed_draw_pixels.append(changed)
++				entry.max_channel_delta.append(max_delta)
++				# One display-code rounding at a shared raster edge is allowed;
++				# competing coplanar artwork produces larger colour differences.
++				check(changed <= 1 and max_delta <= 1.0/255.0+0.000001,fixture+" view "+str(pose)+" coplanar draw order is stable within one edge rounding sample")
++				check(reversed.save_png(folder+fixture+"-motion-%02d.png"%pose) == OK,"actual moving-view evidence saved")
++		report.append(entry)
++		world.queue_free(); await process_frame
++	var path: String = "res://../docs/evidence/asphalt-rise-correction-2026-10-14/ownership-"+RenderingServer.get_current_rendering_method()+".json"
++	var file := FileAccess.open(path,FileAccess.WRITE); file.store_string(JSON.stringify({"checks":checks,"failures":failures,"scenes":report},"\t")); file.close()
++	print("ASPHALT_OWNERSHIP: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_asphalt_surface_ownership.gd.uid
+@@ -0,0 +1 @@
++uid://bg8g8laauue4d
+--- a/game/tests/test_construction.gd
++++ b/game/tests/test_construction.gd
+@@ -57,7 +57,7 @@
+ 	var wet: NativeTrack = TrackCompiler.compile(water)
+ 	check(wet.cell_at(Vector2.ZERO) == 3 and wet.cell_at(Vector2.ZERO,true) == 0,"painting ground water preserves the upper road")
+ 	var bridge := BridgePresentation.new(track)
+-	check(is_equal_approx(bridge.height_at(Vector2.ZERO,0,1),3.5) and bridge.height_at(Vector2.ZERO,0,0) == 0,"same crossing has distinct top and bottom visual heights")
++	check(is_equal_approx(bridge.height_at(Vector2.ZERO,0,1),3.55) and is_equal_approx(bridge.height_at(Vector2.ZERO,0,0),0.05),"same crossing has distinct top and bottom asphalt heights with the cosmetic rise")
+ 	check(CreatorBridges.height(doc.pieces[1],Vector2(-30,0)) == 0 and CreatorBridges.height(doc.pieces[1],Vector2(30,0)) == 0,"both ramp ends meet ground")
+ 	check(CreatorBridges.height(doc.pieces[1],Vector2(-26,0)) > 0 and CreatorBridges.height(doc.pieces[1],Vector2(-26,0)) < 3.5,"ramp has continuous intermediate elevation")
+ 	check(not track.collision_elevated_at(Vector2.ZERO,0,1.364,0) and track.collision_elevated_at(Vector2.ZERO,0,1.364,1),"crossing preserves actual driving layer independently of lap tangent")
+@@ -88,6 +88,11 @@
+ 	app.set("library",TrackLibrary.new(folder))
+ 	app.set("records",LocalRecords.new(folder+"/records.json"))
+ 	root.add_child(app)
++	# Startup now includes asynchronous native Garage preparation. Its final
++	# navigation must finish before opening the editor used by this workflow.
++	var began: int = Time.get_ticks_msec()
++	while not app.get("startup_complete") and Time.get_ticks_msec()-began < 30000: await process_frame
++	check(app.get("startup_complete"),"application startup completes before editor interaction")
+ 	app.set("document",doc)
+ 	app.call("_show_screen","create")
+ 	await process_frame
+--- a/game/tests/test_contact_shading.gd
++++ b/game/tests/test_contact_shading.gd
+@@ -65,7 +65,7 @@
+ 	var test_state := VehicleState.new()
+ 	test_state.track_elevated = true
+ 	ContactShading.present_car(contact,game.get("car"),test_state,Vector2.ZERO,PI*0.5,track,game.get("bridge_presentation"))
+-	check(is_equal_approx(contact.position.y,CreatorBridges.HEIGHT+0.03),"elevated contact stays on deck")
++	check(is_equal_approx(contact.position.y,CreatorBridges.HEIGHT+0.08),"elevated contact stays on the raised asphalt deck")
+ 	ContactShading.present_car(contact,game.get("car"),test_state,Vector2(-26,0),PI*0.5,track,game.get("bridge_presentation"))
+ 	check(contact.rotation.x > 0.1,"contact follows ramp pitch")
+ 	test_state.track_elevated = false
+--- /dev/null
++++ b/docs/ASPHALT_RISE_CORRECTION_2026_10_14.md
+@@ -0,0 +1,42 @@
++# Asphalt-only rise and flicker correction — 2026-10-14
++
++The owner reports flickering and clarifies that the asphalt must rise, while sand stays flat. This supersedes the terrain lowering and sloped shoulders in `GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md`. The previously requested stronger grass resistance remains in place; this correction changes presentation and its shared support sampler, not simulation or track documents.
++
++Requirements: ARC01 raise asphalt by 50 mm; ARC02 restore original flat loose surfaces and remove competing road/blend draws; ARC03 continuous bridge mouths and visible markings, with matching car/ghost/trail/object support; V05/G01/R01/Q01 retain geometry caches, canonical contracts and actual regression evidence.
++
++Authored asphalt changes from its original 0.012 m surface to 0.062 m, and native asphalt from 0 to 0.050 m. Grass terrain retains its original datum (authored -0.060 m, native 0); sand shoulders return to -0.020 m, ground skirts to -0.040 m and decorative blend strips to their original flat 0.013 m. Desert compacted sand, Winter snow/ice and dirt tracks receive no asphalt rise. These existing render offsets are retained independently of the new 50 mm lift.
++
++Ground asphalt uses one visible owner at overlaps/crossings, with the existing per-piece grain coordinates. The flat asphalt blend uses the existing shoulder clipping/tie rules. Vertical outward-facing rim faces close exposed asphalt edges in the same road draw; dedicated dry/wet shader headers cull hidden back faces while retaining the original shading include. Ground end caps are clipped at matching bridge mouths so their enlarged polygons cannot compete with the shallow ramp. Bridge decks follow the same lift, return to the original finish offset inside the span and match ground asphalt at both mouths. Bridge edge paint, approach markings and expansion joints rise with the deck; structural rails and collision/ramp geometry retain their existing dimensions.
++
++The pure spatial support profile raises asphalt contacts only. Loose grass/sand no longer inherit a negative support height or a sloping shoulder. Existing car, ghost, contact-shadow, dust and tire paths use the shared `BridgeElevation` profile. Finish paint, kerbs, placed hazards/props and moving tires follow the same visual rise. Retained editor prop keys include the local support height; per-position tire support avoids applying a single prototype's height to all tires. Cache byte/count bounds are unchanged. The task introduced `track-kit-198` and `bridge-ramps-6` fences; the combined visual working tree is kit199 / compiler27. Verification began with the separate handbrake physics0.58; a later concurrent physics0.59 was observed after these checks and was not authored by this correction.
++
++Actual pinned Godot 4.7.2 checks, with workspace-local APPDATA:
++
++| Check | Result |
++| --- | --- |
++| Grass slowdown, actual sand/fringe vertices, bridge mouths/paint and four-biome captures | Compatibility 115/115; Mobile/Vulkan 115/115 |
++| Actual Ajorata, Over and under, Star spline overlap ownership and six views each | Compatibility 63/63; Mobile/Vulkan 63/63 |
++| Construction, five ordinary laps and editor gestures | 113/113; five laps, zero contacts, 819 upper / 809 lower crossing visits; replay exact |
++| Contact shading / road disk cache / editor CPU-GPU road preparation | 23/23, 70/70, 407/407 |
++| Prepared race worlds / prepared car resources | 85/85, 162/162 |
++| Actual graphical bridge tire guards / dust-layer masks | Compatibility 8/8, 121/121 |
++| Bridge contacts / personal ghosts / rewind / creator refinement | 16/16, 38/38, 61/61, 33/33 |
++| Backend verifier integration | 70 passed; one existing dependency deprecation warning |
++| Final whole-project script parse | 748 scripts, zero failures |
++
++The ownership test checks actual emitted triangle intersections with a 0.0001 m² tolerance for float/geometry clipping precision. It reverses competing horizontal triangles while retaining solid rim slots, whose distinct face normals make silhouette sample ordering a separate rasterisation issue. All 18 settled Vulkan views are pixel-exact. Compatibility has 17 exact views and one shared-edge sample differing by one 8-bit colour level; its bound is one sample / one colour level. All fixed-view stability assertions pass. This is desktop renderer evidence, not physical-phone testing or a general claim about every possible track.
++
++Initial diagnostics are retained: reversing both solid top and vertical faces exposed edge-sample competition, corrected by solid-face culling and testing horizontal ownership separately. A large-world polygon-area calculation was corrected to translate vertices before multiplication. Vulkan's initial captures also differed on unchanged scenery; the final comparison primes both native mesh resources and requires stable fixed images before swapping their draw order. The initial construction test opened Create before asynchronous covered startup completed, allowing startup navigation to remove its canvas; it now waits for the existing `startup_complete` flag, retaining all interaction assertions. Two graphical-only bridge checks were initially launched headless and waited on `frame_post_draw`; only those test processes were stopped and both checks pass in graphical mode.
++
++Commands actually run (render method/driver as in the table):
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_asphalt_surface_ownership.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_asphalt_surface_ownership.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File build/asphalt-rise-correction/run-regressions.ps1
++& .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py -q
++```
++
++Graphical bridge checks and corrected construction were also rerun individually through `scripts/dev.ps1`; the regression receipt records final modes/results and retains initial failures separately. Native captures, overlap/pixel JSON, full logs, source-only checkpoint and SHA256 receipts are in `docs/evidence/asphalt-rise-correction-2026-10-14/`. Concurrent Garage, car, handbrake, grass-tire-colour and Winter work is excluded from the checkpoint. No APK, phone run or deployment was performed. Owner appearance/feel and physical-phone moving-view acceptance remain.
+--- a/docs/GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md
++++ b/docs/GRASS_SLOWDOWN_ROAD_HEIGHT_2026_10_14.md
+@@ -1,4 +1,6 @@
+ # Grass slowdown and five-centimetre road height
++
++The height/shoulder implementation below was superseded by the owner's asphalt-only correction. See [Asphalt rise correction](ASPHALT_RISE_CORRECTION_2026_10_14.md); the grass slowdown remains.
+ 
+ Owner request, 2026-10-14: lose speed faster when entering grass, set the road slightly above terrain (about 5 cm), and account for bridge seams.
+ 
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Asphalt-only rise and flicker correction override (2026-10-14)
++The owner reports flickering and clarifies asphalt must rise, not sand. Add50mm to asphalt only; restore original flat terrain/sand/skirts/fringes, retaining the stronger grass resistance. Give ground asphalt and its flat blend one owner at crossings, close exposed rims with outward solid-face culling and clip ground caps at bridge mouths. Lift deck paint/joints and shared car/ghost/trail/object support while retaining structural rails, canonical collision/ramp shape, physics/compiler contracts and cache bounds. Both-renderer115+115 surface/bridge checks and63+63 ownership/moving-view checks pass; Vulkan18 exact views, Compatibility17 exact+one1-level edge sample. Construction113/cache70/editor407/prepared85+162/bridge8+121/ghost38/rewind61/backend70/parser748 pass. Task kit198/bridge-ramps6; combined visual kit199; concurrent physics work is retained. See `docs/ASPHALT_RISE_CORRECTION_2026_10_14.md` for actual commands/captures, initial diagnostic/test corrections and task-only checkpoint. No phone/APK/deployment; owner/phone moving-view acceptance remains. Supersedes the earlier GRH terrain-lowering/sloped-shoulder instruction.
+ 
+ ## Garage carousel picture refresh override (2026-10-14)
+ The owner requests carousel pictures matching the current Garage and slightly closer cars. All five static native cards share the full prepared room, with one-shot floor/pedestal reflections and framing scale0.84. The car-confirmation button reads `SELECT`. Keep actual local paint/kits/condition, fixed stage, bounded refresh/hidden cleanup, live main camera, selection/navigation and canonical behavior. See `docs/GARAGE_CAROUSEL_REFRESH_2026_10_14.md` for real both-renderer captures, carousel178+178/reflections25+25, scoped checkpoint and remaining owner/phone appearance acceptance. No phone test/APK/deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-14 GCP04/V05/G01/R01/Q01: owner changes Garage confirmation caption from Select car to SELECT. One runtime string plus existing caption expectation; native Compatibility carousel178 checks/0 failures and 960/1280/1600 screenshots pass. No phone test/APK/deployment. Task-only checkpoint: build/garage-select-label-2026-10-14/checkpoint-repo; evidence and actual command: docs/GARAGE_CAROUSEL_REFRESH_2026_10_14.md.
++
++2026-10-14 ARC01-ARC03/V05/G01/R01/Q01: owner corrects the road rise to asphalt only and reports flicker. Asphalt +50mm; original flat grass/sand/skirts/fringes restored. One ground/blend owner at crossings, closed outward culled rims, clipped bridge caps and lifted deck paint/joints; shared car/ghost/trail/object support and retained editor models follow asphalt only. Both-renderer115+115 actual surface/bridge and63+63 ownership checks pass (Vulkan18 exact; Compatibility17 exact+one1-code edge sample). Construction113, contact23, cache70, editor407, prepared85+162, graphical bridge8+121, contacts16, ghost38, rewind61, creator33, backend70 and 748-script parse pass. Task kit198/bridge-ramps6; combined visual kit199/compiler27 (separate physics0.58 during verification; concurrent0.59 retained); no simulation change in this correction. Native captures/initial diagnostics/startup-test correction/scoped checkpoint and remaining owner/physical-phone acceptance: docs/ASPHALT_RISE_CORRECTION_2026_10_14.md. No phone/APK/deployment.
+ 
+ 2026-10-14 GCP01-GCP03/GC06-GC28/GMM01-GMM04/GRD01-GRD03/V05/V06/G01/R01/Q01: owner refreshes Garage carousel pictures and requests slightly closer cars. All five static actual-model cards now share the current full prepared room, with one-shot floor/pedestal reflections and framing0.94->0.84 (~11.9% target-plane magnification). Compatibility baseline/updated25+25 and Mobile25 clean captures; carousel178+178/reflections25+25/scoped four-script parse and task-only whitespace pass. Native before/after comparison saved; main pane RGB differences0/1/1/5 pixels include existing record-player animation. Main camera/local paint-kits-condition/selection/canonical behavior retained; concurrent record-player/menu edits excluded from isolated checkpoint. No phone test/APK/backend/deployment or phone-performance claim. Actual commands/captures/limits/task-only checkpoint: docs/GARAGE_CAROUSEL_REFRESH_2026_10_14.md.
+ 

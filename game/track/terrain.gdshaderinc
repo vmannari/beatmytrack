@@ -7,6 +7,7 @@ uniform bool terrain_packed = false;
 uniform bool terrain_uniform_enabled = false;
 uniform int terrain_region_channel = -1;
 uniform bool terrain_region_low = false;
+uniform bool raised_road_edge = false;
 uniform ivec4 terrain_slots = ivec4(0,1,2,3);
 uniform vec2 map_texel;
 uniform vec4 color_0 : source_color;
@@ -18,9 +19,11 @@ uniform vec4 color_5 : source_color;
 uniform vec4 color_6 : source_color;
 uniform vec4 color_7 : source_color;
 varying vec3 world_position;
+varying float asphalt_edge_shade;
 
 void vertex() {
 	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	asphalt_edge_shade = COLOR.a;
 }
 
 vec4 feather(sampler2D source, vec2 uv) {
@@ -110,6 +113,7 @@ void fragment() {
 		blended += layer * weights[i];
 	}
 	ALBEDO = blended;
+	if (raised_road_edge) ALBEDO *= asphalt_edge_shade;
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g);
 	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.b);
 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,low.g+low.b);

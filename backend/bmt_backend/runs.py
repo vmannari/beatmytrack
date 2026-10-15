@@ -646,6 +646,9 @@ def tick_count(session, board_id, *conditions):
 
 @router.get("/boards/{board_id}/ghosts/{player_id}")
 def ghost(board_id: str, player_id: str, request: Request, session: BoardDB, player: Auth) -> dict:
+    target = session.get(Player, player_id)
+    if target is not None and target.deleted_at is not None:
+        raise HTTPException(410, "RECORDING_REMOVED")
     # Raw canonical controls are personal data: a public ghost will need derived position samples.
     if player.id != player_id:
         raise HTTPException(404, "Personal replay not found")

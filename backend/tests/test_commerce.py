@@ -346,12 +346,14 @@ def test_existing_publications_are_grandfathered_without_new_initial_reward(tmp_
 
     from bmt_backend.db import make_engine, make_session_factory
     from bmt_backend.migrate import configuration, upgrade
-    from bmt_backend.track_models import Track, TrackVersion
+    from bmt_backend.track_models import TrackVersion
     engine = make_engine("sqlite:///" + (tmp_path / "legacy.sqlite").as_posix())
     command.upgrade(configuration(engine), "0015_exception_recovery")
     factory = make_session_factory(engine)
     # Seed the historical table, not today's ORM (which includes later columns).
     legacy_players = Table("players", MetaData(), autoload_with=engine)
+    legacy_tracks = Table("tracks", MetaData(), autoload_with=engine)
+    legacy_versions = Table("track_versions", MetaData(), autoload_with=engine)
     owner_id, new_id = str(uuid4()), str(uuid4())
     with factory() as session:
         session.execute(legacy_players.insert(), [
@@ -360,12 +362,13 @@ def test_existing_publications_are_grandfathered_without_new_initial_reward(tmp_
                 "created_at": 1700000000}
             for identity, name in [(owner_id, "Legacy creator"), (new_id, "New creator")]
         ])
-        track = Track(owner_id=owner_id)
-        session.add(track)
-        session.flush()
+        track_id = str(uuid4())
+        session.execute(legacy_tracks.insert().values(id=track_id, owner_id=owner_id,
+            hidden=False, archived=False, official=False, created_at=1700000000))
         for number in range(1, 4):
-            session.add(TrackVersion(track_id=track.id, number=number, name="Old link",
-                content_hash="a" * 64, manifest={}, state="published", published_at=1700000000))
+            session.execute(legacy_versions.insert().values(id=str(uuid4()), track_id=track_id,
+                number=number, name="Old link", content_hash="a" * 64, manifest={}, state="published",
+                created_at=1700000000, published_at=1700000000, rating_sum=0, rating_count=0))
         session.commit()
     upgrade(engine)
     with factory() as session:

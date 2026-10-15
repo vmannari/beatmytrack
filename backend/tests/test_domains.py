@@ -103,7 +103,7 @@ def domain(tmp_path, request):
     players = {}
     with factory() as session:
         for name in ("Creator", "Alice", "Bob", "Carol"):
-            player = Player(display_name=name)
+            player = Player(display_name=name, analytics_enabled=True)
             session.add(player)
             session.flush()
             players[name] = player.id

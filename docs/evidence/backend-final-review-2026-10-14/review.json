@@ -1,0 +1,153 @@
+{
+  "date": "2026-10-14",
+  "task": "One final backend robustness/security review",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "Q01"
+  ],
+  "status": "Complete locally; one remaining lifetime-reporting defect fixed. No additional high-severity issue reproduced.",
+  "source": "Current combined workspace, including account/privacy migration 0034 after resource-bounds migration 0033; no isolated source copy.",
+  "previous_fixes": "../backend-attack-fixes-2026-10-14/fixes.json",
+  "findings": [
+    {
+      "id": "BFR01",
+      "severity": "low",
+      "status": "fixed",
+      "file": "backend/bmt_backend/discovery.py",
+      "problem": "A reused discovery snapshot advertised expires_in=1800 even after 15 seconds had elapsed. Deduplicated vectors can be older than the latest refresh.",
+      "reproduction": "expiry-before.xml: 1800 returned where 1785 was required.",
+      "change": "Carry the persisted expiry through RAM, cursor, database-restart and coalesced-creation paths; return max(0, expiry-current_time). Keep frozen IDs, existing quotas and 410 on expiry.",
+      "validation": "Three access paths on SQLite and PostgreSQL, including an old cursor rejected at its original expiry."
+    },
+    {
+      "id": "BFR02",
+      "kind": "test maintenance",
+      "status": "fixed",
+      "files": [
+        "backend/tests/test_commerce.py",
+        "backend/tests/test_publication_intents.py"
+      ],
+      "problem": "Historical migration fixtures used current TrackVersion/Player ORM columns before those columns existed. Commerce failed with missing redacted_track_hash; publication fixture had the same source mismatch.",
+      "change": "Seed/query the reflected historical tables; preserve all original source, slot, proof and queue assertions. No runtime migration changed.",
+      "validation": "legacy-fixtures.xml; publication migration also passed on PostgreSQL."
+    },
+    {
+      "id": "BFR03",
+      "kind": "test maintenance",
+      "status": "fixed",
+      "file": "backend/tests/test_resumes.py",
+      "problem": "The historical full-physics rewind equality fixture called trajectory acceptance without trajectory evidence, as recorded in the previous review.",
+      "change": "Call the existing explicit offline canonical diagnostic API for both comparisons. Keep result == original unchanged. Online trajectory-only acceptance retains no fallback.",
+      "validation": "native-and-canonical.xml: exact equality passes on pinned Godot 4.7.2."
+    }
+  ],
+  "review_and_regression_scope": [
+    "Authentication before body admission, per-player/shared peer budgets, unsupported methods and bounded strict JSON/gzip processing.",
+    "Revoked sessions rechecked after body delivery; cancelled admitted uploads release both parser slots.",
+    "Owner locks, durable publication byte/count reservations, partial IO, lease fencing, idempotent retries and protected retention references.",
+    "Real publication HTTP upload paused after durable reservation; concurrent account deletion returns 202, upload returns 401, no intent/track is created, and cleanup removes the reservation.",
+    "Frozen discovery order, RAM/database restart hints, remaining expiry, SQL materialization/storage/creation quotas and cross-replica admission.",
+    "Historical migration preservation, SQL exception/log handling, optional ghosts, admin/private-owner denial and development/public isolation in the existing regression suites.",
+    "Separate API/worker process failure/restart, POSIX SIGTERM/SIGINT/SIGKILL recovery, stale-worker fencing, safe archive restoration and backup wrappers."
+  ],
+  "test_results": {
+    "expiry-before.xml": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 0
+    },
+    "combined-before.xml": {
+      "tests": 137,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 3,
+      "passed": 133
+    },
+    "combined-native-before.xml": {
+      "tests": 324,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 9,
+      "passed": 314
+    },
+    "legacy-fixtures.xml": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 2
+    },
+    "final-focused.xml": {
+      "tests": 40,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 40
+    },
+    "regression-postgres-linux.xml": {
+      "tests": 62,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "passed": 58
+    },
+    "regression-offline-linux.xml": {
+      "tests": 93,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 93,
+      "subtests_passed": 21,
+      "test_functions_passed": 72
+    },
+    "native-and-canonical.xml": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 2
+    }
+  },
+  "combined_regression_note": "combined-native-before.xml records 314 backend passes and 9 skips, followed by one native HTTP failure caused by sandbox denial of the Windows root certificate store. The affected native HTTP check passed with host access in native-and-canonical.xml; the corrected offline rewind check passed there too. The broad run was not repeated after those two focused checks. Counts across invocations overlap and must not be summed as unique tests.",
+  "commands": [
+    ".tools/backend-secure-venv/Scripts/python.exe .tools/backend-final-review-20261014/run_sqlite.py (current source; temporary canonical exclusion then corrected in focused diagnostic)",
+    "python -m pytest backend/tests/test_backend_final_review.py backend/tests/test_discovery_paging.py backend/tests/test_attack_resistance.py -q -x -k \"not postgres\" --junitxml=final-focused.xml (explicit current backend/tests PYTHONPATH)",
+    "python -m pytest backend/tests/test_commerce.py backend/tests/test_publication_intents.py -q -x -k \"grandfathered or (upgrade_parks and not postgres)\" --junitxml=legacy-fixtures.xml",
+    "wsl -d Ubuntu -- docker inspect/start/stop bmt-backend-test; initially stopped and finally verified stopped.",
+    "wsl -d Ubuntu -- docker run --rm --network container:bmt-backend-test --read-only --tmpfs /tmp:size=128m,mode=1777,exec [read-only backend/env and writable evidence mounts] bmt-l123-runtime-test:bbee1e4eb9d0066c python /evidence/run_linux.py postgres",
+    "wsl -d Ubuntu -- docker run --rm --network none --read-only --tmpfs /tmp:size=128m,mode=1777,exec [read-only backend and writable evidence mounts] bmt-l123-runtime-test:bbee1e4eb9d0066c python /evidence/run_linux.py offline",
+    "python -m pytest backend/tests/test_privacy_http.py backend/tests/test_resumes.py -q -x -k \"native_deletion or canonical_three_rewinds_keep_original_verified_time\" --junitxml=native-and-canonical.xml (host access; native HTTP uses scripts/dev.ps1 and pinned Godot 4.7.2)",
+    "ruff check backend/bmt_backend/discovery.py backend/tests/test_backend_final_review.py backend/tests/test_commerce.py backend/tests/test_publication_intents.py backend/tests/test_resumes.py: passed.",
+    "python -m pip check in backend-secure-venv: no broken requirements.",
+    "git diff --check on owned tracked Python files: passed, with CRLF normalization notice."
+  ],
+  "environment_events": [
+    "Initial combined run: 133 passes/3 skips then the historical commerce ORM/schema mismatch; setup fixed and all original assertions pass.",
+    "Windows sandbox denied WSL service access; read-only inspection and disposable test operations succeeded with host access. No automatic approval rejection occurred.",
+    "Native Godot certificate-store access was denied in the sandbox; the unchanged native test passed with host access. No TLS or test assertion was weakened.",
+    "Cached Linux image reused without pull/build/install; PostgreSQL test schemas and source containers remained disposable. No database credentials copied to evidence."
+  ],
+  "limits_and_remaining_acceptance": [
+    "Scoped code/regression review is not an exhaustive penetration test or a guarantee against distributed denial of service. No fresh external advisory scan or live attack was run.",
+    "Plausible fabricated timestamped paths remain an approved tradeoff of lightweight trajectory verification; no full-physics acceptance fallback was added.",
+    "Production migration/deployment is unperformed and requires owner authorization; apply approved 0033/0034 in order with matching API/worker builds and durable erasure-journal backup/restore configuration.",
+    "Actual NAS/cloud host reboot, power-loss durability, production restore/load, live Google/provider/cloud-storage behavior and physical-phone acceptance were not tested in this final pass."
+  ],
+  "changed_files": [
+    "backend/bmt_backend/discovery.py",
+    "backend/tests/test_backend_final_review.py",
+    "backend/tests/test_commerce.py",
+    "backend/tests/test_publication_intents.py",
+    "backend/tests/test_resumes.py",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "backend/README.md",
+    "backend/deploy/README.md"
+  ],
+  "checkpoint": "task-only.patch contains only this final pass relative to the pre-edit combined source; concurrent work preserved.",
+  "warnings": "TestClient httpx deprecation, historical SQLite expression-index reflection warnings and one Pydantic field-alias warning are recorded; no runtime dependency changed."
+}

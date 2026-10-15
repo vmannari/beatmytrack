@@ -287,20 +287,32 @@ func status_for(document: Dictionary) -> Dictionary:
 	return _read(_path(document)) if not document.is_empty() else {}
 
 func ready_to_publish(document: Dictionary) -> bool:
-	var job: Dictionary = status_for(document)
-	return job.has("proof_file") and job.get("state","") in ["local_ready","ready","saved","draft","invalid","failed"] and not job.get("publish_requested",false)
+	return _ready_for_job(status_for(document))
 
 static func ready_to_publish_fingerprint(fingerprint: String, workflow_directory: String) -> bool:
-	if fingerprint.length() != 64 or not fingerprint.is_valid_hex_number(false): return false
-	var job: Dictionary = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
+	return presentation_for_fingerprint(fingerprint,workflow_directory).ready
+
+static func presentation_for_fingerprint(fingerprint: String, workflow_directory: String) -> Dictionary:
+	var job: Dictionary = {}
+	if fingerprint.length() == 64 and fingerprint.is_valid_hex_number(false):
+		job = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
+	# Retain only presentation fields, never the full authoring document/proof.
+	return {"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
+		"revision_conflict":str(job.get("failure","")).contains("REVISION_CONFLICT")}
+
+static func _ready_for_job(job: Dictionary) -> bool:
 	return job.has("proof_file") and job.get("state","") in ["local_ready","ready","saved","draft","invalid","failed"] and not job.get("publish_requested",false)
 
 func can_retry(document: Dictionary) -> bool:
-	var job: Dictionary = status_for(document)
+	return _retry_for_job(status_for(document))
+
+static func _retry_for_job(job: Dictionary) -> bool:
 	return job.has("publication_id") and bool(job.get("remote",{}).get("retryable",false))
 
 func caption(document: Dictionary) -> String:
-	var job: Dictionary = status_for(document)
+	return _caption_for_job(status_for(document))
+
+static func _caption_for_job(job: Dictionary) -> String:
 	if job.has("_read_error"): return "Track recovery data needs repair; original files are preserved."
 	if job.has("failure"): return str(job.failure)
 	if job.is_empty(): return "Saved on this device"

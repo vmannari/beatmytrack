@@ -10,6 +10,7 @@ from bmt_backend import (  # noqa: F401
     network_models,
     object_models,
     publication_models,
+    privacy_models,
     quality_models,
     race_statistics_models,
     resume_models,

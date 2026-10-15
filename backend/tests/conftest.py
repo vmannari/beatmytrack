@@ -41,7 +41,7 @@ def auth_client(auth_app):
 
 @pytest.fixture
 def sign_in(auth_app, auth_client):
-    def perform(subject="alice", **extra):
+    def perform(subject="alice", *, analytics=True, **extra):
         import secrets
 
         challenge = auth_client.post("/v1/auth/google/challenge").json()
@@ -55,6 +55,13 @@ def sign_in(auth_app, auth_client):
         }
         response = auth_client.post("/v1/auth/google", json=body)
         assert response.status_code == 200, response.text
-        return response.json()
+        result = response.json()
+        if analytics:
+            # Legacy telemetry fixtures explicitly opt in through the same API.
+            chosen = auth_client.post("/v1/privacy/preferences", json={"analytics_enabled": True},
+                headers={"Authorization": "Bearer " + result["access_token"]})
+            assert chosen.status_code == 200, chosen.text
+            result["player"]["analytics_enabled"] = True
+        return result
 
     return perform

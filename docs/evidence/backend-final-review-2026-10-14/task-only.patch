@@ -1,0 +1,347 @@
+diff --git a/backend/bmt_backend/discovery.py b/backend/bmt_backend/discovery.py
+--- a/backend/bmt_backend/discovery.py
++++ b/backend/bmt_backend/discovery.py
+@@ -211,11 +211,11 @@
+                 cached = cache.get(identity)
+             if cached is not None and cached[0] > timestamp and cached[2] == fingerprint:
+                 with lock: cache.move_to_end(identity)
+-                return identity, fingerprint, offset, cached[1]
++                return identity, fingerprint, offset, cached[1], cached[0]
+             row = session.get(DiscoverySnapshot, identity)
+             if row is not None and row.query_hash == fingerprint and row.expires_at > timestamp:
+                 remember(identity, row.expires_at, row.version_ids)
+-                return identity, fingerprint, offset, row.version_ids
++                return identity, fingerprint, offset, row.version_ids, row.expires_at
+             if query.cursor: raise HTTPException(410, "DISCOVERY_SNAPSHOT_EXPIRED")
+             settings = request.app.state.settings
+             actor = getattr(request.state, "budget_player_id", None)
+@@ -241,7 +241,7 @@
+             if row is not None and row.query_hash == fingerprint and row.expires_at > timestamp:
+                 session.rollback()
+                 remember(identity, row.expires_at, row.version_ids)
+-                return identity, fingerprint, offset, row.version_ids
++                return identity, fingerprint, offset, row.version_ids, row.expires_at
+             expired = dict(session.execute(select(DiscoverySnapshot.id, DiscoverySnapshot.entry_count)
+                 .where(DiscoverySnapshot.expires_at <= timestamp).limit(64)).all())
+             if row is not None:
+@@ -268,7 +268,7 @@
+                 if row is None or row.query_hash != fingerprint: raise
+                 ids = row.version_ids
+             remember(identity, row.expires_at, ids)
+-            return identity, fingerprint, offset, ids
++            return identity, fingerprint, offset, ids, row.expires_at
+     finally:
+         with lock:
+             if flights.get(flight_key) is flight: flights.pop(flight_key, None)
+@@ -277,7 +277,7 @@
+ def _page(request, session, query, credentials, random_choice=False):
+     player = _identity(request, session, credentials) if query.section == "saved" else None
+     if query.section == "saved" and player is None: raise HTTPException(401, "AUTH_REQUIRED")
+-    snapshot, fingerprint, offset, ids = _snapshot(request, session, query, player.id if player else "")
++    snapshot, fingerprint, offset, ids, expires_at = _snapshot(request, session, query, player.id if player else "")
+     if not random_choice and not query.cursor and query.locate_version in ids:
+         offset = ids.index(query.locate_version)//PAGE_SIZE*PAGE_SIZE
+     if random_choice:
+@@ -308,7 +308,7 @@
+     next_offset = offset+PAGE_SIZE
+     cursor = encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":next_offset}) if next_offset < len(ids) else None
+     session.commit()
+-    return {"items":items,"next_cursor":cursor,"page_cursor":encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":0}),"total":len(ids),"offset":offset,"snapshot":snapshot,"page_size":PAGE_SIZE,"expires_in":SNAPSHOT_SECONDS}
++    return {"items":items,"next_cursor":cursor,"page_cursor":encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":0}),"total":len(ids),"offset":offset,"snapshot":snapshot,"page_size":PAGE_SIZE,"expires_in":max(0, expires_at-int(time.time()))}
+ 
+ 
+ @router.post("/discovery/tracks")
+diff --git a/backend/tests/test_backend_final_review.py b/backend/tests/test_backend_final_review.py
+--- /dev/null
++++ b/backend/tests/test_backend_final_review.py
+@@ -0,0 +1,134 @@
++"""Final combined-source checks for expiry and interrupted authenticated uploads."""
++import asyncio
++import threading
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from types import SimpleNamespace
++from uuid import uuid4
++
++import httpx
++import pytest
++from sqlalchemy import func, select, update
++from test_attack_resistance import catalogue as catalogue_fixture
++from test_attack_resistance import domain as domain_fixture
++from test_attack_resistance import isolated_scope, query
++from test_auth_postgres import google_request, postgres_auth  # noqa: F401
++from test_domains import FakeVerifier
++from test_privacy import auth, deletion_body, drain
++from test_publication_intents import body
++
++from bmt_backend import discovery
++from bmt_backend.identity_models import SessionFamily
++from bmt_backend.publication_models import PublicationIntent, PublicationUpload
++from bmt_backend.track_models import Track
++
++domain = domain_fixture
++catalogue = catalogue_fixture
++
++
++@pytest.mark.parametrize("access", ["cached", "cursor", "restart"])
++def test_discovery_reports_remaining_lifetime_of_reused_snapshot(catalogue, monkeypatch, access):
++    epoch = 1_800_000_300
++    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch))
++    first = query(catalogue, fresh=True)
++    assert first.status_code == 200
++    assert first.json()["expires_in"] == 1800
++    # Stay in the same 20-second refresh window to cover the RAM hint as well.
++    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch + 15))
++    values = {"fresh": True}
++    if access == "cursor":
++        values = {"cursor": first.json()["page_cursor"]}
++    elif access == "restart":
++        catalogue.app.state.discovery_memory.clear()
++        catalogue.app.state.discovery_aliases.clear()
++    response = query(catalogue, **values)
++    assert response.status_code == 200
++    assert response.json()["snapshot"] == first.json()["snapshot"]
++    assert response.json()["expires_in"] == 1785
++    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch + 1800))
++    assert query(catalogue, cursor=first.json()["page_cursor"]).status_code == 410
++
++
++def test_session_revoked_during_upload_cannot_reach_the_endpoint(auth_app, sign_in):
++    signed = sign_in()
++    async def exercise():
++        messages = []
++        async def receive():
++            # Authentication succeeded before receive; invalidate it while the
++            # admitted caller is still delivering its body.
++            with auth_app.state.session_factory() as session:
++                session.execute(update(SessionFamily).where(
++                    SessionFamily.player_id == signed["player"]["id"]).values(revoked=True))
++                session.commit()
++            return {"type": "http.request", "body": b"{}", "more_body": False}
++        async def send(message):
++            messages.append(message)
++        await auth_app(isolated_scope("/v1/runs", credential="Bearer " + signed["access_token"]), receive, send)
++        assert next(message["status"] for message in messages if message["type"] == "http.response.start") == 401
++    asyncio.run(exercise())
++
++
++def test_postgres_real_publication_upload_is_fenced_by_account_deletion(postgres_auth, monkeypatch):  # noqa: F811
++    app, client = postgres_auth
++    app.state.verifier = FakeVerifier()
++    app.state.settings = replace(app.state.settings, local_drafts_only=True)
++    signed_response = client.post("/v1/auth/google", json=google_request(app, client, "final-upload-removal"))
++    assert signed_response.status_code == 200
++    signed = signed_response.json()
++    reached, resume = threading.Event(), threading.Event()
++    original = app.state.blobs.put_json
++    calls = []
++    def paused_put(data):
++        calls.append(1)
++        if len(calls) == 1:
++            reached.set()
++            assert resume.wait(10)
++        return original(data)
++    monkeypatch.setattr(app.state.blobs, "put_json", paused_put)
++    key = str(uuid4())
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        pending = pool.submit(client.post, "/v1/publications", json=body(SimpleNamespace(app=app)),
++            headers={**auth(signed), "Idempotency-Key": key})
++        try:
++            assert reached.wait(10)
++            with app.state.session_factory() as session:
++                assert session.get(PublicationUpload, (signed["player"]["id"], key)) is not None
++            removed = client.post("/v1/privacy/account-deletion", json=deletion_body(), headers=auth(signed))
++            assert removed.status_code == 202, removed.text
++        finally:
++            resume.set()
++        response = pending.result(15)
++        assert response.status_code == 401 and response.json()["detail"] == "INVALID_SESSION"
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(PublicationIntent)) == 0
++        assert session.scalar(select(func.count()).select_from(Track)) == 0
++    drain(app)
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(PublicationUpload)) == 0
++
++
++def test_cancelled_uploads_release_all_parser_slots(auth_app, sign_in):
++    signed = sign_in()
++    async def exercise():
++        reached = [asyncio.Event(), asyncio.Event()]
++        async def receive(index):
++            reached[index].set()
++            await asyncio.Event().wait()
++        async def send(_message):
++            pass
++        tasks = [asyncio.create_task(auth_app(isolated_scope("/v1/runs",
++            credential="Bearer " + signed["access_token"]),
++            lambda index=index: receive(index), send)) for index in range(2)]
++        try:
++            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in reached)), 5)
++        finally:
++            for task in tasks:
++                task.cancel()
++            results = await asyncio.gather(*tasks, return_exceptions=True)
++            assert all(isinstance(result, asyncio.CancelledError) for result in results)
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=auth_app), base_url="http://test") as client:
++            response = await client.post("/v1/runs", headers={"Authorization": "Bearer " + signed["access_token"],
++                "Idempotency-Key": str(uuid4())}, json={"ticket_id": str(uuid4()),
++                "replay": {"schema": "bmt-trajectory-v1", "input_count": 6, "race_proof": {}}})
++            assert response.status_code == 404 and response.json()["detail"] == "Run ticket not found"
++    asyncio.run(exercise())
+diff --git a/backend/tests/test_commerce.py b/backend/tests/test_commerce.py
+--- a/backend/tests/test_commerce.py
++++ b/backend/tests/test_commerce.py
+@@ -346,12 +346,14 @@
+ 
+     from bmt_backend.db import make_engine, make_session_factory
+     from bmt_backend.migrate import configuration, upgrade
+-    from bmt_backend.track_models import Track, TrackVersion
++    from bmt_backend.track_models import TrackVersion
+     engine = make_engine("sqlite:///" + (tmp_path / "legacy.sqlite").as_posix())
+     command.upgrade(configuration(engine), "0015_exception_recovery")
+     factory = make_session_factory(engine)
+     # Seed the historical table, not today's ORM (which includes later columns).
+     legacy_players = Table("players", MetaData(), autoload_with=engine)
++    legacy_tracks = Table("tracks", MetaData(), autoload_with=engine)
++    legacy_versions = Table("track_versions", MetaData(), autoload_with=engine)
+     owner_id, new_id = str(uuid4()), str(uuid4())
+     with factory() as session:
+         session.execute(legacy_players.insert(), [
+@@ -360,12 +362,13 @@
+                 "created_at": 1700000000}
+             for identity, name in [(owner_id, "Legacy creator"), (new_id, "New creator")]
+         ])
+-        track = Track(owner_id=owner_id)
+-        session.add(track)
+-        session.flush()
++        track_id = str(uuid4())
++        session.execute(legacy_tracks.insert().values(id=track_id, owner_id=owner_id,
++            hidden=False, archived=False, official=False, created_at=1700000000))
+         for number in range(1, 4):
+-            session.add(TrackVersion(track_id=track.id, number=number, name="Old link",
+-                content_hash="a" * 64, manifest={}, state="published", published_at=1700000000))
++            session.execute(legacy_versions.insert().values(id=str(uuid4()), track_id=track_id,
++                number=number, name="Old link", content_hash="a" * 64, manifest={}, state="published",
++                created_at=1700000000, published_at=1700000000, rating_sum=0, rating_count=0))
+         session.commit()
+     upgrade(engine)
+     with factory() as session:
+diff --git a/backend/tests/test_publication_intents.py b/backend/tests/test_publication_intents.py
+--- a/backend/tests/test_publication_intents.py
++++ b/backend/tests/test_publication_intents.py
+@@ -310,10 +310,9 @@
+     import uuid
+ 
+     from alembic import command
+-    from sqlalchemy import create_engine, text
++    from sqlalchemy import MetaData, Table, create_engine, text
+     from sqlalchemy.orm import Session
+ 
+-    from bmt_backend.identity_models import Player
+     from bmt_backend.migrate import configuration
+     from bmt_backend.track_models import QueuePlayer, TrackValidation, now
+ 
+@@ -327,20 +326,25 @@
+         engine = create_engine("sqlite:///"+(tmp_path/"legacy.sqlite").as_posix())
+     try:
+         command.upgrade(configuration(engine), "0027_client_quality")
++        # Historical migrations must use their actual tables, not ORM columns
++        # introduced by later account/privacy migrations.
++        legacy_players = Table("players", MetaData(), autoload_with=engine)
++        legacy_tracks = Table("tracks", MetaData(), autoload_with=engine)
++        legacy_versions = Table("track_versions", MetaData(), autoload_with=engine)
+         with Session(engine) as session:
+-            owner = Player(display_name="Legacy Owner")
+-            session.add(owner)
+-            session.flush()
+-            track = Track(owner_id=owner.id, authoring_id="kept_draft")
+-            session.add(track)
+-            session.flush()
+-            source = TrackVersion(track_id=track.id, number=1, name="Legacy draft", content_hash="a"*64,
+-                manifest={}, state="validating")
+-            published = TrackVersion(track_id=track.id, number=2, name="Published retained", content_hash="b"*64,
+-                manifest={}, state="published", published_at=now())
+-            session.add_all((source, published))
+-            session.flush()
+-            version_id, published_id, owner_id = source.id, published.id, owner.id
++            owner_id, track_id, version_id, published_id = (str(uuid.uuid4()) for _ in range(4))
++            session.execute(legacy_players.insert().values(id=owner_id, display_name="Legacy Owner",
++                username_key="legacy owner", disabled=False, needs_username=False, is_test_driver=False,
++                created_at=now()))
++            session.execute(legacy_tracks.insert().values(id=track_id, owner_id=owner_id,
++                authoring_id="kept_draft", hidden=False, archived=False, official=False, created_at=now()))
++            for identity, number, name, content_hash, state in (
++                (version_id, 1, "Legacy draft", "a"*64, "validating"),
++                (published_id, 2, "Published retained", "b"*64, "published")):
++                session.execute(legacy_versions.insert().values(id=identity, track_id=track_id,
++                    number=number, name=name, content_hash=content_hash, manifest={}, state=state,
++                    created_at=now(), published_at=now() if state == "published" else None,
++                    rating_sum=0, rating_count=0))
+             original_detail = "x"*500
+             lease_token = str(uuid.uuid4())
+             session.execute(text("""INSERT INTO track_validations(version_id,status,attempts,lease_until,lease_token,failure_code,detail,created_at)
+@@ -355,8 +359,8 @@
+             assert kept.legacy_workflow_snapshot == {"status": "validating", "failure_code": "validator_unavailable",
+                 "detail": original_detail, "attempts": 2, "lease_until": 1234567890, "lease_token": lease_token}
+             assert count(session, Track) == 1 and count(session, TrackVersion) == 2
+-            assert session.get(TrackVersion, version_id).content_hash == "a"*64
+-            assert session.get(TrackVersion, published_id).state == "published"
++            assert session.scalar(select(legacy_versions.c.content_hash).where(legacy_versions.c.id == version_id)) == "a"*64
++            assert session.scalar(select(legacy_versions.c.state).where(legacy_versions.c.id == published_id)) == "published"
+             assert session.get(QueueCapacity, 1).pending == session.get(QueuePlayer, owner_id).pending == 0
+     finally:
+         engine.dispose()
+diff --git a/backend/tests/test_resumes.py b/backend/tests/test_resumes.py
+--- a/backend/tests/test_resumes.py
++++ b/backend/tests/test_resumes.py
+@@ -173,9 +173,11 @@
+ 
+ 
+ def test_canonical_three_rewinds_keep_original_verified_time(real_verifier, race_fixture):
++    # Full replay equality belongs to the explicit offline diagnostic. Online
++    # acceptance requires trajectory evidence and never falls back to physics.
+     replay = rewind_fixture(race_fixture["replay"])
+-    result = real_verifier.verify_run(race_fixture["document"], replay, "compact")
+-    original = real_verifier.verify_run(race_fixture["document"], race_fixture["replay"], "compact")
++    result = real_verifier.verify_canonical_diagnostic(race_fixture["document"], replay, "compact")
++    original = real_verifier.verify_canonical_diagnostic(race_fixture["document"], race_fixture["replay"], "compact")
+     assert result == original
+ 
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-14 BFR01/B01/B05/B07/Q01: owner final combined backend review. Correct reused discovery snapshot lifetime (remaining seconds, not a renewed 30 minutes); preserve frozen order, quotas and cursor expiry. Historical schema fixtures now reflect historical tables; rewind equality uses the explicit offline canonical diagnostic with the original assertion. Added revocation during body delivery, cancelled-slot recovery, RAM/cursor/restart expiry and real publication-IO/account-deletion concurrency checks. Combined regressions 314pass/9skips; focused40; final PostgreSQL58/4skips; offline Linux72+21subtests; native HTTP/offline rewind2 pass. Initial schema and sandbox certificate-store failures are recorded, then affected checks pass without weakened assertions. No additional high-severity issue reproduced. Test PG restored stopped; no production writes, deployment, physical-phone or host power-loss test. Actual commands, limits and task-only checkpoint: docs/evidence/backend-final-review-2026-10-14/review.json.
++
+ 2026-10-14 WIND16-WIND18/V04/V05/G01/R01/Q01: owner rejects previous Winter wind as too fast/excessive. Visual travel28-36 becomes12-18mps; snow amount0.24-1 becomes0.12-0.45, ground gain0.88 becomes0.60 and local phase warps soften. Wind14/kit193; same ground integration/thin streams/48grains96tri/two reads/artwork/camera/vehicle snow clouds/canonical behavior. Actual paired modest-gust motion30->13.5mps, RGB contribution ratio0.3089 Compatibility/0.3128 Mobile; both84 checks/cache70 pass. Initial sandbox user-log access failure retained; authorized retry passes. No phone/APK/deploy/fullValidate or FPS/AAA claim. Actual captures/commands/scoped checkpoint and owner acceptance: docs/WINTER_WIND_RESTRAINT.md.
+ 
+ 2026-10-14 LVY01-LVY04/LE01-LE04/LV01-LV06/LM01-LM05/V03-V06/G01/R01/Q01: owner adds variety/tribal. Six original abstract tribal plus ten brush/splash/Art Deco/optical/paisley/weave/scale/petal/halftone/graffiti wraps;48 total plus Midnight. Prior32 IDs/palettes and178 photo/sticker files hash-exact;24 decals/colour roles/local condition/saves/actual kits/camera/canonical retained.80 new mipmapped native320x200 photos4937869bytes,245 total; optional scoped bake avoids rewriting old cards. Final842Compatibility+842MobileVulkan/710-script parse pass; both-renderer real sheets/browser/race captures and final validation receipts recorded. Concurrent class/trail/dust interface failures retained and retried after publication; no source/check weakening. No phone commands/device test/APK/fullValidate/backend/deploy/phoneFPS claim. Actual commands/provenance/task-only checkpoint and remaining owner/device acceptance: docs/LIVERY_VARIETY_2026_10_14.md.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-14 BFR01/B01/B05/B07/Q01: owner final combined backend review. Correct reused discovery snapshot lifetime (remaining seconds, not a renewed 30 minutes); preserve frozen order, quotas and cursor expiry. Historical schema fixtures now reflect historical tables; rewind equality uses the explicit offline canonical diagnostic with the original assertion. Added revocation during body delivery, cancelled-slot recovery, RAM/cursor/restart expiry and real publication-IO/account-deletion concurrency checks. Combined regressions 314pass/9skips; focused40; final PostgreSQL58/4skips; offline Linux72+21subtests; native HTTP/offline rewind2 pass. Initial schema and sandbox certificate-store failures are recorded, then affected checks pass without weakened assertions. No additional high-severity issue reproduced. Test PG restored stopped; no production writes, deployment, physical-phone or host power-loss test. Actual commands, limits and task-only checkpoint: docs/evidence/backend-final-review-2026-10-14/review.json.
++
+ 2026-10-14 WIND16-WIND18/V04/V05/G01/R01/Q01: owner rejects previous Winter wind as too fast/excessive. Visual travel28-36 becomes12-18mps; snow amount0.24-1 becomes0.12-0.45, ground gain0.88 becomes0.60 and local phase warps soften. Wind14/kit193; same ground integration/thin streams/48grains96tri/two reads/artwork/camera/vehicle snow clouds/canonical behavior. Actual paired modest-gust motion30->13.5mps, RGB contribution ratio0.3089 Compatibility/0.3128 Mobile; both84 checks/cache70 pass. Initial sandbox user-log access failure retained; authorized retry passes. No phone/APK/deploy/fullValidate or FPS/AAA claim. Actual captures/commands/scoped checkpoint and owner acceptance: docs/WINTER_WIND_RESTRAINT.md.
+ 
+ 2026-10-14 LVY01-LVY04/LE01-LE04/LV01-LV06/LM01-LM05/V03-V06/G01/R01/Q01: owner adds variety/tribal. Six original abstract tribal plus ten brush/splash/Art Deco/optical/paisley/weave/scale/petal/halftone/graffiti wraps;48 total plus Midnight. Prior32 IDs/palettes and178 photo/sticker files hash-exact;24 decals/colour roles/local condition/saves/actual kits/camera/canonical retained.80 new mipmapped native320x200 photos4937869bytes,245 total; optional scoped bake avoids rewriting old cards. Final842Compatibility+842MobileVulkan/710-script parse pass; both-renderer real sheets/browser/race captures and final validation receipts recorded. Concurrent class/trail/dust interface failures retained and retried after publication; no source/check weakening. No phone commands/device test/APK/fullValidate/backend/deploy/phoneFPS claim. Actual commands/provenance/task-only checkpoint and remaining owner/device acceptance: docs/LIVERY_VARIETY_2026_10_14.md.
+diff --git a/backend/README.md b/backend/README.md
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -221,3 +221,5 @@
+ ## Account privacy and erasure journal
+ 
+ Migration0034 adds irreversible account removal with retained public tracks/standings, optional analytics off by default, public `/privacy` and `/account-deletion` resources, and an independent erasure journal. Configure `BMT_PRIVACY_DEVELOPER_NAME`, `BMT_PRIVACY_CONTACT_EMAIL`, `BMT_PRIVACY_BACKUP_DAYS` (30) and `BMT_PRIVACY_PURCHASE_DAYS` (365). Preserve the sibling local object directory or the separate cloud journal prefix through backups/restores; do not restore that journal to an older snapshot. See [account privacy implementation and offline restore runbook](../docs/ACCOUNT_PRIVACY_2026_10_14.md).
++
++The [final combined backend review](../docs/evidence/backend-final-review-2026-10-14/review.json) checks the attack fixes together with account erasure, database migrations and process recovery. Discovery responses now report the actual remaining snapshot lifetime. Host reboot/power-loss and production rollout remain separate acceptance checks.
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,5 @@
++2026-10-14 final combined backend review covers the current 0033/0034 source, including real publication upload/account-deletion fencing and cross-process restart recovery. Reused discovery snapshots report their actual remaining lifetime. Local checks pass; coordinated approved migrations, matching API/worker images and deployment-host reboot/restore/load acceptance remain. No production operation was performed. Evidence: ../../docs/evidence/backend-final-review-2026-10-14/review.json.
++
+ 2026-10-14 backend attack fixes BA01-BA04 prepare migration `0033_attack_resource_bounds`: migrate the approved schema before running matching API/worker code. No production migration or deployment was performed. Large authenticated routes reject invalid sessions before body IO; unsupported methods/bodies never enter large parsing. Discovery uses an independent slot, shared frozen order vectors and database/creation budgets. Defaults are `BMT_PUBLICATION_EVIDENCE_BYTES=67108864`, `BMT_PUBLICATION_EVIDENCE_COUNT=128`, `BMT_DISCOVERY_CATALOGUE_LIMIT=100000`, `BMT_DISCOVERY_SNAPSHOT_IDS=1000000`, `BMT_DISCOVERY_SNAPSHOT_COUNT=2048`, `BMT_DISCOVERY_CREATE_PER_MINUTE=20`; these are hosting limits to assess against measured load. Full creation budgets return explicit 429/503 while cached pages remain usable. Incomplete/failed publication evidence stays charged across crashes; matching delivery reuses its reservation. Run recurring bounded `maintenance --retention --apply-retention --online` through the authorized operations workflow (or `--offline` with every writer stopped). At the existing retention age, terminal rejected evidence and expired incomplete uploads become small permanent retry tombstones; published content and recoverable validator/build/slot failures remain protected. Legacy nonpublished rows are conservatively charged at 2.5 MiB each, so review old rejected evidence and quotas before rollout. Full privacy/account-feature integration and deployment-host reboot/restore/load acceptance remain separate. Tests/task-only checkpoint: ../../docs/evidence/backend-attack-fixes-2026-10-14/fixes.json.
+ 
+ 2026-10-13 backend second pass BR07-BR10: shared storage integrity checks now reject exponent-overflow numbers (1e400), duplicate keys, invalid Unicode and excessive nesting on every object backend and archive restore. Reusing an existing immutable object repeats directory durability flushes, including recovery after a link succeeded but its flush failed. Names exceeding the normalized database comparison-key limit return validation errors before SQL. Server/client ghost components are bounded before rendering while race proof remains independent. Tests, scope and remaining target-host reboot/restore/blocked-IO acceptance: ../../docs/evidence/backend-robustness-second-pass-2026-10-13/report.json.

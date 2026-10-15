@@ -9,10 +9,11 @@ import time
 import uuid
 import zlib
 from collections import OrderedDict
-from contextlib import nullcontext
+from contextlib import AsyncExitStack, nullcontext
 from functools import lru_cache
 
 from fastapi import HTTPException
+from fastapi.dependencies.utils import get_dependant, solve_dependencies
 from fastapi.routing import APIRoute, iter_route_contexts
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -33,6 +34,40 @@ log = logging.getLogger("bmt.requests")
 @lru_cache(maxsize=512)
 def _template_pattern(path):
     return compile_path(path)[0]
+
+
+async def upload_identity(scope):
+    """Use the same authentication dependency, including explicit test overrides."""
+    from fastapi import Depends, Request
+
+    from .security import current_player
+
+    def required(player=Depends(current_player)):
+        return player
+
+    async with AsyncExitStack() as stack:
+        names = ("fastapi_inner_astack", "fastapi_function_astack")
+        previous = {name: scope.get(name) for name in names}
+        scope.update({name: stack for name in names})
+        try:
+            solved = await solve_dependencies(request=Request(scope),
+                dependant=get_dependant(path=scope["path"], call=required),
+                dependency_overrides_provider=scope["app"], async_exit_stack=stack, embed_body_fields=False)
+            if solved.errors:
+                raise HTTPException(401, "AUTH_REQUIRED")
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    scope.pop(name, None)
+                else:
+                    scope[name] = value
+    # The endpoint rechecks revocation after body delivery without charging twice.
+    scope["state"].pop("authenticated_player", None)
+
+
+def requires_player(dependant):
+    from .security import current_player
+    return dependant.call is current_player or any(requires_player(child) for child in dependant.dependencies)
 
 
 def check_budget(factory, peer: str, category: str, limit: int, amount: int = 1, *, session=None) -> bool:
@@ -97,6 +132,7 @@ class RequestBoundary:
         self.app, self.settings, self.session_factory = app, settings, session_factory
         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
         self.telemetry_parsers = asyncio.Semaphore(1)
+        self.discovery_parsers = asyncio.Semaphore(1)
         self.read_leases = OrderedDict()
         self.denied_peers = OrderedDict()
         self.denied_credentials = OrderedDict()
@@ -106,10 +142,10 @@ class RequestBoundary:
         self.client_address = ClientAddress(settings.trusted_proxy_networks)
 
     @staticmethod
-    def route_template(scope):
+    def route_context(scope):
         """Resolve only a declared template, including rejection before routing."""
         router = getattr(scope.get("app"), "router", None)
-        partial = "unmatched"
+        partial = ("unmatched", None)
         path = get_route_path(scope)
         # FastAPI's effective contexts retain prefixes through included/nested
         # routers. Original APIRoute.path omits those prefixes in this version.
@@ -119,10 +155,14 @@ class RequestBoundary:
                 continue
             methods = getattr(context.original_route, "methods", None)
             if not methods or scope["method"] in methods:
-                return template
-            if partial == "unmatched":
-                partial = template
+                return template, context.original_route
+            if partial[1] is None:
+                partial = template, context.original_route
         return partial
+
+    @staticmethod
+    def route_template(scope):
+        return RequestBoundary.route_context(scope)[0]
 
     async def read_budget(self, peer, limit, category="read"):
         # Reserve small chunks in PostgreSQL, so replicas still share a hard ceiling.
@@ -194,7 +234,8 @@ class RequestBoundary:
         request = Request(scope)
         with self.session_factory() as session:
             try:
-                current_player(request, HTTPAuthorizationCredentials(scheme="Bearer", credentials=pieces[1]), session)
+                player = current_player(request, HTTPAuthorizationCredentials(scheme="Bearer", credentials=pieces[1]), session)
+                request.state.budget_player_id = player.id
             except HTTPException as error:
                 if error.status_code == 401:
                     return False
@@ -214,6 +255,7 @@ class RequestBoundary:
         response_started = False
         acquired = False
         acquired_pool = None
+        identity_admitted = False
         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
 
         async def response_send(message):
@@ -235,8 +277,8 @@ class RequestBoundary:
                 response_bytes += len(message.get("body",b""))
             await send(message)
 
-        async def error(code, message):
-            return await JSONResponse({"detail": message, "request_id": request_id}, status_code=code)(
+        async def error(code, message, headers=None):
+            return await JSONResponse({"detail": message, "request_id": request_id}, status_code=code, headers=headers)(
                 scope, receive, response_send
             )
 
@@ -289,6 +331,7 @@ class RequestBoundary:
                 if provided:
                     try:
                         if await run_in_threadpool(self.validated_identity_budget, scope, headers[b"authorization"]):
+                            identity_admitted = True
                             self.remember_credential(credential_key)
                         else:
                             self.known_credentials.pop(credential_key, None)
@@ -307,21 +350,18 @@ class RequestBoundary:
                             self.known_credentials.pop(credential_key, None)
                         return await error(denied.status_code, denied.detail)
             path = scope["path"]
-            limit = min(self.settings.max_body_bytes, 64*1024 if path == "/v1/telemetry/batches" else
+            _template, route = self.route_context(scope)
+            if route is not None and route.methods and method not in route.methods:
+                return await error(405, "METHOD_NOT_ALLOWED", {"Allow": ", ".join(sorted(route.methods))})
+            # Small control writes historically send {} even without a Body
+            # parameter. Unknown routes retain only that small allowance.
+            body_allowed = ((isinstance(route, APIRoute) and route.body_field is not None)
+                            or method in ("POST", "PUT", "PATCH", "DELETE"))
+            limit = min(self.settings.max_body_bytes, 32768 if route is None and scope.get("app") is not None else
+                        64*1024 if path == "/v1/telemetry/batches" else
                         8*1024*1024 if path in ("/v1/runs", "/v1/publications", "/v1/discovery/tracks", "/v1/discovery/random") else
                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
-            upload = method in ("POST", "PUT", "PATCH") and limit > 32768
-            encoding = headers.get(b"content-encoding", b"identity")
-            if encoding not in (b"identity", b"gzip"):
-                return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
-            if upload:
-                try:
-                    acquired_pool = self.telemetry_parsers if path == "/v1/telemetry/batches" else self.parsers
-                    await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
-                    acquired = True
-                except (asyncio.TimeoutError, TimeoutError):
-                    return await error(503, "REQUEST_VALIDATION_BUSY")
-            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == b"gzip" else None
+            upload = body_allowed and limit > 32768
             length = headers.get(b"content-length")
             if length is not None:
                 try:
@@ -330,6 +370,32 @@ class RequestBoundary:
                     return await error(400, "INVALID_CONTENT_LENGTH")
                 if declared < 0 or declared > limit:
                     return await error(413, "PAYLOAD_TOO_LARGE")
+                if declared and not body_allowed:
+                    return await error(400, "REQUEST_BODY_NOT_ALLOWED")
+            if not body_allowed and b"transfer-encoding" in headers:
+                return await error(400, "REQUEST_BODY_NOT_ALLOWED")
+            if upload and isinstance(route, APIRoute) and requires_player(route.dependant):
+                if not identity_admitted:
+                    try:
+                        await upload_identity(scope)
+                    except SQLAlchemyError as exc:
+                        return await database_error(exc)
+                    except HTTPException as denied:
+                        return await error(denied.status_code, denied.detail, denied.headers)
+                scope["state"].pop("authenticated_player", None)
+            encoding = headers.get(b"content-encoding", b"identity")
+            if encoding not in (b"identity", b"gzip"):
+                return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
+            if upload:
+                try:
+                    acquired_pool = (self.telemetry_parsers if path == "/v1/telemetry/batches" else
+                                     self.discovery_parsers if path in ("/v1/discovery/tracks", "/v1/discovery/random")
+                                     else self.parsers)
+                    await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
+                    acquired = True
+                except (asyncio.TimeoutError, TimeoutError):
+                    return await error(503, "REQUEST_VALIDATION_BUSY")
+            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == b"gzip" else None
             body = bytearray()
             wire_bytes = 0
             try:
@@ -339,6 +405,8 @@ class RequestBoundary:
                     if message["type"] == "http.disconnect":
                         return
                     chunk = message.get("body", b"")
+                    if chunk and not body_allowed:
+                        return await error(400, "REQUEST_BODY_NOT_ALLOWED")
                     wire_bytes += len(chunk)
                     if wire_bytes > limit:
                         return await error(413, "PAYLOAD_TOO_LARGE")

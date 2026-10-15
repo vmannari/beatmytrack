@@ -73,6 +73,8 @@ def track_payload(version: TrackVersion, track: Track, creator: str, base_url: s
         "name": version.name,
         "creator_id": track.owner_id,
         "creator": creator,
+        "redacted_track_hash": version.redacted_track_hash,
+        "canonical_track_hash": version.manifest.get("track_content_hash") if version.redacted_track_hash else None,
         "state": version.state,
         "hidden": track.hidden,
         "content_hash": version.content_hash,
@@ -563,6 +565,9 @@ def public_version(version_id: str, request: Request, session: DB) -> dict:
 @router.get("/track-versions/{version_id}/document")
 def public_document(version_id: str, request: Request, session: DB) -> Response:
     version = published_version(session, version_id) # Always recheck account visibility.
+    owner = session.get(Player, session.get(Track, version.track_id).owner_id)
+    if owner.deleted_at is not None and version.redacted_track_hash is None:
+        raise HTTPException(503, "AUTHOR_REDACTION_PENDING")
     etag = '"' + version.content_hash + '"'
     headers = {"ETag": etag, "Cache-Control": "public, max-age=0, must-revalidate"}
     if request.headers.get("if-none-match") == etag:

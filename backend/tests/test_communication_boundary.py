@@ -46,9 +46,9 @@ def test_publication_larger_than_old_control_limit_is_durable(publications, comp
 
 
 @pytest.mark.parametrize("compressed", [False, True])
-def test_publication_over_global_limit_is_rejected(auth_client, compressed):
+def test_publication_over_global_limit_is_rejected(auth_client, sign_in, compressed):
     raw = b'{"document":"' + b"x" * (8 * 1024 * 1024) + b'"}'
-    request_headers = {"Content-Type": "application/json"}
+    request_headers = {"Content-Type": "application/json", "Authorization": "Bearer " + sign_in()["access_token"]}
     if compressed:
         request_headers["Content-Encoding"] = "gzip"
     response = auth_client.post("/v1/publications", content=gzip.compress(raw) if compressed else raw,

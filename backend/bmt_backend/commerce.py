@@ -53,7 +53,7 @@ def lock_entitlements(session, player_id):
         session.execute(update(Player).where(Player.id == player_id).values(created_at=Player.created_at))
     player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
         .execution_options(populate_existing=True))
-    if player is None or player.disabled:
+    if player is None or player.disabled or player.deleted_at is not None:
         raise HTTPException(401, "INVALID_SESSION")
     row = session.get(Entitlements, player_id)
     if row is None:

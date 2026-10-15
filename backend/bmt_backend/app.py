@@ -29,6 +29,8 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         commerce,
         discovery,
         network_health,
+        privacy,
+        privacy_pages,
         product_analytics,
         publications,
         quality,
@@ -67,8 +69,12 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
                     if hasattr(application.state.blobs, "close"):
                         await run_in_threadpool(application.state.blobs.close)
                 finally:
-                    if hasattr(adapter, "close"):
-                        await run_in_threadpool(adapter.close)
+                    try:
+                        if hasattr(application.state.erasure_journal, "close"):
+                            await run_in_threadpool(application.state.erasure_journal.close)
+                    finally:
+                        if hasattr(adapter, "close"):
+                            await run_in_threadpool(adapter.close)
 
     app = FastAPI(title="Beat my track API", version="0.1.0", docs_url="/docs", redoc_url=None, lifespan=lifespan)
     app.state.settings = settings
@@ -76,6 +82,8 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.session_factory = make_session_factory(app.state.engine)
     app.state.identity_budgets = IdentityBudgets(app.state.session_factory)
     app.state.blobs = make_blob_store(settings, app.state.session_factory)
+    from .erasure_journal import make_journal
+    app.state.erasure_journal = make_journal(settings)
     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
     app.state.readiness = ReadinessProbe(app)
@@ -92,6 +100,8 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.include_router(studio_competitions.router)
     app.include_router(studio_catalogue.router)
     app.include_router(telemetry.router)
+    app.include_router(privacy.router)
+    app.include_router(privacy_pages.router)
     app.include_router(product_analytics.router)
     app.include_router(quality.router)
     app.include_router(network_health.router)
@@ -153,6 +163,9 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "service": "beat-my-track",
             "api_version": "v1",
             "auth": "google",
+            "privacy": {"schema_version": 1, "policy_url": settings.public_base_url.rstrip("/") + "/privacy",
+                "deletion_url": settings.public_base_url.rstrip("/") + "/account-deletion",
+                "policy_version": "bmt-privacy-v1", "tracks_retained": True, "standings_retained": True},
             "google_configured": bool(settings.google_client_ids),
             "google_browser_configured": bool(settings.google_web_client_id),
             "development_auth": settings.dev_auth_enabled,

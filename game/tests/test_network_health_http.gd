@@ -14,6 +14,9 @@ func run() -> void:
 	var bootstrap: Dictionary = await client.request_api("/bootstrap")
 	check(bootstrap.ok and bootstrap.data.product_telemetry.network_schema_version == 1,"actual bootstrap negotiates network health")
 	var signed: Dictionary = await client.development_login("network-http-fixture","Network Fixture",OS.get_environment("BMT_DEV_AUTH_KEY"))
+	if signed.ok:
+		var consent: Dictionary = await client.request_api("/privacy/preferences",HTTPClient.METHOD_POST,{"analytics_enabled":true},"",true)
+		if consent.ok: client.player.analytics_enabled = true
 	check(signed.ok and client.network_supported(),"owned development identity enables authenticated observations")
 	if not signed.ok: quit(1); return
 	var telemetry := Telemetry.new(); telemetry.client = client

@@ -112,7 +112,11 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
                     if hasattr(app.state, "blobs") and hasattr(app.state.blobs, "close"):
                         app.state.blobs.close()
                 finally:
-                    app.state.engine.dispose()
+                    try:
+                        if hasattr(app.state, "erasure_journal") and hasattr(app.state.erasure_journal, "close"):
+                            app.state.erasure_journal.close()
+                    finally:
+                        app.state.engine.dispose()
             finally:
                 for signum, handler in previous.items():
                     signal.signal(signum, handler)

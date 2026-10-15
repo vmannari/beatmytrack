@@ -157,6 +157,14 @@ def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
         events = session.scalars(select(ProductEvent).where(ProductEvent.processed_at.is_(None))
             .order_by(ProductEvent.received_at, ProductEvent.id).limit(limit)).all()
         players = {event.player_id for event in events}
+        references = players | {event.properties.get("owner_id") for event in events if event.properties.get("owner_id")}
+        removed = set(session.scalars(select(Player.id).where(Player.id.in_(references), Player.deleted_at.is_not(None)))) if references else set()
+        for event in events:
+            if event.player_id in removed:
+                if event.source == "client": state.pending_clients = max(0, state.pending_clients - 1)
+                session.delete(event)
+        events = [event for event in events if event.player_id not in removed]
+        players -= removed
         client_quality.project(session, events, insert_for)
         race_statistics.project(session, events)
         network_health.project(session, events)
@@ -207,6 +215,8 @@ def project_pending(factory, *, limit=500, at=None, raw_days=7, fact_days=180):
             if event.source == "server" and event.name in ("track_published", "race_accepted"):
                 version = props.get("track_version_id", props.get("track_version"))
                 owner = props.get("owner_id") or (event.player_id if event.name == "track_published" else None)
+                if owner in removed:
+                    owner = None
                 published_at = props.get("published_at", event.occurred_at if event.name == "track_published" else None)
                 if version and owner and published_at is not None and published_at >= (at // DAY - fact_days) * DAY:
                     publication = publications.get(version)

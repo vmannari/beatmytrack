@@ -32,6 +32,9 @@ var resume_recovery: Node
 var session_vault: RefCounted = preload("res://backend/session_vault.gd").new()
 var _idle_requests: Array[HTTPRequest] = []
 var network_health: RefCounted = preload("res://backend/network_health.gd").new()
+var analytics_opt_in: bool = true
+var _delete_request_id: String = ""
+var _delete_access_token: String = ""
 var _pending_network_context: Dictionary = {}
 
 func _vault_context() -> String:
@@ -124,7 +127,7 @@ func auth_busy() -> bool:
 
 func telemetry_supported() -> bool:
 	var capability: Variant = _capabilities.get("product_telemetry",{})
-	return signed_in() and capability is Dictionary and bool(capability.get("enabled",false)) and int(capability.get("schema_version",0)) == 1
+	return _delete_request_id.is_empty() and analytics_opt_in and bool(player.get("analytics_enabled",true)) and signed_in() and capability is Dictionary and bool(capability.get("enabled",false)) and int(capability.get("schema_version",0)) == 1
 
 func cancel_telemetry() -> void:
 	_telemetry_epoch += 1
@@ -167,7 +170,13 @@ func request_telemetry(payload: Dictionary) -> Dictionary:
 	# Optional observations never reserve the mutation queue or rotate credentials.
 	# Expired credentials retain the same durable events for a later normal sign-in.
 	if not telemetry_supported() or _busy or _refresh_busy: return _failure("TELEMETRY_DEFERRED")
-	return await _send("/telemetry/batches",HTTPClient.METHOD_POST,payload,true,"",PackedStringArray(),_telemetry_epoch)
+	var response: Dictionary = await _send("/telemetry/batches",HTTPClient.METHOD_POST,payload,true,"",PackedStringArray(),_telemetry_epoch)
+	if int(response.get("status",0)) == 403 and response.get("error") == "ANALYTICS_DISABLED":
+		player.analytics_enabled = false
+		analytics_opt_in = false
+		network_health._scopes.clear()
+		identity_changed.emit()
+	return response
 
 static func refresh_retry_safe(response: Dictionary) -> bool:
 	return bool(response.get("not_delivered",false)) or (bool(response.get("recoverable_refresh",false)) and (int(response.get("status",0)) in [0,429,500,502,503,504] or str(response.get("error","")) in ["INVALID_INPUT","INVALID_RESPONSE"])) or (int(response.get("status",0)) == 429 and str(response.get("error","")) == "RATE_LIMITED") or (int(response.get("status",0)) == 503 and str(response.get("error","")) == "REQUEST_VALIDATION_BUSY")
@@ -211,6 +220,8 @@ func clear_session(preserve_saved: bool = false) -> void:
 	_access_token = ""
 	_refresh_token = ""
 	_refresh_request_id = ""
+	_delete_request_id = ""
+	_delete_access_token = ""
 	_login_id = ""
 	player = {}
 	identity_changed.emit()
@@ -234,6 +245,9 @@ func _save_session() -> void:
 	config.set_value("session", "login_id", _login_id)
 	config.set_value("session", "player_id", str(player.get("id","")))
 	if not _refresh_request_id.is_empty(): config.set_value("session","refresh_request_id",_refresh_request_id)
+	if not _delete_request_id.is_empty():
+		config.set_value("session","delete_request_id",_delete_request_id)
+		config.set_value("session","delete_access_token",_delete_access_token)
 	persistence_error = _write_saved_config(config) != OK
 	if not session_vault.available(): _forget_saved_session()
 	if not persistence_error and FileAccess.file_exists(session_path+".signed_out"):
@@ -256,6 +270,14 @@ func restore_session() -> Dictionary:
 	if str(config.get_value("session", "url", "")) != _base_url:
 		clear_session()
 		return _failure("SIGN_IN_REQUIRED")
+	_delete_request_id = str(config.get_value("session","delete_request_id",""))
+	_delete_access_token = str(config.get_value("session","delete_access_token",""))
+	if not _delete_request_id.is_empty() and not _delete_access_token.is_empty():
+		_access_token = _delete_access_token
+		_refresh_token = str(config.get_value("session","refresh_token",""))
+		_login_id = _stored_login_id(config)
+		player = {"id":str(config.get_value("session","player_id",""))}
+		return await delete_account()
 	var token: String = str(config.get_value("session", "refresh_token", ""))
 	if token.is_empty():
 		clear_session()
@@ -276,6 +298,86 @@ func restore_session() -> Dictionary:
 static func _stored_login_id(config: ConfigFile) -> String:
 	# Existing saves gain this metadata after their first successful rotation.
 	return str(config.get_value("session","login_id","legacy-"+str(config.get_value("session","refresh_token","")).sha256_text()))
+
+func deletion_supported() -> bool:
+	return int(_capabilities.get("privacy",{}).get("schema_version",0)) == 1
+
+func delete_account() -> Dictionary:
+	if not signed_in() or not deletion_supported(): return _failure("DELETION_UNAVAILABLE")
+	if _delete_request_id.is_empty():
+		var checked: Dictionary = await request_api("/me",HTTPClient.METHOD_GET,{},"",true)
+		if not checked.ok: return checked
+		if str(checked.data.get("id","")) != str(player.get("id","")): return _failure("ACCOUNT_CHANGED")
+	var generation: int = _session_generation
+	while _busy or _refresh_busy:
+		await get_tree().process_frame
+		if generation != _session_generation: return _failure("ACCOUNT_CHANGED")
+	_busy = true
+	var lock := preload("res://backend/session_rotation_lock.gd").new(session_path)
+	_rotation_locks.append(lock)
+	var acquired: Error = await lock.acquire(get_tree())
+	if acquired != OK:
+		_rotation_locks.erase(lock)
+		_busy = false
+		return _failure("SESSION_ROTATION_BUSY")
+	if generation != _session_generation:
+		_release_account_lock(lock)
+		_busy = false
+		return _failure("ACCOUNT_CHANGED")
+	if has_saved_session():
+		var saved := ConfigFile.new()
+		if _load_saved_config(saved,true) != OK or _stored_login_id(saved) != _login_id or str(saved.get_value("session","player_id","")) != str(player.get("id","")):
+			_release_account_lock(lock)
+			_busy = false
+			clear_session(true)
+			return _failure("ACCOUNT_CHANGED")
+		if _delete_request_id.is_empty():
+			_access_token = str(saved.get_value("session","access_token",_access_token))
+			_refresh_token = str(saved.get_value("session","refresh_token",_refresh_token))
+	if _delete_request_id.is_empty():
+		_delete_request_id = preload("res://backend/product_telemetry.gd").uuid()
+		_delete_access_token = _access_token
+	if not session_path.is_empty() and session_vault.available():
+		_save_session()
+		if persistence_error:
+			_release_account_lock(lock)
+			_busy = false
+			return _failure("SESSION_STORAGE_ERROR")
+	var owner: String = str(player.get("id",""))
+	var origin: String = _base_url
+	var response: Dictionary = _checked(await _send("/privacy/account-deletion",HTTPClient.METHOD_POST,
+		{"request_id":_delete_request_id,"confirmation":"DELETE"},false,_delete_request_id,
+		PackedStringArray(["Authorization: Bearer "+_delete_access_token])),"/privacy/account-deletion",HTTPClient.METHOD_POST)
+	if int(response.get("status",0)) == 401 and not _refresh_token.is_empty() and generation == _session_generation:
+		# A 401 proves this credential has no deletion receipt. The original
+		# operation may never have reached the server before access expiry.
+		var renewed: Dictionary = await _renew_locked(generation,"",HTTPClient.METHOD_GET,{},"",_access_token)
+		if renewed.ok and generation == _session_generation:
+			_delete_access_token = _access_token
+			if not session_path.is_empty() and session_vault.available(): _save_session()
+			if not persistence_error:
+				response = _checked(await _send("/privacy/account-deletion",HTTPClient.METHOD_POST,
+					{"request_id":_delete_request_id,"confirmation":"DELETE"},false,_delete_request_id,
+					PackedStringArray(["Authorization: Bearer "+_delete_access_token])),"/privacy/account-deletion",HTTPClient.METHOD_POST)
+	_release_account_lock(lock)
+	_busy = false
+	if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
+	if response.ok:
+		if str(response.data.get("player_id","")) != owner: return _failure("INVALID_RESPONSE",502)
+		var preserve_saved: bool = false
+		if has_saved_session():
+			var saved := ConfigFile.new()
+			preserve_saved = _load_saved_config(saved) != OK or _stored_login_id(saved) != _login_id
+		network_health._scopes.erase((origin+"/"+owner).sha256_text())
+		response.removed_player_id = owner
+		response.removed_origin = origin
+		response.account_removed = true
+		clear_session(preserve_saved)
+	return response
+
+func _release_account_lock(lock: RefCounted) -> void:
+	lock.release()
+	_rotation_locks.erase(lock)
 
 func _renew_session(generation: int, path: String = "", method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, key: String = "", used_access: String = "", network_context: Dictionary = {}) -> Dictionary:
 	# Serialize credentials independently from durable application mutations.
@@ -702,6 +804,7 @@ func development_login(subject: String, display_name: String, development_key: S
 	return response
 
 func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, idempotency_key: String = "", authenticated: bool = false) -> Dictionary:
+	if authenticated and not _delete_request_id.is_empty(): return _failure("DELETION_PENDING")
 	# Public reads need no session rotation and must not block racing or sign-in.
 	if not authenticated and method == HTTPClient.METHOD_GET:
 		return _checked(await _send(path,method,payload,false,idempotency_key),path,method)
@@ -895,6 +998,8 @@ static func valid_wallet(data: Variant) -> bool:
 static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
 	if not data is Dictionary: return false
 	var endpoint: String = path.get_slice("?",0)
+	if endpoint == "/privacy/account-deletion": return data.get("status") in ["requested","complete"] and _text(data.get("player_id")) and data.get("tracks_retained") == true and data.get("standings_retained") == true and data.get("display_name") == "Removed account" and _whole(data.get("requested_at"),1)
+	if endpoint == "/privacy/preferences": return data.get("analytics_enabled") is bool
 	if endpoint == "/auth/google/browser/cancel": return method == HTTPClient.METHOD_POST and data.is_empty()
 	if endpoint == "/auth/google/browser/prepare": return _text(data.get("client_id")) and _text(data.get("nonce"))
 	if endpoint == "/auth/google/browser/complete": return data.get("status") == "complete"

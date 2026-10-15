@@ -43,9 +43,11 @@ def support(player_id: UUID, request: Request, role: Access):
         row = session.get(Entitlements, player.id)
         wallet = session.get(ResumeWallet, player.id)
         values = access_values(row)
+        if player.deleted_at is not None:
+            values = {key: False if type(value) is bool else 0 for key, value in values.items()}
         effective_row = row or Entitlements(player_id=player.id, **values)
         settings = request.app.state.settings
-        eligible = simulator_allowed(session, settings, player.id) and not player.disabled
+        eligible = simulator_allowed(session, settings, player.id) and not player.disabled and player.deleted_at is None
         publications = session.scalar(select(func.count()).select_from(PublicationSlot).where(
             PublicationSlot.player_id == player.id))
         pending = session.scalar(select(func.count()).select_from(Purchase).where(
@@ -55,7 +57,7 @@ def support(player_id: UUID, request: Request, role: Access):
             "access": values, "initialized": row is not None,
             "effective": entitlement_payload(session, settings, effective_row),
             "resumes": {"banked": wallet.balance if wallet else 0,
-                "daily_free_available": not wallet or wallet.free_day < now() // 86400},
+                "daily_free_available": player.deleted_at is None and (not wallet or wallet.free_day < now() // 86400)},
             "consumed_publication_slots": publications, "pending_purchases": pending,
             "products": catalog_products(session), "as_of": now(),
             "development_controls": {"editable": role == "owner" and eligible,

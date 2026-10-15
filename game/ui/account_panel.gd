@@ -13,6 +13,7 @@ var status_label: Label
 var google_button: Button
 var development_button: Button
 var logout_button: Button
+var delete_button: Button
 var cancel_button: Button
 var refresh_button: Button
 var save_button: Button
@@ -114,6 +115,15 @@ func _ready() -> void:
 	logout_button = MenuStyle.button("Sign out", account.sign_out)
 	logout_button.name = "SignOut"
 	column.add_child(logout_button)
+	delete_button = MenuStyle.button("Delete account",_confirm_deletion)
+	delete_button.name = "DeleteAccount"
+	column.add_child(delete_button)
+	var privacy: Button = MenuStyle.button("Privacy policy",func() -> void:
+		if not account.client.base_url().is_empty(): account.open_browser.call(account.client.base_url()+"/privacy"))
+	privacy.name = "AccountPrivacyPolicy"
+	privacy.disabled = account.client.base_url().is_empty()
+	column.add_child(privacy)
+	column.add_child(centered_label("Optional usage and performance sharing is off until you enable it in Settings → Privacy. Online racing sends the evidence needed to verify your results.",15,true))
 	account.changed.connect(_update)
 	_update()
 
@@ -125,6 +135,27 @@ func _save_name() -> void:
 	await account.save_username(username.text,country_picker.country_code)
 	if account.client.signed_in() and not account.needs_username():
 		continue_requested.emit()
+
+func _confirm_deletion() -> void:
+	if account.busy or not account.client.signed_in(): return
+	var dialog := ConfirmationDialog.new()
+	dialog.name = "DeleteAccountConfirmation"
+	dialog.title = "Delete account"
+	dialog.dialog_text = ""
+	var copy: Label = MenuStyle.label("Your sign-in identity, name, country and private online data will be removed.\n\nPublished tracks and historical standings stay under Removed account.\nLocal tracks, car condition and cosmetics stay on this device.\nSigning in again creates a separate account.",18,true)
+	copy.name = "DeleteAccountCopy"
+	copy.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	copy.custom_minimum_size.x = 500
+	dialog.add_child(copy)
+	dialog.ok_button_text = "Delete account permanently"
+	dialog.cancel_button_text = "Keep account"
+	dialog.confirmed.connect(account.delete_account.bind(str(account.client.player.get("id","")),account.client.base_url()))
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	preload("res://ui/popup_style.gd").watch(dialog)
+	dialog.popup_centered(Vector2i(620,440))
+	dialog.get_cancel_button().grab_focus()
 
 func _country_changed() -> void:
 	country_save.disabled = account.busy or country_picker.country_code == str(account.client.player.get("country_code",""))
@@ -159,6 +190,8 @@ func _update() -> void:
 	development_button.disabled = account.busy or not account.configured
 	logout_button.visible = signed_in
 	logout_button.disabled = account.busy
+	delete_button.visible = signed_in
+	delete_button.disabled = account.busy or not account.client.deletion_supported()
 	cancel_button.visible = waiting
 	cancel_button.disabled = account._cancelled
 	refresh_button.visible = account.retry_available and not account.busy

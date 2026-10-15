@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="1.070" timestamp="2026-10-14T18:14:13.212663+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_backend_final_review" name="test_discovery_reports_remaining_lifetime_of_reused_snapshot[sqlite-cached]" time="0.643"><failure message="assert 1800 == 1785">catalogue = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000022DC55A63C0&gt;, client=&lt;starlette.testclient.TestClient obj...ee01', 'Bob': 'cb7e4429-2da5-4688-ac98-145383009d36', 'Carol': '2f120c33-b457-48e9-8dd4-28813a2c86ab'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000022DC56768B0&gt;
+access = 'cached'
+
+    @pytest.mark.parametrize("access", ["cached", "cursor", "restart"])
+    def test_discovery_reports_remaining_lifetime_of_reused_snapshot(catalogue, monkeypatch, access):
+        epoch = 1_800_000_300
+        monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch))
+        first = query(catalogue, fresh=True)
+        assert first.status_code == 200
+        assert first.json()["expires_in"] == 1800
+        # Stay in the same 20-second refresh window to cover the RAM hint as well.
+        monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch + 15))
+        values = {"fresh": True}
+        if access == "cursor":
+            values = {"cursor": first.json()["page_cursor"]}
+        elif access == "restart":
+            catalogue.app.state.discovery_memory.clear()
+            catalogue.app.state.discovery_aliases.clear()
+        response = query(catalogue, **values)
+        assert response.status_code == 200
+        assert response.json()["snapshot"] == first.json()["snapshot"]
+&gt;       assert response.json()["expires_in"] == 1785
+E       assert 1800 == 1785
+
+backend\tests\test_backend_final_review.py:38: AssertionError</failure></testcase></testsuite></testsuites>

@@ -3,29 +3,31 @@
 Snapshots store immutable version IDs, not documents/previews. Page reads recheck
 visibility. DB persistence permits API replicas/restarts to share the same order.
 """
-from collections import OrderedDict, deque
 import hashlib
 import json
 import random
 import threading
 import time
 import uuid
+from collections import OrderedDict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import JSON, Integer, String, Index, any_, delete, func, literal, or_, select
+from sqlalchemy import JSON, Index, Integer, String, any_, delete, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Mapped, mapped_column, aliased
+from sqlalchemy.orm import Mapped, aliased, mapped_column
 
+from .client_address import ClientAddress
+from .cursors import decode_cursor, encode_cursor
 from .db import Base, get_session
 from .identity_models import Player
+from .middleware import ParsedJSONRoute, check_budget
 from .security import bearer, current_player
 from .track_models import Board, Run, Track, TrackVersion
 from .tracks import discovery_payload
-from .cursors import encode_cursor, decode_cursor
 
-router = APIRouter(tags=["discovery"])
+router = APIRouter(route_class=ParsedJSONRoute, tags=["discovery"])
 PAGE_SIZE = 20
 CACHE_SECONDS = 20
 SNAPSHOT_SECONDS = 1800
@@ -38,7 +40,15 @@ class DiscoverySnapshot(Base):
     query_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
     version_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     __table_args__ = (Index("ix_discovery_snapshot_expiry", "expires_at"),)
+
+
+class DiscoveryBudget(Base):
+    __tablename__ = "discovery_budget"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entries: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshots: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class Query(BaseModel):
@@ -87,7 +97,7 @@ def _cache(request):
 
 
 def _remember(request, key, expires, ids, fingerprint):
-    cache, lock = _cache(request)
+    cache, _lock = _cache(request)
     cache[key] = (expires, ids, fingerprint)
     cache.move_to_end(key)
     while len(cache) > 64 or sum(len(v[1]) for v in cache.values()) > MAX_MEMORY_IDS:
@@ -135,7 +145,10 @@ def _ordered_ids(session, query, owner, timestamp):
     elif ordering == "creator": statement = statement.order_by(func.lower(Player.display_name), func.lower(TrackVersion.name))
     elif ordering == "name": statement = statement.order_by(func.lower(TrackVersion.name))
     statement = statement.order_by(TrackVersion.published_at.desc(), TrackVersion.id)
-    rows = session.execute(statement).all()
+    maximum = query._catalogue_limit if hasattr(query, "_catalogue_limit") else 100000
+    rows = session.execute(statement.limit(maximum + 1)).all()
+    if len(rows) > maximum:
+        raise HTTPException(503, "DISCOVERY_CATALOGUE_LIMIT")
     if ordering == "recommended":
         # Three trusted official choices followed by one community choice; all remain accessible.
         official = deque(row[0] for row in rows if row[1])
@@ -164,32 +177,89 @@ def _snapshot(request, session, query, owner):
         if value.get("query") != fingerprint or not isinstance(value.get("snapshot"), str) or type(value.get("offset")) is not int or value["offset"] < 0:
             raise HTTPException(422, "INVALID_CURSOR")
         identity, offset = value["snapshot"], value["offset"] if query.offset is None else query.offset
+        window = None
     else:
-        identity = str(uuid.uuid4()) if query.fresh else str(uuid.uuid5(uuid.NAMESPACE_URL, fingerprint+":"+str(timestamp//CACHE_SECONDS)))
+        generation = fingerprint+":"+str(timestamp//CACHE_SECONDS)+(":fresh" if query.fresh else "")
+        identity = str(uuid.uuid5(uuid.NAMESPACE_URL, generation))
+        window = identity
         offset = query.offset or 0
     cache, lock = _cache(request)
     with lock:
+        aliases = getattr(request.app.state, "discovery_aliases", None)
+        if aliases is None:
+            request.app.state.discovery_aliases = aliases = OrderedDict()
         flights = getattr(request.app.state, "discovery_flights", None)
         if flights is None:
             request.app.state.discovery_flights = flights = {}
         flight = flights.setdefault(identity, threading.Lock())
+
+    def remember(identity, expires, ids):
+        with lock:
+            _remember(request, identity, expires, ids, fingerprint)
+            if window:
+                aliases[window] = identity
+                aliases.move_to_end(window)
+                while len(aliases) > 64:
+                    aliases.popitem(last=False)
+
+    flight_key = identity
     try:
         with flight:
             with lock:
+                if window:
+                    identity = aliases.get(window, identity)
                 cached = cache.get(identity)
             if cached is not None and cached[0] > timestamp and cached[2] == fingerprint:
                 with lock: cache.move_to_end(identity)
-                return identity, fingerprint, offset, cached[1]
+                return identity, fingerprint, offset, cached[1], cached[0]
             row = session.get(DiscoverySnapshot, identity)
             if row is not None and row.query_hash == fingerprint and row.expires_at > timestamp:
-                with lock: _remember(request, identity, row.expires_at, row.version_ids, fingerprint)
-                return identity, fingerprint, offset, row.version_ids
+                remember(identity, row.expires_at, row.version_ids)
+                return identity, fingerprint, offset, row.version_ids, row.expires_at
             if query.cursor: raise HTTPException(410, "DISCOVERY_SNAPSHOT_EXPIRED")
-            # Bound expiry cleanup; never remove a live browsing snapshot.
-            expired = session.scalars(select(DiscoverySnapshot.id).where(DiscoverySnapshot.expires_at <= timestamp).limit(64)).all()
-            if expired: session.execute(delete(DiscoverySnapshot).where(DiscoverySnapshot.id.in_(expired)))
+            settings = request.app.state.settings
+            actor = getattr(request.state, "budget_player_id", None)
+            admission = "player:"+actor if actor else "peer:"+ClientAddress(settings.trusted_proxy_networks).resolve(request.scope)
+            if not check_budget(request.app.state.session_factory, admission, "discovery_create",
+                                settings.discovery_create_per_minute, session=session):
+                raise HTTPException(429, "DISCOVERY_CREATION_LIMIT")
+            query._catalogue_limit = settings.discovery_catalogue_limit
             ids = _ordered_ids(session, query, owner, timestamp)
-            row = DiscoverySnapshot(id=identity, query_hash=fingerprint, expires_at=timestamp+SNAPSHOT_SECONDS, version_ids=ids)
+            # Refreshes with identical order share the stored vector for this
+            # lifetime bucket. A changed order retains a distinct frozen cursor.
+            order = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
+            identity = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                fingerprint+":"+str(timestamp//SNAPSHOT_SECONDS)+":"+order))
+            session.rollback()
+            if session.bind.dialect.name == "sqlite":
+                session.execute(update(DiscoveryBudget).where(DiscoveryBudget.id == 1)
+                    .values(entries=DiscoveryBudget.entries))
+            budget = session.scalar(select(DiscoveryBudget).where(DiscoveryBudget.id == 1).with_for_update()
+                .execution_options(populate_existing=True))
+            # The budget lock also serializes first creation across API replicas.
+            row = session.get(DiscoverySnapshot, identity)
+            if row is not None and row.query_hash == fingerprint and row.expires_at > timestamp:
+                session.rollback()
+                remember(identity, row.expires_at, row.version_ids)
+                return identity, fingerprint, offset, row.version_ids, row.expires_at
+            expired = dict(session.execute(select(DiscoverySnapshot.id, DiscoverySnapshot.entry_count)
+                .where(DiscoverySnapshot.expires_at <= timestamp).limit(64)).all())
+            if row is not None:
+                if row.expires_at > timestamp:
+                    raise HTTPException(503, "DISCOVERY_SNAPSHOT_CONFLICT")
+                expired.setdefault(identity, row.entry_count)
+            if expired:
+                session.execute(delete(DiscoverySnapshot).where(DiscoverySnapshot.id.in_(expired)))
+                budget.entries -= sum(expired.values())
+                budget.snapshots -= len(expired)
+            if (budget.entries + len(ids) > settings.discovery_snapshot_ids
+                    or budget.snapshots >= settings.discovery_snapshot_count):
+                session.commit()  # Keep bounded expiry cleanup even when admission is full.
+                raise HTTPException(503, "DISCOVERY_SNAPSHOT_LIMIT")
+            budget.entries += len(ids)
+            budget.snapshots += 1
+            row = DiscoverySnapshot(id=identity, query_hash=fingerprint, expires_at=timestamp+SNAPSHOT_SECONDS,
+                                    version_ids=ids, entry_count=len(ids))
             session.add(row)
             try: session.commit()
             except IntegrityError:
@@ -197,17 +267,17 @@ def _snapshot(request, session, query, owner):
                 row = session.get(DiscoverySnapshot, identity)
                 if row is None or row.query_hash != fingerprint: raise
                 ids = row.version_ids
-            with lock: _remember(request, identity, row.expires_at, ids, fingerprint)
-            return identity, fingerprint, offset, ids
+            remember(identity, row.expires_at, ids)
+            return identity, fingerprint, offset, ids, row.expires_at
     finally:
         with lock:
-            if flights.get(identity) is flight: flights.pop(identity, None)
+            if flights.get(flight_key) is flight: flights.pop(flight_key, None)
 
 
 def _page(request, session, query, credentials, random_choice=False):
     player = _identity(request, session, credentials) if query.section == "saved" else None
     if query.section == "saved" and player is None: raise HTTPException(401, "AUTH_REQUIRED")
-    snapshot, fingerprint, offset, ids = _snapshot(request, session, query, player.id if player else "")
+    snapshot, fingerprint, offset, ids, expires_at = _snapshot(request, session, query, player.id if player else "")
     if not random_choice and not query.cursor and query.locate_version in ids:
         offset = ids.index(query.locate_version)//PAGE_SIZE*PAGE_SIZE
     if random_choice:
@@ -238,7 +308,7 @@ def _page(request, session, query, credentials, random_choice=False):
     next_offset = offset+PAGE_SIZE
     cursor = encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":next_offset}) if next_offset < len(ids) else None
     session.commit()
-    return {"items":items,"next_cursor":cursor,"page_cursor":encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":0}),"total":len(ids),"offset":offset,"snapshot":snapshot,"page_size":PAGE_SIZE,"expires_in":SNAPSHOT_SECONDS}
+    return {"items":items,"next_cursor":cursor,"page_cursor":encode_cursor({"snapshot":snapshot,"query":fingerprint,"offset":0}),"total":len(ids),"offset":offset,"snapshot":snapshot,"page_size":PAGE_SIZE,"expires_in":max(0, expires_at-int(time.time()))}
 
 
 @router.post("/discovery/tracks")

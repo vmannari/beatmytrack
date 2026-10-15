@@ -97,11 +97,62 @@ func _ready() -> void:
 	_timer.start()
 	if _platform not in ["android","windows","linux","ios"]: _platform = "linux"
 	if _build_pattern.search(_build_id) == null: _build_id = "unknown"
-	if storage_path.is_empty():
+	if not enabled:
+		_loaded = true
+		_erase_saved_queue()
+	elif storage_path.is_empty():
 		_loaded = true
 	else:
 		_start_thread("read",_read_with_ids.bind(storage_path))
 	update_identity()
+
+func _erase_saved_queue() -> void:
+	if storage_path.is_empty(): return
+	for suffix: String in ["", ".tmp"]:
+		if FileAccess.file_exists(storage_path+suffix) and DirAccess.remove_absolute(storage_path+suffix) != OK: persistence_failures += 1
+
+func set_enabled(value: bool) -> void:
+	if enabled == value: return
+	enabled = value
+	if client != null:
+		if "analytics_opt_in" in client: client.analytics_opt_in = value
+		if client.has_method("cancel_telemetry"): client.cancel_telemetry()
+	if not value:
+		# Settings is a menu action. Join the already bounded disk task so it cannot
+		# recreate a removed outbox after withdrawal.
+		if _thread != null:
+			if _thread.is_alive(): _thread.wait_to_finish()
+			_thread = null
+		_loaded = true
+		queue.clear()
+		_persisted_ids.clear()
+		_first_open_scopes.clear()
+		_provisional_first_opens.clear()
+		_collection_started_scope = ""
+		_queue_budget_bytes = 0
+		_dirty = false
+		_erase_saved_queue()
+		if client != null and "network_health" in client: client.network_health._scopes.clear()
+	else: update_identity()
+
+func erase_account(origin: String, player_id: String) -> void:
+	var removed_scope: String = (origin+"/"+player_id).sha256_text()
+	if _thread != null:
+		var completed: Variant = _thread.wait_to_finish()
+		_finish_thread(completed)
+	var kept: Array[Dictionary] = []
+	for entry: Dictionary in queue:
+		if entry.scope == removed_scope: _persisted_ids.erase(str(entry.event.id))
+		else: kept.append(entry)
+	queue = kept
+	_first_open_scopes.erase(removed_scope)
+	_recount_budget()
+	if client != null and "network_health" in client: client.network_health._scopes.erase(removed_scope)
+	_mark_dirty()
+	if enabled: _save_if_needed()
+	else:
+		_dirty = false
+		_erase_saved_queue()
 
 func update_identity() -> void:
 	var next_scope: String = "guest"
@@ -515,9 +566,9 @@ static func _read_with_ids(path: String) -> Dictionary:
 static func _saved_integer(value: Variant) -> int:
 	return int(value) if (value is int or value is float) and is_finite(float(value)) and float(value) >= 0 and float(value) <= 4102444800 else 0
 
-func _finish_thread() -> void:
+func _finish_thread(completed: Variant = null) -> void:
 	if _thread == null or _thread.is_alive(): return
-	var result: Variant = _thread.wait_to_finish()
+	var result: Variant = completed if completed != null else _thread.wait_to_finish()
 	_thread = null
 	if result is Dictionary and result.get("event_ids") is Array:
 		for id: String in result.event_ids:

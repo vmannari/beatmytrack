@@ -108,6 +108,7 @@ def public_player(player: Player) -> dict:
         "created_at": player.created_at,
         "needs_username": player.needs_username,
         "is_test_driver": player.is_test_driver,
+        "analytics_enabled": player.analytics_enabled,
     }
 
 
@@ -161,7 +162,7 @@ def development_login(
             if identity is None:
                 raise HTTPException(409, "USERNAME_TAKEN") from None
             player = session.get(Player, identity.player_id)
-    if player.disabled:
+    if player.disabled or player.deleted_at is not None:
         raise HTTPException(403, "ACCOUNT_DISABLED")
     if player.is_test_driver and not settings.test_drivers_enabled:
         raise HTTPException(403, "TEST_DRIVERS_DISABLED")
@@ -176,6 +177,8 @@ def development_login(
 
 
 def issue_tokens(session: Session, family: SessionFamily, player: Player, settings, *, credentials=None) -> dict:
+    if player.deleted_at is not None:
+        raise HTTPException(401, "ACCOUNT_REMOVED")
     access, refresh = credentials or (secrets.token_urlsafe(32), secrets.token_urlsafe(48))
     expires = min(now() + settings.access_ttl_seconds, family.expires_at)
     session.add(
@@ -254,7 +257,7 @@ def complete_google_login(subject: str, display_name: str | None, request: Reque
             if identity is None:
                 raise HTTPException(409, "USERNAME_TAKEN") from None
             player = session.get(Player, identity.player_id)
-    if player.disabled:
+    if player.disabled or player.deleted_at is not None:
         session.commit()
         raise HTTPException(403, "ACCOUNT_DISABLED")
     family = SessionFamily(
@@ -280,7 +283,7 @@ def refresh_session(body: RefreshBody, request: Request, session: Session = Depe
     if token is None:
         raise HTTPException(401, "INVALID_SESSION")
     player = session.get(Player, family.player_id)
-    if family.revoked or family.expires_at <= now() or player.disabled or development_session_disabled(request, session, player):
+    if family.revoked or family.expires_at <= now() or player.disabled or player.deleted_at is not None or development_session_disabled(request, session, player):
         raise HTTPException(401, "INVALID_SESSION")
     if token.consumed:
         matching = (body.refresh_request_id is not None and token.recovery_key_hash is not None
@@ -303,6 +306,7 @@ def refresh_session(body: RefreshBody, request: Request, session: Session = Depe
         family.revoked
         or family.expires_at <= now()
         or player.disabled
+        or player.deleted_at is not None
         or development_session_disabled(request, session, player)
     ):
         raise HTTPException(401, "INVALID_SESSION")

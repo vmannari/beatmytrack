@@ -310,10 +310,9 @@ def test_upgrade_parks_old_draft_jobs_preserves_source_metadata_and_releases_cou
     import uuid
 
     from alembic import command
-    from sqlalchemy import create_engine, text
+    from sqlalchemy import MetaData, Table, create_engine, text
     from sqlalchemy.orm import Session
 
-    from bmt_backend.identity_models import Player
     from bmt_backend.migrate import configuration
     from bmt_backend.track_models import QueuePlayer, TrackValidation, now
 
@@ -327,20 +326,25 @@ def test_upgrade_parks_old_draft_jobs_preserves_source_metadata_and_releases_cou
         engine = create_engine("sqlite:///"+(tmp_path/"legacy.sqlite").as_posix())
     try:
         command.upgrade(configuration(engine), "0027_client_quality")
+        # Historical migrations must use their actual tables, not ORM columns
+        # introduced by later account/privacy migrations.
+        legacy_players = Table("players", MetaData(), autoload_with=engine)
+        legacy_tracks = Table("tracks", MetaData(), autoload_with=engine)
+        legacy_versions = Table("track_versions", MetaData(), autoload_with=engine)
         with Session(engine) as session:
-            owner = Player(display_name="Legacy Owner")
-            session.add(owner)
-            session.flush()
-            track = Track(owner_id=owner.id, authoring_id="kept_draft")
-            session.add(track)
-            session.flush()
-            source = TrackVersion(track_id=track.id, number=1, name="Legacy draft", content_hash="a"*64,
-                manifest={}, state="validating")
-            published = TrackVersion(track_id=track.id, number=2, name="Published retained", content_hash="b"*64,
-                manifest={}, state="published", published_at=now())
-            session.add_all((source, published))
-            session.flush()
-            version_id, published_id, owner_id = source.id, published.id, owner.id
+            owner_id, track_id, version_id, published_id = (str(uuid.uuid4()) for _ in range(4))
+            session.execute(legacy_players.insert().values(id=owner_id, display_name="Legacy Owner",
+                username_key="legacy owner", disabled=False, needs_username=False, is_test_driver=False,
+                created_at=now()))
+            session.execute(legacy_tracks.insert().values(id=track_id, owner_id=owner_id,
+                authoring_id="kept_draft", hidden=False, archived=False, official=False, created_at=now()))
+            for identity, number, name, content_hash, state in (
+                (version_id, 1, "Legacy draft", "a"*64, "validating"),
+                (published_id, 2, "Published retained", "b"*64, "published")):
+                session.execute(legacy_versions.insert().values(id=identity, track_id=track_id,
+                    number=number, name=name, content_hash=content_hash, manifest={}, state=state,
+                    created_at=now(), published_at=now() if state == "published" else None,
+                    rating_sum=0, rating_count=0))
             original_detail = "x"*500
             lease_token = str(uuid.uuid4())
             session.execute(text("""INSERT INTO track_validations(version_id,status,attempts,lease_until,lease_token,failure_code,detail,created_at)
@@ -355,8 +359,8 @@ def test_upgrade_parks_old_draft_jobs_preserves_source_metadata_and_releases_cou
             assert kept.legacy_workflow_snapshot == {"status": "validating", "failure_code": "validator_unavailable",
                 "detail": original_detail, "attempts": 2, "lease_until": 1234567890, "lease_token": lease_token}
             assert count(session, Track) == 1 and count(session, TrackVersion) == 2
-            assert session.get(TrackVersion, version_id).content_hash == "a"*64
-            assert session.get(TrackVersion, published_id).state == "published"
+            assert session.scalar(select(legacy_versions.c.content_hash).where(legacy_versions.c.id == version_id)) == "a"*64
+            assert session.scalar(select(legacy_versions.c.state).where(legacy_versions.c.id == published_id)) == "published"
             assert session.get(QueueCapacity, 1).pending == session.get(QueuePlayer, owner_id).pending == 0
     finally:
         engine.dispose()

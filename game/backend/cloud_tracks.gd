@@ -346,7 +346,9 @@ func _retain_metadata(metadata: Dictionary) -> bool:
 	if previous.get("version_id","") == metadata.get("version_id","") and previous.get("content_hash","") == metadata.get("content_hash",""):
 		for key: String in ["_compiled_hash","_compiled_version","_compiled_engine","_compiled_source_hash"]:
 			if not metadata.has(key) and previous.has(key): metadata[key] = previous[key]
-	return _write(directory.path_join(identity.sha256_text()+".json"),metadata) and _write(directory.path_join(("cloud_"+str(metadata.version_id)).sha256_text()+".json"),{"alias":identity})
+	var alias_path: String = directory.path_join(("cloud_"+str(metadata.version_id)).sha256_text()+".json")
+	var alias: Dictionary = {"alias":identity}
+	return (previous == metadata or _write(directory.path_join(identity.sha256_text()+".json"),metadata)) and (_read(alias_path) == alias or _write(alias_path,alias))
 
 static func metadata_track(entry: Dictionary) -> NativeTrack:
 	# Presentation only; _start_race must hydrate this before any simulation.
@@ -518,37 +520,59 @@ static func cached_document(entry: Dictionary) -> Dictionary:
 	return doc
 
 func download(entry: Dictionary) -> bool:
-	if not cached_document(entry).is_empty(): return _retain_metadata(entry)
+	return not (await download_document(entry)).is_empty()
+
+func download_document(entry: Dictionary) -> Dictionary:
+	var cached: Dictionary = cached_document(entry)
+	if not cached.is_empty(): return cached if _retain_metadata(entry) else {}
 	var response: Dictionary = await client.request_api("/track-versions/"+str(entry.version_id).uri_encode()+"/document")
 	if not response.ok:
 		last_error = "This track is not cached. Connect and retry. " + str(response.error)
-		return false
+		return {}
 	var body: String = str(response.get("body",""))
 	if body.to_utf8_buffer().size() > TrackDocument.MAX_BYTES or body.sha256_text() != str(entry.content_hash) or not TrackDocument.validate(response.data).is_empty():
 		last_error = "Downloaded track failed its integrity check."
-		return false
+		return {}
 	var path: String = str(entry.cache_path)
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	var file := FileAccess.open(path+".tmp",FileAccess.WRITE)
 	if file == null:
 		last_error = "Not enough writable storage to cache this track."
-		return false
+		return {}
 	file.store_string(body)
 	file.flush()
 	var ok: bool = file.get_error() == OK
 	file.close()
 	if not ok or DirAccess.rename_absolute(path+".tmp",path) != OK:
 		last_error = "The downloaded track could not be saved."
-		return false
-	return _retain_metadata(entry)
+		return {}
+	return response.data if _retain_metadata(entry) else {}
 
-static func compile_entry(entry: Dictionary) -> NativeTrack:
+static func compile_entry(entry: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
 	var doc: Dictionary = cached_document(entry)
 	if doc.is_empty(): return null
+	return compile_document(entry,doc,cancelled)
+
+static func compile_document(entry: Dictionary, doc: Dictionary, cancelled: Callable = Callable()) -> NativeTrack:
+	if cancelled.is_valid() and cancelled.call(): return null
+	# Only an already hash-checked/validated request snapshot enters this path.
+	# Independent calls still use compile_entry and check actual cache bytes.
 	var key: Array = [str(entry.get("cache_path","")),str(entry.content_hash),TrackCompiler.VERSION]
+	var redacted_hash: String = str(entry.get("redacted_track_hash","")) if entry.get("redacted_track_hash") is String else ""
+	var canonical_hash: String = str(entry.get("canonical_track_hash","")) if entry.get("canonical_track_hash") is String else ""
+	if canonical_hash.is_empty() and entry.get("manifest") is Dictionary: canonical_hash = str(entry.manifest.get("track_content_hash",""))
+	if not redacted_hash.is_empty():
+		if redacted_hash.length() != 64 or not redacted_hash.is_valid_hex_number() or canonical_hash.length() != 64 or not canonical_hash.is_valid_hex_number(): return null
+		key.append(redacted_hash)
+		key.append(canonical_hash)
 	var track: NativeTrack = PREPARED_TRACKS.restore(key)
 	if track == null:
-		track = TrackCompiler.compile(doc)
+		track = TrackCompiler.compile(doc,{},cancelled)
+		if track != null and not redacted_hash.is_empty():
+			# The server authorizes a metadata-only redaction and supplies both exact
+			# hashes. Verify the redacted compile before retaining the original pin.
+			if track.content_hash != redacted_hash: return null
+			track.content_hash = canonical_hash
 		if track != null: PREPARED_TRACKS.remember(key,track)
 	if track != null:
 		track.identity = str(entry.id)

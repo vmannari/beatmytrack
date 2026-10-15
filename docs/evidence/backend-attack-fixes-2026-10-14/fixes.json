@@ -1,0 +1,221 @@
+{
+  "date": "2026-10-14",
+  "task": "Fix the four confirmed backend attack paths",
+  "requirements": [
+    "B01",
+    "B05",
+    "B07",
+    "Q01"
+  ],
+  "review": "../backend-attack-review-2026-10-14/review.json",
+  "status": "Four findings fixed locally; prepared migration and deployment-host acceptance remain.",
+  "fixes": [
+    {
+      "id": "BA01",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/middleware.py"
+      ],
+      "behavior": "Mandatory authenticated large uploads validate the same current_player dependency before body delivery or parser admission. Missing/invalid sessions return 401 without receive(). Explicit test dependency overrides use the real FastAPI dependency resolver; no production bypass was added. Valid credentials are checked every request and again at the endpoint after body delivery, with the existing player budget charged only once.",
+      "isolation": "Public discovery has a separate one-slot pool; product telemetry retains its existing separate pool. An anonymous discovery slow body cannot occupy race/publication upload slots. Unknown routes receive only the small 32 KiB control allowance.",
+      "tests": [
+        "test_unauthenticated_upload_never_reads_body_or_takes_slot",
+        "test_anonymous_discovery_slow_body_does_not_block_race_upload"
+      ]
+    },
+    {
+      "id": "BA02",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/middleware.py"
+      ],
+      "behavior": "The boundary resolves a declared route and rejects unsupported methods with 405/Allow before receiving/decompressing/parsing a body. Bodyless read routes reject payloads. Every allowed large body takes a parser lease independent of HTTP method, held through validation, handler and response. Existing small control writes may still send {}.",
+      "compatibility": "Cheap declared-length bounds remain before authentication; correlated headers and safe route-template logs remain. The publication gzip-limit test now supplies a valid session, keeping its original 413 assertion. The privacy-of-logs test expects 405 for an unsupported POST rather than reaching its previous content-type rejection; all correlation/non-echo assertions remain.",
+      "tests": [
+        "test_unsupported_methods_never_read_or_parse_large_bodies"
+      ]
+    },
+    {
+      "id": "BA03",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/publication_storage.py",
+        "backend/bmt_backend/publication_models.py",
+        "backend/bmt_backend/publications.py",
+        "backend/bmt_backend/maintenance.py",
+        "backend/bmt_backend/migrations/versions/0033_attack_resource_bounds.py"
+      ],
+      "behavior": "An owner-locked durable reservation, containing immutable owner/key/body/hash identity, precedes object IO. Canonical bytes and retained intent/upload counts are bounded across replicas. Partial storage/DB failures and process loss keep their charge and references. Matching deliveries reuse one reservation and immutable objects. Replacement leases fence old writers; a failed old writer cannot clear a replacement lease. A successful short transaction transfers the charge to the queued intent and removes the reservation atomically.",
+      "identity": "The server-owned creator snapshot survives profile changes during incomplete-upload recovery. Contract field types/lengths are bounded before storage, preventing uncharged large contract JSON. Known intent retries remain owner/body-bound and do not need new allowance.",
+      "retention": "Bounded retention retires old terminal rejected evidence and expired incomplete reservations. Small permanent operation-key/request-hash tombstones prevent replaying retired operations. Published content/creator proof references and retryable validator/build/entitlement failures remain protected. GC references include live upload reservations and exclude retired evidence; online pins and stopped-writer offline rules remain.",
+      "migration": "0033 adds reservation/retirement accounting and conservatively charges legacy nonpublished intents at their former 512 KiB document + 2 MiB replay bound. Tests downgrade to the prior schema, seed legacy records and verify upgrade preservation/accounting.",
+      "tests": [
+        "test_byte_quota_precedes_storage_and_count_quota_is_owner_scoped",
+        "test_partial_storage_failure_remains_charged_and_same_key_recovers",
+        "test_rejected_evidence_expires_without_repeating_original_operation",
+        "test_expired_incomplete_upload_is_a_permanent_tombstone",
+        "test_replaced_upload_lease_fences_old_writer_and_preserves_new_charge",
+        "test_infrastructure_and_entitlement_evidence_remains_recoverable",
+        "test_postgres_concurrent_new_publication_keys_cannot_exceed_quota",
+        "test_resource_migration_preserves_and_charges_legacy_rows"
+      ]
+    },
+    {
+      "id": "BA04",
+      "status": "fixed",
+      "files": [
+        "backend/bmt_backend/discovery.py",
+        "backend/bmt_backend/config.py",
+        "backend/bmt_backend/middleware.py",
+        "backend/bmt_backend/migrations/versions/0033_attack_resource_bounds.py"
+      ],
+      "behavior": "Identical fresh queries coalesce within the short refresh window. Identical query/order vectors also share one persisted snapshot per lifetime bucket across refresh windows and replicas; changed order retains a separate immutable cursor. Alias hints are capped at 64, and the existing vector RAM bound remains.",
+      "limits": "A shared locked database budget caps stored version IDs and snapshot rows, including empty-result variants. SQL result materialization is capped; over-cap catalogues receive an explicit 503 rather than a silently incomplete listing. Bounded expiry cleanup releases budget atomically. Cache/cursor hits remain usable when creation allowance is full. A separate per-validated-player or trusted-peer creation budget prevents repeated query variants from consuming the whole creation pool.",
+      "migration": "0033 backfills actual legacy snapshot lengths and initializes shared counters. The database budget lock serializes duplicate first creation and quota admission across replicas.",
+      "tests": [
+        "test_fresh_queries_coalesce_across_cache_restart",
+        "test_unchanged_fresh_order_is_not_duplicated_each_refresh_window",
+        "test_creation_budget_does_not_charge_cached_pages",
+        "test_discovery_bounds_do_not_silently_truncate_catalogue",
+        "test_snapshot_count_recovers_after_expiry_and_cached_pages_keep_working",
+        "test_postgres_discovery_budget_is_shared_across_replicas"
+      ]
+    }
+  ],
+  "operational_defaults": {
+    "BMT_PUBLICATION_EVIDENCE_BYTES": 67108864,
+    "BMT_PUBLICATION_EVIDENCE_COUNT": 128,
+    "BMT_DISCOVERY_CATALOGUE_LIMIT": 100000,
+    "BMT_DISCOVERY_SNAPSHOT_IDS": 1000000,
+    "BMT_DISCOVERY_SNAPSHOT_COUNT": 2048,
+    "BMT_DISCOVERY_CREATE_PER_MINUTE": 20,
+    "notes": "Hosting limits, tunable after traffic acceptance. Publication allowance covers incomplete/queued/failed evidence, not successful published content or legitimate racing. Logical canonical bytes are charged conservatively per operation; physical disk/WAL/provider usage is not claimed to equal these values. Terminal evidence uses the existing retention window (default 90 days)."
+  },
+  "validation": {
+    "admission-smoke.xml": {
+      "passed": 58,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2,
+      "seconds": 52.001
+    },
+    "focused.xml": {
+      "passed": 62,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 34.705
+    },
+    "final-focused.xml": {
+      "passed": 67,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 44.071
+    },
+    "merged-focused.xml": {
+      "passed": 58,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 32.808
+    },
+    "regression-sqlite-isolated.xml": {
+      "passed": 289,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 9,
+      "seconds": 179.506
+    },
+    "regression-postgres-linux.xml": {
+      "passed": 63,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 4,
+      "seconds": 295.055
+    },
+    "regression-postgres-focused-linux.xml": {
+      "passed": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "seconds": 43.677
+    },
+    "regression-offline-linux.xml": {
+      "passed": 93,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 93.103,
+      "xml_cases": 114,
+      "subtests_passed": 21
+    }
+  },
+  "validation_notes": [
+    "Counts are per invocation and overlap; do not sum them as unique tests.",
+    "The final broad isolated SQLite run passed 289 tests, with nine row-lock/OS skips and 166 deselections. The old trajectory-less full-replay rewind fixture remains unchanged and excluded as documented in the review.",
+    "The broader PostgreSQL stage passed 63 tests with four skips; it includes real API/worker processes, recovery and locking. The final affected PostgreSQL suite passed 33 with three SQLite-parameter skips after snapshot refinement/migration coverage.",
+    "The final merged workspace focused run passed 58 checks while concurrent account privacy work was present. Broad/PG/POSIX checks used committed complete backend code plus task-owned changes, excluding that unfinished feature. Validation hashes record the exact snapshot.",
+    "Initial Windows loopback database connections timed out with and without sandbox escalation. PostgreSQL was reached directly inside an existing disposable Linux network namespace. No timeout assertion was weakened.",
+    "Intermediate runs encountered concurrent missing account columns/imports, not a security fix failure. Complete source isolation preserved the workspace edits. The unrelated owner.deleted_at publication guard and privacy settings are excluded only from the isolated task patch/test snapshot, not from the workspace.",
+    "The first Linux backup wrapper run could not execute its generated mock Docker script on the temporary mount; the isolated test container was rerun with an executable /tmp. The helper assertions and application scripts were unchanged.",
+    "An initial broad run showed an unintended 400 for a nonexistent grant endpoint; small unknown/control writes were restored to their original bounded behavior, keeping the original 404 grant denial assertion.",
+    "Ruff, scoped git diff --check and secure-environment pip check passed. No dependency was added or installed."
+  ],
+  "commands": [
+    ".tools/backend-secure-venv/Scripts/python.exe .tools/backend-attack-fixes-20261014/run_sqlite.py",
+    "pytest backend/tests/test_attack_resistance.py backend/tests/test_discovery_paging.py backend/tests/test_communication_boundary.py backend/tests/test_request_trace.py -q -x -k \"not postgres\" (isolated PYTHONPATH/source)",
+    "pytest backend/tests/test_attack_resistance.py backend/tests/test_communication_boundary.py backend/tests/test_request_trace.py -q -x -k \"not postgres\" (merged workspace)",
+    "wsl.exe -d Ubuntu -- docker run --rm --network container:bmt-backend-test --read-only --tmpfs /tmp:size=128m,mode=1777,exec --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-attack-fixes-20261014/validation-complete/backend,target=/workspace/backend,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-attack-fixes-20261014,target=/evidence' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-postgres.env,target=/run/pg.env,readonly' --env 'PYTHONPATH=/workspace/backend:/workspace/backend/tests' --env BMT_GODOT_BIN= --env PYTHONDONTWRITEBYTECODE=1 bmt-l123-runtime-test:bbee1e4eb9d0066c python /evidence/run_linux.py postgres-focused",
+    "wsl.exe -d Ubuntu -- docker run --rm --network none --read-only --tmpfs /tmp:size=128m,mode=1777,exec --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-attack-fixes-20261014/validation-complete/backend,target=/workspace/backend,readonly' --mount 'type=bind,source=/mnt/c/Codes/Godot/Beat my track/.tools/backend-attack-fixes-20261014,target=/evidence' --env 'PYTHONPATH=/workspace/backend:/workspace/backend/tests' --env BMT_GODOT_BIN= --env PYTHONDONTWRITEBYTECODE=1 bmt-l123-runtime-test:bbee1e4eb9d0066c python /evidence/run_linux.py offline",
+    ".tools/backend-secure-venv/Scripts/python.exe -m ruff check (all touched Python files)",
+    ".tools/backend-secure-venv/Scripts/python.exe -m pip check",
+    "git diff --check -- (task-owned source/tests/docs)",
+    "wsl.exe -d Ubuntu -- docker stop bmt-backend-test"
+  ],
+  "preserved": [
+    "Trajectory-only acceptance and its documented fabricated-path limitation",
+    "Pinned contracts, five ordinary laps, best-only verified scores, optional ghosts and authorized receipts",
+    "Exactly-once publication/slot accounting, durable retry identity, public/artificial isolation",
+    "Canonical driving/physics, approved artwork, local cosmetics, client journal and paid-resource policy",
+    "Concurrent privacy/account edits and their downstream migration"
+  ],
+  "remaining_acceptance": [
+    "Migration 0033 is prepared and applied only to disposable test schemas. Coordinate production migration and matching API/worker rollout through the separately authorized deployment process; downstream concurrent migration 0034 references it.",
+    "Legacy rejected evidence may initially exhaust a new owner allowance. Use the existing authorized bounded retention workflow, preserving retryable infrastructure failures and permanent tombstones. Configure recurring retention/GC and assess default hosting quotas.",
+    "Production proxy/TLS/WAF configuration, sustained/distributed DDoS capacity, actual provider failures, filesystem power-loss/reboot and restore drills are not tested.",
+    "No APK, native game/physics regression, physical-phone test, new provider call or external vulnerability-advisory scan. No stronger anti-cheat policy was introduced.",
+    "Broad tests do not certify the concurrent privacy feature; its owner must finish its own acceptance and full merged integration. The merged focused security checks passed."
+  ],
+  "checkpoint": "Task-only patch and source/validation hashes; no broad shared-workspace commit.",
+  "changed_files": [
+    "backend/bmt_backend/middleware.py",
+    "backend/bmt_backend/publications.py",
+    "backend/bmt_backend/publication_models.py",
+    "backend/bmt_backend/discovery.py",
+    "backend/bmt_backend/maintenance.py",
+    "backend/bmt_backend/config.py",
+    "backend/tests/test_communication_boundary.py",
+    "backend/deploy/README.md",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "backend/tests/test_request_trace.py",
+    "backend/bmt_backend/publication_storage.py",
+    "backend/bmt_backend/migrations/versions/0033_attack_resource_bounds.py",
+    "backend/tests/test_attack_resistance.py",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/admission-smoke.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/focused.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/final-focused.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/merged-focused.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/regression-sqlite-isolated.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/regression-postgres-linux.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/regression-postgres-focused-linux.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/regression-offline-linux.xml",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/run_linux.py",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/run_sqlite.py",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/fixes.json",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/source-sha256.json",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/validation-sha256.json",
+    "docs\\evidence\\backend-attack-fixes-2026-10-14/task-only.patch"
+  ]
+}

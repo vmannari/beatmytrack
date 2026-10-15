@@ -19,6 +19,7 @@ def test_postgres_network_duplicate_receipts_and_projection_are_exactly_once(pos
         admin_analyst_key="a" * 40)
     signed = client.post("/v1/auth/google", json=google_request(app, client, "network-postgres")).json()
     headers = {"Authorization": "Bearer " + signed["access_token"]}
+    assert client.post("/v1/privacy/preferences", headers=headers, json={"analytics_enabled": True}).status_code == 200
     event = observed("network_summary", at=now(), properties=summary())
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: client.post("/v1/telemetry/batches", headers=headers, json=body([event])), range(4)))

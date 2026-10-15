@@ -123,6 +123,7 @@ def process_one(app, *, refresh_histograms=False) -> bool:
         board = session.get(Board, run.board_id)
         version = session.get(TrackVersion, board.version_id)
         document_hash, replay_hash, vehicle_id = version.content_hash, run.replay_hash, board.vehicle_id
+        redacted_track_hash = version.redacted_track_hash
         creator_test = board.manifest.get("purpose") == "creator_test"
         # Optional client-recorded ghosts accompany trajectory evidence.
         from .rivalry_models import RivalryTicket
@@ -160,6 +161,8 @@ def process_one(app, *, refresh_histograms=False) -> bool:
             options["geometry"] = prepared_geometry(app,document_hash,document)
         result = app.state.verifier.verify_run(document, replay, vehicle_id, **options)
         ticks, lap_ticks = result.get("time_ticks"), result.get("lap_ticks")
+        if redacted_track_hash and result.get("manifest", {}).get("track_content_hash") == redacted_track_hash:
+            result["manifest"] = {**result["manifest"], "track_content_hash": expected_manifest["track_content_hash"]}
         if result.get("manifest") != expected_manifest:
             raise RuntimeError("Verifier manifest differs from pinned track manifest")
         if (
@@ -264,7 +267,7 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
         # Serialize PB projections with account restriction/test-identity changes.
         # Both writers lock Player before touching board visibility counters.
         test_disabled = (player.is_test_driver or pinned_manifest.get("test_population")) and not settings.test_drivers_enabled
-        if player.disabled or test_disabled:
+        if player.disabled or player.deleted_at is not None or test_disabled:
             run.status, run.failure_code, run.finished_at, run.lease_token = (
                 "rejected",
                 "test_population_disabled" if test_disabled else "account_disabled",
@@ -337,7 +340,17 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
 def process_worker_job(app) -> bool:
     # The long-running service performs background presentation work. Explicit
     # single-race diagnostic calls retain their verification-only behavior.
-    return process_one(app, refresh_histograms=True)
+    if process_one(app, refresh_histograms=True):
+        # Foreground work stays first; a bounded cleanup step also gets a turn
+        # every sixteen completed jobs, so continuous racing cannot starve it.
+        count = (getattr(app.state, "privacy_work_count", 0) + 1) % 16
+        app.state.privacy_work_count = count
+        if count == 0:
+            from .privacy import cleanup_one
+            cleanup_one(app)
+        return True
+    from .privacy import cleanup_one
+    return cleanup_one(app)
 
 
 def main() -> None:

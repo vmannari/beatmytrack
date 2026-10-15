@@ -2,6 +2,7 @@ import time
 import uuid
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -39,13 +40,20 @@ class Player(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    analytics_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     is_test_driver: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    vehicle_appearances: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
 
 
 @event.listens_for(Player, "before_insert")
 @event.listens_for(Player, "before_update")
 def set_username_key(_mapper, _connection, player):
+    if player.deleted_at is not None:
+        player.display_name, player.country_code, player.needs_username = "Removed account", "", True
+        player.analytics_enabled, player.created_at = False, 0
+        player.vehicle_appearances = {}
     player.username_key = None if player.needs_username else username_key(player.display_name or "Racer")
 
 

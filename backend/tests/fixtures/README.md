@@ -68,3 +68,13 @@ are retained as `physics_050/*.gd.txt`, restored only into disposable test
 projects. The .50 test still verifies all five original laps and rejects
 missing/trailing finish input. The current verifier separately rejects that
 recording when it does not finish under .51; no historical score is relabeled.
+
+2026-10-14: rapid handbrake countersteering advances the expected manifest to
+`arcade-planar-0.58`. Ordinary-driving inputs, document, ordered five-lap timing
+and snapshot schema are unchanged; the steering correction applies only during
+forward rear-brake engagement/recovery when axle rotation opposes steering.
+
+2026-10-14: stronger dirty-tire grip loss after returning to firm ground advances
+the expected manifest to `arcade-planar-0.59`. Clean-tire road handling, loose-ground
+grip, pickup/cleaning distances and replay schema remain unchanged. The existing
+five-lap oval inputs and timing golden are retained and reverified.

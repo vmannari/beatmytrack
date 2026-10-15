@@ -173,9 +173,11 @@ def rewind_fixture(original):
 
 
 def test_canonical_three_rewinds_keep_original_verified_time(real_verifier, race_fixture):
+    # Full replay equality belongs to the explicit offline diagnostic. Online
+    # acceptance requires trajectory evidence and never falls back to physics.
     replay = rewind_fixture(race_fixture["replay"])
-    result = real_verifier.verify_run(race_fixture["document"], replay, "compact")
-    original = real_verifier.verify_run(race_fixture["document"], race_fixture["replay"], "compact")
+    result = real_verifier.verify_canonical_diagnostic(race_fixture["document"], replay, "compact")
+    original = real_verifier.verify_canonical_diagnostic(race_fixture["document"], race_fixture["replay"], "compact")
     assert result == original
 
 

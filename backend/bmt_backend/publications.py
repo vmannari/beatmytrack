@@ -11,13 +11,15 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .commerce import consume_publication_slot, lock_entitlements
 from .db import get_session
 from .identity_models import Identity, Player
 from .middleware import ParsedJSONRoute
-from .publication_models import PublicationIntent
+from .publication_models import PublicationIntent, PublicationUpload
+from .publication_storage import reserve_upload
 from .queueing import admit, check_capacity, record_claim
 from .security import current_player
 from .storage import canonical_json
@@ -108,7 +110,10 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
         raise HTTPException(422, "INVALID_PUBLICATION_ENVELOPE")
     # Naming and creator ownership use exactly the existing immutable contract.
     clean = UploadTrack(name=body.name, document={**body.document, "creator": player.display_name})
-    if (set(body.contract) != set(CONTRACT_FIELDS) or any(body.contract.get(field) is None for field in CONTRACT_FIELDS)):
+    if (set(body.contract) != set(CONTRACT_FIELDS)
+            or type(body.contract.get("tick_rate")) is not int or not 1 <= body.contract["tick_rate"] <= 1000
+            or any(type(body.contract.get(field)) is not str or not 1 <= len(body.contract[field]) <= 160
+                   for field in CONTRACT_FIELDS if field != "tick_rate")):
         raise HTTPException(422, "INVALID_PUBLICATION_CONTRACT")
     try:
         validate_envelope(body.replay)
@@ -122,22 +127,47 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
     # Immutable objects are written before short transactional queue locks.
     player_id = player.id
     session.rollback()
-    document_hash = request.app.state.blobs.put_json(clean.document)
-    replay_hash = request.app.state.blobs.put_json(body.replay)
-    lock_entitlements(session, player_id)  # Owner lock serializes duplicate requests.
-    existing = session.scalar(select(PublicationIntent).where(PublicationIntent.player_id == player_id,
-        PublicationIntent.operation_key == key))
-    if existing:
-        if existing.request_hash != request_hash:
-            raise HTTPException(409, "Idempotency-Key already used for different content")
+    upload, existing = reserve_upload(session, request.app.state.settings, player_id, key,
+                                     request_hash, clean.document, body.replay)
+    if existing is not None:
         return payload(existing)
-    admit(session, player_id, request.app.state.settings.max_queued_runs)
-    intent = PublicationIntent(player_id=player_id, operation_key=key, request_hash=request_hash,
-        authoring_id=source_id, name=clean.name, content_hash=document_hash, replay_hash=replay_hash,
-        vehicle_id=body.vehicle_id, contract=body.contract)
-    session.add(intent)
-    session.commit()
-    return payload(intent)
+    token = upload.lease_token
+    try:
+        document_hash = request.app.state.blobs.put_json(clean.document)
+        replay_hash = request.app.state.blobs.put_json(body.replay)
+        if (document_hash, replay_hash) != (upload.content_hash, upload.replay_hash):
+            raise HTTPException(503, "PUBLICATION_STORAGE_HASH_MISMATCH")
+        lock_entitlements(session, player_id)
+        existing = session.scalar(select(PublicationIntent).where(PublicationIntent.player_id == player_id,
+            PublicationIntent.operation_key == key))
+        if existing:
+            return payload(existing)
+        reservation = session.scalar(select(PublicationUpload).where(PublicationUpload.player_id == player_id,
+            PublicationUpload.operation_key == key).with_for_update().execution_options(populate_existing=True))
+        if (reservation is None or reservation.evidence_retired or reservation.lease_token != token
+                or reservation.lease_until <= now()):
+            raise HTTPException(503, "PUBLICATION_UPLOAD_BUSY")
+        admit(session, player_id, request.app.state.settings.max_queued_runs)
+        intent = PublicationIntent(player_id=player_id, operation_key=key, request_hash=request_hash,
+            authoring_id=source_id, name=clean.name, content_hash=document_hash, replay_hash=replay_hash,
+            vehicle_id=body.vehicle_id, contract=body.contract, evidence_bytes=reservation.evidence_bytes)
+        session.add(intent)
+        session.delete(reservation)
+        session.commit()
+        return payload(intent)
+    except Exception:
+        session.rollback()
+        # Keep the charge and object references on every partial failure. Only
+        # this writer's lease is released, so retry/crash recovery reuses it.
+        try:
+            with request.app.state.session_factory() as recovery:
+                recovery.execute(update(PublicationUpload).where(PublicationUpload.player_id == player_id,
+                    PublicationUpload.operation_key == key, PublicationUpload.lease_token == token)
+                    .values(lease_until=0))
+                recovery.commit()
+        except SQLAlchemyError:
+            pass  # A crashed/failed DB retains the bounded lease instead.
+        raise
 
 
 @router.get("/me/publications/{publication_id}")
@@ -281,7 +311,7 @@ def process_one(app):
             session.execute(update(Player).where(Player.id == snapshot["player_id"]).values(created_at=Player.created_at))
         session.scalar(select(Player).where(Player.id == snapshot["player_id"]).with_for_update())
         intent = session.scalar(select(PublicationIntent).where(PublicationIntent.id == snapshot["id"]).with_for_update())
-        if intent.status != "verifying" or intent.lease_token != token or intent.lease_until <= now():
+        if intent is None or intent.status != "verifying" or intent.lease_token != token or intent.lease_until <= now():
             return True
         if failure is None:
             # Any rejection rolls back every track/proof/slot write, while the
@@ -303,7 +333,7 @@ def process_one(app):
 def _commit_publication(app, session, intent, manifest, result, document):
     from .runs import board_manifest
     owner = session.get(Player, intent.player_id)
-    if owner.disabled or owner.is_test_driver:
+    if owner.disabled or owner.deleted_at is not None or owner.is_test_driver:
         raise HTTPException(403, "PUBLICATION_OWNER_UNAVAILABLE")
     entitlement = lock_entitlements(session, intent.player_id)
     track = session.scalar(select(Track).where(Track.owner_id == intent.player_id,

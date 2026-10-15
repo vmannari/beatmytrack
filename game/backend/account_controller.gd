@@ -1,6 +1,7 @@
 extends Node
 ## Presentation-side sign-in. No credentials in records, exports, URLs or logs.
 signal changed
+signal account_removed(origin: String, player_id: String)
 const Client = preload("res://backend/backend_client.gd")
 var client := Client.new()
 var busy: bool = false
@@ -49,7 +50,9 @@ func start_session() -> void:
 	var result: Dictionary = await _check_service()
 	if result.ok and client.has_saved_session():
 		result = await client.restore_session()
+	if result.get("account_removed",false): account_removed.emit(str(result.removed_origin),str(result.removed_player_id))
 	message = _signed_in_message() if client.signed_in() else ("" if result.ok else _error_text(result))
+	if result.get("account_removed",false): message = "Account removed. Tracks and historical standings remain under Removed account."
 	retry_available = not result.ok
 	busy = false
 	changed.emit()
@@ -272,6 +275,27 @@ func sign_out() -> void:
 	message = "Signed out." if result.ok else "Signed out on this device. Server revocation was not confirmed."
 	if result.get("error") == "SESSION_STORAGE_ERROR": message = "Session ended, but saved credentials could not be removed. Check writable storage before restarting."
 	_signing_out = false
+	busy = false
+	changed.emit()
+
+func delete_account(expected_player: String = "", expected_origin: String = "") -> void:
+	if busy or not client.signed_in(): return
+	if (not expected_player.is_empty() and str(client.player.get("id","")) != expected_player) or (not expected_origin.is_empty() and client.base_url() != expected_origin):
+		message = "Your account changed. Review the current account before deleting it."
+		changed.emit()
+		return
+	busy = true
+	message = "Removing your account…"
+	changed.emit()
+	var result: Dictionary = await client.delete_account()
+	if result.ok:
+		if Engine.has_singleton("BmtGoogleSignIn"): Engine.get_singleton("BmtGoogleSignIn").clearSignIn()
+		account_removed.emit(str(result.removed_origin),str(result.removed_player_id))
+		message = "Account removed. Tracks and historical standings remain under Removed account."
+		if client.persistence_error: message += " Saved sign-in could not be erased; the account is already inaccessible. Check writable storage."
+	else:
+		message = "Deletion could not be confirmed. Check your connection and retry; the same request will be used."
+		if result.get("error") == "ACCOUNT_CHANGED": message = "Your account changed in another game instance. Its saved sign-in has been preserved."
 	busy = false
 	changed.emit()
 

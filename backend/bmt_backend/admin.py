@@ -65,7 +65,7 @@ def asset(name: str):
 
 # Explicit projections exclude provider subjects, session secrets and worker lease tokens.
 FIELDS = {
-    "players": (Player, "id display_name disabled needs_username is_test_driver created_at"),
+    "players": (Player, "id display_name disabled deleted_at analytics_enabled needs_username is_test_driver created_at"),
     "tracks": (
         TrackVersion,
         "id track_id number name content_hash state created_at published_at rating_sum rating_count",
@@ -152,9 +152,10 @@ def entities(
         conditions.append(or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
     if state:
         if kind == "players":
-            if state not in ("active", "disabled"):
+            if state not in ("active", "disabled", "removed"):
                 raise HTTPException(422, "INVALID_STATE")
-            conditions.append(Player.disabled == (state == "disabled"))
+            conditions.append(Player.deleted_at.is_not(None) if state == "removed" else Player.deleted_at.is_(None))
+            if state != "removed": conditions.append(Player.disabled == (state == "disabled"))
         elif kind in ("races", "jobs", "tracks"):
             conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
     with request.app.state.session_factory() as db:
@@ -268,7 +269,8 @@ def command(body: Command, request: Request, role: Access):
             return {"audit_id": prior.id, "after": prior.after}
         changed = db.execute(
             update(model)
-            .where(model.id == entity_id, getattr(model, field) == body.expected)
+            .where(model.id == entity_id, getattr(model, field) == body.expected,
+                Player.deleted_at.is_(None) if model == Player else True)
             .values(**{field: body.value})
         )
         if changed.rowcount != 1:

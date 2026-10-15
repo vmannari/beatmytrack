@@ -8,7 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from .db import get_session
@@ -88,6 +88,7 @@ def current_player(
     player, family, token = row
     if (
         player.disabled
+        or player.deleted_at is not None
         or family.revoked
         or family.expires_at <= now()
         or token.access_expires_at <= now()
@@ -107,4 +108,24 @@ def current_player(
             raise HTTPException(429, "RATE_LIMITED")
         request.state.player_budget_checked = True
     request.state.authenticated_player = player
+    if request.method not in ("GET", "HEAD"):
+        session.info["privacy_actor"] = player.id
+        fence_account_write(session)
     return player
+
+
+def fence_account_write(session):
+    """Recheck under the owner lock, including after rollback for external IO."""
+    actor = session.info.get("privacy_actor")
+    if actor is None:
+        return
+    row = session.execute(select(Player.deleted_at, Player.disabled).where(Player.id == actor).with_for_update()).first()
+    if row is None or row.deleted_at is not None or row.disabled:
+        raise HTTPException(401, "INVALID_SESSION")
+
+
+@event.listens_for(Session, "before_commit")
+def account_commit_fence(session):
+    # A request that released its connection before blob IO cannot resurrect an
+    # account if deletion committed during that IO. Exceptions roll back writes.
+    fence_account_write(session)

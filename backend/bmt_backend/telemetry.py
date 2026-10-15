@@ -130,6 +130,10 @@ def append_server_event(session, name, event_id, player_id, dimensions, *, occur
     """Caller owns the authority transaction and feature gate; no game/query work."""
     if name not in SERVER_NAMES:
         raise ValueError("UNKNOWN_SERVER_PRODUCT_EVENT")
+    from .identity_models import Player
+    owner = session.get(Player, player_id)
+    if owner is not None and (owner.deleted_at is not None or not owner.analytics_enabled):
+        return None
     event_key = str(uuid5(NAMESPACE_URL, "bmt-product-server-v1/" + name + "/" + str(event_id)))
     projected = {}
     for key in ("track_version", "track_version_id", "run_id", "ticket_id", "owner_id", "published_at", "car_id", "biome", "lap_count"):
@@ -160,6 +164,8 @@ def append_server_event(session, name, event_id, player_id, dimensions, *, occur
 
 @router.post("/v1/telemetry/batches")
 def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
+    if not player.analytics_enabled:
+        raise HTTPException(403, "ANALYTICS_DISABLED")
     if not request.app.state.settings.telemetry_enabled:
         raise HTTPException(503, "TELEMETRY_DISABLED")
     if batch.schema_version != SCHEMA or batch.purpose_policy != POLICY:
@@ -250,7 +256,7 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
                 if acknowledgement["id"] == event_id and acknowledgement["status"] == "pending":
                     acknowledgement.update(status="rejected", reason="INVALID_EVENT")
     if parsed:
-        if session.bind.dialect.name == "sqlite":
+        if session.bind.dialect.name == "sqlite" and not session.in_transaction():
             session.execute(text("BEGIN IMMEDIATE"))
         state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
         race_statistics.admit(session, parsed, acknowledgements, insert_for)

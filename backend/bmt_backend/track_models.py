@@ -64,6 +64,7 @@ class TrackVersion(Base):
     number: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(80))
     content_hash: Mapped[str] = mapped_column(String(64))
+    redacted_track_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     revision_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest: Mapped[dict] = mapped_column(JSON)
     discovery: Mapped[dict | None] = mapped_column(JSON, nullable=True)

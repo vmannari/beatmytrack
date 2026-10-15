@@ -10,7 +10,7 @@ import pytest
     ("POST", "/v1/auth/google/browser/complete?token=private-query", b'{"private-body":',
      {"Content-Type": "application/json"}, 400, "/v1/auth/google/browser/complete"),
     ("POST", "/v1/track-versions/private-identifier/document?secret=private-query", b"private-body",
-     {"Content-Type": "text/plain"}, 415, "/v1/track-versions/{version_id}/document"),
+     {"Content-Type": "text/plain"}, 405, "/v1/track-versions/{version_id}/document"),
     ("POST", "/v1/publications?secret=private-query", b"{}",
      {"Content-Type": "application/json", "Content-Length": str(8*1024*1024+1)}, 413, "/v1/publications"),
     ("POST", "/not-a-route/private-identifier?secret=private-query", b'{"private-body":',

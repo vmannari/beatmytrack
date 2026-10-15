@@ -466,7 +466,7 @@ def test_external_creator_value_excludes_own_races_and_never_marks_passive_owner
     published = AT - 9 * DAY
     version = str(uuid4())
     with app.state.session_factory() as session:
-        external = Player(display_name="External artificial racer", is_test_driver=True)
+        external = Player(display_name="External artificial racer", is_test_driver=True, analytics_enabled=True)
         session.add(external)
         session.flush()
         context = {"track_version": version, "owner_id": owner, "published_at": published}
@@ -526,6 +526,7 @@ def test_postgres_duplicate_ingestion_and_parallel_projection_are_one_effect(pos
         "display_name": "Product PG"})
     assert signed.status_code == 200
     headers = {"Authorization": "Bearer " + signed.json()["access_token"]}
+    assert client.post("/v1/privacy/preferences", headers=headers, json={"analytics_enabled": True}).status_code == 200
     monkeypatch.setattr("bmt_backend.telemetry.now", lambda: AT)
     payload = body([observed("menu_ready")])
     with ThreadPoolExecutor(max_workers=4) as pool:

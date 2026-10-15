@@ -8,7 +8,8 @@ from .db import Base
 
 class ProductEvent(Base):
     __tablename__ = "product_events"
-    __table_args__ = (Index("ix_product_pending", "processed_at", "received_at", "id"),
+    __table_args__ = (Index("ix_product_erasure_player", "player_id", "id"),
+        Index("ix_product_pending", "processed_at", "received_at", "id"),
         Index("ix_product_pending_order", "received_at", "id",
             sqlite_where=text("processed_at IS NULL"), postgresql_where=text("processed_at IS NULL")),
         Index("ix_product_client_cleanup", "received_at", "id",

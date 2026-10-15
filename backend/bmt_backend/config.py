@@ -14,6 +14,10 @@ class Settings:
     purchase_simulation_enabled: bool = False
     telemetry_enabled: bool = False
     client_quality_enabled: bool = False
+    privacy_developer_name: str = "[Developer name — to be confirmed]"
+    privacy_contact_email: str = ""
+    privacy_backup_days: int = 30
+    privacy_purchase_days: int = 365
     telemetry_client_backlog: int = 50000
     telemetry_processor_batch: int = 500
     telemetry_raw_days: int = 7
@@ -41,6 +45,12 @@ class Settings:
     auth_limit_per_minute: int = 30
     write_limit_per_minute: int = 90
     max_queued_runs: int = 128
+    publication_evidence_bytes: int = 64 * 1024 * 1024
+    publication_evidence_count: int = 128
+    discovery_catalogue_limit: int = 100000
+    discovery_snapshot_ids: int = 1000000
+    discovery_snapshot_count: int = 2048
+    discovery_create_per_minute: int = 20
     worker_stale_seconds: int = 300
     worker_shutdown_grace_seconds: int = 5
     readiness_cache_seconds: int = 2
@@ -106,10 +116,14 @@ class Settings:
             "auth_limit_per_minute",
             "write_limit_per_minute",
             "max_queued_runs",
+            "publication_evidence_bytes", "publication_evidence_count", "discovery_catalogue_limit",
+            "discovery_snapshot_ids", "discovery_snapshot_count",
+            "discovery_create_per_minute",
             "worker_stale_seconds",
             "worker_shutdown_grace_seconds",
             "readiness_cache_seconds", "readiness_storage_cache_seconds", "readiness_timeout_seconds",
             "retention_days",
+            "privacy_backup_days", "privacy_purchase_days",
             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
             "upload_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
         ):

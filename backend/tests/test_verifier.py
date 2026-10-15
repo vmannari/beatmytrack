@@ -57,6 +57,15 @@ def legacy_contact_verifier(real_verifier, tmp_path_factory):
     archive = Path(__file__).parent / "fixtures/physics_050"
     for name, folder in (("native_track", "track"), ("playground_data", "track"), ("vehicle_simulation", "vehicle")):
         shutil.copyfile(archive / (name + ".gd.txt"), project / folder / (name + ".gd"))
+    # Current compiler preparation passes optional immutable cell buffers.
+    # The historical loader deliberately ignores them and retains its original
+    # rectangle expansion, so no .50 simulation or replay bytes are changed.
+    historical_track = project / "track/native_track.gd"
+    historical_track.write_text(historical_track.read_text().replace(
+        "hash_value: String) -> NativeTrack:",
+        "hash_value: String, _prepared_cells: PackedInt32Array = PackedInt32Array(), "
+        "_prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:",
+    ))
     subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--editor", "--import"],
                    check=True, capture_output=True, timeout=90)
     return GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary, game_project=project,
@@ -68,7 +77,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
     fixtures = ROOT / "game/tests/fixtures"
     document = json.loads((fixtures / "over_and_under.json").read_text())
     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.56"
+    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.59"
     with pytest.raises(VerificationError, match="required laps"):
         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
 

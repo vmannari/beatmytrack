@@ -10,7 +10,8 @@ from .config import Settings
 from .db import make_engine, make_session_factory
 from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
 from .object_models import ObjectPin
-from .publication_models import PublicationIntent
+from .publication_models import PublicationIntent, PublicationUpload
+from .publication_storage import retire_evidence, retired_candidates
 from .resume_models import ResumeRace, ResumeReceipt
 from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryTicket
 from .storage import LocalBlobStore, PinnedBlobStore, make_blob_store
@@ -48,6 +49,10 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             maintenance = session.scalar(select(OperationState).where(OperationState.id == "object-maintenance").with_for_update())
             if maintenance is not None and maintenance.updated_at > now():
                 raise RuntimeError("Object GC is paused for a consistent online backup")
+        retired_intents, retired_uploads = retired_candidates(session, cutoff)
+        if apply:
+            retire_evidence(retired_intents, retired_uploads)
+            session.flush()
         candidates = session.scalars(select(Run).where(
             Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
             ~Run.id.in_(select(PersonalBest.run_id)),
@@ -87,8 +92,14 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         keep = [] if online else [~Run.id.in_(run_ids)]
         referenced = set(session.scalars(union_all(
             select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes)),
-            select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes)),
-            select(PublicationIntent.replay_hash).where(PublicationIntent.replay_hash.in_(hashes)),
+            select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes),
+                PublicationIntent.evidence_retired.is_(False)),
+            select(PublicationIntent.replay_hash).where(PublicationIntent.replay_hash.in_(hashes),
+                PublicationIntent.evidence_retired.is_(False)),
+            select(PublicationUpload.content_hash).where(PublicationUpload.content_hash.in_(hashes),
+                PublicationUpload.evidence_retired.is_(False)),
+            select(PublicationUpload.replay_hash).where(PublicationUpload.replay_hash.in_(hashes),
+                PublicationUpload.evidence_retired.is_(False)),
             select(Run.replay_hash).where(Run.replay_hash.in_(hashes), *keep),
             select(Run.ghost_hash).where(Run.ghost_hash.in_(hashes), *keep),
         )))
@@ -109,8 +120,12 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 key = row["digest"]
                 if (session.scalar(select(TrackVersion.id).where(TrackVersion.content_hash==key).limit(1))
                         or session.scalar(select(Run.id).where(or_(Run.replay_hash==key,Run.ghost_hash==key)).limit(1))
-                        or session.scalar(select(PublicationIntent.id).where(or_(PublicationIntent.content_hash==key,
+                        or session.scalar(select(PublicationIntent.id).where(PublicationIntent.evidence_retired.is_(False),
+                            or_(PublicationIntent.content_hash==key,
                             PublicationIntent.replay_hash==key)).limit(1))):
+                    continue
+                if session.scalar(select(PublicationUpload.player_id).where(PublicationUpload.evidence_retired.is_(False),
+                        or_(PublicationUpload.content_hash==key, PublicationUpload.replay_hash==key)).limit(1)):
                     continue
                 blobs.delete(key)
                 safe.append(row)
@@ -120,6 +135,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             removed += sum(shard == f"{next_cursor['shard']:02x}" for shard, _name in temporary_removed)
             next_cursor["offset"] = max(0, next_cursor["offset"]-removed)
         result = {"runs": len(run_ids), "tickets": len(tickets), "resume_races": len(races),
+                  "retired_publications": len(retired_intents), "retired_publication_uploads": len(retired_uploads),
                   "orphaned_objects": len(orphaned), "orphaned_bytes": sum(row["bytes"] for row in orphaned), "applied": apply,
                   "temporary_files": temporary_files, "temporary_bytes": temporary_bytes,
                   "archived_weeks": archived, "objects_inspected":objects_inspected, "object_scan_limit": scan_limit,

@@ -50,6 +50,10 @@ func _run() -> void:
 		facts.append({"vertices":vertices.size(),"triangles":indices.size()/3,"inverted":inverted-previous_inverted,"degenerate":degenerate-previous_degenerate})
 	check(inverted == 0,"all nondegenerate faces wind toward their authored normals")
 	check(degenerate == 0,"collapsed leaf/lathe pole triangles omitted")
+	var soil_chip_normals: PackedVector3Array = Plant.meshes[2].surface_get_arrays(0)[Mesh.ARRAY_NORMAL]
+	var upward: bool = true
+	for normal: Vector3 in soil_chip_normals: upward = upward and normal.y>0.0
+	check(upward,"exposed soil-chip faces point upward toward room lighting")
 	check(total<20000,"whole prop stays below 20000 triangles")
 	check(bounds.position.x> -0.75 and bounds.end.x<0.75 and bounds.position.z> -0.75 and bounds.end.z<0.75,"crown clears side wall and stays within furnishing footprint")
 	check(bounds.end.y>1.9 and bounds.end.y<2.3 and bounds.position.y>=0,"natural height, no geometry below floor")

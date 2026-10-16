@@ -176,7 +176,7 @@ static func _chip(tool: SurfaceTool, at: Vector3, size: float, angle: float, sha
 		points.append(at+Vector3(sin(a)*size,0,cos(a)*size*0.65))
 	for index: int in range(5):
 		var peak: Vector3 = at+Vector3.UP*size*0.5
-		var normal: Vector3 = (points[(index+1)%5]-peak).cross(points[index]-peak).normalized()
+		var normal: Vector3 = (points[index]-peak).cross(points[(index+1)%5]-peak).normalized()
 		_quad(tool,[peak,points[index],points[(index+1)%5]],normal,Color(shade,shade,shade))
 
 static func _quad(tool: SurfaceTool, points: Array[Vector3], normal: Vector3, color: Color) -> void:

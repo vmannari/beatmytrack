@@ -1,0 +1,275 @@
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-201"
++const VERSION: String = "track-kit-202"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+ var ground_support: RefCounted
+--- a/game/track/road_surface_height.gd
++++ b/game/track/road_surface_height.gd
+@@ -41,14 +41,34 @@
+ 	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):
+ 		var links: Array = RoadPieces._matches(topology,index,int(cut.endpoint))
+ 		if links.size() != 1 or pieces[int(links[0][0])].kind != "bridge": continue
++		# The 16 cm road offset extends the mouth beneath its bridge. Trim
++		# only that contiguous cap, since a returning curve can cross the same
++		# infinite plane again far from the bridge (Underpass's 216-degree bend).
++		var distances := PackedFloat32Array()
++		for point: Vector2 in polygon: distances.append((point-Vector2(cut.point)).dot(cut.normal))
++		var seed: int = -1
++		var nearest: float = 0.25*0.25
++		for i: int in range(polygon.size()):
++			var next: int = (i+1)%polygon.size()
++			if distances[i] >= 0.0 or distances[next] >= 0.0: continue
++			var distance: float = Vector2(cut.point).distance_squared_to(Geometry2D.get_closest_point_to_segment(cut.point,polygon[i],polygon[next]))
++			if distance < nearest: nearest = distance; seed = i
++		if seed < 0: continue
++		var trimmed := PackedByteArray()
++		trimmed.resize(polygon.size())
++		for step: int in [-1,1]:
++			var vertex: int = seed if step == 1 else posmod(seed-1,polygon.size())
++			while distances[vertex] < 0.0 and trimmed[vertex] == 0:
++				trimmed[vertex] = 1
++				vertex = posmod(vertex+step,polygon.size())
+ 		var result := PackedVector2Array()
+ 		for i: int in range(polygon.size()):
+ 			var a: Vector2 = polygon[i]
+ 			var b: Vector2 = polygon[(i+1)%polygon.size()]
+-			var da: float = (a-Vector2(cut.point)).dot(cut.normal)
+-			var db: float = (b-Vector2(cut.point)).dot(cut.normal)
+-			if da >= 0.0: result.append(a)
+-			if da*db < 0.0: result.append(a.lerp(b,da/(da-db)))
++			var da: float = distances[i]
++			var db: float = distances[(i+1)%polygon.size()]
++			if trimmed[i] == 0: result.append(a)
++			if trimmed[i] != trimmed[(i+1)%polygon.size()] and da*db < 0.0: result.append(a.lerp(b,da/(da-db)))
+ 		polygon = result
+ 	return polygon
+ 
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Underpass returning-bend asphalt repair (2026-10-15)
++The owner reports a pale triangular road artifact on Underpass. Clip only the contiguous 16 cm offset cap at a bridge mouth; preserve distant portions of returning curves that cross its plane again. Retain asphalt height/finish, bridge ownership, camera, canonical track data and bounded preparation/caches, with kit202 fencing old geometry. Native both-renderer before/after and targeted82+82/headless82, cache70/prepared85/editor407 pass; whole-project parsing separately finds undeclared `_resolve_thread` in concurrent TrackBrowser work. See `docs/UNDERPASS_ASPHALT_ARTIFACT_2026_10_15.md` for actual checks, limitations and scoped checkpoint. Owner/phone moving-view acceptance remains; no phone test/APK/deployment.
+ 
+ ## Aligned Weekly Rivalry podium rows override (2026-10-15)
+ The owner requests the car, flag/name and points at matching vertical positions across all three podiums. Bottom-anchor the shared rows with flexible space beneath the rank header, retaining the taller central winner card and compact hub. Preserve the existing simpler customised cars, Garage lighting/finish, front-facing pose and bounded one-shot rendering. See `docs/RIVALRY_PODIUM_ALIGNMENT_2026_10_15.md` for native before/after views, both-renderer geometry checks, full-app verification and task-only checkpoint. Owner/phone visual acceptance remains; no phone test/APK/backend/deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-15 UPA01-UPA02/G01/R01/Q01: owner Underpass screenshot reproduced as missing asphalt, caused by an infinite bridge-mouth plane clipping a distant part of the 216-degree returning bend. Clip only the contiguous local offset cap; retain bridge ownership, original finish/height/camera/canonical data, with kit202 cache fences. Native both-renderer before/after; headless82/Compatibility82/Mobile82, disk70/prepared85/editor407 and headless ownership9 pass. Whole-project parser separately fails on undeclared _resolve_thread in concurrent TrackBrowser code. Actual commands, initial fixture corrections, scoped checkpoint and owner/device acceptance: docs/UNDERPASS_ASPHALT_ARTIFACT_2026_10_15.md. No phone test/attachment check/APK/deployment or performance claim.
++
+ 2026-10-15 RPA01-RPA02/RPC01-RPC04/RPS01/RPP01-RPP05/R01/Q01: owner requests matching vertical positions for podium cars, flags/names and points. Flexible header space bottom-anchors identical content rows while retaining the taller gold winner and compact184-unit podium. Simpler customised cars, Garage finish/lighting, front-facing pose and bounded one-shot rendering retained. Native before/after,199+199 focused checks,1136 full-app checks and765-script parse pass; settled141 draws retained. Task-only checkpoint and actual commands: docs/RIVALRY_PODIUM_ALIGNMENT_2026_10_15.md. No phone test/APK/backend/deployment; owner/device visual acceptance remains.
+ 
+ 2026-10-14 RPP01-RPP05/RPC01-RPC04/RPS01/V03-V06/R01/Q01: owner rejects flat reflections/white edges and supplies Garage-versus-podium crops; also requests180-degree front-facing pose. Podium now shares exact Garage lighting/Compact paint and glass, perspective cutout, display-density2x rendering plus4xMSAA, bounded1536x768 targets and coverage-aware renderer-correct matte removal. Simple geometry/customisation/local condition boundary/one-shot lifecycle/canonical behavior retained; other chassis borrow the Compact Garage paint profile only in their preview. Native matched Garage comparison, real reflection ablations and zero halo461/504edge-pixel checks;54+54 quality/163+163 podium/765-script parser/Mobile Garage reflections25 pass. Full rivalry checks and task-only checkpoint: docs/RIVALRY_PODIUM_POLISH_2026_10_14.md. No phone/APK/backend/deployment or AAA/FPS certification; owner/device acceptance remains.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-15 UPA01-UPA02/G01/R01/Q01: owner Underpass screenshot reproduced as missing asphalt, caused by an infinite bridge-mouth plane clipping a distant part of the 216-degree returning bend. Clip only the contiguous local offset cap; retain bridge ownership, original finish/height/camera/canonical data, with kit202 cache fences. Native both-renderer before/after; headless82/Compatibility82/Mobile82, disk70/prepared85/editor407 and headless ownership9 pass. Whole-project parser separately fails on undeclared _resolve_thread in concurrent TrackBrowser code. Actual commands, initial fixture corrections, scoped checkpoint and owner/device acceptance: docs/UNDERPASS_ASPHALT_ARTIFACT_2026_10_15.md. No phone test/attachment check/APK/deployment or performance claim.
++
+ 2026-10-15 RPA01-RPA02/RPC01-RPC04/RPS01/RPP01-RPP05/R01/Q01: owner requests matching vertical positions for podium cars, flags/names and points. Flexible header space bottom-anchors identical content rows while retaining the taller gold winner and compact184-unit podium. Simpler customised cars, Garage finish/lighting, front-facing pose and bounded one-shot rendering retained. Native before/after,199+199 focused checks,1136 full-app checks and765-script parse pass; settled141 draws retained. Task-only checkpoint and actual commands: docs/RIVALRY_PODIUM_ALIGNMENT_2026_10_15.md. No phone test/APK/backend/deployment; owner/device visual acceptance remains.
+ 
+ 2026-10-14 RPP01-RPP05/RPC01-RPC04/RPS01/V03-V06/R01/Q01: owner rejects flat reflections/white edges and supplies Garage-versus-podium crops; also requests180-degree front-facing pose. Podium now shares exact Garage lighting/Compact paint and glass, perspective cutout, display-density2x rendering plus4xMSAA, bounded1536x768 targets and coverage-aware renderer-correct matte removal. Simple geometry/customisation/local condition boundary/one-shot lifecycle/canonical behavior retained; other chassis borrow the Compact Garage paint profile only in their preview. Native matched Garage comparison, real reflection ablations and zero halo461/504edge-pixel checks;54+54 quality/163+163 podium/765-script parser/Mobile Garage reflections25 pass. Full rivalry checks and task-only checkpoint: docs/RIVALRY_PODIUM_POLISH_2026_10_14.md. No phone/APK/backend/deployment or AAA/FPS certification; owner/device acceptance remains.
+--- /dev/null
++++ b/game/tests/test_underpass_asphalt.gd
+@@ -0,0 +1,139 @@
++extends SceneTree
++## Returning bends retain their asphalt across a distant bridge-mouth plane.
++const HEIGHT = preload("res://track/road_surface_height.gd")
++const PREPARATION = preload("res://editor/road_preparation.gd")
++const PATCH := Vector2(2.10801,-30.46882)
++var checks: int = 0
++var failures: int = 0
++var measurements: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(message)
++
++func area(polygon: PackedVector2Array) -> float:
++	var value: float = 0.0
++	for i: int in range(polygon.size()): value += (polygon[i]-polygon[0]).cross(polygon[(i+1)%polygon.size()]-polygon[0])
++	return absf(value)*0.5
++
++func review_mouth(pieces: Array, index: int, label: String) -> void:
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
++	var cuts: Array[Dictionary] = []
++	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):
++		var links: Array = RoadPieces._matches(topology,index,int(cut.endpoint))
++		if links.size() == 1 and pieces[int(links[0][0])].kind == "bridge": cuts.append(cut)
++	check(not cuts.is_empty(),label+" exercises an actual joined bridge mouth")
++	var removed_area: float = 0.0
++	var farthest: float = 0.0
++	var maximum_depth: float = 0.0
++	var clipped_valid: bool = true
++	var cap_clear: bool = true
++	var distant_vertices_retained: bool = true
++	for polygon: PackedVector2Array in Geometry2D.offset_polygon(shape.contours[0],0.16,Geometry2D.JOIN_ROUND):
++		var clipped: PackedVector2Array = HEIGHT.clip_bridge_mouths(polygon,pieces,index,topology)
++		clipped_valid = clipped_valid and not Geometry2D.triangulate_polygon(clipped).is_empty()
++		for point: Vector2 in polygon:
++			var nearest: float = INF
++			for cut: Dictionary in cuts:
++				var across: Vector2 = Vector2(cut.normal).orthogonal()*float(cut.span)*0.5
++				nearest = minf(nearest,point.distance_to(Geometry2D.get_closest_point_to_segment(point,Vector2(cut.point)-across,Vector2(cut.point)+across)))
++			if nearest > 0.25: distant_vertices_retained = distant_vertices_retained and clipped.has(point)
++		for removed: PackedVector2Array in Geometry2D.clip_polygons(polygon,clipped):
++			removed_area += area(removed)
++			for point: Vector2 in removed:
++				var nearest: float = INF
++				for cut: Dictionary in cuts:
++					var across: Vector2 = Vector2(cut.normal).orthogonal()*float(cut.span)*0.5
++					nearest = minf(nearest,point.distance_to(Geometry2D.get_closest_point_to_segment(point,Vector2(cut.point)-across,Vector2(cut.point)+across)))
++					maximum_depth = maxf(maximum_depth,-(point-Vector2(cut.point)).dot(cut.normal))
++				farthest = maxf(farthest,nearest)
++		for cut: Dictionary in cuts:
++			for across: float in [-0.4,0.0,0.4]:
++				var point: Vector2 = Vector2(cut.point)+Vector2(cut.normal).orthogonal()*float(cut.span)*across
++				cap_clear = cap_clear and not Geometry2D.is_point_in_polygon(point-Vector2(cut.normal)*0.08,clipped)
++				cap_clear = cap_clear and Geometry2D.is_point_in_polygon(point+Vector2(cut.normal)*0.08,clipped)
++	check(clipped_valid,label+" retains triangulatable asphalt")
++	# Polygon Boolean output can carry a zero-area spur along an unchanged
++	# edge. Exact retention of distant vertices avoids counting it as a cut.
++	check(removed_area > 0.01 and removed_area < 2.0 and maximum_depth <= 0.161 and distant_vertices_retained,label+" trims only the local 16 cm cap")
++	check(cap_clear,label+" meets the bridge plane without a ground cap under the deck")
++	measurements.append({"fixture":label,"removed_m2":removed_area,"furthest_removed_m":farthest,"maximum_depth_m":maximum_depth})
++
++func coverage(arrays: Array, point: Vector2) -> int:
++	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	var count: int = 0
++	for first: int in range(0,vertices.size(),3):
++		var polygon := PackedVector2Array()
++		for i: int in range(3):
++			var p: Vector3 = vertices[first+i]
++			if absf(p.y-0.062) > 0.00001: break
++			polygon.append(Vector2(p.x,-p.z))
++		if polygon.size() == 3 and area(polygon) > 0.000001 and Geometry2D.is_point_in_polygon(point,polygon): count += 1
++	return count
++
++func packet_coverage(packet: Dictionary, point: Vector2) -> int:
++	var count: int = 0
++	for part: Dictionary in packet.parts:
++		if part.role == "road" and part.arguments[5] and not part.arguments[6]: count += coverage(part.arrays,point)
++	return count
++
++func mesh_coverage(visual: NativeTrackVisual, point: Vector2) -> int:
++	var count: int = 0
++	for child: Node in visual.get_children():
++		if not child is MeshInstance3D or not child.material_override is ShaderMaterial: continue
++		if child.material_override.get_shader_parameter("asphalt_surface") != true or child.material_override.get_shader_parameter("edge_fringe") == true: continue
++		count += coverage(child.mesh.surface_get_arrays(0),point)
++	return count
++
++func run() -> void:
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/underpass.json"))
++	var frozen_document: PackedByteArray = var_to_bytes(document)
++	review_mouth(document.pieces,5,"original Underpass 216-degree bend")
++	for angle: float in [90.0,180.0,216.0,270.0]:
++		for flip: bool in [false,true]:
++			for bridge_start: bool in [false,true]:
++				var curve: Dictionary = RoadPieces.create("curve",Vector2(80,-110),37,10)
++				curve.angle = angle
++				curve.radius = 12.0
++				curve.flip = flip
++				var before: Dictionary = RoadPieces.create("bridge" if bridge_start else "straight",Vector2(80,-110)-Vector2.RIGHT.rotated(deg_to_rad(37))*30.0,37,10)
++				before.length = 30.0
++				var end: Dictionary = RoadPieces.end_pose(curve)
++				var after: Dictionary = RoadPieces.create("straight" if bridge_start else "bridge",end.position,end.heading,10)
++				after.length = 30.0
++				review_mouth([before,curve,after],1,"%s degrees / flip %s / bridge start %s"%[angle,flip,bridge_start])
++	for theme: String in ["night_city","pine","storm"]:
++		var doc: Dictionary = document.duplicate(true)
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var support: RefCounted = HEIGHT.new(track)
++		check(support.on_floor(PATCH),theme+" missing triangle retains asphalt presentation support")
++		var packet: Dictionary = PREPARATION.prepare(track,true)
++		check(packet_coverage(packet,PATCH) == 1,theme+" prepared CPU asphalt covers the reported hole exactly once")
++		var direct := NativeTrackVisual.new()
++		direct.cache_road_meshes = false
++		direct.persist_road_meshes = false
++		direct.theme_id = theme
++		direct.colors = TrackTheme.palette(theme)
++		root.add_child(direct)
++		direct._build_creator_roads(track)
++		check(mesh_coverage(direct,PATCH) == 1,theme+" direct native asphalt covers the reported hole exactly once")
++		var restored := NativeTrackVisual.new()
++		restored.theme_id = theme
++		restored.colors = TrackTheme.palette(theme)
++		restored.ground_support = support
++		root.add_child(restored)
++		restored._install_prepared_roads(track,packet)
++		check(mesh_coverage(restored,PATCH) == 1,theme+" uploaded prepared asphalt covers the reported hole exactly once")
++		direct.free()
++		restored.free()
++		if theme == "night_city": check(track.content_hash == "259e7adadd65d5365d03af4210db47f199ff4f93d89f02364972cec7bc8ae3ce","published Underpass native hash remains unchanged")
++	check(var_to_bytes(document) == frozen_document,"original document, route, start and identities remain unchanged")
++	var report_path: String = "res://../docs/evidence/underpass-artifact-2026-10-15/coverage-"+RenderingServer.get_current_rendering_method()+".json"
++	var file := FileAccess.open(report_path,FileAccess.WRITE)
++	if file != null: file.store_string(JSON.stringify({"checks":checks,"failures":failures,"mouths":measurements},"\t"))
++	print("UNDERPASS_ASPHALT: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/fixtures/underpass.json
+@@ -0,0 +1 @@
++{"base_track": "", "corners": ["sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp", "sharp"], "creator": "Beat my track", "id": "track_2b3b8a3ba06e1c22", "layout": {}, "name": "Underpass", "objects": [], "paint": [], "pieces": [{"flip": false, "heading": 39.8649822181798, "kind": "bridge", "length": 42.2606201171875, "position": [-15.0, -11.0], "radius": 16.0, "width": 10.0}, {"flip": false, "heading": 136.904728792162, "kind": "bridge", "length": 49.023498968925, "position": [20.2882766723633, -14.4450731277466], "radius": 16.0, "width": 10.0}, {"flip": false, "heading": 35.8349149026652, "kind": "curve", "length": 0.0, "position": [17.4374351501465, 16.0882396697998], "radius": 12.6560403773593, "width": 10.0}, {"angle": 157.5, "flip": false, "heading": 115.119891717668, "kind": "curve", "length": 0.0, "position": [20.2882766723633, 33.7580871582031], "radius": 9.03819779621305, "width": 10.0}, {"flip": false, "heading": 269.404316641645, "kind": "straight", "length": 56.4964599609375, "position": [3.07614898681641, 29.508113861084], "radius": 16.0, "width": 10.0}, {"angle": 216.0, "flip": false, "heading": 287.165726682001, "kind": "curve", "length": 0.0, "position": [2.4887957572937, -26.9852905273438], "radius": 11.4469258113522, "width": 10.0}, {"flip": false, "heading": 238.171868954202, "kind": "curve", "length": 0.0, "position": [-18.8594722747803, 33.3623199462891], "radius": 10.3949208663403, "width": 10.0}, {"angle": 203.5, "flip": false, "heading": 52.3491634226177, "kind": "curve", "length": 0.0, "position": [-18.8594722747803, 33.3623199462891], "radius": 8.28495521210117, "width": 10.0}, {"flip": false, "heading": 250.635516443754, "height": 15.5, "kind": "s_bend", "length": 2.0, "position": [-33.4526214599609, 40.4486351013184], "radius": 24.5, "width": 10.0}, {"angle": 35.5, "flip": true, "heading": 250.635516443754, "kind": "curve", "length": 0.0, "position": [-31.6443252563477, -1.15263748168945], "radius": 7.58991265768076, "width": 10.0}, {"flip": false, "heading": 216.571307611336, "kind": "hairpin", "length": 4.57731496515106, "position": [-34.4367752075195, -4.8429799079895], "radius": 8.11951970234818, "width": 10.0}, {"flip": false, "heading": 35.196280821499, "kind": "straight", "length": 11.9449273555669, "position": [-24.7611846923828, -17.8848094940186], "radius": 16.0, "width": 10.0}], "points": [[-15.0, -11.0], [-11.9958028793335, -8.49121952056885], [-8.99160671234131, -5.98243951797485], [-5.98741006851196, -3.47365880012512], [-2.98321342468262, -0.964878141880035], [0.0209833085536957, 1.54390215873718], [3.02518010139465, 4.05268239974976], [6.02937650680542, 6.56146287918091], [9.03357315063477, 9.07024383544922], [12.0377702713013, 11.5790233612061], [15.0419673919678, 14.0878038406372], [18.0645179748535, 16.5736141204834], [20.655574798584, 19.4856967926025], [22.240966796875, 23.0462112426758], [22.670482635498, 26.9206066131592], [21.8924331665039, 30.7402629852295], [20.0644989013672, 34.1891326904297], [17.541561126709, 37.1406669616699], [14.0078125, 38.7497329711914], [10.1259489059448, 38.7342796325684], [6.60766220092773, 37.0922546386719], [4.10958051681519, 34.1202545166016], [3.08270883560181, 30.3764820098877], [3.04449009895325, 26.4630794525146], [3.00379943847656, 22.5493183135986], [2.96310877799988, 18.6355571746826], [2.92241811752319, 14.7217969894409], [2.88172721862793, 10.8080368041992], [2.84103655815125, 6.89427614212036], [2.80034565925598, 2.98051571846008], [2.75965476036072, -0.933244705200195], [2.71896433830261, -4.84700536727905], [2.67827343940735, -8.76076602935791], [2.63758277893066, -12.6745262145996], [2.5968918800354, -16.5882873535156], [2.55620121955872, -20.502046585083], [2.51551032066345, -24.415807723999], [2.96354603767395, -28.2422714233398], [5.12224578857422, -31.4839038848877], [8.24641513824463, -33.8090209960938], [11.9678249359131, -34.9546890258789], [15.858434677124, -34.7892417907715], [19.4678764343262, -33.3264389038086], [22.3749885559082, -30.735330581665], [24.2474212646484, -27.3213367462158], [24.8698024749756, -23.4771003723145], [24.1626243591309, -19.6472415924072], [22.2109279632568, -16.2775573730469], [19.3742351531982, -13.5898694992065], [16.5161781311035, -10.9157915115356], [13.6581230163574, -8.24171257019043], [10.800066947937, -5.56763458251953], [7.9420108795166, -2.89355683326721], [5.08395528793335, -0.219477981328964], [2.22589945793152, 2.45459985733032], [-0.632156491279602, 5.12867784500122], [-3.49021244049072, 7.80275583267212], [-6.34826755523682, 10.4768342971802], [-9.20632362365723, 13.1509122848511], [-12.0643787384033, 15.8249912261963], [-14.922435760498, 18.4990673065186], [-17.8664131164551, 21.0595970153809], [-19.8231525421143, 24.421350479126], [-20.4102478027344, 28.26637840271], [-19.5449638366699, 32.0595550537109], [-17.6789302825928, 35.488338470459], [-17.1918067932129, 39.3332481384277], [-18.5024394989014, 42.981861114502], [-21.3381519317627, 45.6256828308105], [-25.0640468597412, 46.6927223205566], [-28.8694534301758, 45.9531135559082], [-31.9155178070068, 43.5548934936523], [-33.5926628112793, 40.050178527832], [-34.7741928100586, 36.321216583252], [-35.3542404174805, 32.4555053710938], [-35.2747459411621, 28.5472278594971], [-34.5523910522461, 24.7050857543945], [-33.2245559692383, 21.0275230407715], [-31.5391311645508, 17.4963054656982], [-30.3372116088867, 13.775897026062], [-29.7501201629639, 9.91092014312744], [-29.8113079071045, 6.00235176086426], [-30.5324153900146, 2.16034126281738], [-31.8004951477051, -1.54111862182617], [-34.1451416015625, -4.6178126335144], [-37.2842445373535, -6.95548582077026], [-40.0771064758301, -9.65980911254883], [-41.3506546020508, -13.3198766708374], [-40.7877655029297, -17.1530227661133], [-38.514347076416, -20.2912540435791], [-35.0404281616211, -22.0081768035889], [-31.1667900085449, -21.9271240234375], [-27.7415142059326, -20.0958843231201], [-24.5952854156494, -17.7677974700928], [-21.396858215332, -15.5118646621704], [-18.198429107666, -13.255931854248]], "route_override": true, "schema": "creator-track-v5", "start_line": {"heading": 90.3038248003715, "position": [3.07588338851929, 29.5582160949707]}, "surface": "asphalt", "theme": "night_city", "width": 10.0, "widths": [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]}
+--- /dev/null
++++ b/docs/UNDERPASS_ASPHALT_ARTIFACT_2026_10_15.md
+@@ -0,0 +1,48 @@
++# Underpass asphalt hole — 2026-10-15
++
++The owner's Night screenshot shows a pale triangular patch across Underpass's lower returning bend. UPA01: restore continuous asphalt at that location. UPA02/G01/R01/Q01: retain bridge-mouth ownership, the existing road height/finish/camera, canonical track data and bounded preparation/cache behavior.
++
++The original track document reproduces the patch in native Compatibility and Mobile/Vulkan rendering. This is missing asphalt exposing the brighter terrain under the headlights. `road_surface_height.gd::clip_bridge_mouths` previously clipped an entire polygon against an infinite bridge-mouth plane. Underpass's 216-degree curve crosses that plane again away from its bridge. The clip removed that distant part of the bend and joined the remaining boundary with a straight chord.
++
++The helper now finds the offset mouth edge within 25 cm of the bridge-mouth centre and clips only the contiguous exterior cap around it. The original 16 cm ground-road extension still stops exactly at the deck mouth. Other exterior runs of a returning bend retain their vertices. The same helper supplies rendered asphalt and its presentation support. `NativeTrackVisual.VERSION` advances from kit201 to kit202 to invalidate prepared geometry, retained worlds and disk road artifacts. No shader, lighting, camera, track document, collision, physics, scoring, paint or car-condition change is involved.
++
++Changed runtime files: `game/track/road_surface_height.gd` and the version constant in `game/track/native_track_visual.gd`. The regression is `game/tests/test_underpass_asphalt.gd`, with the unchanged original Underpass document in `game/tests/fixtures/underpass.json`. The fixture is copied from the existing local lab catalog; its native hash remains `259e7adadd65d5365d03af4210db47f199ff4f93d89f02364972cec7bc8ae3ce`.
++
++Actual pinned Godot 4.7.2 verification uses separate workspace APPDATA profiles:
++
++| Check | Actual result |
++| --- | --- |
++| Original mouth helper against the final geometric regression | 68 checks, 13 expected failures, including the original Underpass bend |
++| Corrected returning bends, both directions and bridge ends; direct/CPU/prepared mesh coverage on Night/Grass/Storm; pinned native hash | Headless 82/82; Compatibility 82/82; Mobile/Vulkan 82/82 |
++| Existing asphalt overlap ownership, headless geometry portion | 9/9 |
++| Existing road disk-cache serialization/fences | 70/70 |
++| Existing prepared worlds and cache bounds | 85/85; all-five bytes 265227248, one retained entry within 67108864 bytes |
++| Existing editor direct/worker/prepared/reuse attributes and bounds | 407/407 |
++| Existing four-biome raised-road/deck-mouth/sand/marking visual checks | Compatibility 69/69; Mobile/Vulkan 69/69 |
++| Whole-project parser | Attempted: 769 scripts, failure from undeclared `_resolve_thread` at `game/ui/track_browser.gd:529,558,1110`, with dependent menu/application errors |
++
++The parser issue is in separate, concurrently modified menu code; this task does not edit that file. The focused tests compile and execute the changed road code. There is no whole-project parse-pass claim.
++
++Native evidence is in `docs/evidence/underpass-artifact-2026-10-15/`. For each renderer, compare `matched-before/pose-0.png` with `after/pose-0.png`; four headlight poses, a map view and brighter diagnostic views are retained. The before capture executes the saved original road-builder method and original mouth helper in a subclass of the current native visual. The world, shaders, car and camera remain shared. Captures establish the road repair; they are not whole-screen bit-exact comparisons, and focus-dependent debug HUD visibility can differ. `capture.gd` records the actual setup. `before/` contains task-start runtime sources; `logs/`, coverage JSON and `task-only.patch` retain results and the scoped checkpoint. No mixed-workspace commit is made.
++
++Initial findings are retained: the first captures established that a standard opaque replacement material still showed the hole, excluding a road-shader finish error. A first regression metric treated numerical spurs in polygon-Boolean difference output as actual removed road, producing seven failures despite only about 1.626 m² of local cap removal. The corrected metric checks actual removed area/depth and exact retention of distant source vertices, alongside mouth coverage and triangulation. The saved old helper still fails 13 of those final geometric checks. `initial-coverage.json` retains the original diagnostic. The first `scripts/dev.ps1` attempt also printed an access-denied error; direct pinned-engine runs supplied the complete results above. Isolated profiles print a root-certificate-store diagnostic. Some full-game capture exits report existing audio/soundtrack object/resource cleanup warnings; targeted road tests exit cleanly.
++
++Commands actually used (each run sets APPDATA to a named folder beneath `build/underpass-artifact-2026-10-15/`):
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_underpass_asphalt.gd
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_underpass_asphalt.gd --audio-driver Dummy
++# Same regression with --rendering-method gl_compatibility, or mobile --rendering-driver vulkan, without --headless.
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --script ../build/underpass-artifact-2026-10-15/capture.gd --audio-driver Dummy -- --baseline --output=res://../docs/evidence/underpass-artifact-2026-10-15/gl_compatibility/matched-before
++# Both renderers also run the capture without --baseline into their after folder.
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script ../build/underpass-artifact-2026-10-15/baseline-mouths.gd --audio-driver Dummy
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_asphalt_surface_ownership.gd --audio-driver Dummy
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_road_cache.gd --audio-driver Dummy
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_prepared_race_load.gd --audio-driver Dummy
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_editor_loading_roads.gd --audio-driver Dummy
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --rendering-driver vulkan --script ../build/underpass-artifact-2026-10-15/bridge-seams.gd --audio-driver Dummy -- --visual-only
++# bridge-seams.gd is the existing asphalt-depth visual test with only its evidence destination changed; also run with gl_compatibility.
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_script_parse.gd --audio-driver Dummy
++```
++
++No phone attachment check, phone test, APK, service change or deployment was performed. Owner and physical-phone moving-view acceptance remain. No FPS or general hitch-free claim is made. Saved tracks, original published identities and concurrent menu/Garage/car/audio work are retained.

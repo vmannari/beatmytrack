@@ -7,6 +7,7 @@ signal completed
 var value: Dictionary = {}
 var refreshed: int = -1
 var busy: bool = false
+var reader: WeakRef
 
 static func identity(service: Node) -> String:
 	if not is_instance_valid(service): return ""
@@ -16,6 +17,9 @@ static func identity(service: Node) -> String:
 static func for_service(service: Node) -> RefCounted:
 	var key: String = identity(service)
 	var cache: RefCounted = scopes.get(key)
+	if cache != null and cache.busy:
+		var source: Node = cache.reader.get_ref() as Node if cache.reader != null else null
+		if not is_instance_valid(source) or identity(source)!=key: cache = null
 	if cache == null: cache = load("res://backend/store_access_cache.gd").new()
 	scopes.erase(key)
 	scopes[key] = cache
@@ -34,17 +38,21 @@ func fetch(service: Node, force: bool = false) -> Dictionary:
 		return value.duplicate(true)
 	if not force and refreshed >= 0 and Time.get_ticks_msec()-refreshed < TTL_MS: return value.duplicate(true)
 	busy = true
+	reader = weakref(service)
 	var scope: String = identity(service)
 	var result: Dictionary = await service.request_api("/store/products")
 	var owned: Dictionary = {}
+	var ownership_ok: bool = not service.signed_in()
 	if scope == identity(service) and result.get("ok",false) and valid_catalog(result.get("data")) and service.signed_in():
 		var response: Dictionary = await service.request_api("/me/entitlements",HTTPClient.METHOD_GET,{},"",true)
-		if response.get("ok",false) and preload("res://platform/purchase_simulator.gd").valid_entitlements(response.get("data")): owned = response.data
+		if response.get("ok",false) and preload("res://platform/purchase_simulator.gd").valid_entitlements(response.get("data")):
+			owned = response.data
+			ownership_ok = true
 	if scope != identity(service):
 		value = {"ok":false,"error":"Account changed"}
 		refreshed = -1
 	elif result.get("ok",false) and valid_catalog(result.get("data")):
-		refreshed = Time.get_ticks_msec()
+		refreshed = Time.get_ticks_msec() if ownership_ok else -1
 		value = {"ok":true,"data":result.data,"entitlements":owned,"revision":refreshed}
 	else:
 		refreshed = -1

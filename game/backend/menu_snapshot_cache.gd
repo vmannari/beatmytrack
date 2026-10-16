@@ -9,6 +9,7 @@ var scope: String = ""
 var entries: Dictionary = {}
 var max_entries: int = 32
 var max_age_seconds: int = 600
+var _last_write_requested: int = 0
 
 func configure(destination: String, identity: String) -> void:
 	if destination == path and identity == scope: return
@@ -16,6 +17,7 @@ func configure(destination: String, identity: String) -> void:
 	scope = identity
 	# A queued old-scope snapshot owns its previous dictionary until dispatch.
 	entries = {}
+	_last_write_requested = 0
 	if path.is_empty() or scope.is_empty(): return
 	var saved: Dictionary = WRITER.peek(path,scope)
 	if saved.is_empty(): saved = IO.read(path,MAX_BYTES)
@@ -34,10 +36,15 @@ func read(key: String) -> Dictionary:
 func remember(key: String, value: Dictionary) -> void:
 	if path.is_empty() or scope.is_empty(): return
 	var now: int = int(Time.get_unix_time_from_system())
-	if entries.get(key,{}).get("saved_at",0) == now and entries.get(key,{}).get("data") == value: return
+	var previous: Variant = entries.get(key)
+	if previous is Dictionary and previous.get("saved_at",0) == now and previous.get("data") == value: return
+	var unchanged: bool = previous is Dictionary and previous.get("data") == value
 	entries.erase(key)
-	entries[key] = {"saved_at":now,"data":value.duplicate(true)}
+	entries[key] = {"saved_at":now,"data":previous.data if unchanged else value.duplicate(true)}
 	while entries.size() > max_entries: entries.erase(entries.keys()[0])
+	# Preserve immediate RAM freshness. Identical data only needs a bounded
+	# timestamp checkpoint on disk; new data/removals still queue immediately.
+	if unchanged and now >= _last_write_requested and now-_last_write_requested < mini(60,maxi(1,max_age_seconds/2)): return
 	_save()
 
 func forget(key: String) -> void:
@@ -46,4 +53,6 @@ func forget(key: String) -> void:
 	_save()
 
 func _save() -> void:
-	if not path.is_empty(): WRITER.queue(path,{"schema":SCHEMA,"scope":scope,"entries":entries})
+	if not path.is_empty():
+		_last_write_requested = int(Time.get_unix_time_from_system())
+		WRITER.queue(path,{"schema":SCHEMA,"scope":scope,"entries":entries})

@@ -1813,7 +1813,7 @@ func _prepare_garage_covered() -> void:
 	# Submit the original views under the opaque cover too, so first menu use
 	# does not inherit their first shader draw. The parking slot cannot take input.
 	_garage_parking.show()
-	for _frame: int in range(2):
+	for _frame: int in range(4):
 		await get_tree().process_frame
 		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
 		# The parking branch is inactive. Present its container-managed rectangles

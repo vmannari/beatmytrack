@@ -86,6 +86,8 @@ func run() -> void:
 			var data: Color=effect.foam.multimesh.get_instance_custom_data(index)
 			data.b=0.0
 			effect.foam.multimesh.set_instance_custom_data(index,data)
+		# This ablation edits the native buffer outside the effect's update API.
+		view.invalidate_render()
 		await settle()
 		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("native-unsupported-control.png"))
 		check(pixels()==unsupported_pixels,"unsupported lather contributes exact zero pixels")

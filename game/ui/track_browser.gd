@@ -629,7 +629,9 @@ func _start_selection() -> void:
 	if cached != null:
 		_finish_selection({"track":cached,"draft":{}})
 		return
-	_resolve_job = preload("res://editor/work_job.gd").start(_resolve_work.bind(library.directory,_working_entry.duplicate(true)),get_tree())
+	# Bind the script's static resolver, so the worker never owns a closing UI.
+	var resolver: Script = get_script()
+	_resolve_job = preload("res://editor/work_job.gd").start(resolver._resolve_work.bind(library.directory,_working_entry.duplicate(true)),get_tree())
 	if _resolve_job.done and _resolve_job.thread == null:
 		_resolve_job = null
 		selecting = false
@@ -985,7 +987,9 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 	var metadata_only: bool = not preview_snapshot.is_empty()
 	if (selecting or not preview_entry.is_empty()) and not metadata_only: return
 	var key: String = records.key_for(selected_track,HandlingSelection.config()) if not metadata_only else "preview:"+str(preview_entry.get("version_id",""))
-	discovery.pin_record(key)
+	# Metadata-only cloud views can already have a verified PB rules key. Pin
+	# that stored record rather than their temporary preview identity.
+	discovery.pin_record(records.key_for(selected_track,HandlingSelection.config()) if metadata_only and not selected_track.content_hash.is_empty() else key)
 	var pb: Dictionary = records.records.get(key,{}) if not metadata_only else records.records.get(records.key_for(selected_track,HandlingSelection.config()),{}) if not selected_track.content_hash.is_empty() else {}
 	var snapshot: Dictionary = discovery.record_snapshot(key) if not metadata_only else preview_snapshot
 	_align_personal_comparison(snapshot,pb)

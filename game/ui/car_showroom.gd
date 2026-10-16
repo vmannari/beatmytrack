@@ -49,6 +49,7 @@ var resume_orbit: bool = false
 var _render_dirty: bool = true
 var _last_render_state: Array = []
 var render_requests: int = 0
+var _settle_draws: int = 0
 const DEFAULT_YAW: float = -0.70
 const GARAGE_CAMERA_YAW: float = 0.0
 const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
@@ -400,6 +401,7 @@ func set_wash_mode(enabled: bool) -> void:
 	if enabled and wash_effect == null:
 		wash_effect = preload("res://ui/garage_wash_effect.gd").new()
 		camera.get_parent().add_child(wash_effect)
+		wash_effect.visual_changed.connect(_wash_effect_changed)
 	_clear_gesture()
 	washing = false
 	wash_pointer_valid = false
@@ -456,12 +458,36 @@ func _wash_input(event: InputEvent) -> bool:
 		return true
 	return false
 
+func _wash_effect_changed() -> void:
+	# Normal animation submits once at the end of _process. Explicit preview
+	# tools can advance the same effect while showroom processing is paused.
+	if is_processing(): _render_dirty = true
+	else: invalidate_render()
+
 func invalidate_render() -> void:
 	_render_dirty = true
 	if is_instance_valid(showroom_viewport) and not is_visible_in_tree(): showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if is_inside_tree() and is_visible_in_tree() and is_instance_valid(camera): _request_render()
 
 func _request_render() -> void:
+	_submit_render()
+	# Match the existing podium's bounded radiance preparation. Native shadows,
+	# sky filtering and resized targets must finish before retaining this image.
+	_settle_draws = 3
+	_arm_render_settle()
+
+func _arm_render_settle() -> void:
+	if _settle_draws <= 0 or not is_inside_tree() or not is_visible_in_tree(): return
+	if not read_only and DisplayServer.get_name()!="headless" and not RenderingServer.frame_post_draw.is_connected(_finish_render):
+		RenderingServer.frame_post_draw.connect(_finish_render,CONNECT_ONE_SHOT)
+
+func _finish_render() -> void:
+	if _settle_draws <= 0 or not is_inside_tree() or not is_visible_in_tree(): return
+	_settle_draws -= 1
+	_submit_render()
+	if _settle_draws > 0: _arm_render_settle.call_deferred()
+
+func _submit_render() -> void:
 	if reflections != null:
 		reflections.sync()
 		reflections.request_draw()

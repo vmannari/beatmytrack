@@ -79,6 +79,9 @@ func _ready() -> void:
 	resized.connect(_columns)
 	_columns()
 	if not page_preview: activate()
+	elif is_instance_valid(client):
+		var access: RefCounted = ACCESS.for_service(client)
+		if access.refreshed >= 0 and Time.get_ticks_msec()-access.refreshed < ACCESS.TTL_MS and access.value.get("ok",false): _present_access(access.value,ACCESS.identity(client))
 
 func activate() -> void:
 	page_preview = false
@@ -94,7 +97,13 @@ func refresh(force: bool = true) -> void:
 	if working: return
 	if not force and is_instance_valid(client):
 		var access: RefCounted = ACCESS.for_service(client)
-		if _presented_scope == ACCESS.identity(client) and _presented_revision == access.refreshed and access.refreshed >= 0 and Time.get_ticks_msec()-access.refreshed < ACCESS.TTL_MS: return
+		if _presented_scope == ACCESS.identity(client) and _presented_revision == access.refreshed and access.refreshed >= 0 and Time.get_ticks_msec()-access.refreshed < ACCESS.TTL_MS:
+			if eligible and _pending_revision != _presented_revision:
+				working = true
+				_pending_revision = _presented_revision
+				await _pending()
+				working = false
+			return
 	working = true
 	status.text = "Loading store…"
 	eligible = false
@@ -112,6 +121,13 @@ func refresh(force: bool = true) -> void:
 		_draw_products()
 		status.text = "Store unavailable. Reconnect and Refresh."
 		return
+	_present_access(result,scope)
+	if eligible and (force or _pending_revision != _presented_revision):
+		_pending_revision = int(result.revision)
+		await _pending()
+	working = false
+
+func _present_access(result: Dictionary, scope: String) -> void:
 	products = result.data.products
 	entitlements = result.get("entitlements",{})
 	eligible = OS.is_debug_build() and bool(entitlements.get("purchase_simulation",false))
@@ -124,10 +140,6 @@ func refresh(force: bool = true) -> void:
 	status.text = "Simulated checkout only. No payment is taken. Free rewinds remain limited to three per race." if eligible else "Store billing is not connected yet. Purchases are unavailable."
 	_presented_scope = scope
 	_presented_revision = int(result.get("revision",-1))
-	if eligible and (force or _pending_revision != _presented_revision):
-		_pending_revision = int(result.revision)
-		await _pending()
-	working = false
 
 func _draw_products() -> void:
 	for child: Node in grid.get_children(): grid.remove_child(child); child.queue_free()

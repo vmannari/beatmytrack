@@ -1,4 +1,5 @@
 extends Node3D
+signal visual_changed
 ## Garage-only contact animation. Fixed pools; no condition or simulation ownership.
 const FOAM_COUNT: int = 24
 const WATER_COUNT: int = 32
@@ -47,6 +48,7 @@ func _ready() -> void:
 	water = _pool("Droplets",WATER_COUNT,sphere,drops)
 	for index: int in range(FOAM_COUNT): foam_slots.append({})
 	for index: int in range(WATER_COUNT): water_slots.append({})
+	for node: Node3D in [mitt,foam,water]: node.visibility_changed.connect(visual_changed.emit)
 	reset()
 
 func _part(label: String, mesh: Mesh, material: Material) -> void:
@@ -90,6 +92,7 @@ func reset() -> void:
 		water_slots[index] = {}
 		_hide_slot(water, index)
 	hide()
+	visual_changed.emit()
 
 func begin_frame() -> void:
 	contact.clear()
@@ -134,6 +137,7 @@ func advance(delta: float, active: bool) -> void:
 	var alive: int = _advance_pool(foam, foam_slots, step, false)
 	alive += _advance_pool(water, water_slots, step, true)
 	visible = touching or alive > 0
+	visual_changed.emit()
 
 func _emit(frame: Basis) -> void:
 	# Indexed sequences avoid global RNG side effects and remain bounded forever.

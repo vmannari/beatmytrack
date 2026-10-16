@@ -243,9 +243,9 @@ func _standings() -> void:
 	_resize_rows.call_deferred()
 	_reveal_player.call_deferred()
 	column.add_child(HSeparator.new())
-	if not error.is_empty():
-		var message: Label = _label(column,error,15,MenuStyle.MUTED,"RivalryResultError")
-		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var message: Label = _label(column,error,15,MenuStyle.MUTED,"RivalryResultError")
+	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	message.visible = not error.is_empty()
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation",16)
 	column.add_child(footer)

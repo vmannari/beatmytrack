@@ -33,6 +33,12 @@ var finale_livery: Dictionary = {}
 var finale_customisation: Dictionary = {}
 var finale_condition: Dictionary = {}
 var _presented_key: PackedByteArray
+var _presented_status: Array = []
+var _presented_standings: String = ""
+var _presented_topology: PackedByteArray
+var _driver_views: Dictionary = {}
+var _driver_rows: VBoxContainer
+var _track_views: Array[Dictionary] = []
 var content_builds: int = 0
 const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
 const STANDINGS_GUTTER: int = 12
@@ -45,18 +51,33 @@ func _ready() -> void:
 	resized.connect(queue_redraw)
 	_build_content()
 	_presented_key = _content_key()
+	_presented_status = [busy,error,model.status,model.completed]
+	_presented_standings = standings_identity
+	_presented_topology = _score_topology()
 
 func _content_key() -> PackedByteArray:
 	var loading_view: bool = model.tracks.is_empty() and signed_in and error.is_empty() and (busy or model.received_msec == 0)
-	return var_to_bytes([section,selected,ghost_choice,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,model.tracks,model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
+	return var_to_bytes([section,selected if section in ["detail","result"] else -1,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,_track_projection(true),model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
+
+func _track_projection(scores: bool) -> Array:
+	var values: Array = []
+	for track: Dictionary in model.tracks:
+		values.append([track.get("id",""),track.name,track.theme,track.get("document",{}),track.get("available",true),track.get("entries",[]) if scores else []])
+	return values
 
 func refresh_presentation() -> bool:
 	var key: PackedByteArray = _content_key()
 	var rebuilt: bool = key != _presented_key
 	if key != _presented_key:
+		if section=="overview" and not model.completed and not model.tracks.is_empty() and _score_topology()==_presented_topology:
+			_update_scores()
+			_presented_key = key
+			_update_status()
+			return false
 		var focus: Control = get_viewport().gui_get_focus_owner()
 		var focused_name: String = str(focus.name) if focus != null and is_ancestor_of(focus) else ""
-		if is_instance_valid(standings_scroll): standings_scroll_offset = standings_scroll.scroll_vertical
+		if _presented_standings != standings_identity: standings_scroll_offset = -1
+		elif is_instance_valid(standings_scroll): standings_scroll_offset = standings_scroll.scroll_vertical
 		for child: Node in get_children():
 			remove_child(child)
 			child.queue_free()
@@ -64,16 +85,71 @@ func refresh_presentation() -> bool:
 		standings_ready = false
 		track_rows.clear()
 		track_markers.clear()
+		_track_views.clear()
+		_driver_views.clear()
 		detail_route = null
 		_build_content()
 		_presented_key = key
+		_presented_standings = standings_identity
+		_presented_topology = _score_topology()
 		if not focused_name.is_empty():
 			var restored: Control = find_child(focused_name,true,false) as Control
-			if restored != null: restored.grab_focus.call_deferred()
+			if restored != null: _restore_focus.call_deferred(weakref(restored))
 	_update_status()
 	return rebuilt
 
+func _restore_focus(target: WeakRef) -> void:
+	var control: Control = target.get_ref() as Control
+	if control != null and control.is_visible_in_tree() and control.can_process(): control.grab_focus()
+
+func _score_topology() -> PackedByteArray:
+	if section!="overview" or model.completed or model.tracks.is_empty(): return PackedByteArray()
+	var tracks: Array = _track_projection(false)
+	var drivers: Array = []
+	var podium: Array = []
+	for driver: Dictionary in model.standing():
+		drivers.append([driver.id,driver.get("name",""),driver.get("country_code",""),driver.get("appearance",{})])
+		if podium.size()<3: podium.append(driver.id)
+	drivers.sort_custom(func(a: Array,b: Array) -> bool: return str(a[0])<str(b[0]))
+	return var_to_bytes([section,signed_in,standings_identity,model.week,model.group_id,model.status,model.completed,model.vehicle_id,model.forming,model.placement,tracks,drivers,podium,finale_livery,finale_customisation,finale_condition])
+
+func _update_scores() -> void:
+	var standings: Array[Dictionary] = model.standing()
+	var leader_points: int = int(standings[0].points) if not standings.is_empty() else 0
+	for index: int in range(standings.size()):
+		var driver: Dictionary = standings[index]
+		var view: Dictionary = _driver_views.get(str(driver.id),{})
+		if view.is_empty(): continue
+		_driver_rows.move_child(view.panel,index)
+		var state: PackedByteArray = var_to_bytes([driver,leader_points])
+		if view.state == state: continue
+		view.state = state
+		view.panel.add_theme_stylebox_override("panel",_driver_style(driver))
+		view.rank.text = str(int(driver.rank)) if driver.get("rank")!=null else "--"
+		view.points.text = str(int(driver.points))
+		view.gap.text = "--" if driver.get("rank")==null or int(driver.points)==leader_points else str(int(driver.points)-leader_points)
+		var medal: Color = _medal_color(int(driver.rank)-1) if driver.get("rank")!=null and int(driver.rank)<=3 else Color.TRANSPARENT
+		view.badge.add_theme_stylebox_override("panel",MenuStyle.box(Color(medal,0.48) if medal.a>0.0 else Color.TRANSPARENT,0))
+	for index: int in range(mini(3,standings.size())):
+		(find_child("RivalryPodiumPoints_"+str(index+1),true,false) as Label).text = str(int(standings[index].points))+" pts"
+		(find_child("RivalryPodiumRank_"+str(index+1),true,false) as Label).text = rank_text(standings[index])
+	var completed: int = 0
+	for index: int in range(_track_views.size()):
+		var gap: Dictionary = model.gaps(index)
+		if gap.own.get("ms")!=null: completed += 1
+		var view: Dictionary = _track_views[index]
+		view.rank.text = rank_text(gap.own)
+		view.time.text = MenuStyle.time_text(int(gap.own.ms)/1000.0) if gap.own.get("ms")!=null else MenuStyle.time_text(int(gap.leader.ms)/1000.0) if not gap.leader.is_empty() else "—"
+		view.delta.text = WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms")!=null and not gap.leader.is_empty() and gap.own.rank!=1 else "Leading" if gap.own.get("rank")==1 else "Leader time" if not gap.leader.is_empty() else "Set a time"
+		view.delta.add_theme_color_override("font_color",MenuStyle.POSITIVE if gap.own.get("rank")==1 else MenuStyle.MUTED)
+		view.rank.add_theme_color_override("font_color",MenuStyle.ACCENT if gap.own.get("rank")==1 else MenuStyle.TEXT)
+	var progress: Label = find_child("RivalryTrackProgress",true,false) as Label
+	if progress != null: progress.text = "%d / 5 COMPLETED" % completed
+
 func _update_status() -> void:
+	var state: Array = [busy,error,model.status,model.completed]
+	if state == _presented_status: return
+	_presented_status = state
 	if is_instance_valid(clock_label): clock_label.text = model.countdown()
 	for id: String in ["RivalryJoin","RivalryRefresh","RivalryNextWeek","RivalryShareResults"]:
 		var button: Button = find_child(id,true,false) as Button
@@ -392,7 +468,7 @@ func _championship(parent: Control, finale: bool) -> void:
 	var completed: int = 0
 	for index: int in range(model.tracks.size()):
 		if model.gaps(index).own.get("ms") != null: completed += 1
-	_copy(heading,"%d / 5 COMPLETED" % completed,14,MenuStyle.MUTED)
+	_copy(heading,"%d / 5 COMPLETED" % completed,14,MenuStyle.MUTED).name = "RivalryTrackProgress"
 	var subtitle: Label = _copy(tracks,error if not error.is_empty() else "Week complete. Your best results." if finale else "Choose a track and beat your best time.",15,MenuStyle.MUTED)
 	subtitle.name = "RivalryStatusMessage"
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -444,6 +520,7 @@ func _driver_table(parent: Control, title: String) -> void:
 	row_margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(row_margin)
 	var rows := VBoxContainer.new()
+	_driver_rows = rows
 	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	rows.add_theme_constant_override("separation",2)
 	row_margin.add_child(rows)
@@ -484,6 +561,7 @@ func _driver_table(parent: Control, title: String) -> void:
 		gap.name = "RivalryPlayerGap_"+str(driver.id)
 		gap.custom_minimum_size.x = 54
 		gap.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		_driver_views[str(driver.id)] = {"panel":panel,"badge":badge,"rank":place,"points":points,"gap":gap,"state":var_to_bytes([driver,leader_points])}
 		if own: own_panel = panel
 	if standings_scroll_offset >= 0:
 		# Seed the real range before its first draw, rather than painting at zero
@@ -565,7 +643,7 @@ func _podium(parent: Control) -> void:
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.modulate = color
 		rank.add_child(icon)
-		_copy(rank,rank_text(driver),32 if position == 0 else 29,color)
+		_copy(rank,rank_text(driver),32 if position == 0 else 29,color).name = "RivalryPodiumRank_"+str(position+1)
 		# Keep the shared content rows on one baseline beneath the taller winner header.
 		var header_space := Control.new()
 		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -676,6 +754,7 @@ func _track_row(parent: Control, index: int) -> void:
 	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	var delta: Label = _copy(times,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms") != null and not gap.leader.is_empty() and gap.own.rank != 1 else "Leading" if gap.own.get("rank") == 1 else "Leader time" if not gap.leader.is_empty() else "Set a time",13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
 	delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_track_views.append({"rank":position,"time":time,"delta":delta})
 	_ignore_tree(content_row)
 
 func _select_track(index: int) -> void:

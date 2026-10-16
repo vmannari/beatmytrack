@@ -15,7 +15,7 @@ var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 var comparisons = preload("res://backend/comparison_preloader.gd").new()
 
 func configure_cache(path: String, scope: String) -> void:
-	if not snapshot_cache.scope.is_empty() and snapshot_cache.scope != scope:
+	if snapshot_cache.scope != scope or snapshot_cache.path != path:
 		records_by_rules_key.clear()
 		_record_sizes.clear()
 		_record_bytes = 0

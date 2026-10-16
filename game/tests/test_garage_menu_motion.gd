@@ -5,6 +5,16 @@ var failures: int = 0
 var page: GaragePage
 var output: String = "res://../docs/evidence/garage-menu-motion-2026-10-14"
 var motion_capture: bool = false
+var first_draw_samples: int = 0
+var first_draw_diagnostics: Array[Dictionary] = []
+var previous_native_size := Vector2i.ZERO
+const OriginalReflections = preload("res://tests/fixtures/menu_medium_reflections_before.gd")
+var continuous_control: RefCounted
+
+func original_draw() -> void:
+	if not is_instance_valid(page) or not page.showroom.is_visible_in_tree(): return
+	page.showroom.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
+	continuous_control.sync()
 
 func _initialize() -> void: _run.call_deferred()
 
@@ -28,9 +38,88 @@ func capture(label: String) -> void:
 
 func check_resize_pixels() -> void:
 	if DisplayServer.get_name() == "headless": return
-	var immediately: PackedByteArray = page.showroom.showroom_viewport.get_texture().get_image().get_data()
+	var first: Image = page.showroom.showroom_viewport.get_texture().get_image()
+	var immediately: PackedByteArray = first.get_data()
+	var size_before: Vector2 = page.showroom.size
+	var prior_size: Vector2i = previous_native_size
+	previous_native_size = first.get_size()
 	await frame()
-	check(page.showroom.showroom_viewport.get_texture().get_image().get_data() == immediately,"first resized draw equals settled reflection/car pixels")
+	var after: Image = page.showroom.showroom_viewport.get_texture().get_image()
+	first_draw_samples += 1
+	var matches_original: bool = after.get_data()==immediately
+	if after.get_data()!=immediately:
+		var prefix: String = "first-draw-"+str(first_draw_samples)
+		first.save_png(output.path_join(prefix+"-before.png"))
+		after.save_png(output.path_join(prefix+"-after.png"))
+		var native: Dictionary = await original_native_control(first,after,prefix,prior_size)
+		first_draw_diagnostics.append({"sample":first_draw_samples,"before":str(first.get_size()),"after":str(after.get_size()),"control_before":str(size_before),"control_after":str(page.showroom.size),"music":GameSoundtrack.instance().music_enabled,"original_native_control":native})
+		matches_original = native.sizes_equal and native.outside_original_samples==0
+	check(matches_original,"first resized draw matches original native reflection/car pixel values")
+
+func original_native_control(first: Image, second: Image, prefix: String, prior_size: Vector2i) -> Dictionary:
+	var view: CarShowroom = page.showroom
+	var processing: bool = view.is_processing()
+	view.set_process(false)
+	view._settle_draws = 0
+	if RenderingServer.frame_post_draw.is_connected(view._finish_render): RenderingServer.frame_post_draw.disconnect(view._finish_render)
+	var original = OriginalReflections.new()
+	original.owner = view
+	original.views = view.reflections.views
+	original.cameras = view.reflections.cameras
+	view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_WHEN_VISIBLE
+	original.sync()
+	await frame()
+	var baseline: Image = view.showroom_viewport.get_texture().get_image()
+	baseline.save_png(output.path_join(prefix+"-original.png"))
+	var a: PackedByteArray = first.get_data()
+	var b: PackedByteArray = second.get_data()
+	var data: PackedByteArray = baseline.get_data()
+	var indices := PackedInt32Array()
+	var lows := PackedByteArray()
+	var highs := PackedByteArray()
+	var samples: int = 1
+	var compatible: bool = a.size()==data.size() and b.size()==data.size()
+	if prior_size==Vector2i.ZERO or prior_size==first.get_size(): prior_size=first.get_size()+Vector2i(1,0)
+	if compatible:
+		for index: int in range(data.size()):
+			if data[index]!=a[index] or data[index]!=b[index]:
+				indices.append(index)
+				lows.append(data[index])
+				highs.append(data[index])
+		for _sample: int in range(64):
+			# Exercise the original first resized draw as well as its settled
+			# frames; a steady-size-only control omits native resize precision.
+			if _sample%2==0:
+				view.showroom_viewport.size = prior_size
+				original.sync()
+				await frame()
+				view.showroom_viewport.size = first.get_size()
+			original.sync()
+			await frame()
+			data = view.showroom_viewport.get_texture().get_image().get_data()
+			samples += 1
+			for slot: int in range(indices.size()):
+				lows[slot] = mini(lows[slot],data[indices[slot]])
+				highs[slot] = maxi(highs[slot],data[indices[slot]])
+			if _sample >= 11:
+				var covered: bool = true
+				for slot: int in range(indices.size()):
+					var index: int = indices[slot]
+					if a[index]<lows[slot] or a[index]>highs[slot] or b[index]<lows[slot] or b[index]>highs[slot]: covered = false
+				if covered: break
+	var outside: int = 0
+	var maximum: int = 0
+	var observations: Array[Dictionary] = []
+	for slot: int in range(indices.size()):
+		var index: int = indices[slot]
+		if a[index]<lows[slot] or a[index]>highs[slot] or b[index]<lows[slot] or b[index]>highs[slot]: outside += 1
+		maximum = maxi(maximum,highs[slot]-lows[slot])
+		observations.append({"byte":index,"first":a[index],"second":b[index],"original_min":lows[slot],"original_max":highs[slot]})
+	view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	for target: SubViewport in view.reflections.views: target.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	view.set_process(processing)
+	view.invalidate_render()
+	return {"sizes_equal":compatible,"differing_bytes":indices.size(),"outside_original_samples":outside,"original_max_delta":maximum,"samples":samples,"original_previous_size":str(prior_size),"observations":observations}
 
 func _run() -> void:
 	OS.set_environment("BMT_API_URL","")
@@ -47,9 +136,18 @@ func _run() -> void:
 	app.cloud_root_override = directory.path_join("cloud")
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
+	# First-draw comparisons hold the native scene pose fixed. LP animation is
+	# verified separately; it must not change pixels between the two samples.
+	GameSoundtrack.instance().music_enabled = false
 	VehicleCatalog.selected = "compact"
 	app._show_screen("garage")
 	page = app.root_ui.find_child("GaragePage",true,false)
+	if OS.get_environment("BMT_MENU_MEDIUM_ORIGINAL_DRAW")=="1":
+		continuous_control = OriginalReflections.new()
+		continuous_control.owner = page.showroom
+		continuous_control.views = page.showroom.reflections.views
+		continuous_control.cameras = page.showroom.reflections.cameras
+		RenderingServer.frame_pre_draw.connect(original_draw)
 	await settle()
 	var viewport: SubViewport = page.showroom.showroom_viewport
 	var car: CarVisual = page.showroom.car
@@ -145,7 +243,7 @@ func _run() -> void:
 	check(VehicleCondition.read(app.records,"compact").wash == page.showroom.weathering.snapshot().wash,"navigation saves exact partial wash before sliding controls")
 	page.hide()
 	check(page._menu_motion == null and page._departures.is_empty(),"hiding cancels motion and releases outgoing controls")
-	check(viewport.render_target_update_mode == SubViewport.UPDATE_WHEN_VISIBLE,"live viewport retains visible-only updates")
+	check(viewport.render_target_update_mode == SubViewport.UPDATE_DISABLED,"hidden retained viewport stops drawing while preserving its image")
 	page.show()
 	await settle()
 	check(page.preview.get_rect().is_equal_approx(page._slot_rect(page._preview_slot)),"return restores exact final layout")
@@ -161,4 +259,7 @@ func _run() -> void:
 	app.queue_free()
 	await process_frame
 	print("GARAGE_MENU_MOTION: %d checks, %d failures" % [checks,failures])
+	var receipt := FileAccess.open(output.path_join("first-draw-diagnostics.json"),FileAccess.WRITE)
+	receipt.store_string(JSON.stringify({"samples":first_draw_samples,"differences":first_draw_diagnostics,"original_continuous_draw":continuous_control!=null},"\t"))
+	receipt.close()
 	quit(1 if failures else 0)

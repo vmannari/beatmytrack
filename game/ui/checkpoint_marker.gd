@@ -47,7 +47,7 @@ func present(session: TrackSession, track: NativeTrack, bridge: BridgePresentati
 	var route_index: int = track.nearest_route(center)
 	var layer: int = 1 if session.checkpoint_elevated() else 0
 	position = VisualGeometry.world(center+direction.orthogonal()*shift)
-	position.y = bridge.height_at(center,route_index,layer)+0.12
+	position.y = bridge.visual_height_at(center,route_index,layer)+0.12
 	rotation.y = -atan2(direction.x,direction.y)
 	road_span = road.x+road.y
 	road_quads.clear()
@@ -84,7 +84,7 @@ func present(session: TrackSession, track: NativeTrack, bridge: BridgePresentati
 
 func _road_point(center: Vector2, direction: Vector2, offset: Vector2, bridge: BridgePresentation, route_index: int, layer: int) -> Vector3:
 	var point: Vector2 = center+direction.orthogonal()*offset.x+direction*offset.y
-	return to_local(VisualGeometry.world(point)+Vector3.UP*(bridge.height_at(point,route_index,layer)+0.12))
+	return to_local(VisualGeometry.world(point)+Vector3.UP*(bridge.visual_height_at(point,route_index,layer)+0.12))
 
 func _quad(surface: SurfaceTool, points: PackedVector3Array) -> void:
 	for index: int in [0,1,2,0,2,3]: surface.add_vertex(points[index])

@@ -46,18 +46,23 @@ static func _trophy_wall(root: Node3D) -> void:
 	lettering.text = "BEAT\nMY TRACK"
 	lettering.font = MenuStyle.DISPLAY
 	lettering.font_size = 48
-	lettering.pixel_size = 0.0067
+	lettering.pixel_size = 0.0047
 	lettering.depth = 0.024
 	lettering.curve_step = 0.7
 	title.mesh = lettering
 	title.material_override = GarageEnvironment.surface("brandlettergold","e0c797",0.22,0.44,0.12)
 	title.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	title.rotation.y = PI
-	title.position = Vector3(0,0.16,-0.252)
+	title.position = Vector3(0,0.70,-0.252)
 	cabinet.add_child(title)
-	_laurel(cabinet)
+	var relief := Node3D.new()
+	relief.name = "BrandRelief"
+	relief.position = Vector3(0,0.60,-0.13)
+	relief.scale = Vector3.ONE*0.48
+	cabinet.add_child(relief)
+	_laurel(relief)
 	# Quiet architectural reveals give the uninterrupted display a built finish.
-	for x: float in [-2.55,2.55]:
+	for x: float in [-1.45,1.45]:
 		GarageEnvironment.box(cabinet,Vector3(x,0,-0.181),Vector3(0.012,2.40,0.009),trim)
 	for y: float in [-1.20,1.20]:
 		GarageEnvironment.box(cabinet,Vector3(0,y,-0.183),Vector3(7.28,0.012,0.009),trim)

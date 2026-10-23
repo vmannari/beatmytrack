@@ -1,6 +1,7 @@
 ﻿class_name LocalRecords
 extends RefCounted
 ## Local, unverified PBs. Persistence and recovery stay outside canonical physics.
+signal achievement_progress_committed
 
 const SCHEMA: int = 2
 const MAX_BYTES: int = 4194304
@@ -101,7 +102,9 @@ func save_records() -> Error:
 		return _failed(error)
 	records = document.records
 	settings = document.settings
+	var awards_changed: bool = settings.get("achievements",{}).get("unlocked",{}) != _committed_settings.get("achievements",{}).get("unlocked",{})
 	_remember_committed()
+	if awards_changed: achievement_progress_committed.emit()
 	return OK
 
 
@@ -147,6 +150,12 @@ static func _normalize(data: Variant) -> Dictionary:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "selected_car":
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+		elif field == "achievements":
+			if not AchievementProgress.valid(preferences[field]): return {}
+		elif field == "guest_coins":
+			if not preload("res://persistence/cosmetic_catalog.gd").valid_guest(preferences[field]): return {}
+		elif field == "cosmetic_legacy":
+			if not preload("res://persistence/cosmetic_catalog.gd").valid_owned(preferences[field]): return {}
 		elif field == "music_record":
 			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
 		elif field == "music_records":
@@ -159,6 +168,8 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not VehicleCustomisation.valid_collection(preferences[field]): return {}
 		elif field == "camera_mode":
 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
+		elif field in preload("res://presentation/graphics_preferences.gd").DEFAULTS:
+			if not preload("res://presentation/graphics_preferences.gd").valid(field,preferences[field]): return {}
 		elif field == "camera_speed_zoom_strength":
 			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > CameraProfile.MAX_SPEED_ZOOM_STRENGTH: return {}
 		elif field == "ghost_mode":
@@ -177,7 +188,7 @@ static func _normalize(data: Variant) -> Dictionary:
 					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "control_layout":
 			if not ControlLayout.valid(preferences[field]): return {}
-		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "optional_analytics", "music_enabled"]:
+		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "optional_analytics", "music_enabled", "drift_haptics"]:
 			if not preferences[field] is bool:
 				return {}
 		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:
@@ -213,6 +224,11 @@ static func _normalize(data: Variant) -> Dictionary:
 			return {}
 		normalized[key] = {"race_ms":int(race),"flying_ms":int(flying)}
 	var normalized_preferences: Dictionary = preferences.duplicate(true)
+	if normalized_preferences.has("achievements"):
+		normalized_preferences.achievements = AchievementProgress.normalized(normalized_preferences.achievements)
+	if normalized_preferences.has("guest_coins"):
+		for field: String in ["version","balance","sequence"]:
+			normalized_preferences.guest_coins[field] = int(normalized_preferences.guest_coins[field])
 	normalized_preferences.erase("music_records")
 	if normalized_preferences.has("music_record"):
 		normalized_preferences.music_record = preload("res://soundtrack/record_library.gd").selected(normalized_preferences).id

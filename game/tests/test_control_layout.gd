@@ -63,7 +63,8 @@ func run() -> void:
 		control.layout.steering_type = method
 		var rect: Rect2 = control.group_rects()[method]
 		press(control,1,rect.get_center())
-		drag(control,1,rect.get_center()+Vector2(rect.size.x*0.2,0))
+		check(control.driver.sample().steer == 0,"first analog contact is neutral")
+		drag(control,1,rect.get_center()+Vector2(rect.size.x*0.14,0))
 		check(control.driver.sample().steer > 40 and control.driver.sample().steer < 90,"analog half right")
 		drag(control,1,Vector2(rect.position.x-100,rect.get_center().y))
 		check(control.driver.sample().steer == -127,"captured analog saturates outside bounds")
@@ -73,6 +74,8 @@ func run() -> void:
 	Input.action_press(&"accelerate",0.4)
 	check(control.driver.sample().throttle > 90 and control.driver.sample().throttle < 120,"input-map analog throttle preserved")
 	press(control,2,control.zones()[3].get_center())
+	check(control.driver.sample().throttle > 90 and control.driver.sample().throttle < 120,"neutral analog contact preserves mapped source")
+	drag(control,2,control.zones()[3].get_center()-Vector2(0,100))
 	check(control.driver.sample().throttle == 255,"touch combines with mapped sources")
 	press(control,2,Vector2.ZERO,false)
 	check(control.driver.sample().throttle > 90,"touch release does not cancel mapped source")
@@ -81,6 +84,8 @@ func run() -> void:
 	press(control,7,steer.position+Vector2(4,steer.size.y/2))
 	press(control,8,steer.end-Vector2(4,steer.size.y/2))
 	press(control,7,Vector2.ZERO,false)
+	check(control.driver.sample().steer == 0,"new analog finger starts neutral after handoff")
+	drag(control,8,steer.end-Vector2(4,steer.size.y/2)+Vector2(100,0))
 	check(control.driver.sample().steer == 127,"new analog finger owns steering after old finger releases")
 	var cancel := InputEventScreenTouch.new()
 	cancel.index = 8; cancel.canceled = true
@@ -124,14 +129,14 @@ func run() -> void:
 	await process_frame
 	await process_frame
 	check(editor.touch.layout == ControlLayout.from_settings(reloaded.settings),"editor uses saved race geometry")
-	var before: Rect2 = editor.touch.group_rects().brake
+	var before: Rect2 = editor.touch.group_rects().accelerator
 	var event := InputEventScreenTouch.new()
 	event.index = 8; event.position = before.get_center(); event.pressed = true
 	editor._input(event)
 	var motion := InputEventScreenDrag.new()
 	motion.index = 8; motion.position = before.get_center()+Vector2(0,-160)
 	editor._input(motion)
-	check(editor.touch.group_rects().brake.position.distance_to(before.position) > 100,"direct drag moves selected pedal")
+	check(editor.touch.group_rects().accelerator.position.distance_to(before.position) > 100,"direct drag moves selected gas/brake axis")
 	event.pressed = false; editor._input(event)
 	reloaded.load_records()
 	check(same_layout(reloaded.settings.control_layout,editor.touch.layout),"drag completion persists")

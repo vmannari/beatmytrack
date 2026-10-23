@@ -188,7 +188,7 @@ func run() -> void:
 		list = table()
 		check(app.root_ui.find_child("RivalryClosestChallengerTime",true,false) == null,"no invented challenger before anyone records a time")
 		page = app.root_ui.find_child("WeeklyRivalryPage",true,false)
-		check(page.ghost_choice == 3,"unrecorded rivals retain the no-ghost fallback")
+		check(page.ghost_choice == 0 and model.ghost_target(1,0).is_empty(),"unrecorded rivals have no ghost while retaining the automatic target policy")
 		for row: Control in list.rows.get_children():
 			check((row.find_child("Time",true,false) as Label).text == "—" and (row.find_child("Gap",true,false) as Label).text == "—","missing times have no invented gaps")
 		await capture("unranked",dimensions)

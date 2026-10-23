@@ -139,12 +139,11 @@ func run() -> void:
 	var shortcut_telemetry := LapTelemetry.new()
 	shortcut_telemetry.begin(track.finish_center)
 	var shortcut_session := TrackSession.new(120,1)
-	shortcut_session.shortcut_count = 1
 	shortcut_session.completed_laps = 1
 	shortcut_session.lap_start_time = 10.0
 	shortcut_session.lap_times = [10.0]
 	shortcut_telemetry.observe(shortcut_session,track,track.finish_center,20.0,false)
-	check(shortcut_telemetry.completed[0].valid,"shortcut does not invalidate completed-lap telemetry")
+	check(shortcut_telemetry.completed[0].valid,"an accepted lap retains valid completed-lap telemetry")
 	var invalid: LapTelemetry = LapTelemetry.new()
 	invalid.completed = telemetry.completed.duplicate(true)
 	for lap: Dictionary in invalid.completed: lap.valid = false
@@ -157,7 +156,6 @@ func run() -> void:
 	game.call("toggle_pause")
 	check(not bool(game.get("paused")) and not bool(game.get("attempt_practice")),"resuming keeps the race record-eligible")
 	session.finished = true
-	session.shortcut_count = 1
 	var ui: Control = app.get("root_ui")
 	var store: LocalRecords = app.get("records")
 	game.call("_begin_finish")

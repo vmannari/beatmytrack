@@ -249,6 +249,7 @@ func editable_entries(summaries: bool = false, cancelled: Callable = Callable())
 			var doc: Dictionary = store.load_document(id,summaries)
 			if doc.is_empty(): continue
 			if is_published(str(doc.id)): continue
+			if _retired_backend_backup(id,store.last_read_path): continue
 			var modified: int = FileAccess.get_modified_time(store.last_read_path)
 			var item: Dictionary = {"id":doc.id,"document":doc,"modified":modified,"source":source,
 				"load_id":("wip:" if source == "wip" else "")+str(doc.id)}
@@ -259,6 +260,26 @@ func editable_entries(summaries: bool = false, cancelled: Callable = Callable())
 		if a.modified != b.modified: return a.modified > b.modified
 		return str(a.document.name).naturalnocasecmp_to(str(b.document.name)) < 0)
 	return result
+
+func _retired_backend_backup(id: String, path: String) -> bool:
+	# A completed transfer removes the original but may retain an older, different
+	# recovery copy. Keep those bytes without promoting them into a fresh draft.
+	# Primary/temporary files and recovery written after the transfer stay editable.
+	if not path.ends_with(".json.bak"): return false
+	var primary: String = path.trim_suffix(".bak")
+	if FileAccess.file_exists(primary) or FileAccess.file_exists(primary+".tmp"): return false
+	var binding_path: String = directory.path_join(".backend").path_join(id+".json")
+	if not FileAccess.file_exists(binding_path) or FileAccess.get_modified_time(path) > FileAccess.get_modified_time(binding_path): return false
+	var file := FileAccess.open(binding_path,FileAccess.READ)
+	if file == null or file.get_length() > 4096: return false
+	var parser := JSON.new()
+	if parser.parse(file.get_as_text()) != OK or not parser.data is Dictionary: return false
+	var binding: Dictionary = parser.data
+	for key: String in ["backend_url","track_id","version_id"]:
+		if not binding.get(key) is String or str(binding[key]).is_empty(): return false
+	for key: String in ["content_hash","source_fingerprint"]:
+		if not binding.get(key) is String or str(binding[key]).length() != 64 or not str(binding[key]).is_valid_hex_number(false): return false
+	return true
 
 func delete_editable(id: String) -> Error:
 	if is_published(id):
@@ -368,17 +389,3 @@ func cleanup_backend_publication(source: Dictionary, remote: Dictionary) -> Erro
 	revision += 1
 	last_error = ""
 	return OK
-
-func publish_document(document: Dictionary) -> Error:
-	if not owner_name.is_empty(): document["creator"] = owner_name
-	if is_published(str(document.get("id",""))): return ERR_ALREADY_EXISTS
-	if not is_tested(document):
-		last_error = "Complete test run to publish"
-		return ERR_UNAUTHORIZED
-	var error: Error = save_document(document)
-	if error != OK: return error
-	var published := TrackLibrary.new(directory.path_join(".published"))
-	error = published.save_document(document)
-	last_error = published.last_error
-	if error == OK: revision += 1
-	return error

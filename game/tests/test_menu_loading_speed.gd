@@ -117,6 +117,8 @@ func run() -> void:
 	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
 	var began: int = Time.get_ticks_usec()
 	root.add_child(browser)
+	browser._open_track_view()
+	browser._show_detail()
 	var hero_ms: float = (Time.get_ticks_usec()-began)/1000.0
 	check(browser.hero.find_child("HeroTrackTitle",true,false) != null,"first menu frame draws the hero with both network reads held")
 	check(not browser.race_button.disabled,"optional data never holds an available track's race action")

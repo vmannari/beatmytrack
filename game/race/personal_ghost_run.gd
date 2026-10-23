@@ -30,7 +30,7 @@ func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bri
 	var height: float = (front + rear) * 0.5 + state.jump_height
 	var pitch: float = atan2(front - rear, handling.wheelbase)
 	if state.jump_height > 0.0:
-		pitch = atan2(state.jump_velocity, maxf(5.0, state.velocity.length()))
+		pitch = preload("res://vehicle/bridge_flight.gd").pitch(state)
 	elif not state.track_elevated:
 		height += TrackHazards.ramp_height(point, track.hazard_objects) - track.water_depth(point)
 		pitch += TrackHazards.ramp_pitch(point, axle.normalized(), track.hazard_objects)

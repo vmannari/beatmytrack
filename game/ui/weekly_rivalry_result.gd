@@ -3,6 +3,7 @@ extends HBoxContainer
 ## Competition-first rivalry feedback. All scores remain model projections.
 signal retry_requested
 signal home_requested
+signal player_requested(driver: Dictionary)
 var model: WeeklyRivalry
 var index: int = 0
 var details: Dictionary = {}
@@ -21,6 +22,7 @@ class PlayerList extends ScrollContainer:
 	var pointer: int = -1
 	var origin := Vector2.ZERO
 	var initial_scroll: int = 0
+	var dragged: bool = false
 	func _input(event: InputEvent) -> void:
 		if not is_visible_in_tree(): return
 		if event is InputEventScreenTouch:
@@ -29,10 +31,18 @@ class PlayerList extends ScrollContainer:
 				pointer = event.index
 				origin = event.position
 				initial_scroll = scroll_vertical
-			elif not event.pressed and event.index == pointer: pointer = -1
+				dragged = false
+			elif not event.pressed and event.index == pointer:
+				pointer = -1
+				if not event.canceled and not dragged and event.position.distance_to(origin) < 12 and absi(scroll_vertical-initial_scroll) < 12:
+					for label: Node in find_children("*","Label",true,false):
+						if label.has_meta("player_profile_action") and label.get_global_rect().has_point(event.position):
+							label.get_meta("player_profile_action").call()
+							break
 			else: return
 			get_viewport().set_input_as_handled()
 		elif event is InputEventScreenDrag and event.index == pointer:
+			dragged = dragged or event.position.distance_to(origin) >= 12
 			scroll_vertical = roundi(initial_scroll+origin.y-event.position.y)
 			get_viewport().set_input_as_handled()
 		elif event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION and pointer != -1:
@@ -305,6 +315,7 @@ func _driver_row(driver: Dictionary, own: Dictionary) -> void:
 		var marker: int = display_name.find(" T")
 		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
 	var name_label: Label = _label(identity,display_name,18,color,"RivalryResultName_"+str(driver.id))
+	if not player: preload("res://ui/player_profile.gd").bind_name(name_label,func() -> void: player_requested.emit(driver))
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name_label.clip_text = true

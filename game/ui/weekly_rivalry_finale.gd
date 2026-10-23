@@ -20,6 +20,8 @@ var vehicle: Control
 var metrics: HBoxContainer
 var title: Label
 var track_buttons: Array[Button] = []
+var columns: HBoxContainer
+var actions: HBoxContainer
 
 class RouteThumbnail extends Control:
 	var entry: Dictionary = {}
@@ -52,7 +54,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation",8)
 	summary = model.finale_summary()
 	_build_hero()
-	var columns := HBoxContainer.new()
+	columns = HBoxContainer.new()
 	columns.name = "RivalryAwardsColumns"
 	columns.add_theme_constant_override("separation",14)
 	columns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -73,7 +75,7 @@ func _ready() -> void:
 	columns.add_child(right)
 	_build_standings(right)
 	_build_highlights(right)
-	var actions := HBoxContainer.new()
+	actions = HBoxContainer.new()
 	actions.name = "RivalryFinaleActions"
 	actions.add_theme_constant_override("separation",14)
 	add_child(actions)
@@ -93,6 +95,7 @@ func _ready() -> void:
 	next.disabled = busy
 	actions.add_child(next)
 	resized.connect(_layout_hero)
+	columns.minimum_size_changed.connect(_layout_hero)
 	_layout_hero()
 
 func _label(parent: Control, text: String, font_size: int, color: Color = MenuStyle.TEXT) -> Label:
@@ -177,13 +180,16 @@ func _build_hero() -> void:
 		_label(card,str(fact[0]),12,MenuStyle.MUTED)
 
 func _layout_hero() -> void:
-	if not is_instance_valid(hero): return
+	if not is_instance_valid(hero) or not is_instance_valid(actions): return
 	var width: float = size.x
-	var height: float = clampf(size.y*0.23,112,180)
+	# Reserve the complete cards before assigning decorative hero space. Four
+	# highlight lines need more room than a Perfect Week badge or an empty week.
+	var available: float = size.y-actions.get_combined_minimum_size().y-2*get_theme_constant("separation")-columns.get_combined_minimum_size().y
+	var height: float = minf(clampf(size.y*0.23,100,180),maxf(100,available))
 	hero.custom_minimum_size.y = height
-	hero_copy.position = Vector2(56,14 if height < 140 else 22)
+	hero_copy.position = Vector2(56,6 if height < 112 else 14 if height < 140 else 22)
 	hero_copy.size = Vector2(width*0.53-110,height-hero_copy.position.y)
-	var font_size: int = (46 if height < 140 else 56) if not summary.title.begins_with("JOINT") else 40
+	var font_size: int = (40 if height < 112 else 46 if height < 140 else 56) if not summary.title.begins_with("JOINT") else 40
 	while font_size > 28 and MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > hero_copy.size.x: font_size -= 1
 	title.add_theme_font_size_override("font_size",font_size)
 	# Center the crown on the rendered words, and fit botanical branches around
@@ -265,6 +271,9 @@ func _build_tracks(parent: Control) -> void:
 			_label(field,str(column[1]),20,MenuStyle.TEXT).add_theme_font_override("font",MenuStyle.DISPLAY)
 		_label(line,"›",26,MenuStyle.MUTED).size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		_ignore_children(line)
+	# Include every track row in the body budget, even though the inner scroll
+	# container normally excludes its children's vertical minimum.
+	scroll.custom_minimum_size.y = rows.get_combined_minimum_size().y
 
 func _ignore_children(node: Node) -> void:
 	for child: Node in node.get_children():
@@ -273,8 +282,6 @@ func _ignore_children(node: Node) -> void:
 
 func _build_standings(parent: Control) -> void:
 	var box: VBoxContainer = _panel(parent,"RivalryDriversPanel")
-	box.add_theme_constant_override("separation",2)
-	box.get_parent().get_theme_stylebox("panel").set_content_margin_all(6)
 	var heading := HBoxContainer.new()
 	box.add_child(heading)
 	_label(heading,"FINAL STANDINGS",25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -314,10 +321,8 @@ func _build_standings(parent: Control) -> void:
 
 func _build_highlights(parent: Control) -> void:
 	var box: VBoxContainer = _panel(parent,"RivalryWeeklyHighlights")
-	box.add_theme_constant_override("separation",2)
-	box.get_parent().get_theme_stylebox("panel").set_content_margin_all(6)
 	box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_END
-	_label(box,"YOUR WEEK HIGHLIGHTS",23)
+	_label(box,"YOUR WEEK HIGHLIGHTS",25)
 	var line := HBoxContainer.new()
 	box.add_child(line)
 	var copy := VBoxContainer.new()

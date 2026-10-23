@@ -16,6 +16,7 @@ signal edit_here_requested
 var production_mode: bool = false
 var editor_test: bool = false
 var map_ready: bool = false
+var community_client: Node
 var map_track: NativeTrack
 var race_frame: HUDFrame
 var road_map: HUDRoadMap
@@ -27,7 +28,6 @@ var lap_label: Label
 var lap_timer: Label
 var lap_total: Label
 var race_timer: Label
-var shortcut_penalty_label: Label
 var shortcut_notice_label: Label
 var checkpoint_notice: CheckpointNotice
 var rewind_button: RewindHUDButton
@@ -120,11 +120,6 @@ func _ready() -> void:
 	race_timer.visible = production_mode and not editor_test
 	var clock_row := HBoxContainer.new()
 	clock_info.add_child(clock_row)
-	shortcut_penalty_label = _label("", 13)
-	shortcut_penalty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	shortcut_penalty_label.add_theme_color_override("font_color", RaceHUDStyle.GOLD)
-	shortcut_penalty_label.visible = false
-	clock_info.add_child(shortcut_penalty_label)
 	checkpoint_notice = CheckpointNotice.new()
 	root.add_child(checkpoint_notice)
 	shortcut_notice_label = checkpoint_notice.label
@@ -393,7 +388,6 @@ func show_session(session: TrackSession) -> void:
 	if lap_centiseconds != _lap_centiseconds:
 		_lap_centiseconds = lap_centiseconds
 		lap_timer.text = _time_text(current)
-	shortcut_penalty_label.visible = session.shortcut_count > 0
 
 
 func _time_text(seconds: float) -> String:

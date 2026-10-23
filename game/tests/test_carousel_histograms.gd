@@ -118,6 +118,8 @@ func run() -> void:
 	browser.cloud = cloud
 	browser.state = {"sort":"name"}
 	root.add_child(browser)
+	browser._open_track_view()
+	browser._show_detail()
 	MenuStyle.fill(browser)
 	browser.offset_top = 112
 	browser.offset_bottom = -16
@@ -186,6 +188,8 @@ func paged_window(packet: Dictionary) -> void:
 	browser.cloud = cloud
 	browser.state = {"sort":"name"}
 	root.add_child(browser)
+	browser._open_track_view()
+	browser._show_detail()
 	MenuStyle.fill(browser)
 	await wait_frames(12)
 	client.comparison_paths.clear()

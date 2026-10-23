@@ -2,6 +2,9 @@ class_name CarShowroom
 extends SubViewportContainer
 ## Menu-only orbit camera over the actual race model. No simulation ownership.
 signal condition_changed
+signal trophy_tapped(position: Vector2)
+var _wall_press := Vector2.INF
+var _wall_pointer: int = -2
 var condition: Dictionary = {}
 var weathering := VehicleWeathering.new()
 var wash_mode: bool = false
@@ -313,6 +316,10 @@ func owns_gesture(location: Vector2) -> bool:
 	return rect.has_point(location) and location.y >= rect.position.y + interaction_inset_top and location.y <= rect.end.y - interaction_inset_bottom
 
 func _drag(event: InputEvent) -> void:
+	if trophy_view and (camera_motion == null or not camera_motion.is_running()):
+		_trophy_input(event)
+		accept_event()
+		return
 	if trophy_view or record_view or (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running()):
 		accept_event()
 		return
@@ -378,7 +385,32 @@ func _finger_distance() -> float:
 	var points: Array = touches.values()
 	return (points[0] as Vector2).distance_to(points[1] as Vector2)
 
+func _trophy_input(event: InputEvent) -> void:
+	# Godot can synthesize mouse events from a finger; the touch owns that tap.
+	if event is InputEventMouse and event.device == InputEvent.DEVICE_ID_EMULATION: return
+	if event is InputEventScreenDrag or event is InputEventMouseMotion:
+		if _wall_pointer != -2 and event.position.distance_to(_wall_press) > 12.0:
+			_wall_press = Vector2.INF
+		return
+	if not (event is InputEventScreenTouch or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT)): return
+	var index: int = event.index if event is InputEventScreenTouch else -1
+	if event.pressed:
+		if _wall_pointer != -2:
+			# A second finger cancels this tap; its release cannot open a medal.
+			_wall_press = Vector2.INF
+			return
+		_wall_pointer = index
+		_wall_press = event.position
+	elif index == _wall_pointer:
+		var tapped: bool = event.position.distance_to(_wall_press) <= 12.0
+		if event is InputEventScreenTouch and event.canceled: tapped = false
+		_wall_pointer = -2
+		_wall_press = Vector2.INF
+		if tapped: trophy_tapped.emit(event.position)
+
 func _clear_gesture() -> void:
+	_wall_pointer = -2
+	_wall_press = Vector2.INF
 	washing = false
 	wash_pointer_valid = false
 	touches.clear()

@@ -308,7 +308,7 @@ func run() -> void:
 	size_flow.cloud = size_cloud
 	size_flow.library = TrackLibrary.new(workspace.path_join("publication-size-library"))
 	root.add_child(size_flow)
-	var size_job: Dictionary = {"schema":"track-lifecycle-1","scope":size_flow.scope(),"library_directory":size_flow.library.directory,"fingerprint":"size-fixture","upload_key":"original-size-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"publishing","created_at":1900000000,"document":{"id":"publication_size_fixture","name":"Size fixture"},"publish_requested":true,"publish_workflow":2,"vehicle":"compact","contract":{},"proof_file":"size.proof.json"}
+	var size_job: Dictionary = {"schema":"track-lifecycle-1","scope":size_flow.scope(),"library_directory":size_flow.library.directory,"fingerprint":"size-fixture","upload_key":"original-size-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"publishing","created_at":1900000000,"document":{"id":"publication_size_fixture","name":"Size fixture"},"publish_requested":true,"publish_workflow":2,"vehicle":"compact","contract":{"tick_rate":120},"proof_file":"size.proof.json"}
 	var size_path: String = size_flow._root().path_join("size.job.json")
 	check(size_flow._save(size_path,size_job),"oversize publication job saved")
 	check(Files.write(size_path.get_base_dir().path_join("size.proof.json"),{"input_count":6,"race_proof":{"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0]]}}),"oversize publication evidence saved")

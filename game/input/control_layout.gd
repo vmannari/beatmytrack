@@ -60,7 +60,11 @@ static func active_keys(config: Dictionary) -> Array[String]:
 	var keys: Array[String] = []
 	if config.steering_type == "buttons": keys.append_array(["steer_left", "steer_right"])
 	else: keys.append(str(config.steering_type))
-	keys.append_array(["handbrake", "brake", "accelerator"])
+	keys.append("handbrake")
+	# Analog modes share one vertical gas/brake axis at the saved accelerator position.
+	# Keep the separate brake preferences for switching back to buttons.
+	if config.steering_type == "buttons": keys.append("brake")
+	keys.append("accelerator")
 	return keys
 
 static func extent(key: String, scale_value: float) -> Vector2:

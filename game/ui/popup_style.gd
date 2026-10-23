@@ -9,6 +9,7 @@ var art: TextureRect
 var header: Label
 var symbol: TextureRect
 var close_button: Button
+var header_action: Control
 var body: VBoxContainer
 var message: Label
 var shade_layer: CanvasLayer
@@ -85,7 +86,7 @@ func _prepare() -> void:
 	var content: Array[Control] = []
 	if not window is FileDialog:
 		for child: Node in window.get_children():
-			if child is Control: content.append(child)
+			if child is Control and child != header_action: content.append(child)
 		body = VBoxContainer.new()
 		body.name = "PopupBody"
 		body.add_theme_constant_override("separation",14)
@@ -147,6 +148,7 @@ func _prepare() -> void:
 	close_button.tooltip_text = "Close"
 	close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
 	surface.add_child(close_button)
+	if is_instance_valid(header_action): header_action.reparent(surface)
 	_style_actions()
 
 func _style_actions() -> void:
@@ -199,8 +201,12 @@ func _layout() -> void:
 	(art.material as ShaderMaterial).set_shader_parameter("panel_size",extent)
 	close_button.position = Vector2(extent.x-62,8)
 	close_button.size = Vector2(52,52)
+	if is_instance_valid(header_action):
+		header_action.position = close_button.position-Vector2(58,0)
+		header_action.size = Vector2(52,52)
 	header.position = Vector2(86,24) if forms else Vector2(340,42)
 	header.size = Vector2(maxf(120,extent.x-header.position.x-76),60)
+	if is_instance_valid(header_action): header.size.x = maxf(120,header.size.x-58)
 	symbol.size = Vector2(38,38) if forms else Vector2(140,140)
 	symbol.position = Vector2(30,24) if forms else Vector2(92,extent.y*0.45-70)
 	var actions: Control = window.get_ok_button().get_parent()

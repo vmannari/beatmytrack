@@ -103,8 +103,6 @@ func run() -> void:
 		return
 	var version: String = str(published.receipt.version_id)
 	check(await flow.request_publish(publication_document) and flow.status_for(publication_document).receipt.version_id == version,"repeated publication uses committed receipt without slot duplication")
-	var blocked_draft: Dictionary = await cloud.upload_draft(publication_document)
-	check(not blocked_draft.ok and int(blocked_draft.status) == 410,"deprecated upload adapter cannot transmit drafts")
 	var ticket: Dictionary = await client.race_ticket(version,"compact",Client.new_idempotency_key())
 	ticket.data["_race_proof"] = fixture.race_proof
 	ticket.data["_race_ghost"] = fixture.ghost

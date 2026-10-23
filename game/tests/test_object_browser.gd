@@ -22,7 +22,11 @@ func run() -> void:
 		var sim:=VehicleSimulation.new(config); sim.reset(Vector2(0,-5)); sim.state.velocity=Vector2(0,10)
 		var input:=DriveFrame.new()
 		for tick: int in range(100): sim.step(input,track)
-		check(float(sim.state.light_props[0][1])>0.5 and sim.state.position.y>1,kind+" moves and lets car pass")
+		if kind=="burning_barrel":
+			check(sim.state.light_props[0][4]>0.1 and sim.state.velocity.length()<4 and sim.state.position.y<float(sim.state.light_props[0][1])-1.0,kind+" starts toppling and slows the car without allowing pass-through")
+		elif kind in BreakableProps.WINTER_KINDS:
+			check(sim.state.prop_destruction[0][0]==0.0 and sim.state.position.y>1,kind+" breaks and lets the car pass")
+		else: check(float(sim.state.light_props[0][1])>0.5 and sim.state.position.y>1,kind+" moves and lets car pass")
 		var replay:=VehicleSimulation.new(config); replay.reset(Vector2(0,-5)); replay.state.velocity=Vector2(0,10)
 		for tick: int in range(100):
 			var values: Array=JSON.parse_string(JSON.stringify(input.packed()))
@@ -38,7 +42,10 @@ func run() -> void:
 	var folder: String="user://object_browser_"+TrackLibrary.unique_id()
 	var app: Node=load("res://core/app.gd").new()
 	app.set("library",TrackLibrary.new(folder)); app.set("records",LocalRecords.new(folder+"/records.json"))
-	root.add_child(app); await process_frame
+	root.add_child(app)
+	var startup_deadline: int=Time.get_ticks_msec()+20000
+	while not app.get("startup_complete") and Time.get_ticks_msec()<startup_deadline: await process_frame
+	check(app.get("startup_complete"),"covered startup completes before object browser navigation")
 	var doc: Dictionary=TrackDocument.create_default(); doc.name="Woodland studio"
 	for index: int in range(12): doc.objects.append({"kind":["tree","broadleaf","bush","rock","tyre_stack","fence","cone","jump","barrel","crate","parked_car","shed"][index],"position":[-20+(index%6)*8,-8+(index/6)*14],"rotation":15})
 	app.set("document",doc); app.call("_show_screen","create")

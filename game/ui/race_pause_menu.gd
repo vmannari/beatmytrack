@@ -83,8 +83,9 @@ func show_main() -> void:
 	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
 	_row("Restart","Start this race again","restart",func() -> void: hud.restart_requested.emit())
 	_row("Settings","Camera, sound and controls","gear",_settings)
-	var report := _row("Report track","Reporting is not available yet","flag",func() -> void: pass)
-	report.disabled = true
+	if hud.map_track != null and hud.map_track.metadata.has("cloud_version") and is_instance_valid(hud.community_client):
+		_row("Report track","Send a private content report","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"report",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
+		_row("Track creator","Report or block this player","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"player",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
 	_row("Help","Driving tips and controls","help",_help)
 	column.add_child(HSeparator.new())
 	_row("Quit","Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))

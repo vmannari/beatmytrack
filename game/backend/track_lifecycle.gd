@@ -3,16 +3,65 @@ extends Node
 ## Drafts and creator lap evidence are local. Only explicit Publish sends content.
 ## Durable publication retries never run inside a canonical simulation step.
 signal changed
+signal publication_accepted
 var cloud: Node
 var library: TrackLibrary
 var records: LocalRecords
 var busy: bool = false
 var last_error: String = ""
-var _pending: Dictionary = {}
-var legacy_directories: Array[String] = []
 var _retry_deadlines: Dictionary = {}
 var _batch_deadlines: Dictionary = {}
 var _batch_failed_deadlines: Dictionary = {}
+const NO_SLOTS: String = "No publishing slots left. You can build, save and test drive in the editor. Add a slot in Store to publish this track and race it for records."
+var _slot_scope: String = ""
+var _slots: int = -1
+var _slots_refreshed: int = -1
+var _slot_reads: Dictionary = {}
+var _job_revision: int = 0
+var _publish_actions: Dictionary = {}
+
+class SlotRead extends RefCounted:
+	signal completed
+	var ok: bool = false
+
+func no_publishing_slots() -> bool:
+	return cloud != null and cloud.client.signed_in() and _slot_scope == scope() and _slots == 0
+
+func refresh_publishing_slots(force: bool = false) -> bool:
+	if cloud == null or not cloud.client.signed_in(): return false
+	var owner_scope: String = scope()
+	var pending: SlotRead = _slot_reads.get(owner_scope)
+	if pending != null:
+		await pending.completed
+		return owner_scope == scope() and pending.ok
+	if not force and _slot_scope == owner_scope and _slots_refreshed >= 0 and Time.get_ticks_msec()-_slots_refreshed < 60000: return true
+	pending = SlotRead.new()
+	_slot_reads[owner_scope] = pending
+	pending.ok = await _read_publishing_slots(owner_scope)
+	_slot_reads.erase(owner_scope)
+	pending.completed.emit()
+	return pending.ok
+
+func _read_publishing_slots(owner_scope: String) -> bool:
+	var response: Dictionary = await cloud.client.request_api("/me/entitlements",HTTPClient.METHOD_GET,{},"",true)
+	if owner_scope != scope(): return false
+	var count: Variant = response.get("data",{}).get("publishing_slots")
+	if not response.get("ok",false) or not (count is int or count is float) or not is_finite(float(count)) or float(count) != floorf(float(count)) or float(count) < 0 or float(count) > 9007199254740991:
+		last_error = "Could not check publishing slots. Connect and try again. Your draft and test lap remain saved."
+		return false
+	var changed_slots: bool = _slot_scope != owner_scope or _slots != int(count)
+	_slot_scope = owner_scope
+	_slots = int(count)
+	_slots_refreshed = Time.get_ticks_msec()
+	if changed_slots: changed.emit()
+	return true
+
+func _check_publishing_slots() -> bool:
+	if not await refresh_publishing_slots(true): return false
+	if no_publishing_slots():
+		last_error = NO_SLOTS
+		return false
+	return true
 
 func _wait_root() -> String:
 	return _root().path_join(".publication-waits")
@@ -126,7 +175,6 @@ func archive_draft(id: String) -> bool:
 	if not FileAccess.file_exists(path) and not cloud._write(path,{"id":id,"scope":scope(),"local_only":true}):
 		last_error = "Deletion could not be saved. Free storage and retry; the draft is preserved."
 		return false
-	_pending.erase(id)
 	return true
 
 func _read(path: String) -> Dictionary:
@@ -171,12 +219,13 @@ func _save(path: String, value: Dictionary, new_proof: bool = false) -> bool:
 	if not cloud._write(path,value):
 		last_error = "Could not save track recovery state. Free storage and retry."
 		return false
+	# Poll deadlines and identical status replies do not change the visible job.
+	for field: String in ["state","failure","proof_file","publish_requested","receipt"]:
+		if previous.get(field) != value.get(field):
+			_job_revision += 1
+			break
+	if previous.get("remote",{}).get("retryable") != value.get("remote",{}).get("retryable"): _job_revision += 1
 	return true
-
-func defer_sync(document: Dictionary) -> void:
-	# Kept as a local compatibility hook for older editor callers. A Save never
-	# schedules uploads, head reads, server restoration or archive commands.
-	if not document.is_empty(): _pending.erase(str(document.get("id","")))
 
 func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact", source: TrackLibrary = null, owner_scope: String = "", race_proof: Dictionary = {}) -> Dictionary:
 	if not TrackDocument.validate(document,false).is_empty():
@@ -248,8 +297,6 @@ func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact"
 	if new_proof and not cloud._write(path+".bak",job):
 		last_error = "The recording is saved, but recovery storage needs attention. Retry saving it."
 		return {}
-	if operation_scope == scope() and _pending.has(str(document.id)) and TrackLibrary.draft_fingerprint(_pending[str(document.id)].document) == TrackLibrary.draft_fingerprint(document):
-		_pending.erase(str(document.id))
 	changed.emit()
 	return {"path":path,"job":job}
 
@@ -287,30 +334,65 @@ func status_for(document: Dictionary) -> Dictionary:
 	return _read(_path(document)) if not document.is_empty() else {}
 
 func ready_to_publish(document: Dictionary) -> bool:
-	return _ready_for_job(status_for(document))
-
-static func ready_to_publish_fingerprint(fingerprint: String, workflow_directory: String) -> bool:
-	return presentation_for_fingerprint(fingerprint,workflow_directory).ready
+	return not no_publishing_slots() and _ready_for_job(status_for(document))
 
 static func presentation_for_fingerprint(fingerprint: String, workflow_directory: String) -> Dictionary:
 	var job: Dictionary = {}
 	if fingerprint.length() == 64 and fingerprint.is_valid_hex_number(false):
 		job = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
 	# Retain only presentation fields, never the full authoring document/proof.
-	return {"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
-		"revision_conflict":str(job.get("failure","")).contains("REVISION_CONFLICT")}
+	return {"state":str(job.get("state","")),"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
+		"revision_conflict":str(job.get("failure","")).contains("REVISION_CONFLICT"),"needs_slots":_quota_failure(job)}
+
+static func _quota_failure(job: Dictionary) -> bool:
+	return job.get("state") == "failed" and job.get("remote",{}).get("failure_code") == "NO_PUBLISHING_SLOTS"
+
+func caption_for_presentation(state: Dictionary) -> String:
+	if state.get("needs_slots",false) and cloud != null and cloud.client.signed_in() and _slot_scope == scope() and _slots > 0:
+		return "Ready to retry publication."
+	return str(state.get("caption","Saved on this device"))
 
 static func _ready_for_job(job: Dictionary) -> bool:
 	return job.has("proof_file") and job.get("state","") in ["local_ready","ready","saved","draft","invalid","failed"] and not job.get("publish_requested",false)
 
 func can_retry(document: Dictionary) -> bool:
-	return _retry_for_job(status_for(document))
+	return not no_publishing_slots() and _retry_for_job(status_for(document))
 
 static func _retry_for_job(job: Dictionary) -> bool:
 	return job.has("publication_id") and bool(job.get("remote",{}).get("retryable",false))
 
 func caption(document: Dictionary) -> String:
-	return _caption_for_job(status_for(document))
+	var job: Dictionary = status_for(document)
+	if no_publishing_slots() and job.get("state") not in ["publishing","queued","verifying","finishing","published"]: return NO_SLOTS
+	return caption_for_presentation({"caption":_caption_for_job(job),"needs_slots":_quota_failure(job)})
+
+func publication_receipts() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for job: Dictionary in jobs():
+		if not job.get("publication_notification",false) or job.get("state") not in ["finishing","published"]: continue
+		var receipt: Dictionary = job.get("receipt",{})
+		var version: String = str(receipt.get("version_id",""))
+		if version.is_empty() or str(receipt.get("track_id","")).is_empty(): continue
+		result.append({"scope":scope(),"version_id":version,"name":str(job.get("publication_name",receipt.get("name","Your track"))),"receipt":receipt.duplicate(true)})
+	return result
+
+func publication_notifications() -> Array[Dictionary]:
+	return publication_receipts().filter(func(item: Dictionary) -> bool:
+		var seen: Dictionary = cloud._read(_publication_seen_path(str(item.version_id)))
+		return not (seen.get("schema") == "publication-seen-1" and seen.get("scope") == scope() and seen.get("version_id") == item.version_id))
+
+func _publication_seen_path(version: String) -> String:
+	return _root().path_join(".publication-notices").path_join(version.sha256_text()+".seen.json")
+
+func acknowledge_publication(version: String, owner_scope: String) -> bool:
+	if scope() != owner_scope: return false
+	if not publication_notifications().any(func(item: Dictionary) -> bool: return item.version_id == version): return true
+	# Separate immutable-version acknowledgement: the completed job remains locked.
+	if not cloud._write(_publication_seen_path(version),{"schema":"publication-seen-1","scope":owner_scope,"version_id":version}):
+		last_error = "Could not save the publication notification dismissal. Check free storage and try again."
+		return false
+	changed.emit()
+	return true
 
 static func _caption_for_job(job: Dictionary) -> String:
 	if job.has("_read_error"): return "Track recovery data needs repair; original files are preserved."
@@ -326,6 +408,7 @@ func process_jobs() -> void:
 	if not _batch_ready(): return
 	busy = true
 	last_error = ""
+	var previous_revision: int = _job_revision
 	var owner_scope: String = scope()
 	for job: Dictionary in jobs():
 		if scope() != owner_scope: break
@@ -334,6 +417,12 @@ func process_jobs() -> void:
 			_retire_published(str(job._path),job)
 			continue
 		if job.get("state") == "finishing" and job.has("receipt"):
+			# Also enroll receipts awaiting local completion from earlier client builds.
+			if not job.has("publication_notification"):
+				job.publication_notification = true
+				job.publication_name = str(job.document.name)
+				if not _save(str(job._path),job): continue
+				changed.emit()
 			if not _job_ready(job): continue
 			_delay_job(job,15)
 			_save(str(job._path),job)
@@ -345,7 +434,7 @@ func process_jobs() -> void:
 		if job.has("document") and not _archived(str(job.document.id)):
 			await _advance(str(job._path),job,owner_scope)
 	busy = false
-	changed.emit()
+	if _job_revision != previous_revision: changed.emit()
 
 func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 	job.erase("_path")
@@ -369,8 +458,17 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		job.state = "publishing"
 		job.publication_upload_attempted = true
 		if not _save(path,job): return
+		# Journal JSON numbers are read as floats. Restore the strict wire integer
+		# without changing any pinned value in the saved creator contract.
+		var wire_contract: Dictionary = job.contract.duplicate(true)
+		var rate: Variant = wire_contract.get("tick_rate")
+		if not (rate is int or rate is float) or not is_finite(float(rate)) or float(rate) != floor(float(rate)) or float(rate) < 1 or float(rate) > 1000:
+			job.failure = "The saved creator contract is incomplete. Complete a fresh local test lap."
+			_save(path,job)
+			return
+		wire_contract.tick_rate = int(rate)
 		var response: Dictionary = await cloud.client.request_api("/publications",HTTPClient.METHOD_POST,
-			{"name":job.document.name,"document":job.document,"vehicle_id":job.vehicle,"contract":job.contract,"replay":replay},str(job.upload_key),true)
+			{"name":job.document.name,"document":job.document,"vehicle_id":job.vehicle,"contract":wire_contract,"replay":replay},str(job.upload_key),true)
 		if scope() != owner_scope or _archived(str(job.document.id),path.get_base_dir()): return
 		if not response.ok:
 			last_error = str(response.error)
@@ -414,10 +512,19 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		job.track_id = str(job.receipt.get("track_id",""))
 		job.version_id = str(job.receipt.get("version_id",""))
 		job.state = "finishing"
-		if _save(path,job): await _finalize(path,job,owner_scope)
+		job.publication_notification = true
+		job.publication_name = str(job.document.name)
+		if _save(path,job):
+			changed.emit() # Public acceptance must not wait for the local download.
+			publication_accepted.emit()
+			await _finalize(path,job,owner_scope)
 		return
 	if job.state == "failed":
 		job.failure = "No publishing slots left. Add slots, then Retry. Your track remains saved." if state_data.get("failure_code") == "NO_PUBLISHING_SLOTS" else "Complete a fresh test lap before publishing this revision." if state_data.get("failure_code") == "invalid_creator_proof" else str(state_data.get("detail","Publication verification failed"))
+		if state_data.get("failure_code") == "NO_PUBLISHING_SLOTS":
+			_slot_scope = owner_scope
+			_slots = 0
+			_slots_refreshed = -1
 		last_error = job.failure
 	elif job.state in ["queued","verifying"]:
 		_delay_job(job,maxi(1,ceili(float(state_data.get("poll_after_ms",2500))/1000.0)))
@@ -453,21 +560,38 @@ func prepare_test(document: Dictionary) -> Dictionary:
 	return document.duplicate(true)
 
 func request_publish(document: Dictionary) -> bool:
+	var action_key: String = _path(document)
+	if _publish_actions.has(action_key):
+		last_error = "This publication request is already being checked."
+		return false
+	_publish_actions[action_key] = true
+	var result: bool = await _request_publish(document)
+	_publish_actions.erase(action_key)
+	return result
+
+func _request_publish(document: Dictionary) -> bool:
 	if not cloud.client.signed_in():
 		last_error = "Sign in to publish. Your draft and test lap remain on this device."
 		return false
 	if not _batch_ready(): return false
 	var path: String = _path(document)
 	var job: Dictionary = _read(path)
-	if job.get("state") in ["finishing","published"]: return true
+	if job.get("state") in ["publishing","queued","verifying","finishing","published"]: return true
 	if not job.has("proof_file") or not job.has("contract"):
 		last_error = "Complete a local creator test lap for this exact revision before publishing."
 		return false
 	var owner_scope: String = scope()
+	# Check current server ownership before saving intent or sending any content.
+	if not await _check_publishing_slots() or owner_scope != scope(): return false
 	var compatible: Dictionary = await cloud.client.request_api("/bootstrap")
 	if owner_scope != scope(): return false
 	if not compatible.ok or int(compatible.data.get("publication_workflow_version",0)) != 2:
 		last_error = "The backend needs the local-draft publication update. Your draft and test lap remain saved on this device."
+		return false
+	var acceptance: Dictionary = await cloud.client.request_api("/community/terms",HTTPClient.METHOD_GET,{},"",true)
+	if owner_scope != scope(): return false
+	if not acceptance.ok or not bool(acceptance.data.get("accepted",false)):
+		last_error = "Accept the current public sharing rules before publishing."
 		return false
 	job.publish_requested = true
 	job.publish_workflow = 2
@@ -484,11 +608,19 @@ func request_publish(document: Dictionary) -> bool:
 	return true
 
 func retry(document: Dictionary) -> void:
+	var action_key: String = _path(document)
+	if _publish_actions.has(action_key): return
+	_publish_actions[action_key] = true
+	await _retry(document)
+	_publish_actions.erase(action_key)
+
+func _retry(document: Dictionary) -> void:
 	if not _batch_ready(): return
 	var path: String = _path(document)
 	var job: Dictionary = _read(path)
-	if not job.has("publication_id") or not can_retry(document): return
+	if not _retry_for_job(job): return
 	var owner_scope: String = scope()
+	if not await _check_publishing_slots() or owner_scope != scope(): return
 	# Save the retry operation before delivery. A lost reply or app restart
 	# reuses this key; the immutable publication upload keeps its own identity.
 	if not job.has("publication_retry_key"):

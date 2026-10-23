@@ -97,12 +97,12 @@ func persistence() -> void:
 	check(storage.load_document(doc.id) == committed,"corrupt primary recovers the exact previous committed compact map")
 
 func drawing() -> void:
-	var canvas := EditorCanvas.new(); canvas.document = circuit(); canvas.world_backdrop = true; canvas.size = Vector2(1280,720); root.add_child(canvas)
-	canvas.prepared_route(); canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
+	var canvas := EditorCanvas.new(); canvas.document = circuit(); canvas.size = Vector2(1280,720); root.add_child(canvas)
+	canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
 	var counts: Dictionary = canvas.preparation_counts.duplicate()
 	var started: int = Time.get_ticks_usec()
 	for index: int in range(100):
-		canvas.pan += Vector2.ONE; canvas.prepared_route(); canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
+		canvas.pan += Vector2.ONE; canvas.prepared_joins(); canvas._object_run(Vector2(-20,-30),Vector2(20,-30))
 	metric("hundred_navigation_preparations",started)
 	check(canvas.preparation_counts == counts,"panning and roadside runs retain source geometry")
 	canvas.document.pieces[0].length += 1; canvas.prepared_joins()

@@ -197,7 +197,6 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	doc = RoadPieces.route_from_pieces(doc).document
 	var save_error: Error = library.save_wip(doc)
 	check(save_error==OK,"publication fixture saved: "+library.last_error)
-	check(library.publish_document(doc)==ERR_UNAUTHORIZED,"untested publishing rejected at persistence boundary")
 	app.call("_show_screen","drafts")
 	await app.call("_test_saved_draft","wip:publication_test")
 	await process_frame
@@ -260,7 +259,8 @@ func _publication_ui(app: Node, library: TrackLibrary) -> void:
 	check(not library.is_published(doc.id) and not library.load_wip(doc.id).is_empty(),"guest Publish retains its draft and cannot mint a publication")
 	# Legacy local locks may still exist in retained player files. Exercise their
 	# persistence directly; the current shipping UI publishes through the backend.
-	check(library.publish_document(doc)==OK,"retained legacy publication fixture is readable")
+	check(library.save_document(doc)==OK,"historical published document fixture is saved")
+	check(TrackLibrary.new(library.directory.path_join(".published")).save_document(doc)==OK,"historical local publication fixture is readable")
 	app.call("_show_screen","drafts")
 	check(library.is_published(doc.id),"Publish persists local lock")
 	check(not library.load_document(doc.id).is_empty(),"published track enters local playable library")

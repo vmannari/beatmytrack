@@ -6,6 +6,7 @@ signal publish_requested(load_id: String)
 signal delete_requested(id: String, title: String)
 signal back_requested
 signal fork_requested(document: Dictionary)
+signal store_requested
 
 var library: TrackLibrary
 var lifecycle: TrackLifecycle
@@ -13,6 +14,7 @@ var entries: Array[Dictionary] = []
 var query: String = ""
 var page: int = 0
 var selection: Dictionary = {}
+var restore_view: Dictionary = {}
 const PAGE_SIZE: int = 4
 var gallery: HBoxContainer
 var detail: PanelContainer
@@ -42,6 +44,8 @@ func _ready() -> void:
 	add_child(filters)
 	var search := LineEdit.new()
 	search.name = "DraftSearch"
+	query = str(restore_view.get("query",query))
+	search.text = query
 	search.placeholder_text = "Search drafts by name or biome…"
 	search.custom_minimum_size.y = 54
 	search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -67,6 +71,7 @@ func _ready() -> void:
 	search.text_changed.connect(func(value: String) -> void: query = value; page = 0; _refresh())
 	get_viewport().size_changed.connect(_show_detail)
 	_refresh()
+	if lifecycle != null: lifecycle.refresh_publishing_slots(true)
 
 func _exit_tree() -> void:
 	if scan != null: scan.cancel()
@@ -94,6 +99,17 @@ func _refresh() -> void:
 	for item: Dictionary in entries:
 		var doc: Dictionary = item.document
 		if query.is_empty() or (str(doc.name)+" "+TrackTheme.title(str(doc.theme))).to_lower().contains(query.to_lower()): matches.append(item)
+	if not scanning and not restore_view.is_empty():
+		page = int(restore_view.get("page",0))
+		for index: int in range(matches.size()):
+			if str(matches[index].id) == str(restore_view.get("selected_id","")):
+				selection = matches[index]
+				# Saving may reorder drafts; keep the selected track on its current page.
+				page = index / PAGE_SIZE
+				break
+		if get_parent() is ScrollContainer:
+			get_parent().set_deferred("scroll_vertical",int(restore_view.get("scroll",0)))
+		restore_view = {}
 	var pages: int = maxi(1,ceili(float(matches.size())/PAGE_SIZE))
 	page = clampi(page,0,pages-1)
 	count.text = "%d drafts  ·  %d / %d" % [matches.size(),page+1,pages]
@@ -121,7 +137,7 @@ func _tile(item: Dictionary) -> TrackTile:
 	tile.name = "Draft_"+str(doc.id)
 	tile.draft_mode = true
 	tile.entry = {"name":doc.name,"creator":doc.get("creator",""),"theme":doc.theme,"pieces":doc.pieces,"points":[],
-		"draft_status":_counts(doc),"tested":item.tested}
+		"draft_status":_counts(doc),"tested":item.tested,"publication_state":str(item.get("lifecycle",{}).get("state",""))}
 	tile.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	return tile
 
@@ -147,7 +163,10 @@ func _show_detail() -> void:
 	var doc: Dictionary = item.document
 	var state: Dictionary = item.get("lifecycle",{})
 	var current: bool = not scanning and _summary_is_current()
-	var caption: String = str(state.get("caption","Saved on this device"))
+	var caption: String = lifecycle.caption_for_presentation(state) if lifecycle != null else str(state.get("caption","Saved on this device"))
+	var no_slots: bool = lifecycle != null and lifecycle.no_publishing_slots()
+	if no_slots and not caption.begins_with("Publication queued") and not caption.begins_with("Checking publication") and not caption.begins_with("Published"):
+		caption = "No publishing slots left. Add a slot in Store; your draft and test lap remain saved."
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",12)
 	var actions: Control = row
@@ -198,15 +217,22 @@ func _show_detail() -> void:
 	publish.custom_minimum_size.x = 252
 	publish.clip_text = true
 	publish.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	publish.disabled = not current or (not bool(state.get("ready",false)) if lifecycle != null else not bool(item.tested))
+	publish.disabled = not current or no_slots or (not bool(state.get("ready",false)) if lifecycle != null else not bool(item.tested))
 	if publish.disabled:
-		publish.text = "Publish\n"+(caption if lifecycle != null else "Complete test run to publish")
+		publish.text = "Publish\n"+("No slots available" if no_slots else caption if lifecycle != null else "Complete test run to publish")
+		publish.tooltip_text = caption
 		publish.add_theme_font_size_override("font_size",17)
 		publish.add_theme_stylebox_override("disabled",MenuStyle.box(Color("30383f")))
 		publish.add_theme_color_override("font_disabled_color",Color("aeb8bf"))
 	actions.add_child(publish)
-	if lifecycle != null and current and bool(state.get("retry",false)):
-		actions.add_child(_action("Retry","refresh",_retry_item.bind(item)))
+	if no_slots:
+		var store: Button = _action("Add slots","store",func() -> void: store_requested.emit())
+		store.name = "AddPublishingSlots"
+		actions.add_child(store)
+	elif lifecycle != null and current and bool(state.get("retry",false)):
+		var retry_button: Button = _action("Retry","refresh",_retry_item.bind(item))
+		retry_button.name = "RetryPublication"
+		actions.add_child(retry_button)
 	if lifecycle != null and current and bool(state.get("revision_conflict",false)):
 		actions.add_child(_action("Save as new track","edit",_fork_item.bind(item)))
 	var remove: Button = _action("","delete",func() -> void: delete_requested.emit(str(doc.id),str(doc.name)))

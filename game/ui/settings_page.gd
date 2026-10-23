@@ -12,6 +12,7 @@ var country_code: String = ""
 var section: String = "controls"
 var draft_layout: Dictionary
 var draft_haptics: float = 0.2
+var draft_drift_haptics: bool = true
 var draft_camera: String = "overhead"
 var draft_speed_zoom: bool = true
 var draft_speed_zoom_strength: float = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
@@ -19,6 +20,7 @@ var draft_labels: bool = true
 var draft_ghost: String = "lap"
 var draft_show_ads: bool = false
 var draft_simple_models: bool = false
+var draft_graphics: Dictionary = {}
 var draft_analytics: bool = false
 var draft_audio: Dictionary = {}
 var development_available: bool = OS.is_debug_build()
@@ -36,10 +38,10 @@ var reset_button: Button
 const TITLES: Dictionary = {
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
 	"camera": ["Camera", "Choose the view you prefer while driving."],
-	"graphics": ["Graphics", "Choose car detail while racing."],
+	"graphics": ["Graphics", "Applies from the next race. Menus and HUD stay sharp."],
 	"ghosts": ["Ghosts", "Race against your own locally saved best."],
 	"audio": ["Audio", "Balance the soundtrack, car sounds and menu feedback."],
-	"haptics": ["Haptics", "Adjust the feedback from your steering buttons."],
+	"haptics": ["Haptics", "Adjust steering and drifting vibration."],
 	"account": ["Account", "Manage the profile you race with."],
 	"privacy": ["Privacy", "Choose what optional information you share."],
 	"development": ["Development", "Test ads and simulate purchases without payment."],
@@ -52,6 +54,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 16)
 	draft_layout = ControlLayout.from_settings(records.settings)
 	draft_haptics = float(records.settings.get("steering_haptics", 0.2))
+	draft_drift_haptics = bool(records.settings.get("drift_haptics", true))
 	draft_camera = CameraProfile.valid_mode(str(records.settings.get("camera_mode", "overhead")))
 	draft_speed_zoom = bool(records.settings.get("camera_speed_zoom", true))
 	draft_speed_zoom_strength = float(records.settings.get("camera_speed_zoom_strength", CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH))
@@ -59,6 +62,7 @@ func _ready() -> void:
 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
 	draft_simple_models = bool(records.settings.get("simple_car_models",false))
+	draft_graphics = preload("res://presentation/graphics_preferences.gd").preferences(records.settings)
 	draft_analytics = bool(records.settings.get("optional_analytics",false))
 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
@@ -97,7 +101,7 @@ func _build_sidebar() -> void:
 	for item: Array in [
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
-		["graphics", "Graphics", "Car detail", "garage"],
+		["graphics", "Graphics", "Image quality", "garage"],
 		["ghosts", "Ghosts", "Your personal best", "garage"],
 		["audio", "Audio", "Music and sound", "headphones"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
@@ -199,7 +203,7 @@ func _show_section(id: String) -> void:
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
 	reset_button.visible = id not in ["account","privacy"]
-	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset controls"
+	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset haptics" if id == "haptics" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
@@ -216,6 +220,9 @@ func _show_section(id: String) -> void:
 	_keep_category_visible(id)
 
 func _graphics() -> void:
+	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")
+	_graphics_choice("render_resolution","3D resolution","Lower values improve performance. Device limits may cap resolution.")
+	_graphics_choice("anti_aliasing","Anti-aliasing","Smooth jagged edges. Higher quality uses more graphics power.")
 	var row: HBoxContainer = _row("CarDetailSettings",18)
 	row.add_child(_copy("Simpler car models", "Use lighter car models and shadows from the next race. Garage previews keep full detail."))
 	var toggle := CheckButton.new()
@@ -229,6 +236,29 @@ func _graphics() -> void:
 		toggle.text = "On" if on else "Off"
 		_changed())
 	row.add_child(toggle)
+
+func _graphics_choice(field: String, title: String, description: String) -> void:
+	const GRAPHICS = preload("res://presentation/graphics_preferences.gd")
+	var row: HBoxContainer = _row("Graphics_"+field,14)
+	row.add_child(_copy(title,description))
+	var choice := OptionButton.new()
+	choice.name = "GraphicsChoice_"+field
+	choice.custom_minimum_size = Vector2(185,52)
+	choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	choice.add_theme_font_size_override("font_size",20)
+	choice.tooltip_text = "Auto uses the existing settings for this device."
+	var safe_depth: bool = preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name())
+	for index: int in range(GRAPHICS.OPTIONS[field].size()):
+		var value: String = GRAPHICS.OPTIONS[field][index]
+		if field == "anti_aliasing" and safe_depth and value.begins_with("msaa"): continue
+		choice.add_item(GRAPHICS.LABELS[field][index])
+		choice.set_item_metadata(choice.item_count-1,value)
+		if draft_graphics[field] == value or (field == "anti_aliasing" and safe_depth and value == "fxaa" and str(draft_graphics[field]).begins_with("msaa")):
+			choice.select(choice.item_count-1)
+	choice.item_selected.connect(func(index: int) -> void:
+		draft_graphics[field] = choice.get_item_metadata(index)
+		_changed())
+	row.add_child(choice)
 
 func _keep_category_visible(id: String) -> void:
 	await get_tree().process_frame
@@ -475,9 +505,19 @@ func _haptics() -> void:
 			_show_section("haptics"))
 		choice.name = "Haptics" + titles[index]
 		choices.add_child(choice)
-	var info: HBoxContainer = _row("HapticInfo", 18)
-	info.add_child(_icon("phone", 32))
-	info.add_child(_copy("Feel the steering", "Feedback is available on supported phones. Apply a strength to try it."))
+	var drift: HBoxContainer = _row("DriftHapticSettings", 18)
+	drift.add_child(_copy("Drift feedback", "Vibration as your car slides through a corner."))
+	var toggle := CheckButton.new()
+	toggle.name = "DriftHaptics"
+	toggle.text = "On" if draft_drift_haptics else "Off"
+	toggle.button_pressed = draft_drift_haptics
+	toggle.custom_minimum_size = Vector2(150, 52)
+	toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	toggle.toggled.connect(func(on: bool) -> void:
+		draft_drift_haptics = on
+		toggle.text = "On" if on else "Off"
+		_changed())
+	drift.add_child(toggle)
 
 func _account() -> void:
 	var row: HBoxContainer = _row("AccountSettings", 18)
@@ -513,6 +553,10 @@ func _privacy() -> void:
 	policy.name = "PrivacyPolicy"
 	policy.disabled = not is_instance_valid(purchase_client) or purchase_client.base_url().is_empty()
 	body.add_child(policy)
+	var community: Button = MenuStyle.button("Community safety",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,purchase_client))
+	community.name = "CommunitySafety"
+	community.disabled = not is_instance_valid(purchase_client)
+	body.add_child(community)
 	var deletion: Button = MenuStyle.button("Manage account / delete account",func() -> void: account_requested.emit())
 	deletion.name = "PrivacyManageAccount"
 	body.add_child(deletion)
@@ -521,6 +565,7 @@ func _privacy() -> void:
 func _reset() -> void:
 	if section == "graphics":
 		draft_simple_models = false
+		draft_graphics = preload("res://presentation/graphics_preferences.gd").DEFAULTS.duplicate()
 	elif section == "audio":
 		draft_audio = GameSoundtrack.DEFAULTS.duplicate()
 	elif section == "development":
@@ -532,6 +577,9 @@ func _reset() -> void:
 		draft_camera = "overhead"
 		draft_speed_zoom = true
 		draft_speed_zoom_strength = CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH
+	elif section == "haptics":
+		draft_haptics = 0.2
+		draft_drift_haptics = true
 	else:
 		draft_layout = ControlLayout.preset()
 		draft_haptics = 0.2
@@ -542,12 +590,14 @@ func _reset() -> void:
 func _apply() -> bool:
 	records.settings.control_layout = draft_layout.duplicate(true)
 	records.settings.steering_haptics = draft_haptics
+	records.settings.drift_haptics = draft_drift_haptics
 	records.settings.camera_mode = draft_camera
 	records.settings.camera_speed_zoom = draft_speed_zoom
 	records.settings.camera_speed_zoom_strength = draft_speed_zoom_strength
 	records.settings.control_labels = draft_labels
 	records.settings.ghost_mode = draft_ghost
 	records.settings.simple_car_models = draft_simple_models
+	for field: String in draft_graphics: records.settings[field] = draft_graphics[field]
 	records.settings.optional_analytics = draft_analytics
 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
 	if development_available: records.settings.development_show_ads = draft_show_ads

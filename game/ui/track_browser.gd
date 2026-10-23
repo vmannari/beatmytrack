@@ -4,10 +4,12 @@ extends VBoxContainer
 signal home_requested
 signal race_requested(track: NativeTrack)
 signal track_selected(track: NativeTrack)
+signal preparation_requested(track: NativeTrack)
 signal edit_requested(document: Dictionary)
 signal delete_requested(id: String, title: String)
 signal import_requested
 signal notice(message: String)
+signal share_requested(entry: Dictionary)
 signal rivalry_requested
 signal challenges_requested
 
@@ -74,6 +76,24 @@ var _detail_wait_started: int = 0
 var _detail_wait_key: String = ""
 var _warming_window: String = ""
 var _hero_state: Array = []
+var list_open: bool = true
+var track_list: ScrollContainer
+var list_content: Control
+var list_grid: GridContainer
+var _list_columns: int = 1
+var _list_stride := Vector2(240,192)
+var _list_start: int = -1
+var _list_layout_pending: bool = false
+const VIEW_SLIDE_SECONDS: float = 0.32
+var _view_slot: Control
+var _track_page: VBoxContainer
+var _view_blocker: ScrollContainer
+var _view_motion: Tween
+var _view_progress: float = 0.0
+var _preparation_key: Array = []
+var _preparation_since: int = 0
+var _preparation_sent: bool = false
+const PREPARATION_SETTLE_MS: int = 650
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -90,13 +110,24 @@ func _ready() -> void:
 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main.add_theme_constant_override("separation",8)
 	body.add_child(main)
+	_view_slot = Control.new()
+	_view_slot.name = "TrackViewSlot"
+	_view_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_view_slot.clip_contents = true
+	main.add_child(_view_slot)
+	_build_track_list(_view_slot)
+	_track_page = VBoxContainer.new()
+	_track_page.name = "TrackDetailPage"
+	_track_page.add_theme_constant_override("separation",8)
+	_view_slot.add_child(_track_page)
+	_view_slot.resized.connect(func() -> void: _set_view_progress(_view_progress))
 	var hero_slot := Control.new()
 	hero_slot.name = "HeroSlot"
 	hero_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	# Leave room for complete charts, track cards and actions below the menu header.
 	hero_slot.custom_minimum_size.y = 160
 	hero_slot.clip_contents = true
-	main.add_child(hero_slot)
+	_track_page.add_child(hero_slot)
 	hero = PanelContainer.new()
 	hero.name = "RaceHero"
 	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -109,12 +140,13 @@ func _ready() -> void:
 	records_slot.name = "RecordsSlot"
 	records_slot.custom_minimum_size.y = 180
 	records_slot.clip_contents = true
-	main.add_child(records_slot)
+	_track_page.add_child(records_slot)
 	var selection := PanelContainer.new()
 	records_panel = selection
 	selection.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720dd"),12))
 	records_slot.add_child(selection)
 	MenuStyle.fill(selection)
+	records_slot.resized.connect(func() -> void: records_panel.size = records_slot.size)
 	detail = VBoxContainer.new()
 	selection.add_child(detail)
 	pending_records = MenuStyle.label("",18,true)
@@ -125,7 +157,7 @@ func _ready() -> void:
 	gallery_slot.name = "GallerySlot"
 	gallery_slot.custom_minimum_size.y = 140
 	gallery_slot.resized.connect(_layout_gallery)
-	main.add_child(gallery_slot)
+	_track_page.add_child(gallery_slot)
 	gallery = preload("res://ui/track_carousel.gd").new()
 	gallery.name = "TrackCarousel"
 	gallery.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
@@ -143,6 +175,15 @@ func _ready() -> void:
 	grid.add_theme_constant_override("h_separation",12)
 	gallery_content.add_child(grid)
 	gallery.get_h_scroll_bar().value_changed.connect(func(_value: float) -> void: _render_tiles())
+	# Scroll ownership also keeps a touch on moving content out of primary
+	# menu navigation. The real gallery gesture owners pause during the slide.
+	_view_blocker = ScrollContainer.new()
+	_view_blocker.name = "TrackViewTransitionInput"
+	_view_blocker.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_view_blocker.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_view_slot.add_child(_view_blocker)
+	MenuStyle.fill(_view_blocker)
+	_view_blocker.hide()
 	count_label = MenuStyle.label("Loading?",12,true)
 	count_label.clip_text = true
 	main.add_child(count_label)
@@ -159,7 +200,7 @@ func _ready() -> void:
 		state.merge(filters,true)
 		_refresh()
 		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
-	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
+	filter_dialog.closed.connect(_enable_gallery_input)
 	search_dialog = SearchDrawer.new()
 	search_dialog.catalog = catalog
 	search_dialog.discovery = discovery
@@ -172,12 +213,215 @@ func _ready() -> void:
 		_refresh()
 		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
 	search_dialog.selected.connect(_select)
-	search_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
+	search_dialog.closed.connect(_enable_gallery_input)
 	if cloud != null:
 		cloud.changed.connect(_cloud_changed)
 		cloud_status = count_label
-	_show_detail()
+	_set_list_open(true)
 	call_deferred("_load_catalog")
+
+func _build_track_list(parent: Control) -> void:
+	track_list = preload("res://ui/vertical_swipe_scroll.gd").new()
+	track_list.name = "TrackList"
+	track_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	track_list.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# Reserve the scrollbar's width even for short lists, keeping columns stable.
+	track_list.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_RESERVE
+	track_list.follow_focus = false
+	track_list.scroll_deadzone = 12
+	parent.add_child(track_list)
+	list_content = Control.new()
+	list_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	track_list.add_child(list_content)
+	list_grid = GridContainer.new()
+	list_grid.name = "TrackListCards"
+	list_grid.add_theme_constant_override("h_separation",12)
+	list_grid.add_theme_constant_override("v_separation",12)
+	list_content.add_child(list_grid)
+	track_list.resized.connect(_queue_list_layout)
+	list_content.resized.connect(_queue_list_layout)
+	track_list.get_v_scroll_bar().value_changed.connect(func(_value: float) -> void: _render_list())
+
+func _queue_list_layout() -> void:
+	if _list_layout_pending: return
+	_list_layout_pending = true
+	_layout_list.call_deferred()
+
+func _layout_list() -> void:
+	_list_layout_pending = false
+	if not is_inside_tree() or not list_open: return
+	var anchor: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns-_list_column_offset
+	var width: float = maxf(1.0,list_content.size.x)
+	var previous_columns: int = _list_columns
+	_list_columns = maxi(1,floori((width+12.0)/236.0))
+	_list_column_offset = posmod(-_window_shift,_list_columns) if _window_generation >= 0 else 0
+	_list_stride = Vector2(floorf((width+12.0)/_list_columns),204)
+	list_grid.columns = _list_columns
+	_update_list_extent()
+	if previous_columns != _list_columns: track_list.scroll_vertical = maxi(0,int((anchor+_list_column_offset)/_list_columns)*int(_list_stride.y))
+	_list_start = -1
+	_render_list(true)
+
+func _update_list_extent() -> void:
+	list_content.custom_minimum_size.y = maxf(1.0,ceilf(float(_page_total()+_list_column_offset)/_list_columns)*_list_stride.y-12.0)
+
+func _render_list(reconcile: bool = false) -> void:
+	if not list_open or not is_instance_valid(list_grid): return
+	var first_row: int = maxi(0,floori(track_list.scroll_vertical/_list_stride.y)-1)
+	var first: int = first_row*_list_columns
+	var end: int = mini(_page_total()+_list_column_offset,first+(ceili(track_list.size.y/_list_stride.y)+3)*_list_columns)
+	var paged: bool = cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0
+	if paged:
+		# Request the nearest missing visible page. Its completion reconciles this
+		# window again, so a wide grid can span pages without draining the catalog.
+		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns
+		var desired: int = visible_first
+		for index: int in range(visible_first,end):
+			if cloud.discovery_pages.entry_at(index-_list_column_offset).is_empty():
+				desired = index
+				break
+		if not page_preview and cloud.discovery_pages.error.is_empty(): cloud.discovery_pages.request_visible.call_deferred(maxi(0,desired-_list_column_offset))
+	elif cloud != null and not page_preview and end >= matches.size() and track_list.scroll_vertical > 0:
+		cloud.load_more()
+	if first == _list_start and not reconcile: return
+	_list_start = first
+	var retained: Dictionary = {}
+	for child: Node in list_grid.get_children():
+		var index: int = int(child.get_meta("catalog_index",-1))
+		var entry: Dictionary = _list_entry(index,paged) if index >= first and index < end else {}
+		if entry.is_empty() or not child is TrackTile or str(child.entry.get("id","")) != str(entry.get("id","")):
+			list_grid.remove_child(child)
+			child.queue_free()
+		else: retained[index] = child
+	list_grid.position = Vector2(0,first_row*_list_stride.y)
+	for index: int in range(first,end):
+		var entry: Dictionary = _list_entry(index,paged)
+		var tile: Control
+		if retained.has(index):
+			tile = retained[index]
+			if reconcile: (tile as TrackTile).update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),false)
+		elif entry.is_empty():
+			tile = MenuStyle.label("Loading tracks..." if paged and cloud.discovery_pages.error.is_empty() else "Refresh to retry",16,true)
+			if paged and cloud.discovery_pages.has_method("unavailable_slot") and cloud.discovery_pages.unavailable_slot(index-_list_column_offset):
+				(tile as Label).text = "Track no longer available"
+			tile.set_meta("catalog_index",index)
+			list_grid.add_child(tile)
+		else:
+			var card := TrackTile.new()
+			card.entry = entry
+			card.favorite = entry.id in records.settings.get("favorites",[])
+			card.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
+			card.name = "ListTrack_"+str(entry.id)
+			card.set_meta("catalog_index",index)
+			card.pressed.connect(_select_tile.bind(card))
+			card.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
+			card.focus_entered.connect(_focus_list_card.bind(card))
+			list_grid.add_child(card)
+			tile = card
+		tile.custom_minimum_size = _list_stride-Vector2(12,12)
+		tile.size_flags_horizontal = Control.SIZE_FILL
+		list_grid.move_child(tile,index-first)
+	if _page_total() == 0:
+		var unresolved: bool = loading or (cloud != null and cloud.paged_discovery_available() and (not is_instance_valid(cloud.discovery_pages) or cloud.discovery_pages.total < 0 or cloud.discovery_pages.loading))
+		var empty := MenuStyle.label("Loading tracks..." if unresolved else "No tracks found. Change your filters or search.",20,true)
+		if cloud != null and is_instance_valid(cloud.discovery_pages) and not cloud.discovery_pages.error.is_empty(): empty.text = cloud.discovery_pages.error
+		empty.name = "TrackListEmptyState"
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty.custom_minimum_size.x = _list_stride.x-12
+		empty.custom_minimum_size.y = 128
+		list_grid.add_child(empty)
+
+func _list_entry(index: int, paged: bool) -> Dictionary:
+	if paged:
+		var metadata: Dictionary = cloud.discovery_pages.entry_at(index-_list_column_offset) if index >= _list_column_offset else {}
+		return {} if metadata.is_empty() else cloud.entry_from_metadata(metadata)
+	return matches[index] if index >= 0 and index < matches.size() else {}
+
+func _focus_list_card(card: TrackTile) -> void:
+	var top: int = int(int(card.get_meta("catalog_index"))/_list_columns)*int(_list_stride.y)
+	if top < track_list.scroll_vertical: track_list.scroll_vertical = top
+	elif top+_list_stride.y-12 > track_list.scroll_vertical+track_list.size.y:
+		track_list.scroll_vertical = ceili(top+_list_stride.y-12-track_list.size.y)
+
+func _set_list_open(value: bool, animate: bool = false) -> void:
+	list_open = value
+	race_button.visible = not value
+	for button: Button in [random_button,filter_button,find_child("RaceSearch",true,false)]:
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL if value else Control.SIZE_FILL
+	if value:
+		_queue_list_layout()
+	else:
+		_layout_gallery.call_deferred()
+	if _view_motion != null:
+		_view_motion.kill()
+		_view_motion = null
+	var destination: float = 0.0 if value else 1.0
+	if animate and is_inside_tree() and not page_preview and not is_equal_approx(destination,_view_progress):
+		track_list.show()
+		_track_page.show()
+		_view_blocker.show()
+		get_viewport().gui_release_focus()
+		_set_view_progress(_view_progress)
+		_view_motion = create_tween()
+		_view_motion.tween_method(_set_view_progress,_view_progress,destination,VIEW_SLIDE_SECONDS*absf(destination-_view_progress)).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		_view_motion.tween_callback(_finish_view_transition)
+		_enable_gallery_input()
+	else:
+		_set_view_progress(destination)
+		_finish_view_transition()
+
+func _set_view_progress(value: float) -> void:
+	_view_progress = value
+	# A scrollbar minimum can add offsets while this slot is initially empty.
+	# Match the settled slot explicitly before applying the vertical push.
+	if track_list.size != _view_slot.size: track_list.size = _view_slot.size
+	if _track_page.size != _view_slot.size: _track_page.size = _view_slot.size
+	var distance: float = _view_slot.size.y
+	_track_page.position = Vector2(0.0,(value-1.0)*distance)
+	track_list.position = Vector2(0.0,value*distance)
+
+func _finish_view_transition() -> void:
+	_view_motion = null
+	track_list.visible = list_open
+	_track_page.visible = not list_open
+	_view_blocker.hide()
+	_enable_gallery_input()
+
+func _open_track_view() -> void:
+	if not list_open: return
+	_set_list_open(false,true)
+
+func _close_track_view() -> void:
+	state.erase("pinned_version")
+	_selection_serial += 1
+	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
+	if _resolve_job != null: _resolve_job.cancel()
+	_requested_entry = {}
+	preview_entry = {}
+	selecting = false
+	if _section_motion != null: _section_motion.kill()
+	_clear_outgoing_section()
+	_set_section_offset(0.0)
+	_hero_serial = -1
+	_hero_state = []
+	_detail_state = []
+	_set_list_open(true,true)
+
+func _show_creator_tracks(creator: String) -> void:
+	state.merge(FilterDrawer.DEFAULTS,true)
+	for key: String in ["name","creator","focus_track","random_on_open"]: state.erase(key)
+	state.search = creator
+	state.search_kind = 2
+	state.page = 0
+	_close_track_view()
+	_refresh()
+	if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))
+
+func _enable_gallery_input() -> void:
+	var modal_open: bool = (is_instance_valid(filter_dialog) and filter_dialog.visible) or (is_instance_valid(search_dialog) and search_dialog.visible)
+	var enabled: bool = _view_motion == null and not modal_open
+	gallery.set_process_input(enabled and not list_open)
+	track_list.set_process_input(enabled and list_open)
 
 func _compact_button(text: String, action: Callable) -> Button:
 	var button: Button = MenuStyle.button(text,action)
@@ -269,9 +513,41 @@ func _sync_cloud_catalog() -> bool:
 	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
 	if cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages): current.append([cloud.discovery_pages.total,cloud.discovery_pages.generation,cloud.discovery_pages.loading])
 	if current == _cloud_catalog_state: return false
+	_sync_discovery_window()
 	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
 	_cloud_catalog_state = current.duplicate(true)
 	return true
+
+var _window_generation: int = -1
+var _window_shift: int = 0
+var _list_column_offset: int = 0
+
+func _sync_discovery_window() -> void:
+	if cloud == null or not cloud.has_method("indexed_discovery_available") or not cloud.indexed_discovery_available():
+		_window_generation = -1
+		_window_shift = 0
+		_list_column_offset = 0
+		return
+	if not is_instance_valid(cloud.discovery_pages): return
+	var window = cloud.discovery_pages
+	if _window_generation != int(window.generation):
+		_window_generation = int(window.generation)
+		_window_shift = 0
+		_list_column_offset = 0
+		gallery.call("_stop_snap")
+		gallery.scroll_horizontal = 0
+		track_list.scroll_vertical = 0
+	var shift: int = int(window.coordinate_shift)-_window_shift
+	_window_shift = int(window.coordinate_shift)
+	if shift != 0:
+		var new_offset: int = posmod(-_window_shift,_list_columns)
+		var list_shift: int = shift+new_offset-_list_column_offset
+		_list_column_offset = new_offset
+		gallery.call("_stop_snap")
+		gallery.scroll_horizontal = maxi(0,gallery.scroll_horizontal+shift*tile_stride)
+		track_list.scroll_vertical = maxi(0,track_list.scroll_vertical+int(list_shift/_list_columns)*int(_list_stride.y))
+		_tile_start = -1
+		_list_start = -1
 
 func _cloud_changed() -> void:
 	if page_preview:
@@ -282,14 +558,17 @@ func _cloud_changed() -> void:
 	_refresh()
 	_random_on_open()
 	if not selecting:
+		if list_open: return
 		for entry: Dictionary in catalog.entries:
 			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
+				if not str(state.get("pinned_version","")).is_empty() and state.pinned_version == selected_track.metadata.get("cloud_version",""): continue
 				_select(entry)
 				return
 		_show_detail()
 
 func _selected_is_available() -> bool:
 	if cloud == null: return true
+	if is_instance_valid(cloud.client.get("safety")) and not cloud.client.safety.allows(selected_track.metadata.get("cloud_entry",selected_track.metadata)): return false
 	if cloud.paged_discovery_available() and selected_track.metadata.has("cloud_version"):
 		return not cloud.retained_entry(selected_track.identity).is_empty()
 	return selected_track.metadata.has("cloud_version") and catalog.entries.any(func(entry: Dictionary) -> bool: return str(entry.id) == selected_track.identity)
@@ -310,8 +589,9 @@ func _random_on_open() -> void:
 
 func _reveal_track(identity: String) -> void:
 	# Scroll after the container has laid out its complete virtual carousel.
-	await get_tree().process_frame
 	if not is_inside_tree(): return
+	await get_tree().process_frame
+	if not is_inside_tree() or list_open or identity != str(preview_entry.get("id",selected_track.identity)): return
 	for index: int in range(matches.size()):
 		if str(matches[index].id) != identity: continue
 		gallery.call("_stop_snap")
@@ -331,9 +611,12 @@ func _refresh() -> void:
 	if signature != _query_signature:
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = 0
+		track_list.scroll_vertical = 0
 	_query_signature = signature
 	var track_count: int = _page_total()
 	gallery_content.custom_minimum_size.x = maxi(1,track_count*tile_stride-12)
+	_update_list_extent()
+	_render_list(true)
 	_render_tiles(true)
 	if matches.is_empty() and grid.get_child_count() == 0:
 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
@@ -351,6 +634,9 @@ func _refresh() -> void:
 	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
 	if cloud != null: count_label.text += " · "+str(cloud.status)
 	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
+	if cloud != null and cloud.has_method("indexed_discovery_available") and cloud.indexed_discovery_available():
+		count_label.text = cloud.status
+		count_label.tooltip_text = "Loaded track cards. Scroll to browse more; Refresh updates the ordering."
 	random_button.disabled = matches.is_empty() or loading
 	var filter_count: int = FilterDrawer.active_count(state)
 	if is_instance_valid(refresh_button): refresh_button.disabled = cloud == null or cloud.refreshing
@@ -365,7 +651,7 @@ func _render_tiles(reconcile: bool = false) -> void:
 	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0:
 		_render_paged_tiles(reconcile)
 		return
-	if cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
+	if not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
 		cloud.load_more()
 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
 	_warm_visible_comparisons(first)
@@ -417,6 +703,8 @@ func _layout_gallery() -> void:
 	gallery.position.x = (gallery_slot.size.x-(slots*tile_stride-12))*0.5
 	gallery.size = Vector2(slots*tile_stride-12,140)
 	gallery.set("snap_stride",tile_stride)
+	# Cards prepared while the detail was hidden must adopt its settled width.
+	for tile: Control in grid.get_children(): tile.custom_minimum_size.x = tile_stride-12
 	gallery_content.custom_minimum_size.x = maxi(1,_page_total()*tile_stride-12)
 	gallery.scroll_horizontal = first*tile_stride
 	_tile_start = -1
@@ -429,7 +717,10 @@ func _random() -> void:
 		var metadata: Dictionary = await cloud.discovery_pages.random_entry(selected_track.identity)
 		if not is_inside_tree(): return
 		random_button.disabled = false
-		if metadata.is_empty(): notice.emit("No matching tracks are available. Refresh to retry."); return
+		if metadata.is_empty():
+			var detail: String = str(cloud.discovery_pages.error)
+			notice.emit(detail if not detail.is_empty() else "No matching tracks are available. Refresh to retry.")
+			return
 		var public_entry: Dictionary = cloud.entry_from_metadata(metadata)
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = int(metadata.discovery_index)*tile_stride
@@ -447,12 +738,13 @@ func _page_total() -> int:
 	return matches.size()
 
 func telemetry_exposures() -> Array[Dictionary]:
-	# Only actual cards occupying >= half their area in the visible carousel.
-	# Menu neighbours and twelve-card prefetch/render windows never count.
+	# Count only actual cards occupying >= half their area in the active view.
 	var result: Array[Dictionary] = []
-	if page_preview or not is_visible_in_tree() or not is_instance_valid(gallery) or not is_instance_valid(grid): return result
-	var viewport: Rect2 = gallery.get_global_rect().intersection(get_viewport().get_visible_rect())
-	for child: Node in grid.get_children():
+	if page_preview or _view_motion != null or not is_visible_in_tree() or not is_instance_valid(gallery) or not is_instance_valid(grid): return result
+	var active_gallery: ScrollContainer = track_list if list_open else gallery
+	var active_grid: GridContainer = list_grid if list_open else grid
+	var viewport: Rect2 = active_gallery.get_global_rect().intersection(get_viewport().get_visible_rect())
+	for child: Node in active_grid.get_children():
 		if not child is TrackTile or not child.is_visible_in_tree(): continue
 		var card: Rect2 = child.get_global_rect()
 		if card.get_area() <= 0 or viewport.intersection(card).get_area() < card.get_area()*0.5: continue
@@ -461,7 +753,7 @@ func telemetry_exposures() -> Array[Dictionary]:
 
 func _render_paged_tiles(reconcile: bool) -> void:
 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
-	if not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
+	if not list_open and not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
 	_warm_visible_comparisons(first)
 	if first == _tile_start and not reconcile: return
 	_tile_start = first
@@ -508,7 +800,7 @@ func _render_paged_tiles(reconcile: bool) -> void:
 		tile.size_flags_horizontal = Control.SIZE_FILL
 
 func _warm_visible_comparisons(first: int) -> void:
-	if page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
+	if list_open or page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
 	var entries: Array = []
 	var versions: PackedStringArray = []
 	var visible: int = maxi(1,ceili(gallery.size.x/maxf(1.0,tile_stride)))
@@ -524,6 +816,10 @@ func _warm_visible_comparisons(first: int) -> void:
 	discovery.prime_comparisons(cloud.client,entries,VehicleCatalog.selected)
 
 func _select(entry: Dictionary) -> void:
+	if str(state.get("pinned_version","")) != str(entry.get("version_id","")): state.erase("pinned_version")
+	var from_list: bool = list_open
+	_open_track_view()
+	if from_list: _reveal_track.call_deferred(str(entry.id))
 	if selected_track.metadata.get("metadata_only",false) and not preview_entry.is_empty() and preview_entry.get("version_id","") == entry.get("version_id",""): return
 	var cached: NativeTrack = catalog.cached_track(entry)
 	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_job == null:
@@ -531,6 +827,7 @@ func _select(entry: Dictionary) -> void:
 		# A newly opened page still hydrates its initially selected track once.
 		if not page_preview and cloud != null and cached.metadata.has("cloud_version") and _comparison_selection != _comparison_selection_key(cached):
 			_load_cloud_detail(cached)
+		_show_detail()
 		return
 	if not page_preview and cloud != null and entry.get("source","") == "cloud" and cloud.client.has_method("signed_in") and cloud.client.signed_in():
 		var nearby: Array = [entry]
@@ -568,7 +865,7 @@ func _select(entry: Dictionary) -> void:
 		_set_section_offset(0.0)
 		hero.modulate.a = 1.0
 		records_panel.modulate.a = 1.0
-		if entry.source == "cloud":
+		if entry.source == "cloud" or from_list:
 			# Public route metadata is enough to draw the hero before downloading
 			# or compiling the race geometry. Old scores must not follow it.
 			_show_hero(str(entry.name).to_upper(),str(entry.get("theme","pine")))
@@ -655,6 +952,7 @@ static func _resolve_track(directory: String, entry: Dictionary, cancelled: Call
 	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft,{},cancelled),"draft":draft}
 
 func _process(_delta: float) -> void:
+	_poll_preparation_hint()
 	if _resolve_job == null or not _resolve_job.done: return
 	var result: Dictionary = _resolve_job.result
 	_resolve_job = null
@@ -667,8 +965,25 @@ func _process(_delta: float) -> void:
 		return
 	_finish_selection(result)
 
+func _poll_preparation_hint() -> void:
+	if page_preview or list_open or not is_visible_in_tree() or _view_motion != null or _section_motion != null or selecting or selected_track == null:
+		_preparation_since = 0
+		return
+	var key: Array = [selected_track.get_instance_id(),_selection_serial,VehicleCatalog.selected,str(selected_track.metadata.get("cloud_version",""))]
+	if key != _preparation_key:
+		_preparation_key = key; _preparation_since = 0; _preparation_sent = false
+	if _preparation_sent: return
+	if _preparation_since == 0: _preparation_since = Time.get_ticks_msec(); return
+	if Time.get_ticks_msec()-_preparation_since < PREPARATION_SETTLE_MS: return
+	_preparation_sent = true
+	preparation_requested.emit(selected_track)
+
 func _exit_tree() -> void:
 	_selection_serial += 1
+	if _view_motion != null:
+		_view_motion.kill()
+		_set_view_progress(0.0 if list_open else 1.0)
+		_finish_view_transition()
 	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
 	if _resolve_job != null:
 		# The tree-owned reaper joins completed workers independently of this UI.
@@ -910,6 +1225,7 @@ func _build_actions() -> void:
 	var filters := MenuStyle.button("Filters",func() -> void:
 		gallery.call("_stop_snap")
 		gallery.set_process_input(false)
+		track_list.set_process_input(false)
 		filter_dialog.open_for(state,filter_button))
 	filter_button = filters
 	filters.name = "RaceFilters"
@@ -918,6 +1234,7 @@ func _build_actions() -> void:
 	var search := MenuStyle.button("Search",func() -> void:
 		gallery.call("_stop_snap")
 		gallery.set_process_input(false)
+		track_list.set_process_input(false)
 		search_dialog.open_for(state,find_child("RaceSearch",true,false)))
 	search.name = "RaceSearch"
 	search.icon = MenuIcon.texture("search")
@@ -958,6 +1275,7 @@ func _heading(parent: Control, caption: String, icon: String) -> HBoxContainer:
 	return row
 
 func _show_detail(preview_snapshot: Dictionary = {}) -> void:
+	if list_open: return
 	if selected_track.metadata.get("metadata_only",false) and preview_snapshot.is_empty():
 		if preview_entry.is_empty(): preview_entry = selected_track.metadata.cloud_entry.duplicate(true)
 		var known_contract: bool = not selected_track.content_hash.is_empty()
@@ -1109,7 +1427,14 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 		rate.custom_minimum_size.y = 48
 		rate.disabled = metadata_only and not selected_track.metadata.get("metadata_only",false)
 		actions.add_child(rate)
+		var safety_button := MenuStyle.button("Report / block",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,cloud.client,"track",preload("res://ui/community_safety_ui.gd").track_target(selected_track)))
+		safety_button.name = "TrackSafety"
+		safety_button.add_theme_font_size_override("font_size",18)
+		safety_button.custom_minimum_size.y = 48
+		actions.add_child(safety_button)
 		if not str(snapshot.get("board_error","")).is_empty(): scores_button.tooltip_text = "Scores unavailable - retry"
+		# Reserve the complete action row and its section insets in the clipped slot.
+		friends.get_parent().custom_minimum_size.x = maxf(270.0,friends.get_combined_minimum_size().x)
 	race_button.text = "RACE "+title
 	race_button.disabled = selecting or _resolve_job != null or (metadata_only and not selected_track.metadata.get("metadata_only",false))
 	if race_button.disabled: race_button.text = "Loading track..."
@@ -1211,6 +1536,7 @@ func _build_mode_rail(parent: Control) -> void:
 	parent.add_child(rail)
 
 func _show_hero(title: String, theme_id: String) -> void:
+	if list_open: return
 	var rating_entry: Dictionary = preview_entry
 	if rating_entry.is_empty():
 		for candidate: Dictionary in catalog.entries:
@@ -1272,21 +1598,45 @@ func _show_hero(title: String, theme_id: String) -> void:
 	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,16))
 	var heading := MenuStyle.label(title,60)
 	heading.name = "HeroTrackTitle"
+	var title_width: float = MenuStyle.DISPLAY.get_string_size(title,HORIZONTAL_ALIGNMENT_LEFT,-1,60).x
 	heading.clip_text = true
 	heading.tooltip_text = title
-	info.add_child(heading)
-	var creator := MenuStyle.label("by "+hero_creator,18)
+	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var title_slot := Control.new()
+	title_slot.custom_minimum_size.y = MenuStyle.DISPLAY.get_height(60)
+	info.add_child(title_slot)
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation",12)
+	title_slot.add_child(title_row)
+	title_row.add_child(heading)
+	var creator := MenuStyle.button(hero_creator,_show_creator_tracks.bind(hero_creator))
+	creator.name = "HeroCreatorLink"
 	creator.clip_text = true
+	creator.tooltip_text = "Show tracks by "+hero_creator
+	creator.add_theme_font_override("font",MenuStyle.BODY)
+	creator.add_theme_font_size_override("font_size",18)
+	creator.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	creator.custom_minimum_size = Vector2(minf(280.0,MenuStyle.BODY.get_string_size(hero_creator,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x),48)
+	for button_state: String in ["normal","hover","pressed"]: creator.add_theme_stylebox_override(button_state,StyleBoxEmpty.new())
+	for color_state: String in ["font_color","font_focus_color"]: creator.add_theme_color_override(color_state,MenuStyle.ACCENT)
+	creator.add_theme_color_override("font_hover_color",Color("ffe499"))
+	creator.add_theme_color_override("font_pressed_color",Color("e7b744"))
 	var attribution := HBoxContainer.new()
 	attribution.add_theme_constant_override("separation",16)
 	info.add_child(attribution)
-	creator.custom_minimum_size.x = minf(280.0,MenuStyle.BODY.get_string_size(creator.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x)
-	attribution.add_child(creator)
+	var byline := HBoxContainer.new()
+	byline.add_theme_constant_override("separation",4)
+	attribution.add_child(byline)
+	var by := MenuStyle.label("by",18)
+	by.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	byline.add_child(by)
+	byline.add_child(creator)
 	var rating_tile := TrackTile.new()
 	rating_tile.entry = rating_entry
 	rating_tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(rating_entry.get("id",selected_track.identity)),0))
 	var rating := HBoxContainer.new()
 	rating.name = "HeroRating"
+	rating.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	rating.add_theme_constant_override("separation",7)
 	rating.tooltip_text = "Verified racers" if rating_entry.get("source") == "cloud" else "Local votes on this device"
 	attribution.add_child(rating)
@@ -1305,15 +1655,35 @@ func _show_hero(title: String, theme_id: String) -> void:
 	favorite.icon = MenuIcon.texture("star_filled" if is_favorite else "star")
 	favorite.tooltip_text = "Remove favorite" if is_favorite else "Save favorite"
 	favorite.custom_minimum_size = Vector2(48,48)
+	favorite.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	favorite.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
 	favorite.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if is_favorite else MenuStyle.TEXT)
+	title_row.add_child(favorite)
+	# Keep the star beside short titles while clipping long names within the hero.
+	title_slot.resized.connect(func() -> void:
+		title_row.size = Vector2(minf(title_slot.size.x,title_width+12+favorite.get_combined_minimum_size().x),title_slot.size.y))
 	var route_column := VBoxContainer.new()
 	route_column.add_theme_constant_override("separation",4)
 	route_column.custom_minimum_size.x = 220
 	row.add_child(route_column)
-	var favorite_column := VBoxContainer.new()
-	row.add_child(favorite_column)
-	favorite_column.add_child(favorite)
+	var actions := VBoxContainer.new()
+	actions.add_theme_constant_override("separation",8)
+	row.add_child(actions)
+	var close := MenuStyle.button("",_close_track_view)
+	close.name = "CloseTrackView"
+	close.icon = MenuIcon.texture("close")
+	close.tooltip_text = "Back to all tracks"
+	close.custom_minimum_size = Vector2(48,48)
+	close.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
+	actions.add_child(close)
+	if str(rating_entry.get("version_id","")).length() == 36:
+		var share := MenuStyle.button("",func() -> void: share_requested.emit(rating_entry.duplicate(true)))
+		share.name = "ShareTrackLink"
+		share.icon = MenuIcon.texture("share")
+		share.tooltip_text = "Share track link"
+		share.custom_minimum_size = Vector2(48,48)
+		share.add_theme_stylebox_override("normal",close.get_theme_stylebox("normal"))
+		actions.add_child(share)
 	var outline := Control.new()
 	outline.name = "HeroRouteOutline"
 	outline.custom_minimum_size = Vector2(220,96)
@@ -1401,7 +1771,7 @@ func _section_body(parent: VBoxContainer) -> VBoxContainer:
 	inset.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	inset.add_theme_constant_override("margin_left",40)
 	inset.add_theme_constant_override("margin_right",12)
-	inset.add_theme_constant_override("margin_top",8)
+	inset.add_theme_constant_override("margin_top",5)
 	inset.add_theme_constant_override("margin_bottom",8)
 	parent.add_child(inset)
 	var content := VBoxContainer.new()

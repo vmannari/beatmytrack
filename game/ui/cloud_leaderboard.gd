@@ -17,6 +17,7 @@ var previous: Button
 var next: Button
 var around: Button
 var busy: bool = false
+var player_names: Dictionary = {}
 
 func _ready() -> void:
 	preload("res://ui/popup_style.gd").watch(self)
@@ -28,6 +29,7 @@ func _ready() -> void:
 	rows.custom_minimum_size = Vector2(580,380)
 	rows.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body.add_child(rows)
+	rows.meta_clicked.connect(func(id: Variant) -> void: preload("res://ui/community_safety_ui.gd").open(self,client,"player",{"reported_player_id":str(id),"name":str(player_names.get(str(id),"Player"))}))
 	var actions := HBoxContainer.new()
 	body.add_child(actions)
 	previous = MenuStyle.button("Previous",func() -> void:
@@ -64,10 +66,16 @@ func load_page(nearby: bool = false) -> void:
 	if not is_inside_tree(): return
 	if response.ok:
 		rows.clear()
+		player_names.clear()
 		rows.add_text("%d verified racers\n\n" % int(response.data.population))
 		for item: Dictionary in response.data.items:
+			player_names[str(item.get("player_id",item.get("id","")))] = str(item.display_name)
 			rows.add_image(PlayerCountry.texture(str(item.get("country_code",""))),28,21)
-			rows.add_text("  %d.  %s    %s\n" % [int(item.rank),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/120.0)])
+			rows.add_text("  %d.  " % int(item.rank))
+			rows.push_meta(str(item.get("player_id",item.get("id",""))))
+			rows.add_text(str(item.display_name))
+			rows.pop()
+			rows.add_text("    %s\n" % MenuStyle.time_text(float(item.time_ticks)/120.0))
 		if response.data.items.is_empty(): rows.add_text("Complete a verified race to appear here." if nearby else "No verified times yet.")
 		if not nearby:
 			next_offset = response.data.get("next_offset")

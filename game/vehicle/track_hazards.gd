@@ -34,6 +34,8 @@ static func launch(state: VehicleState, previous: Vector2, objects: Array) -> vo
 			var crossing: float = lerpf(before.y,after.y,(half.x-before.x)/(after.x-before.x))
 			if absf(crossing) <= half.y and state.velocity.length() >= 5.0:
 				state.jump_height = float(object.get("scale",1.0))
+				state.bridge_descending = false
+				state.bridge_landing_speed = 0.0
 				state.jump_velocity = minf(8.0,2.0+state.velocity.length()*0.20)
 				state.jump_cooldown = 120
 				return

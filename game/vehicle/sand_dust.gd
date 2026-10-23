@@ -232,7 +232,7 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: 
 	for wheel: int in range(4):
 		var world_position: Vector3 = VisualGeometry.world(contacts[wheel]) + Vector3(0,0.025,0)
 		if bridge != null:
-			world_position.y += bridge.height_at(contacts[wheel],state.route_index,1 if state.track_elevated else 0)
+			world_position.y += bridge.visual_height_at(contacts[wheel],state.route_index,1 if state.track_elevated else 0)
 		var kind: int = SkidTrails.surface_at(track,world_position,state.track_elevated)
 		var side: float = -1.0 if wheel % 2 == 0 else 1.0
 		var on_sand: bool = kind == SAND_SURFACE

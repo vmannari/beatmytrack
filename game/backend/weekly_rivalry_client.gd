@@ -28,6 +28,23 @@ var _continue_group: String = ""
 var _continue_key: String = ""
 const REFRESH_INTERVAL_MSEC: int = 30000
 
+func _ready() -> void:
+	if is_instance_valid(client) and client.has_signal("run_completed"): client.run_completed.connect(poll_result)
+	if is_instance_valid(client) and is_instance_valid(client.get("safety")): client.safety.changed.connect(_safety_changed)
+
+func _safety_changed() -> void:
+	if not is_instance_valid(client.get("safety")): return
+	if not snapshot_scope.is_empty() and snapshot_scope != scope():
+		reset()
+		changed.emit()
+		return
+	client.safety.mask_public(model.server_standings)
+	for track: Dictionary in model.tracks:
+		client.safety.mask_public(track.entries)
+		if not client.safety.allows(track.entry): track.available = false
+	changed.emit()
+	if client.signed_in() and not busy: refresh.call_deferred()
+
 func _cache_scope() -> String:
 	return scope()+"/"+VehicleSimulation.PHYSICS_VERSION+"/"+RaceRules.KEY+"/"+TrackCompiler.VERSION+"/"+JSON.stringify(HandlingSelection.config().snapshot(),"",true).sha256_text()
 
@@ -48,6 +65,7 @@ func _restore_snapshot() -> void:
 	var remaining: int = maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0))-age)
 	if value.state == "active" and remaining == 0: return
 	value.remaining_seconds = remaining
+	if is_instance_valid(client.get("safety")): client.safety.mask_public(value)
 	model.apply_snapshot(value)
 	snapshot_scope = scope()
 	cached_snapshot = true
@@ -223,37 +241,54 @@ func ticket(slot: int) -> Dictionary:
 	return response.data
 
 func _ghost_key(slot: int, driver: String) -> String:
+	if slot < 0 or slot >= model.tracks.size() or driver.is_empty(): return ""
 	var run_id: String = ""
 	for row: Dictionary in model.tracks[slot].get("entries",[]):
 		if str(row.get("driver_id",row.get("id",""))) == driver: run_id = str(row.get("run_id",""))
 	return "" if run_id.is_empty() else scope()+"/"+model.group_id+"/"+str(slot)+"/"+driver+"/"+run_id
 
 func cached_ghost(slot: int, driver: String) -> Dictionary:
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
 	var value: Dictionary = _ghost_cache.get(_ghost_key(slot,driver),{})
 	return value.get("recording",{}) if snapshot_scope == scope() and Time.get_ticks_msec()-int(value.get("at",-60000)) < 30000 else {}
 
 func prefetch_ghost(slot: int, driver: String) -> void:
 	var key: String = _ghost_key(slot,driver)
 	if key.is_empty() or _ghost_pending.has(key) or not cached_ghost(slot,driver).is_empty(): return
-	_ghost_pending[key] = true
 	await ghost(slot,driver)
-	_ghost_pending.erase(key)
 
 func ghost(slot: int, driver: String) -> Dictionary:
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
 	if driver.is_empty() or snapshot_scope != scope(): return {}
 	var original: String = scope()
 	var generation: int = _generation
 	var cache_key: String = _ghost_key(slot,driver)
-	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
+	if cache_key.is_empty(): return {}
 	var cached: Dictionary = cached_ghost(slot,driver)
 	if not cached.is_empty(): return cached
+	if _ghost_pending.has(cache_key):
+		var pending: Dictionary = _ghost_pending[cache_key]
+		while not pending.done:
+			await get_tree().process_frame
+			if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
+		return pending.recording
+	var pending: Dictionary = {"done":false,"recording":{}}
+	_ghost_pending[cache_key] = pending
+	pending.recording = await _download_ghost(slot,driver,cache_key,original,generation)
+	pending.done = true
+	if _ghost_pending.get(cache_key) == pending: _ghost_pending.erase(cache_key)
+	return pending.recording
+
+func _download_ghost(slot: int, driver: String, cache_key: String, original: String, generation: int) -> Dictionary:
+	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
-	if generation != _generation or original != scope(): return {}
+	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
 	if not response.ok:
 		_ghost_cache.erase(cache_key)
 		return {}
 	var checked: Variant = await client._background(_validate_ghost.bind(response.data.get("recording",{})))
-	if generation != _generation or original != scope() or not checked is Dictionary or checked.is_empty(): return {}
+	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver) or not checked is Dictionary or checked.is_empty(): return {}
+	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
 	var recording: Dictionary = checked
 	if not run_id.is_empty() and str(response.data.get("run_id","")) == run_id:
 		_ghost_cache.erase(cache_key)
@@ -288,12 +323,15 @@ func poll_result() -> void:
 		_poll_ticket = result_ticket
 		_poll_started_msec = current_msec
 		_next_poll_msec = 0
-	if current_msec < _next_poll_msec: return
+	# Durable-upload status reads can already hold the verified receipt. Consume
+	# it immediately without another HTTP poll or waiting for this poll's timer.
+	var recent: Dictionary = client.recent_run(result_ticket)
+	var confirmed: bool = recent.get("status") == "verified" and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
+	if current_msec < _next_poll_msec and not confirmed: return
 	var original: String = scope()
 	var ticket_id: String = result_ticket
 	var generation: int = _generation
 	result_polling = true
-	var recent: Dictionary = client.recent_run(ticket_id)
 	var response: Dictionary = {"ok":true,"status":200,"data":recent} if not recent.is_empty() and recent.has("outcome") else await client.request_api("/rivalry/tickets/"+ticket_id+"/result",HTTPClient.METHOD_GET,{},"",true)
 	if generation != _generation: return
 	result_polling = false

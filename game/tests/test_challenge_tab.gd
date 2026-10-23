@@ -135,7 +135,9 @@ func run() -> void:
 			value.attempt_limit = 3
 			value.attempts_remaining = 0
 		if state == "creator": value.creator_id = "self"
-		if state in ["guest","unjoined"]: value.joined = false
+		if state in ["guest","unjoined"]:
+			value.joined = false
+			value.standings.resize(1)
 		page = page_for(value,state != "guest",state == "busy")
 		await settle()
 		var race: Button = page.find_child("ChallengeRace",true,false)
@@ -148,7 +150,7 @@ func run() -> void:
 	page = page_for({},true,true)
 	await settle()
 	var labels: Array[Node] = page.find_children("*","Label",true,false)
-	check(labels.any(func(node: Node) -> bool: return node.text == "Loading challenges…"),"initial refresh does not claim an empty inbox")
+	check(labels.any(func(node: Node) -> bool: return node.text == "Finding challenges…"),"initial refresh does not claim an empty inbox")
 	await remove_page(page)
 	print("CHALLENGE TAB: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)

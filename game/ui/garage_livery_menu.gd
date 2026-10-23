@@ -287,7 +287,9 @@ func refresh() -> void:
 	# A custom colour retains the design's selected card.
 	if page.draft.pattern != "plain": selected_index = GaragePage.LIVERY_NAMES.size()+LiveryCatalog.pattern_index(page.draft.pattern)
 	else: selected_index = 0 # Custom plain colours still belong to Midnight's design.
-	for index: int in pattern_tiles: pattern_tiles[index].set_selected(index == selected_index)
+	for index: int in pattern_tiles:
+		pattern_tiles[index].set_selected(index == selected_index)
+		page._shop_badge(pattern_tiles[index],"livery/"+str(page._preset_value(index).pattern))
 	for slot: String in slot_buttons:
 		var button: LiveryColourChip = slot_buttons[slot]
 		button.colour = Color(str(page.draft.colors[slot]))

@@ -43,7 +43,7 @@ func run() -> void:
 			check(int(native.call("stats").submitted)==submitted,"paused presentation cannot emit another cue")
 			audio.reset()
 			check(int(native.call("stats").active_voices)==0,"reset/rewind clears every old impact tail")
-			check(not bool(native.call("play",4,.5,1.0)),"invalid sample cannot enter render thread")
+			check(not bool(native.call("play",5,.5,1.0)),"invalid sample cannot enter render thread")
 			for i: int in range(12):
 				audio.windows_impacts.play(i%3,.25,1.0)
 			check(int(native.call("stats").active_voices)<=4,"overlapping body events stay within the voice cap")
@@ -52,7 +52,7 @@ func run() -> void:
 			audio.event_index = 0
 			audio._event("chassis",.12)
 			check(int(native.call("stats").active_voices)==1 and not audio.events[0].playing,"chassis replaces the same native body slot without a delayed Godot copy")
-			check(int(native.call("stats").clip_count)==4,"all collision/body clips are preloaded for the same fast output")
+			check(int(native.call("stats").clip_count)==5,"all collision/body/snow clips are preloaded for the same fast output")
 			audio.reset()
 			var impact_bus: int = AudioServer.get_bus_index("Impacts")
 			var world: GameSoundtrack = GameSoundtrack.instance()

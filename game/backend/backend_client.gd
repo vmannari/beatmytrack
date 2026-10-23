@@ -1,5 +1,6 @@
 extends Node
 signal identity_changed
+signal run_completed
 ## Optional online adapter. The local game and canonical step never depend on it.
 ## Browser sign-in and UI live in account_controller.gd. Persisted credentials are protected by the platform vault.
 const MAX_RESPONSE_BYTES: int = 8388608
@@ -22,6 +23,8 @@ var _rotation_locks: Array[RefCounted] = []
 var _read_cache: Dictionary = {}
 var _encoding_threads: Array[Thread] = []
 var _race_status_cache: Dictionary = {}
+var _run_waits: Dictionary = {}
+var _run_wait_requests: Array[HTTPRequest] = []
 var _capabilities: Dictionary = {}
 var _server_sample: int = 0
 var _server_sample_msec: int = 0
@@ -36,6 +39,8 @@ var analytics_opt_in: bool = true
 var _delete_request_id: String = ""
 var _delete_access_token: String = ""
 var _pending_network_context: Dictionary = {}
+var safety: Node
+var news: Node
 
 func _vault_context() -> String:
 	return "bmt-session-v1/"+_base_url+"/"+ProjectSettings.globalize_path(session_path)
@@ -94,11 +99,23 @@ func _profile_request(path: String, phase: String, start: int) -> void:
 	print("RACE_LOAD_REQUEST ",JSON.stringify({"kind":kind,"phase":phase,"ms":(Time.get_ticks_usec()-start)/1000.0}))
 
 func _ready() -> void:
+	news = preload("res://backend/news_client.gd").new()
+	news.client = self
+	add_child(news)
+	identity_changed.connect(news.identity_changed)
+	news.identity_changed()
+	safety = preload("res://backend/community_safety.gd").new()
+	safety.client = self
+	add_child(safety)
+	identity_changed.connect(safety.identity_changed)
+	safety.identity_changed()
+	safety.changed.connect(news.blocks_changed)
 	resume_recovery = preload("res://backend/resume_recovery.gd").new()
 	resume_recovery.client = self
 	add_child(resume_recovery)
 
 func _exit_tree() -> void:
+	cancel_run_waits()
 	for thread: Thread in _encoding_threads:
 		if thread.is_started(): thread.wait_to_finish()
 	for lock: RefCounted in _rotation_locks: lock.release()
@@ -112,11 +129,14 @@ func cancel_public_reads(owner_id: int) -> void:
 			request.request_completed.emit(HTTPRequest.RESULT_REQUEST_FAILED,0,PackedStringArray(),PackedByteArray())
 
 func request_public(path: String, owner_id: int) -> Dictionary:
-	return await _send(path,HTTPClient.METHOD_GET,{},false,"",PackedStringArray(),owner_id)
+	return _checked(await _send(path,HTTPClient.METHOD_GET,{},false,"",PackedStringArray(),owner_id),path,HTTPClient.METHOD_GET)
 
 func request_discovery(payload: Dictionary, owner_id: int, random_choice: bool = false) -> Dictionary:
 	var path: String = "/discovery/random" if random_choice else "/discovery/tracks"
-	if payload.get("section","all") == "saved": return await request_api(path,HTTPClient.METHOD_POST,payload,"",true)
+	if int(_capabilities.get("discovery_paging_version",0)) >= 3:
+		path = "/discovery/v3/random" if random_choice else "/discovery/v3/tracks"
+		if not payload.has("cursor") and not payload.has("query"): payload = {"query":payload.duplicate(true)}
+	if signed_in() or payload.get("section",payload.get("query",{}).get("section","all")) == "saved": return await request_api(path,HTTPClient.METHOD_POST,payload,"",true)
 	return _checked(await _send(path,HTTPClient.METHOD_POST,payload,false,"",PackedStringArray(),owner_id),path,HTTPClient.METHOD_POST)
 
 func base_url() -> String:
@@ -201,6 +221,7 @@ func configure(base_url: String) -> Error:
 	return OK
 
 func clear_session(preserve_saved: bool = false) -> void:
+	cancel_run_waits()
 	cancel_telemetry()
 	_session_generation += 1
 	_read_cache.clear()
@@ -534,6 +555,49 @@ func recent_run(ticket_id: String) -> Dictionary:
 	var duration: int = 250 if cached.get("data",{}).get("status","") in ["queued","verifying"] else 3000
 	return cached.get("data",{}) if Time.get_ticks_msec()-int(cached.get("at",-10000)) < duration else {}
 
+func run_wait_pending(ticket_id: String) -> bool:
+	for pending: Dictionary in _run_waits.values():
+		if str(pending.ticket) == ticket_id and not pending.done: return true
+	return false
+
+func cancel_run_waits() -> void:
+	_run_waits.clear()
+	for request: HTTPRequest in _run_wait_requests.duplicate():
+		if is_instance_valid(request):
+			request.cancel_request()
+			request.set_meta("cancelled",true)
+			request.request_completed.emit(HTTPRequest.RESULT_REQUEST_FAILED,0,PackedStringArray(),PackedByteArray())
+
+func wait_for_run(run_id: String, ticket_id: String) -> Dictionary:
+	var wait_ms: int = clampi(int(_capabilities.get("run_wait_ms",0)),0,2000)
+	if wait_ms == 0 or not signed_in(): return _failure("WAIT_UNAVAILABLE")
+	var generation: int = _session_generation
+	var origin: String = _base_url
+	var owner: String = str(player.get("id",""))
+	var identity: String = origin+"/"+owner+"/"+str(generation)+"/"+run_id
+	if _run_waits.has(identity):
+		var existing: Dictionary = _run_waits[identity]
+		while not existing.done: await get_tree().process_frame
+		return existing.response
+	if not _run_waits.is_empty(): return _failure("WAIT_BUSY")
+	var pending: Dictionary = {"ticket":ticket_id,"done":false,"response":{}}
+	_run_waits[identity] = pending
+	var response: Dictionary = await request_api("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms),HTTPClient.METHOD_GET,{},"",true)
+	if generation != _session_generation or origin != _base_url or owner != str(player.get("id","")):
+		response = _failure("ACCOUNT_CHANGED")
+	elif response.ok:
+		if not valid_run(response.data) or str(response.data.get("run_id","")) != run_id or str(response.data.get("ticket_id","")) != ticket_id:
+			response = _failure("INVALID_RESPONSE",502)
+		else:
+			remember_run(response.data)
+	elif int(response.get("status",0)) in [404,405,501]:
+		_capabilities["run_wait_ms"] = 0
+	pending.response = response
+	pending.done = true
+	_run_waits.erase(identity)
+	if response.ok and response.data.status in ["verified","rejected","failed"]: run_completed.emit()
+	return response
+
 func _background(work: Callable) -> Variant:
 	var thread := Thread.new()
 	if thread.start(work) != OK: return null
@@ -608,7 +672,8 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	if metrics.collect: metrics.request_body_bytes = packet.body.size()
 	var request: HTTPRequest = _take_request()
 	request.use_threads = true
-	request.timeout = 10.0 if path == "/telemetry/batches" else 2.0 if "/ghosts/" in path else 30.0
+	var run_wait: bool = path.begins_with("/runs/") and path.get_slice("?",0).ends_with("/wait")
+	request.timeout = 5.0 if run_wait else 10.0 if path == "/telemetry/batches" else 2.0 if "/ghosts/" in path else 30.0
 	request.body_size_limit = 16384 if path == "/telemetry/batches" else MAX_RESPONSE_BYTES
 	request.max_redirects = 0 # Never forward credentials to a redirect target.
 	profile_start = Time.get_ticks_usec()
@@ -622,6 +687,7 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 		request.set_meta("owner_id",owner_id)
 		_public_reads.append(request)
 	if path == "/telemetry/batches": _telemetry_requests.append(request)
+	if run_wait: _run_wait_requests.append(request)
 	var completed: Array = await request.request_completed
 	_profile_request(path,"http",profile_start)
 	if metrics.collect:
@@ -631,6 +697,7 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	metrics.http_status = int(completed[1])
 	_public_reads.erase(request)
 	_telemetry_requests.erase(request)
+	_run_wait_requests.erase(request)
 	var cancelled: bool = bool(request.get_meta("cancelled",false))
 	_release_request.call_deferred(request)
 	if cancelled or origin != _base_url: return _failure("CANCELLED")
@@ -672,7 +739,7 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	if path == "/bootstrap" and _whole(parsed.get("server_now",0)): _sample_time(int(parsed.get("server_now",0)))
 	if path == "/bootstrap" and status == 200: _capabilities = parsed.duplicate(true)
 	if authorized and generation == _session_generation and status >= 200 and status < 300:
-		if parsed.has("ticket_id") and parsed.has("status"): remember_run(parsed)
+		if parsed.has("ticket_id") and parsed.has("status") and not run_wait: remember_run(parsed)
 		if path.begins_with("/runs/status"):
 			for item: Dictionary in parsed.get("items",[]): remember_run(item)
 	if method == HTTPClient.METHOD_GET and status == 200 and not tag.is_empty() and bytes.size() <= 524288 and origin == _base_url and generation == _session_generation:
@@ -804,6 +871,7 @@ func development_login(subject: String, display_name: String, development_key: S
 	return response
 
 func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, idempotency_key: String = "", authenticated: bool = false) -> Dictionary:
+	if signed_in() and method == HTTPClient.METHOD_GET and (path == "/tracks" or path.begins_with("/tracks?") or path.begins_with("/track-versions/") or path.begins_with("/challenges/")): authenticated = true
 	if authenticated and not _delete_request_id.is_empty(): return _failure("DELETION_PENDING")
 	# Public reads need no session rotation and must not block racing or sign-in.
 	if not authenticated and method == HTTPClient.METHOD_GET:
@@ -890,13 +958,10 @@ func logout() -> Dictionary:
 	var response: Dictionary = await _send("/auth/logout",HTTPClient.METHOD_POST,payload,false,"",headers)
 	return _failure("SESSION_STORAGE_ERROR") if storage_failed else response
 
-func upload_track(_name_value: String, _document: Dictionary, _key: String) -> Dictionary:
-	return {"ok":false,"status":410,"error":"LOCAL_DRAFTS_ONLY","data":{}}
-
 func race_ticket(version_id: String, vehicle_id: String, key: String, purpose: String = "race") -> Dictionary:
 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id,"purpose":purpose},key,true)
 
-static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}) -> Dictionary:
+static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
 	# Godot's JSON parser returns floats, including integers restored from the outbox.
 	# Preserve the strict wire schema without accepting fractional/corrupt controls.
 	var packed: Array = []
@@ -920,6 +985,9 @@ static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, ra
 			sample[0] = int(row[0]); sample[6] = int(row[6])
 			samples.append(sample)
 		replay.race_proof = {"schema":"bmt-race-proof-v1","samples":samples}
+		var incidents: Variant = race_proof.get("incidents")
+		if include_incidents and incidents is Dictionary and incidents.size() == 4 and incidents.get("schema") == "bmt-race-incidents-v1" and _whole(incidents.get("ticks"),1,216000) and _whole(incidents.get("collision_count"),0,216000) and incidents.get("off_track") is bool:
+			replay.race_proof.incidents = {"schema":"bmt-race-incidents-v1","ticks":int(incidents.ticks),"collision_count":int(incidents.collision_count),"off_track":incidents.off_track}
 	if not rewinds.is_empty():
 		replay.schema = "bmt-replay-v2"
 		replay.rewinds = []
@@ -948,9 +1016,9 @@ static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, ra
 	if replay.has("race_proof"): wire.race_proof = replay.race_proof
 	return wire
 
-static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}) -> Dictionary:
+static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
 	# Normalize the small movement record without encoding/scanning control frames.
-	var normalized: Dictionary = _pack_replay([[0,0,0]],[],false,proof)
+	var normalized: Dictionary = _pack_replay([[0,0,0]],[],false,proof,include_incidents)
 	if normalized.is_empty() or not normalized.has("race_proof"): return {}
 	var events: Array = []
 	for source: Dictionary in rewinds:
@@ -958,6 +1026,7 @@ static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghos
 	var path: Array = []
 	for row: Array in normalized.race_proof.samples: path.append([row[0],row[1],row[2],row[6]])
 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
+	if normalized.race_proof.has("incidents"): result.race_proof.incidents = normalized.race_proof.incidents
 	if not ghost.is_empty(): result.ghost = ghost
 	return result
 
@@ -966,15 +1035,16 @@ func submit_run(ticket_id: String, frames: Array, key: String, rewinds: Array = 
 	var origin: String = _base_url
 	var compact: bool = not _disable_packed and _capabilities.get("replay_wire_schema","") == "bmt-packed-input-v1"
 	var trajectory: bool = bool(_capabilities.get("trajectory_verification",false)) and not race_proof.is_empty()
+	var include_incidents: bool = int(_capabilities.get("race_incident_rewards_version",0)) == 1
 	var preparation: int = Time.get_ticks_usec()
-	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost) if trajectory else _pack_replay.bind(frames,rewinds,compact,race_proof))
+	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost,include_incidents) if trajectory else _pack_replay.bind(frames,rewinds,compact,race_proof,include_incidents))
 	if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
 	note_request_preparation(key,Time.get_ticks_usec()-preparation)
 	if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
 	var response: Dictionary = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
 	if not trajectory and compact and int(response.status) == 422 and (str(response.error).to_lower().contains("replay envelope") or str(response.error) in ["INVALID_PACKED_REPLAY","UNSUPPORTED_REPLAY_SCHEMA"]):
 		_disable_packed = true
-		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof))
+		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof,include_incidents))
 		if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
 		if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
 		response = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
@@ -998,7 +1068,26 @@ static func valid_wallet(data: Variant) -> bool:
 static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
 	if not data is Dictionary: return false
 	var endpoint: String = path.get_slice("?",0)
+	if endpoint == "/economy": return preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data)
+	if endpoint == "/economy/purchases":
+		return _text(data.get("item_id")) and _whole(data.get("charged")) and preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data.get("wallet"))
+	if endpoint.begins_with("/economy/rewards/"):
+		if data.get("status") not in ["credited","pending","unavailable"] or not _whole(data.get("amount")) or not data.get("rows") is Array or data.rows.size() > 12: return false
+		var total: int = 0
+		for row: Variant in data.rows:
+			if not row is Dictionary or not _text(row.get("title")) or not _whole(row.get("amount")) or row.get("icon") not in ["flag","coin","timer","bars","trophy"] or row.get("eligible") != true: return false
+			total += int(row.amount)
+		return total == int(data.amount)
 	if endpoint == "/privacy/account-deletion": return data.get("status") in ["requested","complete"] and _text(data.get("player_id")) and data.get("tracks_retained") == true and data.get("standings_retained") == true and data.get("display_name") == "Removed account" and _whole(data.get("requested_at"),1)
+	if endpoint == "/community/terms": return _text(data.get("version")) and data.get("accepted") is bool and (method != HTTPClient.METHOD_GET or (data.get("text") is String and not data.text.is_empty() and data.text.length() <= 16384))
+	if endpoint == "/community/blocks":
+		if not data.get("items") is Array or data.items.size() > 1000: return false
+		for item: Variant in data.items:
+			if not item is Dictionary or not _text(item.get("player_id")) or not _text(item.get("display_name")): return false
+		return true
+	if endpoint.begins_with("/community/blocks/"): return _text(data.get("player_id")) and data.get("blocked") is bool
+	if endpoint == "/reports" and method == HTTPClient.METHOD_GET: return data.get("items") is Array and data.items.size() <= 50 and data.get("has_more") is bool
+	if endpoint == "/reports" or (endpoint.begins_with("/reports/") and endpoint.ends_with("/appeal")): return _text(data.get("id")) and data.get("status") in ["open","investigating","resolved","appealed"]
 	if endpoint == "/privacy/preferences": return data.get("analytics_enabled") is bool
 	if endpoint == "/auth/google/browser/cancel": return method == HTTPClient.METHOD_POST and data.is_empty()
 	if endpoint == "/auth/google/browser/prepare": return _text(data.get("client_id")) and _text(data.get("nonce"))
@@ -1039,6 +1128,9 @@ static func valid_response(path: String, method: HTTPClient.Method, data: Varian
 	return true
 
 func _checked(response: Dictionary, path: String, method: HTTPClient.Method) -> Dictionary:
+	if response.get("ok",false) and response.get("data") is Dictionary and is_instance_valid(safety) and not path.begins_with("/community/") and not path.begins_with("/reports") and not path.ends_with("/document"):
+		response.data = response.data.duplicate(true)
+		safety.mask_public(response.data)
 	if not response.get("ok",false) or valid_response(path,method,response.get("data")): return response
 	var failed: Dictionary = _failure("INVALID_RESPONSE",502)
 	var identifier: String = preload("res://backend/network_health.gd").request_id(PackedStringArray(["X-Request-ID: "+str(response.get("request_id",""))]))

@@ -19,6 +19,10 @@ var support_body: Label
 var close_button: Button
 var confirm_button: Button
 var previous_focus: WeakRef
+var _publication_flow: TrackLifecycle
+var _publication_document: Dictionary = {}
+var _publication_scope: String = ""
+var _publication_value: Dictionary = {}
 
 func _init() -> void:
 	set_meta("menu_popup_custom",true)
@@ -38,6 +42,11 @@ static func presentation(message: String) -> Dictionary:
 		value.title = "Test lap saved"
 		value.message = "Ready to publish."
 		value.symbol = "check"
+	elif message.begins_with("Track link copied.\n"):
+		value.category = ""
+		value.title = "Track link copied"
+		value.message = message.trim_prefix("Track link copied.\n")
+		value.symbol = "check"
 	elif message.begins_with("Track creator:"):
 		value.category = "TRACK INFORMATION"
 		value.title = "Track creator"
@@ -54,10 +63,11 @@ static func presentation(message: String) -> Dictionary:
 		value.category = "ACCOUNT REQUIRED"
 		value.title = "Sign in to publish"
 		value.symbol = "publish"
-	elif message.contains("Your publication request is saved"):
-		value.category = "PUBLICATION PENDING"
-		value.title = "Publication queued"
-		value.symbol = "clock"
+	elif message.begins_with("No publishing slots left."):
+		value.category = ""
+		value.title = "No publishing slots left"
+		value.message = message.trim_prefix("No publishing slots left. ")
+		value.symbol = "publish"
 	elif message.contains("matching server update"):
 		value.category = "UPDATE REQUIRED"
 		value.title = "Can't go online yet"
@@ -87,8 +97,56 @@ static func presentation(message: String) -> Dictionary:
 		value.title = "Couldn't start the race" if message.to_lower().contains("race") else "Track unavailable"
 	return value
 
+static func publication_presentation(job: Dictionary) -> Dictionary:
+	var value: Dictionary = {"category":"","title":"Not published yet","message":"Your publication request is saved on this device. Keep the game open, signed in and online to continue automatically.","support_title":"","support":"","symbol":"clock"}
+	var state: String = str(job.get("state",""))
+	# A public receipt is authoritative even if the local download/cleanup fails.
+	if state in ["finishing","published"] and job.get("receipt") is Dictionary:
+		value.title = "Track published"
+		value.message = "Your track is available to other players."
+		if state == "finishing": value.message += " Its download on this device is still finishing."
+		value.symbol = "check"
+	elif job.has("failure") or state == "failed":
+		value.title = "Track not published"
+		value.message = str(job.get("failure","Publication failed. Your draft and test lap remain saved."))
+		value.symbol = "warning"
+	elif job.has("_read_error"):
+		value.title = "Publication not confirmed"
+		value.message = "Publication status could not be read on this device. Your original recovery files are preserved."
+		value.symbol = "warning"
+	elif state == "queued":
+		value.message = "Your request was received and is waiting for its test lap check. You can close this message."
+	elif state == "verifying":
+		value.message = "Your test lap is being checked before your track can be published. You can close this message."
+	elif job.get("publication_upload_attempted",false) or state in ["publishing","finishing","published"]:
+		# A lost upload reply can mean that the server already accepted it.
+		value.title = "Publication not confirmed"
+		value.message = "We haven't received confirmation that your track is published. Your request is saved. Keep the game open, signed in and online; we'll check again automatically."
+	return value
+
+func follow_publication(flow: TrackLifecycle, document: Dictionary) -> void:
+	_publication_flow = flow
+	_publication_document = document.duplicate(true)
+	_publication_scope = flow.scope()
+	flow.changed.connect(_refresh_publication)
+	_refresh_publication()
+
+func _refresh_publication() -> void:
+	if _publication_flow.scope() != _publication_scope:
+		_cancel()
+		return
+	var value: Dictionary = publication_presentation(_publication_flow.status_for(_publication_document))
+	if value == _publication_value: return
+	_publication_value = value
+	dialog_text = str(value.message)
+	if not is_instance_valid(heading): return
+	heading.text = str(value.title)
+	message_label.text = str(value.message)
+	message_label.visible = not message_label.text.is_empty()
+	warning.texture = MenuIcon.texture(str(value.symbol),true)
+
 func _ready() -> void:
-	var value: Dictionary = presentation(dialog_text)
+	var value: Dictionary = presentation(dialog_text) if _publication_value.is_empty() else _publication_value
 	name = "FaultDialog"
 	title = ""
 	borderless = true

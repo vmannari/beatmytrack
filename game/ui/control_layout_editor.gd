@@ -288,7 +288,7 @@ func _slider(parent: Node, minimum: float, maximum: float, step_value: float) ->
 	return slider
 
 func _refresh() -> void:
-	heading.text = ControlLayout.TITLES[selected]
+	heading.text = "Gas / brake" if selected == "accelerator" and touch.analog_controls() else ControlLayout.TITLES[selected]
 	size_slider.set_value_no_signal(touch.layout[selected].scale)
 	opacity_slider.set_value_no_signal(touch.layout[selected].opacity)
 	size_value.text = "%d%%" % roundi(float(touch.layout[selected].scale)*100)

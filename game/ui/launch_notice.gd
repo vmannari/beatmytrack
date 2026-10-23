@@ -14,7 +14,7 @@ func _process(_delta: float) -> void:
 	queue_redraw()
 func _draw() -> void:
 	if label == null or label.text.is_empty(): return
-	var warning: bool = label.text == "JUMPED START"
+	var warning: bool = label.text == "FALSE START"
 	var accent: Color = CheckpointNotice.AMBER if warning else Color("79d4aa")
 	accent.a = label.modulate.a
 	var center: Vector2 = size*0.5 + Vector2(0,-120)

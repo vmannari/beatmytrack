@@ -54,12 +54,13 @@ func _geometry(biome: String) -> void:
 		var radius: float = ObjectPopulation.radius(object)
 		var road_distance: float = _road_distance(point,layout.points,layout.widths,true)
 		check(road_distance-radius >= ObjectPopulation.CLEARANCE,"whole footprint stays clear of the actual variable-width road")
-		if object.kind in ObjectPopulation.ROADSIDE:
+		var roadside_kinds: Array[String] = ObjectPopulation.DESERT_ROADSIDE if biome == "desert" else ObjectPopulation.WINTER_ROADSIDE if biome == "winter" else ObjectPopulation.NIGHT_ROADSIDE if biome == "night_city" else ObjectPopulation.ROADSIDE
+		if object.kind in roadside_kinds:
 			roadside += 1
 			check(road_distance+radius <= 22.0,"roadside objects stay entirely inside the roadside zone")
 		else:
 			woodland += 1
-			check(object.kind in ObjectPopulation.NATURE,"outer population contains only trees and rocks")
+			check(object.kind in ObjectPopulation.NATURE or (biome == "desert" and object.kind == "egypt_pyramid") or (biome == "night_city" and object.kind == "firefly_bush"),"outer population contains biome nature or Desert monuments")
 			check(CreatorCatalog.NATURE_BIOMES.get(object.kind,[biome]).has(biome),"nature respects biome availability")
 		for other: Dictionary in population.occupied+objects:
 			if other == object: continue
@@ -151,7 +152,9 @@ func _editor() -> void:
 	app.set("library",TrackLibrary.new(directory))
 	app.set("records",LocalRecords.new(directory.path_join("records.json")))
 	root.add_child(app)
-	await process_frame
+	var startup_deadline: int = Time.get_ticks_msec()+20000
+	while not app.startup_complete and Time.get_ticks_msec()<startup_deadline: await process_frame
+	check(app.startup_complete,"covered application startup finishes before editor navigation")
 	var doc: Dictionary = TrackDocument.create_default()
 	doc.id = "population_fixture"; doc.name = "Woodland circuit"
 	app.set("document",doc)

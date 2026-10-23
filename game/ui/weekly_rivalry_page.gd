@@ -12,10 +12,12 @@ signal refresh_requested
 signal continue_requested
 signal share_requested
 signal retry_requested
+var safety_client: Node
 var model: WeeklyRivalry
 var section: String = "overview"
 var selected: int = 0
 var busy: bool = false
+var background_refresh: bool = false
 var error: String = ""
 var signed_in: bool = false
 var pending_result: bool = false
@@ -51,7 +53,7 @@ func _ready() -> void:
 	resized.connect(queue_redraw)
 	_build_content()
 	_presented_key = _content_key()
-	_presented_status = [busy,error,model.status,model.completed]
+	_presented_status = [busy,background_refresh,error,model.status,model.completed]
 	_presented_standings = standings_identity
 	_presented_topology = _score_topology()
 
@@ -135,19 +137,19 @@ func _update_scores() -> void:
 		(find_child("RivalryPodiumRank_"+str(index+1),true,false) as Label).text = rank_text(standings[index])
 	var completed: int = 0
 	for index: int in range(_track_views.size()):
-		var gap: Dictionary = model.gaps(index)
+		var gap: Dictionary = model.track_summary(index)
 		if gap.own.get("ms")!=null: completed += 1
 		var view: Dictionary = _track_views[index]
 		view.rank.text = rank_text(gap.own)
-		view.time.text = MenuStyle.time_text(int(gap.own.ms)/1000.0) if gap.own.get("ms")!=null else MenuStyle.time_text(int(gap.leader.ms)/1000.0) if not gap.leader.is_empty() else "—"
-		view.delta.text = WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms")!=null and not gap.leader.is_empty() and gap.own.rank!=1 else "Leading" if gap.own.get("rank")==1 else "Leader time" if not gap.leader.is_empty() else "Set a time"
+		view.time.text = _track_time(gap)
+		view.delta.text = _track_delta(gap)
 		view.delta.add_theme_color_override("font_color",MenuStyle.POSITIVE if gap.own.get("rank")==1 else MenuStyle.MUTED)
 		view.rank.add_theme_color_override("font_color",MenuStyle.ACCENT if gap.own.get("rank")==1 else MenuStyle.TEXT)
 	var progress: Label = find_child("RivalryTrackProgress",true,false) as Label
 	if progress != null: progress.text = "%d / 5 COMPLETED" % completed
 
 func _update_status() -> void:
-	var state: Array = [busy,error,model.status,model.completed]
+	var state: Array = [busy,background_refresh,error,model.status,model.completed]
 	if state == _presented_status: return
 	_presented_status = state
 	if is_instance_valid(clock_label): clock_label.text = model.countdown()
@@ -159,8 +161,8 @@ func _update_status() -> void:
 	var start: Button = find_child("RivalryStartRace",true,false) as Button
 	if start != null and not model.tracks.is_empty():
 		var track: Dictionary = model.tracks[selected]
-		start.disabled = busy or model.completed or model.status != "active" or not bool(track.get("available",true))
-		start.text = "WEEK COMPLETE" if model.completed else "TRACK UNAVAILABLE" if not bool(track.get("available",true)) else ("UPDATING RIVALRY..." if error.is_empty() else "RIVALRY UNAVAILABLE") if busy else "RIVALRY NOT ACTIVE" if model.status != "active" else "RACE "+str(track.name).to_upper()+"  →"
+		start.disabled = (busy and not background_refresh) or model.completed or model.status != "active" or not bool(track.get("available",true))
+		start.text = "WEEK COMPLETE" if model.completed else "TRACK UNAVAILABLE" if not bool(track.get("available",true)) else ("UPDATING RIVALRY..." if error.is_empty() else "RIVALRY UNAVAILABLE") if busy and not background_refresh else "RIVALRY NOT ACTIVE" if model.status != "active" else "RACE "+str(track.name).to_upper()+"  →"
 	var message: Label = find_child("RivalryStatusMessage",true,false) as Label
 	if message != null:
 		var normal: String = "Choose a track and beat your best time."
@@ -467,7 +469,7 @@ func _championship(parent: Control, finale: bool) -> void:
 	_copy(heading,"TRACK RESULTS" if finale else "THIS WEEK'S TRACKS",26).size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var completed: int = 0
 	for index: int in range(model.tracks.size()):
-		if model.gaps(index).own.get("ms") != null: completed += 1
+		if model.track_summary(index).own.get("ms") != null: completed += 1
 	_copy(heading,"%d / 5 COMPLETED" % completed,14,MenuStyle.MUTED).name = "RivalryTrackProgress"
 	var subtitle: Label = _copy(tracks,error if not error.is_empty() else "Week complete. Your best results." if finale else "Choose a track and beat your best time.",15,MenuStyle.MUTED)
 	subtitle.name = "RivalryStatusMessage"
@@ -548,6 +550,7 @@ func _driver_table(parent: Control, title: String) -> void:
 		line.add_child(PlayerCountry.flag(str(driver.get("country_code","")),28))
 		var name_label: Label = _copy(line,_display_name(driver),18,color)
 		name_label.name = "RivalryPlayerName_"+str(driver.id)
+		_profile_name(name_label,driver)
 		name_label.add_theme_font_override("font",MenuStyle.DISPLAY)
 		name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -570,19 +573,35 @@ func _driver_table(parent: Control, title: String) -> void:
 		scroll.scroll_vertical = standings_scroll_offset
 	if own_panel != null: _reveal_player.call_deferred(scroll,own_panel)
 
-func _reveal_player(scroll: ScrollContainer, player: Control) -> void:
+func _reveal_player(scroll: Variant, player: Variant) -> void:
 	# One-shot callbacks disconnect when a refresh removes this page.
 	if not is_inside_tree(): return
 	get_tree().process_frame.connect(_reveal_after_sort.bind(scroll,player),CONNECT_ONE_SHOT)
 
-func _reveal_after_sort(scroll: ScrollContainer, player: Control) -> void:
+func _reveal_after_sort(scroll: Variant, player: Variant) -> void:
 	if not is_inside_tree() or not is_instance_valid(scroll) or not is_instance_valid(player): return
 	get_tree().process_frame.connect(_ensure_player_visible.bind(scroll,player),CONNECT_ONE_SHOT)
 
-func _ensure_player_visible(scroll: ScrollContainer, player: Control) -> void:
+func _ensure_player_visible(scroll: Variant, player: Variant) -> void:
 	if is_inside_tree() and is_instance_valid(scroll) and is_instance_valid(player):
 		if standings_scroll_offset < 0: scroll.ensure_control_visible(player)
 		standings_ready = true
+
+func _profile_name(label: Label, driver: Dictionary) -> void:
+	if not is_instance_valid(safety_client) or driver.id == WeeklyRivalry.SELF: return
+	preload("res://ui/player_profile.gd").bind_name(label,_open_player.bind(driver))
+
+func _open_player(driver: Dictionary) -> void:
+	if not is_instance_valid(safety_client) or driver.id == WeeklyRivalry.SELF: return
+	var profile: Dictionary = driver.duplicate(true)
+	# Track boards omit appearance; the same account's overall row owns its car.
+	for row: Dictionary in model.standing():
+		if str(row.get("driver_id",row.id)) == str(driver.get("driver_id",driver.id)):
+			profile.merge(row,true)
+			break
+	profile.catalog_creator = str(profile.name)
+	profile.name = _display_name(profile)
+	preload("res://ui/player_profile.gd").open(self,safety_client,profile,model.vehicle_id)
 
 func _display_name(row: Dictionary) -> String:
 	var value: String = str(row.name)
@@ -672,12 +691,24 @@ func _podium(parent: Control) -> void:
 		identity.add_child(PlayerCountry.flag(str(driver.get("country_code","")),24))
 		var driver_name: Label = _copy(identity,_display_name(driver),20)
 		driver_name.name = "RivalryPodiumName_"+str(position+1)
+		_profile_name(driver_name,driver)
 		driver_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		driver_name.add_theme_font_override("font",MenuStyle.DISPLAY)
 		driver_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 		driver_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		var points: Label = _copy(card,str(int(driver.points))+" pts",20,color)
 		points.name = "RivalryPodiumPoints_"+str(position+1)
+
+func _track_time(gap: Dictionary) -> String:
+	if gap.get("pending_ms") != null: return MenuStyle.time_text(int(gap.pending_ms)/1000.0)
+	if gap.own.get("ms") != null: return MenuStyle.time_text(int(gap.own.ms)/1000.0)
+	return MenuStyle.time_text(int(gap.leader.ms)/1000.0) if not gap.leader.is_empty() else "—"
+
+func _track_delta(gap: Dictionary) -> String:
+	if gap.get("pending_ms") != null: return "Verifying..."
+	if gap.own.get("rank") == 1: return "Leading"
+	if gap.own.get("ms") != null and not gap.leader.is_empty(): return WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead"
+	return "Leader time" if not gap.leader.is_empty() else "Set a time"
 
 func _track_row(parent: Control, index: int) -> void:
 	var track: Dictionary = model.tracks[index]
@@ -729,7 +760,7 @@ func _track_row(parent: Control, index: int) -> void:
 	title.add_theme_font_override("font",MenuStyle.DISPLAY)
 	title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	var gap: Dictionary = model.gaps(index)
+	var gap: Dictionary = model.track_summary(index)
 	var biome := HBoxContainer.new()
 	biome.add_theme_constant_override("separation",5)
 	copy.add_child(biome)
@@ -749,10 +780,10 @@ func _track_row(parent: Control, index: int) -> void:
 	times.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	times.add_theme_constant_override("separation",1)
 	content_row.add_child(times)
-	var time: Label = _copy(times,MenuStyle.time_text(int(gap.own.ms)/1000.0) if gap.own.get("ms") != null else MenuStyle.time_text(int(gap.leader.ms)/1000.0) if not gap.leader.is_empty() else "—",23)
+	var time: Label = _copy(times,_track_time(gap),23)
 	time.add_theme_font_override("font",MenuStyle.DISPLAY)
 	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var delta: Label = _copy(times,WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead" if gap.own.get("ms") != null and not gap.leader.is_empty() and gap.own.rank != 1 else "Leading" if gap.own.get("rank") == 1 else "Leader time" if not gap.leader.is_empty() else "Set a time",13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
+	var delta: Label = _copy(times,_track_delta(gap),13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
 	delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_track_views.append({"rank":position,"time":time,"delta":delta})
 	_ignore_tree(content_row)
@@ -804,9 +835,10 @@ func _detail(parent: Control) -> void:
 	_rank(board,gap.own,model.board(selected).size(),48)
 	var standings := preload("res://ui/rivalry_track_standings.gd").new()
 	standings.board = model.board(selected)
+	standings.player_requested.connect(_open_player)
 	board.add_child(standings)
-	# The removed rival/ghost column keeps its existing target choice internally.
-	if model.ghost_target(selected,ghost_choice).is_empty(): ghost_choice = 3
+	# Keep the chosen policy when a field has no recording yet. A later race
+	# resolves it again against the current verified standings.
 	var actions := HBoxContainer.new()
 	actions.name = "RivalryDetailActions"
 	actions.add_theme_constant_override("separation",14)
@@ -816,10 +848,10 @@ func _detail(parent: Control) -> void:
 	back.custom_minimum_size.y = 64
 	var race: Button = _action(actions,"RACE "+str(track.name).to_upper()+"  →","RivalryStartRace",func() -> void: race_requested.emit(selected,ghost_choice),true)
 	race.custom_minimum_size.y = 64
-	race.disabled = busy or model.completed or model.status != "active" or not bool(track.get("available",true))
+	race.disabled = (busy and not background_refresh) or model.completed or model.status != "active" or not bool(track.get("available",true))
 	if model.completed: race.text = "WEEK COMPLETE"
 	elif not bool(track.get("available",true)): race.text = "TRACK UNAVAILABLE"
-	elif busy: race.text = "UPDATING RIVALRY..." if error.is_empty() else "RIVALRY UNAVAILABLE"
+	elif busy and not background_refresh: race.text = "UPDATING RIVALRY..." if error.is_empty() else "RIVALRY UNAVAILABLE"
 	elif model.status != "active": race.text = "RIVALRY NOT ACTIVE"
 
 func _result(parent: Control) -> void:
@@ -832,6 +864,7 @@ func _result(parent: Control) -> void:
 	result_view.error = error
 	result_view.retry_requested.connect(func() -> void: retry_requested.emit())
 	result_view.home_requested.connect(func() -> void: section_requested.emit("overview"))
+	result_view.player_requested.connect(_open_player)
 	parent.add_child(result_view)
 
 func _finale(parent: Control) -> void:

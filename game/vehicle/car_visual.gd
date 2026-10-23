@@ -146,7 +146,7 @@ func add_scrape(state: VehicleState) -> void:
 	suspension_speed = suspension_speed.limit_length(MAX_COLLISION_SUSPENSION_SPEED)
 
 
-func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
+func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool, canonical_flight: bool = false) -> void:
 	# Small visual unloading at crests, followed by gravity and a damped
 	# landing. This never grants canonical airtime or collision immunity.
 	if not enabled or ramp_tick < 0 or state.tick < ramp_tick or state.tick-ramp_tick > 30:
@@ -163,13 +163,17 @@ func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bo
 		var height: float = ramp_support+ramp_lift
 		for i: int in range(ticks):
 			var floor_height: float = ramp_support+rise*(i+1)
-			ramp_velocity -= 22.0/120.0
-			height += ramp_velocity/120.0
+			if canonical_flight:
+				height = floor_height
+				ramp_velocity = 0.0
+			else:
+				ramp_velocity -= 22.0/120.0
+				height += ramp_velocity/120.0
 			if height <= floor_height:
 				if ramp_lift > 0.005 and ramp_velocity < -1.0:
 					suspension_speed.x -= minf(-ramp_velocity*0.10,0.7)
 				height = floor_height
-				ramp_velocity = minf(rise*120.0,4.5)
+				ramp_velocity = 0.0 if canonical_flight else minf(rise*120.0,4.5)
 			if height > floor_height+0.55:
 				height = floor_height+0.55
 				ramp_velocity = minf(ramp_velocity,0.0)
@@ -377,6 +381,7 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		var airborne: bool = state.jump_height > 0.0
 		var slope_rate: float = (road_pitch - last_slope) / dt
 		var impact: float = maxf(0.0, -last_jump_velocity) if was_airborne and not airborne else 0.0
+		if was_airborne and not airborne and state.bridge_descending: impact = preload("res://vehicle/bridge_flight.gd").landing_feedback(state)
 		var target := Vector3(0.0, clampf(acceleration.dot(state.forward()) * 0.004, -0.085, 0.065), clampf(acceleration.dot(state.right()) * 0.005, -0.10, 0.10))
 		if airborne:
 			target = Vector3(0.035, 0.0, 0.0)

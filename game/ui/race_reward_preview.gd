@@ -1,6 +1,6 @@
 class_name RaceRewardPreview
 extends RefCounted
-## Provisional presentation only. Never writes currency or entitlements.
+## Shared local reward calculation. Account rewards use verified server receipts.
 const TIERS: Array[Dictionary] = [{"percent":1,"amount":500},{"percent":10,"amount":200},{"percent":25,"amount":100},{"percent":50,"amount":50}]
 
 static func tier(percent: float) -> int:
@@ -17,7 +17,8 @@ static func build(facts: Dictionary) -> Array[Dictionary]:
 	var rows: Array[Dictionary] = []
 	var complete: bool = facts.get("complete",false)
 	rows.append(row("Race completed",50,"Eligible" if complete else "Not completed",complete,"flag"))
-	rows.append(row("First time on track",50,"Track history unavailable",false,"flag"))
+	var first_track: bool = complete and facts.get("first_track",false)
+	rows.append(row("First time on track",50,"First finish" if first_track else "Already raced",first_track,"flag"))
 	var race_pb: bool = complete and facts.get("previous",0.0) > 0 and roundi(float(facts.total)*1000) < roundi(float(facts.previous)*1000)
 	rows.append(row("New race PB",100,"Eligible" if race_pb else "No new PB",race_pb,"timer"))
 	var lap_pb: bool = complete and facts.get("previous_lap",0.0) > 0 and facts.get("flying",0.0) > 0 and roundi(float(facts.flying)*1000) < roundi(float(facts.previous_lap)*1000)

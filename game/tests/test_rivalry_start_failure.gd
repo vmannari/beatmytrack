@@ -28,7 +28,7 @@ class CloudFixture extends "res://backend/cloud_tracks.gd":
 		await get_tree().process_frame
 		if not download_ok: last_error = "Track download failed. Check your connection and try again."
 		return download_ok
-	func download_document(entry: Dictionary) -> Dictionary:
+	func download_document(entry: Dictionary, _cancelled: Callable = Callable()) -> Dictionary:
 		return cached_document(entry) if await download(entry) else {}
 
 func _initialize() -> void: run.call_deferred()

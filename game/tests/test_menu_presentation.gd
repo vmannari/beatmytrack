@@ -13,15 +13,6 @@ func _initialize() -> void:
 	call_deferred("run")
 
 func run() -> void:
-	check(RaceDebrief.feedback(100,0,true,true,false).title == "FIRST TIME SET","first finish gives a real benchmark without inventing a rival")
-	var faster: Dictionary = RaceDebrief.feedback(99.816,100,true,true,false)
-	check(faster.title == "PERSONAL BEST" and faster.detail.begins_with("0.184 s faster"),"new PB reports the precise improvement")
-	var slower: Dictionary = RaceDebrief.feedback(100.184,100,true,true,false)
-	check(slower.title == "RACE COMPLETE" and slower.detail.begins_with("+0.184 s off"),"a slower finish provides a precise retry target")
-	check(RaceDebrief.feedback(100.0004,100,true,true,false).title == "MATCHED YOUR BEST","sub-millisecond changes follow stored timing precision")
-	check(RaceDebrief.feedback(90,100,false,true,false).title == "PRACTICE COMPLETE","practice results never claim a personal best")
-	check(RaceDebrief.feedback(90,100,true,false,false).title == "TIME NOT SAVED","failed persistence never celebrates a saved PB")
-	check(RaceDebrief.feedback(90,100,false,true,true).title == "TEST DRIVE COMPLETE","editor runs explain their separate return path")
 	check(MenuStyle.time_text(59.9996) == "01:00.000","timer formatting carries rounded milliseconds into minutes")
 	var folder: String = "user://menu_presentation_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)

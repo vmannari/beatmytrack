@@ -54,7 +54,11 @@ func apply_snapshot(value: Dictionary) -> void:
 	if value.get("points_policy") is Array: points_policy.assign(value.points_policy)
 	tracks.clear()
 	server_standings.clear()
-	for row: Dictionary in value.get("standings",[]): server_standings.append(_map_row(row))
+	for row: Dictionary in value.get("standings",[]):
+		var mapped: Dictionary = _map_row(row)
+		if bool(mapped.get("is_test_driver",false)) and mapped.get("name") != "Blocked player" and not mapped.has("appearance"):
+			mapped.appearance = preload("res://ui/artificial_driver_appearance.gd").create(str(mapped.driver_id),vehicle_id)
+		server_standings.append(mapped)
 	for track: Dictionary in value.get("tracks",[]):
 		var entry: Dictionary = track.entry.duplicate(true)
 		var rows: Array[Dictionary] = []
@@ -324,6 +328,21 @@ static func self_row(rows: Array[Dictionary]) -> Dictionary:
 
 func gaps(index: int) -> Dictionary:
 	var rows: Array[Dictionary] = board(index)
+	return _board_gaps(rows)
+
+func track_summary(index: int) -> Dictionary:
+	# A server receipt can precede the full-board refresh. Pending local PBs
+	# expose only their time; ranks, points and completion stay verified.
+	var confirmed: bool = bool(last_result.get("valid",false)) and not bool(last_result.get("provisional",false))
+	var summary: Dictionary = _board_gaps(result_board(index) if confirmed else board(index))
+	summary.pending_ms = null
+	if int(last_result.get("index",-1)) == index and bool(last_result.get("provisional",false)) and bool(last_result.get("improved",false)):
+		var after: Dictionary = last_result.get("after",{})
+		if after.get("ms") != null and (summary.own.get("ms") == null or int(after.ms) < int(summary.own.ms)):
+			summary.pending_ms = int(after.ms)
+	return summary
+
+static func _board_gaps(rows: Array[Dictionary]) -> Dictionary:
 	var own: Dictionary = self_row(rows)
 	var ahead: Dictionary = {}
 	var behind: Dictionary = {}

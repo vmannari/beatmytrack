@@ -141,6 +141,9 @@ func garage() -> void:
 	check(view.weathering.snapshot() == VehicleCondition.read(records, "compact"), "garage displays raced condition")
 	page.open_car(0)
 	page._show_section("care")
+	# The lightweight wash requirement no longer hides the 0.32s slide behind
+	# livery-gallery construction. Project the hit only once the pane settles.
+	await create_timer(GaragePage.MENU_MOVE_SECONDS + 0.05).timeout
 	await settle()
 	page._toggle_wash()
 	check(view.wash_mode and page.wash_button.text == "Done", "explicit wash mode")
@@ -257,6 +260,8 @@ func app_capture() -> void:
 	var page: GaragePage = app.root_ui.find_child("GaragePage", true, false)
 	page.open_car(0)
 	page._show_section("care")
+	# The incoming action row takes 0.32 seconds, independent of frame rate.
+	while page._menu_motion != null and page._menu_motion.is_running(): await process_frame
 	await settle()
 	var button: Button = app.root_ui.find_child("GarageWash", true, false)
 	button.pressed.emit()

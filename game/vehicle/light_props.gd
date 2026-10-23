@@ -6,9 +6,12 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
 	for object: Dictionary in objects:
 		if object.kind in CreatorCatalog.SOFT: props.append(object)
 	if state.light_props.is_empty():
-		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
+		for object: Dictionary in props: state.light_props.append(BurningBarrel.initial(object) if object.kind=="burning_barrel" else [object.position[0],object.position[1],0.0,0.0,0.0])
 	BreakableProps.prepare(state,props)
 	for index: int in range(props.size()):
+		if props[index].kind=="burning_barrel":
+			BurningBarrel.step(state,props[index],state.light_props[index],contact,previous,dt,car_mass,car_radius)
+			continue
 		if props[index].kind in BreakableProps.KINDS:
 			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
 			continue

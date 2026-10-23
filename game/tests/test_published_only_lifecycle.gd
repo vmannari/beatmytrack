@@ -60,7 +60,18 @@ func proof(document: Dictionary) -> Array:
 	completed_proof = trajectory.recording(session)
 	return frames
 
+func release_fixture_retry(flow: TrackLifecycle, document: Dictionary) -> void:
+	# Advance only the fixture journal clock; production retry cadence is tested separately.
+	var path: String = flow._path(document)
+	var job: Dictionary = flow._read(path)
+	job.erase("retry_at")
+	job.retry_delay = 0
+	job.retry_server_at = 0
+	flow._retry_deadlines.clear()
+	flow._save(path,job)
+
 func until_terminal(flow: TrackLifecycle, document: Dictionary, expected: String) -> void:
+	release_fixture_retry(flow,document)
 	for attempt: int in range(120):
 		await flow.process_jobs()
 		var state: Dictionary = flow.status_for(document)
@@ -80,6 +91,8 @@ func run() -> void:
 	check(bootstrap.ok and int(bootstrap.data.get("publication_workflow_version",0)) == 2 and bootstrap.data.get("local_drafts_only",false),"server advertises explicit local-draft publication")
 	var login: Dictionary = await client.development_login("published-only-creator","Local Creator",OS.get_environment("BMT_DEV_AUTH_KEY"))
 	check(login.ok,"creator signs in")
+	var rules: Dictionary = await client.safety.terms()
+	check(rules.ok and (await client.request_api("/community/terms",HTTPClient.METHOD_POST,{"version":rules.data.version,"accepted":true},"",true)).ok,"fixture explicitly accepts current sharing rules")
 	var cloud := FailingCacheCloud.new()
 	cloud.client = client
 	cloud.root_override = ProjectSettings.globalize_path("res://../build/published-only-http-"+str(Time.get_ticks_usec()))
@@ -118,6 +131,7 @@ func run() -> void:
 	job.erase("retry_at")
 	flow._save(str(staged.path),job)
 	cloud.block_index = true
+	release_fixture_retry(flow,document)
 	for attempt: int in range(120):
 		await flow.process_jobs()
 		if flow.status_for(document).get("state") == "finishing": break

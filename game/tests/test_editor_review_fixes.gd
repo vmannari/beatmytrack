@@ -115,7 +115,7 @@ func autosaves() -> void:
 			close_notices(app)
 			check(app._save_track_now(),"explicit retry commits the desired final state")
 			close_notices(app); app._request_editor_exit()
-		check(app.screen == "tracks" and app.editor_save_error == OK,scenario+" successful exit")
+		check(app.screen == "biome" and app.editor_save_error == OK,scenario+" successful exit returns to Create")
 		check(storage.load_wip("save_order").objects[0].position == [0.0,0.0],scenario+" final WIP matches the returned position")
 		check(storage.load_document("save_order").objects[0].position == [0.0,0.0],scenario+" original preserved")
 		check(storage.editable_entries()[0].document.objects[0].position == [0.0,0.0],scenario+" reopening selects the correct final state")

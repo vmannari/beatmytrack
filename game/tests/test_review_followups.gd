@@ -142,8 +142,7 @@ func run() -> void:
 	await flow.retry(foreign)
 	check(flow._read(conflicting.path).has("failure") and flow._read(conflicting.path).upload_key == conflict_key,"Retry cannot rebase onto another device's head")
 	check(flow.archive_draft(str(document.id)),"archive intent is durable before local deletion")
-	flow.defer_sync(document)
-	check(flow._pending.is_empty() and flow.stage(document).is_empty(),"deleted drafts cannot stage or defer new sync work")
+	check(flow.stage(document).is_empty(),"deleted drafts cannot stage new publication work")
 	flow.free(); cloud.free(); client.free()
 
 	var refresh := RefreshClient.new()
@@ -296,7 +295,6 @@ func check_expiry_and_navigation(document: Dictionary) -> void:
 	app.add_child(deleting)
 	draft_client.uploaded = document.duplicate(true)
 	app.library.save_wip(document)
-	deleting.defer_sync(document)
 	deleting.stage(document)
 	check(deleting.archive_draft(str(document.id)) and app.library.delete_editable(str(document.id)) == OK,"Delete records its intent before removing authoring files")
 	await deleting.process_jobs()

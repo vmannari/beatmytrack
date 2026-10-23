@@ -10,6 +10,7 @@ var rating_track_id: String
 var cloud_client: Node
 var cloud_version: String = ""
 var cloud_sync: Node
+var finish_vote: Node
 var global_rank: Label
 var global_status: Label
 var standings_busy: bool = false
@@ -36,9 +37,18 @@ var reward_panels: Array[PanelContainer] = []
 var reward_total: Label
 var reward_reveal: Tween
 var revealed_count: int = 0
+var economy: Node
+var reward_ticket: String = ""
+var coin_receipt: Dictionary = {}
+var _reward_status: Label
+var _reward_list: VBoxContainer
+var _receipt_timer: Timer
+var _receipt_refresh_pending: bool = false
 
 func _ready() -> void:
 	name = "RaceComplete"
+	if is_instance_valid(cloud_client) and cloud_client.has_signal("run_completed"):
+		cloud_client.run_completed.connect(_run_completed)
 	add_theme_constant_override("separation",10)
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation",14)
@@ -66,24 +76,63 @@ func _ready() -> void:
 	_standings(main)
 	_recommendations()
 	_actions()
+	if economy != null: economy.changed.connect(_update_coin_status)
 	if not recommendations.is_empty(): select_track(0)
+
+func _exit_tree() -> void:
+	if is_instance_valid(cloud_client) and cloud_client.has_signal("run_completed") and cloud_client.run_completed.is_connected(_run_completed):
+		cloud_client.run_completed.disconnect(_run_completed)
+
+func _run_completed() -> void:
+	if coin_receipt.get("status","pending") != "pending" or reward_ticket.is_empty() or not is_instance_valid(economy): return
+	if not cloud_client.has_method("recent_run") or cloud_client.recent_run(reward_ticket).get("status") != "verified": return
+	if get_meta("coin_polling",false): _receipt_refresh_pending = true
+	else: _load_coin_receipt()
 
 func _rewards(parent: Control) -> void:
 	var body: VBoxContainer = _section(parent,16)
 	body.get_parent().custom_minimum_size.x = 350
 	body.add_theme_constant_override("separation",6)
 	body.add_child(MenuStyle.label("REWARDS",28))
-	body.add_child(MenuStyle.label("Reward preview / no balance credited",13,true))
+	_reward_status = MenuStyle.label("Reward preview",13,true)
+	_reward_status.name = "CoinRewardStatus"
+	body.add_child(_reward_status)
 	var scroll := ScrollContainer.new()
 	scroll.name = "RewardScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body.add_child(scroll)
 	var list := VBoxContainer.new()
+	_reward_list = list
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	list.add_theme_constant_override("separation",5)
 	scroll.add_child(list)
-	rewards = RaceRewardPreview.build(facts)
+	if economy == null: rewards = RaceRewardPreview.build(facts)
+	else:
+		if not economy.authenticated(): coin_receipt = {"status":"unavailable","amount":0,"rows":[]}
+		rewards.assign(coin_receipt.get("rows",[]))
+		_update_coin_status()
+		if not reward_ticket.is_empty() and economy.authenticated():
+			_receipt_timer = Timer.new()
+			_receipt_timer.wait_time = 2.0
+			_receipt_timer.timeout.connect(_load_coin_receipt)
+			add_child(_receipt_timer)
+			_receipt_timer.start()
+			_load_coin_receipt.call_deferred()
+	_build_reward_rows()
+	body.add_child(HSeparator.new())
+	var total_row := HBoxContainer.new()
+	body.add_child(total_row)
+	var caption := MenuStyle.label("TOTAL REWARDS",20,true)
+	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	total_row.add_child(caption)
+	total_row.add_child(ResultsIcons.view("coin",38,MenuStyle.ACCENT))
+	reward_total = MenuStyle.label("+ 0",48)
+	total_row.add_child(reward_total)
+	_reveal_rewards()
+
+func _build_reward_rows() -> void:
+	var list: VBoxContainer = _reward_list
 	for item: Dictionary in rewards:
 		if not item.eligible: continue
 		var slot := Control.new()
@@ -104,6 +153,8 @@ func _rewards(parent: Control) -> void:
 		row.add_child(ResultsIcons.view(item.icon,30,MenuStyle.ACCENT))
 		var title := MenuStyle.label(item.title,21)
 		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		title.clip_text = true
+		title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(title)
 		var amount := MenuStyle.label("+%d" % item.amount,28)
@@ -111,16 +162,43 @@ func _rewards(parent: Control) -> void:
 		amount.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(amount)
 	if reward_panels.is_empty():
-		list.add_child(MenuStyle.label("No rewards for this race.",18,true))
-	body.add_child(HSeparator.new())
-	var total_row := HBoxContainer.new()
-	body.add_child(total_row)
-	var caption := MenuStyle.label("TOTAL REWARDS",20,true)
-	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	total_row.add_child(caption)
-	total_row.add_child(ResultsIcons.view("coin",38,MenuStyle.ACCENT))
-	reward_total = MenuStyle.label("+ 0",48)
-	total_row.add_child(reward_total)
+		list.add_child(MenuStyle.label("Waiting for race verification…" if economy != null and not reward_ticket.is_empty() and coin_receipt.get("status","pending") == "pending" else "No rewards for this race.",18,true))
+
+func _update_coin_status() -> void:
+	if economy == null: return
+	if not economy.authenticated():
+		_reward_status.text = "Sign in to earn coins."
+		return
+	var credited: bool = coin_receipt.get("status") == "credited"
+	_reward_status.text = "Coins saved · Balance: %d" % economy.balance() if credited else "Coins will be added after verification." if not reward_ticket.is_empty() else "Race online to earn account coins." if economy.authenticated() else "No coins saved for this race."
+	if coin_receipt.get("status") == "save_failed": _reward_status.text = "Rewards could not be saved. Check storage."
+
+func _load_coin_receipt() -> void:
+	if get_meta("coin_polling",false) or not is_visible_in_tree(): return
+	set_meta("coin_polling",true)
+	var receipt: Dictionary = await economy.reward_for(reward_ticket)
+	if not is_inside_tree(): return
+	set_meta("coin_polling",false)
+	coin_receipt = receipt
+	_update_coin_status()
+	if receipt.get("status") == "pending":
+		if _receipt_refresh_pending:
+			_receipt_refresh_pending = false
+			_load_coin_receipt.call_deferred()
+		return
+	_receipt_refresh_pending = false
+	_receipt_timer.stop()
+	if receipt.get("status") != "credited":
+		_reward_status.text = "This race did not earn account coins."
+	if reward_reveal != null: reward_reveal.kill()
+	for child: Node in _reward_list.get_children():
+		_reward_list.remove_child(child)
+		child.queue_free()
+	reward_panels.clear()
+	revealed_count = 0
+	rewards.assign(receipt.get("rows",[]))
+	_build_reward_rows()
+	reward_total.text = "+ 0"
 	_reveal_rewards()
 
 func _reveal_rewards() -> void:
@@ -232,6 +310,7 @@ func _standings(parent: Control) -> void:
 		rating.cloud_client = cloud_client
 		rating.cloud_version = cloud_version
 		rating.cloud_sync = cloud_sync
+		rating.finish_vote = finish_vote
 		body.add_child(rating)
 	if not cloud_version.is_empty():
 		# Load this results view once. Upload polling and verification completion

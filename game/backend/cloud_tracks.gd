@@ -2,6 +2,7 @@ extends Node
 ## Network/cache work lives outside canonical simulation. Public cache is server scoped;
 ## durable submissions are additionally scoped to the authenticated player.
 signal changed
+signal race_verified
 const Client = preload("res://backend/backend_client.gd")
 const PREPARED_TRACKS = preload("res://backend/prepared_track_cache.gd")
 var client: Node
@@ -23,6 +24,7 @@ var _snapshot_entries: Array[Dictionary] = []
 var _catalog_serial: int = 0
 const MAX_CATALOG_ENTRIES: int = 1000
 var discovery_pages: Node
+var _discovery_protocol: int = 0
 var _discovery_filters: Dictionary = {}
 var _discovery_favorites: Array = []
 var _discovery_raced: Array = []
@@ -38,6 +40,7 @@ const MAX_FLUSH_JOBS: int = 16
 
 func _ready() -> void:
 	_ensure_result_saves()
+	if is_instance_valid(client.get("safety")): client.safety.changed.connect(_safety_changed)
 
 func _ensure_result_saves() -> void:
 	if is_instance_valid(result_saves): return
@@ -164,6 +167,13 @@ func upload_history(page: int = 0) -> Array[Dictionary]:
 func cache_root() -> String:
 	return (root_override if not root_override.is_empty() else "user://cloud").path_join(str(client.base_url()).sha256_text())
 
+func _index_path() -> String:
+	# Filtered v3 results can reveal personal favourites/history. Keep the
+	# lightweight reopening index under the same account boundary as cursors.
+	if indexed_discovery_available():
+		return cache_root().path_join("index-v3-"+str(client.player.get("id","")).sha256_text()+".json")
+	return cache_root().path_join("index.json")
+
 func _read(path: String) -> Dictionary:
 	var started: int = Time.get_ticks_usec()
 	var result: Dictionary = _read_file(path)
@@ -215,11 +225,11 @@ func load_cached() -> void:
 	_snapshot_entries.clear()
 	last_refresh_msec = -60000
 	entries.clear()
-	var cached: Variant = _read(cache_root().path_join("index.json")).get("entries",[])
+	var cached: Variant = _read(_index_path()).get("entries",[])
 	var aliases: Dictionary = _read(cache_root().path_join("aliases.json"))
 	if cached is Array:
 		for item: Variant in cached:
-			if item is Dictionary and _valid_entry(item):
+			if item is Dictionary and _valid_entry(item) and _allowed(item):
 				if not aliases.has("_read_error"): aliases["cloud_"+str(item.version_id)] = "cloud_"+str(item.track_id)
 				if FileAccess.file_exists(cache_root().path_join(str(item.content_hash)+".json")): _retain_metadata(item)
 				if entries.size() < MAX_CATALOG_ENTRIES: entries.append(item)
@@ -272,12 +282,12 @@ func refresh(force: bool = false) -> void:
 		while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
 		var cursor: Variant = response.data.get("next_cursor")
 		next_cursor = "" if cursor == null else str(cursor)
-		if not _write(cache_root().path_join("index.json"),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
+		if not _write(_index_path(),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
 		changed.emit() # Keep usable progress if a later page fails.
 		if next_cursor.is_empty():
 			entries = _snapshot_entries.duplicate(true)
 			status = "Cloud catalog up to date · tracks download when selected"
-			if not _write(cache_root().path_join("index.json"),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
+			if not _write(_index_path(),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
 			break
 		status = "Cloud tracks loaded · more will load on the next refresh"
 	refreshing = false
@@ -327,15 +337,23 @@ func search(filters: Dictionary, append: bool = false) -> void:
 		entries.append(item)
 	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
 	_search_cursor = "" if response.data.get("next_cursor") == null else str(response.data.next_cursor)
-	_write(cache_root().path_join("index.json"),{"entries":entries})
+	_write(_index_path(),{"entries":entries})
 	status = "Cloud matches loaded"+(" · narrow your search for more" if response.data.get("next_cursor") != null else "")
 	changed.emit()
+
+func _safety_changed() -> void:
+	load_cached()
+	changed.emit()
+	if client.signed_in(): refresh.call_deferred(true)
+
+func _allowed(entry: Dictionary) -> bool:
+	return not is_instance_valid(client.get("safety")) or client.safety.allows(entry)
 
 func retained_entry(identity: String) -> Dictionary:
 	var value: Dictionary = _read(cache_root().path_join("retained").path_join(identity.sha256_text()+".json"))
 	if value.get("alias") is String:
 		value = _read(cache_root().path_join("retained").path_join(str(value.alias).sha256_text()+".json"))
-	return entry_from_metadata(value) if _valid_entry(value) else {}
+	return entry_from_metadata(value) if _valid_entry(value) and _allowed(value) else {}
 
 func _retain_metadata(metadata: Dictionary) -> bool:
 	var directory: String = cache_root().path_join("retained")
@@ -391,6 +409,7 @@ func add_to_catalog(catalog: TrackCatalog, discovery: TrackDiscoveryProvider = n
 		available.append(saved)
 		known[str(saved.id)] = true
 	for item: Dictionary in available:
+		if not _allowed(item): continue
 		var entry: Dictionary = item.duplicate(true)
 		entry.id = "cloud_"+str(item.track_id)
 		entry.source = "cloud"
@@ -419,6 +438,47 @@ func entry_from_metadata(metadata: Dictionary) -> Dictionary:
 	entry.theme = TrackTheme.normalized(str(entry.get("theme","pine")))
 	return entry
 
+func news_story_entry(story: Dictionary, cancelled: Callable = Callable()) -> Dictionary:
+	# Explicit Race action only. Real news always pins its immutable version;
+	# local stories identify an existing authored track without inventing a UUID.
+	last_error = ""
+	if cancelled.is_valid() and cancelled.call(): return {}
+	var version: String = str(story.get("version_id",""))
+	if version.is_empty():
+		var authoring: String = str(story.get("authoring_id",""))
+		if not TrackDocument.valid_id(authoring):
+			last_error = "This story's track is no longer available."
+			return {}
+		var candidates: Array = entries
+		var matches: Array = candidates.filter(func(item: Dictionary) -> bool: return item.get("authoring_id","") == authoring and _valid_entry(item))
+		if matches.is_empty():
+			var response: Dictionary = await client.request_api("/tracks?limit=20&q="+str(story.get("track_name","")).uri_encode())
+			if cancelled.is_valid() and cancelled.call(): return {}
+			if response.get("ok",false) and response.get("data") is Dictionary and response.data.get("items") is Array:
+				for item: Variant in response.data.items:
+					if item is Dictionary and item.get("authoring_id","") == authoring and _valid_entry(item): matches.append(item)
+		if matches.is_empty():
+			last_error = "This track is not available. Connect and try again."
+			return {}
+		matches.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.get("version",0)) > int(b.get("version",0)))
+		version = str(matches[0].version_id)
+	if version.length() != 36 or not version.replace("-","").is_valid_hex_number(false):
+		last_error = "This story's track is no longer available."
+		return {}
+	var response: Dictionary = await client.request_api("/track-versions/"+version.uri_encode())
+	if cancelled.is_valid() and cancelled.call(): return {}
+	if not response.get("ok",false) or not response.get("data") is Dictionary:
+		last_error = "This track could not be opened. Connect and try again."
+		return {}
+	var metadata: Dictionary = response.data
+	if not _valid_entry(metadata) or str(metadata.version_id) != version or metadata.get("state","") != "published" or bool(metadata.get("hidden",false)):
+		last_error = "This story's track is no longer available."
+		return {}
+	if not _allowed(metadata):
+		last_error = "This player is blocked. Manage blocked players in Community safety."
+		return {}
+	return entry_from_metadata(metadata)
+
 func remember_publication(metadata: Dictionary) -> bool:
 	if not _retain_metadata(metadata): return false
 	_publication_pin = metadata.duplicate(true)
@@ -442,7 +502,7 @@ func remember_publication(metadata: Dictionary) -> bool:
 	entries = entries.filter(func(old: Dictionary) -> bool: return str(old.track_id) != str(metadata.track_id))
 	entries.append(metadata.duplicate(true))
 	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
-	if not _write(cache_root().path_join("index.json"),{"entries":entries}): return false
+	if not _write(_index_path(),{"entries":entries}): return false
 	_remember_aliases()
 	changed.emit()
 	return true
@@ -450,9 +510,19 @@ func remember_publication(metadata: Dictionary) -> bool:
 func paged_discovery_available() -> bool:
 	return client != null and int(client.get("_capabilities").get("discovery_paging_version",0)) >= 2
 
+func indexed_discovery_available() -> bool:
+	return client != null and int(client.get("_capabilities").get("discovery_paging_version",0)) >= 3
+
 func _ensure_discovery_pages() -> void:
-	if is_instance_valid(discovery_pages): return
-	discovery_pages = preload("res://backend/discovery_pages.gd").new()
+	var protocol: int = 3 if indexed_discovery_available() else 2
+	if is_instance_valid(discovery_pages):
+		if _discovery_protocol == protocol: return
+		client.cancel_public_reads(discovery_pages.get_instance_id())
+		discovery_pages.generation += 1
+		remove_child(discovery_pages)
+		discovery_pages.queue_free()
+	_discovery_protocol = protocol
+	discovery_pages = preload("res://backend/discovery_windows.gd").new() if protocol == 3 else preload("res://backend/discovery_pages.gd").new()
 	discovery_pages.client = client
 	discovery_pages.cache_directory = cache_root().path_join("discovery")
 	add_child(discovery_pages)
@@ -481,9 +551,10 @@ func _discovery_changed() -> void:
 		else: entries.append(_publication_pin)
 	refreshing = discovery_pages.loading
 	status = discovery_pages.error if not discovery_pages.error.is_empty() else ("Loading tracks…" if refreshing else "%d tracks" % maxi(0,int(discovery_pages.total)))
+	if indexed_discovery_available() and discovery_pages.error.is_empty() and not refreshing: status = discovery_pages.status_text()
 	if not refreshing and discovery_pages.total >= 0:
 		# Persist only the first page for fast reopening; distant pages are reloadable.
-		if discovery_pages.pages.has(0): _write(cache_root().path_join("index.json"),{"entries":discovery_pages.pages[0].items})
+		if discovery_pages.pages.has(0): _write(_index_path(),{"entries":discovery_pages.pages[0].items})
 	changed.emit()
 
 func _remember_aliases() -> void:
@@ -522,10 +593,15 @@ static func cached_document(entry: Dictionary) -> Dictionary:
 func download(entry: Dictionary) -> bool:
 	return not (await download_document(entry)).is_empty()
 
-func download_document(entry: Dictionary) -> Dictionary:
+func download_document(entry: Dictionary, cancelled: Callable = Callable()) -> Dictionary:
+	if cancelled.is_valid() and cancelled.call(): return {}
+	if not _allowed(entry):
+		last_error = "This player is blocked. Manage blocked players in Community safety."
+		return {}
 	var cached: Dictionary = cached_document(entry)
 	if not cached.is_empty(): return cached if _retain_metadata(entry) else {}
 	var response: Dictionary = await client.request_api("/track-versions/"+str(entry.version_id).uri_encode()+"/document")
+	if cancelled.is_valid() and cancelled.call(): return {}
 	if not response.ok:
 		last_error = "This track is not cached. Connect and retry. " + str(response.error)
 		return {}
@@ -631,11 +707,6 @@ func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String =
 		return {}
 	response.data["_submit_key"] = client.new_operation_key()
 	return response.data
-
-func upload_draft(_document: Dictionary) -> Dictionary:
-	# Deprecated adapter kept to fail closed for old callers. The exact local
-	# document and creator trajectory leave the device only through Publish.
-	return {"ok":false,"status":410,"error":"LOCAL_DRAFTS_ONLY","data":{}}
 
 func outbox_path() -> String:
 	return cache_root().path_join("players").path_join(str(client.player.get("id","")).sha256_text()).path_join("outbox.json")
@@ -848,6 +919,7 @@ func _retire_replay(job: Dictionary) -> void:
 
 func _job_ready(job: Dictionary) -> bool:
 	var id: String = str(job.ticket)
+	if client.has_method("run_wait_pending") and client.run_wait_pending(id): return false
 	if not _retry_deadlines.has(id):
 		# Ignore legacy phone-wall-clock deadlines. New saved waits are bounded;
 		# corrected server time can shorten them after a restart.
@@ -907,6 +979,14 @@ func flush_outbox() -> void:
 	flushing = false
 	changed.emit()
 
+func _wait_for_upload(run_id: String, ticket_id: String, owner: String, origin: String) -> void:
+	if str(client.player.get("id","")) != owner or client.base_url() != origin: return
+	var response: Dictionary = await client.wait_for_run(run_id,ticket_id)
+	if not is_inside_tree() or str(client.player.get("id","")) != owner or client.base_url() != origin: return
+	if response.ok and response.data.status in ["verified","rejected","failed"]:
+		_retry_deadlines[ticket_id] = 0
+		await flush_outbox()
+
 func _flush_jobs() -> void:
 	if not _migrate_outbox(): return
 	var owner: String = str(client.player.get("id",""))
@@ -919,7 +999,11 @@ func _flush_jobs() -> void:
 	var polled: Dictionary = {}
 	var ids := PackedStringArray()
 	for job: Dictionary in jobs:
-		if job.has("run_id") and not job.has("failure") and _job_ready(job): ids.append("ids="+str(job.run_id).uri_encode())
+		if not job.has("run_id") or job.has("failure") or not _job_ready(job): continue
+		var recent: Dictionary = client.recent_run(str(job.ticket)) if client.has_method("recent_run") else {}
+		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","rejected","failed"]:
+			polled[str(job.run_id)] = recent
+		else: ids.append("ids="+str(job.run_id).uri_encode())
 	var batch: Dictionary = {}
 	if not ids.is_empty() and bool(client._capabilities.get("batch_run_status",false)):
 		batch = await client.request_api("/runs/status?"+"&".join(ids),HTTPClient.METHOD_GET,{},"",true)
@@ -977,6 +1061,8 @@ func _flush_jobs() -> void:
 				continue
 			job.run_id = response.data.run_id
 			_save_job(path,job)
+			if client.has_method("wait_for_run") and response.data.status in ["queued","verifying"]:
+				_wait_for_upload.call_deferred(str(job.run_id),str(job.ticket),owner,origin)
 		if polled.has(str(job.run_id)): response = {"ok":true,"status":200,"data":polled[str(job.run_id)]}
 		elif not batch.is_empty() and not batch.ok: response = batch
 		elif response.is_empty(): response = await client.request_api("/runs/"+str(job.run_id),HTTPClient.METHOD_GET,{},"",true)
@@ -1025,7 +1111,9 @@ func _flush_jobs() -> void:
 			_delay_job(job,1 if int(response.data.get("poll_after_ms",2500)) <= 1000 else 3)
 			status = "Race uploaded ? awaiting server verification"
 		_save_job(path,job)
-		if job.get("done",false) and _read(path).get("done",false): _retire_replay(job)
+		if job.get("done",false) and _read(path).get("done",false):
+			_retire_replay(job)
+			race_verified.emit()
 	if checked: run_connection_failed = unavailable
 
 func _reserve_background_write(request_scope: String) -> bool:

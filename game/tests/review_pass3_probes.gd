@@ -114,7 +114,6 @@ func run() -> void:
 		print("PROBE_SETUP_FAILED: "+app.library.last_error)
 		quit(1)
 		return
-	flow.defer_sync(doc)
 	app._confirm_delete_draft(str(doc.id),str(doc.name))
 	var dialog: ConfirmationDialog = app.root_ui.find_child("DeleteDraftDialog",true,false)
 	dialog.confirmed.emit()

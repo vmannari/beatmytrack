@@ -35,6 +35,7 @@ var desert_sand: bool = false:
 		desert_sand = value
 		if _bridge_material != null: _bridge_material.set_shader_parameter("desert_sand_trails",value)
 var _bridge_track: NativeTrack
+var _bridge_presentation: BridgePresentation
 var _bridge_material: ShaderMaterial
 var _previous_elevated: bool = false
 # Private device comparison; normal play always retains bridge protection.
@@ -76,6 +77,7 @@ shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_disabled, world_vertex_coords;
 #include "res://vehicle/dust_bridge_clip.gdshaderinc"
 uniform bool desert_sand_trails = false;
+uniform float trail_bridge_height_offset = 0.0;
 uniform vec4 desert_sand_pigment : source_color = vec4(0.67451,0.54510,0.35294,1.0);
 uniform vec4 grass_soil_pigment : source_color = vec4(0.32,0.205,0.11,1.0);
 uniform vec4 road_mud_pigment : source_color = vec4(0.43,0.29,0.15,1.0);
@@ -163,7 +165,10 @@ void fragment() {
 		ROUGHNESS = 0.7;
 	}
 	vec3 camera_ray = PROJECTION_MATRIX[3].w>0.5 ? INV_VIEW_MATRIX[2].xyz : normalize(INV_VIEW_MATRIX[3].xyz-trail_world);
-	float bridge_visibility = dust_bridge_projected_visibility(trail_world,camera_ray,trail_world.y);
+	// The shared mask describes the original bridge profile. Transform the
+	// contact back into that frame, retaining the visible deck's cosmetic offset.
+	vec3 bridge_world = trail_world - vec3(0.0,trail_bridge_height_offset,0.0);
+	float bridge_visibility = dust_bridge_projected_visibility(bridge_world,camera_ray,bridge_world.y);
 	ALPHA = COLOR.a * pressure_alpha * chipped_edge * feather * bridge_visibility;
 }
 """
@@ -202,7 +207,7 @@ func clear() -> void:
 
 
 func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation = null, track: NativeTrack = null) -> void:
-	_bind_bridges(track)
+	_bind_bridges(track,bridge)
 	desert_sand = track != null and track.metadata.get("theme","pine") == "desert"
 	if state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < 1.0:
 		active = false
@@ -214,7 +219,7 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	var front_axle: Vector2 = state.position + state.forward() * (wheelbase * 0.5)
 	var left: Vector3 = VisualGeometry.world(rear_axle - state.right() * (track_width * 0.5)) + Vector3(0, 0.028, 0)
 	if bridge != null:
-		left.y += bridge.height_at(Vector2(left.x,-left.z),state.route_index,1 if state.track_elevated else 0)
+		left.y += bridge.visual_height_at(Vector2(left.x,-left.z),state.route_index,1 if state.track_elevated else 0)
 	# Reject unchanged/sub-spacing samples before querying the other contacts
 	# and calculating intensities. Use the same bridge-adjusted 3D distance.
 	if active and left.distance_to(previous_left) < SAMPLE_DISTANCE: return
@@ -223,9 +228,9 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	var front_right: Vector3 = VisualGeometry.world(front_axle + state.right() * (track_width * 0.5)) + Vector3(0, 0.028, 0)
 	if bridge != null:
 		var layer: int = 1 if state.track_elevated else 0
-		right.y += bridge.height_at(Vector2(right.x,-right.z),state.route_index,layer)
-		front_left.y += bridge.height_at(Vector2(front_left.x,-front_left.z),state.route_index,layer)
-		front_right.y += bridge.height_at(Vector2(front_right.x,-front_right.z),state.route_index,layer)
+		right.y += bridge.visual_height_at(Vector2(right.x,-right.z),state.route_index,layer)
+		front_left.y += bridge.visual_height_at(Vector2(front_left.x,-front_left.z),state.route_index,layer)
+		front_right.y += bridge.visual_height_at(Vector2(front_right.x,-front_right.z),state.route_index,layer)
 	if track != null and track.metadata.get("theme","pine") == "winter" and not state.track_elevated:
 		left.y += track.snow_banks.height_at(Vector2(left.x,-left.z))
 		right.y += track.snow_banks.height_at(Vector2(right.x,-right.z))
@@ -279,9 +284,18 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	active = maxf(strongest,maxf(maxf(left_strength,right_strength),maxf(front_left_strength,front_right_strength))) >= 0.012
 
 
-func _bind_bridges(track: NativeTrack) -> void:
-	if _bridge_material == null or _bridge_track == track: return
+func _bind_bridges(track: NativeTrack, bridge: BridgePresentation = null) -> void:
+	if _bridge_material == null or (_bridge_track == track and _bridge_presentation == bridge): return
 	_bridge_track = track
+	_bridge_presentation = bridge
+	var height_offset: float = 0.0
+	if bridge != null:
+		height_offset = bridge.road_surface.lift
+		# The immutable relief lowers every bridge footprint by the same amount.
+		# An empty (over-budget) field leaves the original presentation intact.
+		if bridge.visual_relief != null and not bridge.visual_relief.field.is_empty():
+			height_offset -= preload("res://track/desert_road_relief.gd").DEPTH
+	_bridge_material.set_shader_parameter("trail_bridge_height_offset",height_offset)
 	var count: int = 0 if track == null else track.creator_bridges.size()
 	assert(count <= 16,"Bridge trails require the validated sixteen-span contract")
 	var axes := PackedVector4Array()

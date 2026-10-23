@@ -1,4 +1,5 @@
 extends VBoxContainer
+signal player_requested(driver: Dictionary)
 ## Full ordered track board with a pinned copy only while the player is offscreen.
 const VISIBLE_ROWS: int = 8
 const GUTTER: int = 8
@@ -91,6 +92,7 @@ func _row(driver: Dictionary, own: Dictionary, pinned: bool = false) -> Control:
 		var marker: int = display_name.find(" T")
 		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
 	var identity: Label = _label(line,display_name,0,color,"Name")
+	if not is_player: preload("res://ui/player_profile.gd").bind_name(identity,func() -> void: player_requested.emit(driver))
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.clip_text = true
 	identity.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS

@@ -1,7 +1,8 @@
 extends RefCounted
 ## Temporary draws reuse the actual particle/process/mesh materials. Live effect
 ## nodes, GPU particle ages, trail slots and canonical state remain untouched.
-const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","GroundDrifts","BankPowder","AirborneGrains"]
+# Winter breakups use distinct instanced ice/snow shaders and custom-data powder.
+const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
 
 static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
 	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}

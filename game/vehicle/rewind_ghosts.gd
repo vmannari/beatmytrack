@@ -7,9 +7,11 @@ var track: NativeTrack
 var bridge: BridgePresentation
 var entries: Array[Dictionary] = []
 var origin_tick: int = 0
+var wheelbase: float = 2.26
 
 func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int) -> void:
 	track = road
+	wheelbase = VehicleCatalog.config(car.vehicle_id).wheelbase
 	bridge = heights
 	entries = history
 	origin_tick = tick
@@ -59,7 +61,8 @@ func _append_meshes(node: Node, inverse: Transform3D, tool: SurfaceTool) -> void
 
 func world(state: Dictionary) -> Vector3:
 	var point: Vector2 = state.position
-	var height: float = bridge.height_at(point,int(state.route_index),1 if state.track_elevated else 0)
+	var height: float = VehicleSimulation.BRIDGE_FLIGHT.support(bridge,point,float(state.heading),int(state.route_index),bool(state.track_elevated),wheelbase)
+	height += bridge.visual_offset(point)
 	height += float(state.jump_height)
 	return Vector3(point.x,height+0.05,-point.y)
 

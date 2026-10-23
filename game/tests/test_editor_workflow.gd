@@ -39,7 +39,7 @@ func run() -> void:
 	app.set("library",TrackLibrary.new(test_directory))
 	app.set("records",LocalRecords.new(test_directory.path_join("records.json")))
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	await _show_document(TrackDocument.create_blank())
 	await _blank_and_connect()
 	_ghost_snap_feedback()
@@ -161,7 +161,7 @@ func _ghost_snap_feedback() -> void:
 func _world_and_touch() -> void:
 	var canvas: EditorCanvas = app.get("canvas")
 	var editor_world: EditorWorld = _find_type(app.get("root_ui"),"EditorWorld") as EditorWorld
-	check(editor_world != null and canvas.world_backdrop, "the creator draws shared native 3D scenery behind the touch canvas")
+	check(editor_world != null and editor_world.is_inside_tree(), "the creator draws shared native 3D scenery behind the touch canvas")
 	if editor_world == null:
 		return
 	check(editor_world.track == canvas.native_preview and editor_world.visual is NativeTrackVisual, "world and editing overlay share the exact compiled track")

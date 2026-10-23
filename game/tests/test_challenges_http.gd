@@ -42,6 +42,7 @@ func run() -> void:
 	while not app.startup_complete: await process_frame
 	var login: Dictionary = await app.online.client.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
 	check(login.ok,"creator signs into the disposable development backend")
+	await accept_public_rules(app.online.client)
 	var catalogue: Dictionary = await app.online.client.request_api("/tracks?limit=20")
 	check(catalogue.ok and not catalogue.data.items.is_empty(),"published canonical track is available")
 	var metadata: Dictionary = catalogue.data.items[0]
@@ -134,6 +135,9 @@ func run() -> void:
 	for popup: Node in app.root_ui.get_children():
 		if popup is AcceptDialog: popup.queue_free()
 	await app.online.client.logout()
+	app.challenges.folder = "discover"
+	await app.challenges.refresh()
+	check(app.challenges.items.any(func(item: Dictionary) -> bool: return item.code == code),"guest finds the public challenge by browsing without a code")
 	app._receive_challenge(code)
 	while app.challenges.busy: await process_frame
 	check(not app.challenges.selected.is_empty() and not app.challenges.selected.joined,"guest opens invitation without signing in")
@@ -147,7 +151,10 @@ func run() -> void:
 	var nonce: Dictionary = await app.online.client.google_challenge()
 	var recipient: Dictionary = await app.online.client.google_login("challenge-fixture:"+str(nonce.data.nonce),str(nonce.data.challenge_id),"Challenge Racer")
 	check(recipient.ok,"second isolated identity authenticates through the nonce-bound test provider")
-	await app.challenges.open(code)
+	await accept_public_rules(app.online.client)
+	app.challenges.folder = "discover"
+	await app.challenges.refresh()
+	check(app.challenges.selected.get("code","") == code,"recipient discovers and selects the live public challenge directly")
 	app._open_challenges()
 	while app.challenges.busy: await process_frame
 	await app._start_challenge_race()
@@ -178,6 +185,7 @@ func run() -> void:
 		await create_timer(0.15).timeout
 	check(app.challenges.result_state == "verified" and app.challenges.outcome.get("beaten",false),"server confirms recipient beat the fixed target")
 	check(int(app.challenges.outcome.gap_ms) < 0,"verified outcome carries a signed negative gap")
+	check(app.challenges.selected.rewards.finish_earned and app.challenges.selected.rewards.goal_earned,"verified finish and target goal persist as earned rewards")
 	await capture("verified-result",app)
 	await app._retry_race()
 	check(app.challenge_racing and not app.cloud_ticket.is_empty() and app.game.online_frames.is_empty(),"Race again obtains a fresh challenge ticket and clears prior inputs")
@@ -231,6 +239,12 @@ func _drive(game: Node, frames: Array) -> void:
 	driver.frames = frames
 	game.driver = driver
 	for _tick: int in range(frames.size()): game._physics_process(1.0/120.0)
+
+func accept_public_rules(client: Node) -> void:
+	var terms: Dictionary = await client.request_api("/community/terms",HTTPClient.METHOD_GET,{},"",true)
+	check(terms.ok,"public sharing rules are available to the fixture account")
+	var accepted: Dictionary = await client.request_api("/community/terms",HTTPClient.METHOD_POST,{"version":str(terms.data.version),"accepted":true},client.new_operation_key(),true)
+	check(accepted.ok,"fixture explicitly accepts public challenge sharing rules")
 
 func capture(label: String, _app: Node) -> void:
 	var directory: String = OS.get_environment("BMT_CAPTURE_CLOUD")

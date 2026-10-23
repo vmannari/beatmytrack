@@ -26,6 +26,9 @@ func run() -> void:
 	browser.state = {"section":"all","page":0}
 	root.add_child(browser)
 	while browser.loading: await process_frame
+	# These checks exercise transitions inside an explicitly opened track view.
+	browser._open_track_view()
+	browser._show_detail()
 	var a: Dictionary = TrackCatalog.local_metadata(first)
 	var b: Dictionary = TrackCatalog.local_metadata(second)
 	await process_frame

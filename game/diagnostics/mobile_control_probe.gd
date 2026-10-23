@@ -30,6 +30,9 @@ func run() -> void:
 			controls.layout.steering_type = method
 			var boxes: Array[Rect2] = controls.touch_zones()
 			for rect: Rect2 in boxes: check(controls.usable_area().encloses(rect),"safe touch bounds")
+			if controls.analog_controls():
+				_probe_analog(boxes)
+				continue
 			send_touch(2,boxes[0].get_center())
 			send_touch(5,boxes[3].get_center())
 			check(controls.driver.sample().steer < 0 and controls.driver.sample().throttle == 255,"steer+gas")
@@ -62,3 +65,35 @@ func run() -> void:
 	finished.emit(report)
 	controls.queue_free()
 	queue_free()
+
+func _probe_analog(boxes: Array[Rect2]) -> void:
+	var steering: Rect2 = controls.group_rects()[controls.layout.steering_type]
+	var pedal: Rect2 = controls.group_rects().accelerator
+	var origin: Vector2 = boxes[0].get_center()
+	var gas_origin: Vector2 = pedal.get_center()
+	send_touch(2,origin)
+	send_touch(5,gas_origin)
+	check(controls.driver.sample().steer == 0 and controls.driver.sample().throttle == 0 and controls.driver.sample().brake == 0,"analog first touch neutral")
+	send_drag(2,origin-Vector2(steering.size.x*0.25,0))
+	send_drag(5,gas_origin-Vector2(0,pedal.size.y*0.25))
+	check(controls.driver.sample().steer == -127 and controls.driver.sample().throttle == 255,"horizontal steer+vertical gas")
+	send_touch(11,boxes[4].get_center())
+	check(controls.driver.sample().handbrake == 255 and controls.driver.sample().throttle == 255,"independent analog handbrake with gas")
+	send_touch(11,Vector2.ZERO,false,true)
+	check(controls.driver.sample().handbrake == 0 and controls.driver.sample().throttle == 255,"canceled handbrake preserves analog gas")
+	send_drag(5,gas_origin+Vector2(0,pedal.size.y*0.25))
+	check(controls.driver.sample().brake == 255 and controls.driver.sample().throttle == 0,"vertical gas to brake")
+	send_touch(9,gas_origin)
+	send_touch(5,Vector2.ZERO,false)
+	check(controls.driver.sample().brake == 0 and controls.driver.sample().steer == -127,"pedal handoff starts neutral and preserves steer")
+	send_drag(9,gas_origin+Vector2(0,pedal.size.y*0.14))
+	check(controls.driver.sample().brake > 0 and controls.driver.sample().brake < 255,"relative brake ramp")
+	send_touch(9,Vector2.ZERO,false,true)
+	check(controls.driver.sample().brake == 0,"canceled analog brake")
+	send_touch(2,Vector2.ZERO,false)
+	check(controls.driver.sample().steer == 0,"analog steering releases")
+	send_touch(4,gas_origin)
+	send_drag(4,gas_origin-Vector2(0,pedal.size.y*0.25))
+	controls.enabled = false
+	check(controls.driver.sample().throttle == 0,"disabled analog release")
+	controls.enabled = true

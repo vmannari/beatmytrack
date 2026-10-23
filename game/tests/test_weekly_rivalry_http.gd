@@ -41,9 +41,12 @@ func run() -> void:
 	while not app.startup_complete: await process_frame
 	var login: Dictionary = await app.online.client.development_login("weekly-alice","Weekly Alice",OS.get_environment("BMT_DEV_AUTH_KEY"))
 	check(login.ok,"isolated driver authenticates")
+	# Login changes the scoped records and prepares the retained menu behind its
+	# loading cover. Wait for that real lifecycle before navigating into Rivalry.
+	while app.screen == "restoring": await process_frame
 	var expire_at_finish: bool = OS.get_environment("BMT_RIVALRY_EXPIRED_SESSION") == "true"
 	var restored_at_finish: bool = OS.get_environment("BMT_RIVALRY_SESSION_RESTORED") == "true"
-	app._open_rivalry()
+	await app._open_rivalry()
 	while app.rivalry.busy: await process_frame
 	var automatic: bool = app.online.client.test_drivers_available()
 	if automatic:
@@ -63,7 +66,7 @@ func run() -> void:
 	check(app.rivalry_section == "detail" and app.rivalry_track == 0 and app.game == null and app.cloud_ticket.is_empty(),"track selection opens details before requesting a race ticket")
 	await capture("track-detail")
 	var detail: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
-	check(detail.ghost_choice == 3 and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field starts without a ghost or a third column")
+	check(detail.ghost_choice == 0 and app.rivalry.model.ghost_target(0,0).is_empty() and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field preserves automatic targeting without inventing a ghost or a third column")
 	(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
 	while app.cloud_starting: await process_frame
 	check(app.game != null and app.rivalry_racing and not app.cloud_ticket.is_empty(),"pre-race starts with a rivalry-bound verified ticket")
@@ -175,6 +178,45 @@ func run() -> void:
 	await app._retry_race()
 	check(app.rivalry_racing and app.game.online_frames.is_empty() and not app.cloud_ticket.is_empty(),"Rivalry Race Again gets a fresh weekly ticket")
 	check(app.game.ghost_mode == "race" and not app.game.ghost_bests.get("race",{}).is_empty(),"retry loads the latest chosen verified weekly ghost")
+	check(app.game.personal_ghost.mesh != null,"retry prepares the visible ghost mesh after installing its recording")
+	# Complete actual retries from both results actions, including the normal
+	# summary before its previous result has finished verification.
+	for source: String in ["summary","feedback"]:
+		game = app.game
+		game.set_physics_process(false)
+		game.countdown_ticks = 0
+		game.launch_countdown_seen = false
+		game.launch_early = false
+		var retry_driver := ReplayInput.new()
+		retry_driver.frames = fixture.replay.frames
+		game.driver = retry_driver
+		var retry_ticket: String = str(app.cloud_ticket.ticket_id)
+		for _tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
+		check(game.track_session.finished,"actual Race Again replay finishes five legal laps: "+source)
+		app._results()
+		var retry_summary: RaceResults = app.root_ui.find_child("RaceResults",true,false)
+		check(retry_summary != null and app.rivalry_section == "race_results" and app.rivalry_racing,"retry shows normal results and keeps Rivalry mode: "+source)
+		if source == "summary":
+			retry_summary.find_child("RetryRace",true,false).pressed.emit()
+			while app.cloud_starting: await process_frame
+			check(app.game == game and str(app.cloud_ticket.get("ticket_id","")) != retry_ticket and not app.cloud_ticket.is_empty(),"normal summary Race Again issues a distinct Rivalry ticket while saving the previous race")
+		var verified: Dictionary = {}
+		for _poll: int in range(100):
+			var response: Dictionary = await app.online.client.request_api("/rivalry/tickets/"+retry_ticket+"/result",HTTPClient.METHOD_GET,{},"",true)
+			verified = response.get("data",{})
+			if verified.get("status","") in ["verified","rejected","failed"]: break
+			await create_timer(0.2).timeout
+		check(verified.get("status","") == "verified" and verified.get("slot",-1) == 0 and verified.get("outcome",{}).has("after"),"completed retry receives a server Rivalry standings outcome: "+source)
+		check(int(verified.get("outcome",{}).get("points_delta",-1)) == 0 and not verified.get("outcome",{}).get("improved",true),"equal retry retains the weekly best without farming points: "+source)
+		if source == "feedback":
+			while app.rivalry_result_pending or app.rivalry.busy: await process_frame
+			retry_summary.next_button.pressed.emit()
+			await process_frame
+			var feedback_retry: Button = app.root_ui.find_child("RivalryRaceAgain",true,false)
+			check(feedback_retry != null and not feedback_retry.disabled,"verified retry also offers Race Again from Rivalry feedback")
+			feedback_retry.pressed.emit()
+			while app.cloud_starting: await process_frame
+			check(app.rivalry_racing and str(app.cloud_ticket.get("ticket_id","")) != retry_ticket and not app.cloud_ticket.is_empty(),"feedback Race Again also retains Rivalry authorization")
 	app._leave_race()
 	check(app.game == null and app.screen == "rivalry","exit returns to championship Overview")
 	await app.online.client.logout()

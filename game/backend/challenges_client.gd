@@ -6,7 +6,12 @@ var client: Node
 var cloud: Node
 var items: Array[Dictionary] = []
 var selected: Dictionary = {}
-var folder: String = "received"
+var folder: String = "discover"
+var search: String = ""
+var mode_filter: String = "all"
+var vehicle_filter: String = ""
+var sort_order: String = "ending"
+var creation_visibility: String = "public"
 var busy: bool = false
 var error: String = ""
 var result_ticket: String = ""
@@ -23,8 +28,29 @@ var _folder_refresh_pending: bool = false
 var next_cursor: String = ""
 var result_code: String = ""
 
+func _ready() -> void:
+	if is_instance_valid(client) and client.has_signal("run_completed"): client.run_completed.connect(poll_result)
+	if is_instance_valid(client) and is_instance_valid(client.get("safety")): client.safety.changed.connect(_safety_changed)
+
+func _safety_changed() -> void:
+	if not is_instance_valid(client.get("safety")): return
+	if not _scope.is_empty() and _scope != scope():
+		reset()
+		changed.emit()
+		return
+	items = items.filter(func(item: Dictionary) -> bool: return not client.safety.is_blocked(str(item.get("creator_id",""))) and client.safety.allows(item.get("entry",{})))
+	if client.safety.is_blocked(str(selected.get("creator_id",""))): selected = {}
+	client.safety.mask_public(selected)
+	client.safety.mask_public(items)
+	changed.emit()
+	if client.signed_in() and not busy: refresh.call_deferred()
+
 func scope() -> String:
 	return str(client.base_url())+"/"+str(client.player.get("id",""))
+
+func discovery_supported() -> bool:
+	var capabilities: Variant = client.get("_capabilities")
+	return capabilities is Dictionary and int(capabilities.get("challenge_discovery_version",0)) == 1
 
 func reset() -> void:
 	_generation += 1
@@ -44,6 +70,10 @@ func reset() -> void:
 	_scope = scope()
 	next_cursor = ""
 	result_code = ""
+	search = ""
+	mode_filter = "all"
+	vehicle_filter = ""
+	sort_order = "ending"
 
 static func code_from(value: String) -> String:
 	var code: String = value.strip_edges().get_slice("?",0).get_slice("#",0).trim_suffix("/").get_file().replace("-","").replace(" ","").to_upper()
@@ -80,6 +110,16 @@ static func valid_snapshot(value: Variant) -> bool:
 		seen[str(row.id)] = true
 		if row.ticks != null and (not preload("res://backend/backend_client.gd")._whole(row.ticks,1,216000) or not preload("res://backend/backend_client.gd")._whole(row.rank,1,20) or not preload("res://backend/backend_client.gd")._whole(row.ms,1)): return false
 	if value.joined != seen.has(str(value.self_id)): return false
+	if value.has("visibility") and value.visibility not in ["public","private"]: return false
+	if value.has("capacity") and (not preload("res://backend/backend_client.gd")._whole(value.capacity,2,20) or int(value.capacity) != (2 if value.mode == "beat" else 20)): return false
+	if value.has("rewards"):
+		var rewards: Variant = value.rewards
+		if not rewards is Dictionary or not rewards.has_all(["finish","goal","finish_earned","goal_earned","eligible","daily_limit","remaining_today"]): return false
+		for field: String in ["finish","goal","daily_limit","remaining_today"]:
+			if not preload("res://backend/backend_client.gd")._whole(rewards[field],0,10000): return false
+		for field: String in ["finish_earned","goal_earned","eligible"]:
+			if not rewards[field] is bool: return false
+		if int(rewards.remaining_today) > int(rewards.daily_limit): return false
 	return preload("res://backend/backend_client.gd")._whole(value.ends_at) and preload("res://backend/backend_client.gd")._whole(value.server_now)
 
 func _request(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, authorized: bool = true) -> Dictionary:
@@ -108,7 +148,7 @@ func _request(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, p
 	return response
 
 func select_folder(value: String) -> void:
-	if value not in ["received","sent"]: return
+	if value not in ["discover","friends","received","sent"]: return
 	if _scope != scope(): reset()
 	if folder == value: return
 	folder = value
@@ -124,6 +164,22 @@ func select_folder(value: String) -> void:
 		changed.emit()
 	else: refresh()
 
+func set_filters(query: String, mode: String, vehicle: String, order: String) -> void:
+	if mode not in ["all","beat","group"] or order not in ["ending","newest"] or (not vehicle.is_empty() and vehicle not in VehicleCatalog.IDS): return
+	if _scope != scope(): reset()
+	search = query.strip_edges().left(80)
+	mode_filter = mode
+	vehicle_filter = vehicle
+	sort_order = order
+	items.clear()
+	selected = {}
+	next_cursor = ""
+	_selection_serial += 1
+	if busy:
+		_folder_refresh_pending = true
+		changed.emit()
+	else: refresh()
+
 func _refresh_pending_folder() -> bool:
 	if not _folder_refresh_pending: return false
 	_folder_refresh_pending = false
@@ -134,8 +190,15 @@ func _refresh_pending_folder() -> bool:
 func refresh(append: bool = false) -> void:
 	if _scope != scope(): reset()
 	if busy: return
-	if not client.signed_in():
+	if not client.signed_in() and folder != "discover":
 		items.clear()
+		error = "Sign in to see your challenges and friends."
+		changed.emit()
+		return
+	var capabilities: Variant = client.get("_capabilities")
+	if folder in ["discover","friends"] and capabilities is Dictionary and not discovery_supported():
+		items.clear()
+		error = "Challenge discovery needs the updated online service. Joined and Created are still available."
 		changed.emit()
 		return
 	busy = true
@@ -143,11 +206,17 @@ func refresh(append: bool = false) -> void:
 	var serial: int = _busy_serial
 	var generation: int = _generation
 	var requested_folder: String = folder
-	var path: String = "/challenges?folder="+requested_folder+("&cursor="+next_cursor.uri_encode() if append and not next_cursor.is_empty() else "")
+	var requested_filters: Array = [search,mode_filter,vehicle_filter,sort_order]
+	var path: String = "/challenges?folder="+requested_folder if client.signed_in() else "/challenges/discover?"
+	if not search.is_empty(): path += "&search="+search.uri_encode()
+	if mode_filter != "all": path += "&mode="+mode_filter
+	if not vehicle_filter.is_empty(): path += "&vehicle="+vehicle_filter.uri_encode()
+	if sort_order != "ending": path += "&sort="+sort_order
+	if append and not next_cursor.is_empty(): path += "&cursor="+next_cursor.uri_encode()
 	changed.emit()
-	var response: Dictionary = await _request(path)
+	var response: Dictionary = await _request(path,HTTPClient.METHOD_GET,{},client.signed_in())
 	if generation != _generation or serial != _busy_serial or _scope != scope(): return
-	if requested_folder != folder or (append and _folder_refresh_pending):
+	if requested_folder != folder or requested_filters != [search,mode_filter,vehicle_filter,sort_order] or (append and _folder_refresh_pending):
 		_folder_refresh_pending = true
 		_refresh_pending_folder()
 		return
@@ -162,11 +231,14 @@ func refresh(append: bool = false) -> void:
 				changed.emit()
 				return
 			incoming.append(item)
-		if append: items.append_array(incoming)
+		if append:
+			for item: Dictionary in incoming:
+				if items.size() < 100 and not items.any(func(existing: Dictionary) -> bool: return existing.code == item.code): items.append(item)
 		else: items = incoming
 		for item: Dictionary in incoming:
 			if str(item.code) == str(selected.get("code","")): selected = item
-		next_cursor = str(response.data.next_cursor) if response.data.get("next_cursor") is String else ""
+		next_cursor = str(response.data.next_cursor) if response.data.get("next_cursor") is String and items.size() < 100 else ""
+		if selected.is_empty() and not incoming.is_empty(): selected = incoming[0]
 		error = ""
 	else: error = friendly(str(response.get("error","")))
 	changed.emit()
@@ -264,7 +336,10 @@ func begin_result(ticket_id: String) -> void:
 	_failures = 0
 
 func poll_result() -> void:
-	if _polling or result_ticket.is_empty() or result_state in ["verified","rejected","expired"] or Time.get_ticks_msec() < _next_poll: return
+	if _polling or result_ticket.is_empty() or result_state in ["verified","rejected","expired"]: return
+	var recent: Dictionary = client.recent_run(result_ticket) if client.has_method("recent_run") else {}
+	var confirmed: bool = recent.get("status") == "verified" and _failures == 0
+	if Time.get_ticks_msec() < _next_poll and not confirmed: return
 	var expected: String = result_ticket
 	var original: String = scope()
 	_polling = true

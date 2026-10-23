@@ -5,7 +5,8 @@ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
 const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
 const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48}
 const SLOW_RATE: float = 1.0 / 20.0
-const SCRUB_RATE: float = 0.85
+const SCRUB_RATE: float = 1.15
+const SCRUB_RADIUS: float = 0.60
 const MAX_SCRUB_RESISTANCE: float = 0.40
 const GRIME_AGE_SECONDS: float = 900.0
 const GRIME_AGE_STEP: float = GRIME_AGE_SECONDS / 255.0
@@ -325,7 +326,7 @@ func _upload_wash_masks(bytes: PackedByteArray, slow_bytes: PackedByteArray) -> 
 
 func wash(point: Vector3, seconds: float) -> void:
 	if wash_image == null or seconds <= 0.0 or not is_finite(seconds): return
-	var radius: float = 0.48
+	var radius: float = SCRUB_RADIUS
 	var grid: int = VehicleCondition.GRID
 	var bytes: PackedByteArray = _wash_bytes if _wash_depth > 0 else wash_image.get_data()
 	var slow_bytes: PackedByteArray = _slow_wash_bytes if _wash_depth > 0 else slow_wash_image.get_data()

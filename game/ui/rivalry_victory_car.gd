@@ -3,6 +3,7 @@ extends Control
 var vehicle_id: String = "compact"
 var simple_model: bool = false
 var podium_presentation: bool = false
+var fit_to_frame: bool = false
 var livery: Dictionary = {}
 var customisation: Dictionary = {}
 var condition: Dictionary = {}
@@ -81,10 +82,31 @@ func _legacy_lighting(world: Node3D) -> void:
 		world.add_child(light)
 
 func _refresh() -> void:
+	if not is_inside_tree() or not is_instance_valid(viewport): return
 	var dimensions: Vector2 = size
 	if podium_presentation:
 		var screen: Transform2D = get_viewport().get_stretch_transform()*get_screen_transform()
 		dimensions *= Vector2(screen.x.length(),screen.y.length())*2.0
 		dimensions *= minf(1.0,minf(1536.0/maxf(dimensions.x,1.0),768.0/maxf(dimensions.y,1.0)))
 	viewport.size = Vector2i(maxi(1,roundi(dimensions.x)),maxi(1,roundi(dimensions.y)))
+	if fit_to_frame: _fit_camera()
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if is_visible_in_tree() else SubViewport.UPDATE_DISABLED
+
+func _fit_camera() -> void:
+	var camera: Camera3D = viewport.get_camera_3d()
+	if camera == null or camera.projection != Camera3D.PROJECTION_PERSPECTIVE: return
+	var aspect: float = float(viewport.size.x)/maxi(1,viewport.size.y)
+	var extent: float = 0.0
+	var view: Transform3D = camera.global_transform.affine_inverse()
+	for mesh: Node in car.find_children("*","MeshInstance3D",true,false):
+		if not mesh.is_visible_in_tree() or mesh.mesh == null: continue
+		var bounds: AABB = mesh.get_aabb()
+		for x: float in [bounds.position.x,bounds.end.x]:
+			for y: float in [bounds.position.y,bounds.end.y]:
+				for z: float in [bounds.position.z,bounds.end.z]:
+					var point: Vector3 = view*mesh.to_global(Vector3(x,y,z))
+					var depth: float = maxf(0.01,-point.z)
+					extent = maxf(extent,maxf(absf(point.y)/depth,absf(point.x)/(depth*aspect)))
+	if extent > 0.0:
+		camera.keep_aspect = Camera3D.KEEP_HEIGHT
+		camera.fov = clampf(rad_to_deg(2.0*atan(extent*1.08)),1.0,120.0)

@@ -1,7 +1,6 @@
 class_name TrackSession
 extends RefCounted
 ## Ordered swept gates; no route-history/shortcut search per tick.
-signal shortcut_detected # Legacy observer API; never emitted by checkpoint rules.
 var next_checkpoint: int = 0
 var completed_laps: int = 0
 var elapsed_ticks: int = 0
@@ -14,12 +13,6 @@ var route_distance: float = 0.0
 var finish_armed: bool = false
 var initialized: bool = false
 var missed_checkpoint: int = -1
-# Retained read-model fields; these rules never add time penalties.
-var shortcut_count: int = 0
-var shortcut_distance: float = 0.0
-var penalty_seconds: float = 0.0
-var lap_penalty_seconds: float = 0.0
-var last_shortcut_tick: int = -1
 var last_progress: float = 0.0
 var _widths: Array[Vector2] = []
 var _road_widths: Array[Vector2] = []
@@ -31,14 +24,28 @@ var _route_hints := PackedInt32Array()
 var _start_progress: float = 0.0
 var _layers: Array[bool] = []
 var _finish_elevated: bool = false
+var _spline_corridor: bool = false
+var _notice_route_bins: Dictionary = {}
+var _notice_approaches: Array[Dictionary] = []
+var _notice_route_layers := PackedByteArray()
+var _notice_layer_offsets := PackedInt32Array()
+const NOTICE_LAYOUT_VERSION: int = 4
+const NOTICE_CELL_M: float = 8.0
+const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
 
 func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
 	tick_rate = rate
 	target_laps = laps
 
 func _configure(track: NativeTrack) -> void:
-	# Bake the gate corridor once. Runtime visits only the current gate and
+	# Bake the gate corridor once. Acceptance visits only the current gate and
 	# its neighbour, regardless of track length or total gate count.
+	if track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION:
+		for field: String in GATE_LAYOUT_FIELDS:
+			var value: Variant = track._race_gates[field]
+			set(field,value.duplicate() if value is Array else value)
+		initialized = true
+		return
 	_start_progress = track.route_progress(track.finish_center)
 	_finish_elevated = track.elevated_at(track.finish_center,track.nearest_route(track.finish_center,0))
 	if not track.creator_bridges.is_empty():
@@ -46,15 +53,19 @@ func _configure(track: NativeTrack) -> void:
 	var layer_distance: float = 0.0
 	var route_elevated: bool = _finish_elevated
 	var targets: Array[float] = []
-	var count: int = maxi(4,ceili(track.route_length/12.0))
+	_spline_corridor = false
+	for piece: Dictionary in track.metadata.get("creator_document",{}).get("pieces",[]):
+		if piece.kind == "spline": _spline_corridor = true; break
+	var count: int = maxi(4,ceili(track.route_length/(RaceRules.SPLINE_GATE_SPACING_M if _spline_corridor else 12.0)))
 	var corners: Array[Dictionary] = _road_corners(track)
 	for i: int in range(1,count):
 		var distance: float = track.route_length*i/count
 		var overlaps_corner: bool = false
-		for corner: Dictionary in corners:
-			var separation: float = absf(distance-float(corner.distance))
-			separation = minf(separation,track.route_length-separation)
-			if separation < float(corner.reach): overlaps_corner = true; break
+		if not _spline_corridor:
+			for corner: Dictionary in corners:
+				var separation: float = absf(distance-float(corner.distance))
+				separation = minf(separation,track.route_length-separation)
+				if separation < float(corner.reach): overlaps_corner = true; break
 		if not overlaps_corner: targets.append(distance)
 	for corner: Dictionary in corners: targets.append(corner.distance)
 	targets.sort()
@@ -63,7 +74,7 @@ func _configure(track: NativeTrack) -> void:
 		var junction: Dictionary = {}
 		for corner: Dictionary in corners:
 			if is_equal_approx(distance,float(corner.distance)): junction = corner; break
-		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < 3.0: continue
+		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (1.5 if _spline_corridor else 3.0): continue
 		var absolute: float = _start_progress+distance
 		var center: Vector2 = track._race_route_point(absolute)
 		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
@@ -108,15 +119,15 @@ func _configure(track: NativeTrack) -> void:
 				var sign_value: float = -1.0 if side == 0 else 1.0
 				while span < scan_limit and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
 				road_widths[side] = maxf(0.0,span-0.125)
-				# Permit a shallow wheel-off-road recovery at sharp bends too.
-				# Grass shortcuts still have to cross every bounded gate.
-				widths[side] = road_widths[side]+1.0
+				# Keep a forgiving centre recovery beyond the
+				# connected road/kerb edge, including sharp spline bends.
+				widths[side] = road_widths[side]+RaceRules.CHECKPOINT_RECOVERY_M
 		# A shallow excursion already loses grip/time. Allow extra inside
 		# recovery space, fading it out before a tight hairpin can be cut.
 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
 		var departure: Vector2 = (track._race_route_point(absolute+8.0)-center).normalized()
 		var turn: float = absf(approach.angle_to(departure))
-		if turn > 0.01:
+		if turn > 0.01 and track.grid_width == 0:
 			var allowance: float = 3.0*(1.0-smoothstep(deg_to_rad(30.0),deg_to_rad(60.0),turn))
 			var inside: int = 1 if (departure-approach).dot(normal) > 0.0 else 0
 			widths[inside] += allowance
@@ -137,7 +148,73 @@ func _configure(track: NativeTrack) -> void:
 			var ahead: float = fposmod(projected-absolute+track.route_length*0.5,track.route_length)-track.route_length*0.5
 			notice_reach = maxf(notice_reach,ahead+0.5)
 		_notice_reach.append(notice_reach)
+	if _spline_corridor:
+		var selected: PackedInt32Array = SplineGateCorridor.select(self,track)
+		for index: int in range(_centers.size()-1,-1,-1):
+			if index in selected: continue
+			_widths.remove_at(index); _road_widths.remove_at(index); _layers.remove_at(index)
+			_centers.remove_at(index); _directions.remove_at(index); _progress.remove_at(index)
+			_notice_reach.remove_at(index); _route_hints.remove_at(index)
+			_notice_approaches.remove_at(index)
+	_prepare_notice_route(track)
 	initialized = true
+	var prepared: Dictionary = {"rules_key":RaceRules.KEY,"notice_version":NOTICE_LAYOUT_VERSION}
+	for field: String in GATE_LAYOUT_FIELDS:
+		var value: Variant = get(field)
+		prepared[field] = value.duplicate() if value is Array else value
+	track._race_gates = prepared
+
+func _prepare_notice_route(track: NativeTrack) -> void:
+	_prepare_notice_layers(track)
+	# Index segments once, including long sparse fixture edges. A local
+	# collision hint deliberately cannot jump across a shortcut; notices need
+	# the road physically reached by the car, without scanning the whole lap.
+	for index: int in range(track.route.size()):
+		var a: Vector2 = track.route[index]
+		var b: Vector2 = track.route[(index+1)%track.route.size()]
+		var steps: int = maxi(1,ceili(a.distance_to(b)/(NOTICE_CELL_M*0.5)))
+		var visited: Dictionary = {}
+		for step: int in range(steps+1):
+			var key := Vector2i((a.lerp(b,float(step)/steps)/NOTICE_CELL_M).floor())
+			if visited.has(key): continue
+			visited[key] = true
+			if not _notice_route_bins.has(key): _notice_route_bins[key] = PackedInt32Array()
+			_notice_route_bins[key].append(index)
+
+func _prepare_notice_layers(track: NativeTrack) -> void:
+	if track.creator_bridges.is_empty(): return
+	# The car's X/Z and a tangent cannot identify a branch's layer: a ground
+	# road can pass diagonally beneath an aligned bridge (Knot). Follow the
+	# authored route from the finish, using the same ramp continuity as gates.
+	# Subsegment states also support sparse routes without walking them per tick.
+	_notice_layer_offsets.resize(track.route.size()*2)
+	var first: int = 0
+	for i: int in range(track.route.size()):
+		if track.route_cumulative[i] <= _start_progress: first = i
+	var layer: bool = _finish_elevated
+	var start: Vector2 = track._race_route_point(_start_progress)
+	var end: Vector2 = track.route[(first+1)%track.route.size()]
+	var initial_steps: int = maxi(1,ceili(start.distance_to(end)/0.25))
+	for step: int in range(1,initial_steps+1):
+		layer = CreatorBridges.layer_at(track.creator_bridges,start.lerp(end,float(step)/initial_steps),layer)
+	for offset: int in range(1,track.route.size()+1):
+		var i: int = (first+offset)%track.route.size()
+		var a: Vector2 = track.route[i]
+		var b: Vector2 = track.route[(i+1)%track.route.size()]
+		var steps: int = maxi(1,ceili(a.distance_to(b)/0.25))
+		_notice_layer_offsets[i*2] = _notice_route_layers.size()
+		_notice_layer_offsets[i*2+1] = steps
+		for step: int in range(steps+1):
+			layer = CreatorBridges.layer_at(track.creator_bridges,a.lerp(b,float(step)/steps),layer)
+			_notice_route_layers.append(int(layer))
+
+func _notice_layer_at(track: NativeTrack, index: int, fraction: float) -> bool:
+	var point: Vector2 = track.route[index].lerp(track.route[(index+1)%track.route.size()],fraction)
+	if _notice_layer_offsets.is_empty(): return track.elevated_at(point,index)
+	var start: int = _notice_layer_offsets[index*2]
+	var steps: int = _notice_layer_offsets[index*2+1]
+	var previous: bool = bool(_notice_route_layers[start+floori(fraction*steps)])
+	return CreatorBridges.layer_at(track.creator_bridges,point,previous)
 
 func _road_corners(track: NativeTrack) -> Array[Dictionary]:
 	var points: PackedVector2Array = track.route
@@ -173,7 +250,7 @@ func _road_corners(track: NativeTrack) -> Array[Dictionary]:
 		# Keep neighbouring straight gates beyond the inside miter. Otherwise
 		# a legal inside line crosses those planes in the opposite order.
 		var reach: float = maxf(3.0,(half+0.75)*sqrt(maxf(0.0,1.0-cosine*cosine))/cosine+2.0)
-		result.append({"distance":distance,"center":points[i],"direction":direction,"half_span":half_span,"reach":reach})
+		result.append({"distance":distance,"center":points[i],"direction":direction,"half_span":half_span,"road_half":half,"reach":reach})
 	# A fitted spline changes tangent smoothly, even when its authored points
 	# form a very tight reversal. Dense straight gates at that apex can demand
 	# an artificial loop on a perfectly legal inside line. Treat the actual
@@ -199,7 +276,7 @@ func _road_corners(track: NativeTrack) -> Array[Dictionary]:
 			var duplicate: bool = false
 			for corner: Dictionary in result:
 				if Vector2(corner.center).distance_to(nodes[i]) < 0.1: duplicate = true; break
-			if not duplicate: result.append({"distance":distance,"center":nodes[i],"direction":direction,"half_span":half/cosine,"reach":reach})
+			if not duplicate: result.append({"distance":distance,"center":nodes[i],"direction":direction,"half_span":half/cosine,"road_half":half,"reach":reach})
 	return result
 
 func _bridge_gate_direction(track: NativeTrack, center: Vector2, direction: Vector2, half_span: float) -> Vector2:
@@ -264,25 +341,35 @@ func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int, e
 		var fraction: float = _crossing(next_checkpoint,from,to)
 		if fraction < 0.0 or fraction < consumed-0.000001: break
 		var point: Vector2 = from.lerp(to,fraction)
-		if _layers[next_checkpoint] != _crossing_layer(track,from,to,fraction,route_index,elevated,previous_layer) or not _inside(next_checkpoint,point):
+		var crossing_layer: bool = _crossing_layer(track,from,to,fraction,route_index,elevated,previous_layer)
+		var wrong_layer: bool = _layers[next_checkpoint] != crossing_layer
+		if wrong_layer or not _inside(next_checkpoint,point):
 			if point.distance_squared_to(_centers[next_checkpoint]) < 1600.0:
 				# A lower road may cross the plane of a future deck gate. Only
 				# warn on its intended route approach, not that earlier branch.
-				var progress: float = _route_progress_near(track,point,route_index)
-				if _notice_offset(track,progress) >= -_notice_reach[next_checkpoint]: missed_checkpoint = next_checkpoint
+				var progress: float = _route_progress_near(track,point,route_index,int(crossing_layer))
+				var offset: float = _notice_offset(track,progress)
+				# A spline approach can cross this plane outside the gate before
+				# its valid crossing. Wait until it leaves the prepared approach
+				# envelope; wrong-layer misses still report immediately.
+				if offset >= -_notice_reach[next_checkpoint] and (wrong_layer or not _spline_corridor or _notice_bypassed(track,point,progress)): missed_checkpoint = next_checkpoint
 			break
 		consumed = fraction
 		next_checkpoint += 1
 		missed_checkpoint = -1
 	if next_checkpoint+1 < _centers.size():
 		var later: float = _crossing(next_checkpoint+1,from,to)
-		if later >= 0.0 and _inside(next_checkpoint+1,from.lerp(to,later)) and _layers[next_checkpoint+1] == _crossing_layer(track,from,to,later,route_index,elevated,previous_layer): missed_checkpoint = next_checkpoint
-	_update_display_progress(track,to,route_index)
+		if later >= 0.0 and _inside(next_checkpoint+1,from.lerp(to,later)) and _layers[next_checkpoint+1] == _crossing_layer(track,from,to,later,route_index,elevated,previous_layer):
+			# A returning arm can cross that later plane while the required
+			# gate is still ahead. Such an early crossing is not a bypass.
+			var point: Vector2 = from.lerp(to,later)
+			if _notice_offset(track,_route_progress_near(track,point,route_index,int(_layers[next_checkpoint+1]))) >= 0.0 and not _on_notice_approach(point): missed_checkpoint = next_checkpoint
+	_update_display_progress(track,to,route_index,int(elevated))
 	if next_checkpoint < _centers.size() and missed_checkpoint < 0:
 		# A cut can rejoin beyond a bend without ever crossing its gate plane
 		# (or the next gate). Report it on reentry instead of at a later gate
 		# or the finish. This read model never consumes or relaxes any gate.
-		if _notice_offset(track,last_progress) > _notice_reach[next_checkpoint]: missed_checkpoint = next_checkpoint
+		if _notice_bypassed(track,to,last_progress): missed_checkpoint = next_checkpoint
 	# Crossing the start and the first dense gate in the same fast tick is
 	# departure, not an incomplete lap. Arm only after meaningful progress.
 	if route_distance >= minf(15.0,track.route_length*0.25): finish_armed = true
@@ -313,6 +400,22 @@ func _notice_offset(track: NativeTrack, progress: float) -> float:
 	# like a bypass at the end of the lap.
 	return fposmod(progress-_start_progress-_progress[next_checkpoint]+track.route_length*0.5,track.route_length)-track.route_length*0.5
 
+func _on_notice_approach(point: Vector2) -> bool:
+	if not _spline_corridor or next_checkpoint >= _notice_approaches.size(): return false
+	# Legal offset lanes can project far along a returning arm. Protect their
+	# actual approach, rather than delaying every warning by that whole distance.
+	var key := Vector2i(point.floor())
+	var cells: Dictionary = _notice_approaches[next_checkpoint]
+	for y: int in range(-1,2):
+		for x: int in range(-1,2):
+			if cells.has(key+Vector2i(x,y)): return true
+	return false
+
+func _notice_bypassed(track: NativeTrack, point: Vector2, progress: float) -> bool:
+	var offset: float = _notice_offset(track,progress)
+	if not _spline_corridor: return offset > _notice_reach[next_checkpoint]
+	return offset > 1.0 and not _on_notice_approach(point)
+
 func _crossing_layer(track: NativeTrack, from: Vector2, to: Vector2, fraction: float, route_index: int, elevated: bool, previous_layer: int) -> bool:
 	# A gate can precede a ramp boundary within the same fast simulation tick.
 	# Preserve strict layer checks, using the state at the crossing rather than
@@ -327,11 +430,18 @@ func _crossing_layer(track: NativeTrack, from: Vector2, to: Vector2, fraction: f
 		layer = CreatorBridges.layer_at(track.creator_bridges,from.lerp(crossing,float(step)/steps),layer)
 	return layer
 
-func _route_progress_near(track: NativeTrack, point: Vector2, hint: int) -> float:
+func _route_progress_near(track: NativeTrack, point: Vector2, hint: int, layer: int = -1) -> float:
 	# Keep the collision resolver's branch at overlapping roads. A fresh
 	# nearest-vertex search can jump to a future bridge at the same position.
 	var best: float = INF
 	var progress: float = last_progress
+	var approach_best: float = INF
+	var approach_progress: float = last_progress
+	var approach_reach: float = 0.0
+	var check_layers: bool = layer >= 0 and (not track.creator_bridges.is_empty() or track.bridge_height != 0.0)
+	var target: float = _progress[next_checkpoint] if next_checkpoint < _progress.size() else track.route_length
+	var approach_low: float = (_progress[next_checkpoint-1]-_notice_reach[next_checkpoint-1] if next_checkpoint > 0 else -3.0)-target
+	var approach_high: float = _notice_reach[next_checkpoint] if next_checkpoint < _notice_reach.size() else 1.0
 	var hints: Array[int] = [hint]
 	# A shortcut return can reach the required gate while the collision hint
 	# still follows a distant branch. The last accepted gate anchors the
@@ -349,29 +459,43 @@ func _route_progress_near(track: NativeTrack, point: Vector2, hint: int) -> floa
 			if distance < best-0.000001:
 				best = distance
 				progress = track.route_cumulative[i]+edge.length()*t
+			if distance < approach_best-0.000001:
+				var projected: float = track.route_cumulative[i]+edge.length()*t
+				var approach_offset: float = wrapf(projected-_start_progress-target,-track.route_length*0.5,track.route_length*0.5)
+				if approach_offset >= approach_low and approach_offset <= approach_high and (not check_layers or _notice_layer_at(track,i,t) == bool(layer)):
+					approach_best = distance; approach_progress = projected
+					approach_reach = (track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0)+RaceRules.CHECKPOINT_RECOVERY_M
+	# Preserve the simulation branch on exact overlaps, but recover from a
+	# stale hint as soon as another road segment is physically closer.
+	if best < 0.000001: return progress
+	var key := Vector2i((point/NOTICE_CELL_M).floor())
+	for y: int in range(-2,3):
+		for x: int in range(-2,3):
+			for i: int in _notice_route_bins.get(key+Vector2i(x,y),PackedInt32Array()):
+				var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
+				var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
+				var distance: float = point.distance_squared_to(track.route[i]+edge*t)
+				if distance < best-0.000001:
+					best = distance
+					progress = track.route_cumulative[i]+edge.length()*t
+				if distance < approach_best-0.000001:
+					var projected: float = track.route_cumulative[i]+edge.length()*t
+					var approach_offset: float = wrapf(projected-_start_progress-target,-track.route_length*0.5,track.route_length*0.5)
+					if approach_offset >= approach_low and approach_offset <= approach_high and (not check_layers or _notice_layer_at(track,i,t) == bool(layer)):
+						approach_best = distance; approach_progress = projected
+						approach_reach = (track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0)+RaceRules.CHECKPOINT_RECOVERY_M
+	# Nearby arms can share both X/Z and the same road layer. Prefer the
+	# required approach while the car is still in its recovery corridor;
+	# outside it, the physically reached branch supplies bypass evidence.
+	if approach_best <= approach_reach*approach_reach: return approach_progress
 	return progress
 
-func _update_display_progress(track: NativeTrack, point: Vector2, hint: int) -> void:
+func _update_display_progress(track: NativeTrack, point: Vector2, hint: int, layer: int = -1) -> void:
 	# Display/notice progress only; acceptance remains swept gates.
-	last_progress = _route_progress_near(track,point,hint)
+	last_progress = _route_progress_near(track,point,hint,layer)
 	var low: float = _progress[next_checkpoint-1] if next_checkpoint > 0 else 0.0
 	var high: float = _progress[next_checkpoint] if next_checkpoint < _progress.size() else track.route_length
 	route_distance = clampf(fposmod(last_progress-_start_progress,track.route_length),low,high)
 
-func shortcut_notice_active() -> bool: return false
 func race_time_seconds() -> float:
 	return lap_start_time if finished else float(elapsed_ticks)/tick_rate
-
-static func entry_fraction(rect: Rect2, from: Vector2, to: Vector2) -> float:
-	var lo: float = 0.0
-	var hi: float = 1.0
-	var motion: Vector2 = to-from
-	for axis: int in range(2):
-		if absf(motion[axis]) < 0.000001:
-			if from[axis] < rect.position[axis] or from[axis] > rect.end[axis]: return -1.0
-		else:
-			var a: float = (rect.position[axis]-from[axis])/motion[axis]
-			var b: float = (rect.end[axis]-from[axis])/motion[axis]
-			lo = maxf(lo,minf(a,b))
-			hi = minf(hi,maxf(a,b))
-	return lo if lo <= hi else -1.0

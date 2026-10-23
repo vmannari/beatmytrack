@@ -18,6 +18,7 @@ class CatalogClient extends Client:
 	var requests: Array[String] = []
 	var hold_search: bool = false
 	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
+		if path == "/community/terms": return {"ok":true,"data":{"accepted":true}}
 		if not path.begins_with("/tracks?"): return {"ok":false,"error":"offline fixture","data":{}}
 		requests.append(path)
 		var data: Dictionary

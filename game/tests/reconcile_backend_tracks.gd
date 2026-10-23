@@ -34,10 +34,6 @@ func run() -> void:
 	flow.library = TrackLibrary.new(directory.path_join("tracks"))
 	flow.records = LocalRecords.new(directory.path_join("records.json"))
 	flow.records.load_records()
-	flow.legacy_directories = ["user://tracks"]
-	if DirAccess.dir_exists_absolute("user://players"):
-		for profile: String in DirAccess.get_directories_at("user://players"):
-			flow.legacy_directories.append("user://players".path_join(profile).path_join("tracks"))
 	root.add_child(flow)
 	await flow.process_jobs()
 	var record_paths: Array[String] = ["user://local_records.json"]

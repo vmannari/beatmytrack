@@ -123,6 +123,7 @@ func run() -> void:
 	await _check_clean_result()
 	_check_records()
 	await _check_editor_save_prompt()
+	await _check_editor_return()
 	app.queue_free()
 	await process_frame
 	_finish()
@@ -141,11 +142,99 @@ func _check_editor_save_prompt() -> void:
 	check(dialog != null and dialog.visible, "leaving an unsaved editor opens the Save, Discard or Cancel prompt")
 	var field: LineEdit = dialog.find_child("SaveDraftName", true, false) if dialog != null else null
 	check(field != null and field.text.is_empty() and dialog.get_ok_button().disabled, "new draft requires a name before Save is available")
+	if dialog != null: dialog.canceled.emit()
+	await process_frame
+	check(app.get("screen") == "create", "Cancel keeps the editor open")
+	app.call("_request_editor_exit")
+	await process_frame
+	dialog = (app.get("root_ui") as Node).find_child("SaveChangesDialog", true, false)
 	if dialog != null: dialog.custom_action.emit(&"discard")
 	await process_frame
 	await process_frame
-	check(app.get("screen") == "tracks", "Discard completes the requested editor exit on Race")
+	check(app.get("screen") == "biome", "Discard returns to the Create biome choice that opened the editor")
 	check((app.get("library") as TrackLibrary).load_wip(draft.id).is_empty(), "Discard removes the autosaved recovery draft")
+	await _capture("editor-close-biome")
+
+
+func _check_editor_return() -> void:
+	# A clean close uses the same parent after an editor rebuild (also used by practice).
+	app.call("_select_creation_biome","winter")
+	await process_frame
+	app.document.name = "Return biome fixture"
+	check(app.call("_save_track_now"), "biome return fixture saves successfully")
+	app.call("_show_screen","create")
+	await process_frame
+	(app.root_ui.find_child("CloseEditor",true,false) as Button).pressed.emit()
+	await process_frame
+	check(app.screen == "biome" and app.document.theme == "winter", "clean close returns to the selected biome after rebuilding the editor")
+	# Use a second page and a non-first selection so restoration cannot pass by defaults.
+	for index: int in range(7):
+		var fixture: Dictionary = TrackDocument.create_blank()
+		fixture.id = TrackLibrary.unique_id()
+		fixture.name = "Return draft fixture %02d" % index
+		check(app.library.save_document(fixture) == OK, "return draft fixture is isolated and saved")
+	app.call("_open_drafts")
+	await process_frame
+	var browser: Node = app.root_ui.find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser), "draft return gallery finishes its initial scan")
+	var search: LineEdit = browser.find_child("DraftSearch",true,false)
+	search.text = "Return draft fixture"
+	search.text_changed.emit(search.text)
+	(browser.next as Button).pressed.emit()
+	await process_frame
+	var tiles: Array[Node] = browser.gallery.find_children("Draft_*","TrackTile",true,false)
+	check(tiles.size() == 3, "filtered draft fixture reaches the second page")
+	if tiles.size() < 2: return
+	(tiles[1] as Button).pressed.emit()
+	var selected_id: String = str(browser.selection.id)
+	await _capture("editor-close-drafts-before")
+	for departure: String in ["clean","discard","save"]:
+		(browser.find_child("ContinueEditing",true,false) as Button).pressed.emit()
+		await process_frame
+		check(app.screen == "create" and str(app.document.id) == selected_id, "Edit track opens the selected filtered draft: "+departure)
+		if departure == "clean":
+			await _capture("editor-close-drafts-editor")
+		else:
+			# Filesystem timestamps have one-second precision; force Save to reorder this draft.
+			if departure == "save": await create_timer(1.1).timeout
+			app.document.name = "Return draft fixture changed "+departure
+			check(app.call("_save_draft") == OK, "changed return draft autosaves: "+departure)
+		(app.root_ui.find_child("CloseEditor",true,false) as Button).pressed.emit()
+		await process_frame
+		if departure != "clean":
+			var dialog: ConfirmationDialog = app.root_ui.find_child("SaveChangesDialog",true,false)
+			check(dialog != null and app.screen == "create", "dirty close waits for the departure choice: "+departure)
+			if dialog == null: return
+			if departure == "save": dialog.confirmed.emit()
+			else: dialog.custom_action.emit(&"discard")
+			await process_frame
+		check(app.screen == "drafts", "editor closes to its original draft page: "+departure)
+		browser = app.root_ui.find_child("DraftBrowser",true,false)
+		check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser), "returned draft gallery finishes scanning: "+departure)
+		if browser == null: return
+		check(browser.query == "Return draft fixture" and str(browser.selection.get("id","")) == selected_id, "returned gallery preserves search and selected track: "+departure)
+		check(browser.gallery.find_child("Draft_"+selected_id,true,false) != null and (browser.page == 1 or departure == "save"), "returned gallery keeps the selected draft visible and follows a saved draft if sorting moves it: "+departure)
+		check((browser.find_child("DraftSearch",true,false) as LineEdit).text == browser.query, "restored search field matches its active filter: "+departure)
+		if departure == "save":
+			check(browser.page == 0, "saved draft is revealed on its new first page after modification-time sorting")
+			check(app.library.load_document(selected_id).name == "Return draft fixture changed save", "Save commits the edited draft before returning")
+	await _capture("editor-close-drafts-after")
+	# Loading another draft through an open editor must not make Back reopen that editor.
+	app.call("_show_screen","create")
+	await process_frame
+	app.call("_open_drafts")
+	await process_frame
+	browser = app.root_ui.find_child("DraftBrowser",true,false)
+	check(await preload("res://tests/draft_scan_wait.gd").ready(self,browser), "editor Load action finishes scanning")
+	app.call("_load_saved_document",selected_id)
+	await process_frame
+	app.call("_request_editor_exit")
+	await process_frame
+	browser = app.root_ui.find_child("DraftBrowser",true,false)
+	check(app.screen == "drafts" and browser != null, "closing a draft loaded from the editor returns to Load track")
+	if browser != null: browser.back_requested.emit()
+	await process_frame
+	check(app.screen == "biome", "Back from returned Load track reaches Create without reopening the closed editor")
 
 
 func _set_records_path(records: RefCounted, path: String) -> bool:
@@ -180,7 +269,7 @@ func _check_library() -> void:
 	browser.search_dialog.close()
 	await process_frame
 	await process_frame
-	await _viewport_tap((browser.grid.get_child(0) as Button).get_global_rect().get_center())
+	await _viewport_tap((browser.list_grid.get_child(0) as Button).get_global_rect().get_center())
 	while browser.selecting: await process_frame
 	var chosen: NativeTrack = app.get("selected_track")
 	check(chosen.identity == "cloud_fixture-track" and chosen.metadata.cloud_version == "00000000-0000-4000-8000-000000000001","a route card selects the stable track and exact immutable publication: "+chosen.identity+" / "+app.cloud.last_error)
@@ -224,6 +313,9 @@ func _check_library() -> void:
 
 
 func _check_input_and_history() -> void:
+	var preparation_deadline: int = Time.get_ticks_msec()+60000
+	while (app.canvas.preparing or app.editor_world._building or app.editor_preview_thread != null) and Time.get_ticks_msec() < preparation_deadline: await process_frame
+	check(not app.canvas.preparing and not app.editor_world._building and app.editor_preview_thread == null,"editor preparation finishes before gesture input is exercised")
 	_button(app.get("root_ui"), "Track").pressed.emit()
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.document.pieces.insert(0,RoadPieces.create("straight",Vector2(-25,-12)))
@@ -500,9 +592,13 @@ func _check_clean_result() -> void:
 	await process_frame
 	var resumed_browser: TrackBrowser = resumed.get("root_ui").find_child("TrackBrowser",true,false)
 	while resumed_browser.loading or resumed_browser.selecting: await process_frame
+	resumed_browser._select(resumed_browser.matches[0])
 	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the active handling PB after loading a new app instance")
 	resumed.call("_show_screen", "tracks")
 	await process_frame
+	resumed_browser = resumed.get("root_ui").find_child("TrackBrowser",true,false)
+	while resumed_browser.loading: await process_frame
+	resumed_browser._select(resumed_browser.matches[0])
 	check((resumed.get("selected_track") as NativeTrack).identity == track.identity,"relaunch resumes the last ordinary race circuit")
 	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == "01:48.816","returning Race presents the actual stored five-lap time to beat")
 	await _capture("returning-race-home")

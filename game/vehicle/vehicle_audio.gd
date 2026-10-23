@@ -4,7 +4,7 @@ extends Node
 const BANK: String = "res://assets/audio/vehicles/"
 const COMPRESSED_LOOPS: Array[String] = ["road", "wind", "water", "sand_roll", "sand", "sand_debris", "kerb_roll", "loose", "grass"]
 const IMPACTS: Array[String] = ["impact_0","impact_1","impact_2"]
-const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis"]
+const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis","snow_hit"]
 const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
 const GRIT_SPACING: Array[float] = [4.2,6.6,5.1,3.7]
 const STREAM_CACHE_BYTES: int = 24 * 1024 * 1024
@@ -55,6 +55,10 @@ var impact_count: int = 0
 var countdown_active: bool = false
 var sand_frequency: float = 0.94
 var contact_enabled: bool = false
+var snow_touching: bool = false
+var snow_cooldown: float = 0.0
+var snow_count: int = 0
+var snow_release: float = 0.0
 var visible_contact := VisibleContactAudio.new()
 var use_windows_impacts: bool = true
 var windows_impacts := WindowsImpactAudio.new()
@@ -76,6 +80,7 @@ func _ready() -> void:
 	# Debris cannot steal a collision voice or truncate its settling tail.
 	for i: int in range(2): debris_events.append(_player("DebrisEvent%d"%i,"Vehicle"))
 	for clip: String in IMPACTS+GRIT+ ["chassis"]: _stream(clip,false)
+	levels.snow = 0.0
 	if use_windows_impacts:
 		var impact_samples: Array[AudioStreamWAV] = []
 		for clip: String in BODY_CLIPS: impact_samples.append(_stream(clip,false) as AudioStreamWAV)
@@ -141,6 +146,11 @@ func reset() -> void:
 	windows_impacts.reset()
 	model.reset()
 	surface_model.reset()
+	snow_touching = false
+	snow_cooldown = 0.0
+	snow_count = 0
+	snow_release = 0.0
+	levels.snow = 0.0
 	impact_cooldown = 0.0
 	countdown_active = false
 	contact_enabled = false
@@ -267,6 +277,7 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
 	surface_model.sample_contacts(state,track,grounded)
 	var speed: float = maxf(incoming.length(),state.velocity.length())
 	var theme: String = str(track.metadata.get("theme","pine")) if track!=null else "pine"
+	_observe_snow(state,speed,theme,grounded)
 	if not grounded or theme=="desert" or surface_model.grass==0.0:
 		levels.grass = 0.0
 		(layers.grass as AudioStreamPlayer).volume_linear = 0.0
@@ -302,6 +313,47 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
 			kerb_count += 1
 			kerb_cooldown = .08
 	kerb_touching = current>0.0
+
+func _ensure_snow() -> void:
+	if layers.has("snow"): return
+	# Winter owns one additional loop at most; other biomes keep their voices.
+	var player: AudioStreamPlayer = _player("Snow","Vehicle")
+	player.stream = _stream("snow",true)
+	layers.snow = player
+	_stream("snow_hit",false)
+	if output_enabled: player.play()
+
+func _snow_gain(speed: float) -> float:
+	var movement: float = smoothstep(.15,2.0,speed)
+	var rolling: float = smoothstep(.5,24.0,speed)
+	return movement*((.08+rolling*.12)*surface_model.snow+(.24+rolling*.36)*sqrt(maxf(surface_model.snow_bank,surface_model.snow_body)))
+
+func _snow_pitch(speed: float) -> float:
+	return .78+.36*smoothstep(.5,28.0,speed)
+
+func _observe_snow(state: VehicleState, speed: float, theme: String, grounded: bool) -> void:
+	snow_cooldown = maxf(0.0,snow_cooldown-VehicleSimulation.STEP)
+	if theme=="winter": _ensure_snow()
+	var contact: float = maxf(surface_model.snow_bank,surface_model.snow_body)
+	var touching: bool = grounded and theme=="winter" and not state.track_elevated and contact>.08
+	if touching and not snow_touching and speed>.6 and snow_cooldown==0.0:
+		# Recorded compressed snow, using the existing bounded event pool.
+		_event("snow_hit",lerpf(.16,.68,smoothstep(.6,22.0,speed))*sqrt(contact),.90)
+		snow_count += 1
+		snow_cooldown = .18
+	# The physical seven-point sampler can briefly clear between bumper and
+	# axle contacts on the same ridge. Rearm only after a short clear interval;
+	# the continuous layer still follows current contact without a stale tail.
+	if touching: snow_release = .35
+	else: snow_release = maxf(0.0,snow_release-VehicleSimulation.STEP)
+	snow_touching = touching or (snow_touching and snow_release>0.0)
+	if not grounded or theme!="winter" or state.track_elevated:
+		snow_touching = false
+		snow_release = 0.0
+	if not layers.has("snow"): return
+	var player: AudioStreamPlayer = layers.snow
+	player.stream_paused = false
+	_layer("snow",_snow_gain(speed),_snow_pitch(speed),VehicleSimulation.STEP,not grounded or theme!="winter" or state.track_elevated or speed<=.15 or (surface_model.snow==0.0 and contact==0.0))
 
 func _grass_gain(state: VehicleState, speed: float) -> float:
 	var movement: float = smoothstep(.35,3.0,speed)
@@ -390,6 +442,10 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	for player: AudioStreamPlayer in engine_load+engine_coast+events+debris_events: player.stream_paused = silent
 	for layer: String in layers: (layers[layer] as AudioStreamPlayer).stream_paused = silent
 	if silent:
+		snow_touching = false
+		snow_release = 0.0
+		levels.snow = 0.0
+		if layers.has("snow"): (layers.snow as AudioStreamPlayer).volume_linear = 0.0
 		bridge_layer_known = false
 		pending_scrape = 0.0
 		pending_scrape_speed = 0.0
@@ -449,13 +505,17 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	var theme: String = str(track.metadata.get("theme","pine")) if track != null else "pine"
 	var desert: bool = theme=="desert"
 	surface_model.sample(state,frame,track,dt,grounded,shared_contacts)
+	if theme=="winter": _ensure_snow()
+	if layers.has("snow"):
+		_layer("snow",_snow_gain(speed),_snow_pitch(speed),dt,not grounded or theme!="winter" or state.track_elevated or speed<=.15 or (surface_model.snow==0.0 and surface_model.snow_bank==0.0 and surface_model.snow_body==0.0))
+	if not grounded or theme!="winter" or state.track_elevated: snow_touching = false
 	var kerb_contact: float = maxf(surface_model.kerb,pending_kerb) if grounded and speed>.5 and not desert else 0.0
 	if kerb_contact>0.0:
 		held_kerb = kerb_contact
 		kerb_hold = .04
 	else: kerb_hold = maxf(0.0,kerb_hold-dt)
 	if not grounded or speed<=.5 or desert: kerb_hold = 0.0
-	# Keep recorded rubber/body colour across speeds. Extreme resampling made
+	# Keep tyre/body character across speeds. Extreme resampling made
 	# slow kerbs sound like separate knocks and fast kerbs like a thin buzz.
 	_layer("kerb_roll",1.5*movement*(.25+rolling*.35)*sqrt(held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
 	pending_kerb = 0.0
@@ -490,8 +550,9 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	impact_cooldown = maxf(0,impact_cooldown-dt)
 	chassis_cooldown = maxf(0,chassis_cooldown-dt)
 	if not was_silent and not countdown:
-		if last_jump>0.0 and state.jump_height<=0.0 and last_jump_velocity< -0.5:
-			_event("chassis",lerpf(0.15,0.55,clampf(-last_jump_velocity/10.0,0,1)),0.76)
+		var landing_speed: float = preload("res://vehicle/bridge_flight.gd").landing_feedback(state) if state.bridge_descending else -last_jump_velocity
+		if last_jump>0.0 and state.jump_height<=0.0 and landing_speed>0.5:
+			_event("chassis",lerpf(0.15,0.55,clampf(landing_speed/10.0,0,1)),0.76)
 	last_tick = state.tick
 	last_jump = state.jump_height
 	last_jump_velocity = state.jump_velocity
@@ -515,7 +576,7 @@ func _present_grit(speed: float, rolling: float, slip: float, delta: float, on_s
 		grit_cooldown = 0.12 # Bounded foley; no unbounded catch-up burst after a slow frame.
 
 func _layer(key: String, desired: float, pitch: float, delta: float, immediate_silence: bool) -> void:
-	var response: float = 120.0 if key in ["grass","kerb_roll"] else (32.0 if key=="scrape" else 14.0)
+	var response: float = 120.0 if key in ["grass","kerb_roll","snow"] else (32.0 if key=="scrape" else 14.0)
 	levels[key] = 0.0 if immediate_silence else lerpf(float(levels[key]),desired,1.0-exp(-delta*response))
 	var player: AudioStreamPlayer = layers[key]
 	player.volume_linear = maxf(0.0,float(levels[key]))

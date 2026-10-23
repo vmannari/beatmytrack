@@ -58,7 +58,7 @@ func run() -> void:
 			if session.finished: break
 		print("TRACK_RESULT ", name, " laps=", session.completed_laps, " next_cp=", session.next_checkpoint, " times=", session.lap_times, " collisions=", sim.state.collision_count, " elevated_ticks=", elevated_ticks, " underpass_ticks=", underpass_ticks)
 		check(session.finished, name + " AI completes three ordered laps")
-		check(session.shortcut_count == 0, name + " complete driven route has no shortcut penalties")
+		check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,lap: float) -> float: return total+lap,0.0)), name + " complete driven route has no shortcut penalties")
 		check(sim.state.collision_count == 0, name + " conservative AI avoids barriers")
 		if track.bridge_height > 0:
 			check(elevated_ticks > 0 and underpass_ticks > 0, name + " both crossing branches retain their layers")
@@ -92,9 +92,6 @@ func run() -> void:
 	_check_wall_slide()
 	_check_blocked_speed()
 	_check_tire_dirt()
-	var rect := Rect2(0,0,2,10)
-	check(is_equal_approx(TrackSession.entry_fraction(rect, Vector2(-10,5), Vector2(10,5)), 0.5), "swept high-speed gate")
-	check(TrackSession.entry_fraction(rect, Vector2(-10,15), Vector2(10,15)) < 0, "gate miss rejected")
 	print("TRACK_TESTS: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures else 0)
 

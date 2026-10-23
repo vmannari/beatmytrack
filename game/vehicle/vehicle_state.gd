@@ -8,6 +8,10 @@ var bump_transfer := Vector2.ZERO # canonical nose pitch and pitch velocity
 var jump_height: float = 0.0
 var jump_velocity: float = 0.0
 var jump_cooldown: int = 0
+var bridge_airborne: bool = false
+var bridge_gravity: float = 22.0
+var bridge_descending: bool = false # Retained through landing for per-crest cooldown.
+var bridge_landing_speed: float = 0.0 # Presentation observer; relative to the landing deck.
 var loose_tyres: Array = []
 var light_props: Array = []
 var prop_destruction: Array = []
@@ -61,7 +65,7 @@ func snapshot() -> Array:
 	var result: Array = [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
 		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]
 	result.append(loose_tyres.duplicate(true))
-	result.append([jump_height,jump_velocity,jump_cooldown])
+	result.append([jump_height,jump_velocity,jump_cooldown,bridge_airborne,bridge_gravity,bridge_descending])
 	result.append(light_props.duplicate(true))
 	result.append([tire_oil,tire_water])
 	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])

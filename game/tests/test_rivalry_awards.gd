@@ -107,7 +107,7 @@ func visuals_awards() -> void:
 	while not app.startup_complete: await process_frame
 	app.records.settings.vehicle_liveries = {"compact":{"version":1,"colors":{"body":"993d3d","accent":"e4ba59"}}}
 	var saved_settings: String = JSON.stringify(app.records.settings)
-	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1536,1024),Vector2i(1600,720)]:
+	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1536,1024),Vector2i(1600,720),Vector2i(1927,865),Vector2i(1848,937)]:
 		root.size = dimensions
 		for kind: String in ["perfect","champion","podium","middle","unranked","tied"]:
 			app.rivalry.model.apply_snapshot(awarded_snapshot(kind))
@@ -118,6 +118,7 @@ func visuals_awards() -> void:
 			await settle()
 			var ceremony: Control = app.content.find_child("WeeklyRivalryFinale",true,false)
 			check(ceremony != null,"completed overview mounts the awards ceremony")
+			check_card_bounds(ceremony,"%s %dx%d" % [kind,dimensions.x,dimensions.y])
 			var next: Button = ceremony.find_child("RivalryNextWeek",true,false)
 			var share: Button = ceremony.find_child("RivalryShareResults",true,false)
 			check(not next.disabled and not share.disabled,"completed authoritative ceremony enables sharing and Continue")
@@ -185,6 +186,18 @@ func visuals_awards() -> void:
 	check(JSON.stringify(app.records.settings) == saved_settings,"ceremony and sharing never alter local paint, condition or profile settings")
 	app.queue_free()
 	await process_frame
+
+func check_card_bounds(ceremony: Control, context: String) -> void:
+	var body: ScrollContainer = ceremony.find_child("RivalryFinaleBody",true,false)
+	var viewport: Rect2 = body.get_global_rect()
+	for id: String in ["RivalryTracksPanel","RivalryDriversPanel","RivalryWeeklyHighlights"]:
+		var card: Control = ceremony.find_child(id,true,false)
+		var rect: Rect2 = card.get_global_rect()
+		check(rect.position.y >= viewport.position.y-0.5 and rect.end.y <= viewport.end.y+0.5,context+" complete "+id+" fits inside the visible body")
+		for label: Label in card.find_children("*","Label",true,false):
+			var text_rect: Rect2 = label.get_global_rect()
+			check(text_rect.position.y >= viewport.position.y-0.5 and text_rect.end.y <= viewport.end.y+0.5,context+" "+id+" text remains fully visible: "+label.text)
+	check(not body.get_v_scroll_bar().is_visible_in_tree(),context+" shows all finale cards without body scrolling")
 
 func check_decoration_alignment(ceremony: Control, kind: String) -> void:
 	var heading: Label = ceremony.title

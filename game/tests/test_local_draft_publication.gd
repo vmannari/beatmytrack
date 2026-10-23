@@ -17,7 +17,10 @@ class CountingClient extends Client:
 		if path == "/bootstrap":
 			if switch_on_bootstrap: player = {"id":"other-player"}
 			return {"ok":true,"status":200,"data":{"publication_workflow_version":2}}
+		if path == "/community/terms": return {"ok":true,"status":200,"data":{"accepted":true}}
+		if path == "/me/entitlements": return {"ok":true,"status":200,"data":{"publishing_slots":1}}
 		if path == "/publications":
+			assert(body.contract.tick_rate is int and body.contract.tick_rate == 120,"journal tick rate retains its strict wire integer")
 			if fail_upload:
 				fail_upload = false
 				return {"ok":false,"status":0,"error":"lost publication response"}
@@ -63,7 +66,6 @@ func run() -> void:
 	document.name = "Local creator loop"
 	document.creator = "Fixture Owner"
 	check(flow.library.save_document(document) == OK and flow.library.save_wip(document) == OK,"draft and autosave remain local")
-	flow.defer_sync(document)
 	await flow.process_jobs()
 	check(client.requests.is_empty(),"Save and idle processing issue zero network requests")
 	var exact: Dictionary = await flow.prepare_test(document)
@@ -163,6 +165,6 @@ func run() -> void:
 	check(not flow.stage(fenced,frames,"compact",null,"",proof).is_empty(),"fenced creator recording saved locally")
 	client.switch_on_bootstrap = true
 	check(not await flow.request_publish(fenced),"account change during capability read cannot upload another account's draft")
-	check(client.requests.all(func(row: Dictionary) -> bool: return row.path == "/bootstrap" or row.path == "/publications" or row.path.begins_with("/me/publications/")),"network surface contains publication processing only")
+	check(client.requests.all(func(row: Dictionary) -> bool: return row.path in ["/bootstrap","/community/terms","/me/entitlements","/publications"] or row.path.begins_with("/me/publications/")),"network surface contains publication processing, slot ownership and consent only")
 	print("LOCAL_DRAFT_PUBLICATION_TEST ",JSON.stringify({"checks":checks,"failures":failures,"creator_ticks":frames.size(),"samples":proof.samples.size()}))
 	quit(1 if failures else 0)

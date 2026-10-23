@@ -252,9 +252,10 @@ func clear_search() -> void:
 
 func refresh_results() -> void:
 	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
-	if is_instance_valid(server_pages) and server_pages.total >= 0 and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_pages.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
+	if is_instance_valid(server_pages) and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_pages.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
 		matches.clear()
-		for metadata: Dictionary in server_pages.entries(): matches.append(cloud.entry_from_metadata(metadata))
+		if server_pages.total >= 0:
+			for metadata: Dictionary in server_pages.entries(): matches.append(cloud.entry_from_metadata(metadata))
 	for index: int in range(scopes.size()):
 		var active: bool = index == int(draft.get("search_kind",0))
 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10232f"),10)
@@ -264,8 +265,10 @@ func refresh_results() -> void:
 		scopes[index].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.TEXT)
 		scopes[index].add_theme_color_override("font_focus_color",MenuStyle.INK if active else MenuStyle.TEXT)
 	count_label.text = "%d track%s found" % [matches.size(),"" if matches.size() == 1 else "s"]
-	if is_instance_valid(server_pages) and server_pages.total >= 0:
-		count_label.text = "%d track%s found" % [int(server_pages.total),"" if int(server_pages.total) == 1 else "s"]
+	if is_instance_valid(server_pages):
+		if server_pages.total >= 0:
+			count_label.text = "%d track%s found" % [int(server_pages.total),"" if int(server_pages.total) == 1 else "s"]
+			if server_pages.has_method("status_text"): count_label.text = server_pages.status_text()
 		if server_pages.loading: count_label.text = "Searching…"
 		if not server_pages.error.is_empty(): count_label.text = server_pages.error
 	apply_button.text = "SHOW %d TRACK%s" % [matches.size(),"" if matches.size() == 1 else "S"]
@@ -274,7 +277,11 @@ func refresh_results() -> void:
 		child.queue_free()
 	for entry: Dictionary in matches.slice(0,shown): _result(entry)
 	if matches.is_empty():
-		var empty := MenuStyle.label("No matching tracks.\nTry another name or creator, or change your filters.",18,true)
+		var empty_text: String = "No matching tracks.\nTry another name or creator, or change your filters."
+		if is_instance_valid(server_pages):
+			if server_pages.loading: empty_text = "Searching tracks…"
+			elif not server_pages.error.is_empty(): empty_text = server_pages.error
+		var empty := MenuStyle.label(empty_text,18,true)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		results.add_child(empty)
 	more_button.visible = keyboard_height <= 0.0 and matches.size() > shown
@@ -282,6 +289,7 @@ func refresh_results() -> void:
 	if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size():
 		more_button.visible = keyboard_height <= 0.0
 		more_button.text = "BROWSE ALL %d MATCHES" % int(server_pages.total)
+		if server_pages.has_method("windowed"): more_button.text = "BROWSE MATCHES"
 	_trap_focus()
 
 func _result(entry: Dictionary) -> void:
@@ -384,8 +392,15 @@ func _queue_search() -> void:
 
 func _search_global() -> void:
 	if cloud == null or not visible or not cloud.paged_discovery_available(): return
+	var use_index: bool = cloud.has_method("indexed_discovery_available") and cloud.indexed_discovery_available()
+	if is_instance_valid(server_pages) and server_pages.has_method("windowed") != use_index:
+		cloud.client.cancel_public_reads(server_pages.get_instance_id())
+		server_pages.generation += 1
+		remove_child(server_pages)
+		server_pages.queue_free()
+		server_pages = null
 	if not is_instance_valid(server_pages):
-		server_pages = preload("res://backend/discovery_pages.gd").new()
+		server_pages = preload("res://backend/discovery_windows.gd").new() if use_index else preload("res://backend/discovery_pages.gd").new()
 		server_pages.client = cloud.client
 		add_child(server_pages)
 		server_pages.changed.connect(func() -> void:

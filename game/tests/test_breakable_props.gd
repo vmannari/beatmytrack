@@ -32,7 +32,7 @@ func separate(state: VehicleState, objects: Array) -> void:
 func run() -> void:
 	config = VehicleCatalog.config("compact")
 	for biome: String in TrackTheme.IDS:
-		check(not CreatorCatalog.filtered("Props","Hay bale",[],biome).is_empty(),"hay available in "+biome)
+		check(CreatorCatalog.filtered("Props","Hay bale",[],biome).is_empty() == (biome in ["desert","winter"]),"hay follows the curated biome collections in "+biome)
 	var doc: Dictionary = TrackDocument.create_default(); doc["automatic_scenery"] = false
 	doc.objects = [object("hay_bale"),object("crate")]
 	check(TrackDocument.validate(doc).is_empty(),"both bounded object documents validate")

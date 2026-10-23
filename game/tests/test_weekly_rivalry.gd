@@ -224,7 +224,7 @@ func run() -> void:
 		await settle()
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
 		var empty_page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
-		check(empty_page.ghost_choice == 3,"missing recordings start without a ghost")
+		check(empty_page.ghost_choice == 0 and app.rivalry.model.ghost_target(0,0).is_empty(),"missing recordings retain automatic targeting without inventing a ghost")
 		app.rivalry.model.apply_snapshot(unranked)
 		app.rivalry_section = "overview"
 		app._rivalry()

@@ -128,6 +128,7 @@ func run() -> void:
 	browser.size = root.get_visible_rect().size
 	root.add_child(browser)
 	for _frame: int in range(6): await process_frame
+	browser._select(entry)
 	var first_id: String = str(browser.grid.get_child(0).entry.id)
 	pages.desired_index = 20
 	await pages._fetch(1)

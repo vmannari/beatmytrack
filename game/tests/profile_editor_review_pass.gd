@@ -94,7 +94,7 @@ func stale_autosave() -> void:
 	record("autosave_return_to_saved",{"current_position":baseline.objects[0].position,"queued_after_return":queued_after_return,
 		"unsaved_before_exit":unsaved,"save_status":status,"screen_after_exit":app.screen,"wip_position":on_disk.objects[0].position,
 		"reopened_position":entries[0].document.objects[0].position,"save_error":app.editor_save_error})
-	check(app.screen == "tracks","exit proceeds through the actual UI path")
+	check(app.screen == "biome","exit returns to Create through the actual UI path")
 	app.queue_free(); await process_frame
 
 func population_cancellation() -> void:

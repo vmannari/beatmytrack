@@ -60,7 +60,9 @@ func run() -> void:
 		app._show_screen("settings")
 		check(not is_instance_valid(app.outgoing_menu_page) and is_zero_approx(app.root_ui.position.x), "leaving page tabs clears transition")
 		await show("tracks")
-		var point := Vector2(dimensions.x * 0.6, 180)
+		# The full track list owns content gestures. Test primary page gestures
+		# over the stationary logo, outside all scrollable controls.
+		var point := Vector2(180,50)
 		await check_live_slide(point, dimensions)
 		# Android can deliver the end of a forward stroke only in its UP event.
 		for last_move: float in [0.0, 4.0, 14.0]:
@@ -123,6 +125,8 @@ func run() -> void:
 		touch(point + Vector2(20,0), false, false, 1)
 		await settle()
 		check(app.screen == "tracks", "two fingers do not navigate")
+		open_track_view()
+		await settle()
 		var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
 		check(gallery != null and gallery.get_h_scroll_bar().max_value > gallery.size.x, "populated carousel can scroll")
 		var begin: Vector2 = gallery.get_global_rect().get_center()
@@ -228,6 +232,8 @@ func check_engine_button_swipe(dimensions: Vector2i) -> void:
 	await settle()
 	check(app.document.theme == "desert", "real desktop mouse clicks remain available")
 	await show("tracks")
+	open_track_view()
+	await settle()
 	var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
 	point = gallery.get_global_rect().get_center()
 	engine_touch(point,true)
@@ -237,6 +243,11 @@ func check_engine_button_swipe(dimensions: Vector2i) -> void:
 	engine_touch(point-Vector2(180,0),false)
 	await settle()
 	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "engine-emulated carousel input retains its scrolling ownership")
+
+func open_track_view() -> void:
+	var browser: TrackBrowser = app.root_ui.find_child("TrackBrowser",true,false)
+	browser._open_track_view()
+	browser._show_detail()
 
 func engine_touch(point: Vector2, pressed: bool) -> void:
 	var event := InputEventScreenTouch.new()
@@ -435,14 +446,14 @@ func check_live_slide(point: Vector2, dimensions: Vector2i) -> void:
 	app._show_screen("tracks")
 	await process_frame
 	await process_frame
-	var gallery: ScrollContainer = app.menu_body.find_child("TrackCarousel",true,false)
+	var gallery: ScrollContainer = app.menu_body.find_child("TrackList",true,false)
 	# Its current rectangle is displaced by the animation. Press where it settles.
 	var carousel_point: Vector2 = gallery.get_global_rect().get_center() - Vector2(app.menu_body.position.x,0)
 	touch(carousel_point,true)
-	drag(carousel_point + Vector2(-150,0))
-	touch(carousel_point + Vector2(-150,0),false)
+	drag(carousel_point + Vector2(0,-150))
+	touch(carousel_point + Vector2(0,-150),false)
 	await settle()
-	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel touch during page arrival settles first and retains scrolling ownership")
+	check(app.screen == "tracks" and gallery.scroll_vertical > 0, "track-list touch during page arrival settles first and retains scrolling ownership")
 
 func check_edge(screen: String, point: Vector2, direction: int, dimensions: Vector2i) -> void:
 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()

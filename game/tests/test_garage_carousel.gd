@@ -25,6 +25,15 @@ func capture(label: String) -> void:
 	await settle()
 	check(root.get_texture().get_image().save_png(output.path_join(label + ".png")) == OK, "capture " + label)
 
+func wash_exterior() -> void:
+	page.showroom.weathering.wash(Vector3(-0.9,0.5,0.1),0.1)
+	page._cleanliness.is_clean(page.showroom)
+	page.showroom.weathering.begin_wash_batch()
+	for point: Vector3 in page._cleanliness.points: page.showroom.weathering.wash(point,8.0)
+	page.showroom.weathering.end_wash_batch()
+	page._save_condition()
+	page._show_section("customise")
+
 func touch(point: Vector2, down: bool, canceled: bool = false) -> void:
 	var event := InputEventScreenTouch.new()
 	event.position = point
@@ -190,6 +199,13 @@ func _run() -> void:
 		await create_timer(0.55).timeout
 		check(not page.showroom.trophy_view and page.showroom.camera.transform.is_equal_approx(car_view), "rapid mode changes cancel stale camera motion and return to the car")
 		await tap(page.find_child("GarageCustomise", true, false))
+		check(page._customisation_locked and page.tools.find_child("GarageWashRequired",true,false) != null,"dirty car clearly requires washing before customisation")
+		var original_paint: Dictionary = page.draft.duplicate(true)
+		page._select_livery(0)
+		check(page.draft == original_paint,"dirty livery attempt retains saved paint")
+		# Continue the original editing/navigation regressions with a car whose
+		# actual exterior has been manually scrubbed; historical dirt stays 0.85.
+		wash_exterior()
 		await tap(page.find_child("LiveryMenu_livery", true, false))
 		check(page.section == "customise" and page.livery_menu.pattern_tiles.size() == GaragePage.LIVERY_NAMES.size()+LiveryCatalog.patterns.size(), "Patterns opens the named design browser")
 		page._select_livery(0)
@@ -207,6 +223,8 @@ func _run() -> void:
 		check(VehicleLivery.for_car(app.records.settings, "compact").colors.body == "417585", "leaving Customise saves unclosed colour preview")
 		await tap(page.find_child("GarageCare", true, false))
 		check(page.section == "care" and not page.showroom.wash_mode, "Care waits for explicit Wash action")
+		check(VehicleCondition.save(app.records,"compact",dirty) == OK,"seed fresh dirt for original partial-wash navigation check")
+		page._process(0.0)
 		await tap(page.wash_button)
 		check(page.showroom.wash_mode and page.wash_button.text == "Done", "Care enters manual Wash")
 		await capture("care-" + str(dimensions.x))
@@ -233,6 +251,7 @@ func _run() -> void:
 		var id: String = VehicleCatalog.IDS[index]
 		check(VehicleCatalog.selected == id and app.records.settings.selected_car == id and page.showroom.car.vehicle_id == id, id + " selection persists and switches actual model")
 		page._show_section("customise")
+		if page._customisation_locked: wash_exterior()
 		page._select_livery(0)
 		page._show_section("care")
 		check(page.showroom.weathering.dirt_amount == (0.85 if id == "compact" else 0.0), id + " independent local dirt")

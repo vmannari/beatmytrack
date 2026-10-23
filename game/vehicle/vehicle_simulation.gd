@@ -4,7 +4,8 @@ extends RefCounted
 ## Float replay equivalence is measured on one engine/platform only at this gate.
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.59"
+const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
+const PHYSICS_VERSION: String = "arcade-planar-0.66"
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -15,6 +16,8 @@ const ROLL_CONTINUE_SPEED: float = 18.0 # Remaining lateral m/s needed for anoth
 var state := VehicleState.new()
 var config: HandlingConfig
 var kerb_probe := VehicleState.new()
+var bridge_elevation: BridgeElevation
+var _prepared_ground: PlaygroundData
 
 
 func _init(handling: HandlingConfig) -> void:
@@ -27,7 +30,15 @@ func reset(point: Vector2, direction: float = 0.0) -> void:
 	state.heading = direction
 
 
+func prepare_ground(ground: PlaygroundData, elevation: BridgeElevation = null) -> void:
+	_prepared_ground = ground
+	bridge_elevation = null
+	if ground is NativeTrack and (ground.bridge_height > 0.0 or not ground.creator_bridges.is_empty()):
+		bridge_elevation = elevation if elevation != null else BridgeElevation.new(ground)
+
+
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	if ground != _prepared_ground: prepare_ground(ground)
 	state.collision_impulse = Vector2.ZERO
 	state.scrape_strength = 0.0
 	state.scrape_normal = Vector2.ZERO
@@ -40,6 +51,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var old_position: Vector2 = state.position
 	var old_heading: float = state.heading
 	var old_velocity: Vector2 = state.velocity
+	var old_layer: bool = state.track_elevated
+	var old_route: int = state.route_index
 	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
 	if state.roll_ticks > 0:
 		state.roll_ticks -= 1
@@ -60,13 +73,21 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
 	if state.jump_height > 0.0:
 		var previous: Vector2 = state.position
+		var bridge_jump: bool = state.bridge_airborne and bridge_elevation != null
+		var previous_support: float = BRIDGE_FLIGHT.support(bridge_elevation,previous,state.heading,state.route_index,state.track_elevated,config.wheelbase) if bridge_jump else 0.0
 		state.position += state.velocity*STEP
-		state.jump_velocity -= 9.81*STEP
-		state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
+		if bridge_jump:
+			state.heading += state.yaw_rate*STEP
+		else:
+			state.bridge_airborne = false
+			state.jump_velocity -= 9.81*STEP
+			state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
 		if ground != null:
 			ground.resolve(state,previous,config)
+		if bridge_jump: BRIDGE_FLIGHT.advance(state,previous_support,bridge_elevation,config.wheelbase,STEP)
+		if ground != null:
 			ground.step_props(state,previous,config,STEP)
-		if state.jump_height == 0.0:
+		if state.jump_height == 0.0 and not bridge_jump:
 			state.jump_velocity = 0.0
 			state.velocity *= 0.88
 		_step_kerbs(old_position,old_heading,null)
@@ -267,6 +288,8 @@ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
 	_step_kerbs(old_position,old_heading,ground)
 	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
+	if bridge_elevation != null:
+		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
 	state.tick += 1
 
 

@@ -28,6 +28,7 @@ var _summary_car: Label
 var _summary_time: Label
 var _summary_tries: Label
 var _summary_duration: Label
+var _summary_audience: Label
 var _tries_note: Label
 var result_context: Dictionary = {}
 var created_callback: Callable
@@ -55,6 +56,7 @@ var _duration_buttons: Array[Button] = []
 var _panel: PanelContainer
 var _close_button: Button
 var _source_scope: String = ""
+var _visibility: OptionButton
 
 func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
 
@@ -169,6 +171,17 @@ func _ready() -> void:
 			_update()
 			_search_timer.start())
 		_track.item_selected.connect(func(_i: int) -> void: _check_source())
+	if adapter.discovery_supported():
+		var audience := _field(fields,"WHO CAN JOIN","friends")
+		_visibility = OptionButton.new()
+		_visibility.name = "ChallengeVisibility"
+		_visibility.custom_minimum_size.y = 52
+		_visibility.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_visibility.add_item("Public · listed in Discover")
+		_visibility.add_item("Private · invitation link only")
+		_visibility.select(0 if adapter.creation_visibility == "public" else 1)
+		_visibility.item_selected.connect(func(index: int) -> void: adapter.creation_visibility = "public" if index == 0 else "private"; _refresh_preview())
+		audience.add_child(_visibility)
 	var modes := _field(fields,"CHALLENGE\nTYPE","friends")
 	for index: int in range(2):
 		var choice := _segment(modes,["Beat my time","Group challenge"][index],_choose_mode.bind(index))
@@ -308,6 +321,7 @@ func _ready() -> void:
 	_summary_time = _summary(summary_rows,"Target time","clock")
 	_summary_tries = _summary(summary_rows,"Number of tries","restart")
 	_summary_duration = _summary(summary_rows,"Duration","clock")
+	if adapter.discovery_supported(): _summary_audience = _summary(summary_rows,"Who can join","friends")
 	_status = HBoxContainer.new()
 	add_child(_status)
 	_notice = MenuStyle.label("",17,true)
@@ -333,8 +347,8 @@ func _ready() -> void:
 	_race.name = "RaceToSetChallenge"
 	_race.custom_minimum_size = Vector2(310,56)
 	actions.add_child(_race)
-	_create_button = MenuStyle.button("Create & share",func() -> void: confirmed.emit(),true)
-	_create_button.icon = MenuIcon.texture("share")
+	_create_button = MenuStyle.button("Create challenge" if adapter.discovery_supported() else "Create & share",func() -> void: confirmed.emit(),true)
+	_create_button.icon = MenuIcon.texture("target" if adapter.discovery_supported() else "share")
 	_create_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
 	_create_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
 	_create_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
@@ -469,6 +483,7 @@ func _refresh_preview() -> void:
 	_time.visible = mode == 0
 	_time_caption.text = "Fastest time wins" if mode == 1 else _time_caption.text
 	_summary_time.text = ("This finish" if locked_result() else "My best")+" ("+_time.text+")" if mode == 0 else "Fastest time wins"
+	if _summary_audience != null: _summary_audience.text = "Public (Discover)" if adapter.creation_visibility == "public" else "Private (invitation link)"
 	_summary_tries.text = "Unlimited" if attempt_limit == 0 else str(attempt_limit)
 	_summary_duration.text = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
 
@@ -545,6 +560,7 @@ func _update() -> void:
 	_create_button.visible = not _race.visible
 	_race.disabled = _submitting or _searching
 	_close_button.disabled = _submitting
+	if _visibility != null: _visibility.disabled = _submitting
 	_retry.visible = _source.get("status") == "unavailable" and not _checking and not _submitting
 	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Verifying result…" if locked_result() and (_checking or pending) else "Checking time…" if _checking else str(_source.get("error","")) if _source.has("error") else "This result was not verified." if locked_result() and not verified else "Choose a published track." if not has_entry else ""
 	_notice.visible = not _notice.text.is_empty()
@@ -573,8 +589,20 @@ func _create() -> void:
 	if _create_button.disabled: return
 	_submitting = true
 	_update()
+	if adapter.discovery_supported() and adapter.creation_visibility == "public":
+		if not await preload("res://ui/community_safety_ui.gd").ensure_terms(self,adapter.client):
+			_submitting = false
+			_update()
+			_notice.text = "Accept the public sharing rules to list this challenge."
+			_notice.show()
+			return
+		if adapter.scope() != _source_scope:
+			_submitting = false
+			_update()
+			return
 	var entry: Dictionary = _entry()
 	var payload: Dictionary = {"version_id":str(entry.version_id),"vehicle_id":_vehicle_id(),"mode":"group" if mode == 1 else "beat","duration_seconds":duration}
+	if adapter.discovery_supported(): payload.visibility = adapter.creation_visibility
 	if attempt_limit > 0: payload.attempt_limit = attempt_limit
 	if locked_result():
 		if initial_ticket.is_empty():
@@ -613,6 +641,12 @@ func _find_tracks() -> void:
 		var payload: Dictionary = preload("res://backend/discovery_pages.gd").payload({"search":query,"section":"all"})
 		var response: Dictionary = await adapter.client.request_discovery(payload,get_instance_id())
 		if not is_instance_valid(self) or serial != _search_serial or adapter.scope() != _source_scope: return
+		if not response.ok:
+			_searching = false
+			_update()
+			_notice.text = "Track search is busy. Retry or narrow your search." if int(response.get("status",0)) in [429,503] else "Could not search tracks. Retry when connected."
+			_notice.show()
+			return
 		if not response.get("ok",false) or not response.data.get("items") is Array:
 			_searching = false
 			_checking = false

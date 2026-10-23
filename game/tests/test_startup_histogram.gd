@@ -1,5 +1,5 @@
 extends "res://tests/test_menu_loading_speed.gd"
-## Actual restored selection and cached-page activation, without manual hydration.
+## Selected track detail and cached-page activation, without manual hydration.
 
 class StartupService extends Service:
 	var signed: bool = true
@@ -36,6 +36,7 @@ func make_browser(service: StartupService, track: NativeTrack, preview: bool, pr
 	browser.page_preview = preview
 	if provider != null: browser.discovery = provider
 	root.add_child(browser)
+	browser._select(cloud.entries[0])
 	MenuStyle.fill(browser)
 	browser.offset_top = 112
 	browser.offset_bottom = -16

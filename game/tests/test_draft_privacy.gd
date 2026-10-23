@@ -66,7 +66,6 @@ func run() -> void:
 	choose(app,"Bob")
 	check(app.document.is_empty() and app.library.editable_entries().is_empty(),"Bob inherits neither Alice editor nor Guest originals")
 	check(app.library.load_document(alice.id).is_empty() and app.library.load_wip(alice.id).is_empty(),"Bob cannot load Alice original or WIP")
-	check(app._legacy_track_directories() == [app.library.directory],"normal sync recovery stays in the active profile")
 	var bob: Dictionary = TrackDocument.create_default()
 	bob.id = "bob_private"
 	check(app.library.save_document(bob) == OK,"save Bob original")

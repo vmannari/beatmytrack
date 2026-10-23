@@ -3,6 +3,7 @@ extends Node
 
 const SandDustEffect = preload("res://vehicle/sand_dust.gd")
 const ImpactCracksEffect = preload("res://camera/impact_cracks.gd")
+const GraphicsPreferences = preload("res://presentation/graphics_preferences.gd")
 
 signal exit_requested
 signal race_completed
@@ -18,6 +19,7 @@ var night_ambience: NightAmbience
 var grass_birds: GrassBirds
 var grass_nature: GrassNature
 var desert_ambience: DesertAmbience
+var desert_sand_wind: DesertSandWind
 var desert_rattlesnake: DesertRattlesnake
 var winter_wind: WinterWind
 var winter_snow_wind: WinterSnowWind
@@ -85,6 +87,8 @@ var impact_cracks: Control
 var trails: SkidTrails
 var sand_dust: SandDustEffect
 var vehicle_audio: VehicleAudio
+var drift_haptics = preload("res://platform/drift_haptics.gd").new()
+var drift_haptics_enabled: bool = true
 var hud: PlaygroundHUD
 var paused: bool = false
 var previous_position: Vector2
@@ -143,20 +147,36 @@ var profile_skip_telemetry: bool = false
 var _render_viewport: Viewport
 var _base_msaa: Viewport.MSAA = Viewport.MSAA_DISABLED
 var _base_render_scale: float = 1.0
+var _graphics: Dictionary = {}
+var _shadow_size_changed: bool = false
+var _base_shadow_size: int = 1024
+var _base_shadow_16_bits: bool = true
 var _presentation_has_water: bool = false
 const MOBILE_WORLD_PIXEL_BUDGET: float = 1500000.0
 
 
 func _ready() -> void:
+	if preference_records != null:
+		drift_haptics_enabled = bool(preference_records.settings.get("drift_haptics", true))
 	_render_viewport = get_viewport()
 	_base_msaa = _render_viewport.msaa_3d
-	if preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name()):
+	_graphics = GraphicsPreferences.preferences(preference_records.settings if preference_records != null else {})
+	var safe_depth: bool = preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name())
+	var aa: Dictionary = GraphicsPreferences.antialiasing(_graphics.anti_aliasing,_base_msaa,safe_depth)
+	_render_viewport.msaa_3d = aa.msaa
+	if aa.fxaa:
 		# Adreno's implicit MSAA depth copy loses opaque surfaces and corrupts
 		# soft particles/contact shadows. Preserve AA after the world instead.
 		_render_viewport.msaa_3d = Viewport.MSAA_DISABLED
 		mobile_world_aa = preload("res://track/mobile_world_aa.gd").new()
 		add_child(mobile_world_aa)
 	_base_render_scale = _render_viewport.scaling_3d_scale
+	_base_shadow_size = int(ProjectSettings.get_setting_with_override("rendering/lights_and_shadows/directional_shadow/size"))
+	_base_shadow_16_bits = bool(ProjectSettings.get_setting_with_override("rendering/lights_and_shadows/directional_shadow/16_bits"))
+	var shadow_size: int = GraphicsPreferences.shadow_size(_graphics.shadow_quality)
+	if shadow_size > 0:
+		RenderingServer.directional_shadow_atlas_set_size(shadow_size,_base_shadow_16_bits)
+		_shadow_size_changed = true
 	_render_viewport.size_changed.connect(_refresh_render_scale)
 	if Engine.physics_ticks_per_second != VehicleSimulation.TICK_RATE:
 		push_error("Project physics rate must match the canonical 120 Hz step.")
@@ -244,6 +264,7 @@ func _ready() -> void:
 	hud = PlaygroundHUD.new()
 	hud.production_mode = production_mode
 	hud.editor_test = editor_test
+	hud.community_client = resume_client
 	hud.config = handling
 	hud.driver = driver
 	add_child(hud)
@@ -414,6 +435,7 @@ func _begin_finish() -> void:
 	race_cues.reset()
 	# A separate simulation coasts visually; scored state and telemetry stay at the line.
 	finish_sim = VehicleSimulation.new(handling)
+	finish_sim.prepare_ground(native_track,bridge_presentation)
 	for property: Dictionary in sim.state.get_property_list():
 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
 			var value: Variant = sim.state.get(property.name)
@@ -466,10 +488,14 @@ func _process(delta: float) -> void:
 func _present_frame(delta: float) -> void:
 	if sim == null:
 		return
+	_present_drift_haptics(delta)
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused,finish_sim != null)
 	if night_ambience != null: night_ambience.present(delta,paused,finish_sim != null)
+	if night_ambience != null:
+		var night_props: NightPropEffects=track_ground.get_node_or_null("NightPropEffects") if is_instance_valid(track_ground) else null
+		if night_props != null: night_props.advance(delta,paused)
 	if grass_birds != null: grass_birds.present(delta,paused,finish_sim != null)
 	if grass_nature != null: grass_nature.present(delta,paused,finish_sim != null)
 	if desert_ambience != null: desert_ambience.present(delta,paused,finish_sim != null)
@@ -485,6 +511,7 @@ func _present_frame(delta: float) -> void:
 	var weight: float = Engine.get_physics_interpolation_fraction() if not paused else 1.0
 	if not paused and finish_sim == null: weight = rewind_return.interpolation(weight)
 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
+	if desert_sand_wind != null: desert_sand_wind.present(delta, point, desert_ambience.strength, paused, finish_sim != null)
 	if winter_snow_wind != null: winter_snow_wind.present(delta, point, winter_wind.strength, paused, finish_sim != null)
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
 	_present_personal_ghost(weight)
@@ -509,17 +536,17 @@ func _present_frame(delta: float) -> void:
 	car.rotation.x = 0.0
 	if native_track != null:
 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
-		var front: float = bridge_presentation.height_at(point + axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
-		var rear: float = bridge_presentation.height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
+		var front: float = bridge_presentation.visual_height_at(point + axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
+		var rear: float = bridge_presentation.visual_height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
 		car.position.y += presented.state.jump_height if presented.state.jump_height > 0.0 else (0.0 if presented.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
-		if presented.state.jump_height > 0.0: car.rotation.x = atan2(presented.state.jump_velocity,maxf(5.0,presented.state.velocity.length()))
+		if presented.state.jump_height > 0.0: car.rotation.x = VehicleSimulation.BRIDGE_FLIGHT.pitch(presented.state)
 		elif not presented.state.track_elevated:
 			car.position.y -= water_depth
 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
 	car.rotation.z = 0.0
-	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0)
+	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0,true)
 	var body_rumble: float = 0.0
 	if native_track != null:
 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
@@ -568,7 +595,6 @@ func _present_frame(delta: float) -> void:
 		elif production_mode:
 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
 			hud.show_session(track_session)
-			hud.shortcut_penalty_label.text = ""
 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
 			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position) if checkpoint_marker.visible else Vector2.INF)
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
@@ -580,8 +606,14 @@ func _present_frame(delta: float) -> void:
 	if profile_enabled: profile_hud_us += Time.get_ticks_usec() - section_start
 
 
+func _present_drift_haptics(delta: float) -> void:
+	var active: bool = not paused and countdown_ticks <= 0 and finish_sim == null and not is_instance_valid(rewind_panel) and rewind_return.remaining <= 0 and not ai_enabled and not demo_capture and sim.state.tick > 0
+	drift_haptics.present(delta, sim.state, drift_haptics_enabled, active)
+
+
 func restart() -> void:
 	if is_instance_valid(rewind_panel): return
+	drift_haptics.reset()
 	online_frames.clear()
 	launch_early = false
 	launch_countdown_seen = false
@@ -615,6 +647,7 @@ func restart() -> void:
 	if grass_birds != null: grass_birds.reset()
 	if grass_nature != null: grass_nature.reset()
 	if desert_ambience != null: desert_ambience.reset()
+	if desert_sand_wind != null: desert_sand_wind.reset()
 	if desert_rattlesnake != null: desert_rattlesnake.reset()
 	if winter_wind != null: winter_wind.reset()
 	if winter_snow_wind != null: winter_snow_wind.reset()
@@ -797,6 +830,8 @@ func _present_personal_ghost(weight: float) -> void:
 		# Boundary ticks reset exactly at the player's accepted finish crossing.
 		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
 	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
+	if personal_ghost.visible and bridge_presentation != null:
+		personal_ghost.position.y += bridge_presentation.visual_offset(Vector2(personal_ghost.position.x,-personal_ghost.position.z))
 
 
 func _prepare_personal_ghost() -> void:
@@ -860,6 +895,7 @@ func _build_ground(world: Node3D) -> void:
 		prepared_road_packet = {}
 		visual.cache_race_world = production_mode and not editor_test
 		bridge_presentation = BridgePresentation.new(native_track)
+		sim.prepare_ground(native_track,bridge_presentation)
 		world.add_child(visual)
 		visual.build(native_track, bridge_presentation)
 		track_ground = visual
@@ -875,7 +911,8 @@ func _refresh_render_scale() -> void:
 	if not is_instance_valid(_render_viewport): return
 	var theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
 	var pixels: Vector2i = _render_viewport.get_window().size
-	var scale: float = render_scale_for(theme,_base_render_scale,OS.has_feature("mobile"),pixels)
+	var selected_scale: float = GraphicsPreferences.resolution(_graphics.get("render_resolution","auto"),_base_render_scale)
+	var scale: float = render_scale_for(theme,selected_scale,OS.has_feature("mobile"),pixels)
 	if not is_equal_approx(_render_viewport.scaling_3d_scale,scale): _render_viewport.scaling_3d_scale = scale
 
 
@@ -910,6 +947,9 @@ func _exit_tree() -> void:
 		if _render_viewport.size_changed.is_connected(_refresh_render_scale): _render_viewport.size_changed.disconnect(_refresh_render_scale)
 		_render_viewport.msaa_3d = _base_msaa
 		_render_viewport.scaling_3d_scale = _base_render_scale
+	if _shadow_size_changed:
+		RenderingServer.directional_shadow_atlas_set_size(_base_shadow_size,_base_shadow_16_bits)
+		_shadow_size_changed = false
 
 
 func cycle_track() -> void:
@@ -954,6 +994,7 @@ func _update_weather() -> void:
 		weather_layer = null
 		storm_weather = null
 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
+	biome_light.shadow_enabled = _graphics.get("shadow_quality","auto") != "off"
 	var weather_theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
 	if car != null and car_weathering.theme != weather_theme:
 		car_weathering.configure(car, weather_theme, handling)
@@ -973,6 +1014,14 @@ func _update_weather() -> void:
 		desert_ambience = DesertAmbience.new()
 		add_child(desert_ambience)
 	desert_ambience.configure(weather_theme)
+	if desert_sand_wind != null:
+		desert_sand_wind.get_parent().remove_child(desert_sand_wind)
+		desert_sand_wind.queue_free()
+		desert_sand_wind = null
+	if weather_theme == "desert":
+		desert_sand_wind = DesertSandWind.new()
+		$World.add_child(desert_sand_wind)
+		desert_sand_wind.configure(native_track, track_ground)
 	if desert_rattlesnake == null:
 		desert_rattlesnake = DesertRattlesnake.new()
 		add_child(desert_rattlesnake)

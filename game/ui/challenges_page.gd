@@ -3,6 +3,7 @@ extends VBoxContainer
 signal mode_requested(mode: String)
 signal folder_requested(folder: String)
 signal selected_requested(code: String)
+signal filters_requested(query: String, mode: String, vehicle: String, order: String)
 signal create_requested
 signal code_requested
 signal race_requested
@@ -13,9 +14,18 @@ signal refresh_requested
 signal more_requested
 signal sign_in_requested
 signal back_requested
+var safety_client: Node
 var items: Array[Dictionary] = []
 var selected: Dictionary = {}
-var folder: String = "received"
+var folder: String = "discover"
+var search: String = ""
+var mode_filter: String = "all"
+var vehicle_filter: String = ""
+var sort_order: String = "ending"
+var _search: LineEdit
+var _mode: OptionButton
+var _vehicle: OptionButton
+var _sort: OptionButton
 var signed_in: bool = false
 var busy: bool = false
 var error: String = ""
@@ -49,18 +59,31 @@ func _ready() -> void:
 	header.name = "ChallengeHeader"
 	header.add_theme_constant_override("separation",12)
 	main.add_child(header)
-	var title := MenuStyle.label("CHALLENGES",34)
+	var title := MenuStyle.label("CHALLENGE CLUB",34)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 	if result_view:
 		_action(header,"Back to Challenges",func() -> void: back_requested.emit())
 	else:
-		_action(header,"Enter code",func() -> void: code_requested.emit())
-		_action(header,"Create challenge",func() -> void: create_requested.emit(),selected.is_empty() and signed_in)
+		_action(header,"Create challenge",func() -> void: create_requested.emit() if signed_in else sign_in_requested.emit(),true)
 		var refresh := _action(header,"",func() -> void: refresh_requested.emit())
 		refresh.icon = MenuIcon.texture("restart")
 		refresh.tooltip_text = "Refresh challenges"
 		refresh.custom_minimum_size.x = 52
+	if not result_view:
+		var intro := MenuStyle.label("Find your next rival. Set a time. Make it count.",17,true)
+		intro.name = "ChallengeIntroduction"
+		main.add_child(intro)
+		var tabs := HBoxContainer.new()
+		tabs.add_theme_constant_override("separation",8)
+		main.add_child(tabs)
+		for id: String in ["discover","friends","received","sent"]:
+			var caption: String = {"discover":"Discover","friends":"Friends","received":"Joined","sent":"Created"}[id]
+			var button := MenuStyle.tab(caption,func() -> void: folder_requested.emit(id),folder == id)
+			button.name = "ChallengeTab_"+id
+			button.custom_minimum_size.y = 52
+			button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			tabs.add_child(button)
 	if not error.is_empty():
 		var notice := MenuStyle.label(error,17,true)
 		notice.name = "ChallengeNotice"
@@ -75,18 +98,23 @@ func _ready() -> void:
 	if not selected.is_empty():
 		if result_view: _detail(body)
 		else: _hub_detail(body)
-	elif signed_in:
+	elif signed_in or folder == "discover":
 		var blank := _panel(body)
-		blank.add_child(MenuStyle.label("Choose a challenge" if not items.is_empty() else "Loading challenges…" if busy else "No received challenges" if folder == "received" else "No sent challenges",26))
+		blank.name = "ChallengeEmptyState"
+		blank.add_child(MenuStyle.label("Choose your next race" if not items.is_empty() else "Finding challenges…" if busy else "Start something worth chasing",30))
 		var scene := TextureRect.new()
 		scene.texture = TrackTile.scenery_texture("pine")
 		scene.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		scene.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 		scene.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		blank.add_child(scene)
+		var help := MenuStyle.label("No matches. Try a different search or car." if not search.is_empty() or mode_filter != "all" or not vehicle_filter.is_empty() else "Your friends' public challenges appear here." if folder == "friends" else "Browse Discover and join a race directly." if folder == "received" else "Create a public challenge and let your next rival find you.",19,true)
+		help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		blank.add_child(help)
+		_action(blank,"Create challenge" if signed_in else "Sign in to compete",func() -> void: create_requested.emit() if signed_in else sign_in_requested.emit(),true)
 	else:
 		var blank := _panel(body)
-		blank.add_child(MenuStyle.label("Race your friends' times",30))
+		blank.add_child(MenuStyle.label("Bring your friends. Find your rivals.",30))
 		_action(blank,"Sign in",func() -> void: sign_in_requested.emit(),true)
 
 func _inbox(parent: Control) -> void:
@@ -97,14 +125,26 @@ func _inbox(parent: Control) -> void:
 	column.size_flags_stretch_ratio = 0.62
 	column.add_theme_constant_override("separation",12)
 	parent.add_child(column)
-	var tabs := HBoxContainer.new()
-	column.add_child(tabs)
-	for id: String in ["received","sent"]:
-		var button := MenuStyle.tab(id.capitalize(),func() -> void: folder_requested.emit(id),folder == id)
-		button.name = "ChallengeTab_"+id
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		button.custom_minimum_size.y = 52
-		tabs.add_child(button)
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation",6)
+	column.add_child(search_row)
+	_search = LineEdit.new()
+	_search.name = "ChallengeSearch"
+	_search.placeholder_text = "Find a track or driver"
+	_search.text = search
+	_search.max_length = 80
+	_search.custom_minimum_size.y = 52
+	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_search.text_submitted.connect(func(_value: String) -> void: _apply_filters())
+	search_row.add_child(_search)
+	var find := _action(search_row,"Find",_apply_filters)
+	find.name = "ChallengeFind"
+	var filters := HBoxContainer.new()
+	filters.add_theme_constant_override("separation",6)
+	column.add_child(filters)
+	_mode = _choice(filters,"ChallengeModeFilter",["All races","Beat a time","Group races"],["all","beat","group"],mode_filter)
+	_vehicle = _choice(filters,"ChallengeCarFilter",["Any car","Compact","Pickup","Classic","Formula","Kart"],["","compact","pickup","classic","formula","kart"],vehicle_filter)
+	_sort = _choice(filters,"ChallengeSort",["Ending soon","Newest first"] if folder in ["discover","friends"] else ["Newest first"],["ending","newest"] if folder in ["discover","friends"] else ["newest"],sort_order)
 	var scroll := ScrollContainer.new()
 	scroll.name = "ChallengeInboxScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -122,7 +162,7 @@ func _inbox(parent: Control) -> void:
 		var target: Variant = _target_ms(item)
 		var tile := MenuStyle.button("",func() -> void: selected_requested.emit(str(item.code)))
 		tile.name = "ChallengeCard_"+str(item.code)
-		tile.custom_minimum_size.y = 132
+		tile.custom_minimum_size.y = 154
 		tile.clip_contents = true
 		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		list.add_child(tile)
@@ -139,23 +179,29 @@ func _inbox(parent: Control) -> void:
 		image.texture = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
 		image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-		image.custom_minimum_size.x = 76
+		image.custom_minimum_size.x = 80
 		image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(image)
+		var route := LapRouteView.new()
+		route.miniature = true
+		route.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		MenuStyle.fill(route)
+		route.route = _card_outline(item.entry.points)
+		image.add_child(route)
 		var info := VBoxContainer.new()
 		info.add_theme_constant_override("separation",2)
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_child(info)
-		var competition: String = "Beat my time" if item.mode == "beat" else "Group challenge"
+		var competition: String = "TIME ATTACK" if item.mode == "beat" else "GROUP RACE"
 		var performance: String = MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time"
-		var lines: Array = [[item.entry.name,24],[competition+" · "+str(item.creator),15],[performance,25],[_remaining_text(item),15]]
+		var lines: Array = [[competition+" · "+_remaining_text(item),14],[item.entry.name,25],[str(item.creator),15],[performance,24],[_reward_caption(item),15]]
 		for data: Array in lines:
 			var label := MenuStyle.label(str(data[0]),int(data[1]),int(data[1]) < 20)
 			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			info.add_child(label)
-			if int(data[1]) == 25: label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+			if int(data[1]) == 24 or str(data[0]) == _reward_caption(item): label.add_theme_color_override("font_color",MenuStyle.ACCENT)
 		if str(item.code) == str(selected.get("code","")):
 			var style := MenuStyle.box(Color("1b3443"),10)
 			style.border_color = MenuStyle.ACCENT
@@ -168,8 +214,17 @@ func _inbox(parent: Control) -> void:
 
 func _hub_detail(parent: Control) -> void:
 	# Race browsing has its own composition; post-race feedback keeps _detail.
-	var column := _panel(parent)
-	column.name = "ChallengeDetail"
+	var panel := _panel(parent)
+	panel.name = "ChallengeDetail"
+	var content_scroll := ScrollContainer.new()
+	content_scroll.name = "ChallengeDetailScroll"
+	content_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel.add_child(content_scroll)
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation",8)
+	content_scroll.add_child(column)
 	var heading := MenuStyle.label(str(selected.entry.name),32)
 	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	column.add_child(heading)
@@ -190,7 +245,7 @@ func _hub_detail(parent: Control) -> void:
 	add_child(timer)
 	var preview := HBoxContainer.new()
 	preview.name = "ChallengeTrackPreview"
-	preview.custom_minimum_size.y = 140
+	preview.custom_minimum_size.y = 118
 	preview.add_theme_constant_override("separation",0)
 	column.add_child(preview)
 	var scenery := PanelContainer.new()
@@ -242,6 +297,7 @@ func _hub_detail(parent: Control) -> void:
 	facts.add_child(car)
 	if selected.get("attempt_limit") != null:
 		facts.add_child(MenuStyle.label("%d tries left" % int(selected.attempts_remaining),16,true))
+	facts.add_child(MenuStyle.label("%d / %d drivers" % [selected.standings.size(),int(selected.get("capacity",2 if selected.mode == "beat" else 20))],16,true))
 	var heading_gutter := MarginContainer.new()
 	heading_gutter.add_theme_constant_override("margin_left",6)
 	heading_gutter.add_theme_constant_override("margin_right",30)
@@ -252,6 +308,7 @@ func _hub_detail(parent: Control) -> void:
 	_standing_values(labels,"#","Driver","Time","Gap (s)",true)
 	var scroll := ScrollContainer.new()
 	scroll.name = "ChallengeStandingsScroll"
+	scroll.custom_minimum_size.y = 80
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(scroll)
@@ -275,12 +332,16 @@ func _hub_detail(parent: Control) -> void:
 		var delta: String = "—"
 		if row.get("ms") != null and target != null: delta = "%+.3f" % (float(int(row.ms)-int(target))/1000.0)
 		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else "—",delta,false,player)
+	_reward_strip(panel,selected)
 	var actions := HBoxContainer.new()
 	actions.name = "ChallengeActions"
 	actions.add_theme_constant_override("separation",8)
-	column.add_child(actions)
+	panel.add_child(actions)
 	var share := _action(actions,"Share",func() -> void: share_requested.emit())
 	share.icon = MenuIcon.texture("share")
+	if is_instance_valid(safety_client) and str(selected.creator_id) != str(selected.self_id):
+		var report := _action(actions,"…",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,safety_client,"player",{"reported_player_id":str(selected.creator_id),"name":str(selected.creator)}))
+		report.tooltip_text = "Report / block creator"
 	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode == "group" else int(own.ticks) < int(selected.target_ticks))
 	if winning: _action(actions,"Rematch",func() -> void: rematch_requested.emit())
 	if str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
@@ -290,11 +351,86 @@ func _hub_detail(parent: Control) -> void:
 		cancel.custom_minimum_size.x = 52
 	var exhausted: bool = selected.get("attempts_remaining") != null and int(selected.attempts_remaining) <= 0
 	var creator_target: bool = selected.mode == "beat" and selected.creator_id == selected.self_id
-	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
+	var full: bool = not selected.joined and selected.standings.size() >= int(selected.get("capacity",2 if selected.mode == "beat" else 20))
+	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Full" if full else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
 	var race := _action(actions,caption,func() -> void: race_requested.emit(),true)
 	race.name = "ChallengeRace"
 	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	race.disabled = busy or exhausted or selected.state != "active" or creator_target
+	race.disabled = busy or exhausted or full or selected.state != "active" or creator_target
+
+func _choice(parent: Control, identity: String, titles: Array, values: Array, current: String) -> OptionButton:
+	var choice := OptionButton.new()
+	choice.name = identity
+	choice.custom_minimum_size.y = 52
+	choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	choice.fit_to_longest_item = false
+	choice.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	choice.add_theme_font_size_override("font_size",17)
+	for index: int in range(titles.size()):
+		choice.add_item(str(titles[index]))
+		choice.set_item_metadata(index,values[index])
+		if str(values[index]) == current: choice.select(index)
+	choice.item_selected.connect(func(_index: int) -> void: _apply_filters())
+	parent.add_child(choice)
+	return choice
+
+func _apply_filters() -> void:
+	filters_requested.emit(_search.text,str(_mode.get_selected_metadata()),str(_vehicle.get_selected_metadata()),str(_sort.get_selected_metadata()))
+
+static func _card_outline(points: Array) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	var count: int = mini(96,points.size())
+	for index: int in range(count):
+		var point: Array = points[index*(points.size()-1)/maxi(1,count-1)]
+		result.append(Vector2(point[0],point[1]))
+	return result
+
+func _reward_caption(item: Dictionary) -> String:
+	var rewards: Dictionary = item.get("rewards",{})
+	if rewards.is_empty(): return "Challenge rewards unavailable"
+	if item.mode == "beat" and str(item.creator_id) == str(item.self_id): return "Your target is live" if item.state == "active" else "Your challenge has ended"
+	if not signed_in: return "Sign in to earn Coins"
+	if rewards.get("finish_earned",false) and rewards.get("goal_earned",false): return "Rewards earned"
+	if item.state != "active": return "Challenge ended"
+	if not rewards.get("eligible",false): return "Daily reward limit reached"
+	var amount: int = (0 if rewards.get("finish_earned",false) else int(rewards.get("finish",0)))+(0 if rewards.get("goal_earned",false) else int(rewards.get("goal",0)))
+	return "Up to %d Coins" % amount
+
+func _reward_strip(parent: Control, item: Dictionary) -> void:
+	var rewards: Dictionary = item.get("rewards",{})
+	if rewards.is_empty(): return
+	if item.mode == "beat" and str(item.creator_id) == str(item.self_id):
+		var invitation := MenuStyle.label("Your target is listed in Discover. Let your next rival come to you." if item.get("visibility","private") == "public" else "Share the invitation link to find an opponent for your target.",17,true)
+		invitation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(invitation)
+		return
+	var goals := HBoxContainer.new()
+	goals.name = "ChallengeRewards"
+	goals.add_theme_constant_override("separation",8)
+	parent.add_child(goals)
+	for index: int in range(2):
+		var earned: bool = bool(rewards.get("finish_earned" if index == 0 else "goal_earned",false))
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var style := MenuStyle.box(Color("193c36") if earned else Color("263329"),8)
+		style.border_color = MenuStyle.POSITIVE if earned else Color("706238")
+		style.border_width_left = 3
+		card.add_theme_stylebox_override("panel",style)
+		goals.add_child(card)
+		var lines := VBoxContainer.new()
+		lines.add_theme_constant_override("separation",0)
+		card.add_child(lines)
+		var goal: String = "Finish five laps" if index == 0 else "Beat the target" if item.mode == "beat" else "Outrun a rival & lead"
+		var heading := MenuStyle.label(goal,15,true)
+		heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		lines.add_child(heading)
+		var amount := MenuStyle.label("Earned" if earned else "Ended" if item.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else "+%d Coins" % int(rewards.get("finish" if index == 0 else "goal",0)),23)
+		amount.add_theme_color_override("font_color",MenuStyle.POSITIVE if earned else MenuStyle.ACCENT)
+		lines.add_child(amount)
+	var explanation := MenuStyle.label("Sign in to earn Coins for verified races." if not signed_in else "Daily reward limit reached. Return tomorrow for more Coins." if not rewards.get("eligible",false) else "Verified races · Rewards once each · %d new reward challenges left today (UTC)" % int(rewards.get("remaining_today",0)),14,true)
+	explanation.name = "ChallengeRewardRules"
+	explanation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	parent.add_child(explanation)
 
 func _standing_values(parent: HBoxContainer, rank: String, driver: String, time: String, gap: String, header: bool = false, player: bool = false) -> void:
 	parent.add_theme_constant_override("separation",8)
@@ -389,6 +525,10 @@ func _detail(parent: Control) -> void:
 		var status := MenuStyle.label(feedback,23)
 		status.name = "ChallengeResultFeedback"
 		column.add_child(status)
+		if selected.has("rewards"):
+			var progress := MenuStyle.label("Reward progress: "+_reward_caption(selected),18,true)
+			progress.name = "ChallengeRewardProgress"
+			column.add_child(progress)
 	var scroll := ScrollContainer.new()
 	scroll.name = "ChallengeStandingsScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED

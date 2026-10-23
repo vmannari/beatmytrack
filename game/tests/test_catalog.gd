@@ -74,6 +74,9 @@ func run() -> void:
 	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	root.size = Vector2i(1280,720)
 	root.add_child(browser)
+	# The retained horizontal carousel belongs to the selected track view.
+	browser._open_track_view()
+	browser._show_detail()
 	await process_frame
 	await process_frame
 	check(browser.grid.get_child_count() <= 12 and browser.matches.size() == 5000,"5000-track carousel bounds active cards to twelve")

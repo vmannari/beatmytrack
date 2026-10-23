@@ -18,6 +18,8 @@ class Service extends Node:
 	func test_drivers_available() -> bool: return development
 	func new_operation_key() -> String: return "fixture-key"
 	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _authorized: bool) -> Dictionary:
+		# This fixture delays membership; appearance sync has its own response.
+		if path == "/rivalry/appearance": return {"ok":true,"data":{}}
 		calls += 1
 		pending_path = path
 		await reply_ready

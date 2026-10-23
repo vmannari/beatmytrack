@@ -3,12 +3,16 @@ extends RefCounted
 ## Optional desktop output adapter; never runs in simulation or Android.
 var backend: RefCounted
 var paused: bool = false
+var loaded_samples: int = 0
 
 func configure(samples: Array[AudioStreamWAV]) -> void:
 	if OS.get_name()!="Windows" or AudioServer.get_driver_name()!="WASAPI" or AudioServer.output_device!="Default": return
 	if not ClassDB.class_exists("BmtWindowsImpact"): return
 	backend = ClassDB.instantiate("BmtWindowsImpact") as RefCounted
-	for i: int in range(samples.size()):
+	# A live editor may retain the older four-clip DLL until restart. Keep its
+	# original crash/chassis output and let only unsupported new clips fall back.
+	loaded_samples = mini(samples.size(),int(backend.call("stats").get("clip_count",4)))
+	for i: int in range(loaded_samples):
 		if not bool(backend.call("load_pcm",i,samples[i].data,samples[i].mix_rate)):
 			close()
 			return
@@ -48,7 +52,7 @@ func sync_output(silent: bool) -> void:
 		backend.call("set_chassis_output",db_to_linear(AudioServer.get_bus_volume_db(vehicle)),chassis_mute)
 
 func play(index: int, amplitude: float, pitch: float, slot: int = -1) -> bool:
-	if backend==null or AudioServer.output_device!="Default": return false
+	if backend==null or index<0 or index>=loaded_samples or AudioServer.output_device!="Default": return false
 	sync_output(false)
 	return bool(backend.call("play",index,amplitude,pitch,slot))
 
@@ -65,3 +69,4 @@ func stats() -> Dictionary:
 func close() -> void:
 	if backend!=null: backend.call("close")
 	backend = null
+	loaded_samples = 0

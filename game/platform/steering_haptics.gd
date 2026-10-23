@@ -7,13 +7,14 @@ static var pending_task: int = -1
 # Explicit debug probe only; production always uses the bounded worker.
 static var diagnostic_synchronous: bool = false
 
-static func press(strength: float = AMPLITUDE) -> void:
+static func press(strength: float = AMPLITUDE, duration_ms: int = DURATION_MS) -> void:
 	if strength > 0.0 and (OS.has_feature("android") or OS.has_feature("ios")):
 		var amplitude: float = clampf(strength, 0.0, 1.0)
+		var duration: int = clampi(duration_ms, 1, 50)
 		if OS.has_feature("android") and not (OS.is_debug_build() and diagnostic_synchronous):
-			_submit(func() -> void: Input.vibrate_handheld(DURATION_MS, amplitude))
+			_submit(func() -> void: Input.vibrate_handheld(duration, amplitude))
 		else:
-			Input.vibrate_handheld(DURATION_MS, amplitude)
+			Input.vibrate_handheld(duration, amplitude)
 
 static func _submit(feedback: Callable) -> void:
 	# Called only on the main thread. Never wait for a running Android Binder

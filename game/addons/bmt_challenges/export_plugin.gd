@@ -14,12 +14,20 @@ class ChallengeExport extends EditorExportPlugin:
 	func _get_name() -> String: return "BMTChallengeLinks"
 	func _supports_platform(platform: EditorExportPlatform) -> bool: return platform is EditorExportPlatformAndroid
 	func _get_android_manifest_application_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
-		return '<meta-data android:name="org.godotengine.plugin.v2.BmtChallenges" android:value="org.beatmytrack.challenges.BmtChallenges"/>'
+		return application_contents()
+	static func application_contents() -> String:
+		return '<meta-data android:name="org.godotengine.plugin.v2.BmtChallenges" android:value="org.beatmytrack.challenges.BmtChallenges"/>' \
+			+ '<provider android:name="org.beatmytrack.challenges.RivalryShareProvider" android:authorities="${applicationId}.rivalry-share" android:exported="false" android:grantUriPermissions="true"/>'
 	func _get_android_manifest_activity_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
+		return activity_filters()
+	static func activity_filters() -> String:
 		var filter: String = '<intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="beatmytrack" android:host="challenge"/></intent-filter>'
+		filter += '<intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="beatmytrack" android:host="track"/></intent-filter>'
 		var host: String = OS.get_environment("BMT_CHALLENGE_LINK_HOST")
 		var pattern := RegEx.new()
 		pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9.-]{0,251}[a-zA-Z0-9]$")
 		if not host.is_empty() and pattern.search(host) != null:
 			filter += '<intent-filter android:autoVerify="true"><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="https" android:host="'+host+'" android:pathPrefix="/c/"/></intent-filter>'
+			for prefix: String in ["/t/","/v1/track-versions/"]:
+				filter += '<intent-filter android:autoVerify="true"><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="https" android:host="'+host+'" android:pathPrefix="'+prefix+'"/></intent-filter>'
 		return filter

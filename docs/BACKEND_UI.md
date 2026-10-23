@@ -1,5 +1,33 @@
 # Control Room: backend UI v1
 
+Player support follow-up (deployed, 2026-10-18): the selected player's **Purchases & grants** tab inspects slots, kits/liveries, resumes, Coins and ad-free access. Owners issue previewed, reasoned, idempotent support grants with audit evidence; analysts inspect only. [Implementation, contracts, actual checks and captures](PLAYER_GRANTS_2026_10_18.md). The [full backend release](FULL_BACKEND_DEPLOY_2026_10_18.md) serves the tool on the cloud and PC services with schema42, rules23 and66 read-only live browser checks.
+
+Backend follow-up: Achievements and Challenge Club discovery are live at schema42; the populated Studio and its UI assets are preserved. [Release, migration and actual checks](ACHIEVEMENTS_BACKEND_DEPLOY_2026_10_17.md) record the serving image and current game contract.
+
+Simulation follow-up: the schema40 Studio contains 600 ordinary players and 60 days of behaviour, diagnostic, economy and incident history. There is no separate analytical population. [Simulator, refresh command and populated checks](STUDIO_SIMULATOR_2026_10_17.md) explain the deployed revision, sample scenarios and future production reset.
+
+Deployment follow-up: the eight-workspace Studio is live on API64/schema40. [Deployment and actual checks](STUDIO_PLATFORM_DEPLOY_2026_10_16.md) record the pinned image, backup, preserved game contract/catalog and remaining external-monitor/provider activation.
+
+Implementation follow-up: [Studio platform](STUDIO_PLATFORM_2026_10_16.md) now provides eight workspaces, cohort/release evidence and durable incident response. [Activation and remaining integrations](STUDIO_PLATFORM_ACTIVATION.md) are explicit. The review below describes the earlier deployed snapshot.
+
+Current review: [player analysis and production monitoring audit](BACKEND_PRODUCT_REVIEW_2026_10_16.md) inventories all15 views, measured responsiveness, correctness/efficiency findings and the staged product roadmap. This is a review of revision59/schema36; later local work is separate.
+
+Approved follow-up: both earlier approval requests are resolved. The27 matching
+catalog revisions and scoped ordinary-payload deletion permission are live;
+compiler27/physics0.59 is active. See
+[completed follow-up](BACKEND_APPROVED_FOLLOWUP_2026_10_16.md) for preservation and
+verification evidence. This supersedes the pending-approval status in the initial
+deployment record below.
+
+Deployment follow-up, 2026-10-16: the frozen backend and redesigned Overview/Alarms
+are live on retained staging revision54, schema36. See
+[deployment evidence](BACKEND_LATEST_DEPLOY_2026_10_16.md) for the live links,
+233 passing candidate-backend tests, six live Edge checks and preservation proof.
+The existing racing contract is retained; automatic approval review rejected the
+separate catalog revision and payload-deletion IAM proposals before execution.
+Both explicit owner approvals remain pending. Later concurrent source work is
+outside this frozen snapshot. No phone/APK test was performed.
+
 Owner request: 2026-09-29, implement `temp/BMT_Backend_UI_Draft_v1`.
 Requirements: **B01–B07, B18, B21, B23, B28, RW01–RW08, V03, Q01**.
 
@@ -435,3 +463,8 @@ approved prices, consumed publications and resume promises remain unchanged.
 ## Authorized Studio staging deployment, 2026-10-11
 
 The owner subsequently authorized deployment. The reviewed nine-file Studio overlay is now live on the existing retained staging service, with fresh backup, zero-traffic canary, unchanged schema/game/commerce and preserved configuration. Exact-image47 tests and live API/asset/flag/browser/native-worker checks passed. Earlier no-deployment statements describe their original local tasks. See [the actual deployment report](BACKEND_STUDIO_DEPLOY_2026_10_11.md) for commands, evidence, image/revision and remaining boundaries.
+
+
+## Decision-led overview and alarms, 2026-10-16
+
+The local default Overview now explains current priorities and scoped product findings, with direct investigation links. Alarms has a severity/state/area queue, evidence and next steps, shared audited acknowledgement and closure after a fresh recovery check. Active faults cannot be cleared, unavailable checks remain unknown, and recurrence returns to the action queue. The eight checks run on request; notifications and continuous incident detection are not configured. See [implementation, actual tests and seeded before/after views](STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md). Owner presentation/threshold acceptance and explicit deployment authorisation remain.

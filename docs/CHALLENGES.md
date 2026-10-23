@@ -1,5 +1,7 @@
 # Race challenges — 2026-10-08
 
+Current discovery, presentation and Coin rules are in [Challenge Club (2026-10-16)](CHALLENGE_CLUB_2026_10_16.md). This supersedes the invitation-only menu entry; existing private invitation contracts remain.
+
 **2026-10-09 correction:** post-race creation now uses the exact completed ticket, including slower-than-PB finishes, in a compact custom sheet with its track/car fixed and no rerace fallback. The unrequested Compare tab and embedded histogram addition were removed; original result navigation remains. The matching challenge API and additive migration have now been deployed to the retained development backend after a successful backup, preserving all packaged canonical files and existing data. [Actual tests, pictures, rollout and device limitation](CHALLENGE_CORRECTION_2026_10_09.md). Earlier local-only/Compare descriptions below record the superseded first implementation.
 
 The owner accepted the proposed challenge plan and requested implementation. This is a local implementation with disposable HTTP and database verification; it has not been rolled out to the retained cloud backend.

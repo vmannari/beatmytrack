@@ -43,3 +43,38 @@ Desktop captures were inspected:
 ![Reversed start line](evidence/start-line/start-line-reverse.png)
 
 Logs are retained in evidence/start-line/.
+
+## Empty new-track editor correction (2026-10-22)
+
+Requirements ESL01/R01/Q01: opening a new track must show bare editable terrain without a starting line. The compiler retains an internal fallback route for practice, and the shared renderer previously painted its finish onto the grass. Editor previews of freeform drafts now omit that fallback until the author places a `start_line`. Placed lines, existing layouts, base-track remixes and race rendering keep their existing behavior. No saved document or canonical race data changes.
+
+Changed runtime: `game/track/native_track_visual.gd`. The existing `game/tests/test_start_line.gd` fixture now waits for app startup and editor preparation, and flushes the existing asynchronous draft writer before checking autosave. Its original assertions remain. This document and [the evidence directory](evidence/editor-start-line-2026-10-22/) record the change.
+
+The original renderer reproduces 11 failures in 39 focused checks: blank and incomplete-road previews in all five biomes, plus the actual new editor. Final Compatibility and desktop Mobile runs each pass all 39 checks. Both native screenshots were inspected:
+
+- [Original blank editor](evidence/editor-start-line-2026-10-22/before/blank-editor.png)
+- [Corrected Compatibility editor](evidence/editor-start-line-2026-10-22/final-gl_compatibility/blank-editor.png)
+- [Corrected desktop Mobile editor](evidence/editor-start-line-2026-10-22/final-mobile/blank-editor.png)
+
+Final existing regressions: start-line 27 checks, editor workflow 252 checks and whole-project parser 919 scripts, all passing. Scoped `git diff --check` passes.
+
+Actual repository-root commands used the pinned Godot 4.7.2 executable, with a separate workspace `APPDATA` profile for each capture and regression run:
+
+```powershell
+$env:APPDATA = Join-Path (Get-Location) 'build/editor-start-line/final-gl-profile'
+& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --rendering-driver opengl3 --script '../build/editor-start-line/probe.gd' -- --evidence=res://../docs/evidence/editor-start-line-2026-10-22/final-gl_compatibility
+
+$env:APPDATA = Join-Path (Get-Location) 'build/editor-start-line/final-mobile-profile'
+& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --rendering-driver vulkan --script '../build/editor-start-line/probe.gd' -- --evidence=res://../docs/evidence/editor-start-line-2026-10-22/final-mobile
+
+$env:APPDATA = Join-Path (Get-Location) 'build/editor-start-line/regression-profile-ready'
+foreach ($suite in @('test_start_line','test_editor_workflow','test_script_parse')) {
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath ('res://tests/'+$suite+'.gd') -CommandTimeoutSeconds 180
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+}
+git diff --check -- game/track/native_track_visual.gd game/tests/test_start_line.gd docs/START_LINE_EDITOR.md
+```
+
+The retained [probe](evidence/editor-start-line-2026-10-22/probe.gd) can be copied back to `build/editor-start-line/probe.gd` to repeat these captures. Initial sandbox certificate/path errors, an early capture attempted before app startup, and the three existing start-line fixture timing corrections are retained in the evidence logs. No runtime invariant or assertion was weakened. The task-only source patch is [source-checkpoint.patch](evidence/editor-start-line-2026-10-22/source-checkpoint.patch); concurrent workspace changes are preserved.
+
+Restart/update the local client to load the fix; owner acceptance remains. No phone attachment check or physical-device test, APK/export/install, backend/account mutation or deployment was performed.

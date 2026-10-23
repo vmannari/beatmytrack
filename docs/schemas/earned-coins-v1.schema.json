@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-earned-coins-v1",
+  "description": "Only authenticated accounts earn or spend Coins. Historical guest saves retain cosmetics but their balances are unavailable and never import into accounts. Catalog membership is additionally checked against the shipped cosmetic IDs.",
+  "oneOf": [
+    {"$ref": "#/$defs/guest"},
+    {"$ref": "#/$defs/wallet"},
+    {"$ref": "#/$defs/purchase"},
+    {"$ref": "#/$defs/purchase_receipt"},
+    {"$ref": "#/$defs/reward_receipt"},
+    {"$ref": "#/$defs/race_incidents"}
+  ],
+  "$defs": {
+    "coins": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "item": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^(livery/[a-z0-9_]+|kit/compact/(hood|aero|rims|body)/[a-z0-9_]+)$"},
+    "owned": {"type": "array", "uniqueItems": true, "maxItems": 87, "items": {"$ref": "#/$defs/item"}},
+    "guest": {
+      "description": "Historical read-only save format. Balance and sequence never grant or spend Coins; owned cosmetics remain usable.",
+      "deprecated": true,
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "balance", "owned", "sequence"],
+      "properties": {"version": {"const": 1}, "balance": {"$ref": "#/$defs/coins"}, "owned": {"$ref": "#/$defs/owned"}, "sequence": {"$ref": "#/$defs/coins"}}
+    },
+    "race_incidents": {
+      "description": "Optional recorded cosmetic-bonus evidence inside race_proof, sent only when bootstrap race_incident_rewards_version is 1. A valid accepted five-lap trajectory with matching ticks, zero collisions and no off-track events earns the server-fixed 200 Coins. This is recorded evidence, not independent collision resimulation. Missing or malformed evidence earns no clean bonus without invalidating the score.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "ticks", "collision_count", "off_track"],
+      "properties": {"schema": {"const": "bmt-race-incidents-v1"}, "ticks": {"type": "integer", "minimum": 1, "maximum": 216000}, "collision_count": {"type": "integer", "minimum": 0, "maximum": 216000}, "off_track": {"type": "boolean"}}
+    },
+    "wallet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "balance", "revision", "owned", "prices"],
+      "properties": {
+        "schema": {"const": 1}, "balance": {"$ref": "#/$defs/coins"}, "revision": {"$ref": "#/$defs/coins"}, "owned": {"$ref": "#/$defs/owned"},
+        "prices": {"type": "object", "maxProperties": 256, "propertyNames": {"$ref": "#/$defs/item"}, "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 1000000}}
+      }
+    },
+    "purchase": {
+      "type": "object", "additionalProperties": false, "required": ["item_id", "expected_price"],
+      "properties": {"item_id": {"$ref": "#/$defs/item"}, "expected_price": {"type": "integer", "minimum": 1, "maximum": 1000000}}
+    },
+    "purchase_receipt": {
+      "type": "object", "additionalProperties": false, "required": ["item_id", "charged", "wallet"],
+      "properties": {"item_id": {"$ref": "#/$defs/item"}, "charged": {"$ref": "#/$defs/coins"}, "wallet": {"$ref": "#/$defs/wallet"}}
+    },
+    "reward_receipt": {
+      "type": "object", "additionalProperties": false, "required": ["status", "amount", "rows"],
+      "properties": {
+        "status": {"enum": ["pending", "credited", "unavailable"]}, "amount": {"$ref": "#/$defs/coins"},
+        "rows": {"type": "array", "maxItems": 12, "items": {
+          "type": "object", "additionalProperties": false, "required": ["title", "amount", "icon", "eligible", "status"],
+          "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 256}, "amount": {"$ref": "#/$defs/coins"}, "icon": {"enum": ["flag", "coin", "timer", "bars", "trophy"]}, "eligible": {"const": true}, "status": {"const": "Credited"}}
+        }}
+      }
+    }
+  }
+}

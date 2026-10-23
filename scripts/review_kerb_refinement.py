@@ -13,13 +13,17 @@ args = parser.parse_args()
 out = root / args.evidence_dir
 bank = root / 'game/assets/audio/vehicles'
 before = json.loads((out / 'before-hashes.json').read_text(encoding='utf-8-sig'))
+if isinstance(before, dict):
+    all_changed = {name for name, checksum in before.items() if hashlib.sha256((bank / name).read_bytes()).hexdigest()!=checksum}
+    assert all_changed=={'kerb_roll.wav','kerb_roll.ogg'}, all_changed
+    before = [{'file': name, 'sha256': checksum} for name, checksum in before.items() if name.endswith('.wav')]
 changed = [item['file'] for item in before if hashlib.sha256((bank / item['file']).read_bytes()).hexdigest()!=item['sha256']]
 assert changed==['kerb_roll.wav'], changed
 manifest = json.loads((bank / 'manifest.json').read_text())
 clip = next(item for item in manifest['outputs'] if item['file']=='kerb_roll.wav')
-if manifest['kerb_revision'] in ['clean-tyre-3','slow-pulse-4','thuds-5']:
+if manifest['kerb_revision'] in ['clean-tyre-3','slow-pulse-4','thuds-5','tyre-body-6']:
     assert clip['sources']==[], 'Clean kerb must contain no field recordings'
-    expected = {'clean-tyre-3':'kerb-clean-3','slow-pulse-4':'kerb-slow-pulse-4','thuds-5':'kerb-thuds-5'}
+    expected = {'clean-tyre-3':'kerb-clean-3','slow-pulse-4':'kerb-slow-pulse-4','thuds-5':'kerb-thuds-5','tyre-body-6':'kerb-tyre-body-6'}
     assert clip['generator']==expected[manifest['kerb_revision']]
 else:
     assert manifest['kerb_revision']=='recorded-rumble-2'

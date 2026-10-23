@@ -1,3 +1,5 @@
+2026-10-18 follow-up: selected ghosts await their coalesced download, empty fields retain automatic targeting and retries prepare missing ghost meshes. Completed Race Again attempts from both results actions receive verified weekly standings outcomes. See [actual verification and checkpoint](RIVALRY_GHOST_RETRY_2026_10_18.md).
+
 2026-10-09 follow-up: overview rows/arrows now open track detail; races start there and Back to Rivalry returns to the hub. Removed redundant section tabs and overview race starts. See [current navigation and actual verification](RIVALRY_NAVIGATION.md).
 
 2026-10-07 follow-up: automatic development membership/backend driving and the five-track Overview supersede the manual test-rival switch and older Overview guidance below. See [current behavior and actual verification](RIVALRY_HUB.md).

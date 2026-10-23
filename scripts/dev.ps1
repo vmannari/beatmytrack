@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('TestWindowsAudioExport', 'BuildWindowsAudio', 'BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestSilmukka', 'CaptureShortcutFeedback', 'ReviewRouteValidation', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+    [ValidateSet('BuildWindowsShare', 'BuildTrackGeometry', 'TestWindowsAudioExport', 'BuildWindowsAudio', 'BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
     [string]$Action = 'Validate',
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
@@ -9,6 +9,7 @@ param(
     [string]$Track = '',
     [string]$Screen = '',
     [string]$ScriptPath = '',
+    [ValidateSet('windows','android','all')][string]$NativePlatform = 'all',
     [ValidateSet('', 'write-golden', 'local-corpus')]
     [string]$CompilerAudit = '',
     [string]$StyleDocument = '',
@@ -157,10 +158,16 @@ function Invoke-Validation {
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_spline_laps.gd') 'star-spline-lap-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_gate_tolerance.gd') 'star-gate-tolerance-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_checkpoint_consistency.gd') 'star-checkpoint-consistency-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_forgiveness.gd') 'checkpoint-forgiveness-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_hairpin_checkpoints.gd') 'hairpin-checkpoint-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_star_checkpoint_shortcuts.gd') 'star-checkpoint-shortcut-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_bridge_layers.gd') 'bridge-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_entry_checkpoints.gd') 'bridge-entry-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_bridge_exit_checkpoints.gd') 'bridge-exit-checkpoint-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_notices.gd') 'checkpoint-notice-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_knot_checkpoint_notices.gd') 'knot-checkpoint-notice-tests.log'
+    Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_notice_latency.gd') 'checkpoint-notice-latency-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shallow_collisions.gd') 'shallow-collision-tests.log'
     Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_extra_tracks.gd') 'extra-track-tests.log'
@@ -599,6 +606,7 @@ try {
         'TestRoadBuild' { Invoke-Checked $script:godot (@('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_build.gd', '--') + $trackArguments) 'road-build-tests.log' }
         'TestShoulders' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shoulders.gd') 'shoulder-tests.log' }
         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
+        'BuildWindowsShare' { & (Join-Path $PSScriptRoot 'build_windows_share.ps1'); if ($LASTEXITCODE) { throw 'Windows share build failed.' } }
         'BuildWindowsAudio' { & (Join-Path $PSScriptRoot 'build_windows_audio.ps1'); if ($LASTEXITCODE) { throw 'Windows audio build failed.' } }
         'TestWindowsAudioExport' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-pack', 'Android Debug', (Join-Path $buildRoot 'windows_audio/android-content.zip')) 'android-content.log' }
         'TestScript' {
@@ -614,6 +622,7 @@ try {
             if ($TestArgument.Count -gt 0) { $testArguments += @('--') + $TestArgument }
             Invoke-Checked $script:godot $testArguments 'test-script.log'
         }
+        'BuildTrackGeometry' { & (Join-Path $PSScriptRoot 'build_track_geometry.ps1') -Platform $NativePlatform }
         'Import' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--editor', '--import') 'import.log' }
         'TestConstruction' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_construction.gd') 'construction-tests.log' }
         'CaptureConstruction' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/test_construction.gd', '--', '--capture-construction') 'construction-capture.log' }
@@ -633,9 +642,6 @@ try {
             Write-Host 'Tool prerequisites found. Device list is not proof of physical-phone acceptance.'
         }
         'Validate' { Invoke-Validation }
-        'CaptureShortcutFeedback' { Invoke-Checked $script:godot @('--path', $projectRoot, '--script', 'res://tests/capture_shortcut_feedback.gd') 'shortcut-hud-tests.log' }
-        'ReviewRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/review_route_validation.gd') 'route-owner-review.log' }
-        'TestSilmukka' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_silmukka.gd') 'silmukka-tests.log' }
         'TestRouteValidation' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_checkpoint_rules.gd') 'route-validation-tests.log' }
         'TestTracks' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_tracks.gd') 'track-tests.log' }
         'TestCreator' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_creator.gd') 'creator-tests.log' }

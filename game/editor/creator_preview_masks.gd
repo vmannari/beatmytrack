@@ -11,6 +11,10 @@ static func overlay(track: NativeTrack, paint: Array) -> Image:
 	var overlays: Array = paint.duplicate(true)
 	for stroke: Dictionary in overlays: stroke.protect_road = false
 	TrackCompiler._paint(overlays,painted,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,paint_mask)
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+	if native != null:
+		var packed: PackedByteArray = native.call("raster_pixels",painted,excluded,true)
+		if packed.size() == track.cells.size()*3: return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8,packed)
 	var pixels := PackedByteArray()
 	pixels.resize(track.cells.size()*3)
 	for index: int in range(track.cells.size()):
@@ -20,6 +24,10 @@ static func overlay(track: NativeTrack, paint: Array) -> Image:
 	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8,pixels)
 
 static func road(track: NativeTrack) -> Image:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+	if native != null:
+		var packed: PackedByteArray = native.call("raster_pixels",track.cells,PackedByteArray(),false)
+		if packed.size() == track.cells.size(): return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_L8,packed)
 	var pixels := PackedByteArray()
 	pixels.resize(track.cells.size())
 	for index: int in range(track.cells.size()): pixels[index] = 255 if track.cells[index] == 0 else 0

@@ -1,7 +1,8 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-const VERSION: String = "authored-props-3"
+const VERSION: String = "authored-props-15-ice-compact"
+const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
 const CACHE_LIMIT: int = 96
 static var meshes: Dictionary = {}
 static var pine_meshes: Dictionary = {}
@@ -9,15 +10,29 @@ const CACHE_BUDGET: int = 32 * 1024 * 1024
 static var cache_bytes: int = 0
 static var _ages: Dictionary = {}
 static var _clock: int = 0
+static var _guard := Mutex.new()
+
+static func warm(cancelled: Callable, kind: String, theme: String, length: float = -1.0, color: String = "") -> bool:
+	if cancelled.is_valid() and cancelled.call(): return false
+	var kit := NativeTrackVisual.new()
+	kit.theme_id = theme; kit.colors = TrackTheme.palette(theme)
+	var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if kind == "tree": pine(tool,kit,Vector3.ZERO,1.25,0.0,TrackTheme.foliage(theme))
+	else: append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length,color)
+	kit.free()
+	return not cancelled.is_valid() or not cancelled.call()
 
 static func _touch(mesh: Mesh) -> void:
 	_clock += 1; _ages[mesh.get_instance_id()] = _clock
 
+static func _bytes(mesh: Mesh) -> int:
+	return preload("res://editor/cache_bytes.gd").mesh(mesh)+mesh.get_meta("prop_hidden_triangles",PackedInt32Array()).size()*4
+
 static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
-	var size: int = preload("res://editor/cache_bytes.gd").mesh(mesh)
+	var size: int = _bytes(mesh)
 	if size > CACHE_BUDGET: return
 	cache_bytes = size
-	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += preload("res://editor/cache_bytes.gd").mesh(stored)
+	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += _bytes(stored)
 	while cache.size() >= limit or cache_bytes > CACHE_BUDGET:
 		var victim_cache: Dictionary = cache; var victim: String = ""; var age: int = 9223372036854775807
 		for collection: Dictionary in ([cache] if cache.size() >= limit else [meshes,pine_meshes]):
@@ -25,25 +40,34 @@ static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> vo
 				var candidate_age: int = int(_ages.get(collection[candidate].get_instance_id(),0))
 				if candidate_age < age: age = candidate_age; victim = candidate; victim_cache = collection
 		if victim.is_empty(): break
-		var expired: Mesh = victim_cache[victim]; cache_bytes -= preload("res://editor/cache_bytes.gd").mesh(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
+		var expired: Mesh = victim_cache[victim]; cache_bytes -= _bytes(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
 	cache[key] = mesh; _touch(mesh)
 
 
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true) -> bool:
+	_guard.lock()
 	var length: float = section_length/scale if section_length >= 0 else -1.0
 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
-	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
+	var key: String = "%s/%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint,str(optimize)]
 	var model: Mesh = meshes.get(key)
 	if model == null:
-		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
-		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0)
-		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
-		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
-		if not found: return false
-		local.generate_normals()
-		model = local.commit(); _admit(meshes,key,model,CACHE_LIMIT)
+		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
+		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0,optimize)
+		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint,optimize)
+		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0,optimize)
+		if not found: found = PropEgypt.append(local,kind,Vector3.ZERO,1,0,optimize)
+		if not found: found = PropWinterCraft.append(local,kind,Vector3.ZERO,1,0)
+		if not found: found = PropNight.append(local,kit,kind,Vector3.ZERO,1,0)
+		if not found: _guard.unlock(); return false
+		# Egyptian relief already has authored facet normals. Rebuilding them
+		# after append smooths across tiny stone bevels and shades the flat faces
+		# like deep triangular dents under the low Desert sun.
+		model = PropGeometry.finish(local,kind not in PropEgypt.KINDS and kind not in PropWinterCraft.KINDS and kind not in PropNight.KINDS)
+		if kit.theme_id == "winter" and kind in WINTER_FINISH.KINDS: model = WINTER_FINISH.apply(model,kind,length)
+		_admit(meshes,key,model,CACHE_LIMIT)
 	_touch(model)
-	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+	_guard.unlock()
+	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
 	return true
 
 static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
@@ -156,16 +180,17 @@ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
 		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.13,0.90,0.04)*size],color.lightened(0.26))
 		_leaf_face(tool,kit,center,1,turn,[rim[j],rim[i],Vector3(0,0.0,0)*size],color.darkened(0.43))
 
-static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
-	var key: String = color.to_html()
+static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color, optimize: bool = true) -> void:
+	_guard.lock()
+	var key: String = color.to_html()+"/"+str(optimize)
 	var model: Mesh = pine_meshes.get(key)
 	if model == null:
-		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
 		_pine_model(local,kit,Vector3.ZERO,1,0,color)
-		local.generate_normals()
-		model = local.commit(); _admit(pine_meshes,key,model,32)
+		model = PropGeometry.finish(local); _admit(pine_meshes,key,model,32)
 	_touch(model)
-	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+	_guard.unlock()
+	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
 
 static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)

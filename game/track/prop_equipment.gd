@@ -5,9 +5,9 @@ const METAL := Color("7d8988")
 const DARK := Color("354442")
 const WOOD := Color("8b7453")
 
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float, paint: String = "") -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float, paint: String = "", optimize: bool = true) -> bool:
 	if kind not in ["barrier","fence","guardrail","wire_fence","cone","chevron","braking_board","banner","flag","light","gantry","crate","barrel","pallet","container","hay_bale"]: return false
-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var local: SurfaceTool = PropGeometry.model((0.045 if kind == "barrier" else 0.00001) if optimize else -1.0)
 	var span: float = length/scale if length >= 0 else 6.0
 	match kind:
 		"hay_bale": hay(local,0)

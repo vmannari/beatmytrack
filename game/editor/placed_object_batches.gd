@@ -46,6 +46,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 				node.theme_id = kit.theme_id
 				node.colors = kit.colors
 				node.editor_preview = true
+				node._suppress_night_fx = true
 				var single := NativeTrack.new()
 				single.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
 				await node._build_placed_objects(single)
@@ -62,9 +63,10 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 			for part_index: int in range(model.parts.size()):
 				var part: Dictionary = model.parts[part_index]
 				if part.baked:
-					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+str(Vector2i(floori(float(object.position[0])/32.0),floori(float(object.position[1])/32.0)))+":"+str(index/BAKED_GROUP_SIZE)
-					if not desired.has(role): desired[role] = {"baked":true,"components":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
+					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+("egypt:" if kind in PropEgypt.KINDS else "winter_craft:" if kind in PropWinterCraft.KINDS else "night:" if kind in PropNight.KINDS else "")+str(Vector2i(floori(float(object.position[0])/32.0),floori(float(object.position[1])/32.0)))+":"+str(index/BAKED_GROUP_SIZE)
+					if not desired.has(role): desired[role] = {"baked":true,"components":[],"hidden":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
 					desired[role].components.append(part.arrays)
+					desired[role].hidden.append(part.hidden)
 					desired[role].sources.append(key+":"+str(part_index))
 					desired[role].bounds.append(part.bounds)
 				else:
@@ -107,15 +109,30 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 		var vertices: int = 0
 		for component: Array in entry.components: vertices += component[Mesh.ARRAY_VERTEX].size()
 		if sliced and vertices > 8192:
-			var job = preload("res://editor/work_job.gd").start(_assembly_arrays.bind(entry.components),kit.get_tree())
+			var job = preload("res://editor/work_job.gd").start(_assembly_uploads.bind(entry.components),kit.get_tree())
 			while not job.done:
 				await kit.get_tree().process_frame
 				if not current.call():
 					job.cancel()
 					for pending: NativeTrackVisual in pending_nodes: pending.free()
 					return false
-			entry["prepared_mesh"] = _upload_arrays(job.result) if job.result is Array and not job.result.is_empty() else _assemble(entry.components)
+			if not job.result is Array or job.result.is_empty():
+				for pending: NativeTrackVisual in pending_nodes: pending.free()
+				return false
+			var mesh := ArrayMesh.new()
+			for arrays: Array in job.result:
+				if not current.call() or not await kit._budget_install(arrays[Mesh.ARRAY_VERTEX].size()):
+					for pending: NativeTrackVisual in pending_nodes: pending.free()
+					return false
+				if not current.call():
+					for pending: NativeTrackVisual in pending_nodes: pending.free()
+					return false
+				mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
+			entry["prepared_mesh"] = mesh
 		else: entry["prepared_mesh"] = _assemble(entry.components)
+	if not current.call():
+		for pending: NativeTrackVisual in pending_nodes: pending.free()
+		return false
 	# Publish once, after preparation. A superseded sliced update changes no live groups.
 	for key: String in groups.keys():
 		if desired.has(key): continue
@@ -175,6 +192,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 		var node: NativeTrackVisual = separate[index].node
 		if node.get_parent() == null: kit.add_child(node)
 		kit.light_instances.append_array(node.light_instances)
+	NightPropEffects.build(kit,objects)
 	individuals = separate
 	kit.tyre_instances = groups["tyres"].nodes[0] if groups.has("tyres") else null
 	kit._tyre_positions.clear()
@@ -214,9 +232,11 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
 		for surface: int in range(mesh.get_surface_count()):
 			bytes += mesh.surface_get_array_len(surface)*64+mesh.surface_get_array_index_len(surface)*4
 		var baked: bool = child is MeshInstance3D
+		if baked and child.has_meta("editor_prop_hidden"):
+			bytes += child.get_meta("editor_prop_hidden").size()*16
 		# Keep pre-upload normals. Decoding/re-encoding a compressed ArrayMesh
 		# introduces an extra quantization step, visible in Mobile lighting.
-		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
+		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"hidden":child.get_meta("editor_prop_hidden",PackedInt32Array()),"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
 	prototype.free()
 	var result: Dictionary = {"parts":parts,"bytes":bytes}
 	if bytes <= MODEL_BUDGET:
@@ -240,13 +260,14 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: 
 	if signature != baked_signature:
 		baked_signature = signature.duplicate(true)
 		baked_plan = {}
-		for role: String in ["opaque","ink"]:
+		for role: String in ["opaque","ink","opaque:egypt","opaque:night"]:
 			var parts: Array = []
 			for key: String in signature:
 				if not key.begins_with(role+":"): continue
+				if role == "opaque" and (key.begins_with("opaque:egypt:") or key.begins_with("opaque:night:")): continue
 				var entry: Dictionary = desired[key]
 				for index: int in range(entry.components.size()):
-					parts.append({"arrays":entry.components[index],"bounds":entry.bounds[index],"source":entry.sources[index],"material":entry.material,"chunk":key,"cluster":parts.size()})
+					parts.append({"arrays":entry.components[index],"hidden":entry.hidden[index],"bounds":entry.bounds[index],"source":entry.sources[index],"material":entry.material,"chunk":key,"cluster":parts.size()})
 			# Overlapping opaque surfaces must keep the original triangle order.
 			# Shared vertices additionally need their original joined normals.
 			var shared: Dictionary = {}
@@ -271,21 +292,22 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: 
 				var connected: bool = cluster.size() > 1
 				var key: String = role+":joined:"+cluster[0].source if connected else cluster[0].chunk
 				if not baked_plan.has(key): baked_plan[key] = {"baked":true,"components":[],"sources":[],"material":cluster[0].material,"poses":[]}
-				var components: Array = []
+				var components: Array = []; var removals: Array = []
 				var regenerate: bool = false
 				for part: Dictionary in cluster:
-					components.append(part.arrays)
+					components.append(part.arrays); removals.append(part.hidden)
 					baked_plan[key].sources.append(part.source)
 					regenerate = regenerate or shared.has(part.source)
 				if regenerate:
 					if sliced:
-						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components),kit.get_tree())
+						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components,removals),kit.get_tree())
 						while not job.done:
 							await kit.get_tree().process_frame
 							if not current.call(): job.cancel(); baked_signature = {}; return
-						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components))
-					else: baked_plan[key].components.append(_joined_arrays(components))
-				else: baked_plan[key].components.append_array(components)
+						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components,removals))
+					else: baked_plan[key].components.append(_joined_arrays(components,removals))
+				else:
+					for index: int in range(components.size()): baked_plan[key].components.append(PropGeometry.prune(components[index],removals[index]))
 	for key: String in signature: desired.erase(key)
 	for key: String in baked_plan: desired[key] = baked_plan[key]
 
@@ -307,13 +329,18 @@ func _shared_vertex(first: Dictionary, second: Dictionary) -> bool:
 		shared_vertex_bytes += bytes
 	return shared
 
-static func _joined_arrays(components: Array) -> Array:
-	return _join_arrays(Callable(),components)
+static func _joined_arrays(components: Array, removals: Array = []) -> Array:
+	return _join_arrays(Callable(),components,removals)
 
-static func _join_arrays(cancelled: Callable, components: Array) -> Array:
+static func _join_arrays(cancelled: Callable, components: Array, removals: Array = []) -> Array:
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for component: Array in components:
+	var hidden := PackedInt32Array(); var triangle_offset: int = 0
+	for part_index: int in range(components.size()):
+		var component: Array = components[part_index]
+		if part_index < removals.size():
+			for triangle: int in removals[part_index]: hidden.append(triangle_offset+triangle)
+		triangle_offset += component[Mesh.ARRAY_INDEX].size()/3
 		if cancelled.is_valid() and cancelled.call(): return []
 		var points: PackedVector3Array = component[Mesh.ARRAY_VERTEX]
 		var pigments: PackedColorArray = component[Mesh.ARRAY_COLOR]
@@ -322,10 +349,15 @@ static func _join_arrays(cancelled: Callable, components: Array) -> Array:
 			tool.add_vertex(points[index])
 	tool.generate_normals()
 	tool.index()
-	return tool.commit_to_arrays()
+	return PropGeometry.prune(tool.commit_to_arrays(),hidden)
 
 static func _assemble(components: Array) -> ArrayMesh:
 	return _upload_arrays(_assembly_arrays(Callable(),components))
+
+static func _assembly_uploads(cancelled: Callable, components: Array) -> Array:
+	var arrays: Array = _assembly_arrays(cancelled,components)
+	if arrays.is_empty() or cancelled.call(): return []
+	return preload("res://editor/road_sections.gd").split(arrays)
 
 static func _assembly_arrays(cancelled: Callable, components: Array) -> Array:
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)

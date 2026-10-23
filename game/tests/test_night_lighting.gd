@@ -25,10 +25,13 @@ func run() -> void:
 	root.add_child(visual)
 	visual.build(track,BridgePresentation.new(track))
 	var tiles: Array[Node] = visual.find_children("*","MeshInstance3D",false,false).filter(func(node: Node) -> bool: return str(node.name).begins_with("LitTerrainTile"))
-	# Godot renames duplicate sibling names; identify all terrain tiles by material.
+	# Specialized shaders retain the original dynamic material. Recognize that
+	# source instead of comparing the compiled variant's resource identity.
 	tiles.clear()
 	for child: Node in visual.get_children():
-		if child is MeshInstance3D and child.material_override is ShaderMaterial and child.material_override.shader == NativeTrackVisual.TERRAIN_SHADER: tiles.append(child)
+		if not child is MeshInstance3D: continue
+		var material: ShaderMaterial=child.material_override as ShaderMaterial
+		if material!=null and material.get_meta("surface_dynamic_material",material).shader == NativeTrackVisual.TERRAIN_SHADER: tiles.append(child)
 	check(tiles.size() > 1,"night terrain is spatially partitioned")
 	var area: float = 0.0
 	var aligned: bool = true

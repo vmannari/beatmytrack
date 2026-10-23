@@ -184,6 +184,20 @@ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: 
 
 
 static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
+	if strokes.is_empty(): return
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+	if native != null:
+		var prepared: Array = []
+		for authored: Dictionary in strokes:
+			var stroke: Dictionary = authored.duplicate(true)
+			stroke.points = SurfacePaint.contour(authored.points,str(authored.get("mode","free")))
+			prepared.append(stroke)
+		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size},Geometry2D,cancelled)
+		if _cancelled(cancelled): return
+		if result.has("cells"):
+			cells.resize(0); cells.append_array(result.cells)
+			road_mask.resize(0); road_mask.append_array(result.mask)
+			return
 	for authored: Dictionary in strokes:
 		if _cancelled(cancelled): return
 		var stroke: Dictionary = SurfacePaint.prepared(authored)
@@ -217,6 +231,14 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 
 
 static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+	if native != null:
+		var result: Dictionary = native.call("raster_road",{"route":road_route,"widths":road_widths,"kind":road_kind,"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size,"closed":closed},Geometry2D,cancelled)
+		if _cancelled(cancelled): return
+		if result.has("cells"):
+			cells.resize(0); cells.append_array(result.cells)
+			road_mask.resize(0); road_mask.append_array(result.mask)
+			return
 	var has_mask: bool = not road_mask.is_empty()
 	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
 	for i: int in range(segment_count):

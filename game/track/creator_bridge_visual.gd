@@ -121,6 +121,8 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 	if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
+	asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
 	asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
 	asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
@@ -137,7 +139,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 		asphalt.set_shader_parameter("desert_bridge_width_data",true)
 		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
 		SurfaceShaderVariants.specialize(asphalt)
-	elif road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+	elif theme == "night_city" or road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
 	road.material_override = asphalt
 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
 	parent.add_child(road)

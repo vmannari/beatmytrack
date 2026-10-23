@@ -11,11 +11,36 @@ func run() -> void:
 	_wrong_layer_notices()
 	_hairpin_notices()
 	_unrelated_bridge_crossing()
+	_nearby_overhead_road()
+	_nearby_ground_return()
 	_lateral_notices()
 	_finish_notices()
 	_return_to_missed_gate()
 	print("CHECKPOINT_NOTICE_TESTS: ",checks," checks, ",failures," failures")
 	quit(0 if failures == 0 else 1)
+
+func _nearby_overhead_road() -> void:
+	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+	var track: NativeTrack = TrackCompiler.compile(document)
+	var session := TrackSession.new(120,1); session._configure(track)
+	session.next_checkpoint = 5
+	# Actual RouteDriver tick833: the future deck is 0.108m from the car in
+	# X/Z; its current ground road is 0.192m away. The gate is still ahead.
+	var point := Vector2(28.41919,8.003538)
+	session.advance(track,point-Vector2(0,0.001),point,77,false,0)
+	check(session.next_checkpoint == 5 and session.missed_checkpoint == -1,"closer future deck cannot mark the upcoming ground checkpoint missed")
+	check(session.last_progress < 63.0,"notice progress remains on the actual underpass, not the future deck at143m")
+
+func _nearby_ground_return() -> void:
+	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json"))
+	var track: NativeTrack = TrackCompiler.compile(document)
+	var session := TrackSession.new(120,1); session._configure(track); session.next_checkpoint = 10
+	# Actual RouteDriver tick2147: two ground arms cross; the later arm is
+	# 0.157m away while the current approach is 0.232m away.
+	var point := Vector2(-2.370301,-8.845466)
+	session.advance(track,point-Vector2(0,0.001),point,156,false,0)
+	check(session.next_checkpoint == 10 and session.missed_checkpoint == -1,"closer returning ground arm cannot mark the gate ahead missed")
+	check(session.last_progress < 127.0,"notice progress follows the required ground approach rather than the later arm at304m")
 
 func _return_to_missed_gate() -> void:
 	for name: String in ["silmukka","dust_cloud","over_and_under"]:
@@ -133,7 +158,7 @@ func _lateral_notices() -> void:
 				session.advance(track,after,before,0)
 				check(session.missed_checkpoint == 0 and session.next_checkpoint == 0,"returning backwards retains the required gate and warning")
 				session.advance(track,session._centers[0]-direction*0.1,session._centers[0]+direction*0.1,0)
-				check(session.missed_checkpoint == -1 and session.next_checkpoint == 1 and session.penalty_seconds == 0,"forward recovery immediately clears the notice without a penalty")
+				check(session.missed_checkpoint == -1 and session.next_checkpoint == 1 and is_equal_approx(session.race_time_seconds(),float(session.elapsed_ticks)/session.tick_rate),"forward recovery immediately clears the notice without a penalty")
 	var grid := TrackSession.new(120,1)
 	grid.advance(track,Vector2(-3,0),Vector2(-2.5,0),0)
 	check(grid.next_checkpoint == 0 and grid.missed_checkpoint == -1,"departure behind the start stays quiet")

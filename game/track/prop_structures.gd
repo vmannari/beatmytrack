@@ -5,9 +5,9 @@ const METAL := Color("738482")
 const DARK := Color("293b3c")
 const WOOD := Color("8e7757")
 
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, optimize: bool = true) -> bool:
 	if kind not in ["parked_car","van","car_wreck","shed","hut","grandstand"]: return false
-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var local: SurfaceTool = PropGeometry.model(0.00001 if optimize else -1.0)
 	if kind in ["parked_car","van","car_wreck"]: _vehicle(local,kind)
 	elif kind == "grandstand": _grandstand(local)
 	else: _building(local,kit,kind)

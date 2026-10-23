@@ -11,6 +11,9 @@ const MAX_OBJECTS: int = 96
 const BIN: float = 12.0
 const NATURE: Array[String] = ["tree", "broadleaf", "rock", "boulder"]
 const ROADSIDE: Array[String] = ["shed", "hut", "car_wreck", "container", "parked_car", "barrel", "crate"]
+const DESERT_ROADSIDE: Array[String] = ["egypt_obelisk", "egypt_column", "egypt_wall", "egypt_column_broken"]
+const NIGHT_ROADSIDE: Array[String] = ["burning_barrel", "lantern_post", "neon_arrow", "burning_barrel", "hut", "burning_car", "crate"]
+const WINTER_ROADSIDE: Array[String] = ["igloo", "snow_castle", "snowman", "snow_lantern", "ice_lantern", "hut", "shed"]
 
 var cancelled: Callable
 
@@ -125,14 +128,17 @@ func generate(seed_value: int, density: float, roadside_reach: float) -> Array:
 			var point: Vector2 = candidates[rng.randi_range(0,candidates.size()-1)]+Vector2(rng.randf_range(-0.8,0.8),rng.randf_range(-0.8,0.8))
 			var kind: String
 			if phase == 0:
-				kind = ROADSIDE[result.size()%ROADSIDE.size()]
+				var roadside: Array[String] = DESERT_ROADSIDE if source.theme == "desert" else WINTER_ROADSIDE if source.theme == "winter" else NIGHT_ROADSIDE if source.theme == "night_city" else ROADSIDE
+				kind = roadside[result.size()%roadside.size()]
 			else:
 				var cluster: float = 0.0
 				for centre: Vector2 in centres: cluster = maxf(cluster,exp(-point.distance_squared_to(centre)/500.0))
 				if rng.randf() > clampf(0.2+cluster*0.6+noise.get_noise_2dv(point)*0.35,0.1,0.95): continue
 				kind = "rock" if rng.randf() < (0.85 if source.theme == "desert" else 0.3) else "tree"
 				if source.theme == "desert": kind = "boulder" if rng.randf() < 0.3 else "rock"
-				elif source.theme == "night_city" and kind == "tree": kind = "broadleaf"
+				if source.theme == "desert" and attempt%9 == 0: kind = "egypt_pyramid"
+				elif source.theme == "night_city" and kind == "tree": kind = "firefly_bush" if attempt%3 == 0 else "broadleaf"
+			if not CreatorCatalog.available(kind,source.theme): continue
 			var rotation: float = rng.randf_range(0.0,359.99)
 			if phase == 0 and kind != "car_wreck": rotation = road_rotation(point)+float(rng.randi_range(-1,1))*90.0
 			var object: Dictionary = {"kind":kind,"position":[snappedf(point.x,0.01),snappedf(point.y,0.01)],"rotation":fposmod(snappedf(rotation,0.01),360.0),"scale":snappedf(rng.randf_range(0.8,1.15),0.01)}

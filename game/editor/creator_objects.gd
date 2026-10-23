@@ -2,10 +2,25 @@ class_name CreatorObjects
 extends RefCounted
 ## Original scalable stamps; the same footprint is used in plans and native cells.
 
-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale"]
+const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale", "egypt_pyramid", "egypt_obelisk", "egypt_column", "egypt_column_broken", "egypt_wall", "igloo", "snowman", "snow_castle", "snow_lantern", "ice_lantern", "ice_compact", "firefly_bush", "burning_barrel", "lantern_post", "neon_arrow", "burning_car", "abandoned_warehouse"]
 
 static func dimensions(kind: String) -> Vector2:
 	match kind:
+		"firefly_bush": return Vector2(2.8,2.8)
+		"burning_barrel": return Vector2(1.2,1.2)
+		"burning_car": return Vector2(4.5,2.2)
+		"abandoned_warehouse": return Vector2(19.2,25.0)
+		"lantern_post": return Vector2(1.9,0.8)
+		"neon_arrow": return Vector2(2.2,0.9)
+		"igloo": return Vector2(7.0,8.6)
+		"snowman": return Vector2(3.0,2.0)
+		"snow_castle": return Vector2(7.4,6.4)
+		"snow_lantern": return Vector2(1.8,1.8)
+		"ice_lantern": return Vector2(1.4,1.4)
+		"ice_compact": return Vector2(3.4,5.8)
+		"egypt_pyramid": return Vector2(12,12)
+		"egypt_obelisk", "egypt_column", "egypt_column_broken": return Vector2(2.8,2.8)
+		"egypt_wall": return Vector2(7.6,1.8)
 		"hay_bale": return Vector2(2.0,1.2)
 		"speed_bump": return Vector2(2.0,8.0)
 		"tyre_stack": return Vector2(1,1)
@@ -97,7 +112,17 @@ static func spill_radius(angle: float) -> float:
 static func solid_contains(object: Dictionary, point: Vector2) -> bool:
 	var local: Vector2 = (point-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
 	var scale: float = float(object.get("scale",1.0))
+	if object.kind == "abandoned_warehouse":
+		var p: Vector2=local.abs()/scale
+		return p.x<=9.0 and p.y<=12.0 and (p.x>=8.4 or (p.y>=11.6 and p.x>=6.15))
+	if object.kind == "igloo": return local.length_squared()<=pow(3.14*scale,2) or (absf(local.x)<=1.12*scale and local.y>=2.0*scale and local.y<=4.2*scale)
+	if object.kind == "ice_compact":
+		var p: Vector2 = local.abs()/scale
+		var corner: Vector2 = (p-Vector2(1.44,2.58)).max(Vector2.ZERO)
+		return p.x <= 1.64 and p.y <= 2.78 and corner.length_squared() <= 0.20*0.20
 	if object.kind in ["tree","broadleaf"]: return local.length()<=maxf(0.36,0.4*scale)
+	if object.kind == "burning_barrel": return local.length()<=0.52*scale
+	if object.kind == "lantern_post": return local.length()<=maxf(0.36,0.24*scale)
 	if object.kind == "light": return local.length()<=maxf(0.36,0.22*scale)
 	if object.kind == "gantry": return absf(absf(local.x)-5.7*scale)<=maxf(0.36,0.3*scale) and absf(local.y)<=maxf(0.36,0.5*scale)
 	return contains(object,point)

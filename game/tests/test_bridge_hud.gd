@@ -148,10 +148,8 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		hud.show_session(session)
 		check(hud.lap_label.text == "3" and hud.lap_total.text == "/ 7","lap display uses actual session count and target")
 		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","race and current lap clocks use distinct session times")
-		session.penalty_seconds = 5.0
-		session.lap_penalty_seconds = 5.0
 		hud.show_session(session)
-		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","checkpoint rules use elapsed time, ignoring retired shortcut penalties")
+		check(hud.race_timer.text == "01:07.50" and hud.lap_timer.text == "00:06.25","repeated checkpoint HUD updates retain the exact elapsed time")
 		session.lap_times.assign([20.0,21.0,26.5])
 		session.finished = true
 		hud.show_session(session)
@@ -161,8 +159,6 @@ func review(track: NativeTrack, dimensions: Vector2i, practice: bool, filename: 
 		check(hud._time_text(59.9999) == "00:59.99" and hud._time_text(60.0) == "01:00.00","clock rollover never prints sixty seconds")
 		# Show distinct changing data in the visual witness, then restore the real session.
 		session.finished = false
-		session.penalty_seconds = 0.0
-		session.lap_penalty_seconds = 0.0
 		hud.show_session(session)
 	if not practice:
 		for timer: Label in [hud.race_timer,hud.lap_timer]:

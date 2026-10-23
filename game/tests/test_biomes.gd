@@ -20,7 +20,9 @@ func run() -> void:
 	app.set("library",TrackLibrary.new(folder))
 	app.set("records",LocalRecords.new(folder+"/records.json"))
 	root.add_child(app)
-	await process_frame
+	var deadline: int = Time.get_ticks_msec()+20000
+	while not app.get("startup_complete") and Time.get_ticks_msec()<deadline: await process_frame
+	check(app.get("startup_complete"),"covered startup completes before biome navigation")
 	for biome: String in TrackDocument.THEMES:
 		app.call("_show_screen","play")
 		var create: Button = app.get("root_ui").find_child("Tab_create",true,false)
@@ -67,12 +69,16 @@ func run() -> void:
 		check(doc.theme==biome and app.get("history").is_empty(),"biome is immutable and cannot be undone")
 		var trees: Array = CreatorCatalog.filtered("Nature","Pine tree",[],biome)
 		check(trees.is_empty()==(biome not in ["pine","winter","storm"]),"pine trees restricted to forest")
-		check(not CreatorCatalog.filtered("Barriers","Tyres",[],biome).is_empty(),"race equipment shared")
+		check(CreatorCatalog.filtered("Barriers","Tyres",[],biome).is_empty() == (biome == "desert"),"tyres remain outside the curated Desert collection")
 		if biome=="desert" and "--capture" in OS.get_cmdline_user_args():
 			app.call("_editor_category","objects")
 			for i: int in range(5): await RenderingServer.frame_post_draw
 			root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../docs/evidence/biomes/desert-editor.png"))
 		app.call("_new_document")
+		var departure: ConfirmationDialog = app.get("root_ui").find_child("SaveChangesDialog",true,false)
+		if departure != null: departure.custom_action.emit("discard")
+		var return_deadline: int = Time.get_ticks_msec()+4000
+		while app.get("screen") != "biome" and Time.get_ticks_msec()<return_deadline: await process_frame
 		check(app.get("screen")=="biome" and app.get("document").id!=doc.id,"New repeats required selection with fresh identity")
 	app.queue_free()
 	await process_frame

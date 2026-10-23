@@ -1,9 +1,9 @@
 class_name PropNature
 extends RefCounted
 ## Authored deterministic silhouettes and broad leaf/stone planes, no alpha cards.
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, optimize: bool = true) -> bool:
 	if kind not in ["broadleaf","bush","grass_clump","flowers","pebbles","log","rock","boulder","slate","cliff"]: return false
-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
 	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.06)
 	var stone: Color = TrackTheme.stone(kit.theme_id)
 	match kind:

@@ -136,6 +136,8 @@ static func _render_preview(button: Button, kind: String, biome: String, color: 
 	viewport.add_child(camera)
 	camera.look_at_from_position(camera.position,Vector3.ZERO)
 	var bounds: AABB=_mesh_bounds(kit)
+	if kind=="burning_car": bounds=bounds.merge(AABB(Vector3(-0.8,0.9,-0.45),Vector3(2.8,1.5,0.9)))
+	if kind=="burning_barrel": bounds=bounds.merge(AABB(Vector3(-0.54,0.83,-0.54),Vector3(1.08,1.45,1.08)))
 	var center: Vector3=bounds.get_center()
 	var shadow := MeshInstance3D.new()
 	shadow.name = "PreviewContact"
@@ -162,6 +164,7 @@ static func _render_preview(button: Button, kind: String, biome: String, color: 
 
 
 static func _mesh_bounds(node: Node, parent: Transform3D = Transform3D.IDENTITY) -> AABB:
+	if node.is_in_group("night_prop_effects"): return AABB()
 	var result := AABB()
 	var transform: Transform3D=parent*node.transform if node is Node3D else parent
 	if node is MeshInstance3D: result=transform*node.get_aabb()

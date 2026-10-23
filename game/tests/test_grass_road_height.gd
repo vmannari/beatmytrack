@@ -42,6 +42,9 @@ func circuit(theme: String) -> NativeTrack:
 	return TrackCompiler.compile(result.document)
 
 func run() -> void:
+	if "--visual-only" in OS.get_cmdline_user_args():
+		await run_visual()
+		return
 	var previous := GDScript.new()
 	previous.source_code = FileAccess.get_file_as_string("res://../docs/evidence/grass-road-height-2026-10-14/before/game/vehicle/vehicle_simulation.gd").replace("\r\n","\n").replace("class_name VehicleSimulation\n","")
 	check(previous.reload() == OK,"saved physics 0.56 loads for measured comparison")
@@ -102,6 +105,9 @@ func run() -> void:
 	partial.step(DriveFrame.new(),edge)
 	old_partial.step(DriveFrame.new(),edge)
 	check(partial.state.velocity.length() < old_partial.state.velocity.length()-0.03,"first grass wheel sheds more speed immediately before the centre leaves asphalt")
+	await run_visual()
+
+func run_visual() -> void:
 	check(is_equal_approx(HEIGHT.RISE,0.05),"asphalt-only rise is exactly five centimetres")
 	var native: NativeTrack = field(1)
 	for y: int in range(48,52):
@@ -157,18 +163,28 @@ func inspect_surfaces(world: NativeTrackVisual, track: NativeTrack, span: Dictio
 	var fringe_flat: bool = true
 	var sand_vertices: int = 0
 	var fringe_vertices: int = 0
+	var sand_min: float = INF
+	var sand_max: float = -INF
 	for child: Node in world.get_children():
 		if not child is MeshInstance3D or not child.mesh is ArrayMesh or not child.material_override is ShaderMaterial: continue
 		var material: ShaderMaterial = child.material_override
 		var vertices: PackedVector3Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 		if material.get_shader_parameter("gravel") == true and theme in ["pine","storm"]:
-			for vertex: Vector3 in vertices: sand_flat = sand_flat and is_equal_approx(vertex.y,-0.02)
+			var uv: PackedVector2Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
+			for i: int in range(vertices.size()):
+				var vertex: Vector3 = vertices[i]
+				if theme == "pine" and uv[i].x < -0.5: continue
+				sand_flat = sand_flat and is_equal_approx(vertex.y,-0.02)
+				sand_min = minf(sand_min,vertex.y); sand_max = maxf(sand_max,vertex.y)
 			sand_vertices += vertices.size()
 		if material.get_shader_parameter("edge_fringe") == true:
 			for vertex: Vector3 in vertices: fringe_flat = fringe_flat and is_equal_approx(vertex.y,0.013)
 			fringe_vertices += vertices.size()
-	if theme in ["pine","storm"]: check(sand_vertices > 0 and sand_flat,theme+" actual sand stays at its original flat height")
-	if theme != "winter": check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
+	if theme == "pine":
+		check(sand_vertices > 0 and is_equal_approx(sand_min,-0.038) and is_equal_approx(sand_max,0.027),"Grass reference shoulder has the new cosmetic slope")
+		check(fringe_vertices == 0,"Grass contact shading shares the slope without a crossing flat strip")
+	elif theme == "storm": check(sand_vertices > 0 and sand_flat,theme+" actual sand stays at its original flat height")
+	if theme in ["storm","desert"]: check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
 	var bridge: MeshInstance3D = world.get_node("BridgeAsphalt")
 	var deck_vertices: PackedVector3Array = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 	var deck_colors: PackedColorArray = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]

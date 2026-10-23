@@ -1,7 +1,7 @@
 class_name BridgeElevation
 extends RefCounted
-## Pure spatial elevation shared by client presentation and verified ghosts.
-## Presentation only: no temporal easing and no changes to canonical handling.
+## Pure spatial elevation shared by canonical bridge flight, cars and ghosts.
+## No temporal easing; preparation is immutable during simulation.
 
 const VERSION: String = "bridge-ramps-6"
 const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")

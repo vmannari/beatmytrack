@@ -14,7 +14,6 @@ const PLANNING_PITCH: float = 70.0
 
 var document: Dictionary
 var mode: String = "road"
-var world_backdrop: bool = false
 var selected_piece: int = -1
 var ghost: Dictionary = {}
 var piece_kind: String = "straight"
@@ -24,6 +23,7 @@ var road_action: String = "move"
 var geometry_drag: String = ""
 var geometry_origin: float = 0.0
 var road_approval_pending: bool = false
+var preparing: bool = false
 var endpoint_drag: int = -1
 var spline_point: int = 2
 var spline_point_drag: int = -1
@@ -46,9 +46,6 @@ func _prepared(key: String, source: Array, build: Callable) -> Variant:
 	if bytes <= CANVAS_CACHE_BUDGET: _prepared_geometry[key] = {"source":saved_source,"value":value,"bytes":bytes}
 	preparation_counts[key] = int(preparation_counts.get(key,0))+1
 	return value
-
-func prepared_route() -> Dictionary:
-	return _prepared("route",[document.points,document.widths,document.corners,document.width],TrackDocument.route_data.bind(document))
 
 func prepared_joins() -> Array:
 	return _prepared("joins",[document.pieces],RoadPieces.joins.bind(document.pieces))
@@ -97,7 +94,6 @@ var touches: Dictionary = {}
 var dragging: bool = false
 var panning: bool = false
 var previous_pointer := Vector2.ZERO
-var preview: TrackMap
 var fitted: bool = false
 var fit_pending_native: bool = false
 var native_preview: NativeTrack
@@ -113,19 +109,16 @@ func _ready() -> void:
 	resized.connect(func() -> void:
 		if not fitted: fit()
 		queue_redraw())
-	preview = TrackMap.new()
-	preview.visible = false
-	add_child(preview)
 
 func scale_factor() -> float:
 	return maxf(0.01, minf(size.x / 110.0, size.y / 90.0)) * zoom
 
 func to_screen(point: Vector2) -> Vector2:
-	return size * 0.5 + pan + Vector2(point.x, -point.y*(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0)) * scale_factor()
+	return size * 0.5 + pan + Vector2(point.x, -point.y*sin(deg_to_rad(PLANNING_PITCH))) * scale_factor()
 
 func to_world(point: Vector2) -> Vector2:
 	var local: Vector2 = (point - size * 0.5 - pan) / scale_factor()
-	return Vector2(local.x, -local.y/(sin(deg_to_rad(PLANNING_PITCH)) if world_backdrop else 1.0))
+	return Vector2(local.x, -local.y/sin(deg_to_rad(PLANNING_PITCH)))
 
 func fit() -> void:
 	if size.x < 10 or size.y < 10: return
@@ -169,8 +162,6 @@ func show_native(track: NativeTrack) -> void:
 	if fit_pending_native:
 		fit_pending_native = false
 		fit()
-	# The 3D editor never draws this legacy CPU-rasterized map texture.
-	if not world_backdrop: preview.show_track(track)
 	native_changed.emit(track)
 	queue_redraw()
 
@@ -195,6 +186,7 @@ func cancel_gesture() -> void:
 	bump_end_drag = -1
 
 func _gui_input(event: InputEvent) -> void:
+	if preparing: return
 	if document.is_empty(): return
 	if event is InputEventKey: return
 	# Menus/text fields use Godot mouse emulation; this canvas handles every
@@ -358,7 +350,7 @@ func _begin(point: Vector2, pointer: int) -> void:
 		paint_points = [_paint_position(point)]
 		queue_redraw()
 		return
-	if mode in ["pan","waypoints","move","add"]:
+	if mode == "pan":
 		panning = true
 		return
 	pending_stamp = mode == "place"
@@ -471,6 +463,10 @@ func _move(point: Vector2) -> void:
 	queue_redraw()
 
 func _place(point: Vector2) -> void:
+	if preparing: return
+	if mode in ["place","run"] and not _stamp_available():
+		hint_changed.emit("Choose an object from this biome's object collection.")
+		return
 	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
 	if mode == "start_line":
 		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
@@ -603,11 +599,7 @@ func _notification(what: int) -> void:
 func _draw() -> void:
 	if document.is_empty() or size.x < 10 or size.y < 10: return
 	var palette: Array[Color] = TrackTheme.palette(str(document.theme))
-	if not world_backdrop: draw_style_box(MenuStyle.box(palette[1].darkened(0.2)), Rect2(Vector2.ZERO, size))
-	if not world_backdrop and native_preview != null and preview.surface_texture != null:
-		var corner: Vector2 = to_screen(Vector2(-native_preview.half_extent.x,native_preview.half_extent.y))
-		draw_texture_rect(preview.surface_texture, Rect2(corner,native_preview.half_extent * 2.0 * scale_factor()), false)
-	if world_backdrop and native_preview != null and document.base_track == "" and (document.layout.is_empty() or not document.pieces.is_empty()):
+	if native_preview != null and document.base_track == "" and (document.layout.is_empty() or not document.pieces.is_empty()):
 		var extent: Vector2 = native_preview.half_extent-Vector2.ONE*native_preview.cell_size
 		var corners: Array[Vector2] = [to_screen(Vector2(-extent.x,extent.y)),to_screen(extent),to_screen(Vector2(extent.x,-extent.y)),to_screen(-extent)]
 		for i: int in range(4): draw_dashed_line(corners[i],corners[(i+1)%4],Color(0.85,0.92,0.85,0.28),1.0,8.0,true)
@@ -621,53 +613,14 @@ func _draw() -> void:
 		for y: float in range(ceili(size.y / spacing) + 1):
 			var yy: float = fposmod(origin.y, spacing) + y * spacing
 			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
-	var sampled: Dictionary = prepared_route() if mode == "waypoints" or (native_preview == null and not world_backdrop) else {"points":PackedVector2Array()}
-	var route: PackedVector2Array = sampled.points
-	if native_preview == null and not world_backdrop:
-		for i: int in range(route.size()):
-			var a: Vector2 = to_screen(route[i])
-			var b: Vector2 = to_screen(route[(i+1)%route.size()])
-			var width: float = float(sampled.widths[i])*scale_factor()
-			draw_line(a,b,palette[5],width+2*scale_factor(),true)
-			draw_circle(a,width*0.5+scale_factor(),palette[5])
-		for i: int in range(route.size()):
-			var a: Vector2 = to_screen(route[i])
-			var b: Vector2 = to_screen(route[(i+1)%route.size()])
-			var width: float = float(sampled.widths[i])*scale_factor()
-			var color: Color = palette[2] if document.surface == "dirt" else palette[0]
-			draw_line(a,b,color,width,true)
-			draw_circle(a,width*0.5,color)
-	if mode == "waypoints":
-		var line := PackedVector2Array()
-		for p: Vector2 in route: line.append(to_screen(p))
-		line.append(line[0])
-		draw_polyline(line,Color(1,0.85,0.35,0.9),2,true)
-	if route.size() > 1 and mode == "waypoints":
-		var start: Vector2 = to_screen(route[0])
-		var across: Vector2 = Vector2((route[1]-route[0]).y,(route[1]-route[0]).x).normalized() * TrackDocument.node_width(document,0) * scale_factor() * 0.5
-		draw_line(start-across,start+across,Color("e0e7dd"),3,true)
-		var direction: Vector2 = (to_screen(route[1])-start).normalized()
-		var arrow: Vector2 = start + direction * 24
-		draw_line(arrow-direction.rotated(0.65)*12,arrow,Color("edf1f3"),3,true)
-		draw_line(arrow-direction.rotated(-0.65)*12,arrow,Color("edf1f3"),3,true)
-	for i: int in range(document.points.size() if mode == "waypoints" else 0):
-		var p: Array = document.points[i]
-		var center: Vector2 = to_screen(Vector2(p[0],p[1]))
-		draw_circle(center,4,Color("f3c644"))
-		if i == 0:
-			draw_string(ThemeDB.fallback_font,center+Vector2(-23,-18),"START",HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color.WHITE)
 	for piece: Dictionary in pending_road_pieces(): _draw_piece(piece,false,false)
 	for i: int in range(document.get("objects",[]).size()):
-		if world_backdrop and (mode not in ["objects","place","run"] or i != selected_object): continue
+		if mode not in ["objects","place","run"] or i != selected_object: continue
 		var object: Dictionary = document.objects[i]
 		var outline := PackedVector2Array()
 		for point: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(point))
-		var color: Color = palette[CreatorObjects.surface(object.kind)]
-		if not world_backdrop: draw_colored_polygon(outline,color.lightened(0.12))
 		outline.append(outline[0])
 		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
-		var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
-		if not world_backdrop: draw_string(ThemeDB.fallback_font,center+Vector2(-5,5),object.kind.left(1).to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color("edf1f3"))
 		if i == selected_object and mode == "objects" and object.kind == "speed_bump":
 			for end: Vector2 in SpeedBumpEdit.endpoints(object):
 				var at: Vector2 = to_screen(end)
@@ -701,10 +654,6 @@ func _draw() -> void:
 		if not ghost.is_empty(): _draw_piece(ghost,true)
 		for join: Dictionary in prepared_joins():
 			draw_circle(to_screen(join.position),5,Color("e2efec"),false,2,true)
-	if document.has("practice_start") and mode in ["waypoints","move","add","start"]:
-		var start: Vector2 = to_screen(Vector2(document.practice_start.position[0],document.practice_start.position[1]))
-		draw_circle(start,14,Color("16c2cf"),false,3,true)
-		draw_string(ThemeDB.fallback_font,start+Vector2(20,5),"Practice start",HORIZONTAL_ALIGNMENT_LEFT,-1,17,Color.WHITE)
 	if document.has("start_line") and mode in ["road","start_line"] and not editing_spline(): _draw_start_line()
 	if run_start != Vector2.INF: draw_circle(to_screen(run_start),10,Color("16c2cf"),false,3,true)
 	for object: Dictionary in run_preview:
@@ -996,7 +945,6 @@ func _move_road(point: Vector2) -> void:
 
 func pending_road_pieces() -> Array:
 	var pending: Array = []
-	if not world_backdrop: return pending
 	if native_preview == null: return document.pieces
 	var displayed: NativeTrack = visual_preview if visual_preview != null else native_preview
 	var compiled: Array = displayed.metadata.get("creator_document",{}).get("pieces",[])
@@ -1288,6 +1236,7 @@ func _paint_position(point: Vector2) -> Array:
 	return [p.x,p.y]
 
 func _object_run(start: Vector2, finish: Vector2) -> Array:
+	if not _stamp_available(): return []
 	if not free_run:
 		var paths: Array = _prepared("runs",[document.pieces,document.layout,document.paint],RoadPieces.prepare_run.bind(document))
 		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale,paths)
@@ -1298,8 +1247,13 @@ func _object_run(start: Vector2, finish: Vector2) -> Array:
 	return _path_run(PackedVector2Array([start,finish]))
 
 func _path_run(path: PackedVector2Array) -> Array:
+	if not _stamp_available(): return []
 	var fitted: PackedVector2Array = ObjectRuns.smooth(path) if run_shape == "curve" else path
 	return ObjectRuns.build(fitted,stamp_kind,stamp_scale,96-document.objects.size())
+
+func _stamp_available() -> bool:
+	var biome: String = str(document.get("theme","pine"))
+	return biome not in CreatorCatalog.BIOME_ASSETS or CreatorCatalog.family(stamp_kind).is_empty() or CreatorCatalog.available(stamp_kind,biome)
 
 
 func connect_nearby() -> void:

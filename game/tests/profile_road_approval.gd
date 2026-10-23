@@ -17,7 +17,7 @@ func run() -> void:
 	app.set("library",TrackLibrary.new(folder))
 	app.set("records",LocalRecords.new(folder+"/records.json"))
 	root.add_child(app)
-	await process_frame
+	while not app.startup_complete: await process_frame
 	var doc: Dictionary = TrackDocument.create_blank()
 	doc.name = "Road approval fixture" # Explicit save requires a named circuit.
 	var position := Vector2(-28,-18)
@@ -109,7 +109,7 @@ func run() -> void:
 	while (app.get("editor_preview_thread") != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(world.visual == initial_visual,"undo reuses the previously built scenery mesh")
 	check(canvas.native_preview.content_hash == TrackCompiler.compile(app.document).content_hash,"history preview matches independent compiler")
-	check(canvas.preview.surface_texture == null,"3D editor skips the unused CPU map raster")
+	check(canvas.get_child_count() == 0,"3D editor skips the unused CPU map raster")
 	var original_name: String = app.document.name
 	app.call("_remember")
 	app.document.name = "Temporary title"

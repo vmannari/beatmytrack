@@ -14,6 +14,13 @@ func add(vertices: Array[Vector2], across: Array[float], path: PackedVector2Arra
 			settings.append(cache)
 
 func emit(visual: NativeTrackVisual, tool: SurfaceTool) -> int:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+	if native != null and not visual._menu_slices:
+		var blend: Dictionary = {}
+		if not settings.is_empty() and settings[0].has("desert_blend_sampler"): blend = preload("res://track/geometry_acceleration.gd").blend_data(settings[0].desert_blend_sampler)
+		var result: Dictionary = native.call("road_emit",clipping.triangles,points,settings,blend,visual.theme_id,1,0.013,Geometry2D,tool,visual._cpu_cancelled)
+		if result.has("count"): return int(result.count)
+		if visual._cpu_cancelled(): return 0
 	var count: int = 0
 	var candidates: Dictionary = {}
 	for i: int in range(clipping.triangles.size()):

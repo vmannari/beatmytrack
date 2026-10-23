@@ -1,0 +1,53 @@
+class_name BurningBarrel
+extends RefCounted
+## Deterministic cylinder motion. Only burning barrels use the extended row.
+# x,y,vx,vy, tip angle, fall direction, tip velocity, yaw velocity, roll, contact.
+const ROW_SIZE: int=10
+static func initial(object: Dictionary) -> Array:
+	return [object.position[0],object.position[1],0.0,0.0,0.0,0.0,0.0,0.0,0.0,false]
+
+static func step(state: VehicleState, object: Dictionary, row: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
+	var scale: float=float(object.get("scale",1.0))
+	var p:=Vector2(row[0],row[1]); var velocity:=Vector2(row[2],row[3])
+	var tilt: float=float(row[4]); var direction: float=float(row[5]); var omega: float=float(row[6]); var yaw: float=float(row[7])
+	var radius: float=lerpf(0.52,0.76,sin(tilt))*scale
+	var touching: bool=false
+	if not state.track_elevated and state.jump_height<=0:
+		var delta: Vector2=p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
+		touching=delta.length_squared()<pow(car_radius+radius,2)
+		if touching:
+			var relative: Vector2=state.velocity-velocity
+			var normal: Vector2=delta.normalized() if delta.length_squared()>0.000001 else (relative.normalized() if relative.length_squared()>0.000001 else state.forward())
+			var approach: float=relative.dot(normal)
+			if approach>0:
+				var mass: float=35.0*scale*scale*scale
+				var limit: float=maxf(car_mass*0.18,mass*5.5*sqrt(scale))
+				var impulse: float=minf(approach/(1.0/car_mass+1.0/mass),limit)
+				state.velocity-=normal*impulse/car_mass
+				velocity+=normal*impulse/mass
+				if not bool(row[9]):
+					if tilt<0.15: direction=normal.angle()
+					omega+=impulse*0.65*scale/(mass*0.71*scale*scale)
+					omega=clampf(omega,-8.0,8.0)
+					yaw+=clampf(relative.cross(normal)*0.08,-1.8,1.8)
+	# Gravity uses the cylinder's supported centre height and edge inertia.
+	if tilt>0.00001 or omega>0:
+		omega+=9.81*(0.55*sin(tilt)-0.515*cos(tilt))/(0.71*scale)*dt
+		omega*=maxf(0.0,1.0-0.65*dt)
+		tilt+=omega*dt
+		if tilt<=0:
+			tilt=0.0; omega=-omega*0.12 if absf(omega)>0.25 else 0.0
+		elif tilt>=PI*0.5:
+			tilt=PI*0.5; omega=-omega*0.12 if absf(omega)>0.25 else 0.0
+		if absf(omega)<0.12 and tilt>PI*0.5-0.006: tilt=PI*0.5; omega=0.0
+	direction+=yaw*dt; yaw=move_toward(yaw,0.0,2.4*dt)
+	var rolling: bool=tilt>1.35
+	if rolling:
+		var tangent:=Vector2(-sin(direction),cos(direction))
+		row[8]=float(row[8])+velocity.dot(tangent)*dt/(0.515*scale)
+	velocity=velocity.limit_length(16).move_toward(Vector2.ZERO,(2.8 if rolling else 5.0)*dt)
+	var next: Vector2=p+velocity*dt
+	if Vector3(contact.call(next,radius,false)).z<=0: p=next
+	else: velocity=Vector2.ZERO
+	row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
+	row[4]=tilt; row[5]=direction; row[6]=omega; row[7]=yaw; row[9]=touching

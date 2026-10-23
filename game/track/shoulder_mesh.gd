@@ -5,6 +5,7 @@ extends RefCounted
 
 var triangles: Array[Dictionary] = []
 var bins: Dictionary = {}
+var section_cache: RefCounted
 const CELL: float = 4.0
 
 func add_quad(a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2) -> void:
@@ -32,7 +33,30 @@ func _cells(bounds: Rect2) -> Array[Vector2i]:
 			result.append(Vector2i(x,y))
 	return result
 
-func emit(tool: SurfaceTool, yield_budget: Callable = Callable()) -> int:
+func append_triangle(source: Dictionary) -> void:
+	var index: int = triangles.size()
+	triangles.append(source)
+	for cell: Vector2i in _cells(source.bounds):
+		if not bins.has(cell): bins[cell] = []
+		bins[cell].append(index)
+
+func emit(tool: SurfaceTool, yield_budget: Callable = Callable(), cancelled: Callable = Callable()) -> int:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+	if native != null and not yield_budget.is_valid():
+		var grass: bool = not triangles.is_empty() and triangles[0].has("height_gradient")
+		if not grass:
+			var emitted: Dictionary = native.call("road_shoulder",triangles,Geometry2D,tool,cancelled)
+			if emitted.has("count"): return int(emitted.count)
+		else:
+			var collected: Dictionary = native.call("road_collect",triangles,true,Geometry2D,cancelled)
+			if collected.has("points"):
+				var points: PackedVector2Array = collected.points
+				var uvs: PackedVector2Array = collected.uv
+				for index: int in range(points.size()):
+					if index % 128 == 0 and cancelled.is_valid() and cancelled.call(): return 0
+					_emit_vertex(tool,points[index],uvs[index])
+				return points.size()/3
+		if cancelled.is_valid() and cancelled.call(): return 0
 	# Workers read frozen geometry and return plain arrays, never scene/GPU data.
 	# Keep the cooperative editor path and small jobs on the calling thread.
 	if yield_budget.is_valid() or triangles.size() < 512:
@@ -53,8 +77,7 @@ func emit(tool: SurfaceTool, yield_budget: Callable = Callable()) -> int:
 		var points: PackedVector2Array = result.points
 		var uv: PackedVector2Array = result.uv
 		for index: int in range(points.size()):
-			tool.set_uv(uv[index])
-			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*-0.02)
+			_emit_vertex(tool,points[index],uv[index])
 		vertices += points.size()
 	return vertices/3
 
@@ -71,10 +94,16 @@ func _emit_serial(tool: SurfaceTool, yield_budget: Callable = Callable()) -> int
 			var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
 			for vertex: int in indices:
 				var point: Vector2 = polygon[vertex]
-				tool.set_uv(Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
+				_emit_vertex(tool,point,_vertex_uv(source,point))
 			count += indices.size()/3
 	return count
+
+func _emit_vertex(tool: SurfaceTool, point: Vector2, uv: Vector2) -> void:
+	tool.set_uv(uv)
+	tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
+
+func _vertex_uv(source: Dictionary, point: Vector2) -> Vector2:
+	return Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1))
 
 func _collect_range(first: int, last: int) -> Dictionary:
 	var output := PackedVector2Array()
@@ -89,7 +118,7 @@ func _collect_range(first: int, last: int) -> Dictionary:
 			var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
 			for vertex: int in indices:
 				var point: Vector2 = polygon[vertex]
-				uv.append(Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
+				uv.append(_vertex_uv(source,point))
 				output.append(point)
 	return {"points":output,"uv":uv}
 
@@ -102,6 +131,15 @@ func _fragments(index: int, source: Dictionary, candidate_lists: Dictionary) -> 
 		for cell: Vector2i in _cells(bounds):
 			for other: int in bins[cell]: candidates[other] = true
 		candidate_lists[key] = PackedInt32Array(candidates.keys())
+	var cache_key: String = ""
+	if section_cache != null:
+		var dependencies: Array = [source]
+		for other: int in candidate_lists[key]:
+			if other != index and bounds.intersects(triangles[other].bounds): dependencies.append([triangles[other],other < index])
+		cache_key = "clip/"+preload("res://editor/road_sections.gd").digest(dependencies)
+		var cached: Variant = section_cache.read(cache_key)
+		if cached is Array:
+			var typed: Array[PackedVector2Array] = []; typed.assign(cached); return typed
 	for other: int in candidate_lists[key]:
 		if other == index: continue
 		var rival: Dictionary = triangles[other]
@@ -120,6 +158,7 @@ func _fragments(index: int, source: Dictionary, candidate_lists: Dictionary) -> 
 			remaining.append_array(_subtract_convex(fragment,cutter))
 		fragments = remaining
 		if fragments.is_empty(): break
+	if section_cache != null: section_cache.write(cache_key,fragments)
 	return fragments
 
 func _subtract_convex(source: PackedVector2Array, cutter: PackedVector2Array) -> Array[PackedVector2Array]:
@@ -130,15 +169,21 @@ func _subtract_convex(source: PackedVector2Array, cutter: PackedVector2Array) ->
 		result.append(source)
 		return result
 	var inside: PackedVector2Array = source
-	var center := Vector2.ZERO
-	for point: Vector2 in cutter: center += point
-	center /= cutter.size()
+	# A nearly collinear cutter can round its centroid onto the wrong side
+	# of an edge, reversing a half-plane and removing unrelated road area.
+	# Determine winding from translated scalar products in double precision.
+	var signed_area: float = 0.0
+	for i: int in range(1,cutter.size()-1):
+		var u: Vector2 = cutter[i]-cutter[0]
+		var v: Vector2 = cutter[i+1]-cutter[0]
+		signed_area += float(u.x)*float(v.y)-float(u.y)*float(v.x)
+	if signed_area == 0.0: return [source]
 	for i: int in range(cutter.size()):
 		var a: Vector2 = cutter[i]
 		var edge: Vector2 = cutter[(i+1)%cutter.size()]-a
 		if edge.length_squared() < 0.00000001: continue
 		var normal := Vector2(-edge.y,edge.x).normalized()
-		if normal.dot(center-a) > 0: normal = -normal
+		if signed_area > 0.0: normal = -normal
 		var outside: PackedVector2Array = _lower_half(inside,-normal,normal.dot(a))
 		if outside.size() >= 3: result.append(outside)
 		inside = _lower_half(inside,normal,-normal.dot(a))

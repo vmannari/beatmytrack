@@ -162,7 +162,7 @@ func run() -> void:
 		drive_path(cut,track,shortcut)
 		print("STAR_BYPASS distance=",distance," offroad=",offroad_samples(track,shortcut)," laps=",cut.completed_laps," next=",cut.next_checkpoint)
 		check(cut.completed_laps == 0 and not cut.finished,"cutting a whole Star corner through the infield still blocks the finish")
-		check(cut.penalty_seconds == 0.0,"missed corner requires returning, with no automatic time penalty")
+		check(is_equal_approx(cut.race_time_seconds(),float(cut.elapsed_ticks)/cut.tick_rate),"missed corner requires returning, with no automatic time penalty")
 		skipped += 1
 	check(skipped >= 4,"shortcut regression exercises multiple genuine infield cuts")
 	var reversed_doc: Dictionary = doc.duplicate(true)

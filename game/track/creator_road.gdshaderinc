@@ -10,6 +10,7 @@ uniform vec2 map_extent;
 uniform vec4 road_color : source_color;
 uniform vec4 asphalt_base_color : source_color;
 uniform bool gravel = false;
+uniform bool grass_shoulder = false;
 uniform bool grass = false;
 uniform bool kerb = false;
 uniform bool asphalt_surface = false;
@@ -128,6 +129,15 @@ void fragment() {
 		} else { fringe = (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz))*(1.0-sand); }
 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
 		relief_weight = fringe;
+		if (grass_shoulder) {
+			// Real sloped sand replaces the old lower, flat contact strip.
+			vec2 grit_uv = world_position.xz/2.0;
+			vec3 grit = texture(desert_apron,grit_uv).rgb-texture(desert_apron,grit_uv,4.0).rgb;
+			ALBEDO = max(ALBEDO+grit*0.28*(1.0-fringe),vec3(0.0));
+			float profile_across = clamp((0.027-world_position.y)/0.065,0.0,1.0);
+			ALBEDO *= 1.0-0.16*(1.0-smoothstep(0.0,0.16,profile_across));
+			if (UV.x < -0.5) { ALBEDO = desert_join.rgb; relief_weight = 0.0; }
+		}
 	}
 	ROUGHNESS = 1.0;
  SPECULAR = 0.0;
@@ -150,8 +160,9 @@ void fragment() {
   ROUGHNESS = kerb ? 0.30 : 0.24;
   SPECULAR = 0.5;
  }
-	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
-	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0-relief_weight : 0.0);
+	bool verge_detail = grass_shoulder && UV.x < -0.5;
+	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : relief_weight);
+	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : (grass || gravel) ? (1.0-relief_weight)*(grass_shoulder ? 0.25 : 1.0) : 0.0);
 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));

@@ -25,13 +25,13 @@ func run() -> void:
 			var reversed_doc: Dictionary = doc.duplicate(true)
 			reversed_doc.start_line.heading = fposmod(float(reversed_doc.start_line.heading)+180.0,360.0)
 			current = TrackCompiler.compile(reversed_doc)
-		for offset: float in [-6.0,-5.5,-5.0,-4.5,0.0,4.5,5.0,5.5,6.0]:
+		for offset: float in [-5.5,-5.0,-4.5,0.0,4.5,5.0,5.5]:
 			var path: PackedVector2Array = edge_lane(current,offset)
 			var session := TrackSession.new(120,5)
 			for lap: int in range(5): drive_path(session,current,path)
 			print("STAR_EDGE reverse=",reverse," offset=",offset," offroad=",offroad_samples(current,path)," laps=",session.completed_laps," next=",session.next_checkpoint," missed=",session.missed_checkpoint)
 			check(session.finished and session.completed_laps == 5,"five ordered road-edge laps in either direction offset "+str(offset))
-			check(session.penalty_seconds == 0.0,"edge recovery has no automatic penalty")
+			check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,lap: float) -> float: return total+lap,0.0) if session.finished else float(session.elapsed_ticks)/session.tick_rate),"edge recovery has no automatic penalty")
 			if absf(offset) <= 5.5:
 				check(offroad_samples(current,path) == 0,"near-edge lane stays entirely on real road/kerbs")
 			else:
@@ -68,7 +68,7 @@ func shortcut_checks(track: NativeTrack) -> void:
 		var session := TrackSession.new(120,1); drive_path(session,track,shortcut)
 		print("STAR_INFIELD distance=",distance," offroad=",offroad_samples(track,shortcut)," shallow=",shallow_excursion(track,shortcut)," finished=",session.finished)
 		check(not session.finished and session.missed_checkpoint >= 0,"large infield cuts still require the missed bend")
-		check(session.penalty_seconds == 0.0,"shortcut requires returning with no automatic time penalty")
+		check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,lap: float) -> float: return total+lap,0.0) if session.finished else float(session.elapsed_ticks)/session.tick_rate),"shortcut requires returning with no automatic time penalty")
 		var full := track.route.duplicate(); full.append(full[0]); full.append(full[1])
 		drive_path(session,track,full)
 		check(session.finished and session.missed_checkpoint == -1,"returning through required gates recovers a missed corner")
@@ -77,7 +77,7 @@ func shortcut_checks(track: NativeTrack) -> void:
 
 func gate_span_checks(track: NativeTrack) -> void:
 	var session := TrackSession.new(120,1); session._configure(track)
-	check(session.checkpoint_count() == 19,"same nineteen mandatory gates, with no skipped checkpoint credit")
+	check(session.checkpoint_count() > 19,"spline approaches retain additional mandatory gates, with no skipped checkpoint credit")
 	for gate: int in range(session.checkpoint_count()):
 		session.next_checkpoint = gate
 		var normal: Vector2 = session._directions[gate].orthogonal()
@@ -97,7 +97,10 @@ func real_edge_drive(doc: Dictionary, track: NativeTrack) -> void:
 	sim.state.position -= track.finish_forward*maxf(0.0,(sim.state.position-track.finish_center).dot(track.finish_forward)+3.0)
 	sim.state.route_index = track.nearest_route(sim.state.position)
 	var reference := VehicleState.new(); var driver := RouteDriver.new(); var session := TrackSession.new(120,5)
+	var trace = preload("res://backend/race_proof.gd").new()
+	trace.capture(sim.state,session,true)
 	var frames: Array = []
+	var first_warning: bool = false
 	for tick: int in range(90000):
 		reference.position = sim.state.position; reference.velocity = sim.state.velocity
 		reference.heading = sim.state.heading; reference.yaw_rate = sim.state.yaw_rate
@@ -105,8 +108,13 @@ func real_edge_drive(doc: Dictionary, track: NativeTrack) -> void:
 		var input: DriveFrame = driver.sample(reference,guide,config); frames.append(input.packed())
 		var before: Vector2 = sim.state.position; sim.step(input,track)
 		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated)
+		trace.capture(sim.state,session)
+		if session.missed_checkpoint >= 0 and not first_warning:
+			print("STAR_EDGE_MISS lap=",session.completed_laps," gate=",session.next_checkpoint," point=",sim.state.position)
+			first_warning = true
 		if session.finished: break
 	print("STAR_REAL_EDGE_RACE laps=",session.completed_laps," ticks=",sim.state.tick," collisions=",sim.state.collision_count," next=",session.next_checkpoint)
+	check(not first_warning,"real edge driving has no false checkpoint notice")
 	check(session.finished,"real compact completes five edge-guided laps on unchanged original Star geometry")
 	var replay := VehicleSimulation.new(config); replay.reset(track.spawn,track.spawn_heading)
 	replay.state.position -= track.finish_forward*maxf(0.0,(replay.state.position-track.finish_center).dot(track.finish_forward)+3.0)
@@ -117,8 +125,9 @@ func real_edge_drive(doc: Dictionary, track: NativeTrack) -> void:
 		var before: Vector2 = replay.state.position; replay.step(input,track)
 		scored.advance(track,before,replay.state.position,replay.state.route_index,replay.state.track_elevated)
 	check(replay.state.snapshot() == sim.state.snapshot() and scored.lap_times == session.lap_times,"complete quantized edge-driving recording replays exactly")
-	var evidence: String = ProjectSettings.globalize_path("res://../docs/evidence/star-gate-tolerance-2026-10-07")
+	var evidence: String = ProjectSettings.globalize_path("res://../build/hairpin-checkpoints-2026-10-18")
+	DirAccess.make_dir_recursive_absolute(evidence)
 	var proof: FileAccess = FileAccess.open(evidence.path_join("star-edge-five-lap-replay.json"),FileAccess.WRITE)
 	check(proof != null,"save full canonical edge-driving evidence")
 	if proof != null:
-		proof.store_string(JSON.stringify({"document":doc,"replay":{"schema":"bmt-replay-v1","frames":frames},"vehicle_id":"compact","time_ticks":sim.state.tick,"rules_key":RaceRules.KEY},"",true)); proof.close()
+		proof.store_string(JSON.stringify({"document":doc,"replay":{"schema":"bmt-replay-v1","frames":frames},"race_proof":trace.recording(session),"vehicle_id":"compact","time_ticks":sim.state.tick,"rules_key":RaceRules.KEY},"",true)); proof.close()

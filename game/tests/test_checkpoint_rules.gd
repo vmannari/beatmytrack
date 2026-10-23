@@ -44,7 +44,7 @@ func run() -> void:
 	drive(missed,track,PackedVector2Array([Vector2(1,0),Vector2(40,20),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)]))
 	check(not missed.finished and missed.completed_laps == 0 and missed.next_checkpoint < missed.checkpoint_count(),"skipped gate blocks the finish and cannot be credited out of order")
 	check(missed.missed_checkpoint == missed.next_checkpoint,"missing road section is highlighted")
-	check(missed.penalty_seconds == 0 and missed.shortcut_count == 0,"no shortcut penalty under checkpoint rules")
+	check(is_equal_approx(missed.race_time_seconds(),float(missed.elapsed_ticks)/missed.tick_rate),"no shortcut penalty under checkpoint rules")
 	var before_recovery: int = missed.elapsed_ticks
 	drive(missed,track,loop)
 	check(missed.finished and missed.missed_checkpoint == -1,"returning through all required gates recovers the lap")
@@ -65,7 +65,7 @@ func run() -> void:
 	var automatic := TrackSession.new(120,1)
 	drive(automatic,sparse,loop)
 	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
-	check(RaceRules.KEY == "standing-5-road-gates-v20","road-edge checkpoint spans use a new rules key")
+	check(RaceRules.KEY == "standing-5-road-gates-v23","road-edge checkpoint spans use a new rules key")
 	# Real creator hairpins: a cut must block the eventual finish, even when
 	# the car rejoins and follows the rest of the route correctly.
 	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))

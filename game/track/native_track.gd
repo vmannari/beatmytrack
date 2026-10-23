@@ -16,6 +16,7 @@ var rectangles: Array
 var deck_rectangles: Array
 var route := PackedVector2Array()
 var checkpoints: Array[Rect2] = []
+var _race_gates: Dictionary = {} # Immutable compiled-track preparation; never serialized.
 var route_widths := PackedFloat32Array()
 var route_cumulative := PackedFloat32Array()
 var route_length: float = 0.0
@@ -37,6 +38,8 @@ var snow_banks := SnowBanks.new()
 var editor_overlay_mask: Image
 var editor_road_mask: Image
 var editor_roads: Dictionary = {}
+var editor_ground_key: String = ""
+var editor_winter_cover: Dictionary = {}
 
 
 static func read(path: String) -> NativeTrack:
@@ -92,6 +95,7 @@ static func from_data(data: Dictionary, hash_value: String, prepared_cells: Pack
 
 
 func _build_route_distance() -> void:
+	_race_gates.clear()
 	route_cumulative.resize(route.size())
 	route_length = 0.0
 	for i: int in range(route.size()):
@@ -165,86 +169,6 @@ func project_race_route(point: Vector2, previous: float = NAN, motion: Vector2 =
 			best_score = score
 			best = {"progress":progress, "delta":delta, "distance":distance, "index":i}
 	return best
-
-
-func crosses_hairpin_infield(from: Vector2, to: Vector2) -> bool:
-	# The constructed road is authoritative for small hairpins: the smoothed
-	# lap route and a fixed distance-saving threshold can swallow their island.
-	for piece: Dictionary in metadata.get("creator_document",{}).get("pieces",[]):
-		if piece.kind != "hairpin": continue
-		var origin := Vector2(piece.position[0],piece.position[1])
-		var angle: float = deg_to_rad(float(piece.heading))
-		var side: float = -1.0 if piece.flip else 1.0
-		var a: Vector2 = (from-origin).rotated(-angle)
-		var b: Vector2 = (to-origin).rotated(-angle)
-		a.y *= side
-		b.y *= side
-		var radius: float = piece.radius
-		if (a.y-radius)*(b.y-radius) > 0.0 or absf(b.y-a.y) < 0.000001: continue
-		var fraction: float = (radius-a.y)/(b.y-a.y)
-		if fraction <= 0.0 or fraction > 1.0: continue
-		var crossing: Vector2 = a.lerp(b,fraction)
-		# 0.75m kerb plus half the standard car width: crossing must put
-		# the whole car clear of the inside kerb, not merely a wheel on grass.
-		var clearance: float = 1.55
-		var inner: float = radius-float(piece.width)*0.5-clearance
-		if inner <= 0.0 or crossing.x < 0.0 or crossing.x > float(piece.length)+inner: continue
-		var world: Vector2 = from.lerp(to,fraction)
-		if not _clear_of_road(world,0.8): continue
-		return true
-	return false
-
-
-func _clear_of_road(point: Vector2, clearance: float) -> bool:
-	if kerbs.height_at(point) > 0.0: return false
-	var cell := Vector2i(floori((point.x+half_extent.x)/cell_size),floori((half_extent.y-point.y)/cell_size))
-	var reach: int = ceili(clearance/cell_size)+1
-	for y: int in range(maxi(0,cell.y-reach),mini(grid_height,cell.y+reach+1)):
-		for x: int in range(maxi(0,cell.x-reach),mini(grid_width,cell.x+reach+1)):
-			var index: int = y*grid_width+x
-			if cells[index] not in [0,2,5] and (deck_cells.is_empty() or deck_cells[index] not in [0,2,5]): continue
-			var bounds := Rect2(Vector2(x*cell_size-half_extent.x,half_extent.y-(y+1)*cell_size),Vector2.ONE*cell_size)
-			if point.distance_to(point.clamp(bounds.position,bounds.end)) <= clearance: return false
-	return true
-
-
-func has_cut_gap(previous: float, advance: float, driven: PackedVector2Array) -> bool:
-	# Progress estimates can catch up after a sharp bend. A penalty also
-	# needs spatial evidence: road was bypassed beyond its kerb tolerance,
-	# not merely projected late after the car already drove alongside it.
-	for i: int in range(route.size()):
-		var edge: Vector2 = route[(i + 1) % route.size()] - route[i]
-		var steps: int = maxi(1, ceili(edge.length() / 2.0))
-		for step: int in range(steps):
-			var fraction: float = float(step) / steps
-			var distance: float = fposmod(route_cumulative[i] + edge.length() * fraction - previous, route_length)
-			if distance > advance: continue
-			var point: Vector2 = route[i] + edge * fraction
-			var closest: float = INF
-			var driven_point := Vector2.ZERO
-			for j: int in range(driven.size() - 2, -1, -1):
-				var candidate: Vector2 = Geometry2D.get_closest_point_to_segment(point, driven[j], driven[j + 1])
-				var separation: float = point.distance_to(candidate)
-				if separation < closest:
-					closest = separation
-					driven_point = candidate
-				if closest <= route_cut_radii[i] + 1.0: break
-			if closest <= route_cut_radii[i] + 1.0: continue
-			# Distance alone cannot distinguish cutting inside from running wide.
-			# Measure bend direction over metres, not a number of route vertices.
-			var progress: float = route_cumulative[i] + edge.length() * fraction
-			var reach: float = minf(8.0, route_length * 0.05)
-			var incoming: Vector2 = (point - _race_route_point(progress - reach)).normalized()
-			var outgoing: Vector2 = (_race_route_point(progress + reach) - point).normalized()
-			var turn: float = incoming.cross(outgoing)
-			if absf(turn) < 0.02: continue
-			var tangent: Vector2 = (incoming + outgoing).normalized()
-			var inside: float = tangent.cross(driven_point - point) * signf(turn)
-			# Outside samples provide no cut evidence. They must not veto a
-			# separate inside bypass within the same excursion.
-			if inside < -1.0: continue
-			if inside > 1.0: return true
-	return false
 
 
 func _race_route_point(distance: float) -> Vector2:

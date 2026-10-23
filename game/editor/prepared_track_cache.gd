@@ -54,7 +54,7 @@ static func remember(document: Dictionary, track: NativeTrack, cache: Dictionary
 	cache["prepared"] = entries; cache["prepared_bytes"] = total+size
 
 static func trim_auxiliary(cache: Dictionary) -> void:
-	var keys: Array[String] = ["key","cells","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image"]
+	var keys: Array[String] = ["key","cells","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image","winter_marker_key","winter_markers"]
 	var values: Array = []
 	var bytes: int = 0
 	for key: String in keys:

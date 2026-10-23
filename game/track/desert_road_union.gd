@@ -164,6 +164,11 @@ static func phases(pieces: Array, topology: Dictionary) -> Dictionary:
 	return result
 
 func emit(visual: NativeTrackVisual, tool: SurfaceTool, height: float = 0.012) -> int:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
+	if native != null and not visual._menu_slices:
+		var result: Dictionary = native.call("road_emit",clipping.triangles,points_by_triangle,phase_by_triangle,preload("res://track/geometry_acceleration.gd").blend_data(self),visual.theme_id,0,height,Geometry2D,tool,visual._cpu_cancelled)
+		if result.has("count"): return int(result.count)
+		if visual._cpu_cancelled(): return 0
 	var count: int = 0
 	var candidate_lists: Dictionary = {}
 	var caches: Dictionary = {}

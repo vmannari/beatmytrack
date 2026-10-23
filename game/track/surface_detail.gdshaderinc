@@ -60,6 +60,7 @@ vec3 dune_relief(vec2 p, vec3 original, mat4 view, float weight) {
 // Original world-space pigment pattern. Derivative filtering limits distant shimmer.
 uniform sampler2D painted_grass_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool hybrid_grass = false;
+#include "res://track/night_ground.gdshaderinc"
 uniform sampler2D grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_macro_mask : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -135,6 +136,27 @@ vec3 dry_asphalt_detail(vec3 base, vec2 p) {
 	float grain = texture(surface_factors,p/32.0,0.75).r;
 	float broad = texture(surface_factors,p/384.0+vec2(0.23,0.41)).g;
 	return base * (1.015+(grain-0.54)*0.22+(broad-0.5)*0.04);
+}
+
+// Night-only abandoned industrial road finish. One baked, mipfiltered data
+// sample supplies oxidized binder, irregular old repairs and branching cracks.
+// World coordinates continue across road pieces, painted asphalt and bridges.
+uniform bool industrial_asphalt = false;
+#ifdef BMT_NIGHT_ASPHALT
+uniform sampler2D night_asphalt_wear : filter_linear_mipmap_anisotropic, repeat_enable;
+#else
+// Unspecialized non-Night bridges must also retain their original texture units.
+#define night_asphalt_wear surface_factors
+#endif
+vec3 industrial_asphalt_detail(vec3 base, vec2 p) {
+	vec3 wear = texture(night_asphalt_wear,p/48.0).rgb;
+	float grain = texture(surface_factors,p/32.0,0.25).r-0.54;
+	float mineral = texture(surface_factors,p/13.0,0.5).b-0.45;
+	vec3 faded = base*vec3(1.24,1.20,1.12)*(0.96+wear.r*0.68+grain*0.70);
+	faded += base*mineral*(0.20+wear.r*0.50);
+	vec3 tar = base*(0.70+grain*0.28);
+	vec3 asphalt = mix(faded,tar,wear.g*0.82);
+	return asphalt*(1.0-wear.b*0.66);
 }
 
 // Wet asphalt is the baseline. Only the upper tail of the metre-scale basin
@@ -214,7 +236,7 @@ vec3 surface_detail(vec3 base, vec2 p, bool road) {
 	if (road && icy_road) {
 		return quiet_winter_ice(texture(ice_albedo,p/6.0).rgb);
 	}
-	if (road) { return dry_asphalt_detail(base,p); }
+	if (road) { return industrial_asphalt ? industrial_asphalt_detail(base,p) : dry_asphalt_detail(base,p); }
 
 	// Sparse short blade strokes rather than circular noise clouds.
 	vec2 cell = floor(p * 2.4);
@@ -287,6 +309,7 @@ vec3 directional_asphalt(vec3 base, vec2 p, vec2 encoded_axis) {
 }
 
 vec3 painted_grass(vec3 base, vec2 p) {
+	if (industrial_ground) return industrial_ground_color(p);
 	if (winter_snow) return snow_detail(p);
 	if (desert_dunes) return dune_sand(p);
 	if (hybrid_grass) {

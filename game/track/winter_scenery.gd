@@ -24,7 +24,9 @@ static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
 	kit.theme_id = "pine"
 	var tool := SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	if kind == "tree": CreatorPropVisual.pine(tool,kit,Vector3.ZERO,1.25,0.0,Color("294a47"))
+	# Snow's authored tonal variation uses source vertex ordinals. Retain those
+	# ordinals rather than shifting the visible snow when hidden faces are culled.
+	if kind == "tree": CreatorPropVisual.pine(tool,kit,Vector3.ZERO,1.25,0.0,Color("294a47"),false)
 	elif kind == "marker":
 		kit._colored_box(tool,Vector3(0,0.95,0),Vector3(0.06,1.90,0.06),0.0,Color("a43327"))
 		for y: float in [1.50,1.74]: kit._colored_box(tool,Vector3(0,y,0),Vector3(0.064,0.14,0.064),0.0,Color("e4e7da"))
@@ -33,7 +35,7 @@ static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
 		for i: int in range(5):
 			var angle: float = i*2.4
 			kit._colored_box(tool,Vector3(sin(angle)*0.20,0.30,cos(angle)*0.20),Vector3(0.026,0.65,0.026),angle,Color("62534c"))
-	else: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length)
+	else: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length,"",false)
 	tool.generate_normals()
 	var original: ArrayMesh = tool.commit()
 	var arrays: Array = original.surface_get_arrays(0)
@@ -86,29 +88,58 @@ static func build_authored(parent: Node3D, track: NativeTrack) -> void:
 	batch(parent,groups)
 
 static func build_cover(parent: NativeTrackVisual, track: NativeTrack) -> void:
+	var data: Dictionary = track.editor_winter_cover if not track.editor_winter_cover.is_empty() else cover_data(track)
+	batch(parent,data.groups)
+	parent.set_meta("winter_cover_count",data.count)
+	parent.set_meta("winter_marker_count",data.markers)
+
+static func prepare_cover(track: NativeTrack, cache: Dictionary, cancelled: Callable = Callable()) -> Dictionary:
+	var key: Array = [track.snow_banks.triangles,track.route,track.creator_bridges]
+	var markers: Array[Dictionary] = []
+	if cache.get("winter_marker_key",[]) == key: markers.assign(cache.winter_markers)
+	else:
+		markers = marker_sites(track,cancelled)
+		if cancelled.is_valid() and cancelled.call(): return {}
+		cache.winter_marker_key = key.duplicate(true); cache.winter_markers = markers
+	var data: Dictionary = cover_data(track,cancelled,markers)
+	preload("res://editor/prepared_track_cache.gd").trim_auxiliary(cache)
+	return data
+
+static func cover_data(track: NativeTrack, cancelled: Callable = Callable(), prepared_markers: Variant = null) -> Dictionary:
+	# CPU placements only; editor compilation prepares these off the input thread.
+	var sampler := NativeTrackVisual.new()
 	var groups: Dictionary = {}
-	var sites: Array[Vector2i] = parent._scenery_sites(track,maxi(1,ceili(5.5/track.cell_size)))
+	var sites: Array[Vector2i] = sampler._scenery_sites(track,maxi(1,ceili(5.5/track.cell_size)))
 	var count: int = 0
 	for cell: Vector2i in sites:
 		if count >= 180: break
-		if not parent._cover_clear(track,cell,1.8): continue
+		if cancelled.is_valid() and cancelled.call(): sampler.free(); return {}
+		if not sampler._cover_clear(track,cell,1.8): continue
 		var seed: int = (cell.x*73856093 ^ cell.y*19349663)&0x7fffffff
 		var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
 		var kind: String = "rock" if seed%4 == 0 else "twig" if seed%4 == 1 else "bush"
 		var scale: float = (0.30 if kind == "rock" else 0.40) + float(seed%9)*0.015
 		append_pose(groups,kind,point,scale,float(seed%360)*PI/180.0)
 		count += 1
-	var markers: Array[Dictionary] = marker_sites(track)
+	var markers: Array[Dictionary] = marker_sites(track,cancelled) if prepared_markers == null else prepared_markers
 	for marker: Dictionary in markers: append_pose(groups,"marker",marker.position,1.0,0.0)
-	batch(parent,groups)
-	parent.set_meta("winter_cover_count",count)
-	parent.set_meta("winter_marker_count",markers.size())
+	sampler.free()
+	return {"groups":groups,"count":count,"markers":markers.size()}
 
-static func marker_sites(track: NativeTrack) -> Array[Dictionary]:
+static func marker_sites(track: NativeTrack, cancelled: Callable = Callable()) -> Array[Dictionary]:
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").winter()
+	if native != null:
+		var result: Dictionary = native.call("winter_markers",track.snow_banks.triangles,track.route,track.creator_bridges,cancelled)
+		if cancelled.is_valid() and cancelled.call(): return []
+		if result.has("markers"):
+			var markers: Array[Dictionary] = []
+			markers.assign(result.markers)
+			return markers
 	# True metre spacing replaces square buckets, which crowded short inside arcs.
 	var occupied: Dictionary = {}
 	var candidates: Array[Dictionary] = []
 	for triangle: Dictionary in track.snow_banks.triangles:
+		if cancelled.is_valid() and cancelled.call(): return []
 		var points: PackedVector2Array = triangle.points
 		var heights: PackedFloat32Array = triangle.heights
 		for i: int in range(3):

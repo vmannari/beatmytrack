@@ -4,6 +4,7 @@ extends SubViewportContainer
 ## planning camera preserves the canvas's exact metre-to-pixel mapping.
 
 var track: NativeTrack
+var theme_id: String = "pine"
 var camera: Camera3D
 var canvas: EditorCanvas
 var viewport: SubViewport
@@ -21,8 +22,17 @@ var _visual_track: NativeTrack
 var _visual_cache: Array[Dictionary] = []
 const VISUAL_CACHE_BUDGET: int = 32 * 1024 * 1024
 var visual_cache_bytes: int = 0
+var preparing_materials: bool = false
+var materials_warmed: int = 0
+var _initial_preparation_done: bool = false
+var _applied_theme: String = ""
+var _prop_job: RefCounted
+var _prop_request: Dictionary = {}
+var _prop_generation: int = 0
+var _object_generation: int = 0
 
 func _exit_tree() -> void:
+	if _prop_job != null: _prop_job.cancel()
 	for entry: Dictionary in _visual_cache: entry.visual.free()
 	_visual_cache.clear()
 
@@ -63,7 +73,7 @@ func _ready() -> void:
 	var ground_plane := PlaneMesh.new()
 	ground_plane.size = Vector2(4096, 4096)
 	ground.mesh = ground_plane
-	ground_material = VisualGeometry.material(TrackTheme.PINE[1])
+	ground_material = VisualGeometry.material(TrackTheme.palette(theme_id)[1])
 	ground.material_override = ground_material
 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	ground.position.y = -0.21
@@ -77,6 +87,7 @@ func _ready() -> void:
 	camera.rotation = Vector3(-deg_to_rad(EditorCanvas.PLANNING_PITCH), 0, 0)
 	world.add_child(camera)
 	camera.current = true
+	_apply_theme(str(track.metadata.get("theme", theme_id)) if track != null else theme_id)
 	resized.connect(_sync_camera)
 	if track != null:
 		_build_track()
@@ -87,14 +98,41 @@ func follow_canvas(target: EditorCanvas) -> void:
 	canvas = target
 	_last_scale = -1.0
 	_sync_camera()
+	_prepare_editing()
+
+func _prepare_editing() -> void:
+	_building = true; preparing_materials = true; canvas.preparing = true
+	materials_warmed = await preload("res://editor/material_preparation.gd").warm(self,viewport,theme_id)
+	if not is_inside_tree(): return
+	preparing_materials = false; _building = false
+	warm_prop(canvas.stamp_kind,canvas.stamp_scale,canvas.stamp_container_color)
+	if track != null: _build_track()
+
+func warm_prop(kind: String, scale_value: float = 1.0, color: String = "", length: float = -1.0) -> void:
+	_prop_generation += 1
+	_prop_request = {"kind":kind,"scale":scale_value,"color":color,"length":length,"generation":_prop_generation}
+	if _prop_job == null: _warm_selected_prop.call_deferred()
+
+func _warm_selected_prop() -> void:
+	if not is_inside_tree() or _prop_request.is_empty() or _prop_job != null: return
+	var request: Dictionary = _prop_request; _prop_request = {}
+	_prop_job = preload("res://editor/work_job.gd").start(CreatorPropVisual.warm.bind(str(request.kind),theme_id,float(request.length)/float(request.scale) if float(request.length) >= 0.0 else -1.0,str(request.color)),get_tree())
+	var job: RefCounted = _prop_job
+	while not job.done:
+		await get_tree().process_frame
+		if not is_inside_tree(): job.cancel(); return
+	_prop_job = null
+	if not _prop_request.is_empty(): _warm_selected_prop.call_deferred()
 
 
 func show_track(data: NativeTrack) -> void:
+	_object_generation += 1
 	var reuse: bool = not _building and visual != null and _visual_track != null and _same_ground(_visual_track,data)
 	track = data
 	if is_node_ready() and not _building:
 		if reuse:
 			track.editor_roads = {}
+			visual.refresh_editor_road_masks(track)
 			if _visual_track.metadata.get("creator_document",{}).get("objects",[]) != track.metadata.get("creator_document",{}).get("objects",[]) or _visual_track.metadata.get("scenery_objects",[]) != track.metadata.get("scenery_objects",[]):
 				var target: NativeTrack = track
 				_building = true
@@ -114,15 +152,31 @@ func show_track(data: NativeTrack) -> void:
 
 func preview_objects(document: Dictionary) -> void:
 	if visual == null or track == null: return
+	var fixed: Array = document.get("objects",[]).filter(func(object: Dictionary) -> bool: return object.kind not in ["tyre_stack","tyre_wall"])
+	var previous: Array = track.metadata.get("creator_document",{}).get("objects",[]).filter(func(object: Dictionary) -> bool: return object.kind not in ["tyre_stack","tyre_wall"])
+	var immediate: bool = fixed == previous
+	_object_generation += 1
+	var generation: int = _object_generation
+	# Input records the edit immediately. Even an immediate tap after choosing
+	# a cold prop cannot synchronously build its first mesh in that handler.
+	if not immediate:
+		await get_tree().process_frame
+		if not is_inside_tree() or generation != _object_generation: return
+		while _prop_job != null:
+			await get_tree().process_frame
+			if not is_inside_tree() or generation != _object_generation: return
 	# Render the new props immediately; collision/scenery compilation follows.
 	var props := NativeTrack.new()
 	props.metadata = {"creator_document":document,"scenery_objects":track.metadata.get("scenery_objects",[])}
 	props.tyre_origins = LooseTyres.positions(document)
-	visual.refresh_editor_objects(props,false)
+	await visual.refresh_editor_objects(props,false,not immediate)
+	if not is_inside_tree(): return
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 
 func _same_ground(before: NativeTrack, after: NativeTrack) -> bool:
+	if not before.editor_ground_key.is_empty() and not after.editor_ground_key.is_empty():
+		return before.editor_ground_key == after.editor_ground_key
 	if before.half_extent != after.half_extent or before.cell_size != after.cell_size: return false
 	if before.deck_cells != after.deck_cells: return false
 	var old_document: Dictionary = before.metadata.get("creator_document",{}).duplicate(true)
@@ -160,7 +214,32 @@ func _build_track() -> void:
 		world.add_child(candidate)
 		_building = true
 		# Keep the existing scene while the replacement is built in short slices.
-		await candidate.build(target,BridgePresentation.new(target),true)
+		var job = preload("res://editor/work_job.gd").start(preload("res://editor/preview_ground.gd").bridge.bind(target),get_tree())
+		while not job.done:
+			await get_tree().process_frame
+			if not is_inside_tree(): job.cancel(); return
+			if track != target: job.cancel()
+		if track == target:
+			var bridge: BridgePresentation = job.result
+			if bridge == null: bridge = BridgePresentation.new(target)
+			if visual != null and bridge.visual_relief != null:
+				bridge.visual_relief.reuse_from(visual,visual.desert_relief)
+			if visual != null:
+				for child: Node in visual.find_children("*","MeshInstance3D",true,false):
+					if child.mesh != null and child.mesh.has_meta("editor_section_key"): candidate.reusable_road_meshes[child.mesh.get_meta("editor_section_key")] = child.mesh
+			await candidate.build(target,bridge,true)
+			candidate.reusable_road_meshes.clear()
+			if not _initial_preparation_done and track == target:
+				materials_warmed += await preload("res://editor/material_preparation.gd").draw(self,viewport,candidate) if DisplayServer.get_name() != "headless" else 0
+				if not is_inside_tree(): return
+				if DisplayServer.get_name() != "headless" and track == target:
+					# Submit the actual editor view too: fog, sky, shadows, vertex
+					# formats and MSAA must match before the first input is accepted.
+					candidate.show(); viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+					for frame: int in range(2):
+						await RenderingServer.frame_post_draw
+						if not is_inside_tree(): return
+					candidate.hide(); viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 		if not is_inside_tree(): return
 		while is_instance_valid(canvas) and canvas.active_pointer != -99:
 			await get_tree().process_frame
@@ -187,12 +266,20 @@ func _build_track() -> void:
 	visual = candidate
 	visual.visible = true
 	_visual_track = target
-	var palette: Array[Color] = TrackTheme.palette(str(target.metadata.get("theme", "pine")))
-	TrackTheme.apply_lighting(str(target.metadata.get("theme", "pine")),environment,sunlight)
-	environment.background_color = palette[1]
-	ground_material.albedo_color = palette[1]
+	_initial_preparation_done = true
+	if is_instance_valid(canvas): canvas.preparing = false
+	_apply_theme(str(target.metadata.get("theme", "pine")))
 	_mark_presented()
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+func _apply_theme(theme: String) -> void:
+	var normalized: String = TrackTheme.normalized(theme)
+	if _applied_theme == normalized: return
+	theme_id = normalized; _applied_theme = normalized
+	var palette: Array[Color] = TrackTheme.palette(theme_id)
+	TrackTheme.apply_lighting(theme_id,environment,sunlight)
+	environment.background_color = palette[1]
+	ground_material.albedo_color = palette[1]
 
 func _mark_presented() -> void:
 	if is_instance_valid(canvas):

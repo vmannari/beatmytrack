@@ -1,9 +1,12 @@
 class_name CreatorCatalog
 extends RefCounted
 ## One browser tile per asset family; variants are chosen after selection.
-const BIOME_ASSETS: Dictionary = {}
-const OBJECT_BIOMES: Dictionary = {"speed_bump":["pine","storm","night_city"]}
-# Only nature families are restricted; equipment is shared across all biomes.
+const BIOME_ASSETS: Dictionary = {
+ "desert":["pebbles","rock","slate","cliff","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
+ "winter":["tree","pebbles","rock","slate","cliff","log","tyre_stack","barrier","guardrail","fence","cone","chevron","braking_board","flag","light","gantry","shed","hut","igloo","snow_castle","snowman","snow_lantern","ice_lantern","ice_compact"]
+}
+const OBJECT_BIOMES: Dictionary = {"abandoned_warehouse":["night_city"],"burning_car":["night_city"],"firefly_bush":["night_city"],"burning_barrel":["night_city"],"lantern_post":["night_city"],"neon_arrow":["night_city"],"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"],"igloo":["winter"],"snowman":["winter"],"snow_castle":["winter"],"snow_lantern":["winter"],"ice_lantern":["winter"],"ice_compact":["winter"]}
+# Curated biome kits further restrict the shared equipment and nature families.
 const NATURE_BIOMES: Dictionary = {
  "tree":["pine","winter","storm"], "broadleaf":["pine","night_city","storm"], "bush":["pine","night_city","storm"],
  "grass_clump":["pine","night_city","storm"], "flowers":["pine","night_city","storm"], "log":["pine","winter","storm"]
@@ -13,6 +16,11 @@ const ASSETS: Array = [
  ["tree","Pine tree","Nature",["tree"]],
  ["broadleaf","Broadleaf","Nature",["broadleaf"]],
  ["bush","Bush","Nature",["bush"]],
+ ["firefly_bush","Firefly bush","Nature",["firefly_bush"]],
+ ["burning_barrel","Burning barrel","Props",["burning_barrel"]],
+ ["burning_car","Burning car","Props",["burning_car"]],
+ ["lantern_post","Lantern post","Trackside",["lantern_post"]],
+ ["neon_arrow","Neon arrow","Trackside",["neon_arrow"]],
  ["grass_clump","Grass clump","Nature",["grass_clump"]],
  ["flowers","Flowers","Nature",["flowers"]],
  ["pebbles","Pebbles","Nature",["pebbles"]],
@@ -43,11 +51,22 @@ const ASSETS: Array = [
  ["car_wreck","Car wreck","Props",["car_wreck"]],
  ["container","Container","Props",["container"]],
  ["shed","Garage","Buildings",["shed"]],
+ ["abandoned_warehouse","Warehouse","Buildings",["abandoned_warehouse"]],
  ["hut","Marshal hut","Buildings",["hut"]],
- ["grandstand","Grandstand","Buildings",["grandstand"]]
+ ["grandstand","Grandstand","Buildings",["grandstand"]],
+ ["egypt_pyramid","Pyramid","Buildings",["egypt_pyramid"]],
+ ["egypt_obelisk","Obelisk","Buildings",["egypt_obelisk"]],
+ ["egypt_column","Lotus column","Buildings",["egypt_column","egypt_column_broken"]],
+ ["egypt_wall","Temple wall","Buildings",["egypt_wall"]],
+ ["igloo","Igloo","Buildings",["igloo"]],
+ ["snow_castle","Snow castle","Buildings",["snow_castle"]],
+ ["snowman","Snowman","Props",["snowman"]],
+ ["snow_lantern","Snow lantern","Props",["snow_lantern"]],
+ ["ice_lantern","Ice lantern","Props",["ice_lantern"]],
+ ["ice_compact","Ice Compact","Props",["ice_compact"]]
 ]
-const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet"]
-const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale"]
+const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet","firefly_bush"]
+const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale","snowman","snow_lantern","ice_lantern","burning_barrel"]
 const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
 
 static func family(kind: String) -> Array:
@@ -56,9 +75,14 @@ static func family(kind: String) -> Array:
 	return []
 
 static func label(kind: String) -> String:
-	return {"oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+	return {"ice_compact":"Ice Compact","egypt_pyramid":"Pyramid","egypt_obelisk":"Obelisk","egypt_column":"Lotus column","egypt_column_broken":"Broken column","egypt_wall":"Temple wall","oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
 
 static func behavior(kind: String) -> String:
+	if kind=="burning_barrel": return "Movable / tips and rolls on impact"
+	if kind == "abandoned_warehouse": return "Drive through the open ends / solid side walls"
+	if kind == "snowman": return "Breaks into soft snow chunks and powder"
+	if kind == "snow_lantern": return "Crumbles into snow; the candle goes out"
+	if kind == "ice_lantern": return "Shatters into ice; the candle goes out"
 	if kind == "hay_bale": return "Sheds harmless hay; becomes smaller and lighter"
 	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
 	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
@@ -71,11 +95,17 @@ static func behavior(kind: String) -> String:
 	if kind == "gantry": return "Solid supports / clear passage underneath"
 	return "Solid / blocks the car"
 
+static func available(kind: String, biome: String) -> bool:
+	var asset: Array = family(kind)
+	if asset.is_empty(): return false
+	if biome not in TrackDocument.THEMES: return true
+	var id: String = asset[0]
+	return (not OBJECT_BIOMES.has(id) or biome in OBJECT_BIOMES[id]) and (not NATURE_BIOMES.has(id) or biome in NATURE_BIOMES[id]) and (not BIOME_ASSETS.has(biome) or id in BIOME_ASSETS[biome])
+
 static func filtered(category: String, query: String, recent: Array[String], biome: String = "", availability: Dictionary = BIOME_ASSETS) -> Array:
 	var result: Array = []
 	for asset: Array in ASSETS:
-		if biome in TrackDocument.THEMES and OBJECT_BIOMES.has(asset[0]) and biome not in OBJECT_BIOMES[asset[0]]: continue
-		if biome in TrackDocument.THEMES and NATURE_BIOMES.has(asset[0]) and biome not in NATURE_BIOMES[asset[0]]: continue
+		if not available(asset[0],biome): continue
 		if availability.has(biome) and asset[0] not in availability[biome]: continue
 		if category == "Recent" and asset[0] not in recent: continue
 		if category not in ["All","Recent"] and asset[2] != category: continue

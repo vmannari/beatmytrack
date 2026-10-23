@@ -26,7 +26,7 @@ static func restore(key: Array, visual: Node3D) -> bool:
 static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	var resources: Dictionary = {}
 	# Include CPU/GPU grid masks conservatively, then each mesh/buffer once.
-	var bytes: int = track.cells.size()*16
+	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
 	for child: Node in visual.get_children(): bytes += _resource_bytes(child,resources)
 	if bytes > MAX_BYTES: return
 	var holder := Node3D.new()
@@ -69,6 +69,7 @@ static func _isolate_instances(node: Node) -> void:
 		copy.mesh = source.mesh
 		copy.instance_count = source.instance_count
 		copy.visible_instance_count = source.visible_instance_count
+		copy.custom_aabb = source.custom_aabb
 		# Dummy/headless rendering has no backing instance buffer.
 		var buffer: PackedFloat32Array = source.buffer
 		if not buffer.is_empty(): copy.buffer = buffer

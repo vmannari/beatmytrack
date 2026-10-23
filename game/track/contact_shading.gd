@@ -3,7 +3,7 @@ extends RefCounted
 ## Cosmetic depth projections. No collision, timing or canonical-state writes.
 const VERSION: String = "contact-lighting-12"
 const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2)}
-const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","car_wreck","container","shed","hut","grandstand"]
+const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","car_wreck","container","shed","hut","grandstand","egypt_pyramid","egypt_obelisk","egypt_column","egypt_column_broken","egypt_wall","igloo","snow_castle","ice_compact","firefly_bush","burning_barrel","lantern_post","neon_arrow","burning_car","abandoned_warehouse"]
 
 static func material() -> ShaderMaterial:
 	var result := ShaderMaterial.new()
@@ -30,8 +30,8 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 	if track != null:
 		var axle := Vector2(sin(heading),cos(heading))*dimensions.y*0.35
 		var layer: int = 1 if state.track_elevated else 0
-		var front: float = bridge.height_at(point+axle,state.route_index,layer)
-		var rear: float = bridge.height_at(point-axle,state.route_index,layer)
+		var front: float = bridge.visual_height_at(point+axle,state.route_index,layer)
+		var rear: float = bridge.visual_height_at(point-axle,state.route_index,layer)
 		if not state.track_elevated:
 			front += TrackHazards.ramp_height(point+axle,track.hazard_objects)
 			rear += TrackHazards.ramp_height(point-axle,track.hazard_objects)

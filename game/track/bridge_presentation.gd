@@ -1,9 +1,17 @@
 class_name BridgePresentation
 extends BridgeElevation
 ## Mesh construction over the shared pure elevation sampler.
+var visual_relief: RefCounted
 
 func _init(data: NativeTrack) -> void:
 	super(data)
+	if data.metadata.get("theme","pine") == "desert": visual_relief = preload("res://track/desert_road_relief.gd").new(data)
+
+func visual_offset(point: Vector2) -> float:
+	return visual_relief.height(point) if visual_relief != null else 0.0
+
+func visual_height_at(point: Vector2, route_index: int, actual_layer: int = -1) -> float:
+	return height_at(point,route_index,actual_layer)+visual_offset(point)
 
 
 func build(parent: Node3D) -> void:
@@ -82,6 +90,8 @@ func build(parent: Node3D) -> void:
 				if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
 				asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 				asphalt.set_shader_parameter("road_color", palette[0])
+				asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+				if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
 				asphalt.set_shader_parameter("icy_road",track.metadata.get("theme","pine") == "winter")
 				asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
 				asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
@@ -91,7 +101,7 @@ func build(parent: Node3D) -> void:
 				asphalt.set_shader_parameter("raised_road_edge",road_surface.lift > 0.0)
 				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
 				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
-				if theme == "desert" or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+				if theme in ["desert","night_city"] or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
 				mesh.material_override = asphalt
 			else:
 				mesh.material_override = _structure_material()

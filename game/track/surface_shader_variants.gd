@@ -1,9 +1,10 @@
 class_name SurfaceShaderVariants
 extends RefCounted
 ## Fixed visual-material flags become constants; samples and lighting stay intact.
-const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road"]
-const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
+const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
+const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
 const INCLUDES: Dictionary = {
+	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
 	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
 	"res://track/desert_sun_finish.gdshaderinc":preload("res://track/desert_sun_finish.gdshaderinc"),
@@ -21,8 +22,17 @@ static var preparations: int = 0
 static var prepared_hits: int = 0
 
 static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> void:
+	# The raw shader hides this sampler from non-Night dynamic materials. Keep
+	# its binding through ShaderMaterial.duplicate(), which drops undeclared
+	# parameters, so retained/prepared Night worlds restore the same texture.
+	var night_wear: Texture2D = (material.get_meta("surface_night_asphalt_wear") if material.has_meta("surface_night_asphalt_wear") else material.get_shader_parameter("night_asphalt_wear")) as Texture2D
 	var dynamic: ShaderMaterial = material.duplicate()
+	if night_wear != null:
+		material.set_meta("surface_night_asphalt_wear",night_wear)
+		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
 	var source: String = material.shader.code
+	if material.get_shader_parameter("industrial_asphalt") == true:
+		source = "#define BMT_NIGHT_ASPHALT\n"+source
 	# Reuse the completed compiler result before expanding includes/regexes.
 	# Include/source edits and every immutable role/remap value fence the key.
 	var include_sources: Array[String] = []
@@ -39,6 +49,7 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 	if use_prepared and prepared_keys.has(prepared_key) and cache.has(prepared_keys[prepared_key]):
 		material.set_meta("surface_dynamic_material",dynamic)
 		material.shader = cache[prepared_keys[prepared_key]] as Shader
+		if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
 		prepared_hits += 1
 		return
 	preparations += 1
@@ -94,10 +105,13 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 	# Alias unreachable biome samples to the shared factor sampler so those
 	# declarations cannot consume phone texture units. Active artwork is untouched.
 	var inactive: Array[String] = []
+	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
+	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
 	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
 		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
 	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
-		inactive.append_array(["desert_apron","desert_road_albedo","dune_factors","dune_albedo"])
+		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
+		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
 	if not (material.get_shader_parameter("hybrid_grass") == true):
 		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
 	for sampler: String in inactive:
@@ -124,3 +138,4 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 	prepared_keys[prepared_key] = key
 	material.set_meta("surface_dynamic_material",dynamic)
 	material.shader = cache[key] as Shader
+	if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)

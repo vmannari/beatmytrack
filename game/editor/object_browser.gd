@@ -64,7 +64,11 @@ func _ready() -> void:
 		var count: int=maxi(1,int((size.x-120)/110))
 		if count!=page_size: page_size=count; page=0; _tiles())
 	visibility_changed.connect(func() -> void:
-		if is_visible_in_tree(): _tiles())
+		if is_visible_in_tree():
+			if not CreatorCatalog.available(current,biome):
+				var allowed: Array = CreatorCatalog.filtered("All","",[],biome)
+				if not allowed.is_empty(): choose(allowed[0][0])
+			_tiles())
 	options=PopupPanel.new()
 	options.name="ObjectOptionsPopup"
 	options.add_theme_stylebox_override("panel",EditorStyle.panel())
@@ -94,6 +98,7 @@ func _clear(row: Node) -> void:
 		row.remove_child(child); child.queue_free()
 
 func choose(kind: String) -> void:
+	if not CreatorCatalog.available(kind,biome): return
 	current = kind
 	var asset: Array = CreatorCatalog.family(kind)
 	if not asset.is_empty():
@@ -103,6 +108,8 @@ func choose(kind: String) -> void:
 
 func _tiles() -> void:
 	if tiles == null or not is_visible_in_tree(): return
+	if category not in ["All","Recent"] and CreatorCatalog.filtered(category,"",[],biome).is_empty(): category = "All"; page = 0
+	for button: Button in categories.get_children(): button.visible = button.text in ["All","Recent"] or not CreatorCatalog.filtered(button.text,"",[],biome).is_empty()
 	if _styled_category != category:
 		_styled_category = category
 		for button: Button in categories.get_children(): EditorStyle.apply(button,button.text==category)
@@ -188,6 +195,7 @@ func refresh() -> void:
 			details.add_child(button)
 
 func _activate_asset(kind: String) -> void:
+	if not CreatorCatalog.available(kind,biome): return
 	var already_selected: bool=current==kind
 	choose(kind)
 	if already_selected:

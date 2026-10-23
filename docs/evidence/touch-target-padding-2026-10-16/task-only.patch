@@ -1,0 +1,272 @@
+--- a/game/ui/touch_controls.gd
++++ b/game/ui/touch_controls.gd
+@@ -5,6 +5,7 @@
+ 
+ const ACTIONS: Array[StringName] = [&"steer_left", &"steer_right", &"brake", &"accelerate", &"handbrake"]
+ const LABELS: Array[String] = ["LEFT", "RIGHT", "BRAKE", "THROTTLE", "HANDBRAKE"]
++const TOUCH_PADDING := Vector2(56,64)
+ var vehicle_id: String = "compact":
+ 	set(value):
+ 		vehicle_id = value
+@@ -34,6 +35,10 @@
+ var _cached_groups: Dictionary = {}
+ var _cached_hash: int = 0
+ var _cached_area := Rect2()
++var _cached_hit_bases: Array[Rect2] = []
++var _cached_hit_rects: Array[Rect2] = []
++var _cached_hit_hash: int = 0
++var _cached_hit_area := Rect2()
+ 
+ func release_all() -> void:
+ 	if driver != null:
+@@ -219,8 +224,9 @@
+ 
+ func touch_zones() -> Array[Rect2]:
+ 	if not layout.is_empty():
++		var groups: Dictionary = group_rects()
++		if _cached_hit_hash == _cached_hash and _cached_hit_area == _cached_area and not _cached_hit_rects.is_empty(): return _cached_hit_rects
+ 		var rectangles: Array[Rect2] = zones()
+-		var groups: Dictionary = group_rects()
+ 		var pedal: Rect2 = groups.accelerator
+ 		rectangles[2] = groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
+ 		rectangles[4] = groups.handbrake
+@@ -232,7 +238,11 @@
+ 			var steering: Rect2 = groups[layout.steering_type]
+ 			rectangles[0] = Rect2(steering.position,Vector2(steering.size.x*0.5,steering.size.y))
+ 			rectangles[1] = Rect2(steering.position+Vector2(steering.size.x*0.5,0),rectangles[0].size)
+-		return rectangles
++		_cached_hit_hash = _cached_hash
++		_cached_hit_area = _cached_area
++		_cached_hit_bases = rectangles
++		_cached_hit_rects = _expanded_targets(rectangles,_cached_area)
++		return _cached_hit_rects
+ 	var artwork: Array[Rect2] = zones()
+ 	var result: Array[Rect2] = []
+ 	for i: int in range(artwork.size()):
+@@ -250,9 +260,30 @@
+ 		result.append(rect.intersection(Rect2(Vector2.ZERO, size)))
+ 	return result
+ 
++func _expanded_targets(bases: Array[Rect2], bounds: Rect2) -> Array[Rect2]:
++	var result: Array[Rect2] = []
++	for base: Rect2 in bases:
++		result.append(base.grow_individual(TOUCH_PADDING.x,TOUCH_PADDING.y,TOUCH_PADDING.x,72).intersection(bounds))
++	return result
++
+ 
+ func action_at(point: Vector2) -> StringName:
+ 	var rectangles: Array[Rect2] = touch_zones()
++	if not layout.is_empty():
++		# Button faces always win. Shared padding belongs to the nearest face,
++		# so diagonal/stacked layouts retain their usable empty space as well.
++		for i: int in range(_cached_hit_bases.size()):
++			if _cached_hit_bases[i].has_point(point): return ACTIONS[i]
++		var closest: float = INF
++		var chosen: StringName = &""
++		for i: int in range(rectangles.size()):
++			if not rectangles[i].has_point(point): continue
++			var base: Rect2 = _cached_hit_bases[i]
++			var distance: float = point.distance_squared_to(point.clamp(base.position,base.end))
++			if distance < closest:
++				closest = distance
++				chosen = ACTIONS[i]
++		return chosen
+ 	for i: int in range(rectangles.size()):
+ 		if rectangles[i].has_point(point):
+ 			return ACTIONS[i]
+@@ -305,16 +336,17 @@
+ 	var target: Rect2 = touch_zones()[index]
+ 	# Small excursions retain ownership; crossing to a different pedal never transfers it.
+ 	var held: bool = target.grow(28).has_point(point)
++	var next: StringName = action_at(point)
+ 	if action in [&"steer_left",&"steer_right"]:
+-		var next: StringName = action_at(point)
+ 		if next in [&"steer_left",&"steer_right"]:
+ 			action = next
+ 			owners[finger] = action
+ 			held = true
+-	# Pedals press fully on touch. Sliding down beyond the face progressively releases them.
++	if next != &"" and next != action: held = false
++	# The whole expanded pedal target is a full press; fade only beyond its lower edge.
+ 	var strength: float = 1.0
+ 	if not layout.is_empty() and index in [2,3]:
+-		strength = clampf((target.end.y+28-point.y)/maxf(target.size.y*0.5,1.0),0.0,1.0)
++		strength = clampf((target.end.y+28-point.y)/28.0,0.0,1.0)
+ 	driver.set_touch(finger,action,strength if held else 0.0)
+ 
+ 
+--- /dev/null
++++ b/game/tests/test_touch_target_padding.gd
+@@ -0,0 +1,162 @@
++extends SceneTree
++## HIT01-HIT04: off-button presses, exclusive neighbours, immediate reversal and safe bounds.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		push_error(message)
++
++func press(control: TouchControls, finger: int, point: Vector2, down: bool = true) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	event.pressed = down
++	root.push_input(event,true)
++
++func drag(control: TouchControls, finger: int, point: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	root.push_input(event,true)
++
++func bases(control: TouchControls) -> Array[Rect2]:
++	var groups: Dictionary = control.group_rects()
++	return [groups.steer_left,groups.steer_right,groups.brake,groups.accelerator,groups.handbrake]
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var control := TouchControls.new()
++	control.driver = DriverInput.new()
++	control.haptic_strength = 0.0
++	root.add_child(control)
++	await process_frame
++	for dimensions: Vector2 in [Vector2(960,540),Vector2(1280,720),Vector2(1600,720)]:
++		control.size = dimensions
++		for mirrored: bool in [false,true]:
++			for scale_value: float in [0.65,1.0,1.6]:
++				control.layout = ControlLayout.preset(mirrored,scale_value)
++				_check_geometry(control)
++				var originals: Array[Rect2] = bases(control)
++				for i: int in range(originals.size()):
++					var point := Vector2(originals[i].get_center().x,originals[i].position.y-32)
++					if not control.usable_area().has_point(point): continue
++					check(control.action_at(point) == TouchControls.ACTIONS[i],"press 32 units above saved button is accepted")
++					press(control,1,point)
++					check(control.driver.touches.get(1) == TouchControls.ACTIONS[i] and control.driver.touch_strengths.get(1) == 1.0,"off-button viewport press applies full intended input")
++					press(control,1,Vector2.ZERO,false)
++					check(control.driver.touches.is_empty(),"off-button release clears its input")
++	control.size = Vector2(1280,720)
++	control.layout = ControlLayout.preset()
++	_test_reversal_and_ownership(control)
++	# An isolated custom pedal can use empty space on all four sides.
++	ControlLayout.move(control.layout,"accelerator",Vector2(1000,270),control.usable_area())
++	var gas: Rect2 = control.group_rects().accelerator
++	for point: Vector2 in [Vector2(gas.position.x-32,gas.get_center().y),Vector2(gas.end.x+32,gas.get_center().y),Vector2(gas.get_center().x,gas.position.y-32),Vector2(gas.get_center().x,gas.end.y+32)]:
++		press(control,1,point)
++		check(control.driver.sample().throttle == 255,"isolated pedal accepts full presses beyond each edge")
++		press(control,1,Vector2.ZERO,false)
++	# Stack and offset neighbouring controls; their original faces must never be stolen.
++	for offset: Vector2 in [Vector2(0,-205),Vector2(70,-205),Vector2(-170,-60)]:
++		control.layout = ControlLayout.preset()
++		var right: Rect2 = control.group_rects().steer_right
++		ControlLayout.move(control.layout,"steer_left",right.position+offset,control.usable_area())
++		_check_geometry(control)
++	# Also exercise physical safe insets and a transformed control canvas.
++	control.safe_override = Rect2(44,24,1210,660)
++	control.position = Vector2(17,23)
++	control.scale = Vector2(0.8,0.8)
++	_check_geometry(control)
++	var left: Rect2 = control.group_rects().steer_left
++	press(control,1,Vector2(left.get_center().x,left.position.y-24))
++	check(control.driver.sample().steer == -127,"off-button input survives canvas transform and safe insets")
++	control.release_all()
++	control.queue_free()
++	await process_frame
++	if DisplayServer.get_name() != "headless": await _capture()
++	print("TOUCH_TARGET_PADDING: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func _check_geometry(control: TouchControls) -> void:
++	var originals: Array[Rect2] = bases(control)
++	var hits: Array[Rect2] = control.touch_zones()
++	for i: int in range(hits.size()):
++		check(control.usable_area().encloses(hits[i]),"expanded target respects safe bounds and top HUD")
++		check(hits[i].encloses(originals[i]),"neighbour expansion never steals an original button face")
++		for fraction: Vector2 in [Vector2(0.02,0.02),Vector2(0.98,0.02),Vector2(0.02,0.98),Vector2(0.98,0.98),Vector2(0.5,0.5)]:
++			check(control.action_at(originals[i].position+originals[i].size*fraction) == TouchControls.ACTIONS[i],"original button corners and centre keep their own action")
++		for j: int in range(i+1,hits.size()):
++			if hits[i].intersects(hits[j]):
++				press(control,8,originals[j].get_center())
++				check(control.driver.touches.get(8) == TouchControls.ACTIONS[j],"shared padding cannot capture another button's actual press")
++				press(control,8,Vector2.ZERO,false)
++	check(control.action_at(Vector2(control.size.x-35,45)) == &"","pause button region remains outside driving input")
++	check(control.action_at(Vector2(control.size.x*0.5,100)) == &"","top race HUD remains outside driving input")
++
++func _test_reversal_and_ownership(control: TouchControls) -> void:
++	var originals: Array[Rect2] = bases(control)
++	var divider: float = (originals[0].end.x+originals[1].position.x)*0.5
++	var y: float = minf(originals[0].position.y,originals[1].position.y)-24
++	press(control,1,Vector2(divider-2,y))
++	check(control.driver.sample().steer == -127,"shared steering gap starts as left input")
++	for tick: int in range(12):
++		var direction: int = 1 if tick%2 == 0 else -1
++		drag(control,1,Vector2(divider+direction*2,y))
++		check(control.driver.sample().steer == direction*127,"four-unit thumb slide reverses fully in the same event")
++	press(control,2,originals[3].get_center()-Vector2(0,originals[3].size.y*0.5+24))
++	press(control,3,originals[4].get_center()-Vector2(0,originals[4].size.y*0.5+24))
++	check(control.driver.sample().throttle == 255 and control.driver.sample().handbrake == 255,"off-button gas and handbrake remain independent")
++	press(control,1,Vector2.ZERO,false)
++	check(control.driver.sample().steer == 0 and control.driver.sample().throttle == 255,"steering release preserves other fingers")
++	control.release_all()
++	press(control,1,originals[3].get_center())
++	drag(control,1,originals[2].get_center())
++	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"sliding a captured pedal cannot activate its neighbour")
++	press(control,2,originals[2].get_center())
++	check(control.driver.sample().brake == 255 and control.driver.sample().throttle == 0,"neighbour button stays independently reachable")
++	control.release_all()
++
++func _capture() -> void:
++	var output: String = ProjectSettings.globalize_path("res://../build/touch-target-padding-2026-10-16/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.set("production_mode",true)
++	root.add_child(game)
++	game.set_physics_process(false)
++	var control: TouchControls = game.get("hud").touch
++	control.layout = ControlLayout.preset()
++	control.haptic_strength = 0.0
++	await process_frame
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join("normal-buttons.png")) == OK,"native unchanged-art capture")
++	var overlay := Control.new()
++	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	control.add_child(overlay)
++	overlay.draw.connect(func() -> void:
++		var colours: Array[Color] = [Color("e8c654"),Color("ac83ee"),Color("e87b65"),Color("69d78b"),Color("6bc5df")]
++		for y: int in range(180,int(control.size.y),12):
++			for x: int in range(0,int(control.size.x),12):
++				var point := Vector2(x+6,y+6)
++				var index: int = TouchControls.ACTIONS.find(control.action_at(point))
++				if index >= 0: overlay.draw_rect(Rect2(Vector2(x,y),Vector2(12,12)),Color(colours[index],0.22)))
++	await process_frame
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join("diagnostic-expanded-targets.png")) == OK,"diagnostic overlay shows nearest-button ownership in expanded touch areas")
++	var left: Rect2 = control.group_rects().steer_left
++	press(control,1,Vector2(left.get_center().x,left.position.y-32))
++	var gas: Rect2 = control.group_rects().accelerator
++	press(control,2,Vector2(gas.get_center().x,gas.position.y-32))
++	check(control.driver.sample().steer == -127 and control.driver.sample().throttle == 255,"native viewport accepts simultaneous off-button presses: enabled=%s owners=%s inputs=%s" % [control.enabled,control.owners,control.driver.touches])
++	await process_frame
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join("diagnostic-off-button-held.png")) == OK,"native capture of off-button held input")
++	control.release_all()
++	game.queue_free()
++	await process_frame
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Forgiving driving-button touch targets override (2026-10-16)
++The owner reports missed presses slightly outside driving buttons and requests larger hit areas wherever no other button is present. Saved layouts now gain56 logical units horizontally/64 above/72 below, bounded by safe driving space. Original button faces win; shared empty margins choose the nearest original face with one deterministic action. Keep five cached candidates, actual artwork/layout, analog origins, separate handbrake and canonical inputs/physics. Any press inside an expanded digital pedal target is full strength; captured pedals cannot activate neighbours, while left/right slides reverse in the same event. Focused1162headless/1166Compatibility/1166Mobile, existing buttons747/analog1642/layout407 including viewport90 pass. Native captures, initial rectangular-clipping correction and one unreproduced native-fixture failure are retained with actual commands/task-only patch in `docs/evidence/touch-target-padding-2026-10-16/report.json`. Owner/physical-phone feel acceptance remains; no phone check/test, APK or deployment for this change.
+ 
+ ## Abandoned drive-through warehouse override (2026-10-16)
+ Night Buildings gains an original abandoned drive-through Warehouse with raised shutters, open ends, solid side/end walls, broken industrial cladding/glazing and exposed trusses. Preserve the actual road; the collapsed central roof keeps the original camera/car visible, and buried footings seat at minimum scale.9,790triangles/two lamps share existing bounded Night meshes/lights; prop version9 fences prepared assets. Six scales/five rotations, all-five-car bidirectional driving and wall sweeps, native browser placement/undo/redo and canonical replay/presentation pass264headless/282Compatibility/282Mobile; Night103/props834/prepared85/parser823 pass. Actual views/commands/initial fixture and budget corrections/scoped checkpoint: docs/DRIVE_THROUGH_WAREHOUSE_2026_10_16.md. Open-road practice captures retain route issues and synthetic hitch/FPS diagnostics; no full timed-circuit or performance claim. Owner/phone acceptance remains; no phone test/attachment check/APK/backend/deployment.

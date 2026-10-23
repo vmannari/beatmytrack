@@ -1,0 +1,124 @@
+{
+  "simulations": [
+    {
+      "phase": "screen",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 --seeds 20261022 20261023 20261024 --methods places relative_time total_time --curves absolute percentile hybrid --counts 12 14 16 --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/screen",
+      "exit_code": 0,
+      "source_sha256": "4b417e4c5bd147cdb6ce6c74c125c5253a079e4c67db7187288768f133cf6a2c"
+    },
+    {
+      "phase": "finalists",
+      "command": "python scripts/simulate_world_circuit.py --populations 100000 --seeds 20261022 20261023 20261024 --methods places --curves absolute --counts 12 14 16 --minimum-tracks 4 5 --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/finalists",
+      "exit_code": 0,
+      "source_sha256": "e82d045cd8cbcdc6fe5946ed6355916345c5132b55d6f3154bf2d8ed4c26c6af"
+    },
+    {
+      "phase": "stress",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 --seeds 20261022 20261023 20261024 --methods places --curves absolute --counts 12 16 --minimum-tracks 4 5 --scenarios growth heavy_tail specialists sparse one_fast_track correlated_completion --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/stress",
+      "exit_code": 0,
+      "source_sha256": "e82d045cd8cbcdc6fe5946ed6355916345c5132b55d6f3154bf2d8ed4c26c6af"
+    },
+    {
+      "phase": "curve",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 --seeds 20261022 20261023 20261024 --methods places --curves absolute fourth_root --counts 12 16 --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/curve",
+      "exit_code": 0,
+      "source_sha256": "95b063e2f546c62a0c4d671514c77d920716a7fc45fc56b0968db9ef4c9a7807"
+    },
+    {
+      "phase": "podium",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 --seeds 20261022 20261023 20261024 --methods places --curves podium absolute fourth_root --counts 12 --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/podium",
+      "exit_code": 0,
+      "source_sha256": "3cc10a13f07e7b2bac815c9dbef4b62d8bfdc3a60a3d35c3f227cf0e124a076b"
+    },
+    {
+      "phase": "selected",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 100000 --seeds 20261022 20261023 20261024 --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/selected",
+      "exit_code": 0,
+      "source_sha256": "6f726365fb059893e23ddde4c36a38899d06ca4fb138810fa761bb8d2bceaa2d"
+    },
+    {
+      "phase": "million",
+      "command": "python scripts/simulate_world_circuit.py --populations 1000000 --seeds 20261022 --no-report --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/million",
+      "exit_code": 0,
+      "source_sha256": "6f726365fb059893e23ddde4c36a38899d06ca4fb138810fa761bb8d2bceaa2d"
+    },
+    {
+      "phase": "selected-stress",
+      "command": "python scripts/simulate_world_circuit.py --populations 10000 --seeds 20261022 20261023 20261024 --scenarios growth heavy_tail specialists sparse one_fast_track correlated_completion --weeks 78 --output docs/evidence/world-ranking-refined-2026-10-22/selected-stress",
+      "exit_code": 0,
+      "source_sha256": "6f726365fb059893e23ddde4c36a38899d06ca4fb138810fa761bb8d2bceaa2d"
+    }
+  ],
+  "review": {
+    "command": "python scripts/review_world_circuit.py",
+    "exit_code": 0,
+    "world_runs_checked": 55
+  },
+  "numerical_validation": [
+    {
+      "name": "numerical-tests",
+      "command": [
+        "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts",
+        "-p",
+        "test_world*simulation.py",
+        "-v"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "lint",
+      "command": [
+        "C:\\Codes\\Godot\\Beat my track\\.tools\\backend-venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "scripts/simulate_world_circuit.py",
+        "scripts/test_world_circuit_simulation.py",
+        "scripts/review_world_circuit.py"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "patch",
+      "command": [
+        "git",
+        "apply",
+        "--reverse",
+        "--check",
+        "--whitespace=error-all",
+        "docs/evidence/world-ranking-refined-2026-10-22/task-only.patch"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "spec_checks": {
+    "point_table_examples": 13,
+    "evidence_links": 2,
+    "passed": true
+  },
+  "browser": {
+    "command": "python build/check_world_ranking_report.py",
+    "exit_code": 0,
+    "mode": "Previously approved offline headless Chrome with dedicated workspace profile.",
+    "checks": [
+      "figures rendered",
+      "million-player result",
+      "best12/26 specification",
+      "selected points chart",
+      "PNG output"
+    ]
+  },
+  "reproduction": "Selected phases use the final scripts/simulate_world_circuit.py. For a preliminary phase, restore that phase's simulator.py at scripts/simulate_world_circuit.py in a separate checkout, with the unchanged people generator, then run the listed command. CLI argument order is immaterial.",
+  "initial_corrections": [
+    "Initial lint/import fixes did not weaken numerical tests.",
+    "In the early growth screening, the weak-pioneer adjustment also altered a fixed expert probe. Restored the fixed probe ability and reran all selected growth cases. Early growth probe catch-up times are not used as final evidence.",
+    "Archived simulator versions accompany each pre-final phase; final normal/million/stress use the final selected source hash.",
+    "The first expiry-audit query searched only after week 39, which misidentified sparse players whose last award had already expired. Corrected the query to find the first zero after the actual last earned award; retained the strict last-award-plus-26 assertion."
+  ],
+  "scope": "All production/API/database/device integration checks in the specification are future acceptance work, not tests claimed passed by this task."
+}

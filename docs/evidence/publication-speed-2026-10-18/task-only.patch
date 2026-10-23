@@ -1,0 +1,564 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 746dd45abaf3022fec5cf125237a7f5219522cc8..57b16d7205c7a58aa606f6b834734539713158d2 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Prompt publication verification override (2026-10-18)
++PVL01-PVL03/R01/Q01: An independently supervised publication process inside the existing worker service warms its verifier and checks claimable work every250ms, avoiding competition/background head-of-line waits. Initial status polling is1s for10s then2.5s. Local real HTTP/new-document publication medians0.503s and0.529s pass with the competition engine slot held; sampled additional Windows Python/engine RSS241-252MiB is not peak/cloud memory. Original validation, evidence, leases/retries, idempotency and atomic slots remain. Standalone packaging retains the compiler's optional acceleration adapter with scalar fallback. New5, regression144pass/6skip, final scheduling4 and actual Linux process12 pass; original code reproduces3 failures. PostgreSQL localhost:55439 remains unavailable (two concurrency setup errors). Actual commands, corrections, receipts and task-only source checkpoint: docs/PUBLICATION_SPEED_2026_10_18.md. API/worker rollout, PostgreSQL concurrency and representative cloud latency/memory/owner acceptance remain; no live publication/queue/account mutation, deployment, phone attachment check/test or APK action.
++
+ ## Winter igloo and snow castle refinement override (2026-10-18)
+ WA01-WA04/G01/R01/Q01: Refine both native Winter buildings with bevelled staggered snow masonry, seated joints, a fitted hollow igloo tunnel, coursed castle towers/recesses/rounded crenellations and a real visual arched gate/court. Architecture-only packed-snow finish retains the original opaque draw/material and other craft. Existing footprints/canonical contacts/saves, upload/cache limits and concurrent preparation remain; prop13 fences visual caches. Final6,926/9,890 triangles remain under10,000. Focused57Compatibility/57desktopMobile, Winter595, kits983, worlds85 and parser896 pass. Original castle reproduces two focused failures. Actual commands, retained corrections, native before/after/editor views and task-only checkpoint: docs/WINTER_ARCHITECTURE_2026_10_18.md. Owner AAA/art and physical-device acceptance remain; no phone attachment check/test, APK, backend/deployment or performance claim.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 8ee3577dc96631bd14a9eb52921b15a819af4627..1c2fcf67a50f4a23a2a444539ec78db115807cf6 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-18 PVL01-PVL03/R01/Q01: An independently supervised publication process inside the existing worker service warms its verifier and checks claimable work every250ms, avoiding competition/background head-of-line waits. Initial status polling is1s for10s then2.5s. Local real HTTP/new-document publication medians0.503s and0.529s pass with the competition engine slot held; sampled additional Windows Python/engine RSS241-252MiB is not peak/cloud memory. Original validation, evidence, leases/retries, idempotency and atomic slots remain. Standalone packaging retains the compiler's optional acceleration adapter with scalar fallback. New5, regression144pass/6skip, final scheduling4 and actual Linux process12 pass; original code reproduces3 failures. PostgreSQL localhost:55439 remains unavailable (two concurrency setup errors). Actual commands, corrections, receipts and task-only source checkpoint: docs/PUBLICATION_SPEED_2026_10_18.md. API/worker rollout, PostgreSQL concurrency and representative cloud latency/memory/owner acceptance remain; no live publication/queue/account mutation, deployment, phone attachment check/test or APK action.
++
+ 2026-10-18 WA01-WA04/G01/R01/Q01: Refined native Winter igloo and snow castle with bevelled/staggered snow blocks, seated joints, a fitted hollow tunnel, coursed towers/recesses/rounded merlons and a real visual arched gate/court. Architecture-only packed-snow finish; existing footprints/contacts/saves, caches/uploads and other craft remain. Prop13 fences visuals. Final6,926/9,890 triangles below10,000; focused57Compatibility/57desktopMobile, Winter595, kits983, worlds85 and parser896 pass. Actual commands, initial corrections, native before/after/editor views and task-only checkpoint: docs/WINTER_ARCHITECTURE_2026_10_18.md. Owner AAA/art and physical-device acceptance remain; no phone attachment check/test, APK or backend/deployment action.
+ 
+ 2026-10-18 ILH01-ILH02/G01/R01/Q01: Cover the newer SnowChunks/IceShards/SnowPowder instanced paths during existing race loading, alongside wood/hay/weather. Original helper reproduces four missing-coverage failures per graphical renderer. Final focused42headless/64Compatibility/67desktopMobile, Winter595, breakables46, dynamic148 and parser896 pass; import repairs the initial missing temporary Rivalry-script index entry. Exact original buffers/pixels, contacts, flames, rewind/retry, lifetime and tick-zero/full-countdown/five-lap reveal remain. Actual commands, fixture corrections, desktop timing limits and source-only patch: docs/ICE_LANTERN_HITCH_2026_10_18.md. Desktop original/final caches were warm; the owner's pause duration was not reproduced. Affected-device confirmation remains; no phone attachment check/test, APK/export/install, backend action or deployment.
+diff --git a/backend/bmt_backend/publication_worker.py b/backend/bmt_backend/publication_worker.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b9bbc5439394c01f9e22ba0f63ca1580cee78e36
+--- /dev/null
++++ b/backend/bmt_backend/publication_worker.py
+@@ -0,0 +1,43 @@
++"""Keep explicit publications independent of competition and background work."""
++
++import argparse
++from dataclasses import replace
++
++from .operations import heartbeat
++from .publications import process_one
++from .verifier import VerifierStopping
++from .worker_lifecycle import run_worker, stopping
++
++
++def process_job(app):
++    if stopping(app):
++        return False
++    worker_id = app.state.worker_id
++    # Warm the persistent engine before the first publication. Never advertise
++    # a competition build: this process does not claim races or maintenance.
++    try:
++        app.state.verifier.manifest()
++    except VerifierStopping:
++        return False
++    except RuntimeError:
++        heartbeat(app, worker_id, role="publication", phase="unavailable", coalesce=True)
++        return False
++    heartbeat(app, worker_id, role="publication", phase="claiming", coalesce=True)
++    return process_one(app)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--once", action="store_true")
++    args = parser.parse_args()
++    from .app import create_app
++    from .config import Settings
++
++    # One additional bounded connection, within the existing service instance.
++    settings = replace(Settings.from_env(), database_pool_size=1, database_pool_overflow=0)
++    app = create_app(settings)
++    run_worker(app, process_job, once=args.once, idle_seconds=0.25)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/bmt_backend/publications.py b/backend/bmt_backend/publications.py
+index d05b7745ce7007319cc6b7ffe90b8e2c86e95c99..1a8b5bec008aba0d70ae1f4485862657275a6af4 100644
+--- a/backend/bmt_backend/publications.py
++++ b/backend/bmt_backend/publications.py
+@@ -68,7 +68,8 @@ def payload(intent):
+     return {"publication_id": intent.id, "state": intent.status,
+             "failure_code": intent.failure_code, "detail": intent.detail,
+             "retryable": intent.failure_code in RETRYABLE, "receipt": intent.receipt,
+-            "poll_after_ms": 2500 if intent.status in ("queued", "verifying") else 0}
++            "poll_after_ms": (1000 if now() - intent.created_at < 10 else 2500)
++                if intent.status in ("queued", "verifying") else 0}
+ 
+ 
+ def owned(session, player_id, publication_id, *, lock=False):
+diff --git a/backend/bmt_backend/service_worker.py b/backend/bmt_backend/service_worker.py
+index ba4dba3060ef3665ad2ad4af65456e9da2fe7e19..48404e5d183fdef24a8d8d3d1e3a50a47d3f65e3 100644
+--- a/backend/bmt_backend/service_worker.py
++++ b/backend/bmt_backend/service_worker.py
+@@ -1,4 +1,4 @@
+-"""Supervise competition and optional low-priority product work in one container."""
++"""Supervise publications, competition and optional product work in one container."""
+ 
+ from __future__ import annotations
+ 
+@@ -81,10 +81,11 @@ def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, c
+         raise ValueError("Invalid bounded service shutdown budget")
+     shipping = {
+         "worker": (sys.executable, "-m", "bmt_backend.worker"),
++        "publication": (sys.executable, "-m", "bmt_backend.publication_worker"),
+         "product": (sys.executable, "-m", "bmt_backend.product_worker"),
+     }
+     selected = commands if commands is not None else shipping
+-    roles = ("worker", "product") if telemetry_enabled else ("worker",)
++    roles = ("worker", "publication", "product") if telemetry_enabled else ("worker", "publication")
+     children, previous = {}, {}
+     requested_at, requested_signal, failed = None, None, False
+ 
+diff --git a/backend/bmt_backend/worker_lifecycle.py b/backend/bmt_backend/worker_lifecycle.py
+index 8da3965c56d2ce6ad16a7ae82b12cc12221ebf75..07320795ed3bd9826fed213a66f3556935bb17a3 100644
+--- a/backend/bmt_backend/worker_lifecycle.py
++++ b/backend/bmt_backend/worker_lifecycle.py
+@@ -34,7 +34,9 @@ def aborting(app):
+     return bool(control and control.abort.is_set())
+ 
+ 
+-def run_worker(app, process_job, *, once=False, control=None, install_signals=True):
++def run_worker(app, process_job, *, once=False, control=None, install_signals=True, idle_seconds=1.0):
++    if not 0.1 <= idle_seconds <= 60:
++        raise ValueError("Invalid bounded worker idle interval")
+     control = control or WorkerControl()
+     app.state.worker_control = control
+     app.state.worker_id = new_id()
+@@ -63,7 +65,7 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
+                 if once:
+                     return
+                 if not worked:
+-                    control.stop.wait(1)
++                    control.stop.wait(idle_seconds)
+         except BaseException as error:  # noqa: BLE001 - transport fatal job-thread errors to the supervisor
+             errors.append(error)
+         finally:
+diff --git a/backend/deploy/compose.pc.yaml b/backend/deploy/compose.pc.yaml
+index 9f36e31c5e94c56f474a4f2915335f9fc566b3db..1947b9575eabcde8e819592dae6f462034efa484 100644
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -74,7 +74,7 @@ services:
+       BMT_TEST_DRIVER_API_URL: http://api:8080
+       BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+     restart: unless-stopped
+-    command: [python, -m, bmt_backend.worker]
++    command: [python, -m, bmt_backend.service_worker]
+     depends_on:
+       migrate: {condition: service_completed_successfully}
+ 
+diff --git a/backend/deploy/compose.yaml b/backend/deploy/compose.yaml
+index e4424709e383f4a05dae6b6fad9d6c291e2af497..789d7d03df3a8b93fad03c98b949be7997757f0e 100644
+--- a/backend/deploy/compose.yaml
++++ b/backend/deploy/compose.yaml
+@@ -115,7 +115,7 @@ services:
+       <<: *environment
+       BMT_DATABASE_POOL_SIZE: "2"
+       BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
+-    command: [python, -m, bmt_backend.worker]
++    command: [python, -m, bmt_backend.service_worker]
+     restart: unless-stopped
+     depends_on:
+       migrate: {condition: service_completed_successfully}
+diff --git a/backend/deploy/gcp/staging.py b/backend/deploy/gcp/staging.py
+index 9b425762783d3b9778d0b539012d6d562b3b7595..9a459c0bbd4b1afa4d0874fe11e082e18cbbbe4a 100644
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -167,7 +167,7 @@ def deployment_commands(config, image, directory):
+             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
+             "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
+         "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "runtime", "app_secret"),
+-            "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.worker"),
++            "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.service_worker"),
+         "smoke": command(config, "run", "jobs", "deploy", n["smoke"], *common("smoke", "operator", "app_secret"),
+             *job, "--args=-m,bmt_backend.cloud_smoke"),
+         "smoke_execute": command(config, "run", "jobs", "execute", n["smoke"], "--region=" + region, "--wait"),
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+index 7b46388daa567aad5595a9857e3fa809b757626c..a4e301aa4b175e4f279857af31769342577b0377 100644
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -34,6 +34,7 @@ SCRIPTS = {
+         "builtin_tracks",
+         "bridge_elevation",
+         "creator_bridges",
++        "geometry_acceleration",
+         "native_track",
+         "playground_data",
+         "road_edges",
+diff --git a/backend/tests/publication_latency_probe.py b/backend/tests/publication_latency_probe.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..95f30b948b4c7137a0fe4a8f812f6e6a3efaf0f8
+--- /dev/null
++++ b/backend/tests/publication_latency_probe.py
+@@ -0,0 +1,29 @@
++"""Disposable process fixture; accepts only a test database supplied by pytest."""
++
++import json
++import os
++import sys
++from pathlib import Path
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.publication_worker import process_job
++from bmt_backend.worker_lifecycle import run_worker
++
++if __name__ == "__main__":
++    folder = Path(sys.argv[1])
++    config = json.loads((folder / "worker.json").read_text())
++    assert config["environment"] == "test" and config["database_url"].startswith("sqlite:///")
++    app = create_app(Settings(**config))
++
++    def job(application):
++        if (folder / "stop").exists():
++            application.state.worker_control.request_stop()
++            return False
++        result = process_job(application)
++        if not (folder / "ready").exists():
++            (folder / "ready").write_text(json.dumps({"worker_pid": os.getpid(),
++                "engine_pid": application.state.verifier.engine_pid}))
++        return result
++
++    run_worker(app, job, idle_seconds=0.25)
+diff --git a/backend/tests/service_worker_probe.py b/backend/tests/service_worker_probe.py
+index a2f3ed2c651a064acfa9a94ed4a7464bb981f232..617fbb74c296142d1f0097a6760c1df1fe097324 100644
+--- a/backend/tests/service_worker_probe.py
++++ b/backend/tests/service_worker_probe.py
+@@ -45,7 +45,9 @@ def child(folder, role, mode):
+ def supervisor(folder, mode):
+     worker_mode = "fail" if mode == "worker_fail" else "stubborn" if mode == "timeout" else "orphan" if mode == "orphan" else "normal"
+     product_mode = "fail" if mode == "product_fail" else "exit_zero" if mode == "product_exit_zero" else "normal"
++    publication_mode = "fail" if mode == "publication_fail" else "exit_zero" if mode == "publication_exit_zero" else "normal"
+     commands = {"worker": (sys.executable, __file__, "child", str(folder), "worker", worker_mode),
++        "publication": (sys.executable, __file__, "child", str(folder), "publication", publication_mode),
+         "product": (sys.executable, __file__, "child", str(folder), "product", product_mode)}
+ 
+     def factory(role, command):
+diff --git a/backend/tests/test_publication_latency.py b/backend/tests/test_publication_latency.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2c4e97ab58eb03afe591f6b8bc6e5e78a4bc2e2
+--- /dev/null
++++ b/backend/tests/test_publication_latency.py
+@@ -0,0 +1,204 @@
++"""Publication scheduling stays independent and acceptance remains authoritative."""
++
++import json
++import os
++import signal
++import subprocess
++import sys
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import func, select
++from test_domains import domain as domain_fixture
++from test_lightweight_verifier import creator_proof as creator_proof_fixture
++from test_lightweight_verifier import race_fixture as race_fixture_fixture
++from test_lightweight_verifier import real_verifier as real_verifier_fixture
++from test_publication_intents import publications as publications_fixture
++from test_publication_intents import request, status
++
++from bmt_backend import service_worker
++from bmt_backend.commerce import lock_entitlements
++from bmt_backend.commerce_models import PublicationSlot
++from bmt_backend.loadtest import rss_bytes
++from bmt_backend.operations import competition_health
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.publication_worker import process_job
++from bmt_backend.publications import CONTRACT_FIELDS
++from bmt_backend.track_models import Run, TrackVersion, new_id, now
++from bmt_backend.verifier import _ENGINE_SLOT, GodotVerifier
++from bmt_backend.worker_lifecycle import WorkerControl
++
++domain = domain_fixture
++publications = publications_fixture
++creator_proof = creator_proof_fixture
++race_fixture = race_fixture_fixture
++real_verifier = real_verifier_fixture
++
++
++def test_prompt_polling_is_bounded_and_status_does_not_claim(publications):
++    queued = request(publications)
++    assert queued["poll_after_ms"] == 1000
++    identity = queued["publication_id"]
++    assert status(publications, identity)["poll_after_ms"] == 1000
++    with publications.factory() as session:
++        intent = session.get(PublicationIntent, identity)
++        assert intent.attempts == 0 and intent.status == "queued"
++        intent.created_at = now() - 11
++        session.commit()
++    assert status(publications, identity)["poll_after_ms"] == 2500
++    publications.app.state.worker_id = new_id()
++    assert process_job(publications.app)
++    assert status(publications, identity)["poll_after_ms"] == 0
++
++
++def test_publication_lane_never_runs_competition_or_maintenance(publications, monkeypatch):
++    import bmt_backend.rivalry_planning
++    import bmt_backend.worker
++
++    def forbidden(*args, **kwargs):
++        pytest.fail("Publication lane entered competition or maintenance")
++    monkeypatch.setattr(bmt_backend.worker, "process_one", forbidden)
++    monkeypatch.setattr(bmt_backend.rivalry_planning, "maintain", forbidden)
++    queued = request(publications)
++    publications.app.state.worker_id = new_id()
++    assert process_job(publications.app)
++    assert status(publications, queued["publication_id"])["state"] == "published"
++    # A publication-only process must not make competition appear available.
++    assert competition_health(publications.app)["available_workers"] == 0
++    assert not process_job(publications.app)
++    publications.app.state.worker_control = WorkerControl()
++    publications.app.state.worker_control.request_stop()
++    assert not process_job(publications.app)
++
++
++@pytest.mark.parametrize("telemetry", [False, True])
++def test_supervisor_starts_and_stops_publication_lane_without_telemetry(monkeypatch, telemetry):
++    started, stopped = [], []
++    handlers = {}
++
++    class Child:
++        pid = 42
++        code = None
++
++        def poll(self):
++            return self.code
++
++        def send_signal(self, value):
++            stopped.append((self.role, value))
++            self.code = 0
++
++        def wait(self, **kwargs):
++            return self.code
++
++    def factory(role, command):
++        started.append((role, command))
++        child = Child()
++        child.role = role
++        return child
++
++    def stop_on_sleep(_seconds):
++        handlers[signal.SIGTERM](signal.SIGTERM, None)
++
++    monkeypatch.setattr(service_worker, "_adopt_descendants", lambda: None)
++    monkeypatch.setattr(service_worker, "_reap_adopted", lambda: False)
++    monkeypatch.setattr(service_worker, "_kill_group", lambda child: False)
++    monkeypatch.setattr(service_worker.signal, "signal", lambda key, value: handlers.__setitem__(key, value))
++    monkeypatch.setattr(service_worker.time, "sleep", stop_on_sleep)
++    assert service_worker.supervise(telemetry_enabled=telemetry, child_factory=factory) == 0
++    expected = ["worker", "publication"] + (["product"] if telemetry else [])
++    assert [role for role, command in started] == expected
++    assert started[1][1][-1] == "bmt_backend.publication_worker"
++    assert stopped == [(role, signal.SIGTERM) for role in expected]
++
++
++@pytest.mark.godot
++def test_real_publications_complete_while_competition_engine_is_busy(
++        auth_app, auth_client, sign_in, real_verifier, race_fixture, creator_proof, tmp_path):
++    """A separate OS process must bypass the process-wide competition engine slot."""
++    from bmt_backend.community import TERMS_VERSION
++
++    login = sign_in("Publication timing")
++    auth = {"Authorization": "Bearer " + login["access_token"]}
++
++    def post(path, value):
++        return auth_client.post("/v1" + path, json=value,
++            headers={**auth, "Idempotency-Key": new_id()})
++
++    assert post("/community/terms", {"version": TERMS_VERSION, "accepted": True}).status_code == 200
++    with auth_app.state.session_factory() as session:
++        lock_entitlements(session, login["player"]["id"]).slots = 8
++        session.commit()
++    # Parent only prepares authoritative client contracts. The worker receives
++    # new immutable documents and has never compiled any of them beforehand.
++    client_verifier = GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary,
++        game_project=real_verifier.project, verifier_timeout_seconds=90, persistent_verifier=True))
++    bodies = []
++    try:
++        for index in range(3):
++            document = {**race_fixture["document"], "id": "publication_timing_" + str(index),
++                "name": "Publication timing " + str(index), "creator": login["player"]["display_name"]}
++            manifest = client_verifier.validate_track(document)
++            contract = {key: manifest[key] for key in CONTRACT_FIELDS if key != "config_hash"}
++            contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
++            bodies.append({"name": document["name"], "document": document,
++                "vehicle_id": "compact", "contract": contract, "replay": creator_proof})
++    finally:
++        client_verifier.close()
++    config = {"database_url": auth_app.state.settings.database_url,
++        "object_dir": auth_app.state.settings.object_dir, "environment": "test",
++        "godot_bin": real_verifier.binary, "game_project": str(real_verifier.project)}
++    (tmp_path / "worker.json").write_text(json.dumps(config))
++    output = (tmp_path / "worker.log").open("w")
++    child = subprocess.Popen([sys.executable, str(Path(__file__).with_name("publication_latency_probe.py")),
++        str(tmp_path)], stdout=output, stderr=output)
++    durations = []
++    memory = []
++    try:
++        deadline = time.monotonic() + 30
++        while not (tmp_path / "ready").exists() and child.poll() is None and time.monotonic() < deadline:
++            time.sleep(0.02)
++        assert (tmp_path / "ready").exists(), (tmp_path / "worker.log").read_text()
++        pids = json.loads((tmp_path / "ready").read_text())
++        memory.append({role: rss_bytes(pid) for role, pid in pids.items()})
++        assert _ENGINE_SLOT.acquire(blocking=False)
++        try:
++            for content in bodies:
++                started = time.perf_counter()
++                response = post("/publications", content)
++                assert response.status_code == 202, response.text
++                identity = response.json()["publication_id"]
++                deadline = time.monotonic() + 20
++                while time.monotonic() < deadline:
++                    response = auth_client.get("/v1/me/publications/" + identity, headers=auth)
++                    assert response.status_code == 200
++                    state = response.json()
++                    if state["state"] in ("failed", "published"):
++                        break
++                    time.sleep(0.02)
++                assert state["state"] == "published", state
++                durations.append(time.perf_counter() - started)
++                memory.append({role: rss_bytes(pid) for role, pid in pids.items()})
++        finally:
++            _ENGINE_SLOT.release()
++        with auth_app.state.session_factory() as session:
++            assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 3
++            assert session.scalar(select(func.count()).select_from(TrackVersion)) == 3
++            assert session.scalar(select(func.count()).select_from(Run).where(Run.status == "verified")) == 3
++        report = {"publication_seconds": durations, "competition_engine_held": True,
++            "cold_track_each_time": True, "worker_and_engine_rss_bytes": memory,
++            "scope": "Local HTTP, SQLite, local objects, warmed worker engine; sampled RSS is not peak memory"}
++        print(json.dumps(report))
++        target = os.environ.get("BMT_PUBLICATION_BENCHMARK_REPORT")
++        if target:
++            Path(target).write_text(json.dumps(report, indent=2))
++    finally:
++        (tmp_path / "stop").touch()
++        try:
++            child.wait(timeout=10)
++        except subprocess.TimeoutExpired:
++            child.kill()
++            child.wait(timeout=5)
++        output.close()
++    assert child.returncode == 0, (tmp_path / "worker.log").read_text()
+diff --git a/backend/tests/test_service_worker.py b/backend/tests/test_service_worker.py
+index e0fb7573448890bb00824152dd0f751fb3a149ff..e9f3880c4b82caeb858604279a0bd5ec676ec10c 100644
+--- a/backend/tests/test_service_worker.py
++++ b/backend/tests/test_service_worker.py
+@@ -30,7 +30,7 @@ def launch(folder, mode):
+ 
+ 
+ def assert_reaped(folder):
+-    for name in ("worker.ready", "product.ready", "descendant.ready"):
++    for name in ("worker.ready", "publication.ready", "product.ready", "descendant.ready"):
+         if (folder / name).exists():
+             pid = json.loads((folder / name).read_text(encoding="utf8"))["pid"]
+             with pytest.raises(ProcessLookupError):
+@@ -49,17 +49,20 @@ def cleanup(process, output):
+ 
+ 
+ @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
+-def test_signals_reach_both_children_preserving_grace_and_priority(tmp_path, stop_signal):
++def test_signals_reach_all_children_preserving_grace_and_priority(tmp_path, stop_signal):
+     process, output = launch(tmp_path, "on")
+     try:
+         worker = wait_file(process, tmp_path, "worker.ready")
++        publication = wait_file(process, tmp_path, "publication.ready")
+         product = wait_file(process, tmp_path, "product.ready")
+         assert product["nice"] == 19 and worker["nice"] < product["nice"]
++        assert publication["nice"] == worker["nice"]
++        assert publication["group"] == publication["pid"]
+         assert worker["group"] == worker["pid"] and product["group"] == product["pid"]
+         requested = time.monotonic()
+         process.send_signal(stop_signal)
+         assert process.wait(timeout=3) == 0
+-        for role in ("worker", "product"):
++        for role in ("worker", "publication", "product"):
+             delivered = json.loads((tmp_path / (role + ".signal")).read_text())
+             assert delivered["signal"] == stop_signal
+         assert time.monotonic() - requested >= 0.25
+@@ -69,10 +72,11 @@ def test_signals_reach_both_children_preserving_grace_and_priority(tmp_path, sto
+         cleanup(process, output)
+ 
+ 
+-def test_disabled_default_launches_only_competitive_worker(tmp_path):
++def test_disabled_telemetry_still_launches_publication_worker(tmp_path):
+     process, output = launch(tmp_path, "off")
+     try:
+         wait_file(process, tmp_path, "worker.ready")
++        wait_file(process, tmp_path, "publication.ready")
+         time.sleep(0.1)
+         assert not (tmp_path / "product.ready").exists()
+         process.send_signal(signal.SIGTERM)
+@@ -82,7 +86,7 @@ def test_disabled_default_launches_only_competitive_worker(tmp_path):
+         cleanup(process, output)
+ 
+ 
+-@pytest.mark.parametrize("mode", ["product_fail", "worker_fail", "product_exit_zero", "launch_failure", "priority_failure"])
++@pytest.mark.parametrize("mode", ["product_fail", "worker_fail", "publication_fail", "publication_exit_zero", "product_exit_zero", "launch_failure", "priority_failure"])
+ def test_child_exit_or_launch_failure_cannot_leave_service_healthy(tmp_path, mode):
+     process, output = launch(tmp_path, mode)
+     try:
+diff --git a/docs/PUBLICATION_SPEED_2026_10_18.md b/docs/PUBLICATION_SPEED_2026_10_18.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..016cdc76856280cbbc6d1765c953374b13dc3608
+--- /dev/null
++++ b/docs/PUBLICATION_SPEED_2026_10_18.md
+@@ -0,0 +1,57 @@
++# Prompt backend publication verification — 2026-10-18
++
++PVL01 isolates explicit publication verification from competition and background work. PVL02 warms its engine and checks the durable queue every 250 ms while idle. PVL03 requests one-second status polling for the first ten seconds, then restores 2.5 seconds. R01 preserves authoritative track/creator-proof validation, leases, retries, ownership, original immutable evidence, permanent request identities and atomic publication/slot effects. Q01 requires reproduced regressions and actual process/native checks.
++
++## Result and scope
++
++The earlier read-only Snowmen diagnosis found 212 seconds from submission to publication, principally waiting behind artificial generation; see [the original observation](PUBLICATION_WAIT_STATUS_2026_10_18.md). Its cooperative scheduling repair remains intact. The present change additionally keeps publication work independent of a busy competition process, continuous human races and maintenance. The service supervisor starts one publication process inside the existing worker container, including with product telemetry disabled. Existing competitive-worker publication processing remains a fallback. No worker instance, service, scheduler, database migration or resource-setting increase is introduced.
++
++Three new immutable oval documents published through the real local HTTP API, blob store, database, separate worker process and pinned Godot 4.7.2 in **0.506 / 0.482 / 0.503 seconds** (median **0.503 seconds**), while the competition process's global engine slot was deliberately held. A separate memory-instrumented run measured **0.537 / 0.515 / 0.529 seconds**. Neither worker had compiled these documents beforehand; the publication engine itself was warm. The real physically driven creator trajectory was checked and exactly three published versions, verified creator runs and consumed slots resulted. [Timing receipt](evidence/publication-speed-2026-10-18/latency.json), [memory receipt](evidence/publication-speed-2026-10-18/latency-memory.json).
++
++These are local HTTP/SQLite/local-storage fixtures, not a before/after comparison with Snowmen, a cloud latency guarantee or a worst-case large-track/queue measurement. End-to-end player feedback also includes network and the existing client's one-second lifecycle timer. No client update is required to honor the shorter server polling hint. Long waits and infrastructure failures retain existing bounded polling/backoff.
++
++The added Python process and Godot engine together sampled approximately **241–252 MiB RSS** across startup and three publications on Windows. This is additional memory, not full-service or peak memory; Linux/cloud memory, contention and representative larger-track latency remain rollout acceptance checks. The process uses one database-pool connection with no overflow and keeps the original bounded engine/geometry caches. Its heartbeat does not advertise a competition build, so it cannot falsely make race verification available.
++
++## Changed files
++
++- `backend/bmt_backend/publication_worker.py`: publication-only execution, warm engine, bounded connection pool and original shutdown handling.
++- `backend/bmt_backend/service_worker.py`: starts/supervises the publication process alongside competition and optional product processing; unexpected exits fail the service and stop peers.
++- `backend/bmt_backend/worker_lifecycle.py`: configurable bounded idle interval; existing workers retain one second.
++- `backend/bmt_backend/publications.py`: bounded initial polling hint; submission, verification and commit checks are unchanged.
++- `backend/deploy/{compose.yaml,compose.pc.yaml,gcp/staging.py}`: deployment plans use the service supervisor, preserving instance/resource settings. Direct `bmt_backend.worker` remains the existing competition/diagnostic command.
++- `backend/deploy/stage_verifier.py`: packages the optional `geometry_acceleration.gd` adapter now preloaded by the existing compiler. No native library is added to backend packaging; its original scalar fallback remains.
++- `backend/tests/{test_publication_latency.py,publication_latency_probe.py,test_service_worker.py,service_worker_probe.py}`: authoritative native publication, independent OS process, polling, health isolation, signal/failure/cleanup coverage.
++
++## Actual validation
++
++| Check | Actual result |
++| --- | --- |
++| New polling/supervisor regressions against archived pre-task functions | Three expected failures reproduced |
++| New publication scheduling and real native acceptance | Five passed; two PostgreSQL variants deselected |
++| Memory-instrumented native acceptance rerun | Five passed; two PostgreSQL variants deselected |
++| Final scheduling/competition-health isolation | Four passed; three unrelated/native variants deselected |
++| Publication intents/priority, worker lifecycle, GCP plans, lightweight/persistent/native verifiers | **144 passed, six skipped, 28 PostgreSQL variants deselected**, 164.58 s |
++| Actual Linux process supervision via WSL Ubuntu, standard-library harness | **12 passed**: SIGTERM/SIGINT delivery; telemetry disabled; competition/publication/product failures; zero-exit failure; launch/priority failures; bounded forced termination; orphan cleanup |
++| PostgreSQL-only concurrent delivery/slot tests | Two setup errors: connections to the existing localhost:55439 test database time out; 29 unrelated cases deselected |
++| Ruff on new/changed Python worker, process tests and deployment code | Passed |
++
++The broad regression includes the existing build-mismatch, invalid trajectory, stale-lease, infrastructure retry, idempotency, one-slot atomicity (where supported), original native replay and standalone packaging checks. The two PostgreSQL-only concurrent tests skip on SQLite; four lifecycle tests require POSIX on the Windows pytest run. Real Linux process supervision was separately exercised without installing dependencies. No assertion or runtime acceptance check was weakened.
++
++Initial attempts are retained: the first staged-project run lacked its class import cache; the next exposed the existing compiler's missing packaged `geometry_acceleration.gd` preload and timed out. Packaging was corrected, keeping scalar compilation. The native fixture initially expected an entitlement row before the normal lazy initializer; it now calls the existing initializer in its disposable database. Restricted Windows certificate-store reads produced the verifier's normal infrastructure rejection; host-access native runs passed. Godot uses disposable workspace APPDATA. The stopped stuck process was selected by this task's exact disposable fixture path. Existing FastAPI deprecation and SQLAlchemy index-reflection warnings remain.
++
++Actual commands:
++
++```powershell
++.tools/backend-venv/Scripts/python.exe backend/deploy/stage_verifier.py --destination build/publication-speed-2026-10-18/canonical/game
++& 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --editor --path build/publication-speed-2026-10-18/canonical/game --import
++.tools/backend-venv/Scripts/python.exe build/publication-speed-2026-10-18/check_baseline.py
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_latency.py -k 'not postgres' -q --tb=short
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_latency.py -k 'not postgres and not real_publications' -q --tb=short
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_intents.py backend/tests/test_publication_background_priority.py backend/tests/test_worker_lifecycle.py backend/tests/test_gcp_staging.py backend/tests/test_lightweight_verifier.py backend/tests/test_persistent_verifier.py backend/tests/test_verifier.py -k 'not postgres' -q --tb=short
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_intents.py -k 'postgres and concurrent' -q --tb=short
++wsl.exe -d Ubuntu --cd '/mnt/c/Codes/Godot/Beat my track' --exec env PYTHONPATH=backend python3 build/publication-speed-2026-10-18/linux_process_checks.py
++```
++
++Native tests set `BMT_GAME_PROJECT` to the imported standalone project and `APPDATA` to `build/publication-speed-2026-10-18/appdata`. `BMT_PUBLICATION_BENCHMARK_REPORT` selects each saved timing receipt. Source-only task checkpoint, archived functions, actual test logs/XML and Linux process receipt are under `docs/evidence/publication-speed-2026-10-18/`; helper scripts are retained there as well. Root Git metadata and unrelated concurrent changes are preserved.
++
++These changes are local and reviewable. Matching API/worker rollout, PostgreSQL concurrent-claim validation, representative cloud latency/memory and owner experience acceptance remain. No live publication, account/queue mutation, deployment, phone attachment check/device test or APK action was performed. There are no visible UI changes in this task.

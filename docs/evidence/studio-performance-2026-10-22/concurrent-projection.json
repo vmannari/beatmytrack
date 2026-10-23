@@ -1,0 +1,32 @@
+{
+  "latest_guard": {
+    "events": 500,
+    "sql_statements": 9431,
+    "required_sql_less_than": 60
+  },
+  "current_pipeline": "product_analytics.project_pending delegates to telemetry_processing.diagnostic_pass",
+  "concurrent_studio_change": "The projection function received an optional state= parameter and reuses that state. These two concurrent lines are preserved and excluded from the Studio reporting patch. Studio behaviour/report query edits do not alter event projection.",
+  "project_diff": [
+    "--- ",
+    "+++ ",
+    "@@ -1,10 +1,10 @@",
+    "-def project(session, events, profiles, active_names):",
+    "+def project(session, events, profiles, active_names, *, state=None):",
+    "     \"\"\"Shares the durable product transaction and its receipt deduplication.",
+    " ",
+    "     No additional transaction, raw copy, per-event lookup or foreground HTTP.",
+    "     Existing historical totals are neither reset nor retrospectively segmented.",
+    "     \"\"\"",
+    "-    state = session.get(AnalysisState, 1)",
+    "+    state = state if state is not None else session.get(AnalysisState, 1)",
+    "     if state is None:",
+    "         raise RuntimeError(\"STUDIO_ANALYSIS_MIGRATION_REQUIRED\")",
+    "     grouped, contexts, session_groups = {}, {}, {}"
+  ],
+  "files_sha256": {
+    "product_analytics.py": "52cc578dfe43d6786cf26e70b8ce7c1a95ebbc91fc777c9ed00491b0767f78f6",
+    "telemetry_processing.py": "6ccc7aff2961801764cf40f3cc4dc91fc681f1b7f6d0e11b580ca0804291192f",
+    "telemetry_projection.py": "ec7ad24961e04696f8ee6b738e3df3c4bd3d26dcce76fb5064738a37c5f4187e"
+  },
+  "action": "Concurrent projection sources preserved; budget assertion retained. Resolve its regression before full-backend rollout."
+}

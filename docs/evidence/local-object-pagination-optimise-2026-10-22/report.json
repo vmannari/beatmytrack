@@ -1,0 +1,151 @@
+{
+  "title": "Further local object pagination optimization",
+  "date": "2026-10-22",
+  "requirements": {
+    "LOO01": "Find and implement measured further improvements to the linear local cleanup scan.",
+    "LOO02": "Retain current cursor compatibility, current type/age/reference/pin checks, guarded uploads and bounded memory.",
+    "LOO03": "Separate operation-count improvements from unmeasured NAS wall-time claims."
+  },
+  "outcome": "Implemented fewer startup metadata operations, name-only manifest preparation, a bounded 256 KiB sequential write buffer, path-object reuse with fresh directory checks, and removal of the explicit next-page read probe. Manifest layout, cursor format and object paths remain unchanged.",
+  "changes": [
+    "Startup still visits at most 1000 directory entries, but filters temporary-upload names before fetching metadata. Ordinary objects no longer cause file stat and per-object parent-link checks during startup.",
+    "Preparation records validated candidate names without calling DirEntry.is_file. Current file type is still checked when each page is consumed. A directory or link with an object-shaped name can be a manifest candidate but cannot become an eligible object row.",
+    "Manifest preparation uses one bounded 262144-byte write buffer and a streaming writelines generator. It retains flush/fsync and atomic publication; no unbounded filename collection is introduced.",
+    "Adjacent candidates in one shard reuse the same Path object, but the actual directory-link check is repeated for every candidate. No cached safety verdict is reused.",
+    "Page continuation compares its final byte offset with the already-fstat'ed immutable manifest length. It avoids an explicit read solely to detect a following page. The buffered IO implementation may still prefetch normally."
+  ],
+  "measurements": {
+    "scope": "Instrumented application metadata requests and raw writes, synthetic directory entries with real manifest files. The host is Windows Python 3.14.7 with a 131072-byte default buffer. A separate explicit 8192-byte profile models the deployment Python 3.12 buffer. These counts do not claim equivalent wall-time or NAS throughput gains.",
+    "startup_1000_ordinary_entries": {
+      "directory_entries_before_after": [
+        1000,
+        1000
+      ],
+      "ordinary_object_stat_calls_before_after": [
+        1000,
+        0
+      ],
+      "directory_link_check_calls_before_after": [
+        1001,
+        1
+      ],
+      "entry_type_check_calls_before_after": [
+        1000,
+        0
+      ]
+    },
+    "preparation_100000_candidates": {
+      "directory_entries_before_after": [
+        100000,
+        100000
+      ],
+      "entry_type_check_calls_before_after": [
+        100000,
+        0
+      ],
+      "raw_manifest_writes_host_before_after": [
+        56,
+        28
+      ],
+      "raw_manifest_writes_8192_byte_profile_before_after": [
+        893,
+        28
+      ],
+      "manifest_bytes_before_after": [
+        7300025,
+        7300025
+      ]
+    },
+    "qualification": "DirEntry.is_file can use cached directory metadata on actual filesystems. Eliminating its calls does not universally eliminate the same number of OS syscalls. The fresh page-time file stat and directory guard remain.",
+    "rejected_compact_encoding_probe": "A prototype Base64 digest format reduced 100000 ordinary records from 7300000 to 4500000 bytes, but median encoding-only CPU time increased from 0.0309 to 0.1370 seconds on this host. It was not implemented: this slice preserves byte layout and avoids that additional CPU/versioning cost. These isolated encoder numbers are not whole-scan timings."
+  },
+  "complexity_and_limits": {
+    "complete_scan": "Still O(n) directory work and O(k) page work; n is directory entries and k is at most 1000 candidates. This slice reduces constant factors.",
+    "memory": "O(k) plus a fixed 256 KiB manifest write buffer; at most one builder per local root is active.",
+    "disk_and_preparation": "The first streaming preparation pass and roughly 73 bytes per ordinary object are unchanged. Crash-interrupted preparation still restarts its enumeration.",
+    "further_architecture": "Reducing routine cleanup to changed objects would require a durable upload/delete inventory plus crash reconciliation and periodic filesystem discovery of untracked files. That is a larger write-path and rollout change, not part of this optimization.",
+    "remaining_acceptance": [
+      "Representative NAS/Linux latency, memory and free-space measurements",
+      "PostgreSQL publication/GC row-lock race",
+      "matching artifact rollout if desired"
+    ]
+  },
+  "validation": {
+    "final": {
+      "passed_tests": 78,
+      "passed_subtests": 13,
+      "skipped": 1,
+      "deselected": 115,
+      "failed": 0,
+      "errors": 0,
+      "seconds": 49.71
+    },
+    "skip": "The SQLite instance of the publication/GC race requires PostgreSQL row locks. PostgreSQL parametrizations and live GCS contracts were explicitly deselected.",
+    "covered": [
+      "existing linear-scan regression and saved quadratic original",
+      "restart and retry",
+      "deletion/mutation without cursor shifts",
+      "pin/reference protection and active upload guards",
+      "backup/restore",
+      "startup performs no ordinary-file stats while retaining its 1000-entry limit",
+      "preparation does not fetch per-entry file types",
+      "current directory/link types remain excluded",
+      "directory guard is rechecked for adjacent candidates sharing one Path",
+      "no explicit next-page read probe",
+      "malformed cursor and manifest rejection",
+      "expiry, reclamation and builder concurrency"
+    ],
+    "commands": [
+      "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe docs/evidence/local-object-pagination-optimise-2026-10-22/benchmark.py",
+      "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_local_object_listing.py backend/tests/test_local_object_retention.py backend/tests/test_storage.py backend/tests/test_robustness_fixes.py backend/tests/test_review_followups.py backend/tests/test_scalability.py backend/tests/test_publication_intents.py backend/tests/test_s3_storage.py backend/tests/test_gcs_storage.py backend/deploy/test_operations.py -k 'not postgres and not real_gcs_contract and (test_local_object or test_storage or retention or temporary or gc or archive or test_s3_storage or test_gcs_storage or test_operations)' -q --tb=short --junitxml=docs/evidence/local-object-pagination-optimise-2026-10-22/final-workspace.xml",
+      "& .tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/local_object_listing.py backend/bmt_backend/storage.py backend/tests/test_local_object_listing.py docs/evidence/local-object-pagination-optimise-2026-10-22/benchmark.py",
+      "git diff --check -- backend/bmt_backend/local_object_listing.py backend/bmt_backend/storage.py backend/tests/test_local_object_listing.py backend/deploy/README.md"
+    ],
+    "initial_results": "Existing focused tests passed 32/32 after the runtime changes. Four initial new checks passed; one later added test verifies fresh per-candidate directory guards. Final expanded suite passes. Evidence-script import/dict lint corrections retain all runtime assertions."
+  },
+  "changed_files": [
+    "backend/bmt_backend/local_object_listing.py",
+    "backend/bmt_backend/storage.py",
+    "backend/tests/test_local_object_listing.py",
+    "backend/deploy/README.md"
+  ],
+  "artifacts": [
+    "benchmark.py",
+    "benchmark-results.json",
+    "final-workspace.xml",
+    "focused-initial.xml",
+    "new-checks.xml",
+    "before/",
+    "task-only.patch"
+  ],
+  "scope": {
+    "live_cleanup": false,
+    "database_or_account_mutation": false,
+    "deployment": false,
+    "phone_attachment_check": false,
+    "device_test": false,
+    "apk_action": false,
+    "unrelated_workspace_work_preserved": true
+  },
+  "references": [
+    "https://docs.python.org/3.12/library/os.html#os.DirEntry.is_file",
+    "https://docs.python.org/3.12/library/base64.html"
+  ],
+  "checkpoint": {
+    "before_sha256": {
+      "backend/bmt_backend/local_object_listing.py": "54e8cab6424fcd0c2481e094a49c37e8a7ebb7da7d88ae213d7696997cd1b358",
+      "backend/bmt_backend/storage.py": "2a6d54eb074ddde9c1cf3b0c30237b79882207abd70af6ab9c538ab1940ad638",
+      "backend/tests/test_local_object_listing.py": "d5c49ba5f1e0879329116febd8363a05baf5c685dffc074a4dcf27c0a094d6b5",
+      "backend/deploy/README.md": "0ffcbd110e66705a1ee69aaafc9f7f58356ff886159106b6f2749d485727cc3a"
+    },
+    "after_sha256": {
+      "backend/bmt_backend/local_object_listing.py": "da4d2ae5dddc74b2f608837f3ea0159a34c087ab1c343dc51dae9a4e2f0bb76a",
+      "backend/bmt_backend/storage.py": "8ab13fcf21d322fa15c555bfbaca8e60eed701c494813feb64be052e8aea75eb",
+      "backend/tests/test_local_object_listing.py": "18d7b4b8bfabf988bb5d10043beff1cf2670f6432039f722212571cd5d826f6b",
+      "backend/deploy/README.md": "5b2ffca03c5d1fc40c78aa2e461e2040ac36c4004ad4b7ad713fb4cad1196207"
+    },
+    "patch_sha256": "d64c2450c7ab7dd38db133a037bf88899b84b31b30b469c8afcce08ad7659479",
+    "kind": "Task-only diff against captured source, preserving the preceding implementation and unrelated work; no Git commit."
+  },
+  "measurement_receipt": "benchmark-results.json"
+}

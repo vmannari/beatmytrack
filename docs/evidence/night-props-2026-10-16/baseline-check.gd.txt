@@ -1,0 +1,23 @@
+extends SceneTree
+## Reproduce the stale shader-identity assertions against the captured old builder.
+func _initialize() -> void: run.call_deferred()
+func run() -> void:
+	var old:=GDScript.new()
+	old.source_code=FileAccess.get_file_as_string("res://../build/night-props-2026-10-16/before/game/track/native_track_visual.gd").replace("\r\n","\n").replace("class_name NativeTrackVisual\n","")
+	# Anonymous scripts cannot satisfy named-type arguments in unrelated road/editor
+	# methods. Those methods are not called by this terrain-only reproduction.
+	old.source_code=old.source_code.replace("(self,","(null,").replace("(self)","(null)")
+	if old.reload()!=OK: quit(1); return
+	var doc: Dictionary=TrackDocument.create_default(); doc.theme="night_city"
+	doc.pieces=[RoadPieces.create("curve",Vector2(-10,-8)),RoadPieces.create("straight",Vector2(6,8),90)]
+	for p: Vector2 in [Vector2(-20,-10),Vector2(0,10),Vector2(20,-10)]: doc.objects.append({"kind":"light","position":[p.x,p.y],"rotation":0.0,"scale":1.0})
+	var track: NativeTrack=TrackCompiler.compile(doc)
+	var visual: Node3D=old.new(); root.add_child(visual); visual.theme_id="night_city"; visual.colors=TrackTheme.palette("night_city"); visual._build_terrain(track)
+	var count: int=0; var actual: int=0
+	for child: Node in visual.get_children():
+		if child is MeshInstance3D and child.material_override is ShaderMaterial and child.material_override.shader==NativeTrackVisual.TERRAIN_SHADER: count+=1
+		if child is MeshInstance3D and child.material_override is ShaderMaterial:
+			var material: ShaderMaterial=child.material_override
+			if material.get_meta("surface_dynamic_material",material).shader==NativeTrackVisual.TERRAIN_SHADER: actual+=1
+	print("NIGHT_LIGHTING_BASELINE: original identity count=",count," actual named tiles=",actual," stale failures=",2 if count==0 else 0)
+	visual.free(); quit(0 if count==0 and actual>1 else 1)

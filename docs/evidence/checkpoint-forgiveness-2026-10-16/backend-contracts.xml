@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="2" time="8.212" timestamp="2026-10-16T21:58:39.749431+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_verifier" name="test_spline_gate_rules_do_not_relabel_historical_boards" time="0.144" /><testcase classname="tests.test_verifier" name="test_standalone_verifier_contains_complete_handbrake_model" time="7.462"><failure message="AssertionError: assert {'compiler_ve...: 216000, ...} == {'compiler_ve...: 216000, ...}&#10;  &#10;  Omitting 12 identical items, use -vv to show&#10;  Differing items:&#10;  {'physics_version': 'arcade-planar-0.63'} != {'physics_version': 'arcade-planar-0.62'}&#10;  Use -v to get more diff">real_verifier = &lt;bmt_backend.verifier.GodotVerifier object at 0x000001FFA235A290&gt;
+race_fixture = {'document': {'base_track': '', 'corners': ['sharp', 'sharp', 'sharp', 'sharp', 'sharp', 'sharp', ...], 'creator': 'Ba...166, 0], [0, 166, 0], [0, 166, 0], ...], 'schema': 'bmt-replay-v1'}, 'time_ticks': 12757, 'vehicle_id': 'compact', ...}
+tmp_path = WindowsPath('C:/Users/ville/AppData/Local/Temp/pytest-of-ville/pytest-989/test_standalone_verifier_conta0')
+
+    @pytest.mark.godot
+    def test_standalone_verifier_contains_complete_handbrake_model(real_verifier, race_fixture, tmp_path):
+        project = tmp_path / "canonical"
+        subprocess.run([
+            sys.executable, str(ROOT / "backend/deploy/stage_verifier.py"),
+            "--repo", str(ROOT), "--destination", str(project),
+        ], check=True, capture_output=True, timeout=30)
+        imported = subprocess.run([
+            real_verifier.binary, "--headless", "--editor", "--path", str(project), "--import",
+        ], check=True, capture_output=True, timeout=90)
+        assert b"SCRIPT ERROR:" not in imported.stdout + imported.stderr
+        verifier = GodotVerifier(SimpleNamespace(
+            godot_bin=real_verifier.binary,
+            game_project=project,
+            verifier_timeout_seconds=90,
+        ))
+&gt;       assert verifier.validate_track(race_fixture["document"]) == race_fixture["expected_manifest"]
+E       AssertionError: assert {'compiler_ve...: 216000, ...} == {'compiler_ve...: 216000, ...}
+E         
+E         Omitting 12 identical items, use -vv to show
+E         Differing items:
+E         {'physics_version': 'arcade-planar-0.63'} != {'physics_version': 'arcade-planar-0.62'}
+E         Use -v to get more diff
+
+backend\tests\test_verifier.py:524: AssertionError</failure></testcase></testsuite></testsuites>

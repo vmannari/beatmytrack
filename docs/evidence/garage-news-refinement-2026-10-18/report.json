@@ -1,0 +1,131 @@
+{
+  "date": "2026-10-18",
+  "requirements": [
+    "GNS01",
+    "GNS02",
+    "GNS03",
+    "GNS04",
+    "GNS05",
+    "GNS06",
+    "GNS07",
+    "GNS08",
+    "GNS09",
+    "GNS10",
+    "G01",
+    "R01",
+    "Q01"
+  ],
+  "setup": "$env:APPDATA = Join-Path (Get-Location) 'build/news-refinement-user/<check>'; New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null",
+  "entrypoint": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "validation": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news.gd",
+      "log": "client.log",
+      "result": "GARAGE NEWS: 62 checks, 0 failures",
+      "exit_code": 0,
+      "phase": "Before final italic-font-only integration; callback behavior unchanged afterwards"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import",
+      "log": "import.log",
+      "result": "Italic font and paper shader imported",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_native.gd' -Graphical -RenderingMethod gl_compatibility -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-refinement-2026-10-18/final')\"",
+      "log": "layout-gl.log",
+      "result": "GARAGE NEWS NATIVE: 482 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_native.gd' -Graphical -RenderingMethod mobile -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-refinement-2026-10-18/final')\"",
+      "log": "layout-mobile.log",
+      "result": "GARAGE NEWS NATIVE: 482 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_race.gd' -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-refinement-2026-10-18/race')\"",
+      "log": "race.log",
+      "result": "GARAGE NEWS RACE: 90 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_share.gd",
+      "log": "share.log",
+      "result": "PUBLICATION_SHARE: 39 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "log": "parser-final.log",
+      "result": "SCRIPT_PARSE: 891 scripts, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_app.gd",
+      "log": "app.log",
+      "result": "APP_TESTS: 140 checks, 11 failures",
+      "exit_code": 1
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File build/news-refinement-baseline/scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_app.gd",
+      "log": "app-baseline.log",
+      "result": "APP_TESTS: 140 checks, 11 failures; exact same eleven failure messages",
+      "exit_code": 1,
+      "comparison": "app-baseline-comparison.json",
+      "isolated_source_manifest": "baseline-source.json",
+      "source_identity": "No release identity: isolated copy has no Git source files; do not interpret generated empty-source ID as a client build."
+    },
+    {
+      "command": "git apply --reverse --check docs/evidence/garage-news-refinement-2026-10-18/task-only.patch",
+      "result": "passed",
+      "exit_code": 0
+    }
+  ],
+  "initial_attempts": [
+    "Host PowerShell policy required explicit -ExecutionPolicy Bypass.",
+    "Sandbox native start could not access root certificates; approved native engine execution was used.",
+    "Python fontTools unavailable; standard-library read-only sfnt parsing found wght 400..700.",
+    "Initial layout 334/79 failures: edition text wrapped vertically. Fitted 334/78 failures: sidebar forced excessive minimum height. Review 334/30 failures: inherited map row spacing and wider typography. Early expanded checks 403/16 and rendered 482/2 isolated the personal-best row. Final 482/0 per renderer preserves all assertions.",
+    "Temporary geometry probe and earlier oblique caption were superseded; probe source/logs remain in evidence."
+  ],
+  "font": {
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/librebaskerville/LibreBaskerville-Italic%5Bwght%5D.ttf",
+    "path": "game/assets/fonts/libre_baskerville/LibreBaskerville-Italic.ttf",
+    "bytes": 167456,
+    "sha256": "223959683dc73ec4437bd61fabaa4b3f22209e22855ffd3aee36ba61a5116e97",
+    "license": "game/assets/fonts/libre_baskerville/OFL.txt",
+    "modified": false
+  },
+  "screenshots": [
+    "final/gl_compatibility/record-1720.png",
+    "final/gl_compatibility/news-1720.png",
+    "final/gl_compatibility/friends-1280.png",
+    "final/mobile/local-friend_overtake-960.png"
+  ],
+  "phone_attachment_checked": false,
+  "physical_device_tested": false,
+  "apk_built_or_installed": false,
+  "backend_mutated_or_deployed": false,
+  "remaining": [
+    "Owner appearance/touch acceptance",
+    "Physical-device appearance and performance unmeasured",
+    "Eleven baseline-confirmed App editor gesture failures remain outside this change"
+  ],
+  "checkpoint": "checkpoint.json",
+  "changed_files": [
+    "game/ui/garage_news_menu.gd",
+    "game/ui/garage_news_art.gd",
+    "game/ui/garage_news_paper.gdshader",
+    "game/ui/garage_news_paper.gdshader.uid",
+    "game/assets/fonts/libre_baskerville/LibreBaskerville-Italic.ttf",
+    "game/assets/fonts/libre_baskerville/LibreBaskerville-Italic.ttf.import",
+    "game/tests/test_garage_news_native.gd",
+    "docs/GARAGE_NEWS_REFINEMENT_2026_10_18.md",
+    "licenses/ASSETS.md",
+    "AGENTS.md",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md"
+  ]
+}

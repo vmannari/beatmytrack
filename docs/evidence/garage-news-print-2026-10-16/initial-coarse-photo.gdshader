@@ -1,0 +1,24 @@
+shader_type canvas_item;
+render_mode unshaded;
+
+// The existing native car photograph printed in one ink on the paper stock.
+// Stationary, screen-pixel dots stay fine at both menu sizes and phone scaling.
+const vec3 PAPER = vec3(0.93333, 0.90588, 0.83137);
+const vec3 INK = vec3(0.16078, 0.18039, 0.16078);
+
+void fragment() {
+	vec4 photo = texture(TEXTURE, UV);
+	float luminance = dot(photo.rgb, vec3(0.2126, 0.7152, 0.0722));
+	float density = clamp((1.0 - pow(luminance, 0.65)) * 0.90, 0.04, 0.92);
+	vec2 screen = vec2(FRAGCOORD.x + FRAGCOORD.y, FRAGCOORD.y - FRAGCOORD.x) * 0.707107;
+	vec2 cell = fract(screen / 3.1) - 0.5;
+	float radius = sqrt(density * 0.31831);
+	float edge = max(fwidth(length(cell)) * 0.65, 0.06);
+	float dots = 1.0 - smoothstep(radius - edge, radius + edge, length(cell));
+	float grain = fract(sin(dot(floor(FRAGCOORD.xy), vec2(12.9898, 78.233))) * 43758.5453);
+	float coverage = clamp(mix(density, dots, 0.44) + (grain - 0.5) * 0.035, 0.0, 1.0);
+	vec2 from_edge = min(UV, vec2(1.0) - UV) / TEXTURE_PIXEL_SIZE;
+	float rule = 1.0 - smoothstep(0.35, 1.1, min(from_edge.x, from_edge.y));
+	coverage = max(coverage, rule * 0.75);
+	COLOR = vec4(mix(PAPER, INK, coverage), photo.a);
+}

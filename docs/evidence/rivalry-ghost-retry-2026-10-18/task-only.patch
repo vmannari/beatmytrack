@@ -1,0 +1,489 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1072,7 +1072,9 @@
+ 		if store != null: store.activate()
+ 
+ func _account_changed() -> void:
+-	if is_instance_valid(publication_notification): publication_notification.set_entries([])
++	if is_instance_valid(publication_notification):
++		var empty_publications: Array[Dictionary] = []
++		publication_notification.set_entries(empty_publications)
+ 	if product_telemetry != null:
+ 		product_telemetry.update_identity()
+ 		if startup_complete: _telemetry_observe("menu_ready",{},"ready")
+@@ -1731,10 +1733,11 @@
+ 		document = cloud.cached_document(entry)
+ 	if is_instance_valid(page) and page.is_inside_tree(): page.apply_track_preview(document)
+ 
+-func _rivalry_ghost(index: int, choice: int) -> Dictionary:
++func _rivalry_ghost(index: int, choice: int, wait_for_recording: bool = false) -> Dictionary:
+ 	if choice == 3: return {}
+ 	var target: Dictionary = rivalry.model.ghost_target(index,choice)
+ 	var driver: String = str(target.get("driver_id",""))
++	if wait_for_recording: return await rivalry.ghost(index,driver)
+ 	rivalry.prefetch_ghost(index,driver)
+ 	return rivalry.cached_ghost(index,driver)
+ 
+@@ -1807,7 +1810,7 @@
+ 		_notice(rivalry.error)
+ 		return
+ 	loading.stage("Loading ghost…")
+-	var recording: Dictionary = await _rivalry_ghost(index,choice)
++	var recording: Dictionary = await _rivalry_ghost(index,choice,true)
+ 	if not _race_loading_matches(loading_id): return
+ 	cloud_starting = false
+ 	_close_race_loading(loading_id)
+@@ -3766,7 +3769,7 @@
+ 		challenges.result_state = ""
+ 	if rivalry_racing:
+ 		cloud_starting = true
+-		var refreshed_recording: Dictionary = await _rivalry_ghost(rivalry_track,rivalry_ghost_choice)
++		var refreshed_recording: Dictionary = await _rivalry_ghost(rivalry_track,rivalry_ghost_choice,true)
+ 		cloud_starting = false
+ 		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+ 		rivalry_recording = refreshed_recording
+@@ -3799,6 +3802,7 @@
+ 	elif challenge_racing:
+ 		game.ghost_mode = "race" if not challenge_recording.is_empty() else "off"
+ 		game.ghost_bests = {"race":challenge_recording} if not challenge_recording.is_empty() else {}
++	game.call("_prepare_personal_ghost")
+ 
+ func _prepare_race_rating(track: NativeTrack) -> void:
+ 	var previous_vote: Variant = game.get("cloud_rating")
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -240,6 +240,7 @@
+ 	return response.data
+ 
+ func _ghost_key(slot: int, driver: String) -> String:
++	if slot < 0 or slot >= model.tracks.size() or driver.is_empty(): return ""
+ 	var run_id: String = ""
+ 	for row: Dictionary in model.tracks[slot].get("entries",[]):
+ 		if str(row.get("driver_id",row.get("id",""))) == driver: run_id = str(row.get("run_id",""))
+@@ -253,9 +254,7 @@
+ func prefetch_ghost(slot: int, driver: String) -> void:
+ 	var key: String = _ghost_key(slot,driver)
+ 	if key.is_empty() or _ghost_pending.has(key) or not cached_ghost(slot,driver).is_empty(): return
+-	_ghost_pending[key] = true
+ 	await ghost(slot,driver)
+-	_ghost_pending.erase(key)
+ 
+ func ghost(slot: int, driver: String) -> Dictionary:
+ 	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
+@@ -263,16 +262,32 @@
+ 	var original: String = scope()
+ 	var generation: int = _generation
+ 	var cache_key: String = _ghost_key(slot,driver)
+-	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
++	if cache_key.is_empty(): return {}
+ 	var cached: Dictionary = cached_ghost(slot,driver)
+ 	if not cached.is_empty(): return cached
++	if _ghost_pending.has(cache_key):
++		var pending: Dictionary = _ghost_pending[cache_key]
++		while not pending.done:
++			await get_tree().process_frame
++			if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
++		return pending.recording
++	var pending: Dictionary = {"done":false,"recording":{}}
++	_ghost_pending[cache_key] = pending
++	pending.recording = await _download_ghost(slot,driver,cache_key,original,generation)
++	pending.done = true
++	if _ghost_pending.get(cache_key) == pending: _ghost_pending.erase(cache_key)
++	return pending.recording
++
++func _download_ghost(slot: int, driver: String, cache_key: String, original: String, generation: int) -> Dictionary:
++	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
+ 	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
+-	if generation != _generation or original != scope(): return {}
++	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
+ 	if not response.ok:
+ 		_ghost_cache.erase(cache_key)
+ 		return {}
+ 	var checked: Variant = await client._background(_validate_ghost.bind(response.data.get("recording",{})))
+-	if generation != _generation or original != scope() or not checked is Dictionary or checked.is_empty(): return {}
++	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver) or not checked is Dictionary or checked.is_empty(): return {}
++	if is_instance_valid(client.get("safety")) and client.safety.is_blocked(driver): return {}
+ 	var recording: Dictionary = checked
+ 	if not run_id.is_empty() and str(response.data.get("run_id","")) == run_id:
+ 		_ghost_cache.erase(cache_key)
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -572,16 +572,16 @@
+ 		scroll.scroll_vertical = standings_scroll_offset
+ 	if own_panel != null: _reveal_player.call_deferred(scroll,own_panel)
+ 
+-func _reveal_player(scroll: ScrollContainer, player: Control) -> void:
++func _reveal_player(scroll: Variant, player: Variant) -> void:
+ 	# One-shot callbacks disconnect when a refresh removes this page.
+ 	if not is_inside_tree(): return
+ 	get_tree().process_frame.connect(_reveal_after_sort.bind(scroll,player),CONNECT_ONE_SHOT)
+ 
+-func _reveal_after_sort(scroll: ScrollContainer, player: Control) -> void:
++func _reveal_after_sort(scroll: Variant, player: Variant) -> void:
+ 	if not is_inside_tree() or not is_instance_valid(scroll) or not is_instance_valid(player): return
+ 	get_tree().process_frame.connect(_ensure_player_visible.bind(scroll,player),CONNECT_ONE_SHOT)
+ 
+-func _ensure_player_visible(scroll: ScrollContainer, player: Control) -> void:
++func _ensure_player_visible(scroll: Variant, player: Variant) -> void:
+ 	if is_inside_tree() and is_instance_valid(scroll) and is_instance_valid(player):
+ 		if standings_scroll_offset < 0: scroll.ensure_control_visible(player)
+ 		standings_ready = true
+@@ -823,8 +823,8 @@
+ 	standings.board = model.board(selected)
+ 	standings.player_requested.connect(_open_player)
+ 	board.add_child(standings)
+-	# The removed rival/ghost column keeps its existing target choice internally.
+-	if model.ghost_target(selected,ghost_choice).is_empty(): ghost_choice = 3
++	# Keep the chosen policy when a field has no recording yet. A later race
++	# resolves it again against the current verified standings.
+ 	var actions := HBoxContainer.new()
+ 	actions.name = "RivalryDetailActions"
+ 	actions.add_theme_constant_override("separation",14)
+diff --git a/game/tests/test_weekly_rivalry.gd b/game/tests/test_weekly_rivalry.gd
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -224,7 +224,7 @@
+ 		await settle()
+ 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+ 		var empty_page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+-		check(empty_page.ghost_choice == 3,"missing recordings start without a ghost")
++		check(empty_page.ghost_choice == 0 and app.rivalry.model.ghost_target(0,0).is_empty(),"missing recordings retain automatic targeting without inventing a ghost")
+ 		app.rivalry.model.apply_snapshot(unranked)
+ 		app.rivalry_section = "overview"
+ 		app._rivalry()
+diff --git a/game/tests/test_rivalry_track_detail.gd b/game/tests/test_rivalry_track_detail.gd
+--- a/game/tests/test_rivalry_track_detail.gd
++++ b/game/tests/test_rivalry_track_detail.gd
+@@ -188,7 +188,7 @@
+ 		list = table()
+ 		check(app.root_ui.find_child("RivalryClosestChallengerTime",true,false) == null,"no invented challenger before anyone records a time")
+ 		page = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+-		check(page.ghost_choice == 3,"unrecorded rivals retain the no-ghost fallback")
++		check(page.ghost_choice == 0 and model.ghost_target(1,0).is_empty(),"unrecorded rivals have no ghost while retaining the automatic target policy")
+ 		for row: Control in list.rows.get_children():
+ 			check((row.find_child("Time",true,false) as Label).text == "—" and (row.find_child("Gap",true,false) as Label).text == "—","missing times have no invented gaps")
+ 		await capture("unranked",dimensions)
+diff --git a/game/tests/test_weekly_rivalry_http.gd b/game/tests/test_weekly_rivalry_http.gd
+--- a/game/tests/test_weekly_rivalry_http.gd
++++ b/game/tests/test_weekly_rivalry_http.gd
+@@ -41,9 +41,12 @@
+ 	while not app.startup_complete: await process_frame
+ 	var login: Dictionary = await app.online.client.development_login("weekly-alice","Weekly Alice",OS.get_environment("BMT_DEV_AUTH_KEY"))
+ 	check(login.ok,"isolated driver authenticates")
++	# Login changes the scoped records and prepares the retained menu behind its
++	# loading cover. Wait for that real lifecycle before navigating into Rivalry.
++	while app.screen == "restoring": await process_frame
+ 	var expire_at_finish: bool = OS.get_environment("BMT_RIVALRY_EXPIRED_SESSION") == "true"
+ 	var restored_at_finish: bool = OS.get_environment("BMT_RIVALRY_SESSION_RESTORED") == "true"
+-	app._open_rivalry()
++	await app._open_rivalry()
+ 	while app.rivalry.busy: await process_frame
+ 	var automatic: bool = app.online.client.test_drivers_available()
+ 	if automatic:
+@@ -63,7 +66,7 @@
+ 	check(app.rivalry_section == "detail" and app.rivalry_track == 0 and app.game == null and app.cloud_ticket.is_empty(),"track selection opens details before requesting a race ticket")
+ 	await capture("track-detail")
+ 	var detail: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
+-	check(detail.ghost_choice == 3 and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field starts without a ghost or a third column")
++	check(detail.ghost_choice == 0 and app.rivalry.model.ghost_target(0,0).is_empty() and detail.find_child("RivalryGhostSelector",true,false) == null,"unrecorded field preserves automatic targeting without inventing a ghost or a third column")
+ 	(app.root_ui.find_child("RivalryStartRace",true,false) as Button).pressed.emit()
+ 	while app.cloud_starting: await process_frame
+ 	check(app.game != null and app.rivalry_racing and not app.cloud_ticket.is_empty(),"pre-race starts with a rivalry-bound verified ticket")
+@@ -175,6 +178,45 @@
+ 	await app._retry_race()
+ 	check(app.rivalry_racing and app.game.online_frames.is_empty() and not app.cloud_ticket.is_empty(),"Rivalry Race Again gets a fresh weekly ticket")
+ 	check(app.game.ghost_mode == "race" and not app.game.ghost_bests.get("race",{}).is_empty(),"retry loads the latest chosen verified weekly ghost")
++	check(app.game.personal_ghost.mesh != null,"retry prepares the visible ghost mesh after installing its recording")
++	# Complete actual retries from both results actions, including the normal
++	# summary before its previous result has finished verification.
++	for source: String in ["summary","feedback"]:
++		game = app.game
++		game.set_physics_process(false)
++		game.countdown_ticks = 0
++		game.launch_countdown_seen = false
++		game.launch_early = false
++		var retry_driver := ReplayInput.new()
++		retry_driver.frames = fixture.replay.frames
++		game.driver = retry_driver
++		var retry_ticket: String = str(app.cloud_ticket.ticket_id)
++		for _tick: int in range(fixture.replay.frames.size()): game._physics_process(1.0/120.0)
++		check(game.track_session.finished,"actual Race Again replay finishes five legal laps: "+source)
++		app._results()
++		var retry_summary: RaceResults = app.root_ui.find_child("RaceResults",true,false)
++		check(retry_summary != null and app.rivalry_section == "race_results" and app.rivalry_racing,"retry shows normal results and keeps Rivalry mode: "+source)
++		if source == "summary":
++			retry_summary.find_child("RetryRace",true,false).pressed.emit()
++			while app.cloud_starting: await process_frame
++			check(app.game == game and str(app.cloud_ticket.get("ticket_id","")) != retry_ticket and not app.cloud_ticket.is_empty(),"normal summary Race Again issues a distinct Rivalry ticket while saving the previous race")
++		var verified: Dictionary = {}
++		for _poll: int in range(100):
++			var response: Dictionary = await app.online.client.request_api("/rivalry/tickets/"+retry_ticket+"/result",HTTPClient.METHOD_GET,{},"",true)
++			verified = response.get("data",{})
++			if verified.get("status","") in ["verified","rejected","failed"]: break
++			await create_timer(0.2).timeout
++		check(verified.get("status","") == "verified" and verified.get("slot",-1) == 0 and verified.get("outcome",{}).has("after"),"completed retry receives a server Rivalry standings outcome: "+source)
++		check(int(verified.get("outcome",{}).get("points_delta",-1)) == 0 and not verified.get("outcome",{}).get("improved",true),"equal retry retains the weekly best without farming points: "+source)
++		if source == "feedback":
++			while app.rivalry_result_pending or app.rivalry.busy: await process_frame
++			retry_summary.next_button.pressed.emit()
++			await process_frame
++			var feedback_retry: Button = app.root_ui.find_child("RivalryRaceAgain",true,false)
++			check(feedback_retry != null and not feedback_retry.disabled,"verified retry also offers Race Again from Rivalry feedback")
++			feedback_retry.pressed.emit()
++			while app.cloud_starting: await process_frame
++			check(app.rivalry_racing and str(app.cloud_ticket.get("ticket_id","")) != retry_ticket and not app.cloud_ticket.is_empty(),"feedback Race Again also retains Rivalry authorization")
+ 	app._leave_race()
+ 	check(app.game == null and app.screen == "rivalry","exit returns to championship Overview")
+ 	await app.online.client.logout()
+diff --git a/game/tests/test_rivalry_ghost_retry.gd b/game/tests/test_rivalry_ghost_retry.gd
+--- /dev/null
++++ b/game/tests/test_rivalry_ghost_retry.gd
+@@ -0,0 +1,159 @@
++extends "res://tests/test_rivalry_start_failure.gd"
++## Controlled delayed transport, real adapter, App start and retry presentation.
++const Adapter = preload("res://backend/weekly_rivalry_client.gd")
++
++class GhostClient extends "res://backend/backend_client.gd":
++	signal released
++	var requests: int = 0
++	var held: bool = false
++	var fail: bool = false
++	var issued: Dictionary
++	var recording: Dictionary = {"ticks":12000,"poses":[[0,8,8,0,0,0,0],[12000,12,12,0,0,0,0]]}
++	func request_api(path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		if path.ends_with("/tickets"): return {"ok":true,"data":issued.duplicate(true)}
++		requests += 1
++		if held: await released
++		else: await get_tree().process_frame
++		return {"ok":not fail,"data":{"run_id":"ghost-run","recording":recording}}
++
++class QuietRivalry extends Adapter:
++	func refresh(_force: bool = true) -> void: pass
++	func poll_result() -> void: pass
++
++func fetch(done: Dictionary) -> void:
++	done.recording = await app._rivalry_ghost(0,0,true)
++	done.finished = true
++
++func begin_race(done: Dictionary) -> void:
++	await app._start_rivalry_race(0,0)
++	done.finished = true
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = "res://../docs/evidence/rivalry-ghost-retry-2026-10-18/ui"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
++	root.size = Vector2i(1280,720)
++	var folder: String = "user://rivalry_ghost_retry_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.ghost_mode = "off"
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.records.settings.ghost_mode = "off"
++	app.online.client._access_token = "isolated-fixture"
++	app.online.client.player = {"id":"fixture-self"}
++	var cloud := CloudFixture.new()
++	cloud.client = app.online.client
++	cloud.root_override = folder.path_join("cloud")
++	app.add_child(cloud)
++	app.cloud = cloud
++	var client := GhostClient.new()
++	client.configure("http://fixture.invalid")
++	client.player = {"id":"fixture-self"}
++	app.add_child(client)
++	var rivalry := QuietRivalry.new()
++	rivalry.client = client
++	app.add_child(rivalry)
++	app.rivalry = rivalry
++	var doc: Dictionary = TrackDocument.create_default()
++	var body: String = JSON.stringify(doc)
++	var metadata: Dictionary = {"name":"Ghost retry fixture","creator":"Beat my track","theme":doc.theme,"track_id":"ghost-track","version_id":"ghost-version","content_hash":body.sha256_text(),"points":doc.points}
++	var entry: Dictionary = cloud.entry_from_metadata(metadata)
++	DirAccess.make_dir_recursive_absolute(str(entry.cache_path).get_base_dir())
++	var file := FileAccess.open(str(entry.cache_path),FileAccess.WRITE)
++	file.store_string(body)
++	file.close()
++	var track: NativeTrack = Cloud.compile_entry(entry)
++	for pose: Array in client.recording.poses:
++		pose[1] = track.spawn.x+6.0
++		pose[2] = track.spawn.y+3.0
++	client.issued = {"ticket_id":"ghost-ticket","manifest":manifest(track)}
++	rivalry.model = WeeklyRivalry.new(true)
++	for slot: int in range(rivalry.model.tracks.size()):
++		var rows: Array[Dictionary] = rivalry.model.board(slot)
++		for row: Dictionary in rows:
++			row.driver_id = str(row.id)
++			row.run_id = "ghost-run"
++		rivalry.model.tracks[slot].entries = rows
++	rivalry.model.sample = false
++	rivalry.model.status = "active"
++	rivalry.model.tracks[0].entry = metadata
++	rivalry.snapshot_scope = rivalry.scope()
++	app.rivalry_section = "detail"
++	app._show_screen("rivalry")
++	var saved_rows: Array = rivalry.model.tracks[0].entries.duplicate(true)
++	for row: Dictionary in rivalry.model.tracks[0].entries: row.ms = null
++	app._rivalry()
++	var page: WeeklyRivalryPage = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++	check(page.ghost_choice == 0 and (await app._rivalry_ghost(0,0,true)).is_empty() and client.requests == 0,"an empty field shows no ghost and preserves automatic targeting")
++	rivalry.model.tracks[0].entries = saved_rows
++	app._rivalry()
++	page = app.root_ui.find_child("WeeklyRivalryPage",true,false)
++	check(page.ghost_choice == 0 and not rivalry.model.ghost_target(0,page.ghost_choice).is_empty(),"later verified standings restore the same automatic ghost policy")
++	client.held = true
++	check(app._rivalry_ghost(0,0).is_empty() and client.requests == 1,"cold ghost prefetch returns immediately and starts one request")
++	var first: Dictionary = {"finished":false}
++	var second: Dictionary = {"finished":false}
++	fetch(first)
++	fetch(second)
++	await process_frame
++	check(not first.finished and not second.finished and client.requests == 1,"race callers wait for the same in-flight ghost instead of observing an empty cache")
++	client.released.emit()
++	while not first.finished or not second.finished: await process_frame
++	check(first.recording == client.recording and second.recording == client.recording and client.requests == 1,"coalesced waiters receive the completed validated recording")
++	check(await app._rivalry_ghost(0,0,true) == client.recording and client.requests == 1,"warm ghost reuses the immutable cached run")
++	check((await app._rivalry_ghost(0,3,true)).is_empty() and client.requests == 1,"explicit no-ghost choice never requests a recording")
++	# A race that reaches Loading ghost before transport completes must wait.
++	rivalry._ghost_cache.clear()
++	var start: Dictionary = {"finished":false}
++	begin_race(start)
++	while client.requests < 2: await process_frame
++	for frame: int in range(12): await process_frame
++	check(not start.finished and app.game == null,"cold real Rivalry start waits for its selected ghost")
++	client.released.emit()
++	while not start.finished: await process_frame
++	check(app.game != null and app.rivalry_racing and app.game.ghost_bests.get("race",{}) == client.recording,"real Rivalry start installs the cold selected recording")
++	app.game.set_physics_process(false)
++	app.game.set_process(false)
++	app.game.countdown_ticks = 0
++	app.game.race_cues.reset()
++	app.game._present_personal_ghost(1.0)
++	check(app.game.personal_ghost.mesh != null and app.game.personal_ghost.visible,"cold recording has a visible mesh even when personal ghosts are disabled")
++	await capture("cold-ghost")
++	# Reproduce a retry after a previous attempt had no ghost or local PB mesh.
++	app.game.personal_ghost.mesh = null
++	app.game.ghost_bests = {}
++	app.game.ghost_mode = "off"
++	app.game.personal_ghost.hide()
++	client.held = false
++	client.issued.ticket_id = "retry-ticket"
++	await app._retry_race()
++	check(app.cloud_ticket.get("ticket_id","") == "retry-ticket" and app.rivalry.result_ticket == "retry-ticket" and app.rivalry_racing,"retry keeps a fresh Rivalry ticket and its result-poll identity")
++	check(app.game.ghost_bests.get("race",{}) == client.recording and app.game.personal_ghost.mesh != null,"retry builds a missing mesh after installing the external ghost")
++	app.game.countdown_ticks = 0
++	app.game.race_cues.reset()
++	app.game._present_personal_ghost(1.0)
++	check(app.game.personal_ghost.visible,"retry actually displays its chosen ghost")
++	await capture("retry-ghost")
++	check(app.records.settings.ghost_mode == "off","Rivalry presentation leaves the saved personal-ghost preference unchanged")
++	rivalry._ghost_cache.clear()
++	client.fail = true
++	check((await app._rivalry_ghost(0,0,true)).is_empty() and rivalry._ghost_pending.is_empty(),"unavailable ghost completes without a stuck pending request")
++	client.fail = false
++	check(await app._rivalry_ghost(0,0,true) == client.recording,"failed optional download can recover on the next attempt")
++	rivalry._ghost_cache.clear()
++	client.held = true
++	var stale: Dictionary = {"finished":false}
++	fetch(stale)
++	await process_frame
++	client.player = {"id":"replacement-account"}
++	client.released.emit()
++	while not stale.finished: await process_frame
++	check(stale.recording.is_empty() and rivalry._ghost_cache.is_empty(),"account change discards an in-flight recording")
++	app.queue_free()
++	await process_frame
++	print("RIVALRY_GHOST_RETRY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_rivalry_ghost_retry.gd.uid b/game/tests/test_rivalry_ghost_retry.gd.uid
+--- /dev/null
++++ b/game/tests/test_rivalry_ghost_retry.gd.uid
+@@ -0,0 +1 @@
++uid://c3atix1aa04ji
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Rivalry ghosts and Race Again override (2026-10-18)
++The owner reports inconsistent ghosts and asks whether results-screen retries count toward Rivalry. Race startup/retry now awaits the coalesced selected recording; empty fields retain automatic targeting, and retry prepares any missing ghost mesh after installing external poses. Explicit Off, missing/unavailable recordings, bounded caches, account/run fences and saved personal preferences remain. Completed retries from both normal results and Rivalry feedback retain fresh weekly tickets; actual local HTTP verification returns standings outcomes and equal retries add no points. Focused17headless/17Compatibility/17desktopMobile, HTTP44, SQLite scoring, Rivalry1115/detail321/continue60/personal38/scalability17/FreeRace17/app140/parser865 pass. Actual commands, initial sandbox/import/profile-fixture failures, ancillary callback type/lifetime corrections and task-only checkpoint: docs/RIVALRY_GHOST_RETRY_2026_10_18.md. Owner/device acceptance remains; no phone attachment check/test, APK, live backend change or deployment.
+ 
+ ## Track editor return override (2026-10-18)
+ Closing the track editor returns to its originating Create page (Select biome or Load track), retaining draft search and selection across rescans and revealing saved drafts if sorting moves them. Clean/Save/Discard share the return; Cancel and failed-save protection remain. Nested Load/Back avoids reopening the closed editor. App140headless/158Compatibility, save-regression69 and parser860 pass. Actual commands, initial native reorder correction, captures and task-only checkpoint: docs/EDITOR_RETURN_2026_10_18.md. Owner/device workflow acceptance remains; no phone attachment check/test, APK, backend change or deployment.
+diff --git a/docs/WEEKLY_RIVALRY.md b/docs/WEEKLY_RIVALRY.md
+--- a/docs/WEEKLY_RIVALRY.md
++++ b/docs/WEEKLY_RIVALRY.md
+@@ -1,3 +1,5 @@
++2026-10-18 follow-up: selected ghosts await their coalesced download, empty fields retain automatic targeting and retries prepare missing ghost meshes. Completed Race Again attempts from both results actions receive verified weekly standings outcomes. See [actual verification and checkpoint](RIVALRY_GHOST_RETRY_2026_10_18.md).
++
+ 2026-10-09 follow-up: overview rows/arrows now open track detail; races start there and Back to Rivalry returns to the hub. Removed redundant section tabs and overview race starts. See [current navigation and actual verification](RIVALRY_NAVIGATION.md).
+ 
+ 2026-10-07 follow-up: automatic development membership/backend driving and the five-track Overview supersede the manual test-rival switch and older Overview guidance below. See [current behavior and actual verification](RIVALRY_HUB.md).
+diff --git a/docs/RIVALRY_GHOST_RETRY_2026_10_18.md b/docs/RIVALRY_GHOST_RETRY_2026_10_18.md
+--- /dev/null
++++ b/docs/RIVALRY_GHOST_RETRY_2026_10_18.md
+@@ -0,0 +1,57 @@
++# Rivalry ghost consistency and results retries — 2026-10-18
++
++WR06 / WR07 / WR08 / GH01 / R01 / Q01: the owner reports intermittent ghosts, especially in Rivalry, and requests confirmation that Race Again from results still counts in the weekly standings.
++
++Three presentation defects are corrected. The app previously started a ghost prefetch and later read only its cache; a track that loaded before the request finished started without its selected ghost. The final loading stage and retry now await the same coalesced request. The detail page no longer converts an automatic target policy into permanent Off when the field has no recorded finishes. Retry prepares a missing ghost mesh after replacing local PB recordings with the chosen Rivalry or challenge recording. Explicit no-ghost choices, unavailable recordings, personal preferences, countdown/finish visibility, canonical simulation and bounded interpolation remain unchanged.
++
++Downloads retain the existing transport timeout, eight-entry/8 MiB cache and 30-second freshness policy. Pending callers share one request and receive its validated recording; failures can retry. Account, generation, group, track-slot and run changes fence pending responses. A missing/unavailable ghost remains optional and does not prevent a verified race.
++
++The existing Rivalry retry authorization and scoring flow was correct. Both results actions obtain a distinct weekly ticket and retain the competition result identity. The extended HTTP integration completes three real five-lap attempts with the pinned fixture controls, queues the recordings, receives actual verifier results and checks Rivalry outcomes for the completed retries. Normal-summary Race Again is exercised before the previous result is verified; Rivalry-feedback Race Again is also exercised. Equal-time retries keep the existing weekly PB and award zero additional points. A separate scoring regression covers improved, slower and tied results.
++
++The real login/logout path also exposed an untyped empty array passed through a dynamically typed publication-notification node. That call now supplies `Array[Dictionary]`. Rivalry's deferred standings callbacks accept `Variant` arguments so their existing validity checks can discard freed controls during rapid replacement. These are callback corrections, with no publication/scoring policy change.
++
++## Changed files
++
++- `game/core/app.gd`: awaited selected ghost, retry mesh preparation and typed empty account-callback collection.
++- `game/backend/weekly_rivalry_client.gd`: coalesced requests, valid slot keys and stale-response fencing.
++- `game/ui/weekly_rivalry_page.gd`: retain targeting policy in empty fields; permit validity checks after deferred controls are freed.
++- `game/tests/test_rivalry_ghost_retry.gd` and UID: controlled delayed transport with real adapter/app startup/retry, empty-field recovery, warm cache, Off, download recovery, account fencing and actual mesh visibility.
++- `game/tests/test_weekly_rivalry_http.gd`: completed retries through both results actions and actual server outcomes; wait for real profile restoration/navigation.
++- `game/tests/test_weekly_rivalry.gd`, `game/tests/test_rivalry_track_detail.gd`: preserve automatic policy without fabricated ghosts.
++- `AGENTS.md`, `WEEKLY_RIVALRY.md`, this document and evidence.
++
++## Actual validation
++
++| Check | Result |
++|---|---:|
++| Focused headless / native Compatibility / desktop Mobile | 17 / 17 / 17 checks, 0 failures |
++| Native app, disposable HTTP API, actual verifier | 44 checks, 0 failures; pytest 1 passed |
++| SQLite improved/slower/tied best-only scoring | pytest 1 passed |
++| Weekly Rivalry / track detail / results Continue | 1115 / 321 / 60 checks, 0 failures |
++| Personal ghosts / scalability / Free Race restart | 38 / 17 / 17 checks, 0 failures |
++| App / project parser | 140 checks / 865 scripts, 0 failures |
++
++Each native process sets `APPDATA` and `LOCALAPPDATA` to a dedicated directory under `build/rivalry-ghost-retry-2026-10-18`; fixtures also inject records/library/cloud directories. Existing player files and live services are not used. Actual repository-root commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_ghost_retry.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_ghost_retry.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_ghost_retry.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument '--evidence=res://../docs/evidence/rivalry-ghost-retry-2026-10-18/ui-mobile' -CommandTimeoutSeconds 180
++```
++
++The same TestScript command ran `test_weekly_rivalry.gd`, `test_rivalry_track_detail.gd`, `test_rivalry_results_continue.gd`, `test_personal_ghosts.gd`, `test_backend_scalability.gd`, `test_free_race_restart.gd`, `test_app.gd` and `test_script_parse.gd`. From `backend`:
++
++```powershell
++..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_rivalry_http.py::test_weekly_rivalry_through_native_app -q -s --tb=short --junitxml=../docs/evidence/rivalry-ghost-retry-2026-10-18/http-settled.xml
++..\.tools\backend-secure-venv\Scripts\python.exe -m pytest 'tests/test_rivalry.py::test_verified_weekly_bests_points_ties_and_no_attempt_farming[sqlite]' -q --tb=short --junitxml=../docs/evidence/rivalry-ghost-retry-2026-10-18/scoring-sqlite.xml
++```
++
++[Logs, XML receipts and task checkpoint](evidence/rivalry-ghost-retry-2026-10-18/). Actual native visibility captures: [cold Compatibility](evidence/rivalry-ghost-retry-2026-10-18/ui/cold-ghost.png), [retry Compatibility](evidence/rivalry-ghost-retry-2026-10-18/ui/retry-ghost.png), [cold desktop Mobile](evidence/rivalry-ghost-retry-2026-10-18/ui-mobile/cold-ghost.png), [retry desktop Mobile](evidence/rivalry-ghost-retry-2026-10-18/ui-mobile/retry-ghost.png). These use controlled fixture poses on the real track. The Compatibility fixture retains a start-light cue after manually skipping countdown; Mobile resets that cue before capture. Cold native hitch diagnostics remain visible; no FPS/speed claim is made.
++
++## Initial attempts and limits
++
++Initial direct invocation hit PowerShell execution policy. CheckScript without its required script argument and restricted native attempts hit user-log/certificate access; final commands use disposable workspace profiles and approved native execution. One rerun collided with the initial open log, so later logs have distinct names. The focused fixture initially set preferences before startup replaced profile records; it now sets them after startup without weakening assertions. The first HTTP run completed all 44 domain checks but failed the strict script-error gate on the account callback type error. Later attempts exposed fixture navigation before profile restoration; the fixture now waits for the actual lifecycle. A configured PostgreSQL instance timed out; the final scoring command explicitly uses SQLite, with no PostgreSQL acceptance claim.
++
++The first native capture encountered a missing import for a concurrently added menu texture. The Import wrapper stopped during an extension scan; direct `Godot --headless --path game --editor --import --verbose` completed local imports, after which both renderer runs passed. Original attempts are retained. Pytest retains its existing Starlette/httpx deprecation warning.
++
++The mixed working tree and concurrent features are preserved. The task checkpoint is a patch against saved sources with unrelated concurrent edits retained in its reconstructed base, not a combined working-tree commit. Owner driving/appearance and physical-device acceptance remain. This task performs no phone attachment check or device test, no APK build/install, no live backend mutation and no deployment.

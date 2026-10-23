@@ -1,0 +1,521 @@
+--- a/game/ui/garage_cleanliness.gd
++++ b/game/ui/garage_cleanliness.gd
+@@ -3,63 +3,92 @@
+ ## Inspect washable exterior points, never inaccessible interior wash voxels.
+ ## Work is lazy, bounded and reused until the actual car/parts or masks change.
+ # Cosmetic work needs a reasonably clean car, without hunting missed specks.
+-const CLEAN_RESIDUE: float = 0.10
+-const MAX_DIRTY_FRACTION: float = 0.15
++const CLEAN_RESIDUE: float = 0.20
++const MAX_DIRTY_FRACTION: float = 0.25
+ # The finish's broad slow film has 0.42 to 0.62 opacity before its coverage mask.
+ const SLOW_FILM_WEIGHT: float = 0.62
+ const SAMPLES_PER_AXIS: int = VehicleCondition.GRID
+ var points := PackedVector3Array()
++var _scopes := PackedVector3Array()
+ var _geometry: Array = []
+ var _state: Array = []
+ var _clean: bool = true
++var _mean_residue: float = 0.0
++var _dirty_fraction: float = 0.0
++
++func description(view: CarShowroom) -> String:
++	if is_clean(view):
++		return "Shiny. For now." if _mean_residue <= 0.025 and _dirty_fraction <= 0.01 else "Clean enough for company"
++	if _mean_residue >= 0.50: return "Certified mud magnet"
++	if _mean_residue >= 0.25: return "Grubby but proud"
++	return "Needs a rinse"
+ 
+ func is_clean(view: CarShowroom) -> bool:
+ 	var effect: VehicleWeathering = view.weathering
+ 	var primary: float = maxf(effect.dirt_amount,effect.snow_amount)
+-	var slow: float = maxf(effect.slow_dirt_amount,effect.slow_snow_amount) * SLOW_FILM_WEIGHT
+-	if maxf(primary,slow) <= CLEAN_RESIDUE: return true
++	var slow: float = maxf(effect.slow_dirt_amount * SLOW_FILM_WEIGHT,effect.slow_snow_amount * 0.38)
++	if maxf(primary,slow) == 0.0:
++		_state.clear()
++		_clean = true
++		_mean_residue = maxf(primary,slow)
++		_dirty_fraction = 0.0
++		return true
+ 	var wash: PackedByteArray = effect.wash_image.get_data()
+ 	var slow_wash: PackedByteArray = effect.slow_wash_image.get_data()
+ 	var geometry: Array = [view.car.get_instance_id(),view.customisation.duplicate(true),effect.bounds]
+-	var state: Array = [geometry,primary,slow,wash,slow_wash]
++	var state: Array = [geometry,effect.dirt_amount,effect.snow_amount,effect.slow_dirt_amount,effect.slow_snow_amount,wash,slow_wash]
+ 	if state == _state: return _clean
+ 	_state = state
+-	# An unwashed car requires no geometry inspection at all.
+-	if (primary > CLEAN_RESIDUE and wash.count(0) == wash.size()) or (slow > CLEAN_RESIDUE and slow_wash.count(0) == slow_wash.size()):
+-		_clean = false
+-		return false
+ 	if geometry != _geometry:
+ 		_geometry = geometry
+ 		_sample_exterior(view)
+-	var residue_budget: float = points.size() * CLEAN_RESIDUE
+-	var missed_budget: int = floori(points.size() * MAX_DIRTY_FRACTION)
+ 	var total_residue: float = 0.0
+-	var missed: int = 0
+-	_clean = not points.is_empty()
+-	for point: Vector3 in points:
++	var total_weight: float = 0.0
++	var missed_weight: float = 0.0
++	var cutoff: float = minf(maxf(primary,slow),CLEAN_RESIDUE)
++	for index: int in range(points.size()):
++		var point: Vector3 = points[index]
++		var scope: Vector3 = _scopes[index]
+ 		# The finish distributes these layers across complementary coverage.
+ 		# Adding full-strength layers everywhere overstated barely visible film.
+-		var residue: float = clampf(maxf(primary * (1.0 - _washed(point,effect.bounds,wash)),slow * (1.0 - _washed(point,effect.bounds,slow_wash))),0.0,1.0)
+-		total_residue += residue
+-		if residue > CLEAN_RESIDUE: missed += 1
+-		if total_residue > residue_budget or missed > missed_budget:
+-			_clean = false
+-			break
++		var primary_here: float = maxf(effect.dirt_amount * scope.x,effect.snow_amount * scope.y)
++		var residue: float = clampf(maxf(primary_here * (1.0 - _washed(point,effect.bounds,wash)),slow * scope.z * (1.0 - _washed(point,effect.bounds,slow_wash))),0.0,1.0)
++		# Clean roof/trim must not dilute a missed dirty door either. Weight by
++		# the layer's potential footprint, fixed across strokes in this wash.
++		var weight: float = maxf(scope.x if effect.dirt_amount >= cutoff else 0.0,scope.y if effect.snow_amount >= cutoff else 0.0)
++		if slow >= cutoff: weight = maxf(weight,scope.z)
++		total_weight += weight
++		total_residue += residue * weight
++		if residue > CLEAN_RESIDUE: missed_weight += weight
++	_mean_residue = total_residue / maxf(total_weight,0.0001)
++	_dirty_fraction = missed_weight / maxf(total_weight,0.0001)
++	_clean = not points.is_empty() and _mean_residue <= CLEAN_RESIDUE and _dirty_fraction <= MAX_DIRTY_FRACTION
+ 	return _clean
+ 
+ func _sample_exterior(view: CarShowroom) -> void:
+ 	points.clear()
++	_scopes.clear()
+ 	var body: Transform3D = view.car.body.global_transform
+ 	var inverse_body: Transform3D = body.affine_inverse()
+ 	var entries: Array[Dictionary] = []
+ 	var washable: Dictionary = {}
+-	for binding: Dictionary in view.weathering.bindings: washable[binding.node.get_instance_id()] = true
++	for binding: Dictionary in view.weathering.bindings:
++		var key: int = binding.node.get_instance_id()
++		if not washable.has(key): washable[key] = {}
++		washable[key][binding.index] = binding
+ 	var envelope: AABB = view.weathering.bounds
+ 	for entry: Dictionary in view.pick_meshes:
+ 		var node: MeshInstance3D = entry.node
+ 		var transform: Transform3D = inverse_body * node.global_transform
+ 		envelope = envelope.merge(transform * (entry.bounds as AABB))
+-		entries.append({"node":node,"transform":transform,"inverse":transform.affine_inverse(),"bounds":entry.bounds,"triangles":entry.triangles})
++		var face_ends := PackedInt32Array()
++		var count: int = 0
++		for surface: int in range(node.mesh.get_surface_count()):
++			var arrays: Array = node.mesh.surface_get_arrays(surface)
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			count += (arrays[Mesh.ARRAY_VERTEX].size() if indices.is_empty() else indices.size()) / 3
++			face_ends.append(count)
++		entries.append({"node":node,"transform":transform,"inverse":transform.affine_inverse(),"bounds":entry.bounds,"triangles":entry.triangles,"faces":(entry.triangles as TriangleMesh).get_faces(),"face_ends":face_ends})
+ 	envelope = envelope.grow(0.1)
+ 	# Top and four sides are reachable with the original orbit/wash controls.
+ 	# The hidden underside and enclosed body volume do not demand scrubbing.
+@@ -76,6 +105,8 @@
+ 				var nearest: float = INF
+ 				var target: MeshInstance3D
+ 				var position := Vector3.ZERO
++				var target_entry: Dictionary = {}
++				var face: int = -1
+ 				for entry: Dictionary in entries:
+ 					var inverse: Transform3D = entry.inverse
+ 					var local_origin: Vector3 = inverse * origin
+@@ -88,7 +119,55 @@
+ 						nearest = distance
+ 						target = entry.node
+ 						position = hit.position
+-				if target != null and washable.has(target.get_instance_id()): points.append(view.weathering.wash_point(target,position))
++						target_entry = entry
++						face = int(hit.face_index)
++				if target == null or not washable.has(target.get_instance_id()): continue
++				var surface: int = 0
++				while face >= target_entry.face_ends[surface]: surface += 1
++				var bindings: Dictionary = washable[target.get_instance_id()]
++				if not bindings.has(surface): continue
++				# TriangleMesh turns hit.normal toward the ray, including back
++				# faces. Recover the actual clockwise surface normal instead.
++				var faces: PackedVector3Array = target_entry.faces
++				face *= 3
++				var outward: Vector3 = (faces[face+2] - faces[face]).cross(faces[face+1] - faces[face]).normalized()
++				var normal: Vector3 = ((target_entry.inverse as Transform3D).basis.transposed() * outward).normalized()
++				# Side rays can reach downward-facing chassis/wing surfaces too.
++				# Never require the underbody, even when a gap exposes it sideways.
++				if normal.y < -0.05: continue
++				var point: Vector3 = view.weathering.wash_point(target,position)
++				points.append(point)
++				_scopes.append(_surface_scope(bindings[surface],point,normal,view.weathering))
++
++static func _surface_scope(binding: Dictionary, point: Vector3, normal: Vector3, effect: VehicleWeathering) -> Vector3:
++	# Broad coverage from vehicle_weathering.gdshader; ignore fine noise/specks.
++	# In particular, primary road dirt never coats an otherwise clean roof.
++	var material: ShaderMaterial = binding.finish
++	var roof: float = material.get_shader_parameter("roof_height")
++	var rear_only: float = material.get_shader_parameter("rear_only")
++	var wheel: bool = binding.wheel
++	var rear: float = smoothstep(0.20,0.75,normal.z) * smoothstep(effect.axle_half * 0.85,effect.axle_half * 1.18,point.z)
++	var film: float = 1.0 - smoothstep(effect.wheel_radius * 1.1,minf(roof * 0.58,effect.wheel_radius * 2.4),point.y)
++	var near_wheels: float = smoothstep(effect.wheel_half_span * 0.24,effect.wheel_half_span * 0.80,absf(point.x))
++	var spray: float = 0.0
++	for axle: float in [-effect.axle_half,effect.axle_half]:
++		var behind: float = point.z - axle
++		var distance: float = maxf(behind,0.0)
++		var width: float = effect.wheel_radius * 0.48 + distance * 0.20
++		var fan: float = 1.0 - smoothstep(width * 0.25,width,absf(point.y - effect.wheel_radius * 0.75 - distance * 0.32))
++		spray = maxf(spray,fan * smoothstep(-0.12,effect.wheel_radius * 0.6,behind) * (1.0 - smoothstep(effect.axle_half * 2.2,effect.axle_half * 3.0,distance)))
++	var band: float = near_wheels * (0.65 + absf(normal.x) * 0.35) * film * 0.94
++	var coverage: float = clampf(maxf(band,spray * near_wheels * (0.55 + absf(normal.x) * 0.45) * 0.72) * (1.0 - smoothstep(roof * 0.53,roof * 0.72,point.y)),0.0,1.0)
++	var wake: float = rear * (0.26 + film * 0.69)
++	coverage = lerpf(maxf(coverage,wake),wake,rear_only)
++	if wheel:
++		var rim: Vector3 = point
++		for frame: Dictionary in effect._wheel_frames:
++			if (frame.rotor as Node3D).is_ancestor_of(binding.node):
++				rim = (frame.rest as Transform3D).affine_inverse() * point
++				break
++		coverage = 1.0 - smoothstep(effect.wheel_radius * 0.67,effect.wheel_radius * 0.81,Vector2(rim.y,rim.z).length())
++	return Vector3(coverage,maxf(coverage,maxf(normal.y,0.0) * 0.38 * (1.0 - rear_only) * (0.0 if wheel else 1.0)),(1.0 - coverage) * lerpf(1.0,rear,rear_only) * (0.0 if wheel else 1.0))
+ 
+ static func _washed(point: Vector3, bounds: AABB, bytes: PackedByteArray) -> float:
+ 	# Same trilinear 16-cube mapping used by the existing finish shader.
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -485,7 +485,8 @@
+ 	if state == _wash_status_state: return
+ 	_wash_status_state = state
+ 	var clean: bool = _cleanliness.is_clean(showroom)
+-	_wash_status.text = "Clean enough to customise" if clean else "Needs washing"
++	_wash_status.text = _cleanliness.description(showroom)
++	_wash_status_panel.tooltip_text = "Ready to customise" if clean else "Wash the exterior before customising"
+ 	var colour: Color = MenuStyle.POSITIVE if clean else MenuStyle.MUTED
+ 	_wash_status.add_theme_color_override("font_color",colour)
+ 	_wash_status_icon.texture = MenuIcon.texture("check" if clean else "care")
+--- a/game/tests/test_garage_clean_customisation.gd
++++ b/game/tests/test_garage_clean_customisation.gd
+@@ -36,7 +36,7 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	var renderer: String = RenderingServer.get_current_rendering_method()
+ 	if DisplayServer.get_name() == "headless": renderer = "headless"
+-	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-ready-2026-10-17/"+renderer)
++	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+@@ -81,7 +81,7 @@
+ 	await capture("wash-required-kits")
+ 	page.tools.find_child("GarageWashForCustomisation",true,false).pressed.emit()
+ 	check(page.section == "care" and page.showroom.wash_mode,"Wash car opens actual manual washing")
+-	check(page._wash_status_panel.visible and page._wash_status.text == "Needs washing","wash view explains when more washing is needed")
++	check(page._wash_status_panel.visible and page._wash_status_panel.tooltip_text == "Wash the exterior before customising","wash view explains when more washing is needed")
+ 	check(page._wash_status_panel.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status_icon.mouse_filter == Control.MOUSE_FILTER_IGNORE,"status does not intercept wash gestures")
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
+ 		root.size = dimensions
+@@ -99,7 +99,7 @@
+ 	wash_exterior(page,false)
+ 	page._process(0.0)
+ 	check(page._cleanliness.is_clean(page.showroom),"scrubbing native exterior unlocks car")
+-	check(page.showroom.wash_mode and page._wash_status.text == "Clean enough to customise","ready indication updates during washing without pressing Done")
++	check(page.showroom.wash_mode and page._wash_status.text == "Shiny. For now.","shiny indication updates during washing without pressing Done")
+ 	check(page._wash_status_icon.texture == MenuIcon.texture("check") and page._wash_status.get_theme_color("font_color") == MenuStyle.POSITIVE,"ready state uses a checkmark and positive colour")
+ 	check(VehicleCondition.read(records,"compact") == before_live_wash,"live indication does not save or clear dirt")
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
+@@ -168,7 +168,7 @@
+ 		page._process(0.0)
+ 		check(not page._customisation_locked,id+" faint layers no longer add up to a false lock")
+ 		page._show_section("care")
+-		check(page._wash_status.text == "Clean enough to customise",id+" care indication agrees with faint-film customisation")
++		check(page._wash_status.text == "Clean enough for company",id+" care indication agrees with faint-film customisation")
+ 		var faint_condition: Dictionary = page.showroom.weathering.snapshot()
+ 		page._show_section("customise")
+ 		page._preview_color(Color("49798a"),"body")
+@@ -187,7 +187,7 @@
+ 		trace.dirt = 0.15
+ 		check(VehicleCondition.save(records,id,trace) == OK,"seed noticeable film "+id)
+ 		page._process(0.0)
+-		check(page._customisation_locked,id+" noticeable unwashed film still requires washing")
++		check(not page._customisation_locked,id+" light unwashed film no longer requires spot hunting")
+ 		var leftover: Dictionary = dirty.duplicate(true)
+ 		var faint_mask := PackedByteArray()
+ 		faint_mask.resize(VehicleCondition.CELLS)
+@@ -198,13 +198,13 @@
+ 		page._process(0.0)
+ 		check(not page._customisation_locked,id+" broad faint wash residue no longer needs further scrubbing")
+ 		page._show_section("care")
+-		check(page._wash_status.text == "Clean enough to customise",id+" washed-film indicator agrees with gate")
++		check(page._wash_status_panel.tooltip_text == "Ready to customise",id+" washed-film indicator agrees with gate")
+ 		if id == "compact":
+ 			await settle()
+ 			await capture("faint-residue-clean-enough")
+ 		check(VehicleCondition.save(records,id,dirty) == OK,"seed new race wear during care "+id)
+ 		page._process(0.0)
+-		check(page._wash_status.text == "Needs washing",id+" new race wear revokes ready indication")
++		check(page._wash_status_panel.tooltip_text == "Wash the exterior before customising",id+" new race wear revokes ready indication")
+ 		page._show_section("customise")
+ 		# Leave a real dirty interpolation cell on an otherwise washed exterior.
+ 		var bounds: AABB = page.showroom.weathering.bounds
+@@ -253,6 +253,37 @@
+ 		check(VehicleCondition.save(records,id,wet) == OK,"seed clean wet "+id)
+ 		page._process(0.0)
+ 		check(not page._customisation_locked,id+" clean wet car may customise")
++	# Follow one actual washing session through every nonnumeric label.
++	page._show_section("cars")
++	page.open_car(0)
++	page._show_section("care")
++	page.showroom.finish_car_transition()
++	if not page.showroom.wash_mode: page._toggle_wash()
++	var labels: Array[String] = []
++	var coat: Dictionary = VehicleWeathering.new().snapshot()
++	coat.dirt = 1.0
++	coat.snow = 1.0
++	coat.slow_dirt = 1.0
++	coat.slow_snow = 1.0
++	var progressive := PackedByteArray()
++	progressive.resize(VehicleCondition.CELLS)
++	for strength: int in range(0,256,8):
++		progressive.fill(strength)
++		coat.wash = Marshalls.raw_to_base64(progressive)
++		coat.slow_wash = coat.wash
++		VehicleCondition.save(records,"compact",coat)
++		page._process(0.0)
++		var label: String = page._wash_status.text
++		check(page._wash_status_icon.texture == MenuIcon.texture("check" if page._cleanliness.is_clean(page.showroom) else "care"),"label and editing gate agree during progressive washing")
++		if label in labels: continue
++		labels.append(label)
++		for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++			root.size = dimensions
++			await settle()
++			check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"graded status fits preview "+str(dimensions))
++			check(page._wash_status.size.x >= page._wash_status.get_minimum_size().x,"graded label is not clipped")
++			await capture(label.to_snake_case().replace(".","")+"-"+str(dimensions.x))
++	check(labels == ["Certified mud magnet","Grubby but proud","Needs a rinse","Clean enough for company","Shiny. For now."],"all five humorous grades appear in washing order")
+ 	page.queue_free()
+ 	await process_frame
+ 	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":renderer,"phone_test":false}
+--- /dev/null
++++ b/game/tests/test_garage_wash_surfaces.gd
+@@ -0,0 +1,131 @@
++extends SceneTree
++## Regression: hidden bottom, clean roofs, faint residue and real missed doors.
++var checks: int = 0
++var failures: int = 0
++var inspector_script: GDScript = preload("res://ui/garage_cleanliness.gd")
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func check_underbody(view: CarShowroom) -> void:
++	var original: Array[Dictionary] = view.pick_meshes
++	var original_bindings: Array[Dictionary] = view.weathering.bindings.duplicate()
++	var node := MeshInstance3D.new()
++	view.car.body.add_child(node)
++	var a := Vector3(-1,0.2,-1)
++	var b := Vector3(1,0.8,-1)
++	var c := Vector3(1,0.8,1)
++	var d := Vector3(-1,0.2,1)
++	for bottom: bool in [true,false]:
++		var surface := SurfaceTool.new()
++		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for vertex: Vector3 in ([a,c,b,a,d,c] if bottom else [a,b,c,a,c,d]): surface.add_vertex(vertex)
++		node.mesh = surface.commit()
++		view.pick_meshes = [{"node":node,"bounds":node.mesh.get_aabb(),"triangles":node.mesh.generate_triangle_mesh()}]
++		var binding: Dictionary = original_bindings[0].duplicate()
++		binding.node = node
++		view.weathering.bindings = [binding]
++		var inspector: RefCounted = inspector_script.new()
++		inspector._sample_exterior(view)
++		check(inspector.points.is_empty() if bottom else not inspector.points.is_empty(),view.vehicle_id+" sloping underside excluded / exterior retained: "+str(bottom))
++	view.pick_meshes = original
++	view.weathering.bindings = original_bindings
++	node.queue_free()
++
++func check_material_boundary(view: CarShowroom) -> void:
++	var original: Array[Dictionary] = view.pick_meshes
++	var original_bindings: Array[Dictionary] = view.weathering.bindings.duplicate()
++	var mesh := ArrayMesh.new()
++	for side: int in [-1,1]:
++		var x: float = float(side) * 0.6
++		var surface := SurfaceTool.new()
++		surface.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for vertex: Vector3 in [Vector3(x-0.4,0.5,-0.8),Vector3(x+0.4,0.5,-0.8),Vector3(x+0.4,0.5,0.8),Vector3(x-0.4,0.5,-0.8),Vector3(x+0.4,0.5,0.8),Vector3(x-0.4,0.5,0.8)]: surface.add_vertex(vertex)
++		surface.commit(mesh)
++	var node := MeshInstance3D.new()
++	node.mesh = mesh
++	view.car.body.add_child(node)
++	view.pick_meshes = [{"node":node,"bounds":mesh.get_aabb(),"triangles":mesh.generate_triangle_mesh()}]
++	var binding: Dictionary = original_bindings[0].duplicate()
++	binding.node = node
++	binding.index = 1
++	view.weathering.bindings = [binding]
++	var inspector: RefCounted = inspector_script.new()
++	inspector._sample_exterior(view)
++	var only_washable: bool = not inspector.points.is_empty()
++	for point: Vector3 in inspector.points:
++		if point.x < 0.0: only_washable = false
++	check(only_washable,view.vehicle_id+" unwashable material in the same mesh is excluded")
++	view.pick_meshes = original
++	view.weathering.bindings = original_bindings
++	node.queue_free()
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if not argument.begins_with("--before-file="): continue
++		inspector_script = GDScript.new()
++		inspector_script.source_code = FileAccess.get_file_as_string(argument.trim_prefix("--before-file=")).replace("class_name GarageCleanliness","")
++		check(inspector_script.reload() == OK,"saved pre-task checker compiles")
++	for id: String in VehicleCatalog.IDS:
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		root.add_child(view)
++		await process_frame
++		check_underbody(view)
++		check_material_boundary(view)
++		var inspector: RefCounted = inspector_script.new()
++		var effect: VehicleWeathering = view.weathering
++		var dirty: Dictionary = effect.snapshot()
++		dirty.dirt = 0.95
++		dirty.slow_dirt = 0.0
++		effect.restore(dirty)
++		check(not inspector.is_clean(view),id+" unwashed exterior still requires cleaning")
++		var mask := PackedByteArray()
++		mask.resize(VehicleCondition.CELLS)
++		mask.fill(255)
++		# Leave the lowest storage row untouched. Two rows extend into visible
++		# sills on the pickup/classic and are not an underside-only fixture.
++		for y: int in range(1):
++			for z: int in range(16):
++				for x: int in range(16): mask[y*256+z*16+x] = 0
++		var hidden: Dictionary = dirty.duplicate(true)
++		hidden.wash = Marshalls.raw_to_base64(mask)
++		hidden.slow_wash = hidden.wash
++		effect.restore(hidden)
++		check(inspector.is_clean(view),id+" dirty bottom does not prevent customisation")
++		# Road dirt is absent from high panels, even with untouched mask cells.
++		mask.fill(255)
++		for y: int in range(16):
++			var height: float = effect.bounds.position.y + effect.bounds.size.y * float(y) / 15.0
++			if height < float(VehicleWeathering.HEIGHTS[id]) * 0.82: continue
++			for z: int in range(16):
++				for x: int in range(16): mask[y*256+z*16+x] = 0
++		hidden.wash = Marshalls.raw_to_base64(mask)
++		effect.restore(hidden)
++		check(inspector.is_clean(view),id+" a clean roof with unwiped road-dirt cells is accepted")
++		mask.fill(205)
++		hidden = dirty.duplicate(true)
++		hidden.wash = Marshalls.raw_to_base64(mask)
++		effect.restore(hidden)
++		check(inspector.is_clean(view),id+" faint remaining wash interpolation is forgiven")
++		# The same inspector must invalidate both decisions when masks change.
++		mask.fill(255)
++		for y: int in range(16):
++			for z: int in range(16):
++				for x: int in range(8): mask[y*256+z*16+x] = 0
++		hidden.wash = Marshalls.raw_to_base64(mask)
++		effect.restore(hidden)
++		check(not inspector.is_clean(view),id+" a visibly missed half still requires washing")
++		mask.fill(255)
++		hidden.wash = Marshalls.raw_to_base64(mask)
++		effect.restore(hidden)
++		check(inspector.is_clean(view),id+" completed wash unlocks immediately")
++		view.queue_free()
++		await process_frame
++	print("Garage wash surfaces: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/GARAGE_WASH_FORGIVENESS_2026_10_18.md
+@@ -0,0 +1,61 @@
++# Forgiving exterior washing and cleanliness grades — 2026-10-18
++
++The owner reports a visually clean car still requiring washing, explicitly excludes the underside, and requests several gently humorous cleanliness labels. This supersedes the readiness thresholds and two labels in `GARAGE_WASH_READY_2026_10_17.md`.
++
++| Requirement | Implemented behavior |
++| --- | --- |
++| GWF01 | Exclude downward-facing surfaces using actual triangle winding. Godot's ray-hit normal points toward the incoming ray on either side of a triangle, so it cannot identify the underside. Keep the original top/four-side first-hit occlusion sampling and exclude unbound material surfaces within otherwise washable meshes. |
++| GWF02 | Inspect the finish shader's broad dirt/snow/rim/rear-trim footprints. Unwiped volume cells above a roof do not count as primary road dirt where the shader draws none. Raise tolerated residue from 0.10 to 0.20 and the missed-area allowance from 15% to 25%. Weight the affected exterior so a clean roof cannot dilute a broadly missed door. Slow dirt retains its 0.62 maximum film strength; slow snow uses its actual 0.38 strength. |
++| GWF03 | Show **Certified mud magnet → Grubby but proud → Needs a rinse → Clean enough for company → Shiny. For now.** Update during washing. Both clean grades use the existing green check and permit customisation; the first three require more washing. The existing status tooltip states the editing decision. No numeric meter or additional permanent label is added. |
++| R01 | Keep original washing gestures/rates, actual dirt and masks, saved condition, fitted parts, per-car editing/save guards, achievements, camera, canonical driving and backend contracts. The check and label share one cached inspection. |
++| Q01 | Compare saved original sources, exercise all five native models and material/underside boundaries, validate graded labels and original washing, compile project scripts, inspect native narrow/desktop captures, and provide a task-only source checkpoint. |
++
++Changed source: `game/ui/garage_cleanliness.gd`, `game/ui/garage_page.gd`, `game/tests/test_garage_clean_customisation.gd`, and new `game/tests/test_garage_wash_surfaces.gd`. Project instructions/status/plan record this slice. Existing concurrent changes are retained.
++
++The broad footprint follows geometry/coverage from `vehicle_weathering.gdshader`; it intentionally omits fine procedural noise and individual splash specks. Inspection reuses prepared points/scopes until the actual car, fitted parts or bounds change, and reuses its decision until layer amounts or either wash mask change. It does not alter saved masks to manufacture a clean result.
++
++Actual commands use the pinned Godot 4.7.2 entry point:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_wash_surfaces.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_wash_surfaces.gd -TestArgument '--before-file=res://../docs/evidence/garage-wash-forgiving-2026-10-18/before/game/ui/garage_cleanliness.gd' -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_clean_customisation.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_clean_customisation.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_clean_customisation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_car_wash.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -TestArgument '--evidence-root=res://../docs/evidence/garage-wash-forgiving-2026-10-18/regressions' -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 240
++git diff --check -- game/ui/garage_cleanliness.gd game/ui/garage_page.gd game/tests/test_garage_clean_customisation.gd game/tests/test_garage_wash_surfaces.gd
++```
++
++| Actual check | Outcome |
++| --- | --- |
++| Saved original checker against final surface regression | 46 checks, 19 reproduced failures (includes the extra successful source-compilation check) |
++| Final surface regression, all five native cars | 45 checks, zero failures |
++| Focused headless | 262 checks, zero failures |
++| Focused native Compatibility / OpenGL | 286 checks, zero failures |
++| Focused desktop Mobile / Vulkan | 286 checks, zero failures |
++| Original manual washing and full-app washing flow, native Compatibility | 1,402 checks, zero failures |
++| Whole-project script compilation | 893 scripts, zero failures |
++| Scoped whitespace check | Passed |
++
++Surface checks include sloping underside rejection with an upward-facing control, exact material-surface boundaries within a shared mesh, lowest-volume-row tolerance, clean high panels, faint remaining masks, a dirty half, immediate mask invalidation and complete washing. Focused checks retain original guarded livery/paint/sticker/kit/reset/save behavior, actual per-car local persistence and incoming race wear. Every grade appears in washing order; both green grades agree with the editing gate. Native captures cover every grade at 960x540 and 1280x720, plus the original wide readiness views. Actual captures were visually inspected on both desktop renderers. These are not phone tests.
++
++Retained initial results and corrections:
++
++- Restricted native execution could not open its normal `user://logs` directory. The pinned entry point subsequently ran with native access and isolated test saves. No phone attachment check was made.
++- The first footprint-aware pass had seven focused failures: clean upper panels diluted broad dirty patches and one unwashed kart. Weighting the actual potentially dirty footprint fixes those failures while retaining the missed-half assertions.
++- An initial triangle probe called a nonexposed `TriangleMesh.create` method. The fixture now constructs actual meshes using `SurfaceTool`. Its output confirmed that ray-hit normals flip to face rays; the implementation uses actual clockwise face winding instead.
++- The first underside-volume fixture left two complete bottom voxel rows dirty. On pickup/classic those rows extend into visibly dirty sills. The corrected volume-boundary fixture leaves the lowest row untouched; separate sloping downward-facing triangles still prove underside exclusion directly. Original failures remain in the evidence. No missed-door assertion was relaxed.
++- The first graded screenshot sequence seeded wear during an active car-reveal transition. The final fixture finishes that actual transition before seeding wear and enters washing, so captures show the intended material state.
++- One later headless run hit a concurrent `PackedInt32Array.assign` compile error in `editor/track_compiler.gd`. That file was independently corrected; this task did not edit it.
++- Headless inspection exposed an unavailable matrix shader-parameter read for a wheel material. The final implementation obtains wheel-local coordinates from the original saved wheel-rest frame already used by the wash mapping, without reading a renderer matrix.
++
++Before-source snapshots, retained initial logs, final logs/reports, native captures, source hashes and the task-only patch are under `docs/evidence/garage-wash-forgiving-2026-10-18/`.
++
++![Dirty grade at narrow width](evidence/garage-wash-forgiving-2026-10-18/mobile/certified_mud_magnet-960.png)
++
++![Clean enough for company](evidence/garage-wash-forgiving-2026-10-18/mobile/clean_enough_for_company-960.png)
++
++![Shiny](evidence/garage-wash-forgiving-2026-10-18/mobile/shiny_for_now-1280.png)
++
++Owner washing-effort, wording and physical-device appearance acceptance remain. No phone attachment check, device test, APK/export/install, backend change/deployment or performance claim was made.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,8 @@
+ # Project agent instructions
++
++## Forgiving exterior washing and cleanliness grades override (2026-10-18)
++GWF01-GWF03/R01/Q01: Washing excludes actual downward-facing underbody triangles and unbound material surfaces, follows visible dirt/snow/rim/rear-trim footprints, and forgives 0.20 residue / 25% missed affected exterior. Five live grades run from Certified mud magnet through Grubby but proud, Needs a rinse and Clean enough for company to Shiny. For now.; both green grades permit the original customisation. Saved masks/condition, gestures/rates, fitted parts, achievements and canonical behavior remain. Original checker reproduces19 failures; final surfaces45, focused262headless/286Compatibility/286desktopMobile, original washing1402 and parser893 pass. Actual commands, retained corrections, native views and task-only source checkpoint: docs/GARAGE_WASH_FORGIVENESS_2026_10_18.md. Owner effort/wording/device appearance acceptance remains; no phone attachment check/test, APK/export/install, backend change or deployment.
++
+ 
+ ## Publication wait and Load track status override (2026-10-18)
+ PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-18 GWF01-GWF03/R01/Q01: Washing excludes actual downward-facing underbody triangles and unbound material surfaces, follows visible dirt/snow/rim/rear-trim footprints, and forgives 0.20 residue / 25% missed affected exterior. Five live grades run from Certified mud magnet through Grubby but proud, Needs a rinse and Clean enough for company to Shiny. For now.; both green grades permit the original customisation. Saved masks/condition, gestures/rates, fitted parts, achievements and canonical behavior remain. Original checker reproduces19 failures; final surfaces45, focused262headless/286Compatibility/286desktopMobile, original washing1402 and parser893 pass. Actual commands, retained corrections, native views and task-only source checkpoint: docs/GARAGE_WASH_FORGIVENESS_2026_10_18.md. Owner effort/wording/device appearance acceptance remains; no phone attachment check/test, APK/export/install, backend change or deployment.
++
+ 2026-10-18 PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
+ 
+ 2026-10-18 TCL01-TCL02: The track-view creator name is a yellow text link opening the retained list with creator-only search and unrelated filters cleared. Native touch verifies one paged query, results across biomes, title-only exclusions and unchanged favorites/no race. Sharing45headless/45Compatibility/45desktopMobile and list233headless pass. Commands, views and source-only checkpoint: docs/TRACK_CREATOR_LINK_2026_10_18.md. Existing creator-name search semantics remain; owner acceptance remains. No phone attachment check/device test, APK or backend/deployment action.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-18 GWF01-GWF03/R01/Q01: Washing excludes actual downward-facing underbody triangles and unbound material surfaces, follows visible dirt/snow/rim/rear-trim footprints, and forgives 0.20 residue / 25% missed affected exterior. Five live grades run from Certified mud magnet through Grubby but proud, Needs a rinse and Clean enough for company to Shiny. For now.; both green grades permit the original customisation. Saved masks/condition, gestures/rates, fitted parts, achievements and canonical behavior remain. Original checker reproduces19 failures; final surfaces45, focused262headless/286Compatibility/286desktopMobile, original washing1402 and parser893 pass. Actual commands, retained corrections, native views and task-only source checkpoint: docs/GARAGE_WASH_FORGIVENESS_2026_10_18.md. Owner effort/wording/device appearance acceptance remains; no phone attachment check/test, APK/export/install, backend change or deployment.
++
+ 2026-10-18 PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
+ 
+ 2026-10-18 EIP01-EIP04/G01/R01/Q01: Track-editor road pieces and finished tiles reuse immutable CPU/GPU work with explicit crossing/join/UV/decor dependencies inside the original32MiB road allowance. Selected props warm off-thread; bounded12288-vertex uploads share24576/frame and a cooperative4ms target across roads, large props and Desert deformation. Actual biome materials/environment/view draw before canvas input; unchanged Winter sky stays prepared. Focused270fallback/280Compatibility/280desktopMobile, App141, workflow252, placement205, road-cache70 and parser890 pass. One retained Winter-prop comparison failure reproduces on the saved editor plus concurrent Winter finish; all47 pass with the earlier finish. Actual commands, initial corrections, native views and source-only checkpoint: docs/EDITOR_PREPARATION_2026_10_18.md. Global bookkeeping, driver calls and owner/device acceptance remain; no phone attachment check/test, APK, backend/deployment or FPS claim.

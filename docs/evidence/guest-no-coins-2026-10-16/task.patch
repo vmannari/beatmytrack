@@ -1,0 +1,746 @@
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -209,6 +209,7 @@
+             "rewind_policy": "rewind-1",
+             "verification": "trajectory-v1",
+             "trajectory_verification": True,
++            "race_incident_rewards_version": 1,
+             "lightweight_race_proofs": True,
+             "track_lifecycle_version": 1,
+             "discovery_paging_version": 2,
+diff --git a/backend/bmt_backend/economy.py b/backend/bmt_backend/economy.py
+--- a/backend/bmt_backend/economy.py
++++ b/backend/bmt_backend/economy.py
+@@ -108,7 +108,7 @@
+     return (race.time_ticks if race else 0, lap.time_ticks if lap else 0)
+ 
+ 
+-def accept_verified(session, run, previous):
++def accept_verified(session, run, previous, *, incident_free=False):
+     """Caller holds Player and commits the award in the verification transaction."""
+     board = session.get(Board, run.board_id)
+     player = session.get(Player, run.player_id)
+@@ -166,8 +166,8 @@
+             add("Challenge attempted", 50)
+         if binding.outcome.get("beaten") and milestone("challenge/beaten/" + binding.challenge_id, 1):
+             add("Challenge beaten", 100, "trophy")
+-    # Trajectory verification proves completion, not collision-free driving.
+-    # Never turn client telemetry or a claimed clean flag into account currency.
++    if incident_free is True:
++        add("Clean race", 200, "trophy")
+     amount = min(sum(row["amount"] for row in rows), MAX_BALANCE - wallet.balance)
+     if amount != sum(row["amount"] for row in rows):
+         rows = [{"title": "Wallet capacity", "amount": amount, "icon": "coin", "eligible": True, "status": "Credited"}]
+diff --git a/backend/bmt_backend/trajectory_verifier.py b/backend/bmt_backend/trajectory_verifier.py
+--- a/backend/bmt_backend/trajectory_verifier.py
++++ b/backend/bmt_backend/trajectory_verifier.py
+@@ -4,6 +4,21 @@
+ from .verifier import MAX_FRAMES, VerificationError
+ 
+ SCHEMA = "bmt-trajectory-v1"
++
++
++def clean_race_report(proof, ticks):
++    """Recorded incidents gate a fixed cosmetic bonus after acceptance.
++
++    This follows the lightweight evidence policy, not independent collision
++    re-simulation. Missing/malformed reports earn no bonus and cannot invalidate
++    a valid trajectory or choose a coin amount.
++    """
++    report = proof.get("incidents") if type(proof) is dict else None
++    return (type(report) is dict and set(report) == {"schema", "ticks", "collision_count", "off_track"}
++            and report.get("schema") == "bmt-race-incidents-v1"
++            and type(report.get("ticks")) is int and report["ticks"] == ticks and 0 < ticks <= MAX_FRAMES
++            and type(report.get("collision_count")) is int and report["collision_count"] == 0
++            and type(report.get("off_track")) is bool and not report["off_track"])
+ 
+ 
+ def input_count(replay):
+@@ -61,7 +76,7 @@
+ 
+ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
+     """Check samples once. Geometry is prepared from the pinned server track."""
+-    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
++    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
+             or proof.get("schema") not in ("bmt-race-proof-v1", "bmt-race-path-v1") or type(proof["samples"]) is not list
+             or not 2 <= len(proof["samples"]) <= MAX_FRAMES//6+12):
+         raise VerificationError("Race trajectory is required")
+@@ -117,4 +132,5 @@
+     if laps != target_laps or previous_tick != ticks or sum(lap_ticks) != ticks:
+         raise VerificationError("Trajectory does not complete the required laps and ordered road gates")
+     return {"time_ticks": ticks, "time_ms": round(ticks*1000/120), "lap_ticks": lap_ticks,
+-            "manifest": geometry["manifest"], "verification_method": "trajectory-v1"}
++            "manifest": geometry["manifest"], "verification_method": "trajectory-v1",
++            "incident_free": clean_race_report(proof,ticks)}
+diff --git a/backend/bmt_backend/verifier.py b/backend/bmt_backend/verifier.py
+--- a/backend/bmt_backend/verifier.py
++++ b/backend/bmt_backend/verifier.py
+@@ -435,7 +435,7 @@
+ 
+ 
+ def validate_race_proof(proof, frames):
+-    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
++    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
+             or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
+             or not 2 <= len(proof["samples"]) <= MAX_FRAMES // 6 + 12):
+         raise VerificationError("Malformed race movement proof")
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -280,7 +280,8 @@
+             session.commit()
+             app.state.pending_finalization = None
+             return True
+-        from .economy import accept_verified as award_coins, previous_bests
++        from .economy import accept_verified as award_coins
++        from .economy import previous_bests
+         coin_previous = previous_bests(session, run) if not creator_test else (0, 0)
+         run.status, run.time_ticks, run.lap_ticks = "verified", result["time_ticks"], result["lap_ticks"]
+         run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
+@@ -308,7 +309,7 @@
+                     where=PersonalBest.time_ticks > values["time_ticks"],
+                 )
+             )
+-            award_coins(session, run, coin_previous)
++            award_coins(session, run, coin_previous, incident_free=result.get("incident_free") is True)
+         board = session.get(Board, run.board_id)
+         version = session.get(TrackVersion, board.version_id)
+         track = session.get(Track, version.track_id)
+diff --git a/backend/tests/test_earned_coins.py b/backend/tests/test_earned_coins.py
+--- a/backend/tests/test_earned_coins.py
++++ b/backend/tests/test_earned_coins.py
+@@ -185,3 +185,65 @@
+     assert auth_client.get("/v1/economy").status_code == 401
+     assert auth_client.post("/v1/economy/purchases", json={"item_id": "livery/apex_twin"},
+                             headers={"Idempotency-Key": str(uuid.uuid4())}).status_code == 401
++
++
++def test_registered_clean_race_bonus_is_fixed_verified_and_idempotent(domain, monkeypatch):
++    original = domain.app.state.verifier.verify_run
++    marker = {"incident_free": True}
++
++    def verified(*args, **kwargs):
++        return {**original(*args, **kwargs), **marker}
++
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", verified)
++    assert domain.client.get("/v1/bootstrap").json()["race_incident_rewards_version"] == 1
++    version = upload(domain)
++    first = race(domain, version, frames=30)
++    receipt = domain.client.get("/v1/economy/rewards/" + first["ticket_id"], headers=headers(domain)).json()
++    assert receipt["amount"] == 300  # completion 50 + first track 50 + clean 200
++    assert [row["amount"] for row in receipt["rows"] if row["title"] == "Clean race"] == [200]
++    with domain.factory() as session:
++        run = session.get(Run, first["run_id"])
++        accept_verified(session, run, previous_bests(session, run), incident_free=True)
++        session.commit()
++    assert wallet(domain)["balance"] == 300
++    marker["incident_free"] = False
++    race(domain, version, frames=30)
++    assert wallet(domain)["balance"] == 350
++    marker["incident_free"] = "true"
++    race(domain, version, frames=30)
++    assert wallet(domain)["balance"] == 400  # non-boolean verifier values cannot grant a bonus
++    assert wallet(domain, "Alice")["balance"] == 0
++
++
++def test_clean_report_follows_accepted_trajectory_without_changing_timing():
++    from bmt_backend.trajectory_verifier import check
++    from bmt_backend.verifier import VerificationError
++
++    geometry = {"start": [0, 0, 0], "extent": [10, 10], "manifest": {},
++                "maximum_speed": {"compact": 120},
++                "gates": [[1, 0, -1, 0, 1, 0, -10, 10, 0], [-1, 0, -1, 0, 1, 0, -10, 10, 0]]}
++    proof = {"schema": "bmt-race-path-v1", "samples": [[0, 0, 0, 0]] +
++             [[index * 6, 2 if index % 2 else -2, 0, 0] for index in range(1, 11)]}
++    baseline = check(geometry, proof, 60, "compact")
++    assert not baseline["incident_free"]
++    report = {"schema": "bmt-race-incidents-v1", "ticks": 60, "collision_count": 0, "off_track": False}
++    clean = check(geometry, {**proof, "incidents": report}, 60, "compact")
++    assert clean == {**baseline, "incident_free": True}
++    for bad in (None, {}, {**report, "collision_count": 1}, {**report, "off_track": True},
++                {**report, "ticks": 59}, {**report, "ticks": True}, {**report, "collision_count": False},
++                {**report, "off_track": 0}, {**report, "amount": 999999}, {**report, "schema": "unknown"}):
++        result = check(geometry, {**proof, "incidents": bad}, 60, "compact")
++        assert result == baseline  # no clean bonus, while valid score acceptance is unchanged
++    with pytest.raises(VerificationError):
++        check(geometry, {**proof, "samples": proof["samples"][:-1], "incidents": report}, 60, "compact")
++
++
++def test_incident_metadata_survives_replay_wire():
++    from bmt_backend.replay_wire import unpack_replay
++    from bmt_backend.verifier import validate_replay
++
++    proof = {"schema": "bmt-race-proof-v1", "samples": [[0, 0, 0, 0, 0, 0, 0, 0], [6, 1, 0, 0, 0, 0, 0, 0]],
++             "incidents": {"schema": "bmt-race-incidents-v1", "ticks": 6, "collision_count": 0, "off_track": False}}
++    replay = {"schema": "bmt-replay-v1", "frames": [[0, 0, 0]] * 6, "race_proof": proof}
++    validate_replay(replay)
++    assert unpack_replay(replay)["race_proof"] == proof
+diff --git a/docs/schemas/earned-coins-v1.schema.json b/docs/schemas/earned-coins-v1.schema.json
+--- a/docs/schemas/earned-coins-v1.schema.json
++++ b/docs/schemas/earned-coins-v1.schema.json
+@@ -1,22 +1,31 @@
+ {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "$id": "bmt-earned-coins-v1",
+-  "description": "Guest saves never import into an account wallet. Catalog membership is additionally checked against the shipped cosmetic IDs.",
++  "description": "Only authenticated accounts earn or spend Coins. Historical guest saves retain cosmetics but their balances are unavailable and never import into accounts. Catalog membership is additionally checked against the shipped cosmetic IDs.",
+   "oneOf": [
+     {"$ref": "#/$defs/guest"},
+     {"$ref": "#/$defs/wallet"},
+     {"$ref": "#/$defs/purchase"},
+     {"$ref": "#/$defs/purchase_receipt"},
+-    {"$ref": "#/$defs/reward_receipt"}
++    {"$ref": "#/$defs/reward_receipt"},
++    {"$ref": "#/$defs/race_incidents"}
+   ],
+   "$defs": {
+     "coins": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+     "item": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^(livery/[a-z0-9_]+|kit/compact/(hood|aero|rims|body)/[a-z0-9_]+)$"},
+     "owned": {"type": "array", "uniqueItems": true, "maxItems": 87, "items": {"$ref": "#/$defs/item"}},
+     "guest": {
++      "description": "Historical read-only save format. Balance and sequence never grant or spend Coins; owned cosmetics remain usable.",
++      "deprecated": true,
+       "type": "object", "additionalProperties": false,
+       "required": ["version", "balance", "owned", "sequence"],
+       "properties": {"version": {"const": 1}, "balance": {"$ref": "#/$defs/coins"}, "owned": {"$ref": "#/$defs/owned"}, "sequence": {"$ref": "#/$defs/coins"}}
++    },
++    "race_incidents": {
++      "description": "Optional recorded cosmetic-bonus evidence inside race_proof, sent only when bootstrap race_incident_rewards_version is 1. A valid accepted five-lap trajectory with matching ticks, zero collisions and no off-track events earns the server-fixed 200 Coins. This is recorded evidence, not independent collision resimulation. Missing or malformed evidence earns no clean bonus without invalidating the score.",
++      "type": "object", "additionalProperties": false,
++      "required": ["schema", "ticks", "collision_count", "off_track"],
++      "properties": {"schema": {"const": "bmt-race-incidents-v1"}, "ticks": {"type": "integer", "minimum": 1, "maximum": 216000}, "collision_count": {"type": "integer", "minimum": 0, "maximum": 216000}, "off_track": {"type": "boolean"}}
+     },
+     "wallet": {
+       "type": "object", "additionalProperties": false,
+diff --git a/game/backend/backend_client.gd b/game/backend/backend_client.gd
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -910,7 +910,7 @@
+ func race_ticket(version_id: String, vehicle_id: String, key: String, purpose: String = "race") -> Dictionary:
+ 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id,"purpose":purpose},key,true)
+ 
+-static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}) -> Dictionary:
++static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
+ 	# Godot's JSON parser returns floats, including integers restored from the outbox.
+ 	# Preserve the strict wire schema without accepting fractional/corrupt controls.
+ 	var packed: Array = []
+@@ -934,6 +934,9 @@
+ 			sample[0] = int(row[0]); sample[6] = int(row[6])
+ 			samples.append(sample)
+ 		replay.race_proof = {"schema":"bmt-race-proof-v1","samples":samples}
++		var incidents: Variant = race_proof.get("incidents")
++		if include_incidents and incidents is Dictionary and incidents.size() == 4 and incidents.get("schema") == "bmt-race-incidents-v1" and _whole(incidents.get("ticks"),1,216000) and _whole(incidents.get("collision_count"),0,216000) and incidents.get("off_track") is bool:
++			replay.race_proof.incidents = {"schema":"bmt-race-incidents-v1","ticks":int(incidents.ticks),"collision_count":int(incidents.collision_count),"off_track":incidents.off_track}
+ 	if not rewinds.is_empty():
+ 		replay.schema = "bmt-replay-v2"
+ 		replay.rewinds = []
+@@ -962,9 +965,9 @@
+ 	if replay.has("race_proof"): wire.race_proof = replay.race_proof
+ 	return wire
+ 
+-static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}) -> Dictionary:
++static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
+ 	# Normalize the small movement record without encoding/scanning control frames.
+-	var normalized: Dictionary = _pack_replay([[0,0,0]],[],false,proof)
++	var normalized: Dictionary = _pack_replay([[0,0,0]],[],false,proof,include_incidents)
+ 	if normalized.is_empty() or not normalized.has("race_proof"): return {}
+ 	var events: Array = []
+ 	for source: Dictionary in rewinds:
+@@ -972,6 +975,7 @@
+ 	var path: Array = []
+ 	for row: Array in normalized.race_proof.samples: path.append([row[0],row[1],row[2],row[6]])
+ 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
++	if normalized.race_proof.has("incidents"): result.race_proof.incidents = normalized.race_proof.incidents
+ 	if not ghost.is_empty(): result.ghost = ghost
+ 	return result
+ 
+@@ -980,15 +984,16 @@
+ 	var origin: String = _base_url
+ 	var compact: bool = not _disable_packed and _capabilities.get("replay_wire_schema","") == "bmt-packed-input-v1"
+ 	var trajectory: bool = bool(_capabilities.get("trajectory_verification",false)) and not race_proof.is_empty()
++	var include_incidents: bool = int(_capabilities.get("race_incident_rewards_version",0)) == 1
+ 	var preparation: int = Time.get_ticks_usec()
+-	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost) if trajectory else _pack_replay.bind(frames,rewinds,compact,race_proof))
++	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost,include_incidents) if trajectory else _pack_replay.bind(frames,rewinds,compact,race_proof,include_incidents))
+ 	if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
+ 	note_request_preparation(key,Time.get_ticks_usec()-preparation)
+ 	if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
+ 	var response: Dictionary = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
+ 	if not trajectory and compact and int(response.status) == 422 and (str(response.error).to_lower().contains("replay envelope") or str(response.error) in ["INVALID_PACKED_REPLAY","UNSUPPORTED_REPLAY_SCHEMA"]):
+ 		_disable_packed = true
+-		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof))
++		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof,include_incidents))
+ 		if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
+ 		if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
+ 		response = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
+diff --git a/game/backend/cosmetic_economy.gd b/game/backend/cosmetic_economy.gd
+--- a/game/backend/cosmetic_economy.gd
++++ b/game/backend/cosmetic_economy.gd
+@@ -1,5 +1,5 @@
+ extends Node
+-## Guest saves are device-only. Authenticated grants/charges always come from the server.
++## Only signed-in accounts earn or spend Coins. Old local cosmetics remain available.
+ signal changed
+ const Shop = preload("res://persistence/cosmetic_catalog.gd")
+ const IO = preload("res://backend/atomic_json.gd")
+@@ -63,7 +63,7 @@
+ 	changed.emit()
+ 
+ func balance() -> int:
+-	return int(wallet.get("balance",0)) if authenticated() else int(_guest().balance)
++	return int(wallet.get("balance",0)) if authenticated() else 0
+ 
+ func _guest() -> Dictionary:
+ 	return records.settings.get("guest_coins",{"version":1,"balance":0,"owned":[],"sequence":0}).duplicate(true)
+@@ -116,18 +116,9 @@
+ 	if busy or not Shop.items().has(id): return false
+ 	if owns(id): return true
+ 	if not authenticated():
+-		var guest: Dictionary = _guest()
+-		if int(guest.balance) < price(id):
+-			status = "Not enough coins. Complete more races."
+-			changed.emit()
+-			return false
+-		guest.balance = int(guest.balance)-price(id)
+-		guest.owned.append(id)
+-		records.settings.guest_coins = guest
+-		var saved: bool = records.save_records() == OK
+-		status = "" if saved else "Purchase could not be saved. No coins spent."
++		status = "Sign in to earn and spend coins."
+ 		changed.emit()
+-		return saved
++		return false
+ 	if not pending.is_empty():
+ 		status = "Finishing your previous purchase."
+ 		changed.emit()
+@@ -165,35 +156,6 @@
+ 	if str(response.get("error","")) in ["INSUFFICIENT_COINS","COSMETIC_PRICE_CHANGED"]: refresh.call_deferred()
+ 	return success
+ 
+-func next_guest_sequence() -> int:
+-	return int(_guest().sequence)+1
+-
+-func award_guest(sequence: int, facts: Dictionary, commit: bool = true) -> Dictionary:
+-	if authenticated() or sequence <= 0 or not facts.get("complete",false): return {}
+-	var guest: Dictionary = _guest()
+-	if sequence <= int(guest.sequence): return {"status":"credited","amount":0,"rows":[]}
+-	if sequence != int(guest.sequence)+1: return {}
+-	var rows: Array[Dictionary] = RaceRewardPreview.build(facts)
+-	var amount: int = mini(RaceRewardPreview.total(rows),Shop.MAX_COINS-int(guest.balance))
+-	if amount != RaceRewardPreview.total(rows):
+-		rows = [RaceRewardPreview.row("Wallet capacity",amount,"Credited",true,"coin")]
+-	guest.balance = int(guest.balance)+amount
+-	guest.sequence = sequence
+-	records.settings.guest_coins = guest
+-	if facts.get("track_id") is String:
+-		var raced: Array = records.settings.get("raced_tracks",[]).duplicate()
+-		if facts.track_id not in raced: raced.append(facts.track_id)
+-		records.settings.raced_tracks = raced
+-	# The real results flow commits staged coins together with its PB/history.
+-	if not commit: return {"status":"staged","amount":amount,"rows":rows}
+-	if records.save_records() != OK:
+-		status = "Rewards could not be saved. Check storage."
+-		changed.emit()
+-		return {"status":"save_failed","amount":0,"rows":[]}
+-	status = ""
+-	changed.emit()
+-	return {"status":"credited","amount":amount,"rows":rows}
+-
+ func reward_for(ticket: String) -> Dictionary:
+ 	if not authenticated() or ticket.is_empty(): return {"status":"unavailable","amount":0,"rows":[]}
+ 	var expected: String = _current_scope()
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3458,20 +3458,8 @@
+ 	for lap: Dictionary in result_data.laps:
+ 		if lap.get("samples",[]).is_empty() or not lap.get("events",[]).is_empty(): incident_free = false
+ 	var reward_facts: Dictionary = {"complete":clean and session.finished,"total":total,"previous":previous,"previous_lap":previous_lap,"flying":flying,"incident_free":incident_free,"first_track":first_reward_track,"track_id":track.identity}
+-	var coin_receipt: Dictionary = {}
+-	if cosmetic_economy != null and not cosmetic_economy.authenticated():
+-		coin_receipt = cosmetic_economy.award_guest(cosmetic_economy.next_guest_sequence(),reward_facts,false)
+ 	var saved: bool = not clean
+-	var record_error: Error = OK
+-	if clean:
+-		record_error = result_records.record(track, game.get("handling"), total, session.lap_times)
+-		saved = record_error == OK
+-	if coin_receipt.get("status") == "staged":
+-		# Validation can reject a record before its save/rollback boundary.
+-		if not saved: result_records._failed(record_error)
+-		coin_receipt = {"status":"save_failed","amount":0,"rows":[]} if not saved else {"status":"credited","amount":coin_receipt.amount,"rows":coin_receipt.rows}
+-		cosmetic_economy.status = "" if saved else "Rewards could not be saved. Check storage."
+-		cosmetic_economy.changed.emit()
++	if clean: saved = result_records.record(track, game.get("handling"), total, session.lap_times) == OK
+ 	if clean and saved:
+ 		var ghost_error: Error = game.save_personal_ghost()
+ 		if ghost_error != OK: pending_menu_notice = "Best time saved. Could not save its local ghost."
+@@ -3520,7 +3508,7 @@
+ 	panel.result = result_data
+ 	panel.set_meta("reward_facts",reward_facts)
+ 	panel.set_meta("reward_ticket",challenge_source_ticket)
+-	panel.set_meta("coin_receipt",coin_receipt)
++	panel.set_meta("coin_receipt",{"status":"pending" if online_queued else "unavailable","amount":0,"rows":[]})
+ 	panel.continue_requested.connect(_results_continue.bind(panel,center))
+ 	panel.retry_requested.connect(_retry_race)
+ 	panel.return_requested.connect(_leave_race)
+@@ -3545,6 +3533,8 @@
+ 	if is_instance_valid(completed_game) and completed_game.get("race_proof") != null and bool(cloud.client.get("_capabilities").get("lightweight_race_proofs",false)):
+ 		var proof: Dictionary = completed_game.race_proof.recording(completed_game.track_session)
+ 		if not proof.is_empty():
++			var incidents: Dictionary = preload("res://race/race_incidents.gd").build(completed_game.track_session,completed_game.lap_telemetry,completed_game.sim.state)
++			if not incidents.is_empty(): proof.incidents = incidents
+ 			ticket_data["_race_proof"] = proof
+ 			ticket_data["_race_ghost"] = completed_game.ghost_run.recording("race")
+ 	if not cloud.enqueue_completed(ticket_data,frames,publish_version,rewinds):
+diff --git a/game/tests/test_earned_coins.gd b/game/tests/test_earned_coins.gd
+--- a/game/tests/test_earned_coins.gd
++++ b/game/tests/test_earned_coins.gd
+@@ -1,11 +1,11 @@
+ extends SceneTree
+-## Durable guest writes, account recovery/fences and real Garage purchase controls.
++## Coin-free guests, account recovery/fences and real Garage purchase controls.
+ const Economy = preload("res://backend/cosmetic_economy.gd")
+ const Shop = preload("res://persistence/cosmetic_catalog.gd")
+ const Client = preload("res://backend/backend_client.gd")
+ var checks: int = 0
+ var failures: int = 0
+-var output: String = "res://../docs/evidence/earned-coins-2026-10-16/headless"
++var output: String = "res://../docs/evidence/guest-no-coins-2026-10-16/headless"
+ var page: GaragePage
+ 
+ class FakeClient extends Node:
+@@ -89,61 +89,22 @@
+ 	check(not economy.owns("livery/apex_twin") and not economy.owns("kit/compact/hood/scoop"),"migration does not unlock the catalog")
+ 	check(Shop.items().size() == 87,"48 liveries plus 39 kit parts")
+ 	check(not (await economy.purchase("livery/apex_twin")) and economy.balance() == 0,"insufficient funds spend nothing")
+-	var facts: Dictionary = {"complete":true,"total":100.0,"previous":0.0,"flying":18.0,"previous_lap":0.0,"incident_free":true,"first_track":true}
+-	var receipt: Dictionary = economy.award_guest(1,facts)
+-	check(receipt.amount == 300 and economy.balance() == 300,"first guest finish saves completion, first track and clean bonuses")
+-	check(economy.award_guest(1,facts).amount == 0 and economy.balance() == 300,"duplicate reward cannot credit twice")
+-	check(economy.award_guest(3,facts).is_empty() and economy.balance() == 300,"future sequence cannot skip the saved attempt fence")
+-	facts.first_track = false
+-	facts.previous = 110.0
+-	facts.previous_lap = 20.0
+-	check(economy.award_guest(2,facts).amount == 450,"subsequent PB rewards use existing rules")
+-	check(await economy.purchase("livery/apex_twin"),"buy livery with earned coins")
+-	check(economy.balance() == 250 and economy.owns("livery/apex_twin"),"balance deducted and livery permanently owned")
+-	check(await economy.purchase("livery/apex_twin") and economy.balance() == 250,"owned livery never charges again")
+-	check(not (await economy.purchase("kit/compact/hood/scoop")) and economy.balance() == 250,"kit insufficient balance leaves both fields intact")
+-	facts.incident_free = false
+-	facts.previous = 0.0
+-	facts.previous_lap = 0.0
+-	for sequence: int in range(3,133): economy.award_guest(sequence,facts)
+-	var saved_balance: int = economy.balance()
+-	check(economy.award_guest(1,facts).amount == 0 and economy.balance() == saved_balance,"old attempts remain fenced after more than 128 races")
+-	check(await economy.purchase("kit/compact/hood/scoop"),"kit can be bought with earned coins")
++	check(not records.settings.has("guest_coins"),"new guests never create a wallet")
++	records.settings.guest_coins = {"version":1,"balance":6000,"owned":["kit/compact/hood/scoop"],"sequence":132}
++	check(records.save_records() == OK,"save historical guest fixture")
++	check(economy.balance() == 0 and economy.owns("kit/compact/hood/scoop"),"old guest balance is unavailable and old cosmetics are retained")
++	check(not (await economy.purchase("livery/endurance")) and records.settings.guest_coins.balance == 6000,"guest cannot spend a historical balance")
++	check(not economy.has_method("award_guest") and not economy.has_method("next_guest_sequence"),"guest grant paths are removed")
+ 	var reloaded := LocalRecords.new(records.path)
+ 	reloaded.load_records()
+-	check(reloaded.settings.guest_coins == records.settings.guest_coins,"relaunch reloads balance, sequence and ownership exactly")
++	check(reloaded.settings.guest_coins == records.settings.guest_coins,"historical data survives without new grants or debits")
+ 	check(VehicleLivery.for_car(reloaded.settings,"compact") == VehicleLivery.for_car(records.settings,"compact") and VehicleCustomisation.for_car(reloaded.settings,"compact") == VehicleCustomisation.for_car(records.settings,"compact"),"wallet writes retain saved cosmetics")
+ 	economy.free()
+ 	economy = create_economy(reloaded)
+-	check(economy.owns("livery/apex_twin") and economy.owns("kit/compact/hood/scoop"),"recreated controller retains purchases")
+-	var good_path: String = reloaded.path
+-	var before: int = economy.balance()
+-	reloaded.path = directory.path_join("missing/records.json")
+-	check(not (await economy.purchase("livery/endurance")),"failed disk commit rejects purchase")
+-	check(economy.balance() == before and not economy.owns("livery/endurance"),"failed save rolls back coins and ownership together")
+-	reloaded.path = good_path
+-	var before_sequence: int = economy.next_guest_sequence()
+-	facts.complete = false
+-	check(economy.award_guest(before_sequence,facts).is_empty() and economy.next_guest_sequence() == before_sequence,"incomplete race grants nothing")
++	check(economy.balance() == 0 and economy.owns("kit/compact/hood/scoop"),"recreated guest retains cosmetics with zero available coins")
+ 	for invalid: Variant in [{"version":1,"balance":-1,"owned":[],"sequence":0},{"version":1,"balance":true,"owned":[],"sequence":0},{"version":1,"balance":0,"owned":["fake"],"sequence":0},{"version":1,"balance":0,"owned":[],"sequence":1.5}]:
+ 		check(not Shop.valid_guest(invalid),"invalid guest wallet rejected")
+-	var joint := LocalRecords.new(directory.path_join("joint.json"))
+-	var joint_economy: Node = create_economy(joint)
+-	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
+-	var handling: HandlingConfig = VehicleCatalog.config("compact")
+-	var joint_facts: Dictionary = {"complete":true,"first_track":true,"total":50.0,"track_id":track.identity}
+-	check(joint_economy.award_guest(1,joint_facts,false).status == "staged","race coins can stage for the PB commit")
+-	var disk := LocalRecords.new(joint.path)
+-	disk.load_records()
+-	check(not disk.settings.has("guest_coins"),"staged reward is not visible on disk before PB commit")
+-	check(joint.record(track,handling,50.0,[10.0,10.0,10.0,10.0,10.0]) == OK,"PB and staged coins commit together")
+-	disk.load_records()
+-	check(disk.best_for(track,handling) == 50.0 and disk.settings.guest_coins.balance == 100,"one committed save restores both PB and coins")
+-	joint.path = directory.path_join("missing/joint.json")
+-	joint_economy.award_guest(2,joint_facts,false)
+-	check(joint.record(track,handling,45.0,[9.0,9.0,9.0,9.0,9.0]) != OK,"failed joint write is reported")
+-	check(joint_economy.balance() == 100 and joint.best_for(track,handling) == 50.0,"failed joint write rolls back PB and coins together")
+-	joint_economy.free()
++	incident_checks()
+ 	var fake := FakeClient.new()
+ 	root.add_child(fake)
+ 	var account: Node = create_economy(reloaded,fake)
+@@ -165,6 +126,7 @@
+ 	stale.revision = 0
+ 	stale.balance = 9999
+ 	check(account._accept(stale) and account.wallet == old_owned,"older receipt cannot roll balance/ownership back")
++	await garage_checks(account,reloaded,fake)
+ 	fake.delayed = true
+ 	account.refresh()
+ 	await process_frame
+@@ -175,19 +137,19 @@
+ 	check(account.wallet.is_empty() and account.pending.is_empty(),"late previous-account response is fenced")
+ 	fake.enabled = false
+ 	fake.identity_changed.emit()
+-	check(account.balance() == economy.balance() and account.owns("kit/compact/hood/scoop"),"sign-out returns to the separate guest wallet")
++	check(account.balance() == 0 and account.owns("kit/compact/hood/scoop"),"sign-out exposes no coins and retains historical cosmetics")
+ 	check(not Client.valid_response("/economy",HTTPClient.METHOD_GET,{"schema":1,"balance":-1,"revision":0,"owned":[],"prices":{}}),"wire validator rejects invalid balance")
+ 	check(not Client.valid_response("/economy/rewards/a",HTTPClient.METHOD_GET,{"status":"credited","amount":500,"rows":[]}),"wire validator rejects mismatched reward total")
+ 	account.free()
+ 	fake.free()
+-	await garage_checks(economy,reloaded,receipt)
+-	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"guest_balance":economy.balance(),"owned":reloaded.settings.guest_coins.owned,"account_charge_count":1,"phone_test":false}
++	await guest_checks(economy,reloaded)
++	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"guest_balance":economy.balance(),"owned":reloaded.settings.guest_coins.owned,"phone_test":false}
+ 	preload("res://backend/atomic_json.gd").write(output.path_join("report.json"),report)
+ 	economy.free()
+ 	print("EARNED_COINS: %d checks, %d failures" % [checks,failures])
+ 	quit(0 if failures == 0 else 1)
+ 
+-func garage_checks(economy: Node, records: LocalRecords, receipt: Dictionary) -> void:
++func garage_checks(economy: Node, records: LocalRecords, fake: FakeClient) -> void:
+ 	economy.status = ""
+ 	root.size = Vector2i(1280,720)
+ 	root.content_scale_size = root.size
+@@ -233,17 +195,17 @@
+ 	page._reset_kits()
+ 	check(economy.owns("kit/compact/hood/dome") and page.kit_draft.hood == "stock","reset keeps purchased kit ownership")
+ 	var owned_balance: int = economy.balance()
+-	records.settings.guest_coins.balance = 1
+-	check(records.save_records() == OK,"save insufficient-balance UI fixture")
+-	economy.changed.emit()
++	fake.state.balance = 1
++	fake.state.revision += 1
++	await economy.refresh()
+ 	page._select_kit("hood","louvres")
+ 	await settle()
+ 	check(is_instance_valid(page._purchase_dialog) and page._purchase_dialog.get_ok_button().disabled,"insufficient balance disables confirmation")
+ 	await capture("insufficient-coins")
+ 	page._purchase_dialog.hide()
+-	records.settings.guest_coins.balance = owned_balance
+-	check(records.save_records() == OK,"restore earned balance after UI fixture")
+-	economy.changed.emit()
++	fake.state.balance = owned_balance
++	fake.state.revision += 1
++	await economy.refresh()
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
+ 		root.size = dimensions
+ 		root.content_scale_size = dimensions
+@@ -261,7 +223,7 @@
+ 	var complete := RaceComplete.new()
+ 	complete.results = summary
+ 	complete.economy = economy
+-	complete.coin_receipt = receipt
++	complete.coin_receipt = {"status":"credited","amount":200,"rows":[{"title":"Clean race","amount":200,"icon":"trophy","eligible":true,"status":"Credited"}]}
+ 	host.add_child(complete)
+ 	MenuStyle.fill(complete)
+ 	await settle()
+@@ -269,7 +231,78 @@
+ 		complete.reward_reveal.pause()
+ 		complete.reward_reveal.custom_step(10.0)
+ 	await settle()
+-	check(complete.reward_total.text == "+ 300" and complete._reward_status.text.begins_with("Coins saved"),"results show actual credited receipt and saved balance")
++	check(complete.reward_total.text == "+ 200" and complete._reward_status.text.begins_with("Coins saved"),"registered results show the credited clean-race bonus and balance")
+ 	await capture("saved-race-rewards")
+ 	host.free()
+ 	summary.free()
++
++func guest_checks(economy: Node, records: LocalRecords) -> void:
++	var host := Control.new()
++	host.theme = MenuStyle.theme()
++	root.add_child(host)
++	MenuStyle.fill(host)
++	page = GaragePage.new()
++	page.records = records
++	page.economy = economy
++	host.add_child(page)
++	MenuStyle.fill(page)
++	page.open_car(0)
++	await settle()
++	check(page._coin_balance.text == "Sign in to earn coins","guest Garage offers sign-in instead of a spendable balance")
++	page._select_livery(3)
++	await settle()
++	check(page._purchase_dialog.ok_button_text == "Sign in" and not page._purchase_dialog.get_ok_button().disabled,"guest purchase offers an enabled sign-in action")
++	var requested: Array = []
++	page.account_requested.connect(func() -> void: requested.append(true))
++	page._purchase_dialog.confirmed.emit()
++	check(requested.size() == 1 and economy.balance() == 0,"guest purchase opens account without spending")
++	await capture("guest-sign-in")
++	host.remove_child(page)
++	page.free()
++	page = null
++	var summary := RaceResults.new()
++	summary.circuit = "Guest loop"
++	summary.total = 100.0
++	summary.laps = [20.0,20.0,20.0,20.0,20.0]
++	var complete := RaceComplete.new()
++	complete.results = summary
++	complete.economy = economy
++	complete.coin_receipt = {"status":"credited","amount":200,"rows":[{"title":"Clean race","amount":200,"icon":"trophy","eligible":true,"status":"Credited"}]}
++	host.add_child(complete)
++	MenuStyle.fill(complete)
++	await settle()
++	check(complete.reward_total.text == "+ 0" and complete._reward_status.text == "Sign in to earn coins.","guest results ignore historical positive receipts")
++	await capture("guest-no-rewards")
++	host.free()
++	summary.free()
++
++func incident_checks() -> void:
++	var session := TrackSession.new()
++	session.finished = true
++	session.completed_laps = RaceRules.LAPS
++	session.elapsed_ticks = 6000
++	var telemetry := LapTelemetry.new()
++	for index: int in range(RaceRules.LAPS): telemetry.completed.append({"valid":true,"samples":[{}],"events":[]})
++	var state := VehicleState.new()
++	var incidents: Dictionary = preload("res://race/race_incidents.gd").build(session,telemetry,state)
++	check(incidents == {"schema":"bmt-race-incidents-v1","ticks":6000,"collision_count":0,"off_track":false},"complete clean telemetry records bonus eligibility")
++	state.collision_count = 1
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).collision_count == 1,"collision counter disqualifies clean race")
++	state.collision_count = 0
++	telemetry.completed[0].events = [{"kind":"collision"}]
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).collision_count == 1,"recorded collision disqualifies clean race")
++	telemetry.completed[0].events = [{"kind":"off_track"}]
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).off_track,"off-track event disqualifies clean race")
++	telemetry.completed[0].valid = false
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).is_empty(),"invalid lap cannot claim clean bonus")
++	telemetry.completed[0].valid = true
++	telemetry.completed[0].samples = []
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).is_empty(),"missing telemetry cannot claim clean bonus")
++	session.finished = false
++	check(preload("res://race/race_incidents.gd").build(session,telemetry,state).is_empty(),"incomplete race cannot claim clean bonus")
++	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0.0,0.0,0.0,0.0,0.0,0,0],[6,1.0,0.0,0.0,0.0,0.0,0,0]],"incidents":incidents}
++	var modern: Dictionary = Client._pack_trajectory(6000,proof,[],{},true)
++	var legacy: Dictionary = Client._pack_trajectory(6000,proof,[])
++	check(modern.race_proof.incidents == incidents,"capable server receives incidents alongside trajectory")
++	check(not legacy.race_proof.has("incidents") and legacy.race_proof.samples == modern.race_proof.samples,"older server receives original unchanged trajectory")
++	check(Client._pack_replay([[0,0,0]],[],false,proof,true).race_proof.incidents == incidents,"legacy replay envelope can carry normalized incidents")
+diff --git a/game/tests/test_earned_coins_app.gd b/game/tests/test_earned_coins_app.gd
+--- a/game/tests/test_earned_coins_app.gd
++++ b/game/tests/test_earned_coins_app.gd
+@@ -44,28 +44,28 @@
+ 	app.game.set_physics_process(false)
+ 	var panel: RaceResults = finish_fixture(app,50.0)
+ 	check(panel != null and panel.saved,"real results commit the completed session")
+-	check(app.cosmetic_economy.balance() == 100,"first completed session credits coins without telemetry clean claims")
+-	check(panel.get_meta("coin_receipt").amount == 100,"results hold the committed receipt")
++	check(app.cosmetic_economy.balance() == 0 and not app.records.settings.has("guest_coins"),"first completed guest session creates no coins or wallet")
++	check(panel.get_meta("coin_receipt").amount == 0,"guest results hold no credited receipt")
+ 	app._results()
+-	check(app.cosmetic_economy.balance() == 100,"duplicate finish callback cannot credit twice")
++	check(app.cosmetic_economy.balance() == 0,"duplicate guest finish remains coin-free")
+ 	app._results_continue(panel,panel.get_parent())
+ 	var completion: RaceComplete = app.root_ui.find_child("RaceComplete",true,false)
+ 	check(completion != null and completion.economy == app.cosmetic_economy,"Continue uses the actual persistent economy")
+ 	if completion.reward_reveal != null:
+ 		completion.reward_reveal.pause()
+ 		completion.reward_reveal.custom_step(10.0)
+-	check(completion.reward_total.text == "+ 100" and completion._reward_status.text.begins_with("Coins saved"),"actual result page displays credited amount")
++	check(completion.reward_total.text == "+ 0" and completion._reward_status.text == "Sign in to earn coins.","actual guest result page offers sign-in and displays zero coins")
+ 	await app._retry_race()
+ 	panel = finish_fixture(app,45.0)
+-	check(panel.saved and app.cosmetic_economy.balance() == 350,"retry receives only completion plus new race/lap PB bonuses")
++	check(panel.saved and app.cosmetic_economy.balance() == 0,"guest retry saves PB without any rewards")
+ 	var loaded := LocalRecords.new(app.records.path)
+ 	loaded.load_records()
+-	check(loaded.settings.guest_coins.balance == 350 and loaded.best_for(track,app.game.handling) == 45.0,"one on-disk snapshot restores coins and PB together")
++	check(not loaded.settings.has("guest_coins") and loaded.best_for(track,app.game.handling) == 45.0,"reloaded PB is retained without a guest wallet")
+ 	await app._retry_race()
+ 	app.records.path = directory.path_join("missing/records.json")
+ 	panel = finish_fixture(app,40.0)
+-	check(not panel.saved and app.cosmetic_economy.balance() == 350,"failed actual results save cannot expose unsaved coins")
+-	check(panel.get_meta("coin_receipt").status == "save_failed" and app.records.best_for(track,app.game.handling) == 45.0,"failed actual results save rolls back PB and receipt")
++	check(not panel.saved and app.cosmetic_economy.balance() == 0,"failed guest results save remains coin-free")
++	check(panel.get_meta("coin_receipt").amount == 0 and app.records.best_for(track,app.game.handling) == 45.0,"failed actual results save rolls back PB and keeps a zero receipt")
+ 	root.remove_child(app)
+ 	app.free()
+ 	await process_frame
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -181,8 +181,8 @@
+ 
+ func _shop_changed() -> void:
+ 	if economy == null or not is_instance_valid(_coin_balance): return
+-	_coin_balance.text = "%d coins%s" % [economy.balance(),"" if economy.authenticated() else " · Guest"]
+-	_coin_balance.tooltip_text = "Account coins" if economy.authenticated() else "Guest coins stay on this device. Account coins are separate."
++	_coin_balance.text = "%d coins" % economy.balance() if economy.authenticated() else "Sign in to earn coins"
++	_coin_balance.tooltip_text = "Account coins" if economy.authenticated() else "Guests do not earn coins."
+ 	_coin_status.text = economy.status
+ 	_coin_status.tooltip_text = economy.status
+ 	if is_instance_valid(_purchase_dialog) and _purchase_dialog.get_meta("scope","") != economy.scope: _purchase_dialog.hide()
+@@ -222,8 +222,15 @@
+ 	if not affordable: dialog.dialog_text += "\nComplete more races to earn coins."
+ 	dialog.ok_button_text = "Buy · %d coins" % price
+ 	dialog.get_ok_button().disabled = not affordable or economy.busy or not economy.pending.is_empty()
++	if not economy.authenticated():
++		dialog.dialog_text = "%s\n\nPrice: %d coins\n\nSign in to earn coins and unlock this item." % [title,price]
++		dialog.ok_button_text = "Sign in"
++		dialog.get_ok_button().disabled = false
+ 	add_child(dialog)
+ 	dialog.confirmed.connect(func() -> void:
++		if not economy.authenticated():
++			account_requested.emit()
++			return
+ 		var purchased: bool = await economy.purchase(id)
+ 		if purchased and is_inside_tree() and is_visible_in_tree() and expected_car == vehicle_id and expected_section == section and expected_scope == economy.scope: apply.call())
+ 	dialog.visibility_changed.connect(func() -> void:
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -95,6 +95,7 @@
+ 	scroll.add_child(list)
+ 	if economy == null: rewards = RaceRewardPreview.build(facts)
+ 	else:
++		if not economy.authenticated(): coin_receipt = {"status":"unavailable","amount":0,"rows":[]}
+ 		rewards.assign(coin_receipt.get("rows",[]))
+ 		_update_coin_status()
+ 		if not reward_ticket.is_empty() and economy.authenticated():
+@@ -151,10 +152,12 @@
+ 
+ func _update_coin_status() -> void:
+ 	if economy == null: return
++	if not economy.authenticated():
++		_reward_status.text = "Sign in to earn coins."
++		return
+ 	var credited: bool = coin_receipt.get("status") == "credited"
+ 	_reward_status.text = "Coins saved · Balance: %d" % economy.balance() if credited else "Coins will be added after verification." if not reward_ticket.is_empty() else "Race online to earn account coins." if economy.authenticated() else "No coins saved for this race."
+ 	if coin_receipt.get("status") == "save_failed": _reward_status.text = "Rewards could not be saved. Check storage."
+-	if credited and not economy.authenticated(): _reward_status.text += " · Guest"
+ 
+ func _load_coin_receipt() -> void:
+ 	if get_meta("coin_polling",false) or not is_visible_in_tree(): return
+diff --git a/game/race/race_incidents.gd b/game/race/race_incidents.gd
+new file mode 100644
+--- /dev/null
++++ b/game/race/race_incidents.gd
+@@ -0,0 +1,12 @@
++extends RefCounted
++## Bounded cosmetic-bonus observations, separate from timing/physics authority.
++static func build(session: TrackSession, telemetry: LapTelemetry, state: VehicleState) -> Dictionary:
++	if not session.finished or session.completed_laps != RaceRules.LAPS or telemetry.completed.size() != RaceRules.LAPS: return {}
++	var collisions: int = state.collision_count
++	var off_track: bool = false
++	for lap: Dictionary in telemetry.completed:
++		if not lap.get("valid",false) or lap.get("samples",[]).is_empty(): return {}
++		for event: Dictionary in lap.get("events",[]):
++			if event.get("kind") == "collision": collisions = maxi(collisions,1)
++			else: off_track = true
++	return {"schema":"bmt-race-incidents-v1","ticks":session.elapsed_ticks,"collision_count":collisions,"off_track":off_track}
+diff --git a/game/race/race_incidents.gd.uid b/game/race/race_incidents.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/race/race_incidents.gd.uid
+@@ -0,0 +1 @@
++uid://djegx157hgkeq

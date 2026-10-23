@@ -1,0 +1,1514 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="55" skipped="86" tests="155" time="30.779" timestamp="2026-10-16T21:44:50.869566+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_retired_authoring" name="test_retired_routes_cannot_resume_remote_authoring[True]" time="2.188" /><testcase classname="tests.test_retired_authoring" name="test_retired_routes_cannot_resume_remote_authoring[False]" time="1.386" /><testcase classname="tests.test_publication_intents" name="test_no_track_inventory_until_verified_publish_and_exact_provenance[sqlite]" time="0.403" /><testcase classname="tests.test_publication_intents" name="test_no_track_inventory_until_verified_publish_and_exact_provenance[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:64: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_permanent_retries_dedupe_content_and_slot[sqlite]" time="0.429" /><testcase classname="tests.test_publication_intents" name="test_permanent_retries_dedupe_content_and_slot[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:94: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_invalid_lap_and_build_mismatch_leave_only_failed_publication[sqlite]" time="0.382" /><testcase classname="tests.test_publication_intents" name="test_invalid_lap_and_build_mismatch_leave_only_failed_publication[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:112: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_no_capacity_rolls_back_every_catalogue_and_proof_write[sqlite]" time="0.428" /><testcase classname="tests.test_publication_intents" name="test_no_capacity_rolls_back_every_catalogue_and_proof_write[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:131: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_legacy_draft_requests_rejected_before_storage_and_owner_status_is_private[sqlite]" time="0.249"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 410&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">publications = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027547EBFB60&gt;, client=&lt;starlette.testclient.TestClient obj...7a7e1d9-5cb3-4525-bbc1-5d86858f176c', 'Carol': '0b1c9e24-5460-4848-a951-77c4a3d05300'}, postgres=False, proof_calls=[])
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x00000275481BFC50&gt;
+
+    def test_legacy_draft_requests_rejected_before_storage_and_owner_status_is_private(publications, monkeypatch):
+        domain = publications
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Legacy draft request must not store/read objects")
+        monkeypatch.setattr(domain.app.state.blobs, "put_json", forbidden)
+        for route, method, content in (("/v1/tracks", "post", {"name": "Loop", "document": {"schema": "creator-track-v5", "id": "legacy"}}),
+            ("/v1/tracks/unknown/versions", "post", {"name": "Loop", "document": {}}),
+            ("/v1/me/drafts/legacy/archive", "post", None), ("/v1/me/drafts/legacy/head", "get", None)):
+            response = getattr(domain.client, method)(route, **({"json": content} if content else {}), headers=headers(domain))
+&gt;           assert response.status_code == 410, response.text
+E           AssertionError: {"detail":"AUTH_REQUIRED"}
+E           assert 401 == 410
+E            +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_publication_intents.py:163: AssertionError</failure></testcase><testcase classname="tests.test_publication_intents" name="test_legacy_draft_requests_rejected_before_storage_and_owner_status_is_private[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:154: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_status_reads_do_not_verify_or_read_blobs_and_cannot_cross_accounts[sqlite]" time="0.470" /><testcase classname="tests.test_publication_intents" name="test_status_reads_do_not_verify_or_read_blobs_and_cannot_cross_accounts[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:168: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_old_drafts_remain_stored_but_owned_catalogue_has_only_published[sqlite]" time="0.314" /><testcase classname="tests.test_publication_intents" name="test_old_drafts_remain_stored_but_owned_catalogue_has_only_published[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:179: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_production_and_development_cannot_enable_legacy_remote_drafts" time="0.001" /><testcase classname="tests.test_publication_intents" name="test_infrastructure_retry_and_stale_worker_fence_cannot_publish[sqlite]" time="0.416" /><testcase classname="tests.test_publication_intents" name="test_infrastructure_retry_and_stale_worker_fence_cannot_publish[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:204: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_retention_protects_pending_publication_document_and_saved_proof[sqlite]" time="0.438" /><testcase classname="tests.test_publication_intents" name="test_retention_protects_pending_publication_document_and_saved_proof[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:233: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_foreground_races_precede_publication_and_publication_precedes_artificial[sqlite]" time="0.247"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">publications = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027549DC78C0&gt;, client=&lt;starlette.testclient.TestClient obj...ee14bed-104d-4d2d-9af9-8bda669be036', 'Carol': 'b945c737-30fd-4f65-b8cc-8a05ab2257c0'}, postgres=False, proof_calls=[])
+
+    def test_foreground_races_precede_publication_and_publication_precedes_artificial(publications):
+        from test_domains import submit, ticket, upload
+    
+        from bmt_backend.identity_models import Player
+        from bmt_backend.worker import process_one as worker_one
+        domain = publications
+        # Explicit compatibility fixture is used only to seed an existing published
+        # race course; the behavior under test retains the new local-draft policy.
+        domain.app.state.settings = replace(domain.app.state.settings, local_drafts_only=False)
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_publication_intents.py:261: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027549DC78C0&gt;, client=&lt;starlette.testclient.TestClient obj...ee14bed-104d-4d2d-9af9-8bda669be036', 'Carol': 'b945c737-30fd-4f65-b8cc-8a05ab2257c0'}, postgres=False, proof_calls=[])
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_publication_intents" name="test_foreground_races_precede_publication_and_publication_precedes_artificial[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:252: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_publication_admin_metadata_is_bounded_authenticated_and_has_no_raw_documents[sqlite]" time="0.443" /><testcase classname="tests.test_publication_intents" name="test_publication_admin_metadata_is_bounded_authenticated_and_has_no_raw_documents[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:290: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_upgrade_parks_old_draft_jobs_preserves_source_metadata_and_releases_counters[sqlite]" time="1.227" /><testcase classname="tests.test_publication_intents" name="test_upgrade_parks_old_draft_jobs_preserves_source_metadata_and_releases_counters[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:309: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_concurrent_publication_delivery_has_one_intent_and_one_effect[sqlite]" time="0.235"><skipped type="pytest.skip" message="Concurrent request/owner row-lock behavior is exercised on PostgreSQL">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:376: Concurrent request/owner row-lock behavior is exercised on PostgreSQL</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_concurrent_publication_delivery_has_one_intent_and_one_effect[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:372: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_concurrent_publications_cannot_spend_one_slot_twice[sqlite]" time="0.278"><skipped type="pytest.skip" message="Concurrent finalization/entitlement row-lock behavior is exercised on PostgreSQL">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:392: Concurrent finalization/entitlement row-lock behavior is exercised on PostgreSQL</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_concurrent_publications_cannot_spend_one_slot_twice[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:388: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_publication_intents" name="test_permanent_publication_identity_survives_key_age_without_new_effect[sqlite]" time="0.436" /><testcase classname="tests.test_publication_intents" name="test_permanent_publication_identity_survives_key_age_without_new_effect[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_publication_intents.py:405: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_upload_is_idempotent_and_documents_are_immutable[sqlite]" time="0.360"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754AE256A0&gt;, client=&lt;starlette.testclient.TestClient obj...7f40', 'Bob': '2bfdcebe-7d1b-4822-83bc-a71db7258d0d', 'Carol': '58b6ebaa-12f1-45f7-b0aa-79a02e88f660'}, postgres=False)
+
+    def test_upload_is_idempotent_and_documents_are_immutable(domain):
+&gt;       version = upload(domain, key="same-upload")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:196: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754AE256A0&gt;, client=&lt;starlette.testclient.TestClient obj...7f40', 'Bob': '2bfdcebe-7d1b-4822-83bc-a71db7258d0d', 'Carol': '58b6ebaa-12f1-45f7-b0aa-79a02e88f660'}, postgres=False)
+player = 'Creator', key = 'same-upload', document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_upload_is_idempotent_and_documents_are_immutable[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:195: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_private_drafts_require_ownership_and_verified_creator_test[sqlite]" time="0.297"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754AE27380&gt;, client=&lt;starlette.testclient.TestClient obj...e424', 'Bob': 'b47a2df1-541d-4cc9-abc0-2aa7d08088d7', 'Carol': '8a134b82-6d7c-4b32-84f9-f10c7abfcb90'}, postgres=False)
+
+    def test_private_drafts_require_ownership_and_verified_creator_test(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:225: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754AE27380&gt;, client=&lt;starlette.testclient.TestClient obj...e424', 'Bob': 'b47a2df1-541d-4cc9-abc0-2aa7d08088d7', 'Carol': '8a134b82-6d7c-4b32-84f9-f10c7abfcb90'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_private_drafts_require_ownership_and_verified_creator_test[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:224: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_hide_preserves_records_and_share_links[sqlite]" time="0.252"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B379160&gt;, client=&lt;starlette.testclient.TestClient obj...ce7a', 'Bob': '860f95c2-f509-4a58-b163-6acb7743b0a2', 'Carol': '79adba3a-dcda-4e9b-a08e-92e097c5aa2a'}, postgres=False)
+
+    def test_hide_preserves_records_and_share_links(domain):
+&gt;       version, board = public_course(domain)
+                         ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:258: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B379160&gt;, client=&lt;starlette.testclient.TestClient obj...ce7a', 'Bob': '860f95c2-f509-4a58-b163-6acb7743b0a2', 'Carol': '79adba3a-dcda-4e9b-a08e-92e097c5aa2a'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_hide_preserves_records_and_share_links[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:257: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_ratings_require_completion_disallow_self_and_replace_vote[sqlite]" time="0.256"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B37AE40&gt;, client=&lt;starlette.testclient.TestClient obj...d2aa', 'Bob': '07ecb101-0fc7-4acb-b4e6-1eea3b021027', 'Carol': '6e5074aa-806d-4933-906c-4fc572e94ca7'}, postgres=False)
+
+    def test_ratings_require_completion_disallow_self_and_replace_vote(domain):
+&gt;       version, _ = public_course(domain)
+                     ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:282: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B37AE40&gt;, client=&lt;starlette.testclient.TestClient obj...d2aa', 'Bob': '07ecb101-0fc7-4acb-b4e6-1eea3b021027', 'Carol': '6e5074aa-806d-4933-906c-4fc572e94ca7'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_ratings_require_completion_disallow_self_and_replace_vote[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:281: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_best_lap_histogram_counts_each_driver_once_across_verified_attempts[sqlite]" time="0.260"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C0C20&gt;, client=&lt;starlette.testclient.TestClient obj...f2d2', 'Bob': '5f4c6074-7d4e-4da8-8735-b370793c74fb', 'Carol': '9813e1a3-5832-4dbe-87ba-89f20cdb31a8'}, postgres=False)
+
+    def test_best_lap_histogram_counts_each_driver_once_across_verified_attempts(domain):
+&gt;       version, board = public_course(domain)
+                         ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:308: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C0C20&gt;, client=&lt;starlette.testclient.TestClient obj...f2d2', 'Bob': '5f4c6074-7d4e-4da8-8735-b370793c74fb', 'Carol': '9813e1a3-5832-4dbe-87ba-89f20cdb31a8'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_best_lap_histogram_counts_each_driver_once_across_verified_attempts[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:307: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_results_comparison_uses_one_population_and_replaces_own_result[sqlite]" time="0.454"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C2900&gt;, client=&lt;starlette.testclient.TestClient obj...1249', 'Bob': '56509b2c-9885-4553-bbda-4c93046ed27e', 'Carol': '6209eec0-3884-4342-a430-7a2b4436063b'}, postgres=False)
+
+    def test_results_comparison_uses_one_population_and_replaces_own_result(domain):
+&gt;       version, _ = public_course(domain)
+                     ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C2900&gt;, client=&lt;starlette.testclient.TestClient obj...1249', 'Bob': '56509b2c-9885-4553-bbda-4c93046ed27e', 'Carol': '6209eec0-3884-4342-a430-7a2b4436063b'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_results_comparison_uses_one_population_and_replaces_own_result[postgres]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:344: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_results_histogram_grid_survives_pending_pb_verification[sqlite]" time="0.267"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C3770&gt;, client=&lt;starlette.testclient.TestClient obj...a298', 'Bob': 'd8886d24-b51c-4c76-8903-af8963eba456', 'Carol': '1debf0c0-822a-4538-b68c-b9087bd5f770'}, postgres=False)
+
+    def test_results_histogram_grid_survives_pending_pb_verification(domain):
+&gt;       version, _ = public_course(domain)
+                     ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:368: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754B5C3770&gt;, client=&lt;starlette.testclient.TestClient obj...a298', 'Bob': 'd8886d24-b51c-4c76-8903-af8963eba456', 'Carol': '1debf0c0-822a-4538-b68c-b9087bd5f770'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_results_histogram_grid_survives_pending_pb_verification[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:367: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_results_comparison_has_exact_top_percentile_with_ties[sqlite]" time="0.267"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754A70D550&gt;, client=&lt;starlette.testclient.TestClient obj...2475', 'Bob': 'c70439cc-4879-4eba-8d07-c520329cf49b', 'Carol': '8c3fee9a-694c-443f-b219-3493536582a6'}, postgres=False)
+
+    def test_results_comparison_has_exact_top_percentile_with_ties(domain):
+        from bmt_backend.runs import comparison_position
+        from bmt_backend.track_models import BoardTimeCount
+&gt;       _version, board = public_course(domain)
+                          ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:397: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754A70D550&gt;, client=&lt;starlette.testclient.TestClient obj...2475', 'Bob': 'c70439cc-4879-4eba-8d07-c520329cf49b', 'Carol': '8c3fee9a-694c-443f-b219-3493536582a6'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_results_comparison_has_exact_top_percentile_with_ties[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:394: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_pb_ties_histogram_neighbours_and_ghost_share_population[sqlite]" time="0.271"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754A70F230&gt;, client=&lt;starlette.testclient.TestClient obj...deba', 'Bob': 'f5fb2750-07c4-440a-9a49-f046ec87870b', 'Carol': '0a1cf5e4-acd6-4f3f-8ac0-15dbb87d99f5'}, postgres=False)
+
+    def test_pb_ties_histogram_neighbours_and_ghost_share_population(domain):
+&gt;       version, board = public_course(domain)
+                         ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:411: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754A70F230&gt;, client=&lt;starlette.testclient.TestClient obj...deba', 'Bob': 'f5fb2750-07c4-440a-9a49-f046ec87870b', 'Carol': '0a1cf5e4-acd6-4f3f-8ac0-15dbb87d99f5'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_pb_ties_histogram_neighbours_and_ghost_share_population[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:410: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_submission_ticket_binding_expiry_idempotency_and_conflict[sqlite]" time="0.336"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDED010&gt;, client=&lt;starlette.testclient.TestClient obj...0eaa', 'Bob': '1fa496b7-2ef0-44e7-8b65-281a5398a21a', 'Carol': '5d995996-36e4-46d2-99aa-19d8fb3dc499'}, postgres=False)
+
+    def test_submission_ticket_binding_expiry_idempotency_and_conflict(domain):
+&gt;       version, _ = public_course(domain)
+                     ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:443: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDED010&gt;, client=&lt;starlette.testclient.TestClient obj...0eaa', 'Bob': '1fa496b7-2ef0-44e7-8b65-281a5398a21a', 'Carol': '5d995996-36e4-46d2-99aa-19d8fb3dc499'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_submission_ticket_binding_expiry_idempotency_and_conflict[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:442: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay0]" time="0.231"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDEECF0&gt;, client=&lt;starlette.testclient.TestClient obj...4e04', 'Bob': 'e02759dc-f19f-44b6-b6c7-0210152b6deb', 'Carol': '4db7dbb6-866e-45f8-b72c-1646e195725e'}, postgres=False)
+replay = {'schema': 'bmt-replay-v1', 'frames': []}
+
+    @pytest.mark.parametrize(
+        "replay",
+        [
+            {"schema": "bmt-replay-v1", "frames": []},
+            {"schema": "bmt-replay-v1", "frames": [[0, True, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[128, 255, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]], "time_ticks": 1},
+        ],
+    )
+    def test_replay_has_only_bounded_quantized_inputs(domain, replay):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDEECF0&gt;, client=&lt;starlette.testclient.TestClient obj...4e04', 'Bob': 'e02759dc-f19f-44b6-b6c7-0210152b6deb', 'Carol': '4db7dbb6-866e-45f8-b72c-1646e195725e'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay1]" time="0.245"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDEFA10&gt;, client=&lt;starlette.testclient.TestClient obj...fabb', 'Bob': 'c9c9223d-3cb2-45ff-87b1-5607c45f98dc', 'Carol': 'ea097fe7-dba3-482e-a53c-d21ae7d3cf98'}, postgres=False)
+replay = {'schema': 'bmt-replay-v1', 'frames': [[0, True, 0]]}
+
+    @pytest.mark.parametrize(
+        "replay",
+        [
+            {"schema": "bmt-replay-v1", "frames": []},
+            {"schema": "bmt-replay-v1", "frames": [[0, True, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[128, 255, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]], "time_ticks": 1},
+        ],
+    )
+    def test_replay_has_only_bounded_quantized_inputs(domain, replay):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754BDEFA10&gt;, client=&lt;starlette.testclient.TestClient obj...fabb', 'Bob': 'c9c9223d-3cb2-45ff-87b1-5607c45f98dc', 'Carol': 'ea097fe7-dba3-482e-a53c-d21ae7d3cf98'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay2]" time="0.224"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754C0E97F0&gt;, client=&lt;starlette.testclient.TestClient obj...2cf4', 'Bob': '32475660-025f-4e3f-80e8-0fc672fea679', 'Carol': '4668fbe0-da7a-4cc7-80cb-4fc30ba0f3d6'}, postgres=False)
+replay = {'schema': 'bmt-replay-v1', 'frames': [[128, 255, 0]]}
+
+    @pytest.mark.parametrize(
+        "replay",
+        [
+            {"schema": "bmt-replay-v1", "frames": []},
+            {"schema": "bmt-replay-v1", "frames": [[0, True, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[128, 255, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]], "time_ticks": 1},
+        ],
+    )
+    def test_replay_has_only_bounded_quantized_inputs(domain, replay):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754C0E97F0&gt;, client=&lt;starlette.testclient.TestClient obj...2cf4', 'Bob': '32475660-025f-4e3f-80e8-0fc672fea679', 'Carol': '4668fbe0-da7a-4cc7-80cb-4fc30ba0f3d6'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[sqlite-replay3]" time="0.240"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754C0EB4D0&gt;, client=&lt;starlette.testclient.TestClient obj...80c4', 'Bob': 'cdadc77c-ce27-4958-b887-170b02372a6f', 'Carol': 'cd57e610-02c7-49bd-ae3e-d7029d2397ed'}, postgres=False)
+replay = {'schema': 'bmt-replay-v1', 'frames': [[0, 255, 0]], 'time_ticks': 1}
+
+    @pytest.mark.parametrize(
+        "replay",
+        [
+            {"schema": "bmt-replay-v1", "frames": []},
+            {"schema": "bmt-replay-v1", "frames": [[0, True, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[128, 255, 0]]},
+            {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]], "time_ticks": 1},
+        ],
+    )
+    def test_replay_has_only_bounded_quantized_inputs(domain, replay):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754C0EB4D0&gt;, client=&lt;starlette.testclient.TestClient obj...80c4', 'Bob': 'cdadc77c-ce27-4958-b887-170b02372a6f', 'Carol': 'cd57e610-02c7-49bd-ae3e-d7029d2397ed'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[postgres-replay0]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:470: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[postgres-replay1]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:470: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[postgres-replay2]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:470: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_replay_has_only_bounded_quantized_inputs[postgres-replay3]" time="0.002"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:470: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_rejected_replay_never_publishes_track_or_pb[sqlite]" time="0.217"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D53E510&gt;, client=&lt;starlette.testclient.TestClient obj...422a', 'Bob': '08b32895-457d-46ac-9ae6-fb8e106e24d9', 'Carol': '1a1e9262-1869-4d13-967d-6b0c51f540f4'}, postgres=False)
+
+    def test_rejected_replay_never_publishes_track_or_pb(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:491: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D53E510&gt;, client=&lt;starlette.testclient.TestClient obj...422a', 'Bob': '08b32895-457d-46ac-9ae6-fb8e106e24d9', 'Carol': '1a1e9262-1869-4d13-967d-6b0c51f540f4'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_rejected_replay_never_publishes_track_or_pb[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:490: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_infrastructure_retry_is_durable_and_bounded[sqlite]" time="0.226"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D53FE00&gt;, client=&lt;starlette.testclient.TestClient obj...9874', 'Bob': 'f5785547-4e76-41c3-af0e-e4aca469b9ec', 'Carol': '5308a7cd-ea26-4468-b82b-f156b6cc20b9'}, postgres=False)
+
+    def test_infrastructure_retry_is_durable_and_bounded(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:506: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D53FE00&gt;, client=&lt;starlette.testclient.TestClient obj...9874', 'Bob': 'f5785547-4e76-41c3-af0e-e4aca469b9ec', 'Carol': '5308a7cd-ea26-4468-b82b-f156b6cc20b9'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_infrastructure_retry_is_durable_and_bounded[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:505: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_crashed_worker_lease_can_be_reclaimed[sqlite]" time="0.446"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D835D30&gt;, client=&lt;starlette.testclient.TestClient obj...3c55', 'Bob': '835a9e9f-7b1a-4e8b-93e6-054f21473e0a', 'Carol': '827bce84-1ae8-41f3-9c6d-0e0b2845ca3e'}, postgres=False)
+
+    def test_crashed_worker_lease_can_be_reclaimed(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:521: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D835D30&gt;, client=&lt;starlette.testclient.TestClient obj...3c55', 'Bob': '835a9e9f-7b1a-4e8b-93e6-054f21473e0a', 'Carol': '827bce84-1ae8-41f3-9c6d-0e0b2845ca3e'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_crashed_worker_lease_can_be_reclaimed[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:520: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_lost_lease_fences_stale_verification[sqlite]" time="0.219"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D837A10&gt;, client=&lt;starlette.testclient.TestClient obj...9d4e', 'Bob': '8fc41e3c-66e4-42f0-985e-3c8870854252', 'Carol': '76cea812-ebb1-475d-9890-dbe8495c9b34'}, postgres=False)
+
+    def test_lost_lease_fences_stale_verification(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:535: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754D837A10&gt;, client=&lt;starlette.testclient.TestClient obj...9d4e', 'Bob': '8fc41e3c-66e4-42f0-985e-3c8870854252', 'Carol': '76cea812-ebb1-475d-9890-dbe8495c9b34'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_lost_lease_fences_stale_verification[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:534: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_disabled_players_removed_from_every_board_projection[sqlite]" time="0.215"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754DBB97F0&gt;, client=&lt;starlette.testclient.TestClient obj...3d22', 'Bob': '6be703d1-499e-4eed-b856-a9dbcab535c0', 'Carol': '5c8b22e8-af2e-46ee-9806-b1de83b7efce'}, postgres=False)
+
+    def test_disabled_players_removed_from_every_board_projection(domain):
+&gt;       version, board = public_course(domain)
+                         ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:554: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754DBB97F0&gt;, client=&lt;starlette.testclient.TestClient obj...3d22', 'Bob': '6be703d1-499e-4eed-b856-a9dbcab535c0', 'Carol': '5c8b22e8-af2e-46ee-9806-b1de83b7efce'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_disabled_players_removed_from_every_board_projection[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:553: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_unknown_vehicle_and_changed_runtime_manifest_rejected[sqlite]" time="0.242"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754DBBB4D0&gt;, client=&lt;starlette.testclient.TestClient obj...b206', 'Bob': 'bf683dab-b9cb-493b-82ed-4435a36051a3', 'Carol': '59a7a13c-8cc5-4e6b-8a59-ebbc3421814f'}, postgres=False)
+
+    def test_unknown_vehicle_and_changed_runtime_manifest_rejected(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:579: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754DBBB4D0&gt;, client=&lt;starlette.testclient.TestClient obj...b206', 'Bob': 'bf683dab-b9cb-493b-82ed-4435a36051a3', 'Carol': '59a7a13c-8cc5-4e6b-8a59-ebbc3421814f'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_unknown_vehicle_and_changed_runtime_manifest_rejected[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:578: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_checkpoint_rules_upgrade_keeps_track_and_historical_board[sqlite]" time="0.224"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754E20D2B0&gt;, client=&lt;starlette.testclient.TestClient obj...d885', 'Bob': 'ef756fe3-96a2-4a00-9ebb-120da9a9208c', 'Carol': 'fc0bb126-40fe-4c95-ada2-19452abe5c31'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002754E2A3070&gt;
+
+    def test_checkpoint_rules_upgrade_keeps_track_and_historical_board(domain, monkeypatch):
+        from bmt_backend import runs
+    
+        previous, current = runs.CHECKPOINT_RULES_TRANSITION
+        base = domain.app.state.verifier.manifest()
+        domain.app.state.verifier.manifest = lambda: {**base, "rules_key": previous}
+        # Establish the historical state using the previous ticket policy.
+        with monkeypatch.context() as old_policy:
+            old_policy.setattr(runs, "current_manifest", lambda value: value)
+&gt;           version, old_board_id = public_course(domain)
+                                    ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:609: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754E20D2B0&gt;, client=&lt;starlette.testclient.TestClient obj...d885', 'Bob': 'ef756fe3-96a2-4a00-9ebb-120da9a9208c', 'Carol': 'fc0bb126-40fe-4c95-ada2-19452abe5c31'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_checkpoint_rules_upgrade_keeps_track_and_historical_board[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:600: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_votes_do_not_lose_aggregate_updates[sqlite]" time="0.206"><skipped type="pytest.skip" message="Concurrency contract requires PostgreSQL row locks">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:641: Concurrency contract requires PostgreSQL row locks</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_votes_do_not_lose_aggregate_updates[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:639: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_workers_claim_distinct_jobs_and_keep_best[sqlite]" time="0.226"><skipped type="pytest.skip" message="Concurrency contract requires PostgreSQL SKIP LOCKED">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:665: Concurrency contract requires PostgreSQL SKIP LOCKED</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_workers_claim_distinct_jobs_and_keep_best[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:663: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_same_upload_key_creates_only_one_version[sqlite]" time="0.226"><skipped type="pytest.skip" message="Concurrency contract requires PostgreSQL uniqueness">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:682: Concurrency contract requires PostgreSQL uniqueness</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_same_upload_key_creates_only_one_version[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:680: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_postgres_histogram_uses_one_snapshot_during_new_verified_result[sqlite]" time="0.231"><skipped type="pytest.skip" message="Snapshot contract requires PostgreSQL REPEATABLE READ">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:692: Snapshot contract requires PostgreSQL REPEATABLE READ</skipped></testcase><testcase classname="tests.test_domains" name="test_postgres_histogram_uses_one_snapshot_during_new_verified_result[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:690: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_submissions_cannot_exceed_player_queue_budget[sqlite]" time="0.232"><skipped type="pytest.skip" message="Queue admission contract requires PostgreSQL row locks">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:720: Queue admission contract requires PostgreSQL row locks</skipped></testcase><testcase classname="tests.test_domains" name="test_concurrent_postgres_submissions_cannot_exceed_player_queue_budget[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:718: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_uploaded_document_cannot_spoof_creator[sqlite]" time="0.246"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754E4D7E00&gt;, client=&lt;starlette.testclient.TestClient obj...5e1d', 'Bob': 'f4f7fe2c-01d9-41ae-910d-8f159e5d87d6', 'Carol': '1fb5b4a2-d011-427f-af1d-c8485ab5ad65'}, postgres=False)
+
+    def test_uploaded_document_cannot_spoof_creator(domain):
+&gt;       version = upload(domain, document={"shape": "oval", "creator": "Alice"})
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_domains.py:743: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754E4D7E00&gt;, client=&lt;starlette.testclient.TestClient obj...5e1d', 'Bob': 'f4f7fe2c-01d9-41ae-910d-8f159e5d87d6', 'Carol': '1fb5b4a2-d011-427f-af1d-c8485ab5ad65'}, postgres=False)
+player = 'Creator', key = None, document = {'shape': 'oval', 'creator': 'Alice'}
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_uploaded_document_cannot_spoof_creator[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:742: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_creator_practice_unlocks_publish_without_leaderboard_score[sqlite]" time="0.259"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754EC3DD30&gt;, client=&lt;starlette.testclient.TestClient obj...0777', 'Bob': '45182920-9b47-4f2d-ad9e-f1d9aee61577', 'Carol': '61b2b7ba-6034-432d-a460-46ffb4600f57'}, postgres=False)
+
+    def test_creator_practice_unlocks_publish_without_leaderboard_score(domain):
+&gt;       version = upload(domain)
+                  ^^^^^^^^^^^^^^
+
+tests\test_domains.py:757: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754EC3DD30&gt;, client=&lt;starlette.testclient.TestClient obj...0777', 'Bob': '45182920-9b47-4f2d-ad9e-f1d9aee61577', 'Carol': '61b2b7ba-6034-432d-a460-46ffb4600f57'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_domains" name="test_creator_practice_unlocks_publish_without_leaderboard_score[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:756: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_domains" name="test_recorded_practice_through_real_publish_worker[sqlite]" time="0.223"><skipped type="pytest.skip" message="Run TestPractice first">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:787: Run TestPractice first</skipped></testcase><testcase classname="tests.test_domains" name="test_recorded_practice_through_real_publish_worker[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_domains.py:780: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_new_keys_and_edits_keep_one_logical_track[sqlite]" time="0.248"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F2C0980&gt;, client=&lt;starlette.testclient.TestClient obj...9d35', 'Bob': '7864a1fb-bb20-4aa1-af09-eb592d6e529e', 'Carol': '8fc22142-36ac-4e89-bc2b-a010bc7dda1a'}, postgres=False)
+
+    def test_new_keys_and_edits_keep_one_logical_track(domain):
+&gt;       first, body = save(domain)
+                      ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F2C0980&gt;, client=&lt;starlette.testclient.TestClient obj...9d35', 'Bob': '7864a1fb-bb20-4aa1-af09-eb592d6e529e', 'Carol': '8fc22142-36ac-4e89-bc2b-a010bc7dda1a'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_new_keys_and_edits_keep_one_logical_track[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:39: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_private_acceptance_survives_validator_outage_and_retry[sqlite]" time="0.253"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F2C2660&gt;, client=&lt;starlette.testclient.TestClient obj...de5d', 'Bob': '9f9ef874-e5da-42a1-a9dd-a02c6b19dc9a', 'Carol': 'cff37ded-cecf-40f1-a8ad-92ba61d1a91b'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002754F570CB0&gt;
+
+    def test_private_acceptance_survives_validator_outage_and_retry(domain, monkeypatch):
+        original = domain.app.state.verifier.validate_track
+        monkeypatch.setattr(domain.app.state.verifier, "validate_track", lambda doc: (_ for _ in ()).throw(RuntimeError()))
+&gt;       version, _ = save(domain)
+                     ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:60: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F2C2660&gt;, client=&lt;starlette.testclient.TestClient obj...de5d', 'Bob': '9f9ef874-e5da-42a1-a9dd-a02c6b19dc9a', 'Carol': 'cff37ded-cecf-40f1-a8ad-92ba61d1a91b'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_private_acceptance_survives_validator_outage_and_retry[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:57: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_exact_creator_proof_unlocks_publication_and_owner_status[sqlite]" time="0.544"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F604830&gt;, client=&lt;starlette.testclient.TestClient obj...de41', 'Bob': '8a3889fb-da6f-458c-ae8c-f416fa2c2548', 'Carol': '5e6b2177-4987-488f-8500-ef0c1b1db69a'}, postgres=False)
+
+    def test_exact_creator_proof_unlocks_publication_and_owner_status(domain):
+&gt;       version, _ = save(domain)
+                     ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:76: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F604830&gt;, client=&lt;starlette.testclient.TestClient obj...de41', 'Bob': '8a3889fb-da6f-458c-ae8c-f416fa2c2548', 'Carol': '5e6b2177-4987-488f-8500-ef0c1b1db69a'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_exact_creator_proof_unlocks_publication_and_owner_status[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:75: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_revision_conflict_keeps_original_master[sqlite]" time="0.222"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F6063C0&gt;, client=&lt;starlette.testclient.TestClient obj...8dcb', 'Bob': '8ee54ef1-f6ca-4dce-9076-fbb029456353', 'Carol': 'f1f53753-46ef-4fa2-ac5a-13e8e6f15296'}, postgres=False)
+
+    def test_revision_conflict_keeps_original_master(domain):
+&gt;       version, body = save(domain)
+                        ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:96: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F6063C0&gt;, client=&lt;starlette.testclient.TestClient obj...8dcb', 'Bob': '8ee54ef1-f6ca-4dce-9076-fbb029456353', 'Carol': 'f1f53753-46ef-4fa2-ac5a-13e8e6f15296'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_revision_conflict_keeps_original_master[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:95: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_owner_heads_exclude_older_revisions_and_other_accounts[sqlite]" time="0.215"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F8FC2F0&gt;, client=&lt;starlette.testclient.TestClient obj...f06b', 'Bob': 'a6c918bf-5eea-4f77-a655-8e9300ee5d55', 'Carol': '60ed4a1e-e522-4531-ba82-9f912ef5ff58'}, postgres=False)
+
+    def test_owner_heads_exclude_older_revisions_and_other_accounts(domain):
+&gt;       first, body = save(domain)
+                      ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:108: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F8FC2F0&gt;, client=&lt;starlette.testclient.TestClient obj...f06b', 'Bob': 'a6c918bf-5eea-4f77-a655-8e9300ee5d55', 'Carol': '60ed4a1e-e522-4531-ba82-9f912ef5ff58'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_owner_heads_exclude_older_revisions_and_other_accounts[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:107: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_invalid_document_stays_private_and_cannot_publish[sqlite]" time="0.235"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F8FE120&gt;, client=&lt;starlette.testclient.TestClient obj...59b8', 'Bob': 'cd9d8eca-17a3-4f7c-86c2-3523a48559b1', 'Carol': '3c2c88b9-8503-454a-b118-d7705012f647'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002754FADB0D0&gt;
+
+    def test_invalid_document_stays_private_and_cannot_publish(domain, monkeypatch):
+&gt;       version, _ = save(domain, document={"schema": "creator-track-v5", "id": "track_lifecycle", "points": "invalid"})
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:117: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754F8FE120&gt;, client=&lt;starlette.testclient.TestClient obj...59b8', 'Bob': 'cd9d8eca-17a3-4f7c-86c2-3523a48559b1', 'Carol': '3c2c88b9-8503-454a-b118-d7705012f647'}, postgres=False)
+source = 'track_lifecycle'
+changes = {'document': {'schema': 'creator-track-v5', 'id': 'track_lifecycle', 'points': 'invalid'}}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_invalid_document_stays_private_and_cannot_publish[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:116: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_infrastructure_run_retry_retains_original_replay[sqlite]" time="0.299"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD4050&gt;, client=&lt;starlette.testclient.TestClient obj...055a', 'Bob': '517d586b-6de3-4340-9a8b-f90d43d30817', 'Carol': 'db96e383-498a-44ca-9a72-633626aed25a'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002754FB6A450&gt;
+
+    def test_infrastructure_run_retry_retains_original_replay(domain, monkeypatch):
+&gt;       version, _ = save(domain)
+                     ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:128: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD4050&gt;, client=&lt;starlette.testclient.TestClient obj...055a', 'Bob': '517d586b-6de3-4340-9a8b-f90d43d30817', 'Carol': 'db96e383-498a-44ca-9a72-633626aed25a'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_infrastructure_run_retry_retains_original_replay[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:127: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_legacy_owned_document_identity_recovers_existing_track[sqlite]" time="0.257"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD5E80&gt;, client=&lt;starlette.testclient.TestClient obj...47d7', 'Bob': '452bbbff-2f60-4703-a869-e283e773502d', 'Carol': '67143475-c9b8-425a-a3c1-e4b5e45cba44'}, postgres=False)
+
+    def test_legacy_owned_document_identity_recovers_existing_track(domain):
+        from test_domains import upload
+&gt;       old = upload(domain, document={"id": "track_legacy", "shape": "oval"})
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD5E80&gt;, client=&lt;starlette.testclient.TestClient obj...47d7', 'Bob': '452bbbff-2f60-4703-a869-e283e773502d', 'Carol': '67143475-c9b8-425a-a3c1-e4b5e45cba44'}, postgres=False)
+player = 'Creator', key = None
+document = {'id': 'track_legacy', 'shape': 'oval'}
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_legacy_owned_document_identity_recovers_existing_track[postgres]" time="0.013"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:150: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_validation_lease_fences_old_worker[sqlite]" time="0.374"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD7E00&gt;, client=&lt;starlette.testclient.TestClient obj...d874', 'Bob': '46c03ac6-8118-4e53-b043-fa62b1b09e97', 'Carol': '5cf74d00-18ae-4f5b-bb9b-15dc820ce677'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002754FFC1550&gt;
+
+    def test_validation_lease_fences_old_worker(domain, monkeypatch):
+&gt;       version, _ = save(domain)
+                     ^^^^^^^^^^^^
+
+tests\test_track_lifecycle.py:159: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002754FCD7E00&gt;, client=&lt;starlette.testclient.TestClient obj...d874', 'Bob': '46c03ac6-8118-4e53-b043-fa62b1b09e97', 'Carol': '5cf74d00-18ae-4f5b-bb9b-15dc820ce677'}, postgres=False)
+source = 'track_lifecycle', changes = {}
+
+    def save(domain, source="track_lifecycle", **changes):
+        document = {"schema": "creator-track-v5", "id": source, "name": "Lifecycle loop",
+                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+        body = {"name": document["name"], "document": document, "authoring_id": source, "defer_validation": True}
+        body.update(changes)
+        import time
+        auth = headers(domain)
+        for retry in range(10):
+            response = domain.client.post("/v1/tracks", json=body, headers=auth)
+            if response.status_code != 503 or response.json().get("detail") != "REQUEST_VALIDATION_BUSY": break
+            time.sleep(.1)
+&gt;       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_track_lifecycle.py:29: AssertionError</failure></testcase><testcase classname="tests.test_track_lifecycle" name="test_validation_lease_fences_old_worker[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:158: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_concurrent_new_keys_have_one_authoring_identity[sqlite]" time="0.329"><skipped type="pytest.skip" message="Cross-connection locking acceptance requires PostgreSQL">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:174: Cross-connection locking acceptance requires PostgreSQL</skipped></testcase><testcase classname="tests.test_track_lifecycle" name="test_concurrent_new_keys_have_one_authoring_identity[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_track_lifecycle.py:172: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_non_pb_races_leave_revisions_and_due_snapshot_unchanged[sqlite]" time="0.294"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755017ECF0&gt;, client=&lt;starlette.testclient.TestClient obj...02be', 'Bob': '42c82fc1-59dd-4f04-b31b-912dbecb9eea', 'Carol': '080a85f0-8601-48d5-80f0-26b64eeeaba9'}, postgres=False)
+
+    def test_non_pb_races_leave_revisions_and_due_snapshot_unchanged(domain):
+&gt;       version,board = public_course(domain)
+                        ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755017ECF0&gt;, client=&lt;starlette.testclient.TestClient obj...02be', 'Bob': '42c82fc1-59dd-4f04-b31b-912dbecb9eea', 'Carol': '080a85f0-8601-48d5-80f0-26b64eeeaba9'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_non_pb_races_leave_revisions_and_due_snapshot_unchanged[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:48: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_flying_pb_is_independent_of_race_pb_and_ignores_standing_start[sqlite]" time="0.283"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064CAD0&gt;, client=&lt;starlette.testclient.TestClient obj...855d', 'Bob': '1a97f59c-4fcb-471f-b0fa-467cfb576465', 'Carol': '07e6f5cb-e4fa-4709-bc92-b7c60d5bec0a'}, postgres=False)
+
+    def test_flying_pb_is_independent_of_race_pb_and_ignores_standing_start(domain):
+&gt;       version,board = public_course(domain)
+                        ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064CAD0&gt;, client=&lt;starlette.testclient.TestClient obj...855d', 'Bob': '1a97f59c-4fcb-471f-b0fa-467cfb576465', 'Carol': '07e6f5cb-e4fa-4709-bc92-b7c60d5bec0a'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_flying_pb_is_independent_of_race_pb_and_ignores_standing_start[postgres]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:62: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits0]" time="0.288"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064E7B0&gt;, client=&lt;starlette.testclient.TestClient obj...348f', 'Bob': '341251d9-497b-46ab-88bf-5fa9af46a16a', 'Carol': '33661520-34b0-4672-819d-6890bfb5d477'}, postgres=False)
+splits = [1, 2, 3, 4]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064E7B0&gt;, client=&lt;starlette.testclient.TestClient obj...348f', 'Bob': '341251d9-497b-46ab-88bf-5fa9af46a16a', 'Carol': '33661520-34b0-4672-819d-6890bfb5d477'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits1]" time="0.276"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064F4D0&gt;, client=&lt;starlette.testclient.TestClient obj...ad6d', 'Bob': '29b1f907-beb9-4805-a131-63d0bef50ed1', 'Carol': 'e7102ac5-f945-464e-b45e-d9929a62f5f3'}, postgres=False)
+splits = [1, 2, 3, 4, 5, 6]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755064F4D0&gt;, client=&lt;starlette.testclient.TestClient obj...ad6d', 'Bob': '29b1f907-beb9-4805-a131-63d0bef50ed1', 'Carol': 'e7102ac5-f945-464e-b45e-d9929a62f5f3'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits2]" time="0.267"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027550A1D2B0&gt;, client=&lt;starlette.testclient.TestClient obj...e4ae', 'Bob': '3b46f8ca-5c7d-4b29-bd93-c5f576f26382', 'Carol': 'e7aa2cd3-2788-4312-bfa6-741eae2aaae5'}, postgres=False)
+splits = [1, 0, 3, 4, 5]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027550A1D2B0&gt;, client=&lt;starlette.testclient.TestClient obj...e4ae', 'Bob': '3b46f8ca-5c7d-4b29-bd93-c5f576f26382', 'Carol': 'e7aa2cd3-2788-4312-bfa6-741eae2aaae5'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits3]" time="0.307"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027550A1EF90&gt;, client=&lt;starlette.testclient.TestClient obj...4ab4', 'Bob': 'd89f0b29-b356-4ad0-b49b-4d08a6d48f18', 'Carol': '0e18c8d1-ccd0-47cd-9f7e-cc0d3486178e'}, postgres=False)
+splits = [1, 2.5, 3, 4, 5]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027550A1EF90&gt;, client=&lt;starlette.testclient.TestClient obj...4ab4', 'Bob': 'd89f0b29-b356-4ad0-b49b-4d08a6d48f18', 'Carol': '0e18c8d1-ccd0-47cd-9f7e-cc0d3486178e'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits4]" time="0.260"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027551F04D70&gt;, client=&lt;starlette.testclient.TestClient obj...d52b', 'Bob': '538fcf5b-118f-4dc5-9058-e2dfe36f97ec', 'Carol': '524e6af3-cb76-46e7-9465-e0b4ab9259c1'}, postgres=False)
+splits = [1, '2', 3, 4, 5]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027551F04D70&gt;, client=&lt;starlette.testclient.TestClient obj...d52b', 'Bob': '538fcf5b-118f-4dc5-9058-e2dfe36f97ec', 'Carol': '524e6af3-cb76-46e7-9465-e0b4ab9259c1'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits5]" time="0.276"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027551F06A50&gt;, client=&lt;starlette.testclient.TestClient obj...6966', 'Bob': 'b578d9d3-b488-4a92-a6a6-2f5cd235c523', 'Carol': 'acfdd624-db28-44e7-a962-5311b7cbb591'}, postgres=False)
+splits = [1, True, 3, 4, 5]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027551F06A50&gt;, client=&lt;starlette.testclient.TestClient obj...6966', 'Bob': 'b578d9d3-b488-4a92-a6a6-2f5cd235c523', 'Carol': 'acfdd624-db28-44e7-a962-5311b7cbb591'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[sqlite-splits6]" time="0.283"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275522B4830&gt;, client=&lt;starlette.testclient.TestClient obj...55ff', 'Bob': '14006be2-fac9-472e-a78f-9fab32229775', 'Carol': '69b25660-ef50-404a-b13a-223170443d39'}, postgres=False)
+splits = [1, 2, None, 4, 5]
+
+    @pytest.mark.parametrize("splits",[[1,2,3,4],[1,2,3,4,5,6],[1,0,3,4,5],[1,2.5,3,4,5],
+                                       [1,"2",3,4,5],[1,True,3,4,5],[1,2,None,4,5]])
+    def test_malformed_splits_never_become_lap_pbs(domain,splits):
+&gt;       _,board = public_course(domain)
+                  ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:82: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275522B4830&gt;, client=&lt;starlette.testclient.TestClient obj...55ff', 'Bob': '14006be2-fac9-472e-a78f-9fab32229775', 'Carol': '69b25660-ef50-404a-b13a-223170443d39'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits0]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits1]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits2]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits3]" time="0.003"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits4]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits5]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_malformed_splits_never_become_lap_pbs[postgres-splits6]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:79: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_creator_proof_has_no_flying_pb[sqlite]" time="0.650"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275522B7B60&gt;, client=&lt;starlette.testclient.TestClient obj...2bd5', 'Bob': '143b8ed2-8bbb-456c-b6eb-8a2d71df5dfb', 'Carol': 'efae1e24-55bb-4d23-ac12-936069a6679f'}, postgres=False)
+
+    def test_creator_proof_has_no_flying_pb(domain):
+&gt;       _,board=public_course(domain)
+                ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:90: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275522B7B60&gt;, client=&lt;starlette.testclient.TestClient obj...2bd5', 'Bob': '143b8ed2-8bbb-456c-b6eb-8a2d71df5dfb', 'Carol': 'efae1e24-55bb-4d23-ac12-936069a6679f'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_creator_proof_has_no_flying_pb[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:89: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_retention_keeps_flying_source_but_redundant_attempts_do_not_dirty[sqlite]" time="0.247"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275525552B0&gt;, client=&lt;starlette.testclient.TestClient obj...583d', 'Bob': '9a749fbd-7268-49cb-a5d2-ba2d447b1475', 'Carol': '936326e1-5005-417f-8b48-4c34bcd23036'}, postgres=False)
+
+    def test_retention_keeps_flying_source_but_redundant_attempts_do_not_dirty(domain):
+&gt;       version,board = public_course(domain)
+                        ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:103: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000275525552B0&gt;, client=&lt;starlette.testclient.TestClient obj...583d', 'Bob': '9a749fbd-7268-49cb-a5d2-ba2d447b1475', 'Carol': '936326e1-5005-417f-8b48-4c34bcd23036'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_retention_keeps_flying_source_but_redundant_attempts_do_not_dirty[postgres]" time="0.005"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:102: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_winning_source_retirement_repairs_only_its_driver[sqlite]" time="0.298"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552556F90&gt;, client=&lt;starlette.testclient.TestClient obj...be40', 'Bob': 'a3a26032-ec90-494e-81f5-03adc746d3d5', 'Carol': '9b7c332b-dba8-4ea7-be9d-8b4905732314'}, postgres=False)
+
+    def test_winning_source_retirement_repairs_only_its_driver(domain):
+&gt;       version,board = public_course(domain)
+                        ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:121: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552556F90&gt;, client=&lt;starlette.testclient.TestClient obj...be40', 'Bob': 'a3a26032-ec90-494e-81f5-03adc746d3d5', 'Carol': '9b7c332b-dba8-4ea7-be9d-8b4905732314'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_winning_source_retirement_repairs_only_its_driver[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:120: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_migration_bounded_backfill_matches_legacy_and_survives_restart[sqlite]" time="0.314"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552AE0D70&gt;, client=&lt;starlette.testclient.TestClient obj...1a8e', 'Bob': 'd2d0510a-a86f-4949-a04c-96808dcbe0c5', 'Carol': '9b821e64-0a11-44d8-997c-24d0ea1d5918'}, postgres=False)
+
+    def test_migration_bounded_backfill_matches_legacy_and_survives_restart(domain):
+&gt;       version,board = public_course(domain)
+                        ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:138: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552AE0D70&gt;, client=&lt;starlette.testclient.TestClient obj...1a8e', 'Bob': 'd2d0510a-a86f-4949-a04c-96808dcbe0c5', 'Carol': '9b821e64-0a11-44d8-997c-24d0ea1d5918'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_migration_bounded_backfill_matches_legacy_and_survives_restart[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:137: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_reset_fences_backfill_and_does_not_revive_retained_artificial_history[sqlite]" time="0.337"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552AE2A50&gt;, client=&lt;starlette.testclient.TestClient obj...c15b', 'Bob': '5c039f34-afc8-4d70-88e8-a1f28fe136ca', 'Carol': '64d38d0f-8115-48ff-b152-2984c1879552'}, postgres=False)
+
+    def test_reset_fences_backfill_and_does_not_revive_retained_artificial_history(domain):
+&gt;       _,public = public_course(domain)
+                   ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:161: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552AE2A50&gt;, client=&lt;starlette.testclient.TestClient obj...c15b', 'Bob': '5c039f34-afc8-4d70-88e8-a1f28fe136ca', 'Carol': '64d38d0f-8115-48ff-b152-2984c1879552'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_reset_fences_backfill_and_does_not_revive_retained_artificial_history[postgres]" time="0.005"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:160: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_histogram_generation_reads_driver_pbs_without_run_history[sqlite]" time="0.267"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552E90830&gt;, client=&lt;starlette.testclient.TestClient obj...baf9', 'Bob': '1145347c-4186-45cb-8791-08bd5fe1ded3', 'Carol': 'f9a73687-16d6-4342-a3d8-aac2e9a49149'}, postgres=False)
+
+    def test_histogram_generation_reads_driver_pbs_without_run_history(domain):
+&gt;       _,board=public_course(domain)
+                ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:196: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552E90830&gt;, client=&lt;starlette.testclient.TestClient obj...baf9', 'Bob': '1145347c-4186-45cb-8791-08bd5fe1ded3', 'Carol': 'f9a73687-16d6-4342-a3d8-aac2e9a49149'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_histogram_generation_reads_driver_pbs_without_run_history[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:195: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_failed_transaction_does_not_publish_a_lap_best[sqlite]" time="0.442"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552E92510&gt;, client=&lt;starlette.testclient.TestClient obj...d7aa', 'Bob': '2a80eaaf-e569-461f-acbf-201c315ba89f', 'Carol': 'ef4c57c7-11db-440f-ab0d-4aaf9347376c'}, postgres=False)
+
+    def test_failed_transaction_does_not_publish_a_lap_best(domain):
+&gt;       _,board=public_course(domain)
+                ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:209: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027552E92510&gt;, client=&lt;starlette.testclient.TestClient obj...d7aa', 'Bob': '2a80eaaf-e569-461f-acbf-201c315ba89f', 'Carol': 'ef4c57c7-11db-440f-ab0d-4aaf9347376c'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_failed_transaction_does_not_publish_a_lap_best[postgres]" time="0.005"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:208: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_reset_preserves_existing_all_car_scope_and_real_private_laps[sqlite]" time="0.440"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327C2F0&gt;, client=&lt;starlette.testclient.TestClient obj...0c94', 'Bob': 'b8c6223b-cb46-4d33-a782-8f011fcb1cfa', 'Carol': '6ae81221-2ea6-4625-8c7e-98dbb3bfe3d8'}, postgres=False)
+
+    def test_reset_preserves_existing_all_car_scope_and_real_private_laps(domain):
+&gt;       version,public=public_course(domain)
+                       ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:216: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327C2F0&gt;, client=&lt;starlette.testclient.TestClient obj...0c94', 'Bob': 'b8c6223b-cb46-4d33-a782-8f011fcb1cfa', 'Carol': '6ae81221-2ea6-4625-8c7e-98dbb3bfe3d8'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_reset_preserves_existing_all_car_scope_and_real_private_laps[postgres]" time="0.006"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:215: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_backfill_rechecks_corrected_source_before_publication[sqlite]" time="0.387"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327DFD0&gt;, client=&lt;starlette.testclient.TestClient obj...4697', 'Bob': '3cbe11bf-ed51-4020-a463-538c86ec62ff', 'Carol': '8dcb356a-b6ca-40cf-b8aa-fc49d7cf2e2f'}, postgres=False)
+
+    def test_backfill_rechecks_corrected_source_before_publication(domain):
+&gt;       _,board=public_course(domain)
+                ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:242: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327DFD0&gt;, client=&lt;starlette.testclient.TestClient obj...4697', 'Bob': '3cbe11bf-ed51-4020-a463-538c86ec62ff', 'Carol': '8dcb356a-b6ca-40cf-b8aa-fc49d7cf2e2f'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_backfill_rechecks_corrected_source_before_publication[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:241: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_reclassified_artificial_driver_cannot_keep_a_pre_reset_lap[sqlite]" time="0.282"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327FCB0&gt;, client=&lt;starlette.testclient.TestClient obj...6e94', 'Bob': '1115a54e-a7d9-4cac-a924-ae4c1aa73c4e', 'Carol': '5fd6ae8a-1b66-4697-8161-0f97d8ebf06f'}, postgres=False)
+
+    def test_reclassified_artificial_driver_cannot_keep_a_pre_reset_lap(domain):
+&gt;       version,public=public_course(domain)
+                       ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:258: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755327FCB0&gt;, client=&lt;starlette.testclient.TestClient obj...6e94', 'Bob': '1115a54e-a7d9-4cac-a924-ae4c1aa73c4e', 'Carol': '5fd6ae8a-1b66-4697-8161-0f97d8ebf06f'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_reclassified_artificial_driver_cannot_keep_a_pre_reset_lap[postgres]" time="0.005"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:257: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_player_verification_precedes_backfill_between_batches[sqlite]" time="0.256"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027553689A90&gt;, client=&lt;starlette.testclient.TestClient obj...0e0d', 'Bob': 'd5ecd77a-0761-4c8e-ba79-2e3909fe8613', 'Carol': '2ea57245-7b97-494d-a141-84d8e497e281'}, postgres=False)
+
+    def test_player_verification_precedes_backfill_between_batches(domain):
+        from bmt_backend.worker import process_worker_job
+&gt;       version,board=public_course(domain)
+                      ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:276: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000027553689A90&gt;, client=&lt;starlette.testclient.TestClient obj...0e0d', 'Bob': 'd5ecd77a-0761-4c8e-ba79-2e3909fe8613', 'Carol': '2ea57245-7b97-494d-a141-84d8e497e281'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_player_verification_precedes_backfill_between_batches[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:274: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_backfill_reports_invalid_facts_and_restarts_after_a_crash[sqlite]" time="0.253"><failure message="AssertionError: {&quot;detail&quot;:&quot;AUTH_REQUIRED&quot;}&#10;assert 401 == 201&#10; +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755368B770&gt;, client=&lt;starlette.testclient.TestClient obj...f165', 'Bob': '01aba589-d2de-47c5-8e26-56104f9a00ae', 'Carol': '906f2d05-7340-4c87-9c64-499f53843d59'}, postgres=False)
+
+    def test_backfill_reports_invalid_facts_and_restarts_after_a_crash(domain):
+&gt;       _,board=public_course(domain)
+                ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_lap_bests.py:291: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_domains.py:189: in public_course
+    version = upload(domain)
+              ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000002755368B770&gt;, client=&lt;starlette.testclient.TestClient obj...f165', 'Bob': '01aba589-d2de-47c5-8e26-56104f9a00ae', 'Carol': '906f2d05-7340-4c87-9c64-499f53843d59'}, postgres=False)
+player = 'Creator', key = None, document = None
+
+    def upload(domain, player="Creator", key=None, document=None):
+        result = domain.client.post(
+            "/v1/tracks",
+            json={"name": "Loop", "document": document or {"shape": "oval"}},
+            headers=headers(domain, player, key),
+        )
+&gt;       assert result.status_code == 201, result.text
+E       AssertionError: {"detail":"AUTH_REQUIRED"}
+E       assert 401 == 201
+E        +  where 401 = &lt;Response [401 Unauthorized]&gt;.status_code
+
+tests\test_domains.py:144: AssertionError</failure></testcase><testcase classname="tests.test_lap_bests" name="test_backfill_reports_invalid_facts_and_restarts_after_a_crash[postgres]" time="0.004"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:290: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_concurrent_improvements_choose_minimum[sqlite]" time="0.301"><skipped type="pytest.skip" message="Separate PostgreSQL writer transactions required">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:308: Separate PostgreSQL writer transactions required</skipped></testcase><testcase classname="tests.test_lap_bests" name="test_concurrent_improvements_choose_minimum[postgres]" time="0.008"><skipped type="pytest.skip" message="Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database">C:\Codes\Godot\Beat my track\build\committed-legacy-cleanup-2026-10-16\head\backend\tests\test_lap_bests.py:307: Set BMT_TEST_DATABASE_URL to a disposable PostgreSQL database</skipped></testcase></testsuite></testsuites>

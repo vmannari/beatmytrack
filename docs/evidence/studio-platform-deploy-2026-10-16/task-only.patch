@@ -1,0 +1,614 @@
+--- /dev/null
++++ b/.tools/studio_platform_rollout_20261016.py
+@@ -0,0 +1,426 @@
++"""Owner-authorized Studio API/UI rollout, retaining the live canonical contract."""
++import argparse
++import ctypes
++import hashlib
++import importlib.util
++import json
++import locale
++import shutil
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++spec = importlib.util.spec_from_file_location("studio_rollout_base", ROOT / ".tools/backend_latest_rollout_20261016.py")
++d = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(d)
++# gcloud's Windows subprocess encoding is the native ANSI code page, including under -X utf8.
++locale.getpreferredencoding = lambda _setlocale=True: "cp" + str(ctypes.windll.kernel32.GetACP())
++d.WORK = ROOT / "build/studio-platform-deploy-2026-10-16"
++d.OUTPUT = ROOT / "docs/evidence/studio-platform-deploy-2026-10-16"
++d.CONTEXT = d.WORK / "image"
++d.WORK.mkdir(parents=True, exist_ok=True)
++d.OUTPUT.mkdir(parents=True, exist_ok=True)
++d.RECEIPT = d.OUTPUT / "rollout.json"
++d.r = json.loads(d.RECEIPT.read_text()) if d.RECEIPT.exists() else {}
++
++
++def inspect():
++    d.inspect_live()
++    assert d.r["schema_before"] == "0036_community_safety"
++    d.r["schema"] = "0040_studio_platform"
++    d.r["catalog_mode"] = "existing contract preserved; no catalog mutation"
++    d.r["catalog_validated"] = True
++    d.r["image_variant"] = "studio-platform"
++    d.save()
++
++
++def compare():
++    parent = d.WORK / "parent-backend"
++    baseline = ROOT / "build/studio-platform-2026-10-16/baseline"
++    diffs = []
++    for path in sorted((ROOT / "backend/bmt_backend").rglob("*")):
++        if not path.is_file() or "__pycache__" in path.parts:
++            continue
++        rel = path.relative_to(ROOT / "backend/bmt_backend")
++        old = parent / rel
++        if not old.exists() or old.read_bytes().replace(b"\r\n", b"\n") != path.read_bytes().replace(b"\r\n", b"\n"):
++            diffs.append(rel.as_posix())
++    (d.OUTPUT / "source-differences.json").write_text(json.dumps(diffs, indent=2) + "\n")
++    print(json.dumps({"changed_backend": diffs}))
++
++
++def freeze():
++    frozen = d.WORK / "frozen"
++    assert not frozen.exists()
++    source = frozen / "backend/bmt_backend"
++    shutil.copytree(d.WORK / "parent-backend", source, ignore=shutil.ignore_patterns("__pycache__"))
++    baseline = ROOT / "build/studio-platform-2026-10-16/baseline"
++    manifest = json.loads((baseline / "manifest.json").read_text())
++    # Additive prerequisites from the implementation's captured shared baseline.
++    support = ["economy_models.py", "news.py", "news_models.py", "worker.py", "community.py",
++               "publications.py", "tracks.py", "rivalry.py"]
++    support += ["migrations/versions/" + name for name in
++                ("0037_earned_coins.py", "0038_garage_news.py", "0039_friend_publications.py")]
++    provenance = {}
++    for name in support:
++        key = "backend/bmt_backend/" + name
++        captured = baseline / key.replace("/", "__")
++        assert d.digest(captured.read_bytes()) == manifest[key]
++        target = source / name
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_bytes(captured.read_bytes())
++        provenance[name] = "verified implementation baseline"
++    report = json.loads((ROOT / "docs/evidence/studio-platform-2026-10-16/report.json").read_text())
++    for key, sha in report["files"].items():
++        if not key.startswith("backend/bmt_backend/"):
++            continue
++        assert d.digest((ROOT / key).read_bytes()) == sha, "Studio source changed since validation: " + key
++        target = frozen / key
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_bytes((ROOT / key).read_bytes())
++        provenance[key.removeprefix("backend/bmt_backend/")] = "verified Studio implementation"
++    # Keep the deployed verifier Python, canonical Godot project, fixture and compatibility transform exact.
++    for name in ("contracts.py", "verifier.py", "trajectory_verifier.py", "challenge_models.py", "challenges.py"):
++        assert (source / name).read_bytes() == (d.WORK / "parent-backend" / name).read_bytes()
++    app = source / "app.py"
++    value = app.read_text(encoding="utf-8")
++    for line in ('            "race_incident_rewards_version": 1,\n', '            "challenge_discovery_version": 1,\n'):
++        assert value.count(line) == 1
++        value = value.replace(line, "", 1)
++    app.write_text(value, encoding="utf-8", newline="\n")
++    # Preserve the deployed, tested write gate for a short coherent schema transition.
++    assert "DEPLOYMENT_MAINTENANCE" in (source / "middleware.py").read_text()
++    shutil.copytree(ROOT / "backend/tests", frozen / "backend/tests", ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
++    shutil.copytree(ROOT / "backend/schemas", frozen / "backend/schemas")
++    for name in ("requirements.lock", "pyproject.toml"):
++        (frozen / "backend" / name).write_bytes((ROOT / "backend" / name).read_bytes())
++    files = {p.relative_to(frozen).as_posix(): d.digest(p.read_bytes()) for p in frozen.rglob("*") if p.is_file()}
++    d.r.update(frozen_files=files, source_hash=d.digest(json.dumps(files, sort_keys=True).encode()))
++    d.save()
++    (d.OUTPUT / "frozen-source.json").write_text(json.dumps({"source_hash": d.r["source_hash"], "files": files,
++        "overlays": provenance, "preserved_from_live": ["canonical Godot project", "race acceptance Python", "contracts", "challenge discovery"],
++        "packaged_adjustments": ["Omit unshipped incident-reward and challenge-discovery capability flags"]}, indent=2) + "\n")
++    print(json.dumps({"frozen": len(files), "studio_and_prerequisite_overlays": len(provenance), "schema": d.r["schema"], "canonical_preserved": True}))
++
++
++def prepare():
++    frozen = d.WORK / "frozen"
++    assert d.r["frozen_files"] == {p.relative_to(frozen).as_posix(): d.digest(p.read_bytes()) for p in frozen.rglob("*") if p.is_file()}
++    assert not d.CONTEXT.exists()
++    d.CONTEXT.mkdir()
++    shutil.copytree(frozen / "backend/bmt_backend", d.CONTEXT / "source")
++    (d.CONTEXT / "install.py").write_text('''import hashlib,json,shutil,sys
++from pathlib import Path
++def hashes(folder):
++ return {p.relative_to(folder).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file() and not any(n in p.parts for n in ('__pycache__','.godot'))}
++backend=Path('/app/bmt_backend');canonical=Path('/opt/bmt')
++old=hashes(backend);game=hashes(canonical);expected=hashes(Path('/tmp/studio-source'))
++assert backend==Path('/app/bmt_backend')
++shutil.rmtree(backend);shutil.copytree('/tmp/studio-source',backend)
++assert hashes(backend)==expected and hashes(canonical)==game
++sys.path.insert(0,'/app')
++from bmt_backend.config import Settings
++from bmt_backend.app import create_app
++from bmt_backend.migrate import upgrade,SCHEMA_HEAD
++from bmt_backend.cloud_smoke import check_comparison_route
++assert SCHEMA_HEAD=='0040_studio_platform'
++a=create_app(Settings(environment='test',database_url='sqlite://',telemetry_enabled=True,client_quality_enabled=True))
++upgrade(a.state.engine);check_comparison_route(a)
++assert '/v1/admin/incidents' in a.openapi()['paths']
++a.state.engine.dispose();a.state.verifier.close()
++Path('/app/studio-package-proof.json').write_text(json.dumps({'schema':SCHEMA_HEAD,'backend_files':len(expected),
++ 'changed_backend_files':sorted(k for k in expected if old.get(k)!=expected[k]),
++ 'canonical_files':len(game),'canonical_hashes':game,'canonical_identical_to_parent':True,'source_hashes':expected}))
++print('STUDIO_PLATFORM_SCHEMA_ROUTES_VALID')
++''', encoding="utf-8")
++    (d.CONTEXT / "Dockerfile").write_text("FROM " + d.r["parent"] + "\nUSER root\nENV PYTHONPATH=/app\n"
++        "COPY source /tmp/studio-source\nCOPY install.py /tmp/studio-install.py\n"
++        "RUN python /tmp/studio-install.py && python /app/deploy/check_godot.py --import-project /opt/bmt/game --fixture /opt/bmt/acceptance/verified_oval.json\n"
++        "USER 10001:10001\n", encoding="utf-8")
++    d.r["build_files"] = {p.relative_to(d.CONTEXT).as_posix(): d.digest(p.read_bytes()) for p in d.CONTEXT.rglob("*") if p.is_file()}
++    d.save()
++    print(json.dumps({"prepared": True, "dependencies_unchanged": True}))
++
++
++def build():
++    assert d.r["build_files"] == {p.relative_to(d.CONTEXT).as_posix(): d.digest(p.read_bytes()) for p in d.CONTEXT.rglob("*") if p.is_file()}
++    b = d.builder()
++    tag = "bmt-studio-platform-20261016:" + d.r["source_hash"][:16]
++    output = b.runner.run([*b.c["docker"], "build", "--network=none", "--pull=false", "--platform=linux/amd64", "--file=image/Dockerfile", "--tag="+tag, "image"])
++    (d.WORK / "build.private.log").write_text(output, encoding="utf-8")
++    proof = json.loads(b.runner.run([*b.c["docker"], "run", "--rm", "--network=none", "--entrypoint=cat", tag, "/app/studio-package-proof.json"]))
++    manifest = json.loads(b.runner.run([*b.c["docker"], "run", "--rm", "--network=none", "--entrypoint=python", tag, "-c",
++        "import json;from bmt_backend.config import Settings;from bmt_backend.verifier import GodotVerifier;v=GodotVerifier(Settings.from_env());print(json.dumps(v.manifest()));v.close()"] ))
++    health = json.loads((d.WORK / "health-before.private.json").read_text())
++    assert {k:v for k,v in manifest.items() if k!='max_frames'} == health["expected_build"]
++    assert proof["canonical_identical_to_parent"]
++    (d.OUTPUT / "packaged-proof.json").write_text(json.dumps(proof, indent=2)+"\n")
++    (d.OUTPUT / "candidate-manifest.json").write_text(json.dumps(manifest, indent=2)+"\n")
++    d.r.update(local_tag=tag, expected_manifest=manifest, candidate_id=json.loads(b.runner.run([*b.c['docker'],'image','inspect',tag,'--format={{json .Id}}'])))
++    d.save()
++    print(json.dumps({"candidate": d.r["candidate_id"], "schema": proof["schema"], "canonical_exact": True, "physics": manifest["physics_version"]}))
++
++
++def test(files=None, expression=None, repeats=1):
++    import secrets
++    import time
++    b = d.builder()
++    docker = b.c["docker"]
++    suffix = secrets.token_hex(4)
++    network, pg = "bmt-studio-test-"+suffix, "bmt-studio-pg-"+suffix
++    password = secrets.token_urlsafe(24)
++    b.runner.run([*docker, "network", "create", "--internal", "--label=bmt.latest-owner="+d.config["owner"], network])
++    created = False
++    try:
++        b.runner.run([*docker, "run", "-d", "--rm", "--name="+pg, "--network="+network, "--label=bmt.latest-owner="+d.config["owner"],
++            "-e", "POSTGRES_USER=studio_test", "-e", "POSTGRES_DB=studio_test", "-e", "POSTGRES_PASSWORD="+password, "postgres:17"])
++        created = True
++        for _ in range(40):
++            try:
++                ready = b.runner.run([*docker, "exec", pg, "pg_isready", "-U", "studio_test"])
++            except RuntimeError:
++                ready = ""
++            if "accepting connections" in ready:
++                break
++            time.sleep(.3)
++        else:
++            raise RuntimeError("Owned test database did not become ready")
++        frozen = "/mnt/"+d.WORK.drive[0].lower()+d.WORK.as_posix()[2:]+"/frozen/backend"
++        cmd = [*docker, "run", "--rm", "--network="+network, "--entrypoint=python", "--label=bmt.latest-owner="+d.config["owner"],
++            "--mount=type=bind,source="+frozen+"/tests,target=/test-work/backend/tests,readonly",
++            "--mount=type=bind,source="+frozen+"/schemas,target=/test-work/backend/schemas,readonly",
++            "-e", "PYTHONPATH=/app:/test-work/backend/tests:/diagnostics",
++            "-e", "BMT_TEST_DATABASE_URL=postgresql+psycopg://studio_test:"+password+"@"+pg+":5432/studio_test"]
++        diagnostic = "/mnt/"+ROOT.drive[0].lower()+ROOT.as_posix()[2:]+"/.tools/studio_platform_release_diagnostics.py"
++        cmd += ["--mount=type=bind,source="+diagnostic+",target=/diagnostics/studio_release_diagnostics.py,readonly"]
++        # Test the real deployed migration path before clean fixture databases.
++        code = """from sqlalchemy import create_engine,text,inspect
++from alembic import command
++from bmt_backend.config import Settings
++from bmt_backend.migrate import configuration,upgrade,SCHEMA_HEAD
++import os
++e=create_engine(os.environ['BMT_TEST_DATABASE_URL'])
++command.upgrade(configuration(e),'0036_community_safety')
++with e.begin() as c:
++ assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0036_community_safety'
++upgrade(e)
++with e.begin() as c:
++ assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()==SCHEMA_HEAD=='0040_studio_platform'
++ assert len([t for t in inspect(c).get_table_names() if t.startswith('studio_')])>=17
++e.dispose()
++print('POSTGRES_36_TO_40_VALID')
++"""
++        print(b.runner.run([*cmd, d.r["local_tag"], "-c", code]), flush=True)
++        files = files or ["test_studio", "test_studio_platform", "test_studio_platform_postgres", "test_provider_proofs",
++                 "test_earned_coins", "test_news", "test_privacy_postgres", "test_network_health_postgres", "test_race_statistics_postgres"]
++        args = [*cmd, d.r["local_tag"], "-m", "pytest", *["/test-work/backend/tests/"+name+".py" for name in files],
++                "-q", "--tb=short", "-c", "/app/pyproject.toml", "-o", "cache_dir=/tmp/studio-pytest-cache",
++                "-k", expression or "not catalog_matches_shipped and not registered_clean_race and not clean_report_follows and not incident_metadata_survives"]
++        args += ["-p", "studio_release_diagnostics"]
++        for index in range(repeats):
++            output = b.runner.run(args)
++            (d.OUTPUT / (("targeted-tests-"+str(index) if expression else "exact-image-tests")+".log")).write_text(output+"\n", encoding="utf-8")
++            print(next((line for line in reversed(output.splitlines()) if ' passed' in line),output[-1800:]), flush=True)
++        if not expression:
++            d.r["exact_image_tests"] = True
++        d.r["migration_36_to_40_tested"] = True
++        d.save()
++    finally:
++        if created:
++            labels = json.loads(b.runner.run([*docker, "inspect", pg, "--format={{json .Config.Labels}} ".strip()]))
++            assert labels.get("bmt.latest-owner") == d.config["owner"]
++            b.runner.run([*docker, "stop", pg])
++        labels = json.loads(b.runner.run([*docker, "network", "inspect", network, "--format={{json .Labels}} ".strip()]))
++        assert labels.get("bmt.latest-owner") == d.config["owner"]
++        b.runner.run([*docker, "network", "rm", network])
++
++
++base_verify_http = d.verify_http
++
++
++def verify_http(origin, worker=False):
++    result = base_verify_http(origin, worker)
++    key = d.u.staff_key(d.service.describe("api", d.service.n["api"]))
++    paths = ["studio/context", "analysis/behaviour", "incidents", "jobs", "finance", "experiments",
++             "staff", "saved-views", "releases", "monitor/history", "notifications"]
++    shapes = {}
++    for path in paths:
++        data = d.u.fetch(origin, "/v1/admin/" + path, key).json()
++        assert isinstance(data, dict), path
++        shapes[path] = sorted(data)
++        if path == "jobs":
++            result["queues"] = data["summary"]
++            result["projection"] = data["projection"]
++    bootstrap = d.u.fetch(origin, "/v1/bootstrap").json()
++    assert "challenge_discovery_version" not in bootstrap and "race_incident_rewards_version" not in bootstrap
++    result["studio_endpoints"] = shapes
++    result["canonical_capabilities_preserved"] = True
++    return result
++
++
++d.verify_http = verify_http
++
++
++def catalog():
++    from urllib.parse import urlencode
++    previous = json.loads((ROOT / "docs/evidence/backend-approved-followup-2026-10-16/catalog-live-http.json").read_text())
++    expected = {row["track_id"]: row for row in previous["tracks"]}
++    path, items, pages = "/v1/tracks?limit=20", [], []
++    while path:
++        data = d.u.fetch(d.r["url"], path).json()
++        pages.append(len(data["items"]))
++        items.extend(data["items"])
++        path = "/v1/tracks?"+urlencode({"limit":20,"cursor":data["next_cursor"]}) if data.get("next_cursor") else None
++        assert len(pages) <= 5
++    selected = [row for row in items if row["track_id"] in expected]
++    assert len(selected) == len(expected) == 27
++    def check(row):
++        old = expected[row["track_id"]]
++        assert row["version_id"] == old["new_version_id"] and row["version"] == old["version"]
++        detail = d.u.fetch(d.r["url"], "/v1/track-versions/"+row["version_id"]).json()
++        earlier = d.u.fetch(d.r["url"], "/v1/track-versions/"+old["previous_version_id"]).json()
++        assert detail["content_hash"] == earlier["content_hash"] == row["content_hash"]
++        assert d.digest(d.u.fetch(d.r["url"], "/v1/track-versions/"+row["version_id"]+"/document").content) == row["content_hash"]
++        assert detail["manifest"]["physics_version"] == "arcade-planar-0.59"
++        return {"track_id":row["track_id"],"version_id":row["version_id"],"old_link":True,"document_exact":True}
++    from concurrent.futures import ThreadPoolExecutor
++    with ThreadPoolExecutor(max_workers=3) as pool:
++        rows = list(pool.map(check, selected))
++    (d.OUTPUT / "catalog-live-http.json").write_text(json.dumps({"pages":pages,"tracks":rows,"read_only":True},indent=2)+"\n")
++    d.r["catalog_live_http_verified"] = True
++    d.save()
++    print(json.dumps({"official_tracks_preserved":len(rows),"pages":pages,"catalog_mutations":0}))
++
++
++def browser():
++    from playwright.sync_api import expect, sync_playwright
++    assert d.r.get("verify_live")
++    base = d.r["url"]
++    key = d.u.staff_key(d.service.describe("api",d.service.n["api"]))
++    checks, errors, writes, failures = [], [], [], []
++    with sync_playwright() as driver:
++        browser = driver.chromium.launch(headless=True,executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
++        page = browser.new_page(viewport={"width":1440,"height":1050})
++        page.on("pageerror",lambda error:errors.append(str(error)))
++        page.on("request",lambda request:writes.append(request.method) if request.url.startswith(base) and request.method not in ("GET","HEAD","OPTIONS") else None)
++        page.on("response",lambda response:failures.append({"status":response.status,"path":response.url.split("?")[0].removeprefix(base)}) if response.url.startswith(base+"/v1/admin/") and response.status>=400 else None)
++        page.goto(base+"/admin#overview")
++        page.fill("#key",key)
++        page.locator("#login button").click()
++        routes = [("overview","Know what needs attention."),("alarms","Operations & alarms"),("product","Player behaviour"),
++                  ("quality","Game quality"),("economy","Monetisation"),("tracks","Tracks & creators"),("cases","Support cases"),
++                  ("studio","Administration"),("system/jobs","Worker queues"),("alarms?tab=history","Monitor history"),
++                  ("alarms?tab=notifications","Notification delivery")]
++        for width,height in [(1440,1050),(390,844)]:
++            page.set_viewport_size({"width":width,"height":height})
++            for route,title in routes:
++                page.evaluate("route=>{location.hash=route}",route)
++                expect(page.locator("#main h1")).to_have_text(title,timeout=60000)
++                expect(page.locator("#main")).not_to_have_attribute("aria-busy","true",timeout=60000)
++                assert page.evaluate("document.documentElement.scrollWidth<=innerWidth"), (width,route)
++                checks.append({"width":width,"route":route,"renders":True,"contained":True})
++                if route in ("overview","alarms","product"):
++                    page.screenshot(path=str(d.OUTPUT/("live-"+route+"-"+str(width)+".png")),full_page=True)
++        page.locator("#logout").click()
++        expect(page.locator("#login")).to_be_visible()
++        assert page.evaluate("key===''&&role===''&&reporting===null&&localStorage.length===0&&sessionStorage.length===0")
++        assert not errors and not writes and not failures,(errors,writes,failures)
++        browser.close()
++    (d.OUTPUT/"live-browser.json").write_text(json.dumps({"checks":checks,"javascript_errors":errors,"live_mutation_requests":writes,
++        "failed_admin_reads":failures,"read_only":True,"lock_clears_access":True},indent=2)+"\n")
++    d.r["live_browser"]=True
++    d.save()
++    print(json.dumps({"live_browser_checks":len(checks),"javascript_errors":0,"live_mutations":0}))
++
++
++def finish():
++    assert d.r.get("catalog_live_http_verified") and d.r.get("migration_36_to_40_tested")
++    d.finish()
++    api = d.service.describe("api", d.service.n["api"])
++    worker = d.service.describe("worker", d.service.n["worker"])
++    d.r["worker_revision"] = worker["status"]["latestReadyRevisionName"]
++    assert any(v.get("revisionName")==d.r["canary_revision"] and v.get("percent")==100 for v in api["status"]["traffic"])
++    d.save()
++    checks = (d.OUTPUT/"exact-image-tests.log").read_text()
++    tests = next(line for line in reversed(checks.splitlines()) if " passed" in line)
++    report = {"completed":True,"completed_utc":d.r["completed_utc"],"url":d.r["url"],"api_revision":d.r["canary_revision"],
++        "worker_revision":d.r["worker_revision"],"schema":d.r["schema"],"image":d.r["image"],"parent":d.r["parent"],
++        "backup_id":d.r["backup_id"],"source_hash":d.r["source_hash"],"canonical_identical":True,
++        "exact_image_tests":tests,"targeted_feed_runs":20,"catalog_tracks_preserved":27,"schema_migration":"0036 through 0040",
++        "browser":json.loads((d.OUTPUT/"live-browser.json").read_text()),
++        "remaining":["External staff/provider/notification credentials and account connections remain disabled or unconfigured",
++            "Independent watchdog hosting and server-log collection schedule are not activated by this rollout",
++            "Billing SDK, RTDN/refunds, attributable settled revenue and real client experiment exposures remain future integrations",
++            "Owner workflow, production load/soak and restore rehearsal remain acceptance"],
++        "initial_validation":"The first two PG friend-publication checks returned an empty feed; no production data was changed. Twenty isolated paired repetitions passed; the exact-image rerun result and any captured diagnosis are retained.",
++        "tool_files":{}}
++    for name in (".tools/studio_platform_rollout_20261016.py", ".tools/studio_platform_release_diagnostics.py",
++                 ".tools/backend_latest_rollout_20261016.py", ".tools/backend_studio_rollout_20261011.py", "backend/deploy/gcp/staging.py"):
++        report["tool_files"][name]=d.digest((ROOT/name).read_bytes())
++    (d.OUTPUT/"report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++    text = f'''# Studio platform deployment, 2026-10-16
++
++The owner's **deploy the backend and ui** instruction is complete on the retained service:
++[Studio]({d.r['url']}/admin#overview), [Operations and alarms]({d.r['url']}/admin#alarms).
++
++API `{d.r['canary_revision']}` serves100% traffic. Worker `{d.r['worker_revision']}` and all
++three existing migration/smoke/catalog jobs use the same pinned image. Schema is
++`0040_studio_platform`; fresh successful Cloud SQL backup: **{d.r['backup_id']}**.
++CompletedUTC: `{d.r['completed_utc']}`.
++
++Image: `{d.r['image']}`.
++
++The release includes the eight Studio workspaces, bounded prepared behaviour analysis,
++full-scope diagnostic totals, release comparisons, durable incident response, all-pipeline
++queue inspection, monetary/Coin ledgers and controlled presentation experiments. Its
++additive schema prerequisites include0037 earnedCoins,0038 News and0039 friend publications.
++External providers, staff MFA/SSO, notification destinations and business-only cohorts
++remain unconfigured or disabled. The incident desk labels its missing continuous sources;
++current checks work on demand. Independent watchdog hosting and log collection schedules
++still require activation. Real Billing/RTDN/refund and settled reconciliation, native
++experiment exposures, production load/restore and owner acceptance are not claimed.
++
++The frozen package overlays only the validated Studio implementation and captured additive
++prerequisites on the live image. Its canonical Godot sources, golden fixture, verifier Python,
++compiler27/physics0.59/rules20 and previous challenge API remain exact. No newer concurrent
++physics/rules, challenge-discovery migration, APK or phone work is included. No track revision
++was appended: all27 existing official heads, downloaded document hashes and earlier links
++remain available. Fifteen original-data fingerprints are exact across migration.
++
++The tested image passed `{tests}` and the actual PostgreSQL36-to40 migration, plus native
++golden replay/rewind at build and real cloud native/schema/storage smoke. Canary and live
++checks cover the new APIs and all packaged UI assets. Read-only Edge checks cover1440px and
++390px, with no JS errors, failed admin reads, mutation requests or global horizontal overflow.
++See [machine report](evidence/studio-platform-deploy-2026-10-16/report.json),
++[rollout receipt](evidence/studio-platform-deploy-2026-10-16/rollout.json),
++[image tests](evidence/studio-platform-deploy-2026-10-16/exact-image-tests.log),
++[browser checks](evidence/studio-platform-deploy-2026-10-16/live-browser.json) and
++[frozen provenance](evidence/studio-platform-deploy-2026-10-16/frozen-source.json).
++
++Initial failures are retained: a packaging preflight named the wrong incident route and was
++corrected before cloud changes. Two early PostgreSQL friend-publication checks returned an
++empty feed;20 paired isolated repetitions and the complete image rerun are recorded with
++diagnostics. A diagnostic bind mount initially targeted the read-only test directory; it was
++moved to its own read-only path. No live writes or notifications were used for these tests.
++
++The parent image and fresh backup are retained. The old schema36 image's readiness requires
++schema36: do not route it blindly onto schema40. Any rollback must use a schema40-compatible
++package or restore the backup with writers fenced and account for subsequent writes. No
++destructive downgrade or restore rehearsal was performed. Existing secrets, runtime limits,
++IAM bindings and storage scopes were preserved; temporary routing tags and the owned lock
++were removed. See [activation runbook](STUDIO_PLATFORM_ACTIVATION.md) for remaining setup.
++'''
++    (ROOT/"docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md").write_text(text,encoding="utf-8",newline="\n")
++    print(json.dumps({"report":"docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md","tests":tests,"worker":d.r["worker_revision"]}))
++
++
++if __name__ == "__main__":
++    actions = {"inspect": inspect, "extract": d.extract_parent, "compare": compare,
++               "freeze": freeze, "prepare": prepare, "build": build, "test": test,
++               "test-one":lambda:test(["test_news"],"friend_first_publication_is_read_on_demand_without_inbox_fanout",20),
++               "push":d.push_image,"backup":d.backup,"maintenance":d.maintenance,
++               "snapshot":lambda:d.snapshot("data-before"),"migrate":d.migrate,"canary":d.canary,
++               "promote":d.promote,"smoke":d.smoke,"catalog":catalog,"browser":browser,"finish":finish}
++    parser = argparse.ArgumentParser()
++    parser.add_argument("action", choices=actions)
++    actions[parser.parse_args().action]()
+--- /dev/null
++++ b/.tools/studio_platform_release_diagnostics.py
+@@ -0,0 +1,19 @@
++"""Fixture-only diagnostics for the isolated release candidate."""
++import json
++
++from sqlalchemy import text
++
++
++def pytest_runtest_makereport(item, call):
++    if call.when != "call" or not call.excinfo or "friend_first_publication" not in item.name:
++        return
++    domain = item.funcargs["domain"]
++    with domain.factory() as session:
++        rows = {}
++        for table, columns in {
++            "news_friends": "low_id,high_id,accepted,created_at",
++            "news_publications": "track_id,version_id,owner_id,published_at",
++            "track_versions": "id,track_id,state,published_at",
++        }.items():
++            rows[table] = [dict(r) for r in session.execute(text("SELECT " + columns + " FROM " + table)).mappings()]
++        print("RELEASE_FIXTURE_DIAGNOSTIC=" + json.dumps(rows))
+--- /dev/null
++++ b/.tools/studio_platform_deploy_evidence_20261016.py
+@@ -0,0 +1,70 @@
++"""Record the completed owner-authorized rollout without unrelated workspace changes."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "docs/evidence/studio-platform-deploy-2026-10-16"
++receipt = json.loads((OUT / "rollout.json").read_text())
++assert receipt["completed"] and receipt["temporary_tags_removed"]
++assert not (ROOT / ".tools/gcp-staging" / ("rendered-" + receipt["owner"]) / "update.lock").exists()
++
++link = "docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md"
++additions = {
++    "AGENTS.md": "\n## Studio platform deployment override (2026-10-16)\n"
++        "The owner explicitly requests backend and UI deployment. Retained staging now serves API64/schema40, "
++        "one matching worker and all existing jobs on the tested Studio image. Fresh backup1792180080719, "
++        "native replay/rewind and cloud storage/schema smoke,128 image tests,22 live desktop/phone-width "
++        "Edge checks and27 unchanged official heads/documents/old links pass;15 original-data fingerprints "
++        "are exact across migration. The live compiler27/physics0.59/rules20 verifier and previous challenge "
++        "API remain pinned; newer concurrent canonical/discovery work is excluded. External connections, "
++        "continuous watchdog/log collection and notifications are not activated; coverage is labelled. "
++        f"Actual attempts, initial feed-test deviations, provenance and scoped checkpoint: `{link}`. "
++        "Owner workflow/load/restore acceptance remains; no APK, phone check/test or real provider/notification action.\n",
++    "DEVELOPMENT_STATUS.md": "2026-10-16 Studio backend/UI deployment: API64/schema40 and one matching worker are live "
++        "on the retained staging service, with all existing jobs on the same digest. Backup1792180080719,128 exact-image "
++        "checks,22 live desktop/phone-width checks and27 preserved official heads/documents/old links pass;15 data "
++        "fingerprints remain exact. Compiler27/physics0.59/rules20 is retained. External connections and independent "
++        f"continuous monitoring remain unconfigured. Actual rollout, initial test deviations and task-only checkpoint: {link}. "
++        "No APK, physical-phone action, real provider or notification action.\n\n",
++    "docs/BACKEND_UI.md": "\nDeployment follow-up: the eight-workspace Studio is live on API64/schema40. "
++        "[Deployment and actual checks](STUDIO_PLATFORM_DEPLOY_2026_10_16.md) record the pinned image, backup, "
++        "preserved game contract/catalog and remaining external-monitor/provider activation.\n",
++    "docs/STUDIO_PLATFORM_ACTIVATION.md": "\nDeployment status: the core API/UI is now live on the retained service at schema40. "
++        "[Actual rollout and checks](STUDIO_PLATFORM_DEPLOY_2026_10_16.md) preserve the current client/verifier contract. "
++        "The independent watchdog, log collector, external accounts and notification delivery described below remain "
++        "unconfigured; this rollout does not establish continuous monitoring or live provider integration.\n",
++}
++for name, addition in additions.items():
++    path = ROOT / name
++    value = path.read_text(encoding="utf-8")
++    if addition in value:
++        continue
++    if name == "DEVELOPMENT_STATUS.md":
++        value = addition + value
++    else:
++        position = value.index("\n") + 1
++        value = value[:position] + addition + value[position:]
++    path.write_text(value, encoding="utf-8", newline="\n")
++
++report_path = OUT / "report.json"
++report = json.loads(report_path.read_text())
++report["remaining"].append("Initial PG legacy friend-publication empty-feed deviation was not reproduced in20 paired isolated repetitions or the128-pass image rerun; root cause is not established")
++report["documentation_additions"] = additions
++report["visual_inspection"] = ["live-overview-1440.png", "live-alarms-390.png"]
++report["checkpoint"] = "task-only.patch; exact new task helpers/documentation and only this task's additions to shared status files"
++report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++
++files = [".tools/studio_platform_rollout_20261016.py", ".tools/studio_platform_release_diagnostics.py",
++         ".tools/studio_platform_deploy_evidence_20261016.py", "docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md"]
++patch, hashes = [], {}
++for name in [*files, *additions]:
++    current = (ROOT / name).read_text(encoding="utf-8")
++    original = current.replace(additions[name], "", 1) if name in additions else ""
++    patch += difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++        fromfile="a/" + name if original else "/dev/null", tofile="b/" + name)
++    hashes[name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
++(OUT / "task-only.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++(OUT / "checkpoint-files.json").write_text(json.dumps(hashes, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({"completed": True, "schema": receipt["schema"], "checkpoint_files": len(hashes), "report": str(report_path.relative_to(ROOT))}))
+--- /dev/null
++++ b/docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md
+@@ -0,0 +1,51 @@
++# Studio platform deployment, 2026-10-16
++
++The owner's **deploy the backend and ui** instruction is complete on the retained service:
++[Studio](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/admin#overview), [Operations and alarms](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/admin#alarms).
++
++API `bmt-stg-e7a444ab-api-00064-jid` serves100% traffic. Worker `bmt-stg-e7a444ab-worker-00030-x8p` and all
++three existing migration/smoke/catalog jobs use the same pinned image. Schema is
++`0040_studio_platform`; fresh successful Cloud SQL backup: **1792180080719**.
++CompletedUTC: `2026-10-16T19:56:34.361268+00:00`.
++
++Image: `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:ee956efc3d2bcaa0e04e86e26af9d5d4b8af03cc5799c88ceaaf3edb6d84c5e8`.
++
++The release includes the eight Studio workspaces, bounded prepared behaviour analysis,
++full-scope diagnostic totals, release comparisons, durable incident response, all-pipeline
++queue inspection, monetary/Coin ledgers and controlled presentation experiments. Its
++additive schema prerequisites include0037 earnedCoins,0038 News and0039 friend publications.
++External providers, staff MFA/SSO, notification destinations and business-only cohorts
++remain unconfigured or disabled. The incident desk labels its missing continuous sources;
++current checks work on demand. Independent watchdog hosting and log collection schedules
++still require activation. Real Billing/RTDN/refund and settled reconciliation, native
++experiment exposures, production load/restore and owner acceptance are not claimed.
++
++The frozen package overlays only the validated Studio implementation and captured additive
++prerequisites on the live image. Its canonical Godot sources, golden fixture, verifier Python,
++compiler27/physics0.59/rules20 and previous challenge API remain exact. No newer concurrent
++physics/rules, challenge-discovery migration, APK or phone work is included. No track revision
++was appended: all27 existing official heads, downloaded document hashes and earlier links
++remain available. Fifteen original-data fingerprints are exact across migration.
++
++The tested image passed `128 passed, 3 skipped, 5 deselected, 1 warning in 134.15s (0:02:14)` and the actual PostgreSQL36-to40 migration, plus native
++golden replay/rewind at build and real cloud native/schema/storage smoke. Canary and live
++checks cover the new APIs and all packaged UI assets. Read-only Edge checks cover1440px and
++390px, with no JS errors, failed admin reads, mutation requests or global horizontal overflow.
++See [machine report](evidence/studio-platform-deploy-2026-10-16/report.json),
++[rollout receipt](evidence/studio-platform-deploy-2026-10-16/rollout.json),
++[image tests](evidence/studio-platform-deploy-2026-10-16/exact-image-tests.log),
++[browser checks](evidence/studio-platform-deploy-2026-10-16/live-browser.json) and
++[frozen provenance](evidence/studio-platform-deploy-2026-10-16/frozen-source.json).
++
++Initial failures are retained: a packaging preflight named the wrong incident route and was
++corrected before cloud changes. Two early PostgreSQL friend-publication checks returned an
++empty feed;20 paired isolated repetitions and the complete image rerun are recorded with
++diagnostics. A diagnostic bind mount initially targeted the read-only test directory; it was
++moved to its own read-only path. No live writes or notifications were used for these tests.
++
++The parent image and fresh backup are retained. The old schema36 image's readiness requires
++schema36: do not route it blindly onto schema40. Any rollback must use a schema40-compatible
++package or restore the backup with writers fenced and account for subsequent writes. No
++destructive downgrade or restore rehearsal was performed. Existing secrets, runtime limits,
++IAM bindings and storage scopes were preserved; temporary routing tags and the owned lock
++were removed. See [activation runbook](STUDIO_PLATFORM_ACTIVATION.md) for remaining setup.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Studio platform deployment override (2026-10-16)
++The owner explicitly requests backend and UI deployment. Retained staging now serves API64/schema40, one matching worker and all existing jobs on the tested Studio image. Fresh backup1792180080719, native replay/rewind and cloud storage/schema smoke,128 image tests,22 live desktop/phone-width Edge checks and27 unchanged official heads/documents/old links pass;15 original-data fingerprints are exact across migration. The live compiler27/physics0.59/rules20 verifier and previous challenge API remain pinned; newer concurrent canonical/discovery work is excluded. External connections, continuous watchdog/log collection and notifications are not activated; coverage is labelled. Actual attempts, initial feed-test deviations, provenance and scoped checkpoint: `docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md`. Owner workflow/load/restore acceptance remains; no APK, phone check/test or real provider/notification action.
+ 
+ ## Recessed Desert road override (2026-10-16)
+ The owner requests Desert roads below surrounding terrain and explicitly retains surface transitions. Cosmetic18cm road/deck lowering puts authored road about10.8cm below the original distant terrain; preserve X/Z/material UVs, textures, original blend widths/functions and all shaders. One bounded immutable field drives meshes and separate visual support for cars/marks/dust/shadows/markers/ghosts/props; canonical height_at, physics0.63, rules and stored records remain. Retained editor groups use original poses, moving bounds stay automatic, custom bounds are extended and existing64MiB world caches account for field bytes; kit208. Focused48headless/54Compatibility/54Mobile, prepared85/ghost38/parser839 pass. Actual views, initial MultiMesh-copy failure/correction, commands and task-only checkpoint: docs/DESERT_RECESSED_ROAD_2026_10_16.md. This supersedes flat Desert-road presentation only. Owner/device appearance/performance acceptance remains; no phone check/test/APK/backend/deployment or FPS claim.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-16 Studio backend/UI deployment: API64/schema40 and one matching worker are live on the retained staging service, with all existing jobs on the same digest. Backup1792180080719,128 exact-image checks,22 live desktop/phone-width checks and27 preserved official heads/documents/old links pass;15 data fingerprints remain exact. Compiler27/physics0.59/rules20 is retained. External connections and independent continuous monitoring remain unconfigured. Actual rollout, initial test deviations and task-only checkpoint: docs/STUDIO_PLATFORM_DEPLOY_2026_10_16.md. No APK, physical-phone action, real provider or notification action.
++
+ 2026-10-16 DR01-DR03/G01/R01/Q01: Desert road/deck presentation lowers18cm, putting authored road about10.8cm below original distant terrain. Original X/Z, surface shaders/material roles, texture UVs and transition widths/functions remain; no shader or canonical height/physics/rules edits. One bounded immutable field aligns cars/marks/dust/shadows/markers/ghosts and seated props; retained editor poses and automatic/custom motion bounds are preserved, existing64MiB cache accounting includes field bytes, kit208. Focused48headless/54Compatibility/54Mobile, prepared85/ghost38/parser839 pass. Actual views, initial MultiMesh-copy correction, commands and task-only checkpoint: docs/DESERT_RECESSED_ROAD_2026_10_16.md. Concurrent controls/haptics/backend/physics work is retained. Owner/device appearance/performance acceptance remains; no phone attachment check/test, APK/backend/deployment or FPS claim.
+ 
+ 2026-10-16 DH01-DH02/G01/R01/Q01: added independent saved Drift feedback On/Off under Settings Haptics. Grounded sustained slip requests bounded20ms/10Hz vibration with slip/speed strength, using the original one-outstanding-request platform worker. All pause/focus/countdown/finish/rewind/airborne/rolling/demo/AI gates and canonical replay are retained. Focused45, native Settings299Compatibility/299Mobile, menu41 and driving72 pass; broader performance test retains an unrelated optional historical tire-mark mismatch before haptics. Actual commands/captures/scoped checkpoint: docs/DRIFT_HAPTICS_2026_10_16.md. No phone attachment check/test, APK, backend or deployment; owner/device feel acceptance remains.
+--- a/docs/BACKEND_UI.md
++++ b/docs/BACKEND_UI.md
+@@ -1,4 +1,6 @@
+ # Control Room: backend UI v1
++
++Deployment follow-up: the eight-workspace Studio is live on API64/schema40. [Deployment and actual checks](STUDIO_PLATFORM_DEPLOY_2026_10_16.md) record the pinned image, backup, preserved game contract/catalog and remaining external-monitor/provider activation.
+ 
+ Implementation follow-up: [Studio platform](STUDIO_PLATFORM_2026_10_16.md) now provides eight workspaces, cohort/release evidence and durable incident response. [Activation and remaining integrations](STUDIO_PLATFORM_ACTIVATION.md) are explicit. The review below describes the earlier deployed snapshot.
+ 
+--- a/docs/STUDIO_PLATFORM_ACTIVATION.md
++++ b/docs/STUDIO_PLATFORM_ACTIVATION.md
+@@ -1,4 +1,6 @@
+ # Studio platform activation
++
++Deployment status: the core API/UI is now live on the retained service at schema40. [Actual rollout and checks](STUDIO_PLATFORM_DEPLOY_2026_10_16.md) preserve the current client/verifier contract. The independent watchdog, log collector, external accounts and notification delivery described below remain unconfigured; this rollout does not establish continuous monitoring or live provider integration.
+ 
+ This runbook prepares the implementation for review. It does not authorize a new deployment or create
+ external accounts. All secrets belong in the existing secret configuration, never in repository files.

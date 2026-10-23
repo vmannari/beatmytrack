@@ -1,0 +1,788 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -22,6 +22,9 @@
+ var _retained_garage: GaragePage
+ var cosmetic_economy: Node
+ var achievements: Node
++var race_ad_breaks: Node
++var _ad_input_blocker: Control
++var _ad_previous_focus: WeakRef
+ var achievement_notification: Control
+ var _achievement_finale: String = ""
+ var _achievement_challenges: Dictionary = {}
+@@ -175,10 +178,12 @@
+ var _publishing_slots_foreground: bool = true
+ 
+ func _notification(what: int) -> void:
+-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:
+ 		_publishing_slots_foreground = false
+-	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
++		if race_ad_breaks != null: race_ad_breaks.observe_time(false)
++	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
+ 		_publishing_slots_foreground = true
++		if race_ad_breaks != null: race_ad_breaks.observe_time(false)
+ 		_refresh_creation_slots(true)
+ 		if achievements != null: achievements.refresh()
+ 
+@@ -206,6 +211,9 @@
+ 	editor_preview_document = {}
+ 
+ func _process(_delta: float) -> void:
++	if race_ad_breaks != null:
++		race_ad_breaks.enabled = OS.is_debug_build() and bool(records.settings.get("development_show_ads",false))
++		race_ad_breaks.observe_time(_ad_play_active())
+ 	_poll_selected_preparation()
+ 	editor_writes.poll()
+ 	_apply_editor_writes()
+@@ -279,6 +287,10 @@
+ 	if OS.is_debug_build() and OS.get_environment("BMT_PURCHASE_LAB") == "true":
+ 		online.client.session_path = records.path.get_base_dir().path_join("purchase_lab_session.cfg")
+ 	add_child(online)
++	race_ad_breaks = preload("res://platform/race_ad_breaks.gd").new()
++	race_ad_breaks.client = online.client
++	race_ad_breaks.blocking_changed.connect(_ad_blocking_changed)
++	add_child(race_ad_breaks)
+ 	cosmetic_economy = preload("res://backend/cosmetic_economy.gd").new()
+ 	cosmetic_economy.records = records
+ 	cosmetic_economy.client = online.client
+@@ -3783,6 +3795,7 @@
+ 	game.set("bridge_preparation_ms", preparation_ms)
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+ 	_telemetry_begin_attempt(track)
++	if race_ad_breaks != null and not returning_to_editor and not bool(game.get("attempt_practice")): race_ad_breaks.prepare()
+ 	cloud_starting = false
+ 	_close_race_loading(loading_id)
+ 
+@@ -3817,6 +3830,7 @@
+ 		canvas.refresh()
+ 
+ func _leave_race() -> void:
++	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if is_instance_valid(game) and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+ 		if not cloud_ticket.is_empty(): return
+@@ -3867,6 +3881,7 @@
+ 	var clean: bool = not bool(game.get("attempt_practice")) and not returning_to_editor
+ 	if _result_game_id == game.get_instance_id(): return
+ 	_result_game_id = game.get_instance_id()
++	if clean and session.finished and race_ad_breaks != null: race_ad_breaks.record_finish()
+ 	if client_quality != null: client_quality.finish_race("finished")
+ 	_telemetry_race_finished = true
+ 	_telemetry_observe("race_finished",_telemetry_track_properties(track,"finished"))
+@@ -3975,6 +3990,36 @@
+ 	root_ui.modulate.a = 0.0
+ 	create_tween().tween_property(root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+ 	if online_queued: _save_result_upload(game,cloud_ticket,game.get("online_frames"),"",game.get("online_rewinds"))
++	if clean and session.finished: _try_race_ad.call_deferred(_result_game_id,panel)
++
++func _ad_play_active() -> bool:
++	if not startup_complete or not _publishing_slots_foreground or cloud_starting or screen in ["create","drafts"] or returning_to_editor: return false
++	return not is_instance_valid(game) or (not bool(game.get("paused")) and not bool(game.get("attempt_practice")))
++
++func _try_race_ad(finished_game: int, panel: Control) -> void:
++	if race_ad_breaks == null: return
++	var at_break: Callable = func() -> bool:
++		return _publishing_slots_foreground and is_instance_valid(game) and game.get_instance_id() == finished_game and bool(game.get("track_session").finished) and is_instance_valid(panel) and panel.is_visible_in_tree()
++	await race_ad_breaks.show_if_due(at_break)
++
++func _ad_blocking_changed(value: bool) -> void:
++	if is_instance_valid(_ad_input_blocker):
++		_ad_input_blocker.queue_free()
++		_ad_input_blocker = null
++	if not value and _ad_previous_focus != null:
++		var previous: Control = _ad_previous_focus.get_ref() as Control
++		if is_instance_valid(previous) and previous.is_visible_in_tree(): previous.grab_focus()
++		_ad_previous_focus = null
++	if value and is_instance_valid(menu_layer):
++		var previous: Control = get_viewport().gui_get_focus_owner()
++		_ad_previous_focus = weakref(previous) if previous != null else null
++		_ad_input_blocker = Control.new()
++		_ad_input_blocker.name = "AdInputBlocker"
++		_ad_input_blocker.mouse_filter = Control.MOUSE_FILTER_STOP
++		_ad_input_blocker.focus_mode = Control.FOCUS_ALL
++		menu_layer.add_child(_ad_input_blocker)
++		MenuStyle.fill(_ad_input_blocker)
++		_ad_input_blocker.grab_focus()
+ 
+ func _save_result_upload(completed_game: Node, ticket_data: Dictionary, frames: Array, publish_version: String, rewinds: Array) -> void:
+ 	if is_instance_valid(completed_game) and completed_game.get("race_proof") != null and bool(cloud.client.get("_capabilities").get("lightweight_race_proofs",false)):
+@@ -3992,6 +4037,7 @@
+ 		cloud_ticket = {}
+ 
+ func _results_continue(results: RaceResults, parent: Control) -> void:
++	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if challenge_practice:
+ 		challenge_practice = false
+ 		_clear_challenge_game()
+@@ -4058,6 +4104,7 @@
+ 	parent.add_child(page)
+ 
+ func _next_result_race(recommendation: Dictionary) -> void:
++	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	var next_track: NativeTrack = track_catalog.cached_track(recommendation.entry)
+ 	if next_track == null:
+ 		next_track = cloud.presentation_track(recommendation.entry) if recommendation.entry.source == "cloud" else track_catalog.resolve(recommendation.entry)
+@@ -4072,6 +4119,7 @@
+ 	_start_race(next_track,false)
+ 
+ func _retry_race(offline_only: bool = false) -> void:
++	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if cloud_starting or not is_instance_valid(game): return
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
+ 	if not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+diff --git a/native/admob/src/org/beatmytrack/admob/BmtAdMob.java b/native/admob/src/org/beatmytrack/admob/BmtAdMob.java
+--- a/native/admob/src/org/beatmytrack/admob/BmtAdMob.java
++++ b/native/admob/src/org/beatmytrack/admob/BmtAdMob.java
+@@ -11,9 +11,11 @@
+ import com.google.android.gms.ads.FullScreenContentCallback;
+ import com.google.android.gms.ads.LoadAdError;
+ import com.google.android.gms.ads.MobileAds;
++import com.google.android.gms.ads.interstitial.InterstitialAd;
++import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback;
+ import com.google.android.gms.ads.rewarded.RewardedAd;
+ import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback;
+-import java.util.Collections;
++import java.util.Arrays;
+ import java.util.HashSet;
+ import java.util.Set;
+ import org.godotengine.godot.Godot;
+@@ -21,24 +23,32 @@
+ import org.godotengine.godot.plugin.SignalInfo;
+ import org.godotengine.godot.plugin.UsedByGodot;
+ 
+-/** Original development-only bridge; only Google's rewarded demo unit is used. */
++/** Original development-only bridge; only Google's demo units are used. */
+ public final class BmtAdMob extends GodotPlugin {
+     private static final String TAG = "BMTAdMobTest";
+     private static final String DEMO_UNIT = "ca-app-pub-3940256099942544/5224354917";
++    private static final String INTERSTITIAL_DEMO_UNIT = "ca-app-pub-3940256099942544/1033173712";
+     private final Handler main = new Handler(Looper.getMainLooper());
+     private String request;
+     private boolean initialized;
+     private boolean showing;
+     private boolean earned;
+     private boolean abandoned;
++    private boolean interstitialRequest;
++    private boolean interstitialShown;
++    private InterstitialAd interstitial;
++    private long interstitialLoadedAt;
++    private boolean interstitialLoading;
++    private int interstitialGeneration;
+ 
+     public BmtAdMob(Godot godot) { super(godot); }
+ 
+     @NonNull @Override public String getPluginName() { return "BmtAdMob"; }
+ 
+     @NonNull @Override public Set<SignalInfo> getPluginSignals() {
+-        return new HashSet<>(Collections.singletonList(
+-            new SignalInfo("rewarded_result", String.class, Boolean.class, String.class)));
++        return new HashSet<>(Arrays.asList(
++            new SignalInfo("rewarded_result", String.class, Boolean.class, String.class),
++            new SignalInfo("interstitial_result", String.class, Boolean.class, String.class)));
+     }
+ 
+     @UsedByGodot public void showRewarded(String id) {
+@@ -54,6 +64,7 @@
+                 return;
+             }
+             request = id;
++            interstitialRequest = false;
+             showing = false;
+             earned = false;
+             abandoned = false;
+@@ -119,11 +130,116 @@
+         emitSignal("rewarded_result", id, completed, message);
+     }
+ 
++    private boolean developmentActivity(Activity activity) {
++        return activity != null && !activity.isFinishing() && !activity.isDestroyed()
++            && (activity.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
++    }
++
++    private boolean interstitialReady() {
++        // Google's loaded ads expire after an hour. Keep one for at most 55 min.
++        return interstitial != null && android.os.SystemClock.elapsedRealtime() - interstitialLoadedAt < 55 * 60 * 1000L;
++    }
++
++    @UsedByGodot public void prepareInterstitial() {
++        main.post(() -> {
++            Activity activity = getActivity();
++            if (!developmentActivity(activity) || request != null || interstitialLoading || interstitialReady()) return;
++            interstitial = null;
++            interstitialLoading = true;
++            int generation = ++interstitialGeneration;
++            main.postDelayed(() -> {
++                if (generation == interstitialGeneration && interstitialLoading) {
++                    interstitialLoading = false;
++                    ++interstitialGeneration;
++                }
++            }, 45000);
++            Runnable load = () -> {
++                Activity owner = getActivity();
++                if (generation != interstitialGeneration) return;
++                if (!developmentActivity(owner)) {
++                    interstitialLoading = false;
++                    return;
++                }
++                InterstitialAd.load(owner, INTERSTITIAL_DEMO_UNIT, new AdRequest.Builder().build(), new InterstitialAdLoadCallback() {
++                    @Override public void onAdLoaded(@NonNull InterstitialAd ad) {
++                        if (generation != interstitialGeneration) return;
++                        interstitialLoading = false;
++                        interstitial = ad;
++                        interstitialLoadedAt = android.os.SystemClock.elapsedRealtime();
++                        Log.i(TAG, "Interstitial demo ready");
++                    }
++                    @Override public void onAdFailedToLoad(@NonNull LoadAdError error) {
++                        if (generation != interstitialGeneration) return;
++                        interstitialLoading = false;
++                        Log.w(TAG, "Interstitial demo load failed: " + error.getCode());
++                    }
++                });
++            };
++            if (initialized) load.run();
++            else MobileAds.initialize(activity, status -> main.post(() -> {
++                initialized = true;
++                load.run();
++            }));
++        });
++    }
++
++    @UsedByGodot public void discardInterstitial() {
++        main.post(() -> {
++            ++interstitialGeneration;
++            interstitialLoading = false;
++            interstitial = null;
++        });
++    }
++
++    @UsedByGodot public void tryShowInterstitial(String id) {
++        main.post(() -> {
++            Activity activity = getActivity();
++            if (!developmentActivity(activity) || !activity.hasWindowFocus() || request != null || !interstitialReady()) {
++                emitSignal("interstitial_result", id, false, "Ad unavailable.");
++                return;
++            }
++            InterstitialAd ad = interstitial;
++            interstitial = null;
++            request = id;
++            interstitialRequest = true;
++            interstitialShown = false;
++            showing = true;
++            abandoned = false;
++            ad.setFullScreenContentCallback(new FullScreenContentCallback() {
++                @Override public void onAdShowedFullScreenContent() {
++                    if (id.equals(request)) interstitialShown = true;
++                }
++                @Override public void onAdFailedToShowFullScreenContent(@NonNull AdError error) {
++                    finishInterstitial(id, "Ad could not open.");
++                }
++                @Override public void onAdDismissedFullScreenContent() {
++                    finishInterstitial(id, "");
++                }
++            });
++            try {
++                ad.show(activity);
++            } catch (RuntimeException error) {
++                finishInterstitial(id, "Ad could not open.");
++            }
++        });
++    }
++
++    private void finishInterstitial(String id, String message) {
++        if (!id.equals(request) || !interstitialRequest) return;
++        request = null;
++        showing = false;
++        interstitialRequest = false;
++        emitSignal("interstitial_result", id, interstitialShown, message);
++    }
++
+     @UsedByGodot public void cancelRequest(String id) {
+         main.post(() -> {
+             if (!id.equals(request)) return;
+             abandoned = true;
+-            if (!showing) finish(id, false, "Test ad cancelled.");
++            if (!showing) {
++                if (interstitialRequest) finishInterstitial(id, "Test ad cancelled.");
++                else finish(id, false, "Test ad cancelled.");
++            }
+         });
+     }
+ }
+diff --git a/native/admob/PROVENANCE.md b/native/admob/PROVENANCE.md
+--- a/native/admob/PROVENANCE.md
++++ b/native/admob/PROVENANCE.md
+@@ -4,7 +4,7 @@
+ 
+ Google Mobile Ads Android SDK is an owner-authorized dependency, pinned to `com.google.android.gms:play-services-ads:25.5.0` and resolved from Google's Maven repository. It is compiled only for Android debug. Google's SDK terms and transitive dependency notices apply; generated Gradle binaries/caches remain outside version control. No real app/ad placement, credentials or player identity is supplied to this bridge.
+ 
+-Only Google's documented sample application ID (`ca-app-pub-3940256099942544~3347511713`) and rewarded demo ad unit (`ca-app-pub-3940256099942544/5224354917`) are used. Demo completion is not provider proof for server-authoritative banked rewards.
++Only Google's documented sample application ID (`ca-app-pub-3940256099942544~3347511713`), rewarded demo ad unit (`ca-app-pub-3940256099942544/5224354917`) and interstitial demo unit (`ca-app-pub-3940256099942544/1033173712`) are used. Demo completion is not provider proof for server-authoritative banked rewards. The interstitial uses one preloaded ad, separate load/show operations and the same fullscreen ownership lock as rewarded ads. It grants no reward. Its 2026-10-22 references are [interstitial integration](https://developers.google.com/admob/android/interstitial) and [Google's demo units](https://developers.google.com/admob/android/test-ads).
+ 
+ An explicit `BMT_ADMOB_DEBUG_CA_DIR` can attach a local diagnostic manifest/resource directory to debug only. The owner approved the existing Windows-trusted Avast public root for local emulator ads after Android rejected Avast's HTTPS scanning certificate chain. No CA/private key or generated trust configuration is vendored; release source sets do not include it. Actual commands, domain limits and evidence are in `docs/ADMOB_DEVELOPMENT.md`.
+ 
+diff --git a/game/platform/race_ad_breaks.gd b/game/platform/race_ad_breaks.gd
+new file mode 100644
+--- /dev/null
++++ b/game/platform/race_ad_breaks.gd
+@@ -0,0 +1,81 @@
++extends Node
++## Presentation-only cadence, independent of race simulation and result authority.
++signal blocking_changed(value: bool)
++const RACES_PER_AD: int = 3
++const INTERVAL_MSEC: int = 10 * 60 * 1000
++const ACCESS = preload("res://backend/store_access_cache.gd")
++var client: Node
++var adapter: Node
++var enabled: bool = false
++var races: int = 0
++var active_msec: int = 0
++var busy: bool = false
++var blocking: bool = false
++var clock_msec: Callable = Time.get_ticks_msec
++var _sampled_at: int = -1
++var _was_active: bool = false
++var _preparing: bool = false
++
++func _ready() -> void:
++	if adapter == null:
++		adapter = preload("res://platform/admob_interstitial.gd").new()
++		add_child(adapter)
++
++func observe_time(active: bool) -> void:
++	var now: int = clock_msec.call()
++	if _sampled_at >= 0 and _was_active:
++		active_msec = mini(INTERVAL_MSEC, active_msec + maxi(0, now - _sampled_at))
++	_sampled_at = now
++	_was_active = active and enabled and not blocking
++
++func record_finish() -> void:
++	races = mini(RACES_PER_AD, races + 1)
++
++func due() -> bool:
++	return races >= RACES_PER_AD or active_msec >= INTERVAL_MSEC
++
++func _available() -> bool:
++	return enabled and is_instance_valid(adapter) and adapter.supported()
++
++func _eligible(scope: String) -> bool:
++	if not is_instance_valid(client): return false
++	if not client.signed_in(): return true
++	# Read ownership at the break as well as during warming. Unknown ownership
++	# skips the ad; an account change cannot reuse another player's entitlement.
++	var result: Dictionary = await client.request_api("/me/entitlements", HTTPClient.METHOD_GET, {}, "", true)
++	if scope != ACCESS.identity(client) or not result.get("ok", false): return false
++	var owned: Variant = result.get("data")
++	if not preload("res://platform/purchase_simulator.gd").valid_entitlements(owned): return false
++	return not owned.ad_free and not owned.ad_free_forever
++
++func prepare() -> void:
++	if not _available() or _preparing or busy: return
++	_preparing = true
++	var scope: String = ACCESS.identity(client)
++	var eligible: bool = await _eligible(scope)
++	_preparing = false
++	if not _available() or scope != ACCESS.identity(client): return
++	if eligible: adapter.prepare()
++	else: adapter.discard()
++
++func show_if_due(at_break: Callable) -> Dictionary:
++	if not _available() or not due() or busy or not at_break.call(): return {"shown":false}
++	busy = true
++	var scope: String = ACCESS.identity(client)
++	var eligible: bool = await _eligible(scope)
++	if not _available() or scope != ACCESS.identity(client) or not eligible or not at_break.call():
++		busy = false
++		return {"shown":false}
++	# Only this short SDK handoff owns navigation. Entitlement reads leave the
++	# result usable; leaving it invalidates at_break and prevents a late popup.
++	blocking = true
++	blocking_changed.emit(true)
++	observe_time(false)
++	var result: Dictionary = await adapter.show_interstitial()
++	if bool(result.get("shown", false)):
++		races = 0
++		active_msec = 0
++	blocking = false
++	blocking_changed.emit(false)
++	busy = false
++	return result
+diff --git a/game/platform/race_ad_breaks.gd.uid b/game/platform/race_ad_breaks.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/platform/race_ad_breaks.gd.uid
+@@ -0,0 +1 @@
++uid://c8bpovwau6oyh
+diff --git a/game/platform/admob_interstitial.gd b/game/platform/admob_interstitial.gd
+new file mode 100644
+--- /dev/null
++++ b/game/platform/admob_interstitial.gd
+@@ -0,0 +1,38 @@
++extends Node
++## Preloaded Android demo placement. A late load never opens an ad by itself.
++signal finished(result: Dictionary)
++const SINGLETON: String = "BmtAdMob"
++var _native: Object
++var _request: String = ""
++
++func supported() -> bool:
++	return _native != null and _native.has_signal("interstitial_result") and _native.has_method("prepareInterstitial") and _native.has_method("tryShowInterstitial") and _native.has_method("discardInterstitial")
++
++func _ready() -> void:
++	process_mode = Node.PROCESS_MODE_ALWAYS
++	if OS.is_debug_build() and OS.get_name() == "Android" and Engine.has_singleton(SINGLETON):
++		_native = Engine.get_singleton(SINGLETON)
++		if _native.has_signal("interstitial_result"): _native.connect("interstitial_result", _completed)
++
++func prepare() -> void:
++	if supported(): _native.call("prepareInterstitial")
++
++func discard() -> void:
++	if supported(): _native.call("discardInterstitial")
++
++func show_interstitial() -> Dictionary:
++	if not supported() or not _request.is_empty(): return {"shown":false}
++	_request = str(get_instance_id()) + "-" + str(Time.get_ticks_usec())
++	_native.call("tryShowInterstitial", _request)
++	return await finished
++
++func _completed(request: String, shown: bool, _message: String) -> void:
++	if request != _request or _request.is_empty(): return
++	_request = ""
++	finished.emit({"shown":shown})
++
++func _exit_tree() -> void:
++	if _native == null: return
++	if _native.is_connected("interstitial_result", _completed): _native.disconnect("interstitial_result", _completed)
++	if not _request.is_empty(): _native.call("cancelRequest", _request)
++	discard()
+diff --git a/game/platform/admob_interstitial.gd.uid b/game/platform/admob_interstitial.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/platform/admob_interstitial.gd.uid
+@@ -0,0 +1 @@
++uid://bvdx024hmp0l6
+diff --git a/game/tests/test_race_ad_breaks.gd b/game/tests/test_race_ad_breaks.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_ad_breaks.gd
+@@ -0,0 +1,269 @@
++extends SceneTree
++## Deterministic policy plus the real app's completed-race/results/retry path.
++const Breaks = preload("res://platform/race_ad_breaks.gd")
++const Adapter = preload("res://platform/admob_interstitial.gd")
++const AppScene = preload("res://core/app.tscn")
++var checks: int = 0
++var failures: int = 0
++var now: int = 0
++var capture_directory: String = ""
++
++class TestAds extends Node:
++	var calls: int = 0
++	var prepares: int = 0
++	var discards: int = 0
++	var available: bool = true
++	var shown: bool = true
++	var hold: bool = false
++	func supported() -> bool: return available
++	func prepare() -> void: prepares += 1
++	func discard() -> void: discards += 1
++	func show_interstitial() -> Dictionary:
++		calls += 1
++		await get_tree().process_frame
++		while hold: await get_tree().process_frame
++		return {"shown":shown}
++
++class TestClient extends Node:
++	var player: Dictionary = {}
++	var reads: int = 0
++	var hold: bool = false
++	var ok: bool = true
++	var owned: Dictionary = {"publishing_slots":1,"ad_free_until":0,"max_rewinds_per_race":3,"server_now":1,"ad_free":false,"ad_free_forever":false,"free_rewinds":false,"purchase_simulation":false,"store_available":false}
++	func base_url() -> String: return "https://ad-fixture.invalid"
++	func signed_in() -> bool: return not player.is_empty()
++	func request_api(_path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		reads += 1
++		await get_tree().process_frame
++		while hold: await get_tree().process_frame
++		return {"ok":ok,"data":owned.duplicate(true)}
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + label)
++
++func fixture() -> Node:
++	var policy := Breaks.new()
++	var ads := TestAds.new()
++	var client := TestClient.new()
++	policy.adapter = ads
++	policy.client = client
++	policy.clock_msec = func() -> int: return now
++	policy.enabled = true
++	policy.add_child(ads)
++	policy.add_child(client)
++	root.add_child(policy)
++	return policy
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--capture-ad-breaks="): capture_directory = argument.trim_prefix("--capture-ad-breaks=")
++	var policy: Node = fixture()
++	policy.observe_time(true)
++	check(not policy.due(), "fresh session is not due")
++	for index: int in range(2):
++		policy.record_finish()
++		check(not (await policy.show_if_due(func() -> bool: return true)).shown, "first two finishes are quiet: %d" % index)
++	policy.record_finish()
++	check(policy.due(), "third completed race becomes due")
++	check((await policy.show_if_due(func() -> bool: return true)).shown, "third finish shows one ad")
++	check(policy.races == 0 and policy.active_msec == 0, "show resets both counters")
++	check(not (await policy.show_if_due(func() -> bool: return true)).shown and policy.adapter.calls == 1, "same break cannot show twice")
++	policy.races = 3
++	policy.active_msec = Breaks.INTERVAL_MSEC
++	policy.adapter.hold = true
++	policy.show_if_due(func() -> bool: return true)
++	await process_frame
++	check(not (await policy.show_if_due(func() -> bool: return true)).shown and policy.adapter.calls == 2, "both thresholds and repeat requests own one fullscreen ad")
++	policy.adapter.hold = false
++	for frame: int in range(2): await process_frame
++	check(not policy.due() and not policy.busy, "one dismissal clears both simultaneous thresholds")
++	policy.observe_time(true)
++	now += Breaks.INTERVAL_MSEC - 1
++	policy.observe_time(true)
++	check(not policy.due(), "ten-minute threshold excludes the preceding millisecond")
++	now += 1
++	policy.observe_time(true)
++	check(policy.due() and policy.races == 0, "ten minutes can win before three races")
++	check(not (await policy.show_if_due(func() -> bool: return false)).shown and policy.adapter.calls == 2, "elapsed time cannot open an ad during racing")
++	policy.adapter.shown = false
++	check(not (await policy.show_if_due(func() -> bool: return true)).shown and policy.due(), "unavailable ad preserves due counters")
++	policy.adapter.shown = true
++	check((await policy.show_if_due(func() -> bool: return true)).shown and not policy.due(), "later finish can fulfill deferred ad")
++	policy.observe_time(true)
++	now += 2000
++	policy.observe_time(false)
++	now += 3600000
++	policy.observe_time(false)
++	check(policy.active_msec == 2000, "background, pause and ad time are excluded")
++	policy.observe_time(true)
++	now += 1000
++	policy.observe_time(false)
++	check(policy.active_msec == 3000, "foreground time resumes without counting absence")
++	policy.enabled = false
++	policy.observe_time(true)
++	now += Breaks.INTERVAL_MSEC
++	policy.observe_time(true)
++	check(policy.active_msec == 3000, "disabled development preference does not accrue time")
++	policy.races = 3
++	check(not (await policy.show_if_due(func() -> bool: return true)).shown, "disabled placement stays quiet")
++	policy.enabled = true
++	policy.adapter.available = false
++	check(not (await policy.show_if_due(func() -> bool: return true)).shown, "unsupported platform stays quiet")
++	policy.adapter.available = true
++	policy.free()
++	for mode: String in ["monthly", "forever", "unavailable", "malformed", "changed", "left", "ordinary"]:
++		policy = fixture()
++		policy.races = 3
++		policy.client.player = {"id":"owner"}
++		if mode == "monthly": policy.client.owned.ad_free = true
++		if mode == "forever": policy.client.owned.ad_free_forever = true
++		if mode == "unavailable": policy.client.ok = false
++		if mode == "malformed": policy.client.owned.erase("ad_free")
++		var present: Array[bool] = [true]
++		if mode in ["changed", "left"]:
++			policy.client.hold = true
++			policy.show_if_due(func() -> bool: return present[0])
++			await process_frame
++			check(policy.busy and not policy.blocking, "ownership read leaves result actions usable: " + mode)
++			if mode == "changed": policy.client.player = {"id":"another-owner"}
++			else: present[0] = false
++			policy.client.hold = false
++			for frame: int in range(3): await process_frame
++		else:
++			await policy.show_if_due(func() -> bool: return true)
++		check(policy.adapter.calls == (1 if mode == "ordinary" else 0), "entitlement and break fence: " + mode)
++		check(not policy.busy and not policy.blocking, "ownership path releases request: " + mode)
++		policy.free()
++	policy = fixture()
++	policy.client.player = {"id":"owner"}
++	policy.client.owned.ad_free = true
++	await policy.prepare()
++	check(policy.adapter.prepares == 0 and policy.adapter.discards == 1, "ad-free account does not preload SDK ads")
++	policy.free()
++	var adapter := Adapter.new()
++	root.add_child(adapter)
++	check(not (await adapter.show_interstitial()).shown, "desktop SDK adapter returns unavailable")
++	var callbacks: Array[int] = [0]
++	adapter.finished.connect(func(_value: Dictionary) -> void: callbacks[0] += 1)
++	adapter._request = "current"
++	adapter._completed("stale", true, "")
++	adapter._completed("current", true, "")
++	adapter._completed("current", true, "")
++	check(callbacks[0] == 1, "SDK adapter ignores stale and duplicate callbacks")
++	adapter.free()
++	await app_flow()
++	print("RACE_AD_BREAKS: %d checks, %d failures" % [checks, failures])
++	quit(0 if failures == 0 else 1)
++
++func finish(app: Node) -> RaceResults:
++	var session: TrackSession = app.game.track_session
++	session.finished = true
++	session.completed_laps = RaceRules.LAPS
++	session.elapsed_ticks = 6000
++	session.lap_start_time = 50.0
++	session.lap_times.assign([10.0,10.0,10.0,10.0,10.0])
++	app.game.paused = true
++	app._results()
++	return app.root_ui.find_child("RaceResults", true, false) as RaceResults
++
++func app_flow() -> void:
++	root.size = Vector2i(1280,720)
++	OS.set_environment("BMT_API_URL", "")
++	var directory: String = "user://race_ads_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = AppScene.instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.set_process(false)
++	var ads := TestAds.new()
++	app.race_ad_breaks.adapter.free()
++	app.race_ad_breaks.add_child(ads)
++	app.race_ad_breaks.adapter = ads
++	app.race_ad_breaks.enabled = true
++	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	track.metadata.cloud_version = "isolated-ad-cadence-fixture"
++	app.selected_track = track
++	await app._start_race(track, false, true)
++	check(is_instance_valid(app.game), "real app starts the isolated published-track fixture")
++	if not is_instance_valid(app.game):
++		app.free()
++		return
++	track.metadata.erase("cloud_version")
++	app.game.set_physics_process(false)
++	for index: int in range(3):
++		if index > 0: await app._retry_race()
++		app.game.set_physics_process(false)
++		ads.hold = index == 2
++		var panel: RaceResults = finish(app)
++		var retry: Button = panel.find_child("RetryRace",true,false) as Button
++		if index == 2: retry.grab_focus()
++		app._results()
++		for frame: int in range(3): await process_frame
++		check(panel != null and panel.saved, "normal result saves before ad: %d" % index)
++		if index < 2:
++			check(ads.calls == 0 and app.race_ad_breaks.races == index + 1, "app counts one finish per attempt: %d" % index)
++		else:
++			check(ads.calls == 1 and app.race_ad_breaks.blocking, "third real app finish owns one interstitial")
++			check(is_instance_valid(app._ad_input_blocker), "SDK handoff blocks result touch actions")
++			check(root.gui_get_focus_owner() == app._ad_input_blocker, "SDK handoff owns keyboard focus")
++			await capture("results-during-injected-ad.png")
++			var game_id: int = app.game.get_instance_id()
++			await app._retry_race()
++			app._leave_race()
++			app._results_continue(panel, panel.get_parent())
++			check(app.game.get_instance_id() == game_id and panel.is_visible_in_tree(), "ad keeps retry, exit and Continue on the same result")
++			ads.hold = false
++			for frame: int in range(3): await process_frame
++			check(not app.race_ad_breaks.due() and not app.race_ad_breaks.blocking and not is_instance_valid(app._ad_input_blocker), "dismissal restores results and resets both limits")
++			check(root.gui_get_focus_owner() == retry, "dismissal restores previous result-button focus")
++			await capture("results-after-injected-ad.png")
++	await app._retry_race()
++	app.game.set_physics_process(false)
++	app.returning_to_editor = true
++	finish(app)
++	for frame: int in range(2): await process_frame
++	check(app.race_ad_breaks.races == 0 and ads.calls == 1, "creator test finish is excluded")
++	app.returning_to_editor = false
++	await app._retry_race()
++	app.game.set_physics_process(false)
++	app.game.attempt_practice = true
++	finish(app)
++	for frame: int in range(2): await process_frame
++	check(app.race_ad_breaks.races == 0 and ads.calls == 1, "practice finish is excluded")
++	app.game.attempt_practice = false
++	app.game.paused = false
++	app.screen = "tracks"
++	app._publishing_slots_foreground = true
++	check(app._ad_play_active(), "ordinary foreground race contributes time")
++	app.game.paused = true
++	check(not app._ad_play_active(), "paused race and result screen exclude time")
++	app.game.paused = false
++	app._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++	check(not app._ad_play_active(), "background race excludes time")
++	app._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++	await app._retry_race()
++	app.game.set_physics_process(false)
++	app.game.attempt_practice = false
++	app.race_ad_breaks.active_msec = Breaks.INTERVAL_MSEC
++	for frame: int in range(2): await process_frame
++	check(ads.calls == 1, "real app does not open elapsed-time ad in an unfinished race")
++	finish(app)
++	for frame: int in range(4): await process_frame
++	check(ads.calls == 2 and not app.race_ad_breaks.due(), "ten-minute limit shows at next finish before the third race")
++	root.remove_child(app)
++	app.free()
++	await process_frame
++
++func capture(filename: String) -> void:
++	if capture_directory.is_empty() or DisplayServer.get_name() == "headless": return
++	DirAccess.make_dir_recursive_absolute(capture_directory)
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(capture_directory.path_join(filename)) == OK, "capture result presentation: " + filename)
+diff --git a/game/tests/test_race_ad_breaks.gd.uid b/game/tests/test_race_ad_breaks.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_ad_breaks.gd.uid
+@@ -0,0 +1 @@
++uid://1jrkkt6jydyh
+diff --git a/docs/INTERSTITIAL_CADENCE_2026_10_22.md b/docs/INTERSTITIAL_CADENCE_2026_10_22.md
+new file mode 100644
+--- /dev/null
++++ b/docs/INTERSTITIAL_CADENCE_2026_10_22.md
+@@ -0,0 +1,38 @@
++# Race interstitial cadence — 2026-10-22
++
++The owner requests an ad after three races or ten minutes, whichever comes first. ADB01–ADB04/R01/Q01 implement that placement locally through the existing AdMob development integration. This explicit placement request supersedes the original blueprint's ads-off/forced-interstitial exclusion for this feature. No production rollout is included.
++
++## Behavior
++
++- **ADB01:** Count completed ordinary races once per attempt through the shared App results path. Free Race, Rivalry and Challenges use this boundary. Abandoned attempts, creator test drives, practice and duplicate completion callbacks do not add finishes. Retrying a completed race starts a new countable attempt.
++- **ADB02:** An ad becomes due after three finishes **or** 600,000 milliseconds of active foreground session time. The timer includes ordinary menu use and racing; it excludes background/focus loss, paused races/results, loading, creator/draft work, practice and the ad itself. Time uses the monotonic clock outside the canonical simulation. Counters are session-local and saturate at their thresholds.
++- **ADB03:** Present only at the next ordinary race finish, after saving/building its result. Ten minutes never interrupts driving or opens an ad while sitting in a menu. Keep one native preloaded interstitial; loading never opens it. If it is unavailable, return to play immediately and retain the due state for a later finish. Either threshold, or both together, produces one ad. Only an actual show resets both counters, after dismissal. Result actions are shielded during the SDK handoff and the previous keyboard focus is restored afterward.
++- **ADB04:** Check authoritative `/me/entitlements` at preparation and at an eligible break. Monthly/permanent ad-free access suppresses the placement. Failed/malformed ownership reads skip it. An account change, leaving/hiding the exact result, backgrounding, and stale/duplicate SDK callbacks cannot open a late ad. Results remain usable during the ownership read.
++- **R01:** The existing rewarded-resume path, reward authority, race proofs, PBs, uploads, contracts, race rules and physics are retained. Native rewarded/interstitial displays share one fullscreen request owner. Interstitials grant no reward.
++
++The existing **Settings → Development → Show ads** switch enables the placement on Android debug builds; Off remains Off. Desktop/release builds with no supported bridge remain quiet and issue no placement ownership reads. No preference, saved account or live configuration has been changed. Google's sample app ID and interstitial demo unit `ca-app-pub-3940256099942544/1033173712` are used. Java/source and the existing SDK dependency remain debug-only. The one cached interstitial expires after 55 minutes and its preload has a 45-second timeout; stale loads are discarded. Primary references checked: [Google interstitial integration](https://developers.google.com/admob/android/interstitial) and [test ad units](https://developers.google.com/admob/android/test-ads).
++
++## Files and checks
++
++Runtime changes: `game/core/app.gd`, new `game/platform/race_ad_breaks.gd`, new `game/platform/admob_interstitial.gd` and their UIDs. Native change: `native/admob/src/org/beatmytrack/admob/BmtAdMob.java`; provenance updated in `native/admob/PROVENANCE.md`. Tests: new `game/tests/test_race_ad_breaks.gd` and UID. Status records: `AGENTS.md`, `DEVELOPMENT_STATUS.md`, `docs/PHASE_0_PLAN.md` and this report. Other work in the shared checkout is retained.
++
++All wrapper commands ran from the repository root with `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`. Each Godot run redirected `APPDATA` into a task-owned `.tools/interstitial-cadence-*-user` directory. Windows certificate-store access required execution outside the restricted sandbox; no live account/service or device was used by the fixtures.
++
++| Actual command/check | Outcome |
++| --- | --- |
++| `TestScript -ScriptPath res://tests/test_race_ad_breaks.gd -CommandTimeoutSeconds 180` | Final **57 checks, 0 failures**. Deterministic thresholds, both-at-once serialization, failure carryover, foreground time, entitlement/account/navigation fences, adapter callback identity, and actual App finish/retry/save/focus paths. |
++| Pinned `Godot_v4.7.2-stable_win64_console.exe --audio-driver Dummy --path game --script res://tests/test_race_ad_breaks.gd --log-file <evidence>/graphical-dummy.log -- --capture-ad-breaks=<evidence>` | Final **59 checks, 0 failures**, desktop Compatibility, including two screenshot writes. |
++| `TestScript -ScriptPath res://tests/test_admob_development.gd -CommandTimeoutSeconds 180` | **44 checks, 0 failures**; existing rewarded-resume behavior. |
++| `TestApp -CommandTimeoutSeconds 240` | **141 checks, 0 failures**. |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180` | **930 scripts, 0 failures**. |
++| `Import -CommandTimeoutSeconds 180` | Exit 0 on the pinned engine; new script UIDs registered. |
++| Existing Gradle wrapper, `compileStandardDebugJavaWithJavac --offline --no-daemon` | **BUILD SUCCESSFUL**, actual Java compilation with cached SDK 25.5.0. No APK target. Existing compileSdk/AGP and manifest warnings retained. JDK 17.0.20.1+1 and the configured Android SDK were used. |
++| Scoped `git diff --check` and task-patch reverse check | See `report.json` for the final receipt. |
++
++The first sandbox run could not write the normal user log; a workspace data directory resolved that. Engine startup then failed reading the Windows root certificate store; the isolated run with certificate-store access succeeded. Initial real-App fixture attempts omitted the required published-track marker, then the final lap timestamp; these caused a missing race and three legitimate save-check failures respectively. The fixture was corrected without changing runtime validation. Initial focused passes were 51 checks, then 55 after adding simultaneous-limit/time-first coverage; final focus coverage raises this to 57. The first default graphical run exited with a Windows WASAPI `GetBufferSize` error. A pinned-engine Dummy-audio run passed 55 checks, then the final capture/focus run passed 59. The initial Java command lacked a standard flavor and was ambiguous; the explicit standard-debug compile passed. No failing assertion was removed or weakened.
++
++## Evidence and remaining acceptance
++
++`docs/evidence/interstitial-cadence-2026-10-22/` contains original source snapshots, a task-only source patch, source fingerprints, copied test receipts, Java compilation output and `report.json`. `results-during-injected-ad.png` and `results-after-injected-ad.png` show the real native result page with an injected test adapter; they are **not** screenshots of a Google ad. The focused fixture synthesizes five equal lap times and has no driving telemetry. Its result remains saved and the Retry button regains focus after dismissal. No fake ad screen was added to the product.
++
++Phone attachment was not checked; no physical-device/emulator ad test, APK/export/install, backend deployment, account/race mutation or provider-console change was performed. Actual native ad loading/show/dismissal, touch, owner acceptance of frequency, and release enablement remain. Production requires the owner's AdMob app/interstitial IDs and consent/release configuration. The existing debug-only packaging is intentionally retained until those inputs are supplied. Session restart resets this local cadence; no cross-session persistence was requested.

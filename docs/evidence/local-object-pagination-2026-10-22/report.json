@@ -1,0 +1,160 @@
+{
+  "title": "Linear local object cleanup pagination",
+  "date": "2026-10-22",
+  "requirements": {
+    "LOP01": "Replace quadratic directory-offset pagination with a designed and implemented linear complete scan.",
+    "LOP02": "Retain durable continuation, bounded page memory/work, publication pins, reference protection and active-upload guards.",
+    "LOP03": "Measure the original and final algorithms, preserve backup/restore, and record actual validation and limits."
+  },
+  "outcome": "Implemented in local source. One streaming manifest preparation, followed by direct byte-offset page reads. A 100000-object synthetic shard requires 100000 directory advances instead of the saved original's 5150000. No deployment or live cleanup was performed.",
+  "design": {
+    "choice": "Immutable disk-backed name manifest, not a new authoritative inventory or an in-memory directory iterator.",
+    "reason": "A portable directory offset requires reopening and skipping the prefix. An in-memory iterator does not survive the maintenance CLI restarting between batches. A maintained database inventory would add coordination to uploads and need legacy/orphan reconciliation. A sequential manifest avoids those tradeoffs while leaving publication paths intact.",
+    "preparation": "A fresh scan enumerates the existing 256 hash directories once, validates candidate names and regular-file entries, and appends shard/name records to a private .pending manifest. It fsyncs and atomically publishes a .scan file. Preparation is outside all maintenance database transactions and connections.",
+    "cursor": {
+      "v": 1,
+      "scan": "128-bit random scan ID local to the object root",
+      "offset": "byte position at the next manifest record"
+    },
+    "paging": "Seek directly to the byte offset. Consume at most the requested 1-1000 records, reread each current object's regular-file type, mtime and size, and skip missing files. No directory prefix is traversed. A candidate deletion cannot alter a manifest offset. No long-lived scan handles or population-sized Python collections are retained.",
+    "deletion": "The manifest is only a candidate source. Existing current-reference checks, online publication pins, one-day age guard, offline-writer requirement, temporary guard locks and backup pause remain authoritative. Pending publication documents and proofs remain protected.",
+    "concurrency": "An OS-released nonblocking builder lock permits one preparation at a time per root. Other processes can read existing manifests without acquiring the builder lock. Interrupted preparation leaves no usable partial cursor; retry cleans leftover private pending artifacts and rebuilds. Concurrent directory changes can wait for a later scan.",
+    "lifetime": "At most four unfinished scans per volume. Manifests expire seven days after preparation. Completion creates a reclamation hint; the final page remains retryable until a fresh scan removes completed artifacts. Missing/expired cursors fail explicitly and must restart without a cursor. Reclamation touches only recognized regular scan artifacts, not object data or unknown files.",
+    "compatibility": "Legacy {shard,offset} cursors restart once from the beginning without skipping a prefix. Objects may be rechecked safely. Retention no longer subtracts deleted-directory entries from the cursor. GCS/S3 adapters and existing content-addressed paths are unchanged.",
+    "startup": "Constructor recovery keeps its separate 1000-directory-entry cap and never prepares a full manifest.",
+    "backup": "Portable local archives prune .object-scans-v1 before descent. Rebuildable maintenance artifacts never enter an object archive. A symbolic link at the metadata-directory path is rejected. Real archive/restore and corruption/link checks pass."
+  },
+  "complexity_and_resources": {
+    "notation": "N is the total directory entries visited; M is valid candidate names, M <= N; k is the page size, 1 <= k <= 1000.",
+    "before": "For N objects in a shard, a complete fixed-page scan advanced O(N^2/k) entries because each page reopened scandir and skipped its previous offset.",
+    "after": "One O(N) directory preparation pass, O(M) sequential manifest writes/reads, then O(k) work per page with direct byte seeks. A complete normal scan is O(N), with O(k) application memory. This counts work, not a promise about filesystem latency.",
+    "disk": "An ordinary object name record takes 73 bytes plus the 25-byte manifest header: 7,300,025 bytes for 100000 objects. Up to four unfinished scans can coexist. Temporary-file records have a different bounded length.",
+    "tradeoff": "The first scan preparation is deliberately O(N), not a bounded first-page latency. It needs temporary disk and may take time on a large NAS. It does not hold a DB connection or run during API startup. Interrupted preparation restarts its single enumeration rather than resuming a filesystem iterator.",
+    "expiry": "A scan must finish within seven days. A completed cursor can expire when a fresh scan begins. Start a new scan after completion; preserve and reuse the returned cursor during an active scan."
+  },
+  "files": [
+    "backend/bmt_backend/local_object_listing.py",
+    "backend/bmt_backend/storage.py",
+    "backend/bmt_backend/maintenance.py",
+    "backend/deploy/object_archive.py",
+    "backend/deploy/README.md",
+    "backend/tests/test_local_object_listing.py",
+    "backend/tests/test_local_object_retention.py"
+  ],
+  "validation": {
+    "environment": "Windows Python backend-secure-venv. Synthetic in-memory directory entries with real on-disk manifests, isolated SQLite databases, actual subprocess restart/locking, actual portable backup/restore. No live service, database or object volume was used.",
+    "commands": [
+      "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe docs/evidence/local-object-pagination-2026-10-22/benchmark.py",
+      "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_local_object_listing.py backend/tests/test_local_object_retention.py backend/tests/test_storage.py backend/tests/test_robustness_fixes.py backend/tests/test_review_followups.py backend/tests/test_scalability.py backend/tests/test_publication_intents.py backend/tests/test_s3_storage.py backend/tests/test_gcs_storage.py backend/deploy/test_operations.py -k 'not postgres and not real_gcs_contract and (test_local_object or test_storage or retention or temporary or gc or archive or test_s3_storage or test_gcs_storage or test_operations)' -q --tb=short --junitxml=docs/evidence/local-object-pagination-2026-10-22/final-workspace.xml",
+      "& .tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/local_object_listing.py backend/bmt_backend/storage.py backend/bmt_backend/maintenance.py backend/deploy/object_archive.py backend/tests/test_local_object_listing.py backend/tests/test_local_object_retention.py docs/evidence/local-object-pagination-2026-10-22/benchmark.py",
+      "git diff --check -- backend/bmt_backend/storage.py backend/bmt_backend/maintenance.py backend/deploy/object_archive.py backend/deploy/README.md"
+    ],
+    "final_workspace": {
+      "passed_tests": 74,
+      "passed_subtests": 13,
+      "skipped": 1,
+      "deselected": 115,
+      "seconds": 48.89,
+      "failed": 0,
+      "errors": 0
+    },
+    "skip": "test_gc_racing_publication_recreates_before_reference_commit[sqlite] requires the PostgreSQL row-lock race. PostgreSQL parametrizations and live GCS contract were explicitly deselected.",
+    "lint_and_whitespace": "Passed. Initial test/evidence import and fixture lint corrections did not change runtime assertions.",
+    "covered": [
+      "saved original reproduces 5150000 directory advances",
+      "final 1000/10000/100000 advances for equal object counts",
+      "process restart and page retries",
+      "deletion without cursor shifts",
+      "new objects on a later scan",
+      "current type/age and missing-file checks",
+      "legacy cursor upgrade",
+      "malformed cursor, limit, record and boundary rejection",
+      "cursor expiry and artifact reclamation",
+      "builder failure/release and real cross-process lock exclusion",
+      "four-active-scan cap",
+      "resumed page performs no directory enumeration",
+      "startup inspects exactly at most 1000 directory entries without preparing a manifest",
+      "manifest preparation precedes DB checkout",
+      "actual paged applied cleanup preserves live pins",
+      "referenced records and pending publication evidence remain",
+      "aged active uploads and young temporary files remain",
+      "legacy unguarded temporary files require offline cleanup",
+      "local backup/restore excludes manifests and preserves exact JSON",
+      "existing corrupt archives/links/duplicates rejected",
+      "S3/GCS transport regressions"
+    ],
+    "initial_corrections": [
+      "Two initial patch attempts had context mismatches and made no partial changes; the storage method was then replaced against the verified current source.",
+      "Concurrent unrelated migration edits briefly caused a missing down_revision and then multiple schema heads. Storage-only tests passed independently. The initial mixed focused run had 32 passes and two migration setup errors; its XML is retained.",
+      "A disposable package snapshot was prepared for retention checks. Its setup assertion expected two migration heads, but concurrent edits had already joined them into one; no synthetic merge was written. The ensuing isolated check passed 37 tests with one PostgreSQL-dependent skip. The final actual workspace rerun passed all 74 selected tests and supersedes the workaround. No source migrations or existing assertions were changed.",
+      "WSL's read-only Python version probe returned E_ACCESSDENIED. No Linux execution, container operation or privilege escalation was performed."
+    ]
+  },
+  "remaining_acceptance": [
+    "representative NAS/Linux filesystem throughput, free-space and interrupted-preparation operational acceptance",
+    "PostgreSQL row-lock race execution",
+    "matching backend artifact rollout if desired"
+  ],
+  "scope": {
+    "database_migration_needed": false,
+    "upload_path_changed": false,
+    "live_cleanup": false,
+    "deployment": false,
+    "phone_attachment_check": false,
+    "device_test": false,
+    "apk_action": false,
+    "unrelated_workspace_work_preserved": true
+  },
+  "artifacts": [
+    "benchmark.py",
+    "benchmark-results.json",
+    "final-workspace.xml",
+    "storage-backup-final.xml",
+    "focused-initial.xml",
+    "focused-migration-errors.xml",
+    "retention-initial.xml",
+    "retention-isolated-final.xml",
+    "migration-test-snapshot.json",
+    "before/",
+    "task-only.patch"
+  ],
+  "checkpoint": {
+    "after_sha256": {
+      "backend/bmt_backend/storage.py": "2a6d54eb074ddde9c1cf3b0c30237b79882207abd70af6ab9c538ab1940ad638",
+      "backend/bmt_backend/maintenance.py": "83dbdd8d2498f82407c31532d9772233c616dcf203835577fe14b99d023fa774",
+      "backend/deploy/object_archive.py": "63da00fdd5e5dcb667b8e57d45818f98786ce84e15106046861ccf1fc85cba86",
+      "backend/deploy/README.md": "0ffcbd110e66705a1ee69aaafc9f7f58356ff886159106b6f2749d485727cc3a",
+      "backend/bmt_backend/local_object_listing.py": "54e8cab6424fcd0c2481e094a49c37e8a7ebb7da7d88ae213d7696997cd1b358",
+      "backend/tests/test_local_object_listing.py": "d5c49ba5f1e0879329116febd8363a05baf5c685dffc074a4dcf27c0a094d6b5",
+      "backend/tests/test_local_object_retention.py": "3afe991e78bf1c5cd6059570448cebd29c3951341fab2c51589d6bb31b202f38"
+    },
+    "before_sha256": {
+      "backend/bmt_backend/storage.py": "551173bb61b5d3bea295feee2dba4375ac6754e3eb456794fc8c1f80aa27b7e7",
+      "backend/bmt_backend/maintenance.py": "18f36258f65ecee445c7b51a6558f1d05b0287d55c26f635fcc1a7db32f1eb6d",
+      "backend/deploy/object_archive.py": "3d23746bc4415480f94c7de3a2be538f81b75fde7eb74f7fcbd73db437fad622",
+      "backend/deploy/README.md": "159d3789a59c8b79aeaf827517f63ede391f8077467dcf931a9c2341d079f53c"
+    },
+    "patch_sha256": "9ce99173afa46f53aae3c9e16fe7ccbb9264e9969d4e6f9c3a679b157fa6c4d5",
+    "kind": "Task-only patch against captured session originals; no Git commit or unrelated changes included."
+  },
+  "actual_measurements": [
+    {
+      "objects": 1000,
+      "before_directory_advances": 2000,
+      "after_directory_advances": 1000,
+      "manifest_bytes": 73025
+    },
+    {
+      "objects": 10000,
+      "before_directory_advances": 65000,
+      "after_directory_advances": 10000,
+      "manifest_bytes": 730025
+    },
+    {
+      "objects": 100000,
+      "before_directory_advances": 5150000,
+      "after_directory_advances": 100000,
+      "manifest_bytes": 7300025
+    }
+  ]
+}

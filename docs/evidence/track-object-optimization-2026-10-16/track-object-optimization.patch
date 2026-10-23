@@ -1,0 +1,2563 @@
+diff --git a/docs/TRACK_OBJECT_OPTIMIZATION_2026_10_16.md b/docs/TRACK_OBJECT_OPTIMIZATION_2026_10_16.md
+new file mode 100644
+index 0000000..853cece
+--- /dev/null
++++ b/docs/TRACK_OBJECT_OPTIMIZATION_2026_10_16.md
+@@ -0,0 +1,96 @@
++# Track editor object geometry review and optimization
++
++Owner request, 2026-10-16: inspect all track editor objects for hidden surfaces and unnecessary structure, simplify where possible, and retain their appearance.
++
++TOOPT01 covers every catalog family and variant; TOOPT02 removes only provably enclosed or zero-area triangles; TOOPT03 preserves visible surfaces, authored normals, material runs, outlines, movement and canonical data; TOOPT04 retains bounded shared preparation/caches; TOOPT05 records actual native evidence, costs and remaining device acceptance. The existing camera, collision, local saves, five-lap, road/bridge and authored Egyptian-material contracts remain.
++
++The review covers the starting catalog of 39 families / 43 variants plus the legacy puddle, across all five biomes (220 combinations). Twenty variants benefit. The prepared catalog, including all breakable phases, changes from **85,067 to 82,560 triangles**, removing **2,507 (2.95%)**. A container loses 8.96%; the broken column loses 17.52%. These are triangles referenced by drawing, not a claim of reduced draw calls, large RAM savings or measured phone FPS.
++
++Only complete triangles inside one closed, convex authored box are removed. The test includes the actual octagonal corner cuts and sloping bevels; all three vertices must be inside. A bounded transient grid accelerates these exact tests (8,192 entries maximum, with a broad-list fallback). Open foliage, holes, wire mesh, partial intersections and touching faces are retained. Inked geometry keeps 45 mm of local clearance, covering its 22 mm extrusion at the minimum 0.5 scale. Exact zero-area pole triangles are also omitted.
++
++All original faces contribute to the original final normals before removal. Prepared mesh caches carry small triangle-ordinal plans; final native and editor assembly apply contiguous index slices. Original vertex streams and ordering remain intact, avoiding a GDScript copy of every attribute or extra normal/colour quantization. Editor joins keep full source arrays through shared normal generation, then prune. Cache admission counts retained removal indices; existing 96/32 entries, 32 MiB shared mesh and 16 MiB retained editor-model limits remain. Native kit203 and authored-props5 fence older prepared artifacts.
++
++Winter keeps its ordinal-sensitive snow preparation intact. Movable/damaged props retain exposed undersides, separate phases, collision, replay/rewind and debris behavior. Tyres retain hollow beads and internal surfaces visible through them; fences/guardrails retain their open structures. Other unchanged entries have no safe enclosed-box or zero-area removal in this pass. No silhouette, material, object population, source pigment, collision footprint, camera, track document or canonical rule was deliberately simplified.
++
++The editor review additionally found that overlapping ordinary and Egyptian components could enter the same material cluster. They now have separate cluster passes, preserving the new authored stone shader.
++
++| Kind | Before triangles | After triangles | Removed |
++| --- | ---: | ---: | ---: |
++| tree | 1590 | 1550 | 40 |
++| broadleaf | 1208 | 1208 | 0 |
++| bush | 648 | 648 | 0 |
++| grass_clump | 60 | 60 | 0 |
++| flowers | 492 | 492 | 0 |
++| pebbles | 819 | 819 | 0 |
++| rock | 234 | 234 | 0 |
++| boulder | 234 | 234 | 0 |
++| slate | 585 | 585 | 0 |
++| cliff | 1025 | 1025 | 0 |
++| log | 1440 | 1440 | 0 |
++| tyre_stack | 1200 | 1200 | 0 |
++| tyre_wall | 7200 | 7200 | 0 |
++| barrier | 468 | 468 | 0 |
++| guardrail | 576 | 576 | 0 |
++| fence | 672 | 626 | 46 |
++| wire_fence | 832 | 832 | 0 |
++| cone | 572 | 572 | 0 |
++| chevron | 452 | 412 | 40 |
++| braking_board | 772 | 716 | 56 |
++| banner | 964 | 916 | 48 |
++| flag | 170 | 170 | 0 |
++| light | 356 | 334 | 22 |
++| gantry | 2220 | 2220 | 0 |
++| jump | 166 | 166 | 0 |
++| speed_bump | 1880 | 1880 | 0 |
++| oil | 120 | 120 | 0 |
++| hay_bale | 2932 | 2892 | 40 |
++| crate | 5140 | 5037 | 103 |
++| barrel | 820 | 800 | 20 |
++| pallet | 1420 | 1390 | 30 |
++| parked_car | 3046 | 2970 | 76 |
++| van | 3188 | 3112 | 76 |
++| car_wreck | 2856 | 2774 | 82 |
++| container | 8548 | 7782 | 766 |
++| shed | 2210 | 2071 | 139 |
++| hut | 1874 | 1747 | 127 |
++| grandstand | 4920 | 4720 | 200 |
++| egypt_pyramid | 6988 | 6988 | 0 |
++| egypt_obelisk | 4458 | 4182 | 276 |
++| egypt_column | 3802 | 3708 | 94 |
++| egypt_column_broken | 1290 | 1064 | 226 |
++| egypt_wall | 4500 | 4500 | 0 |
++| puddle | 120 | 120 | 0 |
++
++All measurements use pinned `4.7.2.stable.official.ed1daf0bf`. The actual executable is `C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe`, with `--path game --log-file <absolute workspace log> --script res://tests/<script>`. Headless runs add `--headless`; graphical runs use `--rendering-method gl_compatibility --rendering-driver opengl3` or `--rendering-method mobile --rendering-driver vulkan`. The exact scripts, counts, logs, hashes and command forms are in [report.json](evidence/track-object-optimization-2026-10-16/report.json).
++
++| Actual check | Result |
++| --- | --- |
++| test_prop_optimization.gd ? headless | 665 checks, 0 failures |
++| test_prop_optimization.gd ? Compatibility | 1105 checks, 0 failures |
++| test_prop_optimization.gd ? Mobile | 1105 checks, 0 failures |
++| test_prop_optimization_editor.gd ? Compatibility | 20 checks, 0 failures |
++| test_prop_optimization_editor_baseline.gd ? Mobile, eight settled frames | 10 checks, 0 failures |
++| test_editor_incremental_objects.gd ? headless | 47 checks, 0 failures |
++| test_prop_refinement.gd ? headless | 669 checks, 0 failures |
++| test_breakable_props.gd ? headless | 46 checks, 0 failures |
++| test_egypt_props.gd ? headless | 79 checks, 0 failures |
++| test_script_parse.gd ? headless | 797 scripts, 0 failures |
++| Frozen original catalog against concurrent Winter code ? headless | 665 checks, 0 failures |
++
++The differential test renders the actual native object builders in one world, comparing against frozen original builders from before this task, with concurrent Egyptian art corrections mirrored into both sides. There are 440 exact settled object/view comparisons per renderer: four compass views, low views, underside views, near-top and oblique views. All five biomes preserve original document/cell data. The editor fixture also exercises nonuniform scales/rotations, independent runs, duplicate painted containers, intersections and superseded work. Its source positions, pigments and normals compare exactly.
++
++Native evidence: [Compatibility catalog](evidence/track-object-optimization-2026-10-16/gl_compatibility/after-9.png), [Mobile catalog](evidence/track-object-optimization-2026-10-16/mobile/after-9.png), [retained editor](evidence/track-object-optimization-2026-10-16/editor-gl_compatibility/pine-incremental.png), [Mobile original editor](evidence/track-object-optimization-2026-10-16/editor-baseline-mobile/pine-editor-original.png), [Mobile optimized editor](evidence/track-object-optimization-2026-10-16/editor-baseline-mobile/pine-editor-optimized.png). Each renderer directory retains the before/after views and JSON observations.
++
++The unchanged six-frame Mobile native-vs-retained diagnostic records four colour channels differing by one level in Pine and Night. Its geometry/normal checks pass exactly, and its failed pixel assertions are retained rather than relaxed. With eight settling frames, the separate unoptimized/optimized native pairs and unoptimized/optimized editor pairs are byte-exact for all five biomes. First/return images also record original-only first-material warm-up. Compatibility passes the original six-frame checks.
++
++Cold preparation is a real tradeoff: the final headless synthetic first-catalog sums were 371.410 ms original and 494.407 ms optimized. That includes source inspection and cached removal-plan construction. This is desktop callback/build evidence, not a controlled phone latency or FPS benchmark. Cached and retained meshes reuse the plans; no inspection runs during settled rendering.
++
++Initial failures remain in `initial`, `iteration-2`, `initial-mobile`, `initial-editor-gl` and `logs`: default user-log access denial, incorrect tangent stride in an intermediate compaction, early pruning affecting normal generation, mixed-material editor clustering, in-progress external parser errors, and the six-frame Mobile precision observations. The source-normal regression now compares the final source draw indices and every retained authored normal with the original >0.999 requirement; it does not require removed enclosed preparation faces to be drawn.
++
++The legacy object-browser fixture stops on its old `test_button` reference after current UI changes. Its assertions were not changed. The current full incremental editor/save regression passes all 47 checks. No claim of a completely green legacy full-project Validate run is made.
++
++New Winter craft objects arrived from concurrent work during finalization. Their additive changes and subsequent authored-props6 version are preserved. They are outside this pass's 43-variant before/after metrics; a frozen-catalog recheck against the combined code passes 665 checks.
++
++No phone test, Android export/install, backend change or deployment was performed. Owner and physical-phone appearance, sustained frame pacing, memory and loading acceptance remain.
++
++The task-only patch, baseline/final hashes and isolated two-commit Git checkpoint are recorded in the evidence report. Unrelated current work and the main repository index/branch are preserved.
+diff --git a/game/editor/placed_object_batches.gd b/game/editor/placed_object_batches.gd
+index 337e738..691afb1 100644
+--- a/game/editor/placed_object_batches.gd
++++ b/game/editor/placed_object_batches.gd
+@@ -63,8 +63,9 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current:
+ 				var part: Dictionary = model.parts[part_index]
+ 				if part.baked:
+ 					var role: String = ("ink:" if part.material.next_pass != null else "opaque:")+("egypt:" if kind in PropEgypt.KINDS else "")+str(Vector2i(floori(float(object.position[0])/32.0),floori(float(object.position[1])/32.0)))+":"+str(index/BAKED_GROUP_SIZE)
+-					if not desired.has(role): desired[role] = {"baked":true,"components":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
++					if not desired.has(role): desired[role] = {"baked":true,"components":[],"hidden":[],"sources":[],"bounds":[],"material":part.material,"poses":[]}
+ 					desired[role].components.append(part.arrays)
++					desired[role].hidden.append(part.hidden)
+ 					desired[role].sources.append(key+":"+str(part_index))
+ 					desired[role].bounds.append(part.bounds)
+ 				else:
+@@ -214,9 +215,11 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
+ 		for surface: int in range(mesh.get_surface_count()):
+ 			bytes += mesh.surface_get_array_len(surface)*64+mesh.surface_get_array_index_len(surface)*4
+ 		var baked: bool = child is MeshInstance3D
++		if baked and child.has_meta("editor_prop_hidden"):
++			bytes += child.get_meta("editor_prop_hidden").size()*16
+ 		# Keep pre-upload normals. Decoding/re-encoding a compressed ArrayMesh
+ 		# introduces an extra quantization step, visible in Mobile lighting.
+-		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
++		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"hidden":child.get_meta("editor_prop_hidden",PackedInt32Array()),"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
+ 	prototype.free()
+ 	var result: Dictionary = {"parts":parts,"bytes":bytes}
+ 	if bytes <= MODEL_BUDGET:
+@@ -240,13 +243,14 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced:
+ 	if signature != baked_signature:
+ 		baked_signature = signature.duplicate(true)
+ 		baked_plan = {}
+-		for role: String in ["opaque","ink"]:
++		for role: String in ["opaque","ink","opaque:egypt"]:
+ 			var parts: Array = []
+ 			for key: String in signature:
+ 				if not key.begins_with(role+":"): continue
++				if role == "opaque" and key.begins_with("opaque:egypt:"): continue
+ 				var entry: Dictionary = desired[key]
+ 				for index: int in range(entry.components.size()):
+-					parts.append({"arrays":entry.components[index],"bounds":entry.bounds[index],"source":entry.sources[index],"material":entry.material,"chunk":key,"cluster":parts.size()})
++					parts.append({"arrays":entry.components[index],"hidden":entry.hidden[index],"bounds":entry.bounds[index],"source":entry.sources[index],"material":entry.material,"chunk":key,"cluster":parts.size()})
+ 			# Overlapping opaque surfaces must keep the original triangle order.
+ 			# Shared vertices additionally need their original joined normals.
+ 			var shared: Dictionary = {}
+@@ -271,21 +275,22 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced:
+ 				var connected: bool = cluster.size() > 1
+ 				var key: String = role+":joined:"+cluster[0].source if connected else cluster[0].chunk
+ 				if not baked_plan.has(key): baked_plan[key] = {"baked":true,"components":[],"sources":[],"material":cluster[0].material,"poses":[]}
+-				var components: Array = []
++				var components: Array = []; var removals: Array = []
+ 				var regenerate: bool = false
+ 				for part: Dictionary in cluster:
+-					components.append(part.arrays)
++					components.append(part.arrays); removals.append(part.hidden)
+ 					baked_plan[key].sources.append(part.source)
+ 					regenerate = regenerate or shared.has(part.source)
+ 				if regenerate:
+ 					if sliced:
+-						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components),kit.get_tree())
++						var job = preload("res://editor/work_job.gd").start(_join_arrays.bind(components,removals),kit.get_tree())
+ 						while not job.done:
+ 							await kit.get_tree().process_frame
+ 							if not current.call(): job.cancel(); baked_signature = {}; return
+-						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components))
+-					else: baked_plan[key].components.append(_joined_arrays(components))
+-				else: baked_plan[key].components.append_array(components)
++						baked_plan[key].components.append(job.result if job.result is Array and not job.result.is_empty() else _joined_arrays(components,removals))
++					else: baked_plan[key].components.append(_joined_arrays(components,removals))
++				else:
++					for index: int in range(components.size()): baked_plan[key].components.append(PropGeometry.prune(components[index],removals[index]))
+ 	for key: String in signature: desired.erase(key)
+ 	for key: String in baked_plan: desired[key] = baked_plan[key]
+ 
+@@ -307,13 +312,18 @@ func _shared_vertex(first: Dictionary, second: Dictionary) -> bool:
+ 		shared_vertex_bytes += bytes
+ 	return shared
+ 
+-static func _joined_arrays(components: Array) -> Array:
+-	return _join_arrays(Callable(),components)
++static func _joined_arrays(components: Array, removals: Array = []) -> Array:
++	return _join_arrays(Callable(),components,removals)
+ 
+-static func _join_arrays(cancelled: Callable, components: Array) -> Array:
++static func _join_arrays(cancelled: Callable, components: Array, removals: Array = []) -> Array:
+ 	var tool := SurfaceTool.new()
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for component: Array in components:
++	var hidden := PackedInt32Array(); var triangle_offset: int = 0
++	for part_index: int in range(components.size()):
++		var component: Array = components[part_index]
++		if part_index < removals.size():
++			for triangle: int in removals[part_index]: hidden.append(triangle_offset+triangle)
++		triangle_offset += component[Mesh.ARRAY_INDEX].size()/3
+ 		if cancelled.is_valid() and cancelled.call(): return []
+ 		var points: PackedVector3Array = component[Mesh.ARRAY_VERTEX]
+ 		var pigments: PackedColorArray = component[Mesh.ARRAY_COLOR]
+@@ -322,7 +332,7 @@ static func _join_arrays(cancelled: Callable, components: Array) -> Array:
+ 			tool.add_vertex(points[index])
+ 	tool.generate_normals()
+ 	tool.index()
+-	return tool.commit_to_arrays()
++	return PropGeometry.prune(tool.commit_to_arrays(),hidden)
+ 
+ static func _assemble(components: Array) -> ArrayMesh:
+ 	return _upload_arrays(_assembly_arrays(Callable(),components))
+diff --git a/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd b/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd
+new file mode 100644
+index 0000000..5d83309
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd
+@@ -0,0 +1,106 @@
++class_name BeforeBreakablePropVisual
++extends RefCounted
++## Prepared damage meshes and two debris batches; never changes canonical state.
++static var debris_meshes: Dictionary = {}
++static var damage_meshes: Dictionary = {}
++static var shared_material: StandardMaterial3D
++
++static func build(node: Node3D, kit: Node, kind: String, scale: float) -> void:
++	node.set_meta("breakable_kind",kind)
++	node.set_meta("authored_yaw",node.rotation.y)
++	for phase: int in range(3):
++		var key: String = BeforeCreatorPropVisual.VERSION+"/"+kind+"/"+str(phase)
++		if not damage_meshes.has(key):
++			var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++			if phase == 0: BeforeCreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1,0)
++			elif kind == "hay_bale": BeforePropEquipment.hay(tool,phase)
++			else: _damaged_crate(tool,phase)
++			tool.generate_normals(); tool.index()
++			if damage_meshes.size() >= 12: damage_meshes.erase(damage_meshes.keys()[0])
++			damage_meshes[key] = tool.commit()
++		var mesh := MeshInstance3D.new()
++		mesh.name = "DamagePhase"+str(phase); mesh.mesh = damage_meshes[key]
++		mesh.material_override = material(); mesh.scale = Vector3.ONE*scale
++		mesh.visible = phase == 0
++		node.add_child(mesh)
++
++static func material() -> StandardMaterial3D:
++	if shared_material == null:
++		shared_material = VisualGeometry.material(Color.WHITE)
++		shared_material.vertex_color_use_as_albedo = true; shared_material.vertex_color_is_srgb = true
++		shared_material.cull_mode = BaseMaterial3D.CULL_DISABLED
++	return shared_material
++
++static func present(node: Node3D, row: Array, integrity: float) -> void:
++	var kind: String = node.get_meta("breakable_kind")
++	node.visible = integrity > 0
++	node.scale = Vector3.ONE*BreakableProps.size_fraction(kind,integrity)
++	node.rotation.y = float(node.get_meta("authored_yaw"))+float(row[4])
++	node.rotation.z = clampf(float(row[2])*0.012,-0.12,0.12)
++	node.rotation.x = clampf(float(row[3])*0.012,-0.12,0.12)
++	var phase: int = 0 if integrity > 0.96 else 1 if integrity > 0.38 else 2
++	for child: MeshInstance3D in node.get_children(): child.visible = child.name == "DamagePhase"+str(phase)
++
++static func _damaged_crate(tool: SurfaceTool, phase: int) -> void:
++	var wood := BeforePropEquipment.WOOD
++	# Open interior, missing/split boards and broken diagonal braces.
++	for i: int in range(5): BeforePropGeometry.box(tool,Vector3(-0.43+i*0.215,0.055,0),Vector3(0.195,0.07,1.06),wood.darkened(0.16),0.008)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(5):
++			if i == 1 or (phase == 2 and i == 3): continue
++			var height: float = 0.92 if i%2 == 0 else 0.56
++			BeforePropGeometry.box(tool,Vector3(-0.43+i*0.215,height*0.5+0.06,side*0.525),Vector3(0.196,height,0.04),wood.lightened((i%3)*0.03),0.008)
++			BeforePropGeometry.box(tool,Vector3(side*0.525,height*0.5+0.06,-0.43+i*0.215),Vector3(0.04,height,0.196),wood,0.008)
++		BeforePropGeometry.box(tool,Vector3(0,0.14,side*0.56),Vector3(1.10,0.13,0.07),wood.lightened(0.10),0.012)
++		BeforePropGeometry.beam(tool,Vector3(-0.42,0.27,side*0.56),Vector3(-0.05,0.47,side*0.56),0.12,0.06,wood.lightened(0.08))
++		BeforePropGeometry.beam(tool,Vector3(0.18,0.62,side*0.56),Vector3(0.41,0.81,side*0.56),0.12,0.06,wood.lightened(0.08))
++	for i: int in [0,2,4]:
++		if phase == 2 and i == 2: continue
++		BeforePropGeometry.box(tool,Vector3(-0.43+i*0.215,0.93-i*0.025,0.17),Vector3(0.196,0.055,0.71),wood.lightened(0.05),0.009)
++
++static func ensure_debris(parent: Node3D) -> void:
++	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
++		var name: String = "LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments"
++		if parent.has_node(name): continue
++		var node := MultiMeshInstance3D.new(); node.name = name
++		node.multimesh = MultiMesh.new(); node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++		node.multimesh.mesh = _debris_mesh(kind); node.material_override = material()
++		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		parent.add_child(node)
++
++static func _debris_mesh(kind: int) -> ArrayMesh:
++	if debris_meshes.has(kind): return debris_meshes[kind]
++	var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if kind == BreakableProps.WOOD:
++		BeforePropGeometry.box(tool,Vector3(0,0.03,0),Vector3(1,0.06,1),BeforePropEquipment.WOOD,0.012)
++		for side: float in [-1.0,1.0]:
++			BeforePropGeometry.face(tool,[Vector3(side*0.50,0.004,-0.46),Vector3(side*0.56,0.031,0.15),Vector3(side*0.50,0.058,0.46)],BeforePropEquipment.WOOD.lightened(0.18))
++	else:
++		for i: int in range(40):
++			var a: float = i*2.4
++			var p := Vector3(cos(a)*0.35,0.01,sin(a)*0.35)
++			var reach := Vector3(cos(a+0.8)*0.32,0.012+(i%3)*0.012,sin(a+0.8)*0.32)
++			var side := Vector3(-sin(a)*0.026,0,cos(a)*0.026)
++			BeforePropGeometry.face(tool,[p-side,p+reach,p+side],Color("a68c55").lightened((i%3)*0.055))
++	tool.generate_normals(); tool.index(); debris_meshes[kind] = tool.commit()
++	return debris_meshes[kind]
++
++static func update_debris(parent: Node3D, state: VehicleState) -> void:
++	if not parent.has_node("WoodFragments"): return
++	for kind: int in [BreakableProps.HAY,BreakableProps.WOOD]:
++		var node: MultiMeshInstance3D = parent.get_node("LooseHayFragments" if kind == BreakableProps.HAY else "WoodFragments")
++		var pieces: Array = []
++		for row: Array in state.prop_fragments:
++			if int(row[0]) == kind: pieces.append(row)
++		if node.multimesh.instance_count != pieces.size(): node.multimesh.instance_count = pieces.size()
++		var cache: Dictionary = node.get_meta("debris_draw_state",{})
++		if cache.get("resource") != node.multimesh.get_instance_id() or cache.get("count") != pieces.size():
++			cache = {"resource":node.multimesh.get_instance_id(),"count":pieces.size(),"poses":{}}
++			node.set_meta("debris_draw_state",cache)
++		for i: int in range(pieces.size()):
++			var row: Array = pieces[i]
++			var size := Vector3(float(row[8]),1,float(row[9]))
++			var pose := Transform3D(Basis(Vector3.UP,float(row[6])).scaled(size),Vector3(row[2],0.023,-float(row[3])))
++			if cache.poses.get(i) == pose: continue
++			cache.poses[i] = pose
++			node.multimesh.set_instance_transform(i,pose)
+diff --git a/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd.uid b/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd.uid
+new file mode 100644
+index 0000000..f26b0da
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/breakable_prop_visual.gd.uid
+@@ -0,0 +1 @@
++uid://bow0xj61sdjcw
+diff --git a/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd b/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd
+new file mode 100644
+index 0000000..0b946b3
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd
+@@ -0,0 +1,227 @@
++class_name BeforeCreatorPropVisual
++extends RefCounted
++## Original shared meshes for world placement and browser thumbnails.
++const VERSION: String = "authored-props-4-egypt"
++const CACHE_LIMIT: int = 96
++static var meshes: Dictionary = {}
++static var pine_meshes: Dictionary = {}
++const CACHE_BUDGET: int = 32 * 1024 * 1024
++static var cache_bytes: int = 0
++static var _ages: Dictionary = {}
++static var _clock: int = 0
++
++static func _touch(mesh: Mesh) -> void:
++	_clock += 1; _ages[mesh.get_instance_id()] = _clock
++
++static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
++	var size: int = preload("res://editor/cache_bytes.gd").mesh(mesh)
++	if size > CACHE_BUDGET: return
++	cache_bytes = size
++	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += preload("res://editor/cache_bytes.gd").mesh(stored)
++	while cache.size() >= limit or cache_bytes > CACHE_BUDGET:
++		var victim_cache: Dictionary = cache; var victim: String = ""; var age: int = 9223372036854775807
++		for collection: Dictionary in ([cache] if cache.size() >= limit else [meshes,pine_meshes]):
++			for candidate: String in collection:
++				var candidate_age: int = int(_ages.get(collection[candidate].get_instance_id(),0))
++				if candidate_age < age: age = candidate_age; victim = candidate; victim_cache = collection
++		if victim.is_empty(): break
++		var expired: Mesh = victim_cache[victim]; cache_bytes -= preload("res://editor/cache_bytes.gd").mesh(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
++	cache[key] = mesh; _touch(mesh)
++
++
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
++	var length: float = section_length/scale if section_length >= 0 else -1.0
++	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
++	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
++	var model: Mesh = meshes.get(key)
++	if model == null:
++		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++		var found: bool = BeforePropNature.append(local,kit,kind,Vector3.ZERO,1,0)
++		if not found: found = BeforePropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
++		if not found: found = BeforePropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
++		if not found: found = BeforePropEgypt.append(local,kind,Vector3.ZERO,1,0)
++		if not found: return false
++		if kind not in BeforePropEgypt.KINDS: local.generate_normals()
++		model = local.commit(); _admit(meshes,key,model,CACHE_LIMIT)
++	_touch(model)
++	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++	return true
++
++static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
++	var vertices: Array[Vector3] = []
++	for point: Vector3 in points: vertices.append(center+(point*scale).rotated(Vector3.UP,turn))
++	tool.set_color(color)
++	if vertices.size() == 4: kit._quad(tool,vertices[0],vertices[1],vertices[2],vertices[3])
++	else:
++		for index: int in [0,2,1]: tool.add_vertex(vertices[index])
++
++static func _stone(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
++	# Three fractured strata and an offset split cap, inside the original footprint.
++	var rings: Array = []
++	for row: int in range(3):
++		var ring: Array[Vector3] = []
++		for i: int in range(12):
++			var angle: float = TAU*i/12
++			var radial: float = 0.92+0.08*sin(i*2.31)
++			var reach: float = radial * ([1.0,0.93,0.67][row] + (0.055*sin(i*1.83+row) if row > 0 else 0.0))
++			var y: float = [0.0,0.38,0.81][row] + (0.10*sin(i*1.73+row*0.83) if row > 0 else 0.0)
++			ring.append(Vector3(cos(angle)*reach+row*0.025,y,sin(angle)*reach-row*0.018)*size)
++		rings.append(ring)
++	for row: int in range(2):
++		for i: int in range(12):
++			var j: int = (i+1)%12
++			var shade: Color = color.darkened(0.12+0.045*((i+row)%3))
++			var a: Vector3 = rings[row][i]; var b: Vector3 = rings[row][j]
++			var c: Vector3 = rings[row+1][j]; var d: Vector3 = rings[row+1][i]
++			var split: Vector3 = (a+b+c+d)*0.25 + Vector3(cos(i*TAU/12)*0.025,0,sin(i*TAU/12)*0.025)*size
++			_leaf_face(tool,kit,center,1,turn,[a,b,split],shade.darkened(0.03))
++			_leaf_face(tool,kit,center,1,turn,[b,c,split],shade)
++			_leaf_face(tool,kit,center,1,turn,[c,d,split],shade.lightened(0.04))
++			_leaf_face(tool,kit,center,1,turn,[d,a,split],shade)
++			if row == 1 and i in [1,5,9]:
++				var offset := Vector3(cos(i*TAU/12),0,sin(i*TAU/12))*0.004
++				_leaf_face(tool,kit,center,1,turn,[a.lerp(d,0.22)+offset,d+offset,d.lerp(c,0.025)+offset],color.darkened(0.42))
++	for i: int in range(12):
++		var j: int = (i+1)%12
++		var cap := Vector3(-0.08,1.0,0.07)*size
++		_leaf_face(tool,kit,center,1,turn,[rings[2][i],rings[2][j],cap],color.lightened(0.12+(i%3)*0.04))
++	# Short oblique sediment trace sits on one real slope, not a floating decal.
++	for i: int in [2,3,7]:
++		var a: Vector3 = rings[1][i].lerp(rings[2][i],0.23)
++		var b: Vector3 = rings[1][(i+1)%12].lerp(rings[2][(i+1)%12],0.30)
++		var offset := Vector3(cos(i*TAU/12)*0.005,0.003,sin(i*TAU/12)*0.005)
++		_leaf_face(tool,kit,center,1,turn,[a+offset,b+offset,b+offset+Vector3.UP*size.y*0.009,a+offset+Vector3.UP*size.y*0.009],color.lightened(0.10))
++
++static func _cliff(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
++	# Continuous rectangular rock wall: exact solid footprint, broken upper ledge.
++	var front: Array = []
++	var back: Array = []
++	for row: int in range(6):
++		var f: Array[Vector3] = []
++		var b: Array[Vector3] = []
++		for i: int in range(7):
++			var x: float = -0.5+float(i)/6.0
++			var h: float = [0.0,0.25,0.29,0.56,0.61,0.91][row]+(0.14*sin(i*1.9) if row==5 else 0.035*sin(i*1.9) if row>0 else 0.0)
++			var z: float = 0.5 if row==0 else [0.5,0.46,0.36,0.43,0.29,0.34][row]+0.035*sin(i*2.4)
++			if i>0 and i<6 and row>0: x+=0.025*sin(i*3.2+row*0.8)
++			f.append(Vector3(x,h,-z)*size)
++			b.append(Vector3(x,h+0.015 if row>0 else 0.0,z)*size)
++		front.append(f); back.append(b)
++	for row: int in range(5):
++		for i: int in range(6):
++			var shade: Color = color.darkened(0.27 if i%3==0 else 0.12)
++			_leaf_face(tool,kit,center,1,turn,[front[row][i],front[row][i+1],front[row+1][i+1],front[row+1][i]],shade)
++			_leaf_face(tool,kit,center,1,turn,[back[row][i+1],back[row][i],back[row+1][i],back[row+1][i+1]],shade.darkened(0.10))
++		for i: int in [0,6]:
++			var points: Array = [front[row][i],back[row][i],back[row+1][i],front[row+1][i]]
++			if i==0: points.reverse()
++			_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.30))
++	for i: int in range(6):
++		_leaf_face(tool,kit,center,1,turn,[front[5][i],front[5][i+1],back[5][i+1],back[5][i]],color.lightened(0.22))
++	for row: int in [0,2,4]:
++		for i: int in [1,3,5]:
++			for side: int in [-1,1]:
++				var rings: Array = front if side<0 else back
++				var lo: Vector3 = rings[row][i].lerp(rings[row][i+1],0.45)
++				var hi: Vector3 = rings[row+1][i].lerp(rings[row+1][i+1],0.30)
++				var offset := Vector3(0,0,side*0.015)
++				var points: Array = [lo.lerp(hi,0.18)+offset,hi+offset,hi+Vector3(size.x*0.008,0,side*0.015)]
++				if side>0: points.reverse()
++				_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.55))
++	# Narrow, interrupted sediment seams on both faces.
++	for row: int in [2,4]:
++		for i: int in range(6):
++			if (i+row)%4==0: continue
++			for side: int in [-1,1]:
++				var ring: Array = front[row] if side<0 else back[row]
++				var a: Vector3 = ring[i]+Vector3(0,0,side*0.012)
++				var b: Vector3 = ring[i+1]+Vector3(0,0,side*0.012)
++				var points: Array = [a,b,b+Vector3.UP*size.y*0.013,a+Vector3.UP*size.y*0.013]
++				if side>0: points.reverse()
++				_leaf_face(tool,kit,center,1,turn,points,color.darkened(0.47))
++
++static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3, turn: float, color: Color) -> void:
++	# Serrated canopy edge with a single broad light plane and dark underside.
++	# Deliberately no rounded rings or spherical leaf clusters.
++	var rim: Array[Vector3] = []
++	var upper: Array[Vector3] = []
++	for i: int in range(18):
++		var angle: float = TAU*i/18.0
++		var radius: float = (1.0 if i%3 != 1 else 0.77)*(0.91+0.09*sin(i*2.1))
++		rim.append(Vector3(cos(angle)*radius,0.24+0.08*sin(i*1.7),sin(angle)*radius)*size)
++		upper.append(Vector3(cos(angle)*radius*0.57,0.73+0.07*sin(i*0.9),sin(angle)*radius*0.57)*size)
++	for i: int in range(18):
++		var j: int = (i+1)%18
++		var side_color: Color = color.lightened(0.12) if cos(TAU*i/18.0+turn)>0.2 else color.darkened(0.22)
++		_leaf_face(tool,kit,center,1,turn,[rim[i],rim[j],upper[j],upper[i]],side_color)
++		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.13,0.90,0.04)*size],color.lightened(0.26))
++		_leaf_face(tool,kit,center,1,turn,[rim[j],rim[i],Vector3(0,0.0,0)*size],color.darkened(0.43))
++
++static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
++	var key: String = color.to_html()
++	var model: Mesh = pine_meshes.get(key)
++	if model == null:
++		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++		_pine_model(local,kit,Vector3.ZERO,1,0,color)
++		local.generate_normals()
++		model = local.commit(); _admit(pine_meshes,key,model,32)
++	_touch(model)
++	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++
++static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
++	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
++	var branches := SurfaceTool.new(); branches.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for i: int in range(7):
++		var a: float = i*2.4
++		BeforePropGeometry.tube(branches,Vector3(0,0.035,0),Vector3(cos(a)*0.24,0.008,sin(a)*0.24),0.055,0.014,Color("63523e"),6)
++	# Swept, tapered boughs: dark lower blades and connected upper ridges.
++	for tier: int in range(5):
++		var radius: float = 1.02-tier*0.17
++		var height: float = 0.66+tier*0.49
++		for branch: int in range(7):
++			var angle: float = turn+branch*TAU/7.0+tier*0.63
++			var reach: float = radius*(0.91+0.09*sin(branch*2.7+tier))
++			var points: Array[Vector3] = [Vector3(-0.15,height+0.47,0),Vector3(reach*0.63,height+0.12,-reach*0.36),Vector3(reach,height-0.10,-reach*0.13),Vector3(reach*0.83,height-0.02,reach*0.08),Vector3(reach*0.95,height-0.15,reach*0.24),Vector3(reach*0.45,height+0.04,reach*0.40)]
++			var ridge := Vector3(reach*0.38,height+0.37,0)
++			BeforePropGeometry.tube(branches,Vector3(0,height+0.10,0),Vector3(reach*0.77,height-0.045,0).rotated(Vector3.UP,angle-turn),0.025,0.007,Color("746044"),6)
++			for i: int in range(points.size()):
++				var j: int = (i+1)%points.size()
++				var shade: Color = color.lightened(0.23) if i<3 else color.darkened(0.12)
++				_leaf_face(tool,kit,center,scale,angle,[points[i],points[j],ridge],shade)
++				_leaf_face(tool,kit,center,scale,angle,[points[j],points[i],Vector3(0,height-0.02,0)],color.darkened(0.40))
++			# Split needle tips, rather than a single unbroken triangular blade.
++			for spray: int in range(3):
++				var p := Vector3(reach*(0.47+spray*0.17),height+0.14-spray*0.075,reach*(-0.19+spray*0.16))
++				_leaf_face(tool,kit,center,scale,angle,[p+Vector3(-0.17,0.06,-0.05),p+Vector3(0.16,-0.06,-0.09),p+Vector3(0.13,-0.08,0.09),p+Vector3(-0.13,0.07,0.06)],color.lightened(0.17+(spray%2)*0.06))
++	# Small pointed leader rather than a round cap.
++	_lathe(tool,kit,center,scale,turn,[Vector2(0.22,2.65),Vector2(0.0,3.3)],[color.lightened(0.20)],true)
++	BeforePropGeometry.append_transformed(tool,branches,center,scale,turn)
++
++static func _lathe(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, profile: Array, colors: Array, reverse: bool = false) -> void:
++	for row: int in range(profile.size()-1):
++		for i: int in range(20):
++			var a: float=TAU*i/20+turn
++			var b: float=TAU*(i+1)/20+turn
++			var lo: Vector2=profile[row]
++			var hi: Vector2=profile[row+1]
++			tool.set_color(colors[row])
++			var points: Array[Vector3] = [Vector3(cos(a)*lo.x,lo.y,sin(a)*lo.x),Vector3(cos(b)*lo.x,lo.y,sin(b)*lo.x),Vector3(cos(b)*hi.x,hi.y,sin(b)*hi.x),Vector3(cos(a)*hi.x,hi.y,sin(a)*hi.x)]
++			if reverse: points.reverse()
++			kit._quad(tool,center+points[0]*scale,center+points[1]*scale,center+points[2]*scale,center+points[3]*scale)
++
++static func _roof(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, width: float, depth: float, color: Color) -> void:
++	var count: int=ceili(width/0.4)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(count):
++			var x0: float=lerpf(-width*0.5-0.15,width*0.5+0.15,float(i)/count)
++			var x1: float=lerpf(-width*0.5-0.15,width*0.5+0.15,float(i+1)/count)
++			var points: Array[Vector3]=[Vector3(x0,3.02,side*(depth*0.5+0.15)),Vector3(x1,3.02,side*(depth*0.5+0.15)),Vector3(x1,4.0,0),Vector3(x0,4.0,0)]
++			if side<0: points.reverse()
++			for j: int in range(4): points[j]=center+(points[j]*scale).rotated(Vector3.UP,turn)
++			tool.set_color(color.lightened((i%3)*0.025).darkened(0.08 if side<0 else 0))
++			kit._quad(tool,points[0],points[1],points[2],points[3])
++
++static func _leaf_face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
++	# Godot's clockwise front faces must point outwards for the ink hull.
++	points.reverse()
++	_face(tool,kit,center,scale,turn,points,color)
+diff --git a/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd.uid b/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd.uid
+new file mode 100644
+index 0000000..13ceec7
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/creator_prop_visual.gd.uid
+@@ -0,0 +1 @@
++uid://dutmaxwqryi8h
+diff --git a/game/tests/fixtures/prop_optimization_before/native_track_visual.gd b/game/tests/fixtures/prop_optimization_before/native_track_visual.gd
+new file mode 100644
+index 0000000..fcc1142
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/native_track_visual.gd
+@@ -0,0 +1,147 @@
++class_name BeforePropTrackVisual
++extends NativeTrackVisual
++
++func _build_placed_objects(track: NativeTrack) -> void:
++	ContactShading.build_props(self,track)
++	if theme_id == "winter": BeforeWinterScenery.build_authored(self,track)
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var count: int = 0
++	var ink_tool := SurfaceTool.new()
++	ink_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var ink_count: int = 0
++	var egypt_tool := SurfaceTool.new(); egypt_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var egypt_count: int = 0
++	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
++		if _menu_yield_due():
++			await get_tree().process_frame
++			if not is_inside_tree(): return
++			_slice_started = Time.get_ticks_usec()
++		var center := Vector3(float(object.position[0]),0.014,-float(object.position[1]))
++		if ground_support != null: center.y += ground_support.ground(Vector2(center.x,-center.z))
++		if theme_id == "winter" and str(object.kind) in BeforeWinterScenery.TYPES: continue
++		var object_scale: float = float(object.get("scale",1.0))
++		if object.kind in BeforePropEgypt.KINDS:
++			BeforeCreatorPropVisual.append(egypt_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
++			egypt_count += 1
++			continue
++		if object.kind == "light" and theme_id == "night_city":
++			var lamp := OmniLight3D.new()
++			lamp.name = "StreetLamp"
++			lamp.position = center+(Vector3(0.4,4.65,0)*object_scale).rotated(Vector3.UP,deg_to_rad(float(object.rotation)))
++			lamp.light_color = Color("ffda98")
++			lamp.light_energy = 5.0
++			lamp.omni_range = 15.0*object_scale
++			lamp.omni_attenuation = 1.2
++			lamp.shadow_enabled = false
++			lamp.light_cull_mask = 1
++			add_child(lamp)
++			var glow := VisualGeometry.material(Color("ffe3ae"))
++			glow.emission_enabled = true
++			glow.emission = Color("ffda98")
++			VisualGeometry.box(self,Vector3(0.8,0.06,0.32)*object_scale,lamp.position,glow)
++		if object.kind in CreatorCatalog.SOFT:
++			var node := Node3D.new()
++			add_child(node)
++			node.position = center
++			node.rotation.y = deg_to_rad(float(object.rotation))
++			node.set_meta("prop_origin",center)
++			node.set_meta("prop_yaw",node.rotation.y)
++			if object.kind in BreakableProps.KINDS:
++				BeforeBreakablePropVisual.build(node,self,object.kind,object_scale)
++				BeforeBreakablePropVisual.ensure_debris(self)
++			else:
++				var prop_tool := SurfaceTool.new()
++				prop_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++				BeforeCreatorPropVisual.append(prop_tool,self,object.kind,Vector3.ZERO,object_scale,0)
++				_finish_prop_mesh(prop_tool,node)
++			light_instances.append(node)
++			continue
++		if object.kind in ["tree","broadleaf","bush","barrier","rock","boulder","slate","cliff"]:
++			if object.kind == "tree": _pine(ink_tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
++			else: BeforeCreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)))
++			ink_count += 1
++			continue
++		if BeforeCreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else ""):
++			count += 1
++			continue
++		if object.kind == "tree":
++			_pine(tool,center,1.25*object_scale,-deg_to_rad(float(object.rotation)),TrackTheme.foliage(theme_id))
++		elif object.kind == "rock":
++			_mound(tool,center,Vector3(0.95,0.5,0.9)*object_scale,deg_to_rad(float(object.rotation)),TrackTheme.stone(theme_id))
++		elif object.kind in ["boulder","slate","cliff"]:
++			var size: Vector2 = CreatorObjects.size_of(object)
++			var height: float = {"boulder":2.0,"slate":0.65,"cliff":3.4}[object.kind]*object_scale
++			var turn: float = deg_to_rad(float(object.rotation))
++			_mound(tool,center,Vector3(size.x*0.5,height,size.y*0.5),turn,TrackTheme.stone(theme_id))
++			if object.kind == "cliff":
++				for x: float in [-0.3,0.1,0.35]:
++					_mound(tool,center+Vector3(size.x*x,0,0).rotated(Vector3.UP,turn),Vector3(size.x*0.19,height*(0.8+x),size.y*0.47),turn+x,TrackTheme.stone(theme_id).darkened(0.08))
++		elif object.kind in ["oil","puddle","jump","speed_bump"]:
++			HazardVisual.build(self,object)
++			if ground_support != null: (get_child(get_child_count()-1) as Node3D).position.y += ground_support.ground(Vector2(object.position[0],object.position[1]))
++			continue
++		elif object.kind in ["tyre_wall","tyre_stack"]: continue # Shared instanced mesh below.
++		else: continue # Barrier/water/dirt already rendered from exact native cells.
++		count += 1
++	if egypt_count > 0:
++		egypt_tool.index()
++		var egypt_mesh := MeshInstance3D.new()
++		egypt_mesh.name = "EgyptianStonework"
++		egypt_mesh.mesh = egypt_tool.commit()
++		if _capture_editor_prop_arrays: egypt_mesh.set_meta("editor_prop_arrays",egypt_tool.commit_to_arrays())
++		egypt_mesh.material_override = BeforePropEgypt.material()
++		add_child(egypt_mesh)
++	if count > 0:
++		tool.generate_normals()
++		tool.index()
++		var mesh := MeshInstance3D.new()
++		mesh.mesh = tool.commit()
++		if _capture_editor_prop_arrays: mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
++		var material := VisualGeometry.material(Color.WHITE)
++		material.vertex_color_use_as_albedo = true
++		# Small roof seams and foliage use their silhouettes, not intersecting ink hulls.
++		material.vertex_color_is_srgb = true
++		material.cull_mode = BaseMaterial3D.CULL_DISABLED
++		mesh.material_override = material
++		add_child(mesh)
++
++	if ink_count > 0:
++		ink_tool.generate_normals()
++		ink_tool.index()
++		var ink_mesh := MeshInstance3D.new()
++		ink_mesh.mesh = ink_tool.commit()
++		if _capture_editor_prop_arrays: ink_mesh.set_meta("editor_prop_arrays",ink_tool.commit_to_arrays())
++		var ink_material := VisualGeometry.material(Color.WHITE)
++		ink_material.vertex_color_use_as_albedo = true
++		ink_material.vertex_color_is_srgb = true
++		ink_material.cull_mode = BaseMaterial3D.CULL_DISABLED
++		VisualGeometry.ink(ink_material)
++		ink_mesh.material_override = ink_material
++		add_child(ink_mesh)
++
++	if not track.tyre_origins.is_empty():
++		var stack := SurfaceTool.new()
++		stack.begin(Mesh.PRIMITIVE_TRIANGLES)
++		_tyre(stack,Vector3.ZERO)
++		_tyre(stack,Vector3.UP*0.30)
++		stack.generate_normals()
++		stack.index()
++		tyre_instances = MultiMeshInstance3D.new()
++		var instances := MultiMesh.new()
++		instances.transform_format = MultiMesh.TRANSFORM_3D
++		instances.mesh = stack.commit()
++		instances.instance_count = track.tyre_origins.size()
++		tyre_instances.multimesh = instances
++		_tyre_positions.clear()
++		_tyre_spins.clear()
++		var rubber := VisualGeometry.material(Color.WHITE)
++		rubber.vertex_color_use_as_albedo = true
++		rubber.vertex_color_is_srgb = true
++		rubber.cull_mode = BaseMaterial3D.CULL_DISABLED
++		tyre_instances.material_override = rubber
++		add_child(tyre_instances)
++		update_tyres(VehicleState.new(),track.tyre_origins)
++
++func _pine(tool: SurfaceTool, center: Vector3, scale_value: float, turn: float, color: Color) -> void:
++	BeforeCreatorPropVisual.pine(tool,self,center,scale_value,turn,color)
+diff --git a/game/tests/fixtures/prop_optimization_before/native_track_visual.gd.uid b/game/tests/fixtures/prop_optimization_before/native_track_visual.gd.uid
+new file mode 100644
+index 0000000..2f25c1b
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/native_track_visual.gd.uid
+@@ -0,0 +1 @@
++uid://dj3vsxif2mki2
+diff --git a/game/tests/fixtures/prop_optimization_before/placed_object_batches.gd b/game/tests/fixtures/prop_optimization_before/placed_object_batches.gd
+new file mode 100644
+index 0000000..95f3875
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/placed_object_batches.gd
+@@ -0,0 +1,45 @@
++extends "res://editor/placed_object_batches.gd"
++
++func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictionary:
++	if models.has(key): return models[key]
++	var prototype := BeforePropTrackVisual.new()
++	prototype.theme_id = kit.theme_id
++	prototype.colors = kit.colors
++	prototype.editor_preview = true
++	prototype.ground_support = kit.ground_support if key != "tyres" else null
++	prototype._capture_editor_prop_arrays = true
++	var track := NativeTrack.new()
++	track.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
++	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)
++	prototype._build_placed_objects(track)
++	var parts: Array = []
++	var bytes: int = 0
++	for child: Node in prototype.get_children():
++		if child.is_in_group("contact_lighting"): continue
++		var mesh: Mesh
++		var pose: Transform3D
++		if child is MeshInstance3D:
++			mesh = child.mesh
++			pose = child.transform
++		elif child is MultiMeshInstance3D and child.multimesh.instance_count == 1:
++			mesh = child.multimesh.mesh
++			pose = child.transform*child.multimesh.get_instance_transform(0)
++		else: continue
++		for surface: int in range(mesh.get_surface_count()):
++			bytes += mesh.surface_get_array_len(surface)*64+mesh.surface_get_array_index_len(surface)*4
++		var baked: bool = child is MeshInstance3D
++		if baked and child.has_meta("editor_prop_hidden"):
++			bytes += child.get_meta("editor_prop_hidden").size()*16
++		# Keep pre-upload normals. Decoding/re-encoding a compressed ArrayMesh
++		# introduces an extra quantization step, visible in Mobile lighting.
++		parts.append({"mesh":null if baked else mesh,"arrays":_baked_arrays(child) if baked else [],"hidden":child.get_meta("editor_prop_hidden",PackedInt32Array()),"bounds":mesh.get_aabb(),"baked":baked,"pose":pose,"material":child.material_override,"cast_shadow":child.cast_shadow,"layers":child.layers,"name":str(child.name),"contact":false})
++	prototype.free()
++	var result: Dictionary = {"parts":parts,"bytes":bytes}
++	if bytes <= MODEL_BUDGET:
++		while not models.is_empty() and (models.size() >= MODEL_LIMIT or model_bytes+bytes > MODEL_BUDGET):
++			var expired: String = models.keys()[0]
++			model_bytes -= int(models[expired].bytes)
++			models.erase(expired)
++		models[key] = result
++		model_bytes += bytes
++	return result
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_egypt.gd b/game/tests/fixtures/prop_optimization_before/prop_egypt.gd
+new file mode 100644
+index 0000000..5d86c4f
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_egypt.gd
+@@ -0,0 +1,280 @@
++class_name BeforePropEgypt
++extends RefCounted
++## Original modular Egyptian-inspired stonework. All detail is static geometry.
++const KINDS: Array[String] = ["egypt_pyramid","egypt_obelisk","egypt_column","egypt_column_broken","egypt_wall"]
++const LIMESTONE := Color("c8ad7c")
++const SANDSTONE := Color("bca077")
++const GRANITE := Color("a57d68")
++const CUT := Color("776448")
++const BLUE := Color("617f81")
++const RED := Color("985d49")
++
++static func append(tool: SurfaceTool, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++	if kind not in KINDS: return false
++	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	match kind:
++		"egypt_pyramid": _pyramid(local)
++		"egypt_obelisk": _obelisk(local)
++		"egypt_column": _column(local,false)
++		"egypt_column_broken": _column(local,true)
++		"egypt_wall": _wall(local)
++	BeforePropGeometry.append_transformed(tool,local,center,scale,turn)
++	return true
++
++static func material() -> ShaderMaterial:
++	var result := ShaderMaterial.new()
++	result.shader = preload("res://track/egypt_stone.gdshader")
++	return result
++
++static func _tone(base: Color, seed_value: float) -> Color:
++	return base.lightened(0.035*sin(seed_value*2.37)).darkened(0.025+0.025*sin(seed_value*5.13))
++
++static func _turn(point: Vector3, side: int) -> Vector3:
++	return point.rotated(Vector3.UP,side*PI*0.5)
++
++static func _turned_face(tool: SurfaceTool, points: Array, color: Color, side: int, normal: Vector3) -> void:
++	var transformed: Array[Vector3] = []
++	for point: Vector3 in points: transformed.append(_turn(point,side))
++	BeforePropGeometry.face(tool,transformed,color,_turn(normal,side))
++
++static func _frustum(tool: SurfaceTool, y0: float, y1: float, w0: float, w1: float, depth0: float, depth1: float, color: Color) -> void:
++	for side: int in range(4):
++		var a: float = w0 if side%2 == 0 else depth0
++		var b: float = w1 if side%2 == 0 else depth1
++		var c: float = depth0 if side%2 == 0 else w0
++		var d: float = depth1 if side%2 == 0 else w1
++		var points: Array = [Vector3(-a,y0,-c),Vector3(a,y0,-c),Vector3(b,y1,-d)]
++		if b>0.0 or d>0.0: points.append(Vector3(-b,y1,-d))
++		_turned_face(tool,points,color,side,Vector3(0,0,-1))
++	if w1>0.0 and depth1>0.0: BeforePropGeometry.face(tool,[Vector3(-w1,y1,-depth1),Vector3(w1,y1,-depth1),Vector3(w1,y1,depth1),Vector3(-w1,y1,depth1)],color,Vector3.UP)
++	BeforePropGeometry.face(tool,[Vector3(-w0,y0,-depth0),Vector3(w0,y0,-depth0),Vector3(w0,y0,depth0),Vector3(-w0,y0,depth0)],color.darkened(0.10),Vector3.DOWN)
++
++static func _ashlar(tool: SurfaceTool, corners: Array, side: int, color: Color, seed_value: float) -> void:
++	# A real sloped face with eight worn corners and bevel returns, seated in
++	# a closed recessed core. Narrow joints retain depth at glancing angles.
++	var outer: Array[Vector3] = []
++	var inner: Array[Vector3] = []
++	var centre := Vector3.ZERO
++	for point: Vector3 in corners: centre += point*0.25
++	for i: int in range(4):
++		var a: Vector3 = corners[i]
++		var b: Vector3 = corners[(i+1)%4]
++		var trim: float = 0.035+0.018*sin(seed_value+i*1.83)
++		for t: float in [trim,1.0-trim]:
++			var p: Vector3 = a.lerp(b,t)
++			outer.append(p)
++			inner.append(p.lerp(centre,0.025)+Vector3(0,0,-0.022-0.004*sin(seed_value)))
++	for i: int in range(8):
++		var j: int = (i+1)%8
++		_turned_face(tool,[outer[i],outer[j],inner[j],inner[i]],color.darkened(0.035),side,Vector3(0,0,-1))
++	_turned_face(tool,inner,color,side,Vector3(0,0,-1))
++
++static func _pyramid(tool: SurfaceTool) -> void:
++	# Readable monument proportions; individually fitted sloping limestone
++	# courses, staggered joints and a surviving quieter upper casing.
++	_frustum(tool,-0.07,7.46,5.91,0.025,5.91,0.025,LIMESTONE.darkened(0.20))
++	for row: int in range(12):
++		var y0: float = row*0.59
++		var y1: float = y0+0.571
++		var r0: float = 5.96*(1.0-y0/7.5)
++		var r1: float = 5.96*(1.0-y1/7.5)
++		var count: int = maxi(1,ceili(r0*1.65))
++		for side: int in range(4):
++			for block: int in range(count):
++				var u0: float = float(block)/count
++				var u1: float = float(block+1)/count
++				# Offset internal joints without disturbing the watertight corners.
++				if block>0: u0 += sin(row*2.1+side)*0.15/count
++				if block<count-1: u1 += sin(row*2.1+side)*0.15/count
++				var a0: float = lerpf(-r0,r0,u0)+0.009
++				var b0: float = lerpf(-r0,r0,u1)-0.009
++				var a1: float = lerpf(-r1,r1,u0)+0.009
++				var b1: float = lerpf(-r1,r1,u1)-0.009
++				var seed_value: float = row*31+side*7+block*1.71
++				_ashlar(tool,[Vector3(a0,y0,-r0),Vector3(b0,y0,-r0),Vector3(b1,y1,-r1),Vector3(a1,y1,-r1)],side,_tone(LIMESTONE,seed_value),seed_value)
++	_frustum(tool,7.08,7.49,0.336,0.002,0.336,0.002,LIMESTONE.lightened(0.05))
++	# A few displaced casing chips remain within the authored solid footprint.
++	for i: int in range(9):
++		var a: float = i*2.39
++		var p := Vector3(cos(a)*5.50,0.07,sin(a)*5.50)
++		BeforePropGeometry.box(tool,p,Vector3(0.23+0.10*sin(i),0.20,0.32),_tone(LIMESTONE,i),0.048)
++
++static func _obelisk(tool: SurfaceTool) -> void:
++	BeforePropGeometry.box(tool,Vector3(0,0.19,0),Vector3(2.7,0.5,2.7),SANDSTONE,0.065)
++	BeforePropGeometry.box(tool,Vector3(0,0.51,0),Vector3(2.24,0.18,2.24),GRANITE.darkened(0.07),0.035)
++	BeforePropGeometry.box(tool,Vector3(0,0.72,0),Vector3(1.86,0.30,1.86),GRANITE,0.035)
++	# Monolithic tapered shaft. A shallow recessed inscription strip is
++	# actually cut out of each side, including its four narrow reveal walls.
++	var rings: Array = []
++	for row: int in range(2):
++		var ring: Array[Vector3] = []
++		var radius: float = 0.73 if row==0 else 0.46
++		var width: float = 0.23 if row==0 else 0.19
++		var height: float = 0.86 if row==0 else 7.59
++		for side: int in range(4):
++			for q: Vector2 in [Vector2(-radius+0.035,-radius),Vector2(-width,-radius),Vector2(-width,-radius+0.022),Vector2(width,-radius+0.022),Vector2(width,-radius),Vector2(radius-0.035,-radius)]:
++				ring.append(_turn(Vector3(q.x,height,q.y),-side))
++		rings.append(ring)
++	for i: int in range(rings[0].size()):
++		var j: int = (i+1)%rings[0].size()
++		var edge: Vector3 = rings[0][j]-rings[0][i]
++		var normal:=Vector3(edge.z,0,-edge.x)
++		BeforePropGeometry.face(tool,[rings[0][i],rings[0][j],rings[1][j],rings[1][i]],GRANITE.darkened(0.09 if i%6==2 else 0.0),normal)
++	for row: int in range(2):
++		var cap:=Vector3(0,0.86 if row==0 else 7.59,0)
++		for i: int in range(rings[row].size()):
++			BeforePropGeometry.face(tool,[rings[row][i],rings[row][(i+1)%rings[row].size()],cap],GRANITE,Vector3.DOWN if row==0 else Vector3.UP)
++	for side: int in range(4):
++		var y0: float = 0.86; var y1: float = 7.59
++		var r0: float = 0.73; var r1: float = 0.46
++		for row: int in range(10):
++			var y: float = 1.19+row*0.58
++			var z: float = -lerpf(r0,r1,(y-y0)/(y1-y0))+0.010
++			_glyph(tool,Vector3(0,y,z),0.26,row+side,side,GRANITE.darkened(0.36))
++	_frustum(tool,7.59,8.60,0.46,0.0,0.46,0.0,GRANITE.lightened(0.09))
++	# Restrained mineral edge staining on the plinth, with seated fragments.
++	for i: int in range(4):
++		var p: Vector3 = _turn(Vector3(0.88,0.06,-1.12),i)
++		BeforePropGeometry.box(tool,p,Vector3(0.20,0.15,0.22),GRANITE.darkened(0.04),0.035)
++
++static func _stroke(tool: SurfaceTool, a: Vector3, b: Vector3, width: float, side: int, color: Color) -> void:
++	# Low carved relief is seated in the recessed field. Beveled sides catch
++	# directional light; the geometry never uses emissive or floating decals.
++	BeforePropGeometry.beam(tool,_turn(a,side),_turn(b,side),width,0.013,color)
++
++static func _glyph(tool: SurfaceTool, p: Vector3, size: float, index: int, side: int, color: Color) -> void:
++	var shapes: Array = []
++	match index%5:
++		0: # sun disk and supporting horizon
++			for i: int in range(12):
++				var a: float = TAU*i/12; var b: float = TAU*(i+1)/12
++				shapes.append([Vector2(cos(a)*0.35,sin(a)*0.35+0.17),Vector2(cos(b)*0.35,sin(b)*0.35+0.17)])
++			shapes.append([Vector2(-0.48,-0.44),Vector2(0.48,-0.44)])
++		1: # reed and two leaves
++			shapes = [[Vector2(0,-0.58),Vector2(0,0.62)],[Vector2(0,0.14),Vector2(-0.4,0.48)],[Vector2(-0.4,0.48),Vector2(-0.19,-0.06)],[Vector2(0,0.14),Vector2(0.4,0.48)],[Vector2(0.4,0.48),Vector2(0.19,-0.06)]]
++		2: # water lines
++			for row: int in range(3):
++				for i: int in range(4): shapes.append([Vector2(-0.5+i*0.25,-0.35+row*0.35+(0.09 if i%2==0 else 0.0)),Vector2(-0.25+i*0.25,-0.35+row*0.35+(0.09 if i%2!=0 else 0.0))])
++		3: # folded cloth
++			shapes = [[Vector2(-0.3,-0.6),Vector2(-0.3,0.55)],[Vector2(-0.3,0.55),Vector2(0.35,0.55)],[Vector2(0.35,0.55),Vector2(0.15,0.18)],[Vector2(0.15,0.18),Vector2(-0.3,0.18)]]
++		4: # stylised bird profile, original ornament rather than copied text
++			shapes = [[Vector2(-0.4,0.4),Vector2(-0.2,0.51)],[Vector2(-0.2,0.51),Vector2(-0.1,0.05)],[Vector2(-0.1,0.05),Vector2(0.40,-0.22)],[Vector2(0.40,-0.22),Vector2(-0.34,-0.22)],[Vector2(-0.34,-0.22),Vector2(-0.1,0.05)],[Vector2(-0.15,-0.22),Vector2(-0.25,-0.55)],[Vector2(0.13,-0.22),Vector2(0.22,-0.55)]]
++	for line: Array in shapes:
++		var a: Vector2 = line[0]; var b: Vector2 = line[1]
++		_stroke(tool,p+Vector3(a.x,a.y,0)*size,p+Vector3(b.x,b.y,0)*size,size*0.070,side,color)
++
++static func _lathe(tool: SurfaceTool, profile: Array, color: Color, lobes: float = 0.0, broken: bool = false) -> void:
++	var segments: int = 48
++	var rings: Array = []
++	for row: int in range(profile.size()):
++		var ring: Array[Vector3] = []
++		var p: Vector2 = profile[row]
++		for i: int in range(segments):
++			var a: float = TAU*i/segments
++			var radius: float = p.x+lobes*(0.5+0.5*cos(a*12))
++			var height: float = p.y+(0.13*sin(a*3+0.8)+0.065*sin(a*7) if broken and row==profile.size()-1 else 0.0)
++			ring.append(Vector3(cos(a)*radius,height,sin(a)*radius))
++		rings.append(ring)
++	for row: int in range(rings.size()-1):
++		for i: int in range(segments):
++			var j: int = (i+1)%segments
++			var normal := Vector3(cos(TAU*(i+0.5)/segments),0,sin(TAU*(i+0.5)/segments))
++			_smooth_face(tool,[rings[row][i],rings[row][j],rings[row+1][j],rings[row+1][i]],_tone(color,row*0.12+i*0.04),normal,0)
++	# Connected triangle fan for the fracture; no flat disc over its broken edge.
++	var cap := Vector3(0,profile[-1].y-0.025 if broken else profile[-1].y,0)
++	for i: int in range(segments):
++		BeforePropGeometry.face(tool,[rings[-1][i],rings[-1][(i+1)%segments],cap],_tone(color.lightened(0.05),i),Vector3.UP)
++	BeforePropGeometry.face(tool,rings[0],color.darkened(0.12),Vector3.DOWN)
++
++static func _smooth_face(tool: SurfaceTool, points: Array, color: Color, outward: Vector3, group: int) -> void:
++	# Curved carved profiles share normals only with their own connected
++	# surface. Masonry and fractures keep their deliberately hard face normals.
++	tool.set_color(color); tool.set_smooth_group(group)
++	var flip: bool=(points[1]-points[0]).cross(points[2]-points[0]).dot(outward)<0.0
++	for i: int in range(1,points.size()-1):
++		for j: int in ([0,i,i+1] if flip else [0,i+1,i]): tool.add_vertex(points[j])
++
++static func _cornice(tool: SurfaceTool) -> void:
++	# Closed extruded cavetto blocks: a concave face, a solid cap and real
++	# returns at both ends. Every curved strip is supported by stone behind it.
++	var profile: Array[Vector2] = [Vector2(0.57,3.18),Vector2(0.58,3.28),Vector2(0.605,3.42),Vector2(0.66,3.58),Vector2(0.75,3.73),Vector2(0.84,3.83)]
++	for block: int in range(3):
++		var x0: float = -3.55+block*1.17
++		var x1: float = x0+1.154
++		var color: Color = _tone(SANDSTONE,block*0.8)
++		for sign_value: float in [-1.0,1.0]:
++			for row: int in range(profile.size()-1):
++				var a: Vector2=profile[row]; var b: Vector2=profile[row+1]
++				BeforePropGeometry.face(tool,[Vector3(x0,a.y,sign_value*a.x),Vector3(x1,a.y,sign_value*a.x),Vector3(x1,b.y,sign_value*b.x),Vector3(x0,b.y,sign_value*b.x)],color,Vector3(0,0,sign_value))
++		BeforePropGeometry.face(tool,[Vector3(x0,3.83,-0.84),Vector3(x1,3.83,-0.84),Vector3(x1,3.83,0.84),Vector3(x0,3.83,0.84)],color,Vector3.UP)
++		BeforePropGeometry.face(tool,[Vector3(x0,3.18,-0.57),Vector3(x1,3.18,-0.57),Vector3(x1,3.18,0.57),Vector3(x0,3.18,0.57)],color.darkened(0.1),Vector3.DOWN)
++		for x: float in [x0,x1]:
++			var loop: Array[Vector3] = []
++			for p: Vector2 in profile: loop.append(Vector3(x,p.y,-p.x))
++			for i: int in range(profile.size()-1,-1,-1): loop.append(Vector3(x,profile[i].y,profile[i].x))
++			# These concave end sections need a centre inside the solid volume.
++			var centre:=Vector3(x,3.50,0)
++			for i: int in range(loop.size()): BeforePropGeometry.face(tool,[loop[i],loop[(i+1)%loop.size()],centre],color,Vector3(-1 if x==x0 else 1,0,0))
++
++static func _column(tool: SurfaceTool, broken: bool) -> void:
++	BeforePropGeometry.box(tool,Vector3(0,0.11,0),Vector3(2.66,0.34,2.66),SANDSTONE.darkened(0.05),0.07)
++	_lathe(tool,[Vector2(1.12,0.23),Vector2(1.16,0.29),Vector2(1.15,0.43),Vector2(0.99,0.53),Vector2(0.80,0.60)],SANDSTONE)
++	var shaft: Array = [Vector2(0.77,0.53),Vector2(0.76,0.83),Vector2(0.73,1.43),Vector2(0.71,2.1)] if broken else [Vector2(0.77,0.53),Vector2(0.76,0.83),Vector2(0.73,1.43),Vector2(0.69,2.44),Vector2(0.65,3.48),Vector2(0.64,4.0)]
++	_lathe(tool,shaft,SANDSTONE,0.022,broken)
++	# Fine drum joints remain narrow and structural; no stacked-disc silhouette.
++	for joint: Vector2 in ([Vector2(0.733,1.42)] if broken else [Vector2(0.733,1.42),Vector2(0.693,2.43),Vector2(0.653,3.47)]):
++		_lathe(tool,[Vector2(joint.x,joint.y-0.008),Vector2(joint.x,joint.y+0.008)],SANDSTONE.darkened(0.15),0.022)
++	if broken:
++		for i: int in range(3):
++			BeforePropGeometry.box(tool,Vector3(-0.91+i*0.48,0.055,-0.94),Vector3(0.24,0.16,0.28),_tone(SANDSTONE,i),0.05)
++		return
++	# Bound neck, swelling lotus bud, attached pointed petals and abacus.
++	_lathe(tool,[Vector2(0.67,3.91),Vector2(0.71,3.95),Vector2(0.71,4.03),Vector2(0.67,4.08),Vector2(0.72,4.17),Vector2(0.91,4.43),Vector2(1.04,4.77),Vector2(0.99,5.08),Vector2(0.80,5.36),Vector2(0.60,5.54)],SANDSTONE)
++	_lathe(tool,[Vector2(0.713,3.97),Vector2(0.713,4.01)],SANDSTONE.lerp(BLUE,0.25))
++	var petals: Array[Vector3] = [Vector3(0.692,4.12,0.018),Vector3(0.815,4.30,0.080),Vector3(0.937,4.50,0.145),Vector3(1.04,4.77,0.195),Vector3(0.99,5.08,0.165),Vector3(0.80,5.36,0.085),Vector3(0.622,5.52,0.003)]
++	for i: int in range(12):
++		var a: float = TAU*i/12
++		var rings: Array = []
++		for petal: Vector3 in petals:
++			var ring: Array[Vector3] = []
++			for k: int in range(5):
++				var u: float = float(k)*0.5-1.0
++				var angle: float = a+petal.z*u
++				var r: float = petal.x+0.007+0.024*(1.0-u*u)
++				ring.append(Vector3(sin(angle)*r,petal.y,-cos(angle)*r))
++			rings.append(ring)
++		for row: int in range(rings.size()-1):
++			for k: int in range(4):
++				_smooth_face(tool,[rings[row][k],rings[row][k+1],rings[row+1][k+1],rings[row+1][k]],SANDSTONE.lerp(BLUE,0.16 if i%3==0 else 0.035),Vector3(sin(a),0,-cos(a)),1)
++	BeforePropGeometry.box(tool,Vector3(0,5.65,0),Vector3(1.64,0.25,1.64),SANDSTONE,0.045)
++	# Surviving muted mineral pigment at the lower carved stem register.
++	for side: int in range(4):
++		_glyph(tool,Vector3(0,1.0,-0.775),0.25,side+1,side,SANDSTONE.lerp(RED,0.32))
++
++static func _wall(tool: SurfaceTool) -> void:
++	# Closed battered temple remnant, intentionally no decorative doorway
++	# through a solid footprint. Crown loss is confined to the top courses.
++	_frustum(tool,-0.05,3.26,3.72,3.48,0.80,0.56,SANDSTONE.darkened(0.22))
++	for row: int in range(6):
++		var y0: float = row*0.53
++		var y1: float = y0+0.51
++		var z0: float = 0.81-row*0.04
++		var z1: float = z0-0.04
++		for side: int in [0,2]:
++			for block: int in range(6):
++				var x0: float = -3.64+block*1.21
++				var x1: float = x0+1.19
++				_ashlar(tool,[Vector3(x0,y0,-z0),Vector3(x1,y0,-z0),Vector3(x1,y1,-z1),Vector3(x0,y1,-z1)],side,_tone(SANDSTONE,row*11+block+side),row*11+block)
++	# Concave cavetto cornice on a retained left bay.
++	_cornice(tool)
++	for side: int in [0,2]:
++		# Relief register: sun disk, paired wings and alternating reed motifs.
++		_glyph(tool,Vector3(-1.73,2.72,-0.630),0.49,0,side,SANDSTONE.darkened(0.27))
++		for sign_value: float in [-1.0,1.0]:
++			for i: int in range(5):
++				_stroke(tool,Vector3(-1.73+sign_value*(0.32+i*0.18),2.77,-0.635),Vector3(-1.73+sign_value*(0.52+i*0.17),2.70-i*0.07,-0.641),0.032,side,SANDSTONE.darkened(0.19))
++		for i: int in range(10):
++			_glyph(tool,Vector3(-3.19+i*0.67,1.02,-0.742),0.32,i+1,side,SANDSTONE.darkened(0.24))
++	for i: int in range(4):
++		var x: float = 0.49+i*0.76
++		BeforePropGeometry.box(tool,Vector3(x,3.32+sin(i*2.1)*0.08,0),Vector3(0.71,0.27,1.06),_tone(SANDSTONE,i),0.07)
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_egypt.gd.uid b/game/tests/fixtures/prop_optimization_before/prop_egypt.gd.uid
+new file mode 100644
+index 0000000..69b4352
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_egypt.gd.uid
+@@ -0,0 +1 @@
++uid://jb4m2hd3xuae
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_equipment.gd b/game/tests/fixtures/prop_optimization_before/prop_equipment.gd
+new file mode 100644
+index 0000000..456f50d
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_equipment.gd
+@@ -0,0 +1,223 @@
++class_name BeforePropEquipment
++extends RefCounted
++## Original track furniture with construction details sized for overhead viewing.
++const METAL := Color("7d8988")
++const DARK := Color("354442")
++const WOOD := Color("8b7453")
++
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float, paint: String = "") -> bool:
++	if kind not in ["barrier","fence","guardrail","wire_fence","cone","chevron","braking_board","banner","flag","light","gantry","crate","barrel","pallet","container","hay_bale"]: return false
++	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var span: float = length/scale if length >= 0 else 6.0
++	match kind:
++		"hay_bale": hay(local,0)
++		"barrier": _barrier(local,span)
++		"fence", "guardrail", "wire_fence": _fence(local,kind,span,length >= 0)
++		"cone":
++			BeforePropGeometry.box(local,Vector3(0,0.065,0),Vector3(0.7,0.13,0.7),Color("303a38"),0.055)
++			BeforeCreatorPropVisual._lathe(local,kit,Vector3.ZERO,1,0,[Vector2(0.29,0.13),Vector2(0.28,0.20),Vector2(0.21,0.40),Vector2(0.18,0.51),Vector2(0.125,0.67),Vector2(0.08,0.80),Vector2(0.06,0.88),Vector2(0.027,0.88),Vector2(0.027,0.83)],
++				[Color("ba5628"),Color("d77837"),Color("e4dfc9"),Color("e4dfc9"),Color("d77837"),Color("c5672b"),Color("e8a056"),Color("593d2f")])
++			BeforePropGeometry.ring(local,Vector3(0,0.20,0),Vector3.UP,0.282,0.258,0.045,Color("dc8441"))
++		"chevron", "braking_board", "banner": _sign(local,kind)
++		"flag": _flag(local)
++		"light": _light(local)
++		"gantry": _gantry(local)
++		"crate": _crate(local)
++		"barrel": _barrel(local,kit)
++		"pallet": _pallet(local)
++		"container": ContainerVisual.append(local,Color(paint if ContainerPaint.valid(paint) else ContainerPaint.DEFAULT))
++	BeforePropGeometry.append_transformed(tool,local,center,scale,turn)
++	return true
++
++static func _barrier(tool: SurfaceTool, span: float) -> void:
++	# Jersey profile keeps the original one-metre solid footprint and height.
++	var profile: Array[Vector2] = [Vector2(-0.5,0),Vector2(-0.5,0.17),Vector2(-0.24,0.55),Vector2(-0.22,0.88),Vector2(-0.18,0.93),Vector2(0.18,0.93),Vector2(0.22,0.88),Vector2(0.24,0.55),Vector2(0.5,0.17),Vector2(0.5,0)]
++	var lo: Array[Vector3] = []; var hi: Array[Vector3] = []
++	for p: Vector2 in profile:
++		lo.append(Vector3(-span*0.5,p.y,p.x)); hi.append(Vector3(span*0.5,p.y,p.x))
++	for i: int in range(profile.size()):
++		var j: int = (i+1)%profile.size()
++		BeforePropGeometry.face(tool,[lo[i],lo[j],hi[j],hi[i]],Color("a6aaa0").lightened(0.13 if i in [3,4,5] else 0).darkened(0.12 if i in [0,8] else 0))
++	BeforePropGeometry.face(tool,lo,Color("969d92")); hi.reverse(); BeforePropGeometry.face(tool,hi,Color("969d92"))
++	for x: float in [-span*0.33,0,span*0.33]:
++		for side: float in [-1.0,1.0]:
++			BeforePropGeometry.face(tool,[Vector3(x-span*0.055,0.59,side*0.241),Vector3(x+span*0.09,0.59,side*0.241),Vector3(x+span*0.035,0.87,side*0.225),Vector3(x-span*0.11,0.87,side*0.225)],Color("ac4936"))
++		BeforePropGeometry.box(tool,Vector3(x,0.935,0),Vector3(span*0.12,0.009,0.34),Color("bf5940"),0.002)
++	for x: float in [-span*0.22,span*0.22]:
++		BeforePropGeometry.box(tool,Vector3(x,0.939,0),Vector3(minf(0.14,span*0.07),0.008,0.08),DARK,0.015)
++	for side: float in [-1.0,1.0]:
++		BeforePropGeometry.box(tool,Vector3(0,0.10,side*0.493),Vector3(maxf(0.02,span-0.08),0.06,0.017),Color("7a827a"),0.003)
++
++static func _fence(tool: SurfaceTool, kind: String, span: float, continuous: bool) -> void:
++	var count: int = maxi(1,ceili(span/3.0))
++	var reach: float = span*0.5 if continuous else span*0.5-0.1
++	for i: int in range(count+1):
++		var x: float = lerpf(-reach,reach,float(i)/count)
++		if kind == "fence":
++			BeforePropGeometry.box(tool,Vector3(x,0.62,0),Vector3(0.20,1.24,0.20),WOOD.darkened(0.12),0.028)
++			BeforePropGeometry.box(tool,Vector3(x,1.25,0),Vector3(0.24,0.09,0.24),WOOD.lightened(0.12),0.035)
++			for h: float in [0.42,1.02]:
++				BeforePropGeometry.tube(tool,Vector3(x,h,-0.113),Vector3(x,h,-0.126),0.027,0.027,DARK,8)
++		elif kind == "guardrail":
++			for z: float in [-0.072,0.025]:
++				BeforePropGeometry.beam(tool,Vector3(x,0,z),Vector3(x,1.25,z),0.15,0.035,METAL.darkened(0.20))
++			BeforePropGeometry.beam(tool,Vector3(x,0,-0.024),Vector3(x,1.25,-0.024),0.033,0.10,METAL.darkened(0.1))
++			BeforePropGeometry.box(tool,Vector3(x,0.80,0.035),Vector3(0.17,0.30,0.17),DARK,0.015)
++			BeforePropGeometry.tube(tool,Vector3(x,0.80,0.146),Vector3(x,0.80,0.169),0.040,0.040,Color("ccd1c6"),8)
++			BeforePropGeometry.box(tool,Vector3(x,1.20,0.06),Vector3(0.085,0.15,0.04),Color("bbab70"),0.012)
++		else:
++			BeforePropGeometry.tube(tool,Vector3(x,0,0),Vector3(x,1.46,0),0.055,0.045,METAL,10)
++			BeforePropGeometry.box(tool,Vector3(x,0.07,0),Vector3(0.20,0.14,0.20),DARK,0.02)
++	if kind == "fence":
++		for h: float in [0.42,1.02]:
++			BeforePropGeometry.box(tool,Vector3(0,h,0.04),Vector3(span,0.18,0.15),WOOD,0.018)
++			BeforePropGeometry.beam(tool,Vector3(-span*0.5,h+0.04,-0.041),Vector3(span*0.5,h+0.04,-0.041),0.023,0.008,WOOD.lightened(0.24))
++	elif kind == "guardrail":
++		var section: Array[Vector2] = [Vector2(0.57,0.087),Vector2(0.62,0.11),Vector2(0.72,0.16),Vector2(0.80,0.11),Vector2(0.88,0.16),Vector2(0.98,0.11),Vector2(1.03,0.087)]
++		for row: int in range(section.size()-1):
++			var a: Vector2 = section[row]; var b: Vector2 = section[row+1]
++			BeforePropGeometry.face(tool,[Vector3(-span*0.5,a.x,a.y),Vector3(span*0.5,a.x,a.y),Vector3(span*0.5,b.x,b.y),Vector3(-span*0.5,b.x,b.y)],METAL.lightened(0.12 if row%2 == 0 else 0.02))
++			BeforePropGeometry.face(tool,[Vector3(span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,b.x,b.y-0.015),Vector3(span*0.5,b.x,b.y-0.015)],METAL.darkened(0.15))
++	else:
++		for h: float in [0.18,1.38]: BeforePropGeometry.tube(tool,Vector3(-span*0.5,h,0),Vector3(span*0.5,h,0),0.024,0.024,METAL,6)
++		# Clipped diamond mesh, rather than a rectangular cage.
++		var steps: int = ceili((span+1.2)/0.34)
++		for i: int in range(steps):
++			for slope: float in [-1.0,1.0]:
++				var start: float = -span*0.5-1.2+i*0.34
++				var xa: float = maxf(-span*0.5,start)
++				var xb: float = minf(span*0.5,start+1.2)
++				if xb <= xa: continue
++				var ya: float = 0.18+(xa-start) if slope > 0 else 1.38-(xa-start)
++				var yb: float = 0.18+(xb-start) if slope > 0 else 1.38-(xb-start)
++				BeforePropGeometry.beam(tool,Vector3(xa,ya,0),Vector3(xb,yb,0),0.011,0.011,METAL.darkened(0.05))
++
++static func _sign(tool: SurfaceTool, kind: String) -> void:
++	var width: float = 4.0 if kind == "banner" else 1.5
++	for x: float in [-width*0.4,width*0.4]:
++		BeforePropGeometry.beam(tool,Vector3(x,0,0),Vector3(x,1.46,0),0.08,0.09,METAL.darkened(0.15))
++		BeforePropGeometry.box(tool,Vector3(x,0.05,0),Vector3(0.21,0.10,0.24),DARK,0.018)
++	BeforePropGeometry.box(tool,Vector3(0,1.15,0),Vector3(width,0.80,0.12),DARK,0.035)
++	for side: float in [-1.0,1.0]:
++		BeforePropGeometry.box(tool,Vector3(0,1.15,side*0.066),Vector3(width-0.08,0.70,0.025),Color("d6d8c7"),0.022)
++		if kind == "chevron":
++			for x: float in [-0.43,0.18]:
++				BeforePropGeometry.face(tool,[Vector3(x-0.14,0.85,side*0.083),Vector3(x+0.06,0.85,side*0.083),Vector3(x+0.32,1.15,side*0.083),Vector3(x+0.06,1.45,side*0.083),Vector3(x-0.14,1.45,side*0.083),Vector3(x+0.13,1.15,side*0.083)],DARK)
++		elif kind == "braking_board":
++			# Actual brake-distance identifier, authored as simple segment geometry.
++			for i: int in range(3): _digit(tool,1 if i == 0 else 0,Vector3(-0.39+i*0.34,1.15,side*0.084),0.44)
++		else:
++			for col: int in range(4):
++				for row: int in range(2):
++					if (col+row)%2 == 0: BeforePropGeometry.box(tool,Vector3(-1.53+col*0.20,1.06+row*0.20,side*0.084),Vector3(0.19,0.19,0.008),DARK,0.002)
++			BeforePropGeometry.beam(tool,Vector3(-0.5,1.04,side*0.085),Vector3(1.45,1.04,side*0.085),0.11,0.007,Color("697d72"))
++			BeforePropGeometry.beam(tool,Vector3(-0.5,1.27,side*0.085),Vector3(1.1,1.27,side*0.085),0.045,0.007,DARK)
++		for x: float in [-width*0.44,width*0.44]:
++			BeforePropGeometry.tube(tool,Vector3(x,1.15,side*0.077),Vector3(x,1.15,side*0.09),0.023,0.023,METAL,8)
++
++static func _digit(tool: SurfaceTool, value: int, center: Vector3, height: float) -> void:
++	var segments: Array = [1,2] if value == 1 else [0,1,2,3,4,5]
++	var ends: Array = [[Vector2(-0.20,0.5),Vector2(0.20,0.5)],[Vector2(0.23,0.43),Vector2(0.23,0.07)],[Vector2(0.23,-0.07),Vector2(0.23,-0.43)],[Vector2(-0.20,-0.5),Vector2(0.20,-0.5)],[Vector2(-0.23,-0.43),Vector2(-0.23,-0.07)],[Vector2(-0.23,0.07),Vector2(-0.23,0.43)]]
++	for i: int in segments:
++		var a: Vector2 = ends[i][0]*height; var b: Vector2 = ends[i][1]*height
++		BeforePropGeometry.beam(tool,center+Vector3(a.x,a.y,0),center+Vector3(b.x,b.y,0),height*0.105,0.007,DARK)
++
++static func _flag(tool: SurfaceTool) -> void:
++	BeforePropGeometry.box(tool,Vector3(0,0.07,0),Vector3(0.27,0.14,0.27),DARK,0.03)
++	BeforePropGeometry.tube(tool,Vector3.ZERO,Vector3(0,3,0),0.045,0.025,METAL,12)
++	BeforePropGeometry.tube(tool,Vector3(0,3,0),Vector3(0,3.07,0),0.05,0.005,Color("d0c6a5"),10)
++	for col: int in range(5):
++		for row: int in range(3):
++			var xa: float = 0.03+col*0.184; var xb: float = xa+0.184
++			var ya: float = 2.44+row*0.16; var yb: float = ya+0.16
++			BeforePropGeometry.face(tool,[Vector3(xa,ya-0.06*xa,sin(xa*6.0)*0.08),Vector3(xb,ya-0.06*xb,sin(xb*6.0)*0.08),Vector3(xb,yb-0.06*xb,sin(xb*6.0)*0.08),Vector3(xa,yb-0.06*xa,sin(xa*6.0)*0.08)],Color("dad9c7") if (row+col)%2 == 0 else DARK)
++
++static func _light(tool: SurfaceTool) -> void:
++	BeforePropGeometry.box(tool,Vector3(0,0.11,0),Vector3(0.36,0.22,0.36),Color("747e76"),0.04)
++	BeforePropGeometry.tube(tool,Vector3(0,0.2,0),Vector3(0,4.72,0),0.10,0.063,METAL,12)
++	BeforePropGeometry.box(tool,Vector3(0,0.52,-0.095),Vector3(0.16,0.24,0.035),DARK,0.012)
++	BeforePropGeometry.beam(tool,Vector3(0,4.58,0),Vector3(0.43,4.82,0),0.11,0.11,METAL)
++	BeforePropGeometry.box(tool,Vector3(0.4,4.79,0),Vector3(1,0.23,0.40),DARK,0.07)
++	BeforePropGeometry.box(tool,Vector3(0.4,4.666,0),Vector3(0.80,0.027,0.30),Color("d3d1b1"),0.035)
++	for x: float in [0.08,0.24,0.40,0.56,0.72]: BeforePropGeometry.beam(tool,Vector3(x,4.92,-0.12),Vector3(x,4.92,0.12),0.025,0.018,METAL.darkened(0.3))
++
++static func _gantry(tool: SurfaceTool) -> void:
++	for x: float in [-5.7,5.7]:
++		BeforePropGeometry.box(tool,Vector3(x,0.15,0),Vector3(0.60,0.30,1),Color("8c968a"),0.045)
++		for z: float in [-0.34,0.34]: BeforePropGeometry.beam(tool,Vector3(x,0.3,z),Vector3(x,4.8,z),0.18,0.18,METAL)
++		for i: int in range(4): BeforePropGeometry.beam(tool,Vector3(x,0.5+i,z_sign(i)*0.34),Vector3(x,1.5+i,-z_sign(i)*0.34),0.075,0.075,DARK)
++	for z: float in [-0.3,0.3]:
++		for h: float in [4.45,5.18]: BeforePropGeometry.beam(tool,Vector3(-5.7,h,z),Vector3(5.7,h,z),0.12,0.12,METAL)
++		for i: int in range(12): BeforePropGeometry.beam(tool,Vector3(-5.7+i*0.95,4.45,z),Vector3(-4.75+i*0.95,5.18,z),0.065,0.065,DARK)
++	BeforePropGeometry.box(tool,Vector3(0,4.79,-0.37),Vector3(10.8,0.54,0.10),DARK,0.03)
++	for i: int in range(20):
++		for row: int in range(2):
++			if (i+row)%2 == 0: BeforePropGeometry.box(tool,Vector3(-5.13+i*0.54,4.65+row*0.27,-0.426),Vector3(0.53,0.26,0.012),Color("d2d4c3"),0.002)
++	for x: float in [-0.68,0,0.68]:
++		BeforePropGeometry.box(tool,Vector3(x,4.07,-0.15),Vector3(0.42,0.41,0.29),Color("263332"),0.045)
++		BeforePropGeometry.tube(tool,Vector3(x,4.07,-0.31),Vector3(x,4.07,-0.34),0.13,0.13,Color("7b4435"),16)
++
++static func z_sign(i: int) -> float: return -1.0 if i%2 == 0 else 1.0
++
++static func _crate(tool: SurfaceTool) -> void:
++	BeforePropGeometry.box(tool,Vector3(0,0.5,0),Vector3(1.02,0.96,1.02),WOOD.darkened(0.25),0.025)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(5):
++			BeforePropGeometry.box(tool,Vector3(-0.43+i*0.215,0.50,side*0.522),Vector3(0.197,0.94,0.04),WOOD.lightened((i%3)*0.035),0.008)
++			BeforePropGeometry.box(tool,Vector3(side*0.522,0.50,-0.43+i*0.215),Vector3(0.04,0.94,0.197),WOOD.lightened((i%3)*0.025),0.008)
++		for h: float in [0.12,0.88]:
++			BeforePropGeometry.box(tool,Vector3(0,h,side*0.56),Vector3(1.10,0.13,0.07),WOOD.lightened(0.12),0.012)
++			BeforePropGeometry.box(tool,Vector3(side*0.56,h,0),Vector3(0.07,0.13,1.10),WOOD.lightened(0.12),0.012)
++		BeforePropGeometry.beam(tool,Vector3(-0.41,0.23,side*0.555),Vector3(0.41,0.77,side*0.555),0.12,0.065,WOOD.lightened(0.08))
++		for x: float in [-0.42,0.42]:
++			for h: float in [0.12,0.88]: BeforePropGeometry.tube(tool,Vector3(x,h,side*0.60),Vector3(x,h,side*0.605),0.019,0.019,DARK,6)
++	for i: int in range(5): BeforePropGeometry.box(tool,Vector3(-0.43+i*0.215,0.99,0),Vector3(0.197,0.055,1.05),WOOD.lightened(0.06),0.008)
++
++static func hay(tool: SurfaceTool, phase: int) -> void:
++	var straw := Color("a68c55")
++	if phase < 2:
++		BeforePropGeometry.box(tool,Vector3(0,0.49,0),Vector3(1.96,0.98,1.16),straw,0.16 if phase == 0 else 0.23)
++	else:
++		for i: int in range(3): BeforePropGeometry.box(tool,Vector3(-0.55+i*0.52,0.37+(i%2)*0.11,0.035*sin(i*2.4)),Vector3(0.88,0.73+(i%2)*0.18,1.06),straw.lightened(i*0.035),0.19)
++	for side: float in [-1.0,1.0]:
++		for i: int in range(15):
++			var x: float = -0.82+i*0.116
++			var low: float = 0.11+(i%3)*0.026
++			var high: float = 0.85-(i%4)*0.031
++			if phase > 0: high -= 0.11*(i%3)
++			BeforePropGeometry.beam(tool,Vector3(x,low,side*0.586),Vector3(x+0.035*sin(i*1.7),high,side*0.586),0.012+(i%2)*0.006,0.008,straw.lightened((i%3)*0.07).darkened(0.08 if i%4 == 0 else 0))
++		for i: int in range(9):
++			var z: float = -0.43+i*0.10
++			BeforePropGeometry.beam(tool,Vector3(side*0.986,0.16,z),Vector3(side*0.986,0.81-(i%3)*0.05,z+0.025),0.015,0.008,straw.darkened(0.11+(i%3)*0.03))
++	for x: float in [-0.56,0.56]:
++		if phase == 2: continue
++		var twine := Color("655f42")
++		for side: float in [-1.0,1.0]: BeforePropGeometry.beam(tool,Vector3(x,0.12,side*0.593),Vector3(x,0.86,side*0.593),0.018,0.014,twine)
++		BeforePropGeometry.beam(tool,Vector3(x,0.985,-0.43),Vector3(x,0.985,0.43),0.021,0.014,twine)
++	for i: int in range(20):
++		var x: float = -0.84+i*0.087
++		var part: int = clampi(roundi((x+0.55)/0.52),0,2)
++		var y: float = 0.986 if phase < 2 else 0.37+(part%2)*0.11+(0.73+(part%2)*0.18)*0.5+0.006
++		BeforePropGeometry.beam(tool,Vector3(x,y,-0.42),Vector3(x+0.021*sin(i*1.7),y+0.003,0.42),0.012+(i%3)*0.003,0.007,straw.lightened(0.04 if i%3 == 0 else 0).darkened(0.11 if i%4 == 0 else 0.035))
++	if phase > 0:
++		for i: int in range(20):
++			var a: float = i*2.4
++			var p := Vector3(cos(a)*0.83,0.12+(i%4)*0.20,sin(a)*0.48)
++			BeforePropGeometry.face(tool,[p,p+Vector3(cos(a)*0.14,0.05,sin(a)*0.10),p+Vector3(-sin(a)*0.026,0.018,cos(a)*0.026)],straw.lightened((i%3)*0.05))
++
++static func _barrel(tool: SurfaceTool, kit: Node) -> void:
++	var paint := Color("6e7f70")
++	BeforeCreatorPropVisual._lathe(tool,kit,Vector3.ZERO,1,0,[Vector2(0.47,0.02),Vector2(0.51,0.08),Vector2(0.51,0.15),Vector2(0.48,0.18),Vector2(0.48,0.31),Vector2(0.51,0.34),Vector2(0.51,0.39),Vector2(0.48,0.42),Vector2(0.48,0.72),Vector2(0.51,0.75),Vector2(0.51,0.80),Vector2(0.48,0.83),Vector2(0.48,0.99),Vector2(0.51,1.03),Vector2(0.51,1.08),Vector2(0.46,1.08),Vector2(0.46,1.055),Vector2(0,1.055)],
++		[paint.darkened(0.2),METAL,paint,paint,paint.lightened(0.05),METAL,paint,paint,paint.lightened(0.05),METAL,paint,paint,paint,METAL,METAL,paint.darkened(0.15),paint.lightened(0.09)])
++	BeforePropGeometry.tube(tool,Vector3(0.22,1.06,0.15),Vector3(0.22,1.075,0.15),0.074,0.074,DARK,12)
++	BeforePropGeometry.tube(tool,Vector3(-0.22,1.06,-0.15),Vector3(-0.22,1.075,-0.15),0.037,0.037,METAL,10)
++	BeforePropGeometry.box(tool,Vector3(0,0.57,-0.484),Vector3(0.30,0.18,0.015),Color("c5bd96"),0.012)
++
++static func _pallet(tool: SurfaceTool) -> void:
++	for x: float in [-0.72,0,0.72]:
++		for z: float in [-0.52,0,0.52]: BeforePropGeometry.box(tool,Vector3(x,0.14,z),Vector3(0.22,0.22,0.22),WOOD.darkened(0.22),0.008)
++	for z: float in [-0.52,0,0.52]: BeforePropGeometry.box(tool,Vector3(0,0.035,z),Vector3(1.94,0.07,0.17),WOOD.darkened(0.10),0.009)
++	for i: int in range(7):
++		var x: float = -0.85+i*0.283
++		BeforePropGeometry.box(tool,Vector3(x,0.285,0),Vector3(0.23,0.08,1.40),WOOD.lightened((i%3)*0.04),0.012)
++		for z: float in [-0.52,0.52]: BeforePropGeometry.tube(tool,Vector3(x,0.327,z),Vector3(x,0.330,z),0.016,0.016,DARK,6)
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_equipment.gd.uid b/game/tests/fixtures/prop_optimization_before/prop_equipment.gd.uid
+new file mode 100644
+index 0000000..13ac6df
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_equipment.gd.uid
+@@ -0,0 +1 @@
++uid://cr5bus3tsql0y
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_geometry.gd b/game/tests/fixtures/prop_optimization_before/prop_geometry.gd
+new file mode 100644
+index 0000000..2e8bbf0
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_geometry.gd
+@@ -0,0 +1,85 @@
++class_name BeforePropGeometry
++extends RefCounted
++## Original opaque, vertex-coloured prop geometry. No collision or simulation data.
++
++static func face(tool: SurfaceTool, points: Array, color: Color, outward: Vector3 = Vector3.ZERO) -> void:
++	tool.set_color(color)
++	tool.set_smooth_group(-1)
++	var flip: bool = outward != Vector3.ZERO and (points[1]-points[0]).cross(points[2]-points[0]).dot(outward) < 0
++	for i: int in range(1,points.size()-1):
++		for j: int in ([0,i,i+1] if flip else [0,i+1,i]): tool.add_vertex(points[j])
++
++static func box(tool: SurfaceTool, p: Vector3, size: Vector3, color: Color, bevel: float = 0.025) -> void:
++	var half: Vector3 = size*0.5
++	var b: float = minf(bevel,minf(half.x,minf(half.y,half.z))*0.6)
++	var loops: Array = []
++	for row: int in range(4):
++		var inset: float = b if row in [0,3] else 0.0
++		var x: float = half.x-inset
++		var z: float = half.z-inset
++		var y: float = [-half.y,-half.y+b,half.y-b,half.y][row]
++		var cut: float = minf(b,minf(x,z)*0.4)
++		var ring: Array[Vector3] = []
++		for q: Vector2 in [Vector2(-x+cut,-z),Vector2(x-cut,-z),Vector2(x,-z+cut),Vector2(x,z-cut),Vector2(x-cut,z),Vector2(-x+cut,z),Vector2(-x,z-cut),Vector2(-x,-z+cut)]:
++			ring.append(p+Vector3(q.x,y,q.y))
++		loops.append(ring)
++	for row: int in range(3):
++		for i: int in range(8):
++			var j: int = (i+1)%8
++			var normal: Vector3 = (loops[row][j]+loops[row][i]+loops[row+1][i]+loops[row+1][j])*0.25-p
++			face(tool,[loops[row][j],loops[row][i],loops[row+1][i],loops[row+1][j]],color.lightened(0.07 if row == 2 else 0).darkened(0.10 if row == 0 else 0),normal)
++	face(tool,loops[3],color.lightened(0.06),Vector3.UP)
++	var bottom: Array = loops[0].duplicate(); bottom.reverse()
++	face(tool,bottom,color.darkened(0.15),Vector3.DOWN)
++
++static func beam(tool: SurfaceTool, a: Vector3, b: Vector3, width: float, depth: float, color: Color) -> void:
++	var axis: Vector3 = (b-a).normalized()
++	var across: Vector3 = axis.cross(Vector3.UP).normalized()
++	if across.length_squared() < 0.01: across = Vector3.RIGHT
++	var normal: Vector3 = across.cross(axis).normalized()
++	var loops: Array = []
++	for p: Vector3 in [a,b]:
++		loops.append([p-across*width*0.5-normal*depth*0.5,p+across*width*0.5-normal*depth*0.5,p+across*width*0.5+normal*depth*0.5,p-across*width*0.5+normal*depth*0.5])
++	for i: int in range(4):
++		var j: int = (i+1)%4
++		var side_normal: Vector3 = (loops[0][i]+loops[0][j]+loops[1][j]+loops[1][i])*0.25-(a+b)*0.5
++		face(tool,[loops[0][i],loops[0][j],loops[1][j],loops[1][i]],color,side_normal)
++	face(tool,loops[0],color.darkened(0.1),-axis)
++	var cap: Array = loops[1].duplicate(); cap.reverse(); face(tool,cap,color.lightened(0.05),axis)
++
++static func tube(tool: SurfaceTool, a: Vector3, b: Vector3, radius_a: float, radius_b: float, color: Color, segments: int = 10) -> void:
++	var axis: Vector3 = (b-a).normalized()
++	var u: Vector3 = axis.cross(Vector3.UP).normalized()
++	if u.length_squared() < 0.01: u = Vector3.RIGHT
++	var v: Vector3 = axis.cross(u).normalized()
++	var lo: Array[Vector3] = []
++	var hi: Array[Vector3] = []
++	for i: int in range(segments):
++		var radial: Vector3 = u*cos(TAU*i/segments)+v*sin(TAU*i/segments)
++		lo.append(a+radial*radius_a); hi.append(b+radial*radius_b)
++	for i: int in range(segments):
++		var j: int = (i+1)%segments
++		var normal: Vector3 = (lo[j]+lo[i]+hi[i]+hi[j])*0.25-(a+b)*0.5
++		face(tool,[lo[j],lo[i],hi[i],hi[j]],color.lightened(0.025*(i%3)),normal)
++	face(tool,hi,color.lightened(0.07),axis); face(tool,lo,color.darkened(0.10),-axis)
++
++static func ring(tool: SurfaceTool, center: Vector3, axis: Vector3, outer: float, inner: float, width: float, color: Color, segments: int = 24) -> void:
++	var u: Vector3 = axis.cross(Vector3.UP).normalized()
++	if u.length_squared() < 0.01: u = Vector3.RIGHT
++	var v: Vector3 = axis.cross(u).normalized()
++	for i: int in range(segments):
++		var p: Vector3 = u*cos(TAU*i/segments)+v*sin(TAU*i/segments)
++		var q: Vector3 = u*cos(TAU*(i+1)/segments)+v*sin(TAU*(i+1)/segments)
++		var a: Vector3 = center-axis*width*0.5
++		var b: Vector3 = center+axis*width*0.5
++		face(tool,[a+q*outer,a+p*outer,b+p*outer,b+q*outer],color.darkened(0.10),p+q)
++		face(tool,[a+p*inner,a+q*inner,b+q*inner,b+p*inner],color.darkened(0.24),-p-q)
++		face(tool,[b+q*outer,b+p*outer,b+p*inner,b+q*inner],color.lightened(0.13),axis)
++		face(tool,[a+p*outer,a+q*outer,a+q*inner,a+p*inner],color,-axis)
++
++static func append_transformed(destination: SurfaceTool, local: SurfaceTool, center: Vector3, scale: float, turn: float) -> void:
++	local.generate_normals()
++	# Keep the source unindexed until the complete destination is assembled.
++	# Mixing indexed and unindexed appends omits earlier faces from the indices.
++	var mesh: ArrayMesh = local.commit()
++	destination.append_from(mesh,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_geometry.gd.uid b/game/tests/fixtures/prop_optimization_before/prop_geometry.gd.uid
+new file mode 100644
+index 0000000..e6c8a16
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_geometry.gd.uid
+@@ -0,0 +1 @@
++uid://e37mnr5s43vx
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_nature.gd b/game/tests/fixtures/prop_optimization_before/prop_nature.gd
+new file mode 100644
+index 0000000..97e3287
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_nature.gd
+@@ -0,0 +1,104 @@
++class_name BeforePropNature
++extends RefCounted
++## Authored deterministic silhouettes and broad leaf/stone planes, no alpha cards.
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++	if kind not in ["broadleaf","bush","grass_clump","flowers","pebbles","log","rock","boulder","slate","cliff"]: return false
++	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.06)
++	var stone: Color = TrackTheme.stone(kit.theme_id)
++	match kind:
++		"broadleaf":
++			BeforePropGeometry.tube(local,Vector3.ZERO,Vector3(0.06,1.9,0.03),0.26,0.15,Color("796547"),12)
++			for i: int in range(5):
++				var angle: float = i*2.4
++				var foot := Vector3(cos(angle)*0.38,0.03,sin(angle)*0.38)
++				BeforePropGeometry.tube(local,foot,Vector3(0,0.52,0),0.04,0.10,Color("67553e"),7)
++			for i: int in range(9):
++				var angle: float = i*2.4
++				var p := Vector3(cos(angle)*(0.92 if i < 6 else 0.43),1.78+(i%4)*0.26,sin(angle)*(0.83 if i < 6 else 0.38))
++				BeforePropGeometry.tube(local,Vector3(0.03,1.15+i*0.07,0),p+Vector3(0,0.17,0),0.10,0.034,Color("796547"),8)
++				_cluster(local,kit,p,Vector3(0.93,0.82,0.84),angle,leaf.lightened((i%3)*0.04))
++		"bush":
++			for i: int in range(6):
++				var p := Vector3(cos(i*2.4)*0.39,0.04+(i%3)*0.09,sin(i*2.4)*0.32)
++				BeforePropGeometry.tube(local,Vector3(0,0.01,0),p+Vector3.UP*0.39,0.033,0.012,Color("716044"),6)
++				_cluster(local,kit,p,Vector3(0.52,0.68,0.48),i*1.3,leaf.lightened((i%3)*0.035))
++		"grass_clump", "flowers":
++			for i: int in range(15):
++				var angle: float = i*2.4
++				var p := Vector3(cos(angle)*(0.10+(i%3)*0.105),0,sin(angle)*(0.10+(i%3)*0.105))
++				var height: float = 0.34+(i%5)*0.067
++				var lean := Vector3(cos(angle)*0.15,0,sin(angle)*0.15)
++				_blade(local,p,lean,height,0.035,leaf.lightened((i%3)*0.06),angle)
++				if kind == "flowers" and i%2 == 0:
++					var top: Vector3 = p+lean*0.6+Vector3.UP*(height+0.06)
++					BeforePropGeometry.tube(local,p,top,0.011,0.007,leaf.darkened(0.1),5)
++					for petal: int in range(5):
++						var a: float = TAU*petal/5
++						var radial := Vector3(cos(a),0,sin(a))
++						var side := Vector3(-sin(a),0,cos(a))
++						BeforePropGeometry.face(local,[top,top+radial*0.075+side*0.044+Vector3.UP*0.008,top+radial*0.13+Vector3.UP*0.027,top+radial*0.075-side*0.044+Vector3.UP*0.008],Color("c5b17a") if i%4 == 0 else Color("d3cbb0"))
++					BeforePropGeometry.tube(local,top,top+Vector3.UP*0.027,0.025,0.020,Color("94763e"),8)
++		"pebbles":
++			for i: int in range(7):
++				var size := Vector3(0.13+(i%3)*0.018,0.075+(i%2)*0.036,0.10+(i%3)*0.021)
++				BeforeCreatorPropVisual._stone(local,kit,Vector3(cos(i*2.4)*0.31,0,sin(i*2.4)*0.27),size,i*0.9,stone.lightened((i%3)*0.035))
++		"log": _log(local)
++		"rock", "boulder", "slate":
++			var bounds: Vector2 = CreatorObjects.dimensions(kind)
++			var height: float = 2.1 if kind == "boulder" else 0.85 if kind == "slate" else 0.7
++			BeforeCreatorPropVisual._stone(local,kit,Vector3.ZERO,Vector3(bounds.x*0.5,height,bounds.y*0.5),0,stone)
++			# A second fractured shoulder stays inside the existing selectable footprint.
++			BeforeCreatorPropVisual._stone(local,kit,Vector3(-bounds.x*0.22,0,bounds.y*0.12),Vector3(bounds.x*0.18,height*0.49,bounds.y*0.21),0.83,stone.darkened(0.09))
++			if kind == "slate":
++				for i: int in range(3):
++					var p := Vector3(-0.25+i*0.46,0.10+i*0.09,-0.50)
++					BeforeCreatorPropVisual._stone(local,kit,p,Vector3(0.53,0.20,0.29),0.14,stone.lightened(i*0.035))
++		"cliff":
++			BeforeCreatorPropVisual._cliff(local,kit,Vector3.ZERO,Vector3(8,4,3),0,stone)
++			for i: int in range(7):
++				var p := Vector3(-3.43+i*1.12,0,-1.12+(i%3)*0.14)
++				BeforeCreatorPropVisual._stone(local,kit,p,Vector3(0.28+(i%3)*0.08,0.33+(i%2)*0.13,0.20),i*0.71,stone.darkened(0.15))
++	BeforePropGeometry.append_transformed(tool,local,center,scale,turn)
++	return true
++
++static func _cluster(tool: SurfaceTool, kit: Node, p: Vector3, size: Vector3, angle: float, color: Color) -> void:
++	BeforeCreatorPropVisual._crown(tool,kit,p,size,angle,color)
++	# Folded sprays sit on upper surfaces and break the broad crown into leaf masses.
++	for i: int in range(8):
++		var a: float = i*2.4+angle
++		var leaf_p: Vector3 = p+Vector3(cos(a)*size.x*0.53,size.y*(0.59+(i%3)*0.08),sin(a)*size.z*0.53)
++		var reach := Vector3(cos(a)*0.18,0.015,sin(a)*0.18)
++		var side := Vector3(-sin(a)*0.065,0,cos(a)*0.065)
++		BeforePropGeometry.face(tool,[leaf_p-reach*0.3,leaf_p+side,leaf_p+reach+Vector3.UP*0.04,leaf_p-side],color.lightened(0.18+(i%2)*0.05))
++
++static func _blade(tool: SurfaceTool, base: Vector3, lean: Vector3, height: float, width: float, color: Color, angle: float) -> void:
++	var side := Vector3(cos(angle)*width,0,sin(angle)*width)
++	var mid: Vector3 = base+lean*0.28+Vector3.UP*height*0.58
++	var tip: Vector3 = base+lean+Vector3.UP*height
++	BeforePropGeometry.face(tool,[base-side,base+side,mid+side*0.63,mid-side*0.63],color)
++	BeforePropGeometry.face(tool,[mid-side*0.63,mid+side*0.63,tip],color.lightened(0.13))
++	BeforePropGeometry.face(tool,[base,mid+Vector3(0.01,0,0.01),tip],color.darkened(0.14))
++
++static func _log(tool: SurfaceTool) -> void:
++	var ends: Array = []
++	for side: float in [-1.0,1.0]:
++		var ring: Array[Vector3] = []
++		for i: int in range(16):
++			var a: float = TAU*i/16
++			var radius: float = 0.365+0.022*sin(i*2.1)
++			ring.append(Vector3(side*1.99,0.40+cos(a)*radius,sin(a)*radius))
++		ends.append(ring)
++	for i: int in range(16):
++		var j: int = (i+1)%16
++		BeforePropGeometry.face(tool,[ends[0][i],ends[0][j],ends[1][j],ends[1][i]],Color("66543e").lightened((i%3)*0.07))
++		var a: Vector3 = ends[0][i].lerp(ends[0][j],0.24)
++		var b: Vector3 = ends[1][i].lerp(ends[1][j],0.35)
++		BeforePropGeometry.beam(tool,a+Vector3(-0.003,0.002,0.002),b+Vector3(0.003,0.002,0.002),0.017,0.008,Color("443b2e"))
++	for side: float in [-1.0,1.0]:
++		BeforePropGeometry.tube(tool,Vector3(side*2.001,0.40,0),Vector3(side*2.008,0.40,0),0.329,0.329,Color("b79b71"),16)
++		for radius: float in [0.12,0.23,0.29]: BeforePropGeometry.ring(tool,Vector3(side*2.012,0.40,0),Vector3.RIGHT,radius,radius-0.012,0.004,Color("957b55"),20)
++		BeforePropGeometry.beam(tool,Vector3(side*2.017,0.39,0),Vector3(side*2.017,0.62,0.14),0.011,0.003,Color("66523b"))
++	for x: float in [-0.75,0.68]:
++		BeforePropGeometry.tube(tool,Vector3(x,0.59,-0.14),Vector3(x+0.12,0.80,-0.22),0.095,0.053,Color("6a563e"),8)
++		BeforePropGeometry.tube(tool,Vector3(x+0.12,0.80,-0.22),Vector3(x+0.13,0.81,-0.22),0.046,0.046,Color("b89a6e"),8)
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_nature.gd.uid b/game/tests/fixtures/prop_optimization_before/prop_nature.gd.uid
+new file mode 100644
+index 0000000..859669f
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_nature.gd.uid
+@@ -0,0 +1 @@
++uid://waqx2d08mcl4
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_structures.gd b/game/tests/fixtures/prop_optimization_before/prop_structures.gd
+new file mode 100644
+index 0000000..5da4d43
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_structures.gd
+@@ -0,0 +1,175 @@
++class_name BeforePropStructures
++extends RefCounted
++## Original fictional service vehicles and track buildings; opaque shared meshes.
++const METAL := Color("738482")
++const DARK := Color("293b3c")
++const WOOD := Color("8e7757")
++
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++	if kind not in ["parked_car","van","car_wreck","shed","hut","grandstand"]: return false
++	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if kind in ["parked_car","van","car_wreck"]: _vehicle(local,kind)
++	elif kind == "grandstand": _grandstand(local)
++	else: _building(local,kit,kind)
++	BeforePropGeometry.append_transformed(tool,local,center,scale,turn)
++	return true
++
++static func _vehicle(tool: SurfaceTool, kind: String) -> void:
++	var wreck: bool = kind == "car_wreck"
++	var van: bool = kind == "van"
++	var paint := Color("8b9e91") if not van else Color("b4b5a1")
++	if wreck: paint = Color("815842")
++	var half: float = 2.50 if van else 2.10
++	var axle: float = 1.60 if van else 1.30
++	var belt: float = 0.88
++	# Open wheel arches are cut into the side panels rather than wheels on a box.
++	var samples: Array[float] = [-half,-axle-0.45,-axle-0.36,-axle-0.22,-axle,-axle+0.22,-axle+0.36,-axle+0.45,axle-0.45,axle-0.36,axle-0.22,axle,axle+0.22,axle+0.36,axle+0.45,half]
++	for side: float in [-1.0,1.0]:
++		for i: int in range(samples.size()-1):
++			var a: float = samples[i]; var b: float = samples[i+1]
++			var za: float = 0.84 if absf(a) < half-0.20 else 0.73
++			var zb: float = 0.84 if absf(b) < half-0.20 else 0.73
++			var ya: float = _arch(a,axle); var yb: float = _arch(b,axle)
++			var top_a: float = belt-0.08 if absf(a) > half-0.25 else belt
++			var top_b: float = belt-0.08 if absf(b) > half-0.25 else belt
++			BeforePropGeometry.face(tool,[Vector3(a,ya,side*za),Vector3(b,yb,side*zb),Vector3(b,top_b,side*zb),Vector3(a,top_a,side*za)],paint.darkened(0.05 if i%4 == 0 else 0))
++			if ya > 0.30 or yb > 0.30:
++				BeforePropGeometry.beam(tool,Vector3(a,ya,side*(za+0.006)),Vector3(b,yb,side*(zb+0.006)),0.046,0.028,paint.lightened(0.11))
++		BeforePropGeometry.beam(tool,Vector3(-axle+0.48,0.28,side*0.80),Vector3(axle-0.48,0.28,side*0.80),0.10,0.10,DARK)
++		for x: float in [-0.64,0.62]:
++			BeforePropGeometry.beam(tool,Vector3(x,0.43,side*0.847),Vector3(x,0.85,side*0.847),0.014,0.008,paint.darkened(0.32))
++			BeforePropGeometry.box(tool,Vector3(x-0.16,0.78,side*0.856),Vector3(0.16,0.038,0.026),METAL,0.009)
++		BeforePropGeometry.beam(tool,Vector3(-half+0.15,0.56,side*0.855),Vector3(half-0.15,0.56,side*0.855),0.027,0.015,DARK.lightened(0.16))
++	BeforePropGeometry.box(tool,Vector3(0,0.28,0),Vector3(half*2-0.12,0.20,1.25),DARK,0.055)
++	for end: float in [-1.0,1.0]:
++		BeforePropGeometry.box(tool,Vector3(end*(half-0.07),0.54,0),Vector3(0.12,0.49,1.46),paint,0.065)
++		BeforePropGeometry.box(tool,Vector3(end*(half+0.015),0.38,0),Vector3(0.045,0.13,1.48),DARK.lightened(0.07),0.04)
++		BeforePropGeometry.box(tool,Vector3(end*(half+0.04),0.52,0),Vector3(0.012,0.11,0.34),Color("c8cbbb"),0.009)
++		for z: float in [-0.56,0.56]:
++			BeforePropGeometry.box(tool,Vector3(end*(half+0.035),0.70,z),Vector3(0.025,0.145,0.29),Color("d6d4ac") if end > 0 else Color("9f4637"),0.025)
++	for x: float in [half-0.035]:
++		BeforePropGeometry.box(tool,Vector3(x,0.65,0),Vector3(0.022,0.15,0.58),DARK,0.014)
++		for z: float in [-0.21,0,0.21]: BeforePropGeometry.beam(tool,Vector3(x+0.018,0.62,z),Vector3(x+0.018,0.70,z),0.026,0.012,METAL)
++	var rear: float = -2.23 if van else -1.34
++	var roof_rear: float = -2.18 if van else -0.90
++	var roof_front: float = 0.58 if van else 0.32
++	var front: float = 1.20 if van else 0.98
++	var roof: float = 2.12 if van else 1.55
++	if wreck: roof = 1.15; roof_front = 0.10
++	var glass := Color("324e59")
++	if wreck: glass = Color("273231")
++	BeforePropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.lightened(0.08))
++	BeforePropGeometry.face(tool,[Vector3(-half,belt-0.08,-0.73),Vector3(rear,belt,-0.79),Vector3(rear,belt,0.79),Vector3(-half,belt-0.08,0.73)],paint.lightened(0.06))
++	BeforePropGeometry.face(tool,[Vector3(roof_rear,roof,-0.68),Vector3(roof_front,roof,-0.68),Vector3(roof_front,roof,0.68),Vector3(roof_rear,roof,0.68)],paint.lightened(0.16))
++	BeforePropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(front,belt,0.79),Vector3(roof_front,roof,0.68),Vector3(roof_front,roof,-0.68)],paint)
++	BeforePropGeometry.face(tool,[Vector3(front-0.065,belt+0.07,-0.71),Vector3(front-0.065,belt+0.07,0.71),Vector3(roof_front+0.045,roof-0.09,0.62),Vector3(roof_front+0.045,roof-0.09,-0.62)],glass)
++	BeforePropGeometry.face(tool,[Vector3(rear,belt,0.79),Vector3(rear,belt,-0.79),Vector3(roof_rear,roof,-0.68),Vector3(roof_rear,roof,0.68)],paint)
++	if not van:
++		BeforePropGeometry.face(tool,[Vector3(rear+0.06,belt+0.06,0.72),Vector3(rear+0.06,belt+0.06,-0.72),Vector3(roof_rear-0.03,roof-0.10,-0.61),Vector3(roof_rear-0.03,roof-0.10,0.61)],glass)
++	for side: float in [-1.0,1.0]:
++		BeforePropGeometry.face(tool,[Vector3(rear,belt,side*0.79),Vector3(front,belt,side*0.79),Vector3(roof_front,roof,side*0.68),Vector3(roof_rear,roof,side*0.68)],paint)
++		var window_rear: float = -0.20 if van else rear+0.14
++		var upper_rear: float = -0.20 if van else roof_rear+0.06
++		BeforePropGeometry.face(tool,[Vector3(window_rear,belt+0.09,side*0.799),Vector3(front-0.15,belt+0.09,side*0.799),Vector3(roof_front-0.03,roof-0.10,side*0.701),Vector3(upper_rear,roof-0.10,side*0.701)],glass)
++		BeforePropGeometry.beam(tool,Vector3(-0.14,belt+0.07,side*0.805),Vector3(-0.14,roof-0.05,side*0.695),0.082,0.016,paint.darkened(0.05))
++		BeforePropGeometry.beam(tool,Vector3(front-0.17,belt+0.12,side*0.77),Vector3(front-0.12,belt+0.17,side*0.94),0.035,0.035,DARK)
++		BeforePropGeometry.box(tool,Vector3(front-0.10,belt+0.18,side*0.94),Vector3(0.23,0.13,0.105),paint.darkened(0.12),0.026)
++		if van:
++			BeforePropGeometry.beam(tool,Vector3(-0.40,0.92,side*0.81),Vector3(-0.40,2.01,side*0.71),0.017,0.013,paint.darkened(0.30))
++			BeforePropGeometry.box(tool,Vector3(-1.21,1.47,side*0.77),Vector3(1.23,0.38,0.019),paint.darkened(0.08),0.022)
++	for z: float in [-0.36,0.36]: BeforePropGeometry.beam(tool,Vector3(front-0.08,0.98,z),Vector3(front-0.12,1.015,z-0.28),0.02,0.014,DARK)
++	for x: float in [-axle,axle]:
++		for side: float in [-1.0,1.0]:
++			if wreck and x > 0 and side > 0:
++				BeforePropGeometry.tube(tool,Vector3(x,0.31,0.69),Vector3(x,0.31,0.86),0.10,0.10,Color("816951"),12)
++				continue
++			var p := Vector3(x,0.34,side*0.80)
++			BeforePropGeometry.ring(tool,p,Vector3.BACK,0.34,0.175,0.22,Color("303937"),24)
++			BeforePropGeometry.tube(tool,p+Vector3.BACK*side*0.117,p+Vector3.BACK*side*0.129,0.166,0.166,METAL.darkened(0.1),16)
++			BeforePropGeometry.tube(tool,p+Vector3.BACK*side*0.132,p+Vector3.BACK*side*0.14,0.055,0.055,DARK,10)
++			for i: int in range(5):
++				var a: float = TAU*i/5
++				BeforePropGeometry.beam(tool,p+Vector3(cos(a)*0.065,sin(a)*0.065,side*0.135),p+Vector3(cos(a)*0.14,sin(a)*0.14,side*0.135),0.040,0.012,Color("b4bbab"))
++	if wreck:
++		BeforePropGeometry.box(tool,Vector3(1.36,0.91,0.02),Vector3(0.53,0.24,0.52),DARK,0.025)
++		for z: float in [-0.19,0,0.19]: BeforePropGeometry.beam(tool,Vector3(1.13,1.04,z),Vector3(1.56,1.04,z),0.055,0.055,Color("817b68"))
++		BeforePropGeometry.face(tool,[Vector3(1.05,0.91,-0.78),Vector3(1.97,0.95,-0.72),Vector3(1.97,1.19,-0.22),Vector3(1.05,1.14,-0.27)],paint.lightened(0.11))
++		for side: float in [-1.0,1.0]:
++			BeforePropGeometry.face(tool,[Vector3(-0.73,0.58,side*0.848),Vector3(-0.26,0.52,side*0.849),Vector3(-0.05,0.74,side*0.849),Vector3(-0.61,0.79,side*0.849)],Color("a16e45"))
++		BeforePropGeometry.beam(tool,Vector3(-0.9,1.15,-0.68),Vector3(0.1,1.15,-0.68),0.045,0.045,Color("aa8970"))
++
++static func _arch(x: float, axle: float) -> float:
++	var d: float = minf(absf(x-axle),absf(x+axle))
++	return 0.34+sqrt(maxf(0.0,0.43*0.43-d*d)) if d < 0.43 else 0.27
++
++static func _building(tool: SurfaceTool, kit: Node, kind: String) -> void:
++	var shed: bool = kind == "shed"
++	var width: float = 7.0 if shed else 2.5
++	var depth: float = 5.0 if shed else 2.5
++	var wall := Color("827c66") if shed else Color("8b7656")
++	var roof := Color("566b68") if shed else Color("845b46")
++	BeforePropGeometry.box(tool,Vector3(0,1.5,0),Vector3(width,3,depth),wall,0.025)
++	BeforePropGeometry.box(tool,Vector3(0,0.14,0),Vector3(width+0.02,0.28,depth+0.02),Color("626e64"),0.025)
++	BeforeCreatorPropVisual._roof(tool,kit,Vector3.ZERO,1,0,width,depth,roof)
++	for side: float in [-1.0,1.0]:
++		BeforePropGeometry.face(tool,[Vector3(side*width*0.5,3,-depth*0.5),Vector3(side*width*0.5,3,depth*0.5),Vector3(side*width*0.5,4,0)],wall.darkened(0.16))
++		BeforePropGeometry.beam(tool,Vector3(-width*0.5-0.13,3.0,side*(depth*0.5+0.15)),Vector3(width*0.5+0.13,3.0,side*(depth*0.5+0.15)),0.14,0.13,roof.darkened(0.22))
++		for x: float in [-width*0.47,width*0.47]:
++			BeforePropGeometry.box(tool,Vector3(x,1.55,side*(depth*0.5+0.021)),Vector3(0.14,2.90,0.075),wall.lightened(0.16),0.015)
++		for h: int in range(11): BeforePropGeometry.beam(tool,Vector3(-width*0.5,0.33+h*0.24,side*(depth*0.5+0.014)),Vector3(width*0.5,0.33+h*0.24,side*(depth*0.5+0.014)),0.014,0.009,wall.darkened(0.20))
++		BeforePropGeometry.tube(tool,Vector3(width*0.47,0.12,side*(depth*0.5+0.09)),Vector3(width*0.47,3,side*(depth*0.5+0.09)),0.042,0.042,roof.darkened(0.15),8)
++	BeforePropGeometry.beam(tool,Vector3(-width*0.5-0.15,4.025,0),Vector3(width*0.5+0.15,4.025,0),0.14,0.10,roof.lightened(0.14))
++	for side: float in [-1.0,1.0]:
++		for edge: float in [-width*0.5-0.16,width*0.5+0.16]: BeforePropGeometry.beam(tool,Vector3(edge,3.01,side*(depth*0.5+0.15)),Vector3(edge,4.03,0),0.10,0.08,roof.lightened(0.12))
++	if shed:
++		var dw: float = width*0.51
++		BeforePropGeometry.box(tool,Vector3(0,1.27,-depth*0.5-0.022),Vector3(dw+0.24,2.57,0.055),DARK,0.025)
++		BeforePropGeometry.box(tool,Vector3(0,1.24,-depth*0.5-0.056),Vector3(dw,2.40,0.024),METAL.darkened(0.12),0.01)
++		for i: int in range(11): BeforePropGeometry.beam(tool,Vector3(-dw*0.5,0.16+i*0.21,-depth*0.5-0.073),Vector3(dw*0.5,0.16+i*0.21,-depth*0.5-0.073),0.025,0.012,METAL.lightened(0.13))
++		for x: float in [-0.94,0,0.94]: _window(tool,Vector3(x,2.05,-depth*0.5-0.085),Vector2(0.67,0.28))
++		BeforePropGeometry.box(tool,Vector3(0,0.57,-depth*0.5-0.086),Vector3(0.34,0.038,0.036),DARK,0.01)
++		for x: float in [-width*0.39,width*0.39]: _window(tool,Vector3(x,1.91,-depth*0.5-0.08),Vector2(0.70,0.82))
++		# Rooflights sit on the actual pitch, with opaque inset glass.
++		for x: float in [-1.70,1.70]:
++			var corners: Array = [Vector3(x-0.44,3.49,-1.35),Vector3(x+0.44,3.49,-1.35),Vector3(x+0.44,3.82,-0.50),Vector3(x-0.44,3.82,-0.50)]
++			BeforePropGeometry.face(tool,corners,Color("8ca9a5"))
++			for i: int in range(4): BeforePropGeometry.beam(tool,corners[i],corners[(i+1)%4],0.045,0.04,DARK)
++	else:
++		BeforePropGeometry.box(tool,Vector3(0,1.10,-depth*0.5-0.04),Vector3(0.79,2.20,0.08),DARK,0.022)
++		BeforePropGeometry.box(tool,Vector3(0,1.10,-depth*0.5-0.086),Vector3(0.63,2.03,0.023),Color("62766a"),0.012)
++		_window(tool,Vector3(0,1.62,-depth*0.5-0.11),Vector2(0.49,0.67))
++		BeforePropGeometry.box(tool,Vector3(0.22,0.97,-depth*0.5-0.107),Vector3(0.038,0.11,0.032),Color("c1c5ad"),0.009)
++		for x: float in [-0.87,0.87]: _window(tool,Vector3(x,1.91,-depth*0.5-0.055),Vector2(0.40,0.85))
++		for side: float in [-1.0,1.0]:
++			BeforePropGeometry.box(tool,Vector3(side*(width*0.5+0.025),1.95,0),Vector3(0.04,0.98,1.52),Color("c0b596"),0.02)
++			BeforePropGeometry.box(tool,Vector3(side*(width*0.5+0.052),1.95,0),Vector3(0.02,0.78,1.32),Color("35565d"),0.01)
++			BeforePropGeometry.beam(tool,Vector3(side*(width*0.5+0.07),1.52,0),Vector3(side*(width*0.5+0.07),2.38,0),0.052,0.03,Color("b9b397"))
++		BeforePropGeometry.box(tool,Vector3(0,0.055,-depth*0.5-0.13),Vector3(1.02,0.11,0.23),Color("898e7c"),0.028)
++
++static func _window(tool: SurfaceTool, p: Vector3, size: Vector2) -> void:
++	BeforePropGeometry.box(tool,p,Vector3(size.x,size.y,0.04),Color("bcb99e"),0.018)
++	BeforePropGeometry.box(tool,p+Vector3(0,0,-0.026),Vector3(size.x-0.12,size.y-0.12,0.018),Color("35545b"),0.012)
++	BeforePropGeometry.beam(tool,p+Vector3(0,-size.y*0.43,-0.039),p+Vector3(0,size.y*0.43,-0.039),0.035,0.014,Color("afb298"))
++	BeforePropGeometry.box(tool,p+Vector3(0,-size.y*0.5,-0.036),Vector3(size.x+0.08,0.07,0.09),Color("b5b198"),0.018)
++
++static func _grandstand(tool: SurfaceTool) -> void:
++	for row: int in range(4):
++		var h: float = 0.25+row*0.40
++		var z: float = -1.50+row
++		BeforePropGeometry.box(tool,Vector3(0,h,z),Vector3(8,0.18,0.85),METAL.darkened(0.16),0.025)
++		for x: float in [-3.65,3.65]:
++			BeforePropGeometry.beam(tool,Vector3(x,0,z),Vector3(x,h,z),0.15,0.15,DARK)
++		for seat: int in range(10):
++			var x: float = -3.45+seat*0.77
++			if absf(x) < 0.65: continue
++			BeforePropGeometry.box(tool,Vector3(x,h+0.16,z+0.13),Vector3(0.56,0.09,0.38),Color("687f77"),0.05)
++			BeforePropGeometry.box(tool,Vector3(x,h+0.36,z+0.33),Vector3(0.55,0.37,0.07),Color("778d80"),0.04)
++		# Clear central aisle, two half-rise stair treads per tier.
++		for step: int in range(2): BeforePropGeometry.box(tool,Vector3(0,h-0.10+step*0.20,z-0.21+step*0.42),Vector3(1.03,0.07,0.40),METAL.lightened(0.10),0.012)
++	for x: float in [-3.9,3.9]:
++		BeforePropGeometry.beam(tool,Vector3(x,0.06,-1.85),Vector3(x,1.68,1.90),0.12,0.12,DARK)
++		BeforePropGeometry.beam(tool,Vector3(x,1.10,-1.85),Vector3(x,2.70,1.90),0.075,0.075,METAL)
++		for row: int in range(5): BeforePropGeometry.beam(tool,Vector3(x,0.15+row*0.40,-1.65+row*0.86),Vector3(x,1.15+row*0.40,-1.65+row*0.86),0.055,0.055,METAL)
++		BeforePropGeometry.beam(tool,Vector3(x,0.15,-1.2),Vector3(x,1.38,1.35),0.08,0.08,DARK)
++	for x: float in [-3.9,-1.3,1.3,3.9]: BeforePropGeometry.beam(tool,Vector3(x,1.48,1.86),Vector3(x,2.60,1.86),0.06,0.06,METAL)
++	for h: float in [1.84,2.59]: BeforePropGeometry.beam(tool,Vector3(-3.9,h,1.86),Vector3(3.9,h,1.86),0.065,0.065,METAL)
+diff --git a/game/tests/fixtures/prop_optimization_before/prop_structures.gd.uid b/game/tests/fixtures/prop_optimization_before/prop_structures.gd.uid
+new file mode 100644
+index 0000000..96f2e3a
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/prop_structures.gd.uid
+@@ -0,0 +1 @@
++uid://c8sao3fd04q43
+diff --git a/game/tests/fixtures/prop_optimization_before/winter_scenery.gd b/game/tests/fixtures/prop_optimization_before/winter_scenery.gd
+new file mode 100644
+index 0000000..eff9389
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/winter_scenery.gd
+@@ -0,0 +1,143 @@
++class_name BeforeWinterScenery
++extends RefCounted
++## Original snow-covered instanced kit. Placement never changes canonical cells.
++const TYPES: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","fence"]
++const TILE: float = 32.0
++static var meshes: Dictionary = {}
++static var surface: StandardMaterial3D
++
++static func material() -> StandardMaterial3D:
++	if surface == null:
++		surface = StandardMaterial3D.new()
++		surface.vertex_color_use_as_albedo = true
++		surface.vertex_color_is_srgb = true
++		surface.diffuse_mode = BaseMaterial3D.DIFFUSE_BURLEY
++		surface.roughness = 0.95
++		surface.metallic_specular = 0.0
++		surface.cull_mode = BaseMaterial3D.CULL_DISABLED
++	return surface
++
++static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
++	var cache_key: String = kind+":"+str(length)
++	if meshes.has(cache_key): return meshes[cache_key]
++	var kit := NativeTrackVisual.new()
++	kit.theme_id = "pine"
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	# Snow's authored tonal variation uses source vertex ordinals. Retain those
++	# ordinals rather than shifting the visible snow when hidden faces are culled.
++	if kind == "tree": BeforeCreatorPropVisual.pine(tool,kit,Vector3.ZERO,1.25,0.0,Color("294a47"))
++	elif kind == "marker":
++		kit._colored_box(tool,Vector3(0,0.95,0),Vector3(0.06,1.90,0.06),0.0,Color("a43327"))
++		for y: float in [1.50,1.74]: kit._colored_box(tool,Vector3(0,y,0),Vector3(0.064,0.14,0.064),0.0,Color("e4e7da"))
++		kit._colored_box(tool,Vector3(0,0.12,0),Vector3(0.09,0.24,0.09),0.0,Color("665343"))
++	elif kind == "twig":
++		for i: int in range(5):
++			var angle: float = i*2.4
++			kit._colored_box(tool,Vector3(sin(angle)*0.20,0.30,cos(angle)*0.20),Vector3(0.026,0.65,0.026),angle,Color("62534c"))
++	else: BeforeCreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length)
++	tool.generate_normals()
++	var original: ArrayMesh = tool.commit()
++	var arrays: Array = original.surface_get_arrays(0)
++	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++	var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
++	for i: int in range(vertices.size()):
++		var cover: float = smoothstep(0.13,0.62,normals[i].y) * smoothstep(0.15,0.50,vertices[i].y)
++		if kind == "marker" or kind == "twig": cover = 0.0
++		var snow := Color("d7e2ed").darkened(0.025*(i%5))
++		colors[i] = colors[i].lerp(snow,cover*0.96)
++	arrays[Mesh.ARRAY_COLOR] = colors
++	var result := ArrayMesh.new()
++	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	result.surface_set_material(0,material())
++	if meshes.size() >= 64: meshes.erase(meshes.keys()[0])
++	meshes[cache_key] = result
++	kit.free()
++	return result
++
++static func batch(parent: Node3D, groups: Dictionary) -> void:
++	for key: String in groups:
++		var poses: Array[Transform3D] = groups[key]
++		var kind: String = key.get_slice("|",0)
++		var node := MultiMeshInstance3D.new()
++		node.name = "Winter_" + kind
++		var instances := MultiMesh.new()
++		instances.transform_format = MultiMesh.TRANSFORM_3D
++		instances.mesh = mesh_for(kind,float(key.get_slice("|",3)))
++		instances.instance_count = poses.size()
++		for i: int in range(poses.size()): instances.set_instance_transform(i,poses[i])
++		node.multimesh = instances
++		node.material_override = material()
++		if poses[0].basis.get_scale().x < 0.5 or kind == "twig":
++			node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		parent.add_child(node)
++
++static func append_pose(groups: Dictionary, kind: String, point: Vector2, scale: float, rotation: float, length: float = -1.0) -> void:
++	var tile := Vector2i((point/TILE).floor())
++	var key: String = "%s|%d|%d|%s" % [kind,tile.x,tile.y,str(length)]
++	if not groups.has(key): groups[key] = [] as Array[Transform3D]
++	groups[key].append(Transform3D(Basis(Vector3.UP,rotation).scaled(Vector3.ONE*scale),VisualGeometry.world(point)+Vector3.UP*0.015))
++
++static func build_authored(parent: Node3D, track: NativeTrack) -> void:
++	var groups: Dictionary = {}
++	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[]) + track.metadata.get("scenery_objects",[]):
++		if str(object.kind) not in TYPES: continue
++		var scale: float = float(object.get("scale",1.0))
++		append_pose(groups,str(object.kind),Vector2(object.position[0],object.position[1]),scale,deg_to_rad(float(object.get("rotation",0.0))),float(object.length)/scale if object.has("length") else -1.0)
++	batch(parent,groups)
++
++static func build_cover(parent: NativeTrackVisual, track: NativeTrack) -> void:
++	var groups: Dictionary = {}
++	var sites: Array[Vector2i] = parent._scenery_sites(track,maxi(1,ceili(5.5/track.cell_size)))
++	var count: int = 0
++	for cell: Vector2i in sites:
++		if count >= 180: break
++		if not parent._cover_clear(track,cell,1.8): continue
++		var seed: int = (cell.x*73856093 ^ cell.y*19349663)&0x7fffffff
++		var point := Vector2((cell.x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(cell.y+0.5)*track.cell_size)
++		var kind: String = "rock" if seed%4 == 0 else "twig" if seed%4 == 1 else "bush"
++		var scale: float = (0.30 if kind == "rock" else 0.40) + float(seed%9)*0.015
++		append_pose(groups,kind,point,scale,float(seed%360)*PI/180.0)
++		count += 1
++	var markers: Array[Dictionary] = marker_sites(track)
++	for marker: Dictionary in markers: append_pose(groups,"marker",marker.position,1.0,0.0)
++	batch(parent,groups)
++	parent.set_meta("winter_cover_count",count)
++	parent.set_meta("winter_marker_count",markers.size())
++
++static func marker_sites(track: NativeTrack) -> Array[Dictionary]:
++	# True metre spacing replaces square buckets, which crowded short inside arcs.
++	var occupied: Dictionary = {}
++	var candidates: Array[Dictionary] = []
++	for triangle: Dictionary in track.snow_banks.triangles:
++		var points: PackedVector2Array = triangle.points
++		var heights: PackedFloat32Array = triangle.heights
++		for i: int in range(3):
++			if heights[i] < 0.30: continue
++			var point: Vector2 = points[i]
++			var index: int = track.nearest_route(point)
++			var center: Vector2 = track.route[index]
++			var before: Vector2 = track.route[posmod(index-3,track.route.size())]
++			var after: Vector2 = track.route[(index+3)%track.route.size()]
++			var side: int = 1 if (after-before).normalized().orthogonal().dot(point-center) >= 0.0 else -1
++			var inside: bool = (before+after-center*2.0).dot(point-center) > 0.01
++			var key: String = "%d:%d:%d" % [floori(point.x/6.0),floori(point.y/6.0),side]
++			if occupied.has(key): continue
++			if CreatorBridges.at_any(track.creator_bridges,point): continue
++			occupied[key] = true
++			candidates.append({"position":point,"side":side,"inside":inside,"route":index,"spacing":28.0 if inside else 18.0})
++	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
++		if a.inside != b.inside: return not a.inside
++		if a.route != b.route: return a.route < b.route
++		if a.position.x != b.position.x: return a.position.x < b.position.x
++		return a.position.y < b.position.y)
++	var result: Array[Dictionary] = []
++	for candidate: Dictionary in candidates:
++		if result.size() >= 40: break
++		var clear: bool = true
++		for existing: Dictionary in result:
++			var minimum: float = maxf(candidate.spacing,existing.spacing) if candidate.side == existing.side else 7.5
++			if candidate.position.distance_to(existing.position) < minimum: clear = false; break
++		if clear: result.append(candidate)
++	return result
+diff --git a/game/tests/fixtures/prop_optimization_before/winter_scenery.gd.uid b/game/tests/fixtures/prop_optimization_before/winter_scenery.gd.uid
+new file mode 100644
+index 0000000..671dd48
+--- /dev/null
++++ b/game/tests/fixtures/prop_optimization_before/winter_scenery.gd.uid
+@@ -0,0 +1 @@
++uid://bb55cdidtixrv
+diff --git a/game/tests/test_egypt_props.gd b/game/tests/test_egypt_props.gd
+index c0418db..3a01f1c 100644
+--- a/game/tests/test_egypt_props.gd
++++ b/game/tests/test_egypt_props.gd
+@@ -70,8 +70,16 @@ func run() -> void:
+ 		var indices: PackedInt32Array=rendered[Mesh.ARRAY_INDEX]
+ 		var assembled_match: float=1.0
+ 		var basis:=Basis(Vector3.UP,deg_to_rad(37.0))
+-		check(indices.size()==vertices.size(),kind+" world assembly retains every source triangle")
+-		for i: int in range(indices.size()): assembled_match=minf(assembled_match,(basis*normals[i]).dot(render_normals[indices[i]]))
++		# The source keeps hidden faces until final normal generation. Compare
++		# the draw contract, including every surviving authored normal, rather
++		# than requiring enclosed preparation faces to be drawn as well.
++		var source_arrays: Array=PropGeometry.arrays(source)
++		var source_draw: PackedInt32Array=source_arrays[Mesh.ARRAY_INDEX] if source_arrays[Mesh.ARRAY_INDEX]!=null else PackedInt32Array()
++		if source_draw.is_empty():
++			source_draw.resize(vertices.size())
++			for i: int in range(vertices.size()): source_draw[i]=i
++		check(indices.size()==source_draw.size(),kind+" world assembly retains every prepared draw triangle")
++		for i: int in range(indices.size()): assembled_match=minf(assembled_match,(basis*normals[source_draw[i]]).dot(render_normals[indices[i]]))
+ 		check(assembled_match>0.999,kind+" world assembly preserves the authored normals under the Desert sun")
+ 		visual.free()
+ 	kit.free()
+diff --git a/game/tests/test_prop_optimization.gd b/game/tests/test_prop_optimization.gd
+new file mode 100644
+index 0000000..523ffc6
+--- /dev/null
++++ b/game/tests/test_prop_optimization.gd
+@@ -0,0 +1,180 @@
++extends SceneTree
++## Original builders are frozen in fixtures; compare actual production meshes.
++const OUTPUT: String = "res://../docs/evidence/track-object-optimization-2026-10-16"
++const REVIEW_KINDS: Array[String] = ["tree", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "rock", "boulder", "slate", "cliff", "log", "tyre_stack", "tyre_wall", "barrier", "guardrail", "fence", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "jump", "speed_bump", "oil", "hay_bale", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "egypt_pyramid", "egypt_obelisk", "egypt_column", "egypt_column_broken", "egypt_wall", "puddle"]
++var checks: int = 0
++var failures: int = 0
++var rows: Array[Dictionary] = []
++var views: Array[Dictionary] = []
++var folder: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++
++func track_for(kind: String) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.cells = PackedInt32Array([0,1,2,3,4,5,6,7])
++	track.metadata = {"creator_document":{"objects":[{"kind":kind,"position":[0,0],"rotation":0}]}}
++	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)
++	return track
++
++func stats(node: Node) -> Dictionary:
++	var result: Dictionary = {"triangles":0,"vertices":0,"bytes":0,"meshes":0}
++	if node.is_in_group("contact_lighting"): return result
++	var mesh: Mesh
++	var instances: int = 1
++	if node is MeshInstance3D: mesh = node.mesh
++	if node is MultiMeshInstance3D: mesh = node.multimesh.mesh; instances = node.multimesh.instance_count
++	if mesh != null and instances > 0:
++		result.meshes += 1
++		result.bytes += preload("res://editor/cache_bytes.gd").mesh(mesh)
++		for surface: int in range(mesh.get_surface_count()):
++			var arrays: Array = mesh.surface_get_arrays(surface)
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			result.vertices += arrays[Mesh.ARRAY_VERTEX].size()*instances
++			result.triangles += (indices.size() if not indices.is_empty() else arrays[Mesh.ARRAY_VERTEX].size())/3*instances
++	for child: Node in node.get_children():
++		var sub: Dictionary = stats(child)
++		for key: String in result: result[key] += sub[key]
++	return result
++
++func primitive_checks() -> void:
++	var tool: SurfaceTool = PropGeometry.model(0.00001)
++	PropGeometry.box(tool,Vector3.ZERO,Vector3(2,2,2),Color.WHITE,0.1)
++	PropGeometry.box(tool,Vector3.ZERO,Vector3(0.2,0.2,0.2),Color.RED,0.02)
++	var mesh: ArrayMesh = bake(tool)
++	check(elements(mesh) == 180,"enclosed small box is removed, outer bevel retained")
++	tool = PropGeometry.model(0.00001)
++	PropGeometry.box(tool,Vector3.ZERO,Vector3(2,2,2),Color.WHITE,0.1)
++	PropGeometry.face(tool,[Vector3(-2,0,0),Vector3(2,0,0),Vector3(0,2,0)],Color.RED)
++	mesh = bake(tool)
++	check(elements(mesh) == 183,"crossing triangle is retained even with its centre inside a solid")
++	tool = PropGeometry.model()
++	PropGeometry.box(tool,Vector3.ZERO,Vector3(2,2,2),Color.WHITE,0.1)
++	PropGeometry.face(tool,[Vector3(-0.2,0.97,-0.2),Vector3(0.2,0.97,-0.2),Vector3(0,0.97,0.2)],Color.RED)
++	mesh = bake(tool)
++	check(elements(mesh) == 183,"near-surface faces retain clearance for the 22 mm outline at half scale")
++	tool = PropGeometry.model(0.00001)
++	PropGeometry.face(tool,[Vector3.ZERO,Vector3.RIGHT,Vector3.UP],Color.WHITE)
++	PropGeometry.face(tool,[Vector3.ZERO,Vector3.ZERO,Vector3.UP],Color.RED)
++	mesh = bake(tool)
++	check(elements(mesh) == 3,"collapsed triangle removed without removing a real face")
++	tool = PropGeometry.model(0.00001)
++	PropGeometry.face(tool,[Vector3.ZERO,Vector3.RIGHT*0.000001,Vector3.UP*0.000001],Color.WHITE)
++	mesh = bake(tool)
++	check(elements(mesh) == 3,"small real detail is retained")
++
++func elements(mesh: ArrayMesh) -> int:
++	return mesh.surface_get_array_index_len(0) if mesh.surface_get_array_index_len(0) else mesh.surface_get_array_len(0)
++
++func bake(tool: SurfaceTool) -> ArrayMesh:
++	var source: ArrayMesh = PropGeometry.finish(tool)
++	tool.set_meta("prop_hidden_triangles",source.get_meta("prop_hidden_triangles"))
++	return PropGeometry.commit(tool)
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path(OUTPUT+"/"+("headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method()))
++	DirAccess.make_dir_recursive_absolute(folder)
++	primitive_checks()
++	# Freeze the comparison catalog; later assets have no original builder in
++	# this task's before fixtures and are reviewed by their own authoring pass.
++	var kinds: Array[String] = REVIEW_KINDS.duplicate()
++	for biome: String in TrackTheme.IDS:
++		for kind: String in kinds:
++			var track: NativeTrack = track_for(kind)
++			var original: Dictionary = track.metadata.duplicate(true)
++			var cells: PackedInt32Array = track.cells.duplicate()
++			var old := BeforePropTrackVisual.new(); old.theme_id = biome
++			var now := NativeTrackVisual.new(); now.theme_id = biome
++			var started: int = Time.get_ticks_usec()
++			old._build_placed_objects(track)
++			var old_us: int = Time.get_ticks_usec()-started
++			started = Time.get_ticks_usec()
++			now._build_placed_objects(track)
++			var new_us: int = Time.get_ticks_usec()-started
++			var a: Dictionary = stats(old); var b: Dictionary = stats(now)
++			check(b.triangles > 0 and b.triangles <= a.triangles,biome+"/"+kind+" has no additional triangles")
++			check(b.meshes == a.meshes,biome+"/"+kind+" retains original draw grouping")
++			check(track.metadata == original and track.cells == cells,biome+"/"+kind+" leaves canonical data exact")
++			rows.append({"biome":biome,"kind":kind,"before":a,"after":b,"before_build_us":old_us,"after_build_us":new_us})
++			old.free(); now.free()
++	if DisplayServer.get_name() != "headless": await captures(kinds)
++	var report: Dictionary = {"checks":checks,"failures":failures,"models":rows,"views":views,"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method()}
++	var file := FileAccess.open(folder.path_join("review.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t")); file.close()
++	print("PROP_OPTIMIZATION: %d checks, %d failures; %d model/biome combinations" % [checks,failures,rows.size()])
++	quit(1 if failures else 0)
++
++func frames() -> void:
++	for i: int in range(3): await process_frame
++	await RenderingServer.frame_post_draw
++
++func captures(kinds: Array[String]) -> void:
++	root.size = Vector2i(1920,1152); root.content_scale_size = root.size
++	var stages: Array[Dictionary] = []
++	for i: int in range(kinds.size()):
++		var viewport := SubViewport.new(); viewport.size = Vector2i(240,192)
++		viewport.own_world_3d = true; viewport.msaa_3d = Viewport.MSAA_4X
++		root.add_child(viewport)
++		var image := TextureRect.new(); image.texture = viewport.get_texture()
++		image.position = Vector2((i%8)*240,(i/8)*192); image.size = Vector2(240,192); root.add_child(image)
++		var label := Label.new(); label.text = CreatorCatalog.label(kinds[i]); image.add_child(label)
++		var track: NativeTrack = track_for(kinds[i])
++		var old := BeforePropTrackVisual.new(); viewport.add_child(old); old._build_placed_objects(track)
++		var now := NativeTrackVisual.new(); viewport.add_child(now); now._build_placed_objects(track); now.visible = false
++		var bounds: AABB = ObjectThumbnail._mesh_bounds(old)
++		var center: Vector3 = bounds.get_center()
++		var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-48,-38,0); light.shadow_enabled = true; viewport.add_child(light)
++		var environment := WorldEnvironment.new(); environment.environment = Environment.new()
++		environment.environment.background_mode = Environment.BG_COLOR; environment.environment.background_color = Color("34424a")
++		environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++		environment.environment.ambient_light_color = Color("b6c5d0"); environment.environment.ambient_light_energy = 0.55; viewport.add_child(environment)
++		var camera := Camera3D.new(); viewport.add_child(camera)
++		camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++		camera.size = maxf(bounds.size.length()*1.12,0.5)
++		camera.current = true
++		stages.append({"viewport":viewport,"before":old,"after":now,"camera":camera,"center":center,"distance":maxf(8,bounds.size.length()*2),"kind":kinds[i]})
++	# Warm both instances, then observe the original again. Mobile can finish
++	# its first material/shadow preparation after the initial submitted draw.
++	for stage: Dictionary in stages:
++		stage.camera.look_at_from_position(stage.center+Vector3(1,0.8,0)*stage.distance,stage.center)
++	await frames()
++	var cold_originals: Array[PackedByteArray] = []
++	for stage: Dictionary in stages: cold_originals.append(stage.viewport.get_texture().get_image().get_data())
++	root.get_texture().get_image().save_png(folder.path_join("warmup-original-first.png"))
++	for stage: Dictionary in stages: stage.before.visible = false; stage.after.visible = true
++	await frames()
++	for stage: Dictionary in stages: stage.before.visible = true; stage.after.visible = false
++	await frames()
++	root.get_texture().get_image().save_png(folder.path_join("warmup-original-return.png"))
++	for i: int in range(stages.size()):
++		views.append({"kind":stages[i].kind,"original_warmup_changed":cold_originals[i] != stages[i].viewport.get_texture().get_image().get_data()})
++	for angle: int in range(10):
++		var yaw: float = angle*PI*0.5
++		var elevation: float = 0.8 if angle < 4 else 0.16 if angle < 6 else -0.65
++		if angle == 8: elevation = 5.0; yaw = 0.37
++		if angle == 9: elevation = 0.7; yaw = 0.71
++		for stage: Dictionary in stages:
++			stage.camera.look_at_from_position(stage.center+Vector3(cos(yaw),elevation,sin(yaw))*stage.distance,stage.center)
++			stage.before.visible = true; stage.after.visible = false
++		await frames()
++		var originals: Array[PackedByteArray] = []
++		for stage: Dictionary in stages: originals.append(stage.viewport.get_texture().get_image().get_data())
++		root.get_texture().get_image().save_png(folder.path_join("before-%d.png"%angle))
++		for stage: Dictionary in stages: stage.before.visible = false; stage.after.visible = true
++		await frames()
++		root.get_texture().get_image().save_png(folder.path_join("after-%d.png"%angle))
++		for i: int in range(stages.size()):
++			var pixels: Image = stages[i].viewport.get_texture().get_image()
++			var exact: bool = originals[i] == pixels.get_data()
++			views.append({"kind":stages[i].kind,"angle":angle,"exact":exact})
++			check(exact,"native pixels retained: %s angle %d"%[stages[i].kind,angle])
++			if not exact:
++				var before_image := Image.create_from_data(240,192,false,pixels.get_format(),originals[i])
++				before_image.save_png(folder.path_join("difference-%s-%d-before.png"%[stages[i].kind,angle]))
++				pixels.save_png(folder.path_join("difference-%s-%d-after.png"%[stages[i].kind,angle]))
++	for stage: Dictionary in stages: stage.viewport.queue_free()
++	await frames()
+diff --git a/game/tests/test_prop_optimization.gd.uid b/game/tests/test_prop_optimization.gd.uid
+new file mode 100644
+index 0000000..055cc1b
+--- /dev/null
++++ b/game/tests/test_prop_optimization.gd.uid
+@@ -0,0 +1 @@
++uid://c37esxfn6sagm
+diff --git a/game/tests/test_prop_optimization_editor.gd b/game/tests/test_prop_optimization_editor.gd
+new file mode 100644
+index 0000000..e2d10b3
+--- /dev/null
++++ b/game/tests/test_prop_optimization_editor.gd
+@@ -0,0 +1,10 @@
++extends "res://tests/test_editor_incremental_objects.gd"
++## Keep the existing exact triangle/normal and native pixel assertions, focused
++## on all-biome object assembly without unrelated changing application menus.
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/track-object-optimization-2026-10-16/editor-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for biome: String in TrackTheme.IDS: await compare_props(biome)
++	print("PROP_OPTIMIZATION_EDITOR: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_prop_optimization_editor.gd.uid b/game/tests/test_prop_optimization_editor.gd.uid
+new file mode 100644
+index 0000000..3da05d7
+--- /dev/null
++++ b/game/tests/test_prop_optimization_editor.gd.uid
+@@ -0,0 +1 @@
++uid://bonk00gep4tfp
+diff --git a/game/tests/test_prop_optimization_editor_baseline.gd b/game/tests/test_prop_optimization_editor_baseline.gd
+new file mode 100644
+index 0000000..1b87666
+--- /dev/null
++++ b/game/tests/test_prop_optimization_editor_baseline.gd
+@@ -0,0 +1,42 @@
++extends "res://tests/test_editor_incremental_objects.gd"
++## Original unpruned and optimized editor batches in one native world.
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/track-object-optimization-2026-10-16/editor-baseline-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for biome: String in TrackTheme.IDS:
++		var track: NativeTrack = props_fixture(biome)
++		var viewport := SubViewport.new(); viewport.size = Vector2i(1280,720); viewport.own_world_3d = true; root.add_child(viewport)
++		var original := BeforePropTrackVisual.new(); original.theme_id = biome; viewport.add_child(original); original._build_placed_objects(track)
++		var before := NativeTrackVisual.new(); before.theme_id = biome; viewport.add_child(before)
++		var batches = preload("res://tests/fixtures/prop_optimization_before/placed_object_batches.gd").new()
++		await batches.refresh(before,track,false,func() -> bool: return true)
++		var after := NativeTrackVisual.new(); after.theme_id = biome; viewport.add_child(after)
++		await after.refresh_editor_objects(track,false)
++		var native_after := NativeTrackVisual.new(); native_after.theme_id = biome; viewport.add_child(native_after); native_after._build_placed_objects(track)
++		var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 75
++		viewport.add_child(camera); camera.look_at_from_position(Vector3(0,88,-78),Vector3(0,0,-1)); camera.current = true
++		var light := DirectionalLight3D.new(); light.rotation_degrees = Vector3(-58,-35,0); light.shadow_enabled = true; viewport.add_child(light)
++		var ambient := WorldEnvironment.new(); ambient.environment = Environment.new()
++		ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; ambient.environment.ambient_light_energy = 0.45
++		ambient.environment.background_mode = Environment.BG_COLOR; ambient.environment.background_color = Color("45535a"); viewport.add_child(ambient)
++		var images: Array[Image] = []
++		for active: Node3D in [original,before,after,native_after]:
++			original.visible = active == original; before.visible = active == before; after.visible = active == after
++			native_after.visible = active == native_after
++			for frame: int in range(8): await RenderingServer.frame_post_draw
++			images.append(viewport.get_texture().get_image())
++		for index: int in range(images.size()): images[index].save_png(evidence.path_join(biome+"-"+["native-original","editor-original","editor-optimized","native-optimized"][index]+".png"))
++		var a: PackedByteArray = images[0].get_data(); var b: PackedByteArray = images[1].get_data(); var c: PackedByteArray = images[2].get_data()
++		var prior_changed: int = 0; var prior_max: int = 0; var changed: int = 0; var maximum: int = 0
++		for i: int in range(a.size()):
++			var prior: int = absi(int(a[i])-int(b[i])); var delta: int = absi(int(b[i])-int(c[i]))
++			if prior: prior_changed += 1
++			if delta: changed += 1
++			prior_max = maxi(prior_max,prior); maximum = maxi(maximum,delta)
++		check(changed == 0,biome+" optimized editor is byte exact to original editor")
++		check(a == images[3].get_data(),biome+" optimized native is byte exact to original native after settling")
++		print("PROP_EDITOR_BASELINE ",biome," original_native_vs_editor_channels=",prior_changed," max=",prior_max," optimized_vs_original_editor_channels=",changed," max=",maximum)
++		viewport.queue_free(); await process_frame
++	print("PROP_EDITOR_BASELINE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/track/breakable_prop_visual.gd b/game/track/breakable_prop_visual.gd
+index d625be5..c8c9a70 100644
+--- a/game/track/breakable_prop_visual.gd
++++ b/game/track/breakable_prop_visual.gd
+@@ -17,7 +17,7 @@ static func build(node: Node3D, kit: Node, kind: String, scale: float) -> void:
+ 			else: _damaged_crate(tool,phase)
+ 			tool.generate_normals(); tool.index()
+ 			if damage_meshes.size() >= 12: damage_meshes.erase(damage_meshes.keys()[0])
+-			damage_meshes[key] = tool.commit()
++			damage_meshes[key] = PropGeometry.commit(tool)
+ 		var mesh := MeshInstance3D.new()
+ 		mesh.name = "DamagePhase"+str(phase); mesh.mesh = damage_meshes[key]
+ 		mesh.material_override = material(); mesh.scale = Vector3.ONE*scale
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+index fd359c9..af7428b 100644
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,7 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-4-egypt"
++const VERSION: String = "authored-props-5-hidden-faces"
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+ static var pine_meshes: Dictionary = {}
+@@ -13,11 +13,14 @@ static var _clock: int = 0
+ static func _touch(mesh: Mesh) -> void:
+ 	_clock += 1; _ages[mesh.get_instance_id()] = _clock
+ 
++static func _bytes(mesh: Mesh) -> int:
++	return preload("res://editor/cache_bytes.gd").mesh(mesh)+mesh.get_meta("prop_hidden_triangles",PackedInt32Array()).size()*4
++
+ static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> void:
+-	var size: int = preload("res://editor/cache_bytes.gd").mesh(mesh)
++	var size: int = _bytes(mesh)
+ 	if size > CACHE_BUDGET: return
+ 	cache_bytes = size
+-	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += preload("res://editor/cache_bytes.gd").mesh(stored)
++	for stored: Mesh in meshes.values()+pine_meshes.values(): cache_bytes += _bytes(stored)
+ 	while cache.size() >= limit or cache_bytes > CACHE_BUDGET:
+ 		var victim_cache: Dictionary = cache; var victim: String = ""; var age: int = 9223372036854775807
+ 		for collection: Dictionary in ([cache] if cache.size() >= limit else [meshes,pine_meshes]):
+@@ -25,26 +28,29 @@ static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> vo
+ 				var candidate_age: int = int(_ages.get(collection[candidate].get_instance_id(),0))
+ 				if candidate_age < age: age = candidate_age; victim = candidate; victim_cache = collection
+ 		if victim.is_empty(): break
+-		var expired: Mesh = victim_cache[victim]; cache_bytes -= preload("res://editor/cache_bytes.gd").mesh(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
++		var expired: Mesh = victim_cache[victim]; cache_bytes -= _bytes(expired); _ages.erase(expired.get_instance_id()); victim_cache.erase(victim)
+ 	cache[key] = mesh; _touch(mesh)
+ 
+ 
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "") -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true) -> bool:
+ 	var length: float = section_length/scale if section_length >= 0 else -1.0
+ 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
+-	var key: String = "%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint]
++	var key: String = "%s/%s/%s/%s/%s/%s" % [VERSION,kind,kit.theme_id,str(length),paint,str(optimize)]
+ 	var model: Mesh = meshes.get(key)
+ 	if model == null:
+-		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
+-		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0)
+-		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint)
+-		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0)
+-		if not found: found = PropEgypt.append(local,kind,Vector3.ZERO,1,0)
++		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
++		var found: bool = PropNature.append(local,kit,kind,Vector3.ZERO,1,0,optimize)
++		if not found: found = PropEquipment.append(local,kit,kind,Vector3.ZERO,1,0,length,paint,optimize)
++		if not found: found = PropStructures.append(local,kit,kind,Vector3.ZERO,1,0,optimize)
++		if not found: found = PropEgypt.append(local,kind,Vector3.ZERO,1,0,optimize)
+ 		if not found: return false
+-		if kind not in PropEgypt.KINDS: local.generate_normals()
+-		model = local.commit(); _admit(meshes,key,model,CACHE_LIMIT)
++		# Egyptian relief already has authored facet normals. Rebuilding them
++		# after append smooths across tiny stone bevels and shades the flat faces
++		# like deep triangular dents under the low Desert sun.
++		model = PropGeometry.finish(local,kind not in PropEgypt.KINDS)
++		_admit(meshes,key,model,CACHE_LIMIT)
+ 	_touch(model)
+-	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+ 	return true
+ 
+ static func _face(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, points: Array, color: Color) -> void:
+@@ -157,16 +163,15 @@ static func _crown(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
+ 		_leaf_face(tool,kit,center,1,turn,[upper[i],upper[j],Vector3(-0.13,0.90,0.04)*size],color.lightened(0.26))
+ 		_leaf_face(tool,kit,center,1,turn,[rim[j],rim[i],Vector3(0,0.0,0)*size],color.darkened(0.43))
+ 
+-static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
+-	var key: String = color.to_html()
++static func pine(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color, optimize: bool = true) -> void:
++	var key: String = color.to_html()+"/"+str(optimize)
+ 	var model: Mesh = pine_meshes.get(key)
+ 	if model == null:
+-		var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
+ 		_pine_model(local,kit,Vector3.ZERO,1,0,color)
+-		local.generate_normals()
+-		model = local.commit(); _admit(pine_meshes,key,model,32)
++		model = PropGeometry.finish(local); _admit(pine_meshes,key,model,32)
+ 	_touch(model)
+-	tool.append_from(model,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++	PropGeometry.append_mesh(tool,model,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+ 
+ static func _pine_model(tool: SurfaceTool, kit: Node, center: Vector3, scale: float, turn: float, color: Color) -> void:
+ 	_lathe(tool,kit,center,scale,turn,[Vector2(0.16,0),Vector2(0.10,2.7),Vector2(0,3.2)],[Color("65513c"),Color("8e7951")],true)
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index e5a6b97..acc45a9 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@ class_name NativeTrackVisual
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-202"
++const VERSION: String = "track-kit-204"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+ var ground_support: RefCounted
+@@ -1543,16 +1543,20 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 		egypt_tool.index()
+ 		var egypt_mesh := MeshInstance3D.new()
+ 		egypt_mesh.name = "EgyptianStonework"
+-		egypt_mesh.mesh = egypt_tool.commit()
+-		if _capture_editor_prop_arrays: egypt_mesh.set_meta("editor_prop_arrays",egypt_tool.commit_to_arrays())
++		egypt_mesh.mesh = PropGeometry.commit(egypt_tool)
++		if _capture_editor_prop_arrays:
++			egypt_mesh.set_meta("editor_prop_arrays",egypt_tool.commit_to_arrays())
++			egypt_mesh.set_meta("editor_prop_hidden",egypt_tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
+ 		egypt_mesh.material_override = PropEgypt.material()
+ 		add_child(egypt_mesh)
+ 	if count > 0:
+ 		tool.generate_normals()
+ 		tool.index()
+ 		var mesh := MeshInstance3D.new()
+-		mesh.mesh = tool.commit()
+-		if _capture_editor_prop_arrays: mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
++		mesh.mesh = PropGeometry.commit(tool)
++		if _capture_editor_prop_arrays:
++			mesh.set_meta("editor_prop_arrays",tool.commit_to_arrays())
++			mesh.set_meta("editor_prop_hidden",tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
+ 		var material := VisualGeometry.material(Color.WHITE)
+ 		material.vertex_color_use_as_albedo = true
+ 		# Small roof seams and foliage use their silhouettes, not intersecting ink hulls.
+@@ -1565,8 +1569,10 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 		ink_tool.generate_normals()
+ 		ink_tool.index()
+ 		var ink_mesh := MeshInstance3D.new()
+-		ink_mesh.mesh = ink_tool.commit()
+-		if _capture_editor_prop_arrays: ink_mesh.set_meta("editor_prop_arrays",ink_tool.commit_to_arrays())
++		ink_mesh.mesh = PropGeometry.commit(ink_tool)
++		if _capture_editor_prop_arrays:
++			ink_mesh.set_meta("editor_prop_arrays",ink_tool.commit_to_arrays())
++			ink_mesh.set_meta("editor_prop_hidden",ink_tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
+ 		var ink_material := VisualGeometry.material(Color.WHITE)
+ 		ink_material.vertex_color_use_as_albedo = true
+ 		ink_material.vertex_color_is_srgb = true
+@@ -1754,7 +1760,7 @@ func _finish_prop_mesh(tool: SurfaceTool, parent: Node3D) -> void:
+ 	tool.generate_normals()
+ 	tool.index()
+ 	var mesh := MeshInstance3D.new()
+-	mesh.mesh = tool.commit()
++	mesh.mesh = PropGeometry.commit(tool)
+ 	var material := VisualGeometry.material(Color.WHITE)
+ 	material.vertex_color_use_as_albedo = true
+ 	material.vertex_color_is_srgb = true
+diff --git a/game/track/prop_egypt.gd b/game/track/prop_egypt.gd
+index 1022733..d9a7cc3 100644
+--- a/game/track/prop_egypt.gd
++++ b/game/track/prop_egypt.gd
+@@ -9,9 +9,9 @@ const CUT := Color("776448")
+ const BLUE := Color("617f81")
+ const RED := Color("985d49")
+ 
+-static func append(tool: SurfaceTool, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++static func append(tool: SurfaceTool, kind: String, center: Vector3, scale: float, turn: float, optimize: bool = true) -> bool:
+ 	if kind not in KINDS: return false
+-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var local: SurfaceTool = PropGeometry.model(0.00001 if optimize else -1.0)
+ 	match kind:
+ 		"egypt_pyramid": _pyramid(local)
+ 		"egypt_obelisk": _obelisk(local)
+diff --git a/game/track/prop_equipment.gd b/game/track/prop_equipment.gd
+index e2b0b7a..7f0f41c 100644
+--- a/game/track/prop_equipment.gd
++++ b/game/track/prop_equipment.gd
+@@ -5,9 +5,9 @@ const METAL := Color("7d8988")
+ const DARK := Color("354442")
+ const WOOD := Color("8b7453")
+ 
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float, paint: String = "") -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, length: float, paint: String = "", optimize: bool = true) -> bool:
+ 	if kind not in ["barrier","fence","guardrail","wire_fence","cone","chevron","braking_board","banner","flag","light","gantry","crate","barrel","pallet","container","hay_bale"]: return false
+-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var local: SurfaceTool = PropGeometry.model((0.045 if kind == "barrier" else 0.00001) if optimize else -1.0)
+ 	var span: float = length/scale if length >= 0 else 6.0
+ 	match kind:
+ 		"hay_bale": hay(local,0)
+diff --git a/game/track/prop_geometry.gd b/game/track/prop_geometry.gd
+index 47f5d83..541c312 100644
+--- a/game/track/prop_geometry.gd
++++ b/game/track/prop_geometry.gd
+@@ -2,6 +2,130 @@ class_name PropGeometry
+ extends RefCounted
+ ## Original opaque, vertex-coloured prop geometry. No collision or simulation data.
+ 
++# Opt in only while assembling one immutable prop. The cores are strictly
++# inside closed boxes; they are never inferred from open foliage or a mesh AABB.
++static func model(clearance: float = 0.045) -> SurfaceTool:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	if clearance >= 0.0:
++		tool.set_meta("prop_solid_cores",[])
++		tool.set_meta("prop_clearance",clearance)
++	return tool
++
++static func finish(tool: SurfaceTool, generate: bool = true) -> ArrayMesh:
++	if generate: tool.generate_normals()
++	var source: ArrayMesh = tool.commit()
++	var hidden: Dictionary = {}
++	for triangle: int in tool.get_meta("prop_hidden_triangles",PackedInt32Array()): hidden[triangle] = true
++	var complete: bool = tool.get_meta("prop_plan_complete",false) and int(tool.get_meta("prop_triangle_count",-1))*3 == source.surface_get_array_len(0)
++	if tool.has_meta("prop_solid_cores") and not complete:
++		var data: Array = source.surface_get_arrays(0)
++		var vertices: PackedVector3Array = data[Mesh.ARRAY_VERTEX]
++		var cores: Array = tool.get_meta("prop_solid_cores")
++		# Bound the transient acceleration table. Very long solids use the
++		# broad list, so authored run lengths cannot explode the grid.
++		var grid: Dictionary = {}; var broad: Array = []; var entries: int = 0
++		for core: SolidBox in cores:
++			var low := Vector3i(core.bounds.position.floor())
++			var high := Vector3i(core.bounds.end.floor())
++			var extent: Vector3i = high-low+Vector3i.ONE
++			var cells: int = extent.x*extent.y*extent.z
++			if cores.size() < 16 or cells > 256 or entries+cells > 8192:
++				broad.append(core)
++				continue
++			for x: int in range(low.x,high.x+1):
++				for y: int in range(low.y,high.y+1):
++					for z: int in range(low.z,high.z+1):
++						var cell := Vector3i(x,y,z)
++						if not grid.has(cell): grid[cell] = []
++						grid[cell].append(core)
++			entries += cells
++		for i: int in range(0,vertices.size(),3):
++			if hidden.has(i/3): continue
++			var a: Vector3 = vertices[i]; var b: Vector3 = vertices[i+1]; var c: Vector3 = vertices[i+2]
++			if (b-a).cross(c-a) == Vector3.ZERO:
++				hidden[i/3] = true
++				continue
++			if enclosed(a,b,c,grid.get(Vector3i(a.floor()),[])) or enclosed(a,b,c,broad): hidden[i/3] = true
++	source.set_meta("prop_hidden_triangles",PackedInt32Array(hidden.keys()))
++	source.set_meta("prop_plan_complete",tool.has_meta("prop_solid_cores") or tool.get_meta("prop_plan_complete",false))
++	return source
++
++static func enclosed(a: Vector3, b: Vector3, c: Vector3, cores: Array) -> bool:
++	for core: SolidBox in cores:
++		if core.bounds.has_point(a) and core.contains(a) and core.contains(b) and core.contains(c): return true
++	return false
++
++static func append_mesh(destination: SurfaceTool, mesh: ArrayMesh, pose: Transform3D) -> void:
++	# Carry removal ordinals through the existing unindexed assembly. Keep all
++	# faces until the receiving builder has generated its original normals.
++	var offset: int = int(destination.get_meta("prop_triangle_count",-1))
++	if offset < 0:
++		var existing: Array = destination.commit_to_arrays()
++		offset = 0 if existing[Mesh.ARRAY_VERTEX] == null else existing[Mesh.ARRAY_VERTEX].size()/3
++	var hidden: PackedInt32Array = destination.get_meta("prop_hidden_triangles",PackedInt32Array())
++	for triangle: int in mesh.get_meta("prop_hidden_triangles",PackedInt32Array()): hidden.append(offset+triangle)
++	destination.append_from(mesh,0,pose)
++	destination.set_meta("prop_hidden_triangles",hidden)
++	destination.set_meta("prop_triangle_count",offset+mesh.surface_get_array_len(0)/3)
++	destination.set_meta("prop_plan_complete",(offset == 0 or destination.get_meta("prop_plan_complete",false)) and mesh.get_meta("prop_plan_complete",false))
++
++static func arrays(tool: SurfaceTool) -> Array:
++	return prune(tool.commit_to_arrays(),tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
++
++static func prune(source: Array, hidden: PackedInt32Array) -> Array:
++	var data: Array = source.duplicate()
++	if hidden.is_empty(): return data
++	var vertices: PackedVector3Array = data[Mesh.ARRAY_VERTEX]
++	var indices: PackedInt32Array = data[Mesh.ARRAY_INDEX] if data[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++	var count: int = (indices.size() if not indices.is_empty() else vertices.size())/3
++	if indices.is_empty():
++		indices.resize(count*3)
++		for i: int in range(indices.size()): indices[i] = i
++	var ordered: PackedInt32Array = hidden.duplicate(); ordered.sort()
++	var kept := PackedInt32Array(); var start: int = 0
++	for triangle: int in ordered:
++		var end: int = triangle*3
++		if end > start: kept.append_array(indices.slice(start,end))
++		start = end+3
++	if start < indices.size(): kept.append_array(indices.slice(start))
++	if kept.is_empty(): return data
++	# Retain the original shared vertex streams. Contiguous index slices remove
++	# only the enclosed faces without a per-vertex GDScript copy or re-encoding
++	# normals/colours. Unreferenced vertices perform no rendering work.
++	data[Mesh.ARRAY_INDEX] = kept
++	return data
++
++static func commit(tool: SurfaceTool) -> ArrayMesh:
++	if not tool.has_meta("prop_hidden_triangles") or tool.get_meta("prop_hidden_triangles").is_empty(): return tool.commit()
++	var result := ArrayMesh.new()
++	result.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays(tool))
++	return result
++
++class SolidBox extends RefCounted:
++	var center: Vector3
++	var half: Vector3
++	var bevel: float
++	var clearance: float
++	var cut_flat: float
++	var cut_cap: float
++	var bounds: AABB
++
++	func _init(p: Vector3, extent: Vector3, b: float, margin: float) -> void:
++		center = p; half = extent; bevel = b; clearance = margin
++		cut_flat = minf(b,minf(half.x,half.z)*0.4)
++		cut_cap = minf(b,minf(half.x-b,half.z-b)*0.4)
++		bounds = AABB(p-half,half*2.0)
++
++	func contains(point: Vector3) -> bool:
++		# This is the actual convex octagonal cross-section of box(), including
++		# its sloping bevels. Padding in all axes also encloses the ink extrusion.
++		var q: Vector3 = (point-center).abs()+Vector3.ONE*clearance
++		if q.y >= half.y: return false
++		var inset: float = maxf(0.0,q.y-half.y+bevel)
++		var cut: float = lerpf(cut_flat,cut_cap,inset/bevel) if bevel > 0 else 0.0
++		return q.x < half.x-inset and q.z < half.z-inset and q.x+q.z < half.x+half.z-inset*2.0-cut
++
+ static func face(tool: SurfaceTool, points: Array, color: Color, outward: Vector3 = Vector3.ZERO) -> void:
+ 	tool.set_color(color)
+ 	tool.set_smooth_group(-1)
+@@ -12,6 +136,11 @@ static func face(tool: SurfaceTool, points: Array, color: Color, outward: Vector
+ static func box(tool: SurfaceTool, p: Vector3, size: Vector3, color: Color, bevel: float = 0.025) -> void:
+ 	var half: Vector3 = size*0.5
+ 	var b: float = minf(bevel,minf(half.x,minf(half.y,half.z))*0.6)
++	if tool.has_meta("prop_solid_cores"):
++		# 22 mm ink extrusion at the minimum authored scale (0.5), plus
++		# clearance. Retain thin shells, bevels and all touching faces.
++		var cores: Array = tool.get_meta("prop_solid_cores")
++		cores.append(SolidBox.new(p,half,b,float(tool.get_meta("prop_clearance"))))
+ 	var loops: Array = []
+ 	for row: int in range(4):
+ 		var inset: float = b if row in [0,3] else 0.0
+@@ -78,8 +207,7 @@ static func ring(tool: SurfaceTool, center: Vector3, axis: Vector3, outer: float
+ 		face(tool,[a+p*outer,a+q*outer,a+q*inner,a+p*inner],color,-axis)
+ 
+ static func append_transformed(destination: SurfaceTool, local: SurfaceTool, center: Vector3, scale: float, turn: float) -> void:
+-	local.generate_normals()
+ 	# Keep the source unindexed until the complete destination is assembled.
+ 	# Mixing indexed and unindexed appends omits earlier faces from the indices.
+-	var mesh: ArrayMesh = local.commit()
+-	destination.append_from(mesh,0,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
++	var mesh: ArrayMesh = finish(local)
++	append_mesh(destination,mesh,Transform3D(Basis(Vector3.UP,turn).scaled(Vector3.ONE*scale),center))
+diff --git a/game/track/prop_nature.gd b/game/track/prop_nature.gd
+index 12cad14..631d8cc 100644
+--- a/game/track/prop_nature.gd
++++ b/game/track/prop_nature.gd
+@@ -1,9 +1,9 @@
+ class_name PropNature
+ extends RefCounted
+ ## Authored deterministic silhouettes and broad leaf/stone planes, no alpha cards.
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, optimize: bool = true) -> bool:
+ 	if kind not in ["broadleaf","bush","grass_clump","flowers","pebbles","log","rock","boulder","slate","cliff"]: return false
+-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
+ 	var leaf: Color = TrackTheme.foliage(kit.theme_id).lightened(0.06)
+ 	var stone: Color = TrackTheme.stone(kit.theme_id)
+ 	match kind:
+diff --git a/game/track/prop_structures.gd b/game/track/prop_structures.gd
+index d837d94..7af277f 100644
+--- a/game/track/prop_structures.gd
++++ b/game/track/prop_structures.gd
+@@ -5,9 +5,9 @@ const METAL := Color("738482")
+ const DARK := Color("293b3c")
+ const WOOD := Color("8e7757")
+ 
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float) -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, optimize: bool = true) -> bool:
+ 	if kind not in ["parked_car","van","car_wreck","shed","hut","grandstand"]: return false
+-	var local := SurfaceTool.new(); local.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var local: SurfaceTool = PropGeometry.model(0.00001 if optimize else -1.0)
+ 	if kind in ["parked_car","van","car_wreck"]: _vehicle(local,kind)
+ 	elif kind == "grandstand": _grandstand(local)
+ 	else: _building(local,kit,kind)
+diff --git a/game/track/winter_scenery.gd b/game/track/winter_scenery.gd
+index 116524d..831169b 100644
+--- a/game/track/winter_scenery.gd
++++ b/game/track/winter_scenery.gd
+@@ -26,7 +26,7 @@ static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
+ 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	# Snow's authored tonal variation uses source vertex ordinals. Retain those
+ 	# ordinals rather than shifting the visible snow when hidden faces are culled.
+-	if kind == "tree": CreatorPropVisual.pine(tool,kit,Vector3.ZERO,1.25,0.0,Color("294a47"))
++	if kind == "tree": CreatorPropVisual.pine(tool,kit,Vector3.ZERO,1.25,0.0,Color("294a47"),false)
+ 	elif kind == "marker":
+ 		kit._colored_box(tool,Vector3(0,0.95,0),Vector3(0.06,1.90,0.06),0.0,Color("a43327"))
+ 		for y: float in [1.50,1.74]: kit._colored_box(tool,Vector3(0,y,0),Vector3(0.064,0.14,0.064),0.0,Color("e4e7da"))
+@@ -35,7 +35,7 @@ static func mesh_for(kind: String, length: float = -1.0) -> ArrayMesh:
+ 		for i: int in range(5):
+ 			var angle: float = i*2.4
+ 			kit._colored_box(tool,Vector3(sin(angle)*0.20,0.30,cos(angle)*0.20),Vector3(0.026,0.65,0.026),angle,Color("62534c"))
+-	else: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length)
++	else: CreatorPropVisual.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length,"",false)
+ 	tool.generate_normals()
+ 	var original: ArrayMesh = tool.commit()
+ 	var arrays: Array = original.surface_get_arrays(0)

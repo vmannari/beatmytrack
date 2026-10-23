@@ -1,0 +1,587 @@
+--- a/backend/bmt_backend/economy.py
++++ b/backend/bmt_backend/economy.py
+@@ -4,7 +4,7 @@
+ 
+ from fastapi import APIRouter, HTTPException
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import func, or_, select, update
++from sqlalchemy import or_, select, update
+ 
+ from .economy_models import CoinMilestone, CoinReward, CoinWallet, CosmeticUnlock
+ from .identity_models import Player
+@@ -163,15 +163,12 @@
+         add("New race PB", 100, "timer")
+     if previous[1] and flying < previous[1]:
+         add("New lap PB", 100, "timer")
+-    for metric, model, ticks in (("race", PersonalBest, run.time_ticks), ("lap", LapPersonalBest, flying)):
+-        # One verified PB per actual driver; rank ties share the same threshold.
+-        criteria = (model.board_id == board.id, Player.disabled.is_(False),
+-                    Player.deleted_at.is_(None), Player.is_test_driver.is_(False))
+-        count = session.scalar(select(func.count()).select_from(model).join(Player).where(*criteria))
+-        ahead = session.scalar(select(func.count()).select_from(model).join(Player)
+-            .where(*criteria, model.time_ticks < ticks))
+-        percent = 100 * (ahead + 1) / count if count else 101
+-        amount = next((amount for limit, amount in ((1, 500), (10, 200), (25, 100), (50, 50)) if percent <= limit), 0)
++    from .reward_ranks import percentile_amount
++    for metric, ticks in (("race", run.time_ticks), ("lap", flying)):
++        earned = session.get(CoinMilestone, (run.player_id, metric + "/" + board.id))
++        if earned is not None and earned.value >= 500:
++            continue
++        amount = percentile_amount(session, board.id, metric, ticks)
+         if amount and milestone(metric + "/" + board.id, amount):
+             add("Race percentile tier" if metric == "race" else "Best-lap percentile tier", amount, "bars")
+     from .challenge_models import ChallengeTicket
+--- a/backend/bmt_backend/economy_models.py
++++ b/backend/bmt_backend/economy_models.py
+@@ -1,5 +1,5 @@
+ """Earned coins and permanent cosmetic ownership, separate from paid commerce/resumes."""
+-from sqlalchemy import JSON, CheckConstraint, ForeignKey, Integer, String
++from sqlalchemy import JSON, BigInteger, CheckConstraint, ForeignKey, Integer, String
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from .db import Base
+@@ -37,3 +37,15 @@
+     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+     scope: Mapped[str] = mapped_column(String(120), primary_key=True)
+     value: Mapped[int] = mapped_column(Integer, default=0)
++
++
++class RewardRankCount(Base):
++    """Sparse exact prefix index, maintained transactionally by PB/player triggers."""
++    __tablename__ = "reward_rank_counts"
++    __table_args__ = (CheckConstraint("total >= 0"),
++                      CheckConstraint("node > 0 AND node <= 2147483648"),
++                      CheckConstraint("metric IN ('race','lap')"))
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    metric: Mapped[str] = mapped_column(String(4), primary_key=True)
++    node: Mapped[int] = mapped_column(BigInteger, primary_key=True)
++    total: Mapped[int] = mapped_column(BigInteger)
+--- /dev/null
++++ b/backend/bmt_backend/reward_ranks.py
+@@ -0,0 +1,36 @@
++"""Exact reward ranks with bounded index reads, independent of board population.
++
++Fenwick nodes cover the positive PostgreSQL INTEGER tick domain, including older
++boards. A root and at most 30 prefix nodes suffice for one rank query. Counters
++are BIGINT; a board may contain more drivers than the tick domain contains times.
++The migration owns transactional maintenance and seeds existing PBs once.
++"""
++from sqlalchemy import select
++
++from .economy_models import RewardRankCount
++
++TREE_SIZE = 1 << 31
++TIERS = ((1, 500), (10, 200), (25, 100), (50, 50))
++
++
++def prefix_nodes(ticks):
++    """Nodes whose disjoint ranges contain precisely the strictly faster ticks."""
++    if type(ticks) is not int or not 0 < ticks < TREE_SIZE:
++        raise ValueError("Reward ticks must be a positive INTEGER")
++    node, result = ticks - 1, []
++    while node:
++        result.append(node)
++        node -= node & -node
++    return result
++
++
++def percentile_amount(session, board_id, metric, ticks):
++    nodes = prefix_nodes(ticks)
++    values = dict(session.execute(select(RewardRankCount.node, RewardRankCount.total).where(
++        RewardRankCount.board_id == board_id, RewardRankCount.metric == metric,
++        RewardRankCount.node.in_([TREE_SIZE, *nodes]))).all())
++    population = values.get(TREE_SIZE, 0)
++    rank = sum(values.get(node, 0) for node in nodes) + 1
++    # Integer comparison preserves exact threshold boundaries and shared ties.
++    return next((amount for limit, amount in TIERS
++                 if population and rank * 100 <= population * limit), 0)
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0045_reward_rank_index.py
+@@ -0,0 +1,212 @@
++"""Exact bounded percentile queries, maintained with PB and visibility changes.
++
++Quiesce writers for rollout: existing eligible PBs are aggregated once while the
++source tables are write-locked. No rewards, wallets or historical results change.
++The 2**31 root covers every positive INTEGER time, not only today's replay cap.
++"""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0045_reward_rank_index"
++down_revision = "0044_telemetry_counter_bigint"
++branch_labels = None
++depends_on = None
++
++SIZE = 2147483648
++SOURCES = (("personal_bests", "race"), ("lap_personal_bests", "lap"))
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def eligible(ref):
++    return f"NOT {ref}.disabled AND NOT {ref}.is_test_driver AND {ref}.deleted_at IS NULL"
++
++
++def player_rows(identity):
++    return " UNION ALL ".join(
++        f"SELECT board_id,'{metric}' AS metric,time_ticks FROM {table} WHERE player_id={identity}"
++        for table, metric in SOURCES)
++
++
++def sqlite_path(ref):
++    return f"""WITH RECURSIVE nodes(node) AS (
++        SELECT CASE WHEN {ref}.time_ticks<=0 THEN RAISE(ABORT,'Invalid reward ticks')
++                    ELSE {ref}.time_ticks END
++        WHERE EXISTS(SELECT 1 FROM players p WHERE p.id={ref}.player_id AND {eligible('p')})
++        UNION ALL SELECT node+(node & -node) FROM nodes WHERE node<{SIZE}) SELECT node FROM nodes"""
++
++
++def sqlite_delta(ref, metric, delta, other=None):
++    path = sqlite_path(ref)
++    if other is not None:
++        path = (f"SELECT node FROM ({path}) WHERE {ref}.board_id IS NOT {other}.board_id "
++                f"OR node NOT IN ({sqlite_path(other)})")
++    if delta < 0:
++        return f"""UPDATE reward_rank_counts SET total=total-1 WHERE board_id={ref}.board_id
++            AND metric='{metric}' AND node IN ({path});"""
++    return f"""INSERT INTO reward_rank_counts(board_id,metric,node,total)
++        SELECT {ref}.board_id,'{metric}',node,1 FROM ({path}) WHERE 1
++        ON CONFLICT(board_id,metric,node) DO UPDATE SET total=reward_rank_counts.total+1;"""
++
++
++def sqlite_triggers():
++    for table, metric in SOURCES:
++        for event in ("INSERT", "UPDATE", "DELETE"):
++            guard = ""
++            if event == "UPDATE":
++                guard = "WHEN OLD.board_id IS NOT NEW.board_id OR OLD.player_id IS NOT NEW.player_id OR OLD.time_ticks IS NOT NEW.time_ticks"
++            body = (sqlite_delta("OLD", metric, -1, "NEW" if event == "UPDATE" else None) if event != "INSERT" else "")
++            body += sqlite_delta("NEW", metric, 1, "OLD" if event == "UPDATE" else None) if event != "DELETE" else ""
++            sql(f"CREATE TRIGGER reward_rank_{metric}_{event.lower()} AFTER {event} ON {table} {guard} BEGIN {body} END")
++    rows = player_rows("NEW.id")
++    paths = f"""WITH RECURSIVE nodes(board_id,metric,node) AS (
++        SELECT board_id,metric,time_ticks FROM ({rows})
++        UNION ALL SELECT board_id,metric,node+(node & -node) FROM nodes WHERE node<{SIZE})
++        SELECT board_id,metric,node FROM nodes"""
++    # BEFORE visibility changes: subsequent reclassification/erasure triggers can
++    # remove PBs. Their AFTER triggers then see the new, already-counted visibility.
++    sql(f"""CREATE TRIGGER reward_rank_player BEFORE UPDATE OF disabled,is_test_driver,deleted_at ON players
++        WHEN ({eligible('OLD')}) IS NOT ({eligible('NEW')}) BEGIN
++        UPDATE reward_rank_counts SET total=total-1 WHERE ({eligible('OLD')})
++            AND (board_id,metric,node) IN ({paths});
++        INSERT INTO reward_rank_counts(board_id,metric,node,total)
++            SELECT board_id,metric,node,1 FROM ({paths}) WHERE ({eligible('NEW')})
++            ON CONFLICT(board_id,metric,node) DO UPDATE SET total=reward_rank_counts.total+1;
++        END""")
++
++
++def postgres_triggers():
++    sql(f"""CREATE FUNCTION bmt_reward_rank_delta(bid text, kind text, ticks integer, delta integer, exclude_ticks integer DEFAULT NULL)
++        RETURNS void LANGUAGE plpgsql AS $$
++        DECLARE idx bigint:=ticks; path bigint[]:=ARRAY[]::bigint[];
++                omitted bigint[]:=ARRAY[]::bigint[]; changed integer;
++        BEGIN
++            IF ticks<=0 THEN RAISE EXCEPTION 'Invalid reward ticks'; END IF;
++            IF exclude_ticks IS NOT NULL THEN
++                IF exclude_ticks<=0 THEN RAISE EXCEPTION 'Invalid reward ticks'; END IF;
++                idx:=exclude_ticks;
++                WHILE idx<={SIZE} LOOP
++                    omitted:=array_append(omitted,idx); idx:=idx+(idx & -idx);
++                END LOOP;
++            END IF;
++            idx:=ticks;
++            WHILE idx<={SIZE} LOOP
++                IF NOT idx=ANY(omitted) THEN path:=array_append(path,idx); END IF;
++                idx:=idx+(idx & -idx);
++            END LOOP;
++            IF delta>0 THEN
++                INSERT INTO reward_rank_counts(board_id,metric,node,total)
++                    SELECT bid,kind,n,delta FROM unnest(path) n ORDER BY n
++                    ON CONFLICT(board_id,metric,node) DO UPDATE
++                    SET total=reward_rank_counts.total+EXCLUDED.total;
++            ELSE
++                UPDATE reward_rank_counts SET total=total+delta
++                    WHERE board_id=bid AND metric=kind AND node=ANY(path);
++                GET DIAGNOSTICS changed=ROW_COUNT;
++                IF changed<>cardinality(path) THEN RAISE EXCEPTION 'Incomplete reward rank index'; END IF;
++            END IF;
++        END $$""")
++    sql(f"""CREATE FUNCTION bmt_reward_rank_pb() RETURNS trigger LANGUAGE plpgsql AS $$
++        DECLARE old_visible boolean:=false; new_visible boolean:=false;
++                skip_old integer; skip_new integer;
++        BEGIN
++            IF TG_OP='UPDATE' THEN
++                IF (OLD.board_id,OLD.player_id,OLD.time_ticks) IS NOT DISTINCT FROM
++                   (NEW.board_id,NEW.player_id,NEW.time_ticks) THEN RETURN NULL; END IF;
++            END IF;
++            IF TG_OP<>'INSERT' THEN
++                SELECT EXISTS(SELECT 1 FROM players p WHERE p.id=OLD.player_id AND {eligible('p')}) INTO old_visible;
++            END IF;
++            IF TG_OP<>'DELETE' THEN
++                SELECT EXISTS(SELECT 1 FROM players p WHERE p.id=NEW.player_id AND {eligible('p')}) INTO new_visible;
++            END IF;
++            IF TG_OP='UPDATE' AND old_visible AND new_visible THEN
++                IF OLD.board_id=NEW.board_id THEN
++                    -- Shared ancestors have net zero change on an improvement;
++                    -- avoid touching the population root or other common nodes.
++                    skip_old:=NEW.time_ticks; skip_new:=OLD.time_ticks;
++                END IF;
++            END IF;
++            IF TG_OP<>'INSERT' THEN
++                IF old_visible THEN
++                    PERFORM bmt_reward_rank_delta(OLD.board_id,TG_ARGV[0],OLD.time_ticks,-1,skip_old);
++                END IF;
++            END IF;
++            IF TG_OP<>'DELETE' THEN
++                IF new_visible THEN
++                    PERFORM bmt_reward_rank_delta(NEW.board_id,TG_ARGV[0],NEW.time_ticks,1,skip_new);
++                END IF;
++            END IF;
++            RETURN NULL;
++        END $$""")
++    for table, metric in SOURCES:
++        # Existing PB projections acquire Board first; alphabetical AFTER trigger
++        # order retains Player -> Board -> prefix-counter ordering.
++        sql(f"CREATE TRIGGER reward_rank_{metric} AFTER INSERT OR UPDATE OR DELETE ON {table} "
++            f"FOR EACH ROW EXECUTE FUNCTION bmt_reward_rank_pb('{metric}')")
++    rows = player_rows("NEW.id")
++    sql(f"""CREATE FUNCTION bmt_reward_rank_player() RETURNS trigger LANGUAGE plpgsql AS $$
++        DECLARE item record; delta integer;
++        BEGIN
++            delta:=({eligible('NEW')})::integer-({eligible('OLD')})::integer;
++            IF delta=0 THEN RETURN NEW; END IF;
++            -- PB writers already acquire Board before changing prefix counters.
++            -- Take that same order before any visibility delta to avoid inversion.
++            PERFORM 1 FROM boards WHERE id IN (SELECT board_id FROM ({rows}) p)
++                ORDER BY id FOR UPDATE;
++            FOR item IN SELECT * FROM ({rows}) p ORDER BY board_id,metric LOOP
++                PERFORM bmt_reward_rank_delta(item.board_id,item.metric,item.time_ticks,delta);
++            END LOOP;
++            RETURN NEW;
++        END $$""")
++    sql("CREATE TRIGGER reward_rank_player BEFORE UPDATE OF disabled,is_test_driver,deleted_at ON players "
++        "FOR EACH ROW EXECUTE FUNCTION bmt_reward_rank_player()")
++
++
++def upgrade():
++    if op.get_bind().dialect.name == "postgresql":
++        sql("LOCK TABLE players, personal_bests, lap_personal_bests IN SHARE ROW EXCLUSIVE MODE")
++    op.create_table("reward_rank_counts",
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), primary_key=True),
++        sa.Column("metric", sa.String(4), primary_key=True),
++        sa.Column("node", sa.BigInteger(), primary_key=True),
++        sa.Column("total", sa.BigInteger(), nullable=False),
++        sa.CheckConstraint("total >= 0"),
++        sa.CheckConstraint(f"node > 0 AND node <= {SIZE}"),
++        sa.CheckConstraint("metric IN ('race','lap')"))
++    rows = " UNION ALL ".join(
++        f"SELECT b.board_id,'{metric}' AS metric,b.time_ticks FROM {table} b JOIN players p ON p.id=b.player_id WHERE {eligible('p')}"
++        for table, metric in SOURCES)
++    if op.get_bind().scalar(sa.text(f"SELECT 1 FROM ({rows}) p WHERE time_ticks<=0 LIMIT 1")):
++        raise RuntimeError("Repair invalid nonpositive PB ticks before indexing rewards")
++    # Group equal ticks before expanding paths; do not expand every player into
++    # dozens of migration rows when a large board has many ties.
++    sql(f"""INSERT INTO reward_rank_counts(board_id,metric,node,total)
++        WITH RECURSIVE frequencies AS (
++            SELECT board_id,metric,time_ticks,COUNT(*) AS total FROM ({rows}) p
++            GROUP BY board_id,metric,time_ticks), nodes(board_id,metric,node,total) AS (
++            SELECT board_id,metric,CAST(time_ticks AS BIGINT),total FROM frequencies
++            UNION ALL SELECT board_id,metric,node+(node & -node),total FROM nodes WHERE node<{SIZE})
++        SELECT board_id,metric,node,SUM(total) FROM nodes GROUP BY board_id,metric,node""")
++    if op.get_bind().dialect.name == "sqlite":
++        sqlite_triggers()
++    else:
++        postgres_triggers()
++
++
++def downgrade():
++    if op.get_bind().dialect.name == "sqlite":
++        for _table, metric in SOURCES:
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER reward_rank_{metric}_{event}")
++    else:
++        for table, metric in SOURCES:
++            sql(f"DROP TRIGGER reward_rank_{metric} ON {table}")
++        sql("DROP FUNCTION bmt_reward_rank_pb()")
++    sql("DROP TRIGGER reward_rank_player" + (" ON players" if op.get_bind().dialect.name == "postgresql" else ""))
++    if op.get_bind().dialect.name == "postgresql":
++        sql("DROP FUNCTION bmt_reward_rank_player()")
++        sql("DROP FUNCTION bmt_reward_rank_delta(text,text,integer,integer,integer)")
++    op.drop_table("reward_rank_counts")
+--- /dev/null
++++ b/backend/tests/test_reward_ranks.py
+@@ -0,0 +1,272 @@
++"""Exact award equivalence, transactional projection and bounded query work."""
++# ruff: noqa: F811 - imported pytest fixture is intentionally named by test args.
++import random
++
++import pytest
++from alembic import command
++from sqlalchemy import delete, event, func, select, text
++from test_domains import domain, headers, public_course, race  # noqa: F401
++
++from bmt_backend.economy_models import CoinMilestone, RewardRankCount
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.reward_ranks import TREE_SIZE, percentile_amount, prefix_nodes
++from bmt_backend.track_models import Board, LapPersonalBest, PersonalBest, Run, RunTicket
++
++
++def oracle(session, board, model, ticks):
++    criteria = (model.board_id == board, Player.disabled.is_(False),
++                Player.deleted_at.is_(None), Player.is_test_driver.is_(False))
++    total = session.scalar(select(func.count()).select_from(model).join(Player).where(*criteria))
++    ahead = session.scalar(select(func.count()).select_from(model).join(Player).where(*criteria, model.time_ticks < ticks))
++    return next((amount for limit, amount in ((1, 500), (10, 200), (25, 100), (50, 50))
++                 if total and (ahead + 1) * 100 <= total * limit), 0)
++
++
++def assert_exact(session, board):
++    for metric, model in (("race", PersonalBest), ("lap", LapPersonalBest)):
++        times = list(session.scalars(select(model.time_ticks).where(model.board_id == board)))
++        probes = {1, 2, 216000, TREE_SIZE - 1, *times, *(t + 1 for t in times if t + 1 < TREE_SIZE)}
++        for ticks in probes:
++            assert percentile_amount(session, board, metric, ticks) == oracle(session, board, model, ticks)
++        root = session.get(RewardRankCount, (board, metric, TREE_SIZE))
++        population = session.scalar(select(func.count()).select_from(model).join(Player).where(
++            model.board_id == board, Player.disabled.is_(False), Player.is_test_driver.is_(False),
++            Player.deleted_at.is_(None)))
++        assert (root.total if root else 0) == population
++
++
++def field(domain):
++    version, board = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    race(domain, version, "Bob", frames=30)
++    race(domain, version, "Carol", frames=30)
++    return version, board
++
++
++def test_exact_after_ties_improvement_correction_restriction_and_reclassification(domain):
++    _, board = field(domain)
++    rng = random.Random(12)
++    with domain.factory() as session:
++        assert_exact(session, board)
++        for _ in range(20):
++            identity = domain.players[rng.choice(("Alice", "Bob", "Carol"))]
++            player = session.get(Player, identity)
++            action = rng.randrange(4)
++            if action == 0:
++                player.disabled = not player.disabled
++            elif action == 1:
++                player.is_test_driver = not player.is_test_driver
++            else:
++                model = PersonalBest if action == 2 else LapPersonalBest
++                session.get(model, (board, identity)).time_ticks = rng.choice((1, 20, 30, 100, 65536, TREE_SIZE - 1))
++            session.flush()
++            assert_exact(session, board)
++        session.rollback()
++        assert_exact(session, board)
++
++
++def test_deleted_visibility_and_pb_deletes_do_not_double_subtract(domain):
++    _, board = field(domain)
++    with domain.factory() as session:
++        player = session.get(Player, domain.players["Alice"])
++        player.deleted_at = 123
++        session.flush()
++        assert_exact(session, board)
++        for model in (PersonalBest, LapPersonalBest):
++            session.execute(delete(model).where(model.board_id == board, model.player_id == player.id))
++        assert_exact(session, board)
++        # Delete an ordinary visible driver's PBs as well.
++        for model in (PersonalBest, LapPersonalBest):
++            session.execute(delete(model).where(model.board_id == board, model.player_id == domain.players["Bob"]))
++        assert_exact(session, board)
++        session.rollback()
++        assert_exact(session, board)
++
++
++def test_retiring_lap_source_repairs_prefix_counts(domain):
++    version, board = field(domain)
++    race(domain, version, "Alice", frames=25)
++    with domain.factory() as session:
++        best = session.get(LapPersonalBest, (board, domain.players["Alice"]))
++        session.get(Run, best.run_id).status = "rejected"
++        session.flush()
++        session.expire_all()
++        assert session.get(LapPersonalBest, (board, domain.players["Alice"])).time_ticks == 25
++        assert_exact(session, board)
++        session.rollback()
++        assert_exact(session, board)
++
++
++def test_migration_backfills_existing_field_and_downgrades_without_changing_receipts(domain):
++    _, board = field(domain)
++    with domain.factory() as session:
++        before = list(session.execute(select(PersonalBest.player_id, PersonalBest.time_ticks, PersonalBest.run_id)
++                                      .where(PersonalBest.board_id == board).order_by(PersonalBest.player_id)))
++    command.downgrade(configuration(domain.app.state.engine), "0044_telemetry_counter_bigint")
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        after = list(session.execute(select(PersonalBest.player_id, PersonalBest.time_ticks, PersonalBest.run_id)
++                                     .where(PersonalBest.board_id == board).order_by(PersonalBest.player_id)))
++        assert after == before
++        assert_exact(session, board)
++
++
++def test_prefix_queries_are_bounded_and_do_not_read_players_or_pbs(domain):
++    _, board = field(domain)
++    with domain.factory() as session:
++        captured = []
++
++        def record(_connection, _cursor, statement, *_args):
++            captured.append(statement)
++
++        event.listen(domain.app.state.engine, "before_cursor_execute", record)
++        try:
++            for metric in ("race", "lap"):
++                percentile_amount(session, board, metric, TREE_SIZE - 1)
++        finally:
++            event.remove(domain.app.state.engine, "before_cursor_execute", record)
++        assert len(captured) == 2
++        assert all("reward_rank_counts" in sql and " IN (" in sql for sql in captured)
++        assert not any("JOIN" in sql or "count(" in sql.lower() or "personal_bests" in sql or "players" in sql for sql in captured)
++        # The largest possible prefix reads at most 31 nodes plus its total.
++        assert len(prefix_nodes(TREE_SIZE - 1)) + 1 <= 32
++
++
++def test_race_acceptance_does_not_scan_population(domain):
++    version, _board = field(domain)
++    captured = []
++
++    def record(_connection, _cursor, statement, *_args):
++        captured.append(statement)
++
++    event.listen(domain.app.state.engine, "before_cursor_execute", record)
++    try:
++        # A slower repeat still receives ordinary rewards and is evaluated
++        # against the submitted time, preserving the original candidate policy.
++        race(domain, version, "Alice", frames=25)
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", record)
++    scans = [sql for sql in captured if "count(" in sql.lower()
++             and ("FROM personal_bests" in sql or "FROM lap_personal_bests" in sql)]
++    assert not scans, scans
++    assert sum("FROM reward_rank_counts" in sql for sql in captured) == 2
++
++
++def test_maximum_tier_skips_rank_reads_but_keeps_ordinary_reward(domain):
++    version, board = field(domain)
++    with domain.factory() as session:
++        for metric in ("race", "lap"):
++            old = session.get(CoinMilestone, (domain.players["Alice"], metric + "/" + board))
++            if old:
++                old.value = 500
++            else:
++                session.add(CoinMilestone(player_id=domain.players["Alice"], scope=metric + "/" + board, value=500))
++        session.commit()
++    captured = []
++
++    def record(_connection, _cursor, statement, *_args):
++        if statement.lstrip().upper().startswith("SELECT"):
++            captured.append(statement)
++
++    event.listen(domain.app.state.engine, "before_cursor_execute", record)
++    try:
++        result = race(domain, version, "Alice", frames=25)
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", record)
++    receipt = domain.client.get("/v1/economy/rewards/" + result["ticket_id"], headers=headers(domain, "Alice")).json()
++    assert any(row["title"] == "Race completed" for row in receipt["rows"])
++    assert not any("percentile" in row["title"] for row in receipt["rows"])
++    assert not any("reward_rank_counts" in sql for sql in captured)
++
++
++def test_counters_support_population_beyond_integer_range(domain):
++    _, board = public_course(domain)
++    with domain.factory() as session:
++        # Synthetic tied population: exercise BIGINT counters, exact integer
++        # threshold arithmetic and sparse prefix reads without billions of rows.
++        session.execute(delete(RewardRankCount).where(RewardRankCount.board_id == board))
++        nodes = set()
++        node = 100
++        while node <= TREE_SIZE:
++            nodes.add(node)
++            node += node & -node
++        session.add_all(RewardRankCount(board_id=board, metric="race", node=n, total=5000000000) for n in nodes)
++        session.flush()
++        assert percentile_amount(session, board, "race", 100) == 500
++        assert percentile_amount(session, board, "race", 101) == 0
++        session.rollback()
++
++
++def test_exact_tier_boundaries_for_one_hundred_drivers(domain):
++    _, board = public_course(domain)
++    with domain.factory() as session:
++        for index in range(1, 100):
++            player = Player(display_name="Rank boundary " + str(index))
++            session.add(player)
++            session.flush()
++            ticket = RunTicket(player_id=player.id, board_id=board, expires_at=2000000000)
++            session.add(ticket)
++            session.flush()
++            run = Run(player_id=player.id, board_id=board, ticket_id=ticket.id, replay_hash="0"*64,
++                      status="verified", time_ticks=1000+index*5, lap_ticks=[200+index]*5, finished_at=1)
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=board, player_id=player.id, run_id=run.id, time_ticks=run.time_ticks))
++        session.flush()
++        for rank, expected in ((1,500),(10,200),(25,100),(50,50),(51,0)):
++            ticks = 300 if rank == 1 else 1000+(rank-1)*5
++            assert percentile_amount(session, board, "race", ticks) == expected
++        assert_exact(session, board)
++        session.rollback()
++
++
++def test_improvement_does_not_rewrite_population_root(domain):
++    version, board = field(domain)
++    if not domain.postgres:
++        pytest.skip("PostgreSQL physical row identity verifies cancelled ancestor writes")
++    with domain.factory() as session:
++        roots = list(session.execute(text("SELECT metric,ctid::text FROM reward_rank_counts WHERE board_id=:board AND node=:root ORDER BY metric"),
++                                     {"board":board,"root":TREE_SIZE}))
++    race(domain, version, "Alice", frames=10)
++    with domain.factory() as session:
++        after = list(session.execute(text("SELECT metric,ctid::text FROM reward_rank_counts WHERE board_id=:board AND node=:root ORDER BY metric"),
++                                     {"board":board,"root":TREE_SIZE}))
++        assert after == roots
++        assert_exact(session, board)
++
++
++def test_concurrent_pb_writers_keep_both_metric_prefixes_exact(domain):
++    if not domain.postgres:
++        pytest.skip("Independent concurrent PostgreSQL writer transactions")
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++
++    _, board = field(domain)
++    ready = Barrier(2)
++
++    def improve(name, ticks):
++        with domain.factory() as session:
++            identity = domain.players[name]
++            session.scalar(select(Player).where(Player.id == identity).with_for_update())
++            ready.wait(timeout=10)
++            # The existing PB triggers acquire Board before prefix counters.
++            # Concurrent writers on distinct players must serialize cleanly.
++            session.get(PersonalBest, (board, identity)).time_ticks = ticks * 5
++            session.flush()
++            session.get(LapPersonalBest, (board, identity)).time_ticks = ticks
++            session.commit()
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        futures = [pool.submit(improve,"Alice",10), pool.submit(improve,"Bob",15)]
++        for future in futures:
++            future.result(timeout=15)
++    with domain.factory() as session:
++        assert session.get(Board, board) is not None
++        assert_exact(session, board)
++
++
++@pytest.mark.parametrize("ticks", [0, -1, TREE_SIZE, True, 1.5])
++def test_invalid_tick_domain_fails_explicitly(ticks):
++    with pytest.raises(ValueError):
++        prefix_nodes(ticks)

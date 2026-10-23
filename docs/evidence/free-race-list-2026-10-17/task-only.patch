@@ -1,0 +1,839 @@
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -74,6 +74,14 @@
+ var _detail_wait_key: String = ""
+ var _warming_window: String = ""
+ var _hero_state: Array = []
++var list_open: bool = true
++var track_list: ScrollContainer
++var list_content: Control
++var list_grid: GridContainer
++var _list_columns: int = 1
++var _list_stride := Vector2(240,192)
++var _list_start: int = -1
++var _list_layout_pending: bool = false
+ 
+ func _ready() -> void:
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -90,6 +98,7 @@
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation",8)
+ 	body.add_child(main)
++	_build_track_list(main)
+ 	var hero_slot := Control.new()
+ 	hero_slot.name = "HeroSlot"
+ 	hero_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -159,7 +168,7 @@
+ 		state.merge(filters,true)
+ 		_refresh()
+ 		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
+-	filter_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
++	filter_dialog.closed.connect(_enable_gallery_input)
+ 	search_dialog = SearchDrawer.new()
+ 	search_dialog.catalog = catalog
+ 	search_dialog.discovery = discovery
+@@ -172,12 +181,168 @@
+ 		_refresh()
+ 		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[])))
+ 	search_dialog.selected.connect(_select)
+-	search_dialog.closed.connect(func() -> void: gallery.set_process_input(true))
++	search_dialog.closed.connect(_enable_gallery_input)
+ 	if cloud != null:
+ 		cloud.changed.connect(_cloud_changed)
+ 		cloud_status = count_label
+-	_show_detail()
++	_set_list_open(true)
+ 	call_deferred("_load_catalog")
++
++func _build_track_list(parent: Control) -> void:
++	track_list = preload("res://ui/vertical_swipe_scroll.gd").new()
++	track_list.name = "TrackList"
++	track_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	track_list.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	# Reserve the scrollbar's width even for short lists, keeping columns stable.
++	track_list.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_RESERVE
++	track_list.follow_focus = false
++	track_list.scroll_deadzone = 12
++	parent.add_child(track_list)
++	list_content = Control.new()
++	list_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	track_list.add_child(list_content)
++	list_grid = GridContainer.new()
++	list_grid.name = "TrackListCards"
++	list_grid.add_theme_constant_override("h_separation",12)
++	list_grid.add_theme_constant_override("v_separation",12)
++	list_content.add_child(list_grid)
++	track_list.resized.connect(_queue_list_layout)
++	list_content.resized.connect(_queue_list_layout)
++	track_list.get_v_scroll_bar().value_changed.connect(func(_value: float) -> void: _render_list())
++
++func _queue_list_layout() -> void:
++	if _list_layout_pending: return
++	_list_layout_pending = true
++	_layout_list.call_deferred()
++
++func _layout_list() -> void:
++	_list_layout_pending = false
++	if not is_inside_tree() or not list_open: return
++	var anchor: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns
++	var width: float = maxf(1.0,list_content.size.x)
++	var previous_columns: int = _list_columns
++	_list_columns = maxi(1,floori((width+12.0)/236.0))
++	_list_stride = Vector2(floorf((width+12.0)/_list_columns),204)
++	list_grid.columns = _list_columns
++	_update_list_extent()
++	if previous_columns != _list_columns: track_list.scroll_vertical = int(anchor/_list_columns)*int(_list_stride.y)
++	_list_start = -1
++	_render_list(true)
++
++func _update_list_extent() -> void:
++	list_content.custom_minimum_size.y = maxf(1.0,ceilf(float(_page_total())/_list_columns)*_list_stride.y-12.0)
++
++func _render_list(reconcile: bool = false) -> void:
++	if not list_open or not is_instance_valid(list_grid): return
++	var first_row: int = maxi(0,floori(track_list.scroll_vertical/_list_stride.y)-1)
++	var first: int = first_row*_list_columns
++	var end: int = mini(_page_total(),first+(ceili(track_list.size.y/_list_stride.y)+3)*_list_columns)
++	var paged: bool = cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0
++	if paged:
++		# Request the nearest missing visible page. Its completion reconciles this
++		# window again, so a wide grid can span pages without draining the catalog.
++		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns
++		var desired: int = visible_first
++		for index: int in range(visible_first,end):
++			if cloud.discovery_pages.entry_at(index).is_empty():
++				desired = index
++				break
++		if not page_preview and cloud.discovery_pages.error.is_empty(): cloud.discovery_pages.request_visible.call_deferred(desired)
++	elif cloud != null and not page_preview and end >= matches.size() and track_list.scroll_vertical > 0:
++		cloud.load_more()
++	if first == _list_start and not reconcile: return
++	_list_start = first
++	var retained: Dictionary = {}
++	for child: Node in list_grid.get_children():
++		var index: int = int(child.get_meta("catalog_index",-1))
++		var entry: Dictionary = _list_entry(index,paged) if index >= first and index < end else {}
++		if entry.is_empty() or not child is TrackTile or str(child.entry.get("id","")) != str(entry.get("id","")):
++			list_grid.remove_child(child)
++			child.queue_free()
++		else: retained[index] = child
++	list_grid.position = Vector2(0,first_row*_list_stride.y)
++	for index: int in range(first,end):
++		var entry: Dictionary = _list_entry(index,paged)
++		var tile: Control
++		if retained.has(index):
++			tile = retained[index]
++			if reconcile: (tile as TrackTile).update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),false)
++		elif entry.is_empty():
++			tile = MenuStyle.label("Loading tracks..." if paged and cloud.discovery_pages.error.is_empty() else "Refresh to retry",16,true)
++			tile.set_meta("catalog_index",index)
++			list_grid.add_child(tile)
++		else:
++			var card := TrackTile.new()
++			card.entry = entry
++			card.favorite = entry.id in records.settings.get("favorites",[])
++			card.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
++			card.name = "ListTrack_"+str(entry.id)
++			card.set_meta("catalog_index",index)
++			card.pressed.connect(_select_tile.bind(card))
++			card.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
++			card.focus_entered.connect(_focus_list_card.bind(card))
++			list_grid.add_child(card)
++			tile = card
++		tile.custom_minimum_size = _list_stride-Vector2(12,12)
++		tile.size_flags_horizontal = Control.SIZE_FILL
++		list_grid.move_child(tile,index-first)
++	if _page_total() == 0:
++		var unresolved: bool = loading or (cloud != null and cloud.paged_discovery_available() and (not is_instance_valid(cloud.discovery_pages) or cloud.discovery_pages.total < 0 or cloud.discovery_pages.loading))
++		var empty := MenuStyle.label("Loading tracks..." if unresolved else "No tracks found. Change your filters or search.",20,true)
++		if cloud != null and is_instance_valid(cloud.discovery_pages) and not cloud.discovery_pages.error.is_empty(): empty.text = cloud.discovery_pages.error
++		empty.name = "TrackListEmptyState"
++		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++		empty.custom_minimum_size.x = _list_stride.x-12
++		empty.custom_minimum_size.y = 128
++		list_grid.add_child(empty)
++
++func _list_entry(index: int, paged: bool) -> Dictionary:
++	if paged:
++		var metadata: Dictionary = cloud.discovery_pages.entry_at(index)
++		return {} if metadata.is_empty() else cloud.entry_from_metadata(metadata)
++	return matches[index] if index >= 0 and index < matches.size() else {}
++
++func _focus_list_card(card: TrackTile) -> void:
++	var top: int = int(int(card.get_meta("catalog_index"))/_list_columns)*int(_list_stride.y)
++	if top < track_list.scroll_vertical: track_list.scroll_vertical = top
++	elif top+_list_stride.y-12 > track_list.scroll_vertical+track_list.size.y:
++		track_list.scroll_vertical = ceili(top+_list_stride.y-12-track_list.size.y)
++
++func _set_list_open(value: bool) -> void:
++	list_open = value
++	track_list.visible = value
++	for slot: String in ["HeroSlot","RecordsSlot","GallerySlot"]:
++		(find_child(slot,true,false) as Control).visible = not value
++	race_button.visible = not value
++	for button: Button in [random_button,filter_button,find_child("RaceSearch",true,false)]:
++		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL if value else Control.SIZE_FILL
++	if value:
++		_queue_list_layout()
++	else:
++		_layout_gallery.call_deferred()
++
++func _open_track_view() -> void:
++	if not list_open: return
++	_set_list_open(false)
++
++func _close_track_view() -> void:
++	_selection_serial += 1
++	if cloud != null and cloud.client.has_method("cancel_public_reads"): cloud.client.cancel_public_reads(get_instance_id())
++	if _resolve_job != null: _resolve_job.cancel()
++	_requested_entry = {}
++	preview_entry = {}
++	selecting = false
++	if _section_motion != null: _section_motion.kill()
++	_clear_outgoing_section()
++	_set_section_offset(0.0)
++	_hero_serial = -1
++	_hero_state = []
++	_detail_state = []
++	_set_list_open(true)
++
++func _enable_gallery_input() -> void:
++	gallery.set_process_input(true)
++	track_list.set_process_input(true)
+ 
+ func _compact_button(text: String, action: Callable) -> Button:
+ 	var button: Button = MenuStyle.button(text,action)
+@@ -282,6 +447,7 @@
+ 	_refresh()
+ 	_random_on_open()
+ 	if not selecting:
++		if list_open: return
+ 		for entry: Dictionary in catalog.entries:
+ 			if str(entry.id) == selected_track.identity and str(entry.get("version_id","")) != str(selected_track.metadata.get("cloud_version","")):
+ 				_select(entry)
+@@ -312,7 +478,7 @@
+ func _reveal_track(identity: String) -> void:
+ 	# Scroll after the container has laid out its complete virtual carousel.
+ 	await get_tree().process_frame
+-	if not is_inside_tree(): return
++	if not is_inside_tree() or list_open or identity != str(preview_entry.get("id",selected_track.identity)): return
+ 	for index: int in range(matches.size()):
+ 		if str(matches[index].id) != identity: continue
+ 		gallery.call("_stop_snap")
+@@ -332,9 +498,12 @@
+ 	if signature != _query_signature:
+ 		gallery.call("_stop_snap")
+ 		gallery.scroll_horizontal = 0
++		track_list.scroll_vertical = 0
+ 	_query_signature = signature
+ 	var track_count: int = _page_total()
+ 	gallery_content.custom_minimum_size.x = maxi(1,track_count*tile_stride-12)
++	_update_list_extent()
++	_render_list(true)
+ 	_render_tiles(true)
+ 	if matches.is_empty() and grid.get_child_count() == 0:
+ 		var empty := MenuStyle.label("No tracks found.\nTry another name or creator,\nor change your filters.",20,true)
+@@ -366,7 +535,7 @@
+ 	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0:
+ 		_render_paged_tiles(reconcile)
+ 		return
+-	if cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
++	if not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
+ 		cloud.load_more()
+ 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+ 	_warm_visible_comparisons(first)
+@@ -418,6 +587,8 @@
+ 	gallery.position.x = (gallery_slot.size.x-(slots*tile_stride-12))*0.5
+ 	gallery.size = Vector2(slots*tile_stride-12,140)
+ 	gallery.set("snap_stride",tile_stride)
++	# Cards prepared while the detail was hidden must adopt its settled width.
++	for tile: Control in grid.get_children(): tile.custom_minimum_size.x = tile_stride-12
+ 	gallery_content.custom_minimum_size.x = maxi(1,_page_total()*tile_stride-12)
+ 	gallery.scroll_horizontal = first*tile_stride
+ 	_tile_start = -1
+@@ -448,12 +619,13 @@
+ 	return matches.size()
+ 
+ func telemetry_exposures() -> Array[Dictionary]:
+-	# Only actual cards occupying >= half their area in the visible carousel.
+-	# Menu neighbours and twelve-card prefetch/render windows never count.
++	# Count only actual cards occupying >= half their area in the active view.
+ 	var result: Array[Dictionary] = []
+ 	if page_preview or not is_visible_in_tree() or not is_instance_valid(gallery) or not is_instance_valid(grid): return result
+-	var viewport: Rect2 = gallery.get_global_rect().intersection(get_viewport().get_visible_rect())
+-	for child: Node in grid.get_children():
++	var active_gallery: ScrollContainer = track_list if list_open else gallery
++	var active_grid: GridContainer = list_grid if list_open else grid
++	var viewport: Rect2 = active_gallery.get_global_rect().intersection(get_viewport().get_visible_rect())
++	for child: Node in active_grid.get_children():
+ 		if not child is TrackTile or not child.is_visible_in_tree(): continue
+ 		var card: Rect2 = child.get_global_rect()
+ 		if card.get_area() <= 0 or viewport.intersection(card).get_area() < card.get_area()*0.5: continue
+@@ -462,7 +634,7 @@
+ 
+ func _render_paged_tiles(reconcile: bool) -> void:
+ 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+-	if not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
++	if not list_open and not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
+ 	_warm_visible_comparisons(first)
+ 	if first == _tile_start and not reconcile: return
+ 	_tile_start = first
+@@ -509,7 +681,7 @@
+ 		tile.size_flags_horizontal = Control.SIZE_FILL
+ 
+ func _warm_visible_comparisons(first: int) -> void:
+-	if page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
++	if list_open or page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
+ 	var entries: Array = []
+ 	var versions: PackedStringArray = []
+ 	var visible: int = maxi(1,ceili(gallery.size.x/maxf(1.0,tile_stride)))
+@@ -525,6 +697,9 @@
+ 	discovery.prime_comparisons(cloud.client,entries,VehicleCatalog.selected)
+ 
+ func _select(entry: Dictionary) -> void:
++	var from_list: bool = list_open
++	_open_track_view()
++	if from_list: _reveal_track.call_deferred(str(entry.id))
+ 	if selected_track.metadata.get("metadata_only",false) and not preview_entry.is_empty() and preview_entry.get("version_id","") == entry.get("version_id",""): return
+ 	var cached: NativeTrack = catalog.cached_track(entry)
+ 	if cached == selected_track and not selecting and preview_entry.is_empty() and _resolve_job == null:
+@@ -532,6 +707,7 @@
+ 		# A newly opened page still hydrates its initially selected track once.
+ 		if not page_preview and cloud != null and cached.metadata.has("cloud_version") and _comparison_selection != _comparison_selection_key(cached):
+ 			_load_cloud_detail(cached)
++		_show_detail()
+ 		return
+ 	if not page_preview and cloud != null and entry.get("source","") == "cloud" and cloud.client.has_method("signed_in") and cloud.client.signed_in():
+ 		var nearby: Array = [entry]
+@@ -569,7 +745,7 @@
+ 		_set_section_offset(0.0)
+ 		hero.modulate.a = 1.0
+ 		records_panel.modulate.a = 1.0
+-		if entry.source == "cloud":
++		if entry.source == "cloud" or from_list:
+ 			# Public route metadata is enough to draw the hero before downloading
+ 			# or compiling the race geometry. Old scores must not follow it.
+ 			_show_hero(str(entry.name).to_upper(),str(entry.get("theme","pine")))
+@@ -911,6 +1087,7 @@
+ 	var filters := MenuStyle.button("Filters",func() -> void:
+ 		gallery.call("_stop_snap")
+ 		gallery.set_process_input(false)
++		track_list.set_process_input(false)
+ 		filter_dialog.open_for(state,filter_button))
+ 	filter_button = filters
+ 	filters.name = "RaceFilters"
+@@ -919,6 +1096,7 @@
+ 	var search := MenuStyle.button("Search",func() -> void:
+ 		gallery.call("_stop_snap")
+ 		gallery.set_process_input(false)
++		track_list.set_process_input(false)
+ 		search_dialog.open_for(state,find_child("RaceSearch",true,false)))
+ 	search.name = "RaceSearch"
+ 	search.icon = MenuIcon.texture("search")
+@@ -959,6 +1137,7 @@
+ 	return row
+ 
+ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
++	if list_open: return
+ 	if selected_track.metadata.get("metadata_only",false) and preview_snapshot.is_empty():
+ 		if preview_entry.is_empty(): preview_entry = selected_track.metadata.cloud_entry.duplicate(true)
+ 		var known_contract: bool = not selected_track.content_hash.is_empty()
+@@ -1217,6 +1396,7 @@
+ 	parent.add_child(rail)
+ 
+ func _show_hero(title: String, theme_id: String) -> void:
++	if list_open: return
+ 	var rating_entry: Dictionary = preview_entry
+ 	if rating_entry.is_empty():
+ 		for candidate: Dictionary in catalog.entries:
+@@ -1318,7 +1498,15 @@
+ 	route_column.custom_minimum_size.x = 220
+ 	row.add_child(route_column)
+ 	var favorite_column := VBoxContainer.new()
++	favorite_column.add_theme_constant_override("separation",8)
+ 	row.add_child(favorite_column)
++	var close := MenuStyle.button("",_close_track_view)
++	close.name = "CloseTrackView"
++	close.icon = MenuIcon.texture("close")
++	close.tooltip_text = "Back to all tracks"
++	close.custom_minimum_size = Vector2(48,48)
++	close.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
++	favorite_column.add_child(close)
+ 	favorite_column.add_child(favorite)
+ 	var outline := Control.new()
+ 	outline.name = "HeroRouteOutline"
+diff --git a/game/tests/test_app.gd b/game/tests/test_app.gd
+--- a/game/tests/test_app.gd
++++ b/game/tests/test_app.gd
+@@ -180,7 +180,7 @@
+ 	browser.search_dialog.close()
+ 	await process_frame
+ 	await process_frame
+-	await _viewport_tap((browser.grid.get_child(0) as Button).get_global_rect().get_center())
++	await _viewport_tap((browser.list_grid.get_child(0) as Button).get_global_rect().get_center())
+ 	while browser.selecting: await process_frame
+ 	var chosen: NativeTrack = app.get("selected_track")
+ 	check(chosen.identity == "cloud_fixture-track" and chosen.metadata.cloud_version == "00000000-0000-4000-8000-000000000001","a route card selects the stable track and exact immutable publication: "+chosen.identity+" / "+app.cloud.last_error)
+@@ -500,9 +500,13 @@
+ 	await process_frame
+ 	var resumed_browser: TrackBrowser = resumed.get("root_ui").find_child("TrackBrowser",true,false)
+ 	while resumed_browser.loading or resumed_browser.selecting: await process_frame
++	resumed_browser._select(resumed_browser.matches[0])
+ 	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == MenuStyle.time_text(108.816),"Tracks shows the active handling PB after loading a new app instance")
+ 	resumed.call("_show_screen", "tracks")
+ 	await process_frame
++	resumed_browser = resumed.get("root_ui").find_child("TrackBrowser",true,false)
++	while resumed_browser.loading: await process_frame
++	resumed_browser._select(resumed_browser.matches[0])
+ 	check((resumed.get("selected_track") as NativeTrack).identity == track.identity,"relaunch resumes the last ordinary race circuit")
+ 	check(((resumed.get("root_ui") as Node).find_child("LibraryBestTime",true,false) as Label).text == "01:48.816","returning Race presents the actual stored five-lap time to beat")
+ 	await _capture("returning-race-home")
+diff --git a/game/tests/test_catalog.gd b/game/tests/test_catalog.gd
+--- a/game/tests/test_catalog.gd
++++ b/game/tests/test_catalog.gd
+@@ -74,6 +74,9 @@
+ 	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+ 	root.size = Vector2i(1280,720)
+ 	root.add_child(browser)
++	# The retained horizontal carousel belongs to the selected track view.
++	browser._open_track_view()
++	browser._show_detail()
+ 	await process_frame
+ 	await process_frame
+ 	check(browser.grid.get_child_count() <= 12 and browser.matches.size() == 5000,"5000-track carousel bounds active cards to twelve")
+diff --git a/game/tests/test_menu_loading.gd b/game/tests/test_menu_loading.gd
+--- a/game/tests/test_menu_loading.gd
++++ b/game/tests/test_menu_loading.gd
+@@ -26,6 +26,9 @@
+ 	browser.state = {"section":"all","page":0}
+ 	root.add_child(browser)
+ 	while browser.loading: await process_frame
++	# These checks exercise transitions inside an explicitly opened track view.
++	browser._open_track_view()
++	browser._show_detail()
+ 	var a: Dictionary = TrackCatalog.local_metadata(first)
+ 	var b: Dictionary = TrackCatalog.local_metadata(second)
+ 	await process_frame
+diff --git a/game/tests/test_menu_loading_speed.gd b/game/tests/test_menu_loading_speed.gd
+--- a/game/tests/test_menu_loading_speed.gd
++++ b/game/tests/test_menu_loading_speed.gd
+@@ -117,6 +117,8 @@
+ 	root.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+ 	var began: int = Time.get_ticks_usec()
+ 	root.add_child(browser)
++	browser._open_track_view()
++	browser._show_detail()
+ 	var hero_ms: float = (Time.get_ticks_usec()-began)/1000.0
+ 	check(browser.hero.find_child("HeroTrackTitle",true,false) != null,"first menu frame draws the hero with both network reads held")
+ 	check(not browser.race_button.disabled,"optional data never holds an available track's race action")
+diff --git a/game/tests/test_startup_histogram.gd b/game/tests/test_startup_histogram.gd
+--- a/game/tests/test_startup_histogram.gd
++++ b/game/tests/test_startup_histogram.gd
+@@ -1,5 +1,5 @@
+ extends "res://tests/test_menu_loading_speed.gd"
+-## Actual restored selection and cached-page activation, without manual hydration.
++## Selected track detail and cached-page activation, without manual hydration.
+ 
+ class StartupService extends Service:
+ 	var signed: bool = true
+@@ -36,6 +36,7 @@
+ 	browser.page_preview = preview
+ 	if provider != null: browser.discovery = provider
+ 	root.add_child(browser)
++	browser._select(cloud.entries[0])
+ 	MenuStyle.fill(browser)
+ 	browser.offset_top = 112
+ 	browser.offset_bottom = -16
+diff --git a/game/tests/test_carousel_histograms.gd b/game/tests/test_carousel_histograms.gd
+--- a/game/tests/test_carousel_histograms.gd
++++ b/game/tests/test_carousel_histograms.gd
+@@ -118,6 +118,8 @@
+ 	browser.cloud = cloud
+ 	browser.state = {"sort":"name"}
+ 	root.add_child(browser)
++	browser._open_track_view()
++	browser._show_detail()
+ 	MenuStyle.fill(browser)
+ 	browser.offset_top = 112
+ 	browser.offset_bottom = -16
+@@ -186,6 +188,8 @@
+ 	browser.cloud = cloud
+ 	browser.state = {"sort":"name"}
+ 	root.add_child(browser)
++	browser._open_track_view()
++	browser._show_detail()
+ 	MenuStyle.fill(browser)
+ 	await wait_frames(12)
+ 	client.comparison_paths.clear()
+diff --git a/game/tests/test_discovery_pages.gd b/game/tests/test_discovery_pages.gd
+--- a/game/tests/test_discovery_pages.gd
++++ b/game/tests/test_discovery_pages.gd
+@@ -128,6 +128,7 @@
+ 	browser.size = root.get_visible_rect().size
+ 	root.add_child(browser)
+ 	for _frame: int in range(6): await process_frame
++	browser._select(entry)
+ 	var first_id: String = str(browser.grid.get_child(0).entry.id)
+ 	pages.desired_index = 20
+ 	await pages._fetch(1)
+diff --git a/game/tests/test_menu_page_swipe.gd b/game/tests/test_menu_page_swipe.gd
+--- a/game/tests/test_menu_page_swipe.gd
++++ b/game/tests/test_menu_page_swipe.gd
+@@ -60,7 +60,9 @@
+ 		app._show_screen("settings")
+ 		check(not is_instance_valid(app.outgoing_menu_page) and is_zero_approx(app.root_ui.position.x), "leaving page tabs clears transition")
+ 		await show("tracks")
+-		var point := Vector2(dimensions.x * 0.6, 180)
++		# The full track list owns content gestures. Test primary page gestures
++		# over the stationary logo, outside all scrollable controls.
++		var point := Vector2(180,50)
+ 		await check_live_slide(point, dimensions)
+ 		# Android can deliver the end of a forward stroke only in its UP event.
+ 		for last_move: float in [0.0, 4.0, 14.0]:
+@@ -123,6 +125,8 @@
+ 		touch(point + Vector2(20,0), false, false, 1)
+ 		await settle()
+ 		check(app.screen == "tracks", "two fingers do not navigate")
++		open_track_view()
++		await settle()
+ 		var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
+ 		check(gallery != null and gallery.get_h_scroll_bar().max_value > gallery.size.x, "populated carousel can scroll")
+ 		var begin: Vector2 = gallery.get_global_rect().get_center()
+@@ -228,6 +232,8 @@
+ 	await settle()
+ 	check(app.document.theme == "desert", "real desktop mouse clicks remain available")
+ 	await show("tracks")
++	open_track_view()
++	await settle()
+ 	var gallery: ScrollContainer = app.root_ui.find_child("TrackCarousel",true,false)
+ 	point = gallery.get_global_rect().get_center()
+ 	engine_touch(point,true)
+@@ -237,6 +243,11 @@
+ 	engine_touch(point-Vector2(180,0),false)
+ 	await settle()
+ 	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "engine-emulated carousel input retains its scrolling ownership")
++
++func open_track_view() -> void:
++	var browser: TrackBrowser = app.root_ui.find_child("TrackBrowser",true,false)
++	browser._open_track_view()
++	browser._show_detail()
+ 
+ func engine_touch(point: Vector2, pressed: bool) -> void:
+ 	var event := InputEventScreenTouch.new()
+@@ -435,14 +446,14 @@
+ 	app._show_screen("tracks")
+ 	await process_frame
+ 	await process_frame
+-	var gallery: ScrollContainer = app.menu_body.find_child("TrackCarousel",true,false)
++	var gallery: ScrollContainer = app.menu_body.find_child("TrackList",true,false)
+ 	# Its current rectangle is displaced by the animation. Press where it settles.
+ 	var carousel_point: Vector2 = gallery.get_global_rect().get_center() - Vector2(app.menu_body.position.x,0)
+ 	touch(carousel_point,true)
+-	drag(carousel_point + Vector2(-150,0))
+-	touch(carousel_point + Vector2(-150,0),false)
+-	await settle()
+-	check(app.screen == "tracks" and gallery.scroll_horizontal > 0, "carousel touch during page arrival settles first and retains scrolling ownership")
++	drag(carousel_point + Vector2(0,-150))
++	touch(carousel_point + Vector2(0,-150),false)
++	await settle()
++	check(app.screen == "tracks" and gallery.scroll_vertical > 0, "track-list touch during page arrival settles first and retains scrolling ownership")
+ 
+ func check_edge(screen: String, point: Vector2, direction: int, dimensions: Vector2i) -> void:
+ 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Free Race full track list override (2026-10-17)
++The owner requests a full Free Race card list before selection. Open a vertically scrolling responsive grid of the existing scenic cards; selecting one opens the retained hero/records/carousel/Race view. An X returns to the same list position and the detail favorite star sits below it. Keep bounded metadata/control windows, existing pages/caches, saved choices and five-lap racing; the selected distant card is revealed in the carousel. Native 73 headless/85 Compatibility/85 Mobile, app101, catalog21, paging269, gestures240, mode42, menu41, speed27, histogram22 and parser854 pass. Two historical loading suites reproduce their removed worker-field/cache failures against the saved original UI. Actual commands, initial setup/fixture/shader failures, native views and task-only checkpoint: docs/FREE_RACE_LIST_2026_10_17.md. Owner/phone appearance acceptance remains; no phone attachment check/test, APK, live backend action/deployment or FPS claim.
+ 
+ ## Worn industrial Night asphalt override (2026-10-17)
+ The owner requests more worn Night asphalt for the abandoned industrial area. Night-only faded binder/exposed aggregate, dark irregular tar repairs and branching cracks share one original offline1024px mipmapped48m data tile across roads and both bridge material paths; retain industrial terrain, geometry, markings, lighting, car/camera and canonical driving. Kit209 fences presentation caches; other-biome asphalt and sampler counts remain. Focused143headless/163Compatibility/163desktopMobile, sampler63/prepared162/Night15/parser854 pass. Actual views, original shader fixtures, initial corrections, bake provenance and task-only checkpoint: docs/NIGHT_ASPHALT_2026_10_17.md. Owner/device appearance/performance acceptance remains; no phone attachment check/test, APK, backend/deployment or FPS claim.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-17 FRL01-FRL03/G01/R01/Q01: The owner requests a full Free Race card list before selection. Open a vertically scrolling responsive grid of the existing scenic cards; selecting one opens the retained hero/records/carousel/Race view. An X returns to the same list position and the detail favorite star sits below it. Keep bounded metadata/control windows, existing pages/caches, saved choices and five-lap racing; the selected distant card is revealed in the carousel. Native 73 headless/85 Compatibility/85 Mobile, app101, catalog21, paging269, gestures240, mode42, menu41, speed27, histogram22 and parser854 pass. Two historical loading suites reproduce their removed worker-field/cache failures against the saved original UI. Actual commands, initial setup/fixture/shader failures, native views and task-only checkpoint: docs/FREE_RACE_LIST_2026_10_17.md. Owner/phone appearance acceptance remains; no phone attachment check/test, APK, live backend action/deployment or FPS claim.
++
+ 2026-10-17 NA01-NA02/G01/R01/Q01: The owner requests more worn Night asphalt for the abandoned industrial area. Night-only faded binder/exposed aggregate, dark irregular tar repairs and branching cracks share one original offline1024px mipmapped48m data tile across roads and both bridge material paths; retain industrial terrain, geometry, markings, lighting, car/camera and canonical driving. Kit209 fences presentation caches; other-biome asphalt and sampler counts remain. Focused143headless/163Compatibility/163desktopMobile, sampler63/prepared162/Night15/parser854 pass. Actual views, original shader fixtures, initial corrections, bake provenance and task-only checkpoint: docs/NIGHT_ASPHALT_2026_10_17.md. Owner/device appearance/performance acceptance remains; no phone attachment check/test, APK, backend/deployment or FPS claim.
+ 
+ 2026-10-17 AW01-AW04/AS01-AS03/G01/R01/Q01: The owner requests more polished achievements and all missing/earned medals on the actual Trophy Room wall. Forty original vector emblems share one fixed atlas across browser/details and forty permanent wall positions; missing awards remain faint silhouettes, earned medals show their true metal tier and minted edges. Retain five featured medals, six major trophies, cabinet/lights/camera and compact 52-unit toolbar/100-unit cards/2-3-4 columns. Real wall taps open matching modal details; drags, cancelled touches and emulated mouse events stay quiet. Cached tiers/choices drive change-only instanced displays, with no backend/projection/deployment changes. Native 424 headless/559 Compatibility/559 Mobile, Garage152, app101 on unchanged rerun and parser852 pass. Initial visual/GPU-fixture/app attempts, actual commands, captures and task-only checkpoint: docs/ACHIEVEMENT_WALL_2026_10_17.md. Owner/device appearance and existing achievement-service rollout remain; no phone attachment check/test, APK, live backend change/deployment or FPS claim.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-17 FRL01-FRL03/G01/R01/Q01: The owner requests a full Free Race card list before selection. Open a vertically scrolling responsive grid of the existing scenic cards; selecting one opens the retained hero/records/carousel/Race view. An X returns to the same list position and the detail favorite star sits below it. Keep bounded metadata/control windows, existing pages/caches, saved choices and five-lap racing; the selected distant card is revealed in the carousel. Native 73 headless/85 Compatibility/85 Mobile, app101, catalog21, paging269, gestures240, mode42, menu41, speed27, histogram22 and parser854 pass. Two historical loading suites reproduce their removed worker-field/cache failures against the saved original UI. Actual commands, initial setup/fixture/shader failures, native views and task-only checkpoint: docs/FREE_RACE_LIST_2026_10_17.md. Owner/phone appearance acceptance remains; no phone attachment check/test, APK, live backend action/deployment or FPS claim.
++
+ 2026-10-17 NA01-NA02/G01/R01/Q01: The owner requests more worn Night asphalt for the abandoned industrial area. Night-only faded binder/exposed aggregate, dark irregular tar repairs and branching cracks share one original offline1024px mipmapped48m data tile across roads and both bridge material paths; retain industrial terrain, geometry, markings, lighting, car/camera and canonical driving. Kit209 fences presentation caches; other-biome asphalt and sampler counts remain. Focused143headless/163Compatibility/163desktopMobile, sampler63/prepared162/Night15/parser854 pass. Actual views, original shader fixtures, initial corrections, bake provenance and task-only checkpoint: docs/NIGHT_ASPHALT_2026_10_17.md. Owner/device appearance/performance acceptance remains; no phone attachment check/test, APK, backend/deployment or FPS claim.
+ 
+ 2026-10-17 DH03/DH01-DH02/G01/R01/Q01: owner finds drift haptics too strong; halve requested amplitude0.18-0.45 to0.09-0.225 while retaining20ms/10Hz timing, slip gates, saved toggle, steering feedback and canonical behavior. Only the drift expression changes in the prior validated phone build. Haptics45/driving72/catalog21/menu41/import/startup pass. APK639ffeaef installed/hash-matched; both progress files and123 cache/track files retain14 drafts before launch; actual phone APP_READY has no captured script/parse/fatal errors. Owner phone feel remains; no driving sweep, FPS claim or backend deployment. Actual commands/capture/scoped checkpoint: docs/DRIFT_HAPTICS_SOFT_2026_10_17.md.
+diff --git a/game/tests/test_free_race_list.gd b/game/tests/test_free_race_list.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_free_race_list.gd
+@@ -0,0 +1,218 @@
++extends SceneTree
++## Actual app input, bounded public pages and isolated player files.
++const Paging = preload("res://tests/test_discovery_pages.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var browser: TrackBrowser
++var client: ListClient
++var output: String = "res://../docs/evidence/free-race-list-2026-10-17/headless"
++
++class ListClient extends Paging.PagedClient:
++	var track_total: int = 27
++	var signed: bool = false
++	var comparison_reads: int = 0
++	func signed_in() -> bool: return signed
++	func request_api(path: String, method: int = HTTPClient.METHOD_GET, body: Dictionary = {}, key: String = "", authenticated: bool = false) -> Dictionary:
++		comparison_reads += 1
++		return await super.request_api(path,method,body,key,authenticated)
++	func metadata(number: int, index: int) -> Dictionary:
++		var value: Dictionary = super.metadata(number,index)
++		value.theme = ["pine","desert","winter","storm","night_city"][number%5]
++		return value
++	func request_discovery(body: Dictionary, owner: int, random_choice: bool = false) -> Dictionary:
++		var value: Dictionary = await super.request_discovery(body,owner,random_choice)
++		if not str(body.get("search","")).is_empty() or body.has("ids"): return value
++		value.data.total = track_total
++		value.data.items = value.data.items.filter(func(entry: Dictionary) -> bool: return entry.discovery_index < track_total)
++		return value
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++func frames(count: int = 8) -> void:
++	for _frame: int in range(count): await process_frame
++func settle() -> void:
++	for _frame: int in range(120):
++		await process_frame
++		if not app.cloud.discovery_pages.loading and not browser.loading and not browser.selecting: break
++	await frames()
++func touch(point: Vector2, pressed: bool, canceled: bool = false) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = 0
++	event.position = point
++	event.pressed = pressed
++	event.canceled = canceled
++	root.push_input(event,true)
++func tap(point: Vector2) -> void:
++	touch(point,true)
++	touch(point,false)
++	await frames()
++func swipe(point: Vector2, distance: Vector2) -> void:
++	touch(point,true)
++	for step: int in range(1,5):
++		var event := InputEventScreenDrag.new()
++		event.index = 0
++		event.position = point+distance*step/4.0
++		event.relative = distance/4.0
++		root.push_input(event,true)
++		await process_frame
++	touch(point+distance,false)
++	await settle()
++func visible_card() -> TrackTile:
++	for node: Node in browser.list_grid.get_children():
++		if node is TrackTile and browser.track_list.get_global_rect().encloses(node.get_global_rect()): return node
++	return null
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	create_timer(120).timeout.connect(func() -> void: print("FAIL: free race list deadline"); quit(1))
++	var folder: String = ProjectSettings.globalize_path("res://../build/free-race-list/session-"+TrackLibrary.unique_id())
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	client = ListClient.new()
++	client.configure("http://127.0.0.1:1")
++	client._capabilities = {"discovery_paging_version":2}
++	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
++	client.hash_value = JSON.stringify(client.document).sha256_text()
++	root.add_child(client)
++	app.cloud.client = client
++	await app.cloud.query_discovery({"sort":"name"})
++	app.cloud._write(app.cloud.cache_root().path_join(client.hash_value+".json"),client.document)
++	var data: Array = []
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		root.size = dimensions
++		# Preserve the game's 1280x720 design canvas on smaller physical windows.
++		root.content_scale_size = Vector2i(1280,720) if dimensions.x < 1280 else dimensions
++		app._show_screen("tracks")
++		browser = app.root_ui.find_child("TrackBrowser",true,false)
++		await settle()
++		client.signed = true
++		browser._show_detail()
++		browser._render_tiles(true)
++		await frames()
++		check(client.comparison_reads == 0,"unselected list starts no detail comparison reads")
++		client.signed = false
++		check(browser.list_open and browser.track_list.is_visible_in_tree(),"Free Race opens full list "+str(dimensions))
++		check(not browser.hero.is_visible_in_tree() and not browser.gallery.is_visible_in_tree() and not browser.race_button.is_visible_in_tree(),"detail and Race action wait for selection")
++		check(browser._page_total() == 27 and browser.track_list.size.y > browser.size.y*0.8,"27 tracks use the available list area")
++		check(browser._list_columns >= 3 and browser.list_grid.get_child_count() <= (ceili(browser.track_list.size.y/browser._list_stride.y)+3)*browser._list_columns,"responsive list has bounded controls")
++		check(browser.list_grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"visible page boundaries are hydrated")
++		check(browser.telemetry_exposures().size() > 0,"only visible list cards produce exposures")
++		await capture("list-%dx%d"%[dimensions.x,dimensions.y])
++		var original: NativeTrack = browser.selected_track
++		var settings: Dictionary = browser.records.settings.duplicate(true)
++		var first: TrackTile = visible_card()
++		await swipe(first.get_global_rect().get_center(),Vector2(0,-160))
++		check(browser.list_open and browser.track_list.scroll_vertical >= 150 and app.screen == "tracks","vertical card swipe scrolls without selecting or navigating")
++		check(browser.selected_track == original and browser.records.settings == settings,"scrolling preserves the track and saved choices")
++		var before: int = browser.track_list.scroll_vertical
++		var wheel := InputEventMouseButton.new()
++		wheel.position = browser.track_list.get_global_rect().get_center()
++		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
++		wheel.pressed = true
++		root.push_input(wheel,true)
++		await frames()
++		check(browser.track_list.scroll_vertical > before,"mouse wheel scrolls the full list vertically")
++		browser.track_list.scroll_vertical = before
++		await swipe(browser.track_list.get_global_rect().get_center(),Vector2(-90,0))
++		check(browser.list_open and app.screen == "tracks" and browser.track_list.scroll_vertical == before,"horizontal stroke on the list never selects or changes page")
++		first = visible_card()
++		var favorite: Button = first.get_node("ToggleFavorite")
++		var identity: String = str(first.entry.id)
++		await tap(favorite.get_global_rect().get_center())
++		check(browser.list_open and identity in browser.records.settings.favorites,"list star saves favorite without opening detail")
++		first = visible_card()
++		identity = str(first.entry.id)
++		before = browser.track_list.scroll_vertical
++		await tap(first.get_global_rect().get_center())
++		await settle()
++		check(not browser.list_open and browser.hero.is_visible_in_tree() and browser.gallery.is_visible_in_tree() and browser.race_button.is_visible_in_tree(),"card tap opens the current detail and carousel")
++		check(browser.selected_track.identity == identity,"detail belongs to the selected card")
++		var close: Button = browser.hero.find_child("CloseTrackView",true,false)
++		favorite = browser.hero.find_child("HeroFavorite",true,false)
++		check(close != null and favorite.get_global_rect().position.y >= close.get_global_rect().end.y+7,"X sits above the lowered favorite star")
++		check(close.get_global_rect().encloses(Rect2(close.get_global_rect().position,Vector2(48,48))),"X retains a full touch target")
++		await capture("detail-%dx%d"%[dimensions.x,dimensions.y])
++		await tap(favorite.get_global_rect().get_center())
++		check(not browser.list_open,"detail favorite keeps the track view open")
++		close = browser.hero.find_child("CloseTrackView",true,false)
++		await tap(close.get_global_rect().get_center())
++		if not browser.list_open or browser.track_list.scroll_vertical != before:
++			print("RETURN_DIAGNOSTIC size=",dimensions," open=",browser.list_open," scroll=",browser.track_list.scroll_vertical," expected=",before," close=",close.get_global_rect()," hero=",browser.hero.get_global_rect()," viewport=",root.get_visible_rect())
++		check(browser.list_open and browser.track_list.scroll_vertical == before,"X restores the same list scroll position")
++		await capture("returned-%dx%d"%[dimensions.x,dimensions.y])
++		var list_point: Vector2 = browser.track_list.get_global_rect().get_center()
++		touch(list_point,true)
++		touch(list_point,false,true)
++		await frames()
++		check(browser.list_open,"canceled list touch does not open a track")
++		(browser.find_child("RaceFilters",true,false) as Button).pressed.emit()
++		check(browser.filter_dialog.visible and not browser.track_list.is_processing_input(),"filter drawer blocks list input")
++		browser.filter_dialog.close()
++		check(browser.track_list.is_processing_input(),"closing filters restores list scrolling")
++		(browser.find_child("RaceSearch",true,false) as Button).pressed.emit()
++		check(browser.search_dialog.visible and not browser.track_list.is_processing_input(),"search drawer blocks list input")
++		browser.search_dialog.close()
++		data.append({"size":str(dimensions),"columns":browser._list_columns,"list":str(browser.track_list.size),"controls":browser.list_grid.get_child_count()})
++	# Reach distant pages without creating thousands of cards or loading documents.
++	client.track_total = 5000
++	await app.cloud.query_discovery({"sort":"name"},[],[],true)
++	await settle()
++	browser.track_list.scroll_vertical = int(4250/browser._list_columns)*int(browser._list_stride.y)
++	await settle()
++	check(browser.list_open and browser.list_grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"deep list scrolling hydrates every visible card")
++	check(int(browser.list_grid.get_child(0).get_meta("catalog_index")) > 4200 and browser.list_grid.get_child_count() <= 60,"5000-track list keeps a bounded distant window")
++	check(app.cloud.discovery_pages.pages.size() <= 15 and client.requests.size() < 30,"scrolling fetches nearby pages within the existing cache bound")
++	await capture("deep-list")
++	await first_visible_detail_return()
++	await settle()
++	check(browser.list_open,"late detail work cannot reopen a closed view")
++	var requests_before: int = client.requests.size()
++	app.cloud.discovery_pages.pages.clear()
++	app.cloud.discovery_pages.error = "Could not load tracks. Retry when connected."
++	browser._refresh()
++	await frames(24)
++	check(client.requests.size() == requests_before,"failed list pages wait for explicit refresh without repeated reads")
++	await capture("unavailable-list")
++	# Empty results retain filters/search and a useful state inside the list.
++	app.cloud.discovery_pages.error = ""
++	browser.state.theme = "coast"
++	app.cloud.discovery_pages.total = 0
++	app.cloud.discovery_pages.pages.clear()
++	browser._refresh()
++	await frames()
++	check(browser.list_open and browser.list_grid.find_child("TrackListEmptyState",true,false) != null,"empty result uses list space and keeps navigation available")
++	await capture("empty-list")
++	var report := {"checks":checks,"failures":failures,"display":DisplayServer.get_name(),"renderer":RenderingServer.get_current_rendering_method(),"layouts":data,"page_requests":client.requests.size()}
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("FREE_RACE_LIST ",JSON.stringify(report))
++	app.queue_free()
++	client.queue_free()
++	await frames()
++	quit(1 if failures else 0)
++
++func first_visible_detail_return() -> void:
++	var card: TrackTile = visible_card()
++	if card == null: check(false,"distant card is visible"); return
++	browser._select(card.entry)
++	await settle()
++	check(browser.grid.get_children().any(func(node: Node) -> bool: return node is TrackTile and node.selected and browser.gallery.get_global_rect().encloses(node.get_global_rect())),"opening a distant card reveals its complete card in the retained carousel")
++	browser._close_track_view()
+diff --git a/game/tests/test_free_race_list.gd.uid b/game/tests/test_free_race_list.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_free_race_list.gd.uid
+@@ -0,0 +1 @@
++uid://b3ocm83hbbcx0
+diff --git a/docs/FREE_RACE_LIST_2026_10_17.md b/docs/FREE_RACE_LIST_2026_10_17.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FREE_RACE_LIST_2026_10_17.md
+@@ -0,0 +1,33 @@
++# Free Race track list - 2026-10-17
++
++FRL01 opens Free Race with a vertical grid of the existing scenic track cards. FRL02 opens the retained hero, records, carousel and Race action on selection, with an X returning to the same list position. FRL03 places the detail favorite star below the X. G01 preserves racing, five laps and selected publication contracts. R01 keeps the existing metadata, pagination and cache bounds. Q01 covers native input and rendered views.
++
++The list fills the area above the original Random track / Filters / Search / refresh actions. Its columns respond to the available design width. On smaller physical windows the existing 1280x720 game canvas scales normally. Cards retain their biome artwork, actual metadata outlines, names, creators, ratings and independent favorite controls. Track details and their comparison reads start after selection. Filter/search drawers block both galleries while open.
++
++Only nearby rows have controls. A 5,000-track fixture reaches distant pages while retaining the existing 15-page metadata cache. The inactive carousel cannot pull the list back to page zero. Failed pages wait for explicit refresh; closing a detail invalidates pending selection presentation. Exposure collection follows the visible gallery. Reconciled cards select their current metadata.
++
++## Implementation
++
++- `game/ui/track_browser.gd`: list, view switching, close control, lowered detail star, paging and visible-card exposure handling.
++- `game/tests/test_free_race_list.gd`: isolated full-app touch/wheel, selection, favorite, close, drawer, empty/unavailable and distant-page checks.
++- Existing app/detail, paging, histogram and menu-gesture fixtures explicitly open a detail where needed. Primary page gestures are tested outside the new scroll area; arrival ownership is tested against the visible vertical list.
++
++No backend code, saved-data schema, canonical simulation, track artwork or assets were changed by this task. Concurrent safety, achievements, Night rendering and other working-tree changes are retained.
++
++## Evidence and checks
++
++Final native checks: 73 headless, 85 Compatibility and 85 Mobile, all passing. App 101, catalog 21, discovery paging 269, page gestures 240, race modes 42, menu presentation 41, selected-detail speed/cache 27, histogram hydration 22 and parser 854 also pass. The two old loading suites still fail; their same removed `_resolve_thread` reference and cache assumptions reproduce with the saved original TrackBrowser. The initial broader app shader failure is retained; its rerun passes.
++
++Exact commands, logs, hashes, initial failures and final outcomes are recorded in [report.json](evidence/free-race-list-2026-10-17/report.json). The task-only patch is [task-only.patch](evidence/free-race-list-2026-10-17/task-only.patch).
++
++Native test screenshots use 27 server-shaped fixture records, with the existing real card artwork and starter route; they are not a live-service catalog acceptance claim. The paging stress fixture contains 5,000 metadata records.
++
++- [List, 1280x720](evidence/free-race-list-2026-10-17/gl_compatibility/list-1280x720.png)
++- [Selected detail with X and lower star](evidence/free-race-list-2026-10-17/gl_compatibility/detail-1280x720.png)
++- [Return to the scrolled list](evidence/free-race-list-2026-10-17/gl_compatibility/returned-1280x720.png)
++- [Mobile renderer, 960x540 list](evidence/free-race-list-2026-10-17/mobile/list-960x540.png)
++- [Mobile renderer, 960x540 detail](evidence/free-race-list-2026-10-17/mobile/detail-960x540.png)
++
++Initial setup attempts hit Windows script execution policy and sandbox user-log/certificate access; the commands use process-scoped policy and isolated workspace APPDATA. An early compact test forced a 960-unit logical canvas, overflowing the retained detail view; the corrected fixture uses the game's existing 1280x720 scaling. A Mobile run encountered a concurrently introduced texture before its import was ready; an import attempt also encountered a locked temporary Windows audio DLL. Subsequent native UI runs are recorded separately. Final visual review also found that carousel cards retained their hidden preparation widths; resizing retained controls to the settled carousel width fixes the clipped first card. The preserved initial view is `initial-detail-card-width.png`, and the final distant-selection check requires the entire selected card to be visible. Broader regressions retain their actual failures, including historical `_resolve_thread` references and the observed road shader compile error.
++
++Owner appearance acceptance remains. No phone attachment check or device test, APK, live backend read/mutation/deployment, or FPS claim was performed by this task.

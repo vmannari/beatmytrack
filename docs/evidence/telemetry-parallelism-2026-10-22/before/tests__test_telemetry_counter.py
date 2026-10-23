@@ -1,0 +1,89 @@
+"""Lifetime telemetry counts survive migration and the signed 32-bit boundary."""
+import importlib
+from io import StringIO
+from uuid import uuid4
+
+import pytest
+from alembic import command
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import BigInteger, inspect, text
+from sqlalchemy.dialects import postgresql
+from test_auth_postgres import postgres_auth  # noqa: F401
+
+from bmt_backend.identity_models import Player
+from bmt_backend.migrate import configuration, upgrade
+from bmt_backend.product_analytics import project_pending
+from bmt_backend.telemetry_models import ProductEvent, ProductState
+from bmt_backend.track_models import now
+
+PREVIOUS = "0043_rivalry_planning"
+REVISION = "0044_telemetry_counter_bigint"
+INT_MAX = 2**31 - 1
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def counter_app(request):
+    if request.param == "postgres":
+        return request.getfixturevalue("postgres_auth")[0]
+    return request.getfixturevalue("auth_app")
+
+
+def test_migration_preserves_existing_count_and_all_other_state(counter_app):
+    engine = counter_app.state.engine
+    command.downgrade(configuration(engine), PREVIOUS)
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE product_state SET processed_events=:count, pending_clients=17, "
+                                "pending_events=23, processed_through=1234567890 WHERE id=1"),
+                           {"count": INT_MAX})
+        before = dict(connection.execute(text("SELECT * FROM product_state WHERE id=1")).mappings().one())
+    upgrade(engine)
+    with engine.connect() as connection:
+        assert dict(connection.execute(text("SELECT * FROM product_state WHERE id=1")).mappings().one()) == before
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == REVISION
+    column = next(column for column in inspect(engine).get_columns("product_state")
+                  if column["name"] == "processed_events")
+    assert isinstance(column["type"], BigInteger)
+    assert not column["nullable"]
+    command.downgrade(configuration(engine), PREVIOUS)
+    with engine.connect() as connection:
+        assert dict(connection.execute(text("SELECT * FROM product_state WHERE id=1")).mappings().one()) == before
+    upgrade(engine)
+
+
+def test_projector_crosses_integer_limit_and_empty_pass_does_not_recount(counter_app):
+    factory = counter_app.state.session_factory
+    stamp = now()
+    with factory() as session:
+        player = Player(display_name="Counter fixture", analytics_enabled=True)
+        session.add(player)
+        session.flush()
+        session.get(ProductState, 1).processed_events = INT_MAX - 1
+        for _ in range(2):
+            session.add(ProductEvent(id=str(uuid4()), player_id=player.id, is_test_driver=False,
+                source="client", name="menu_ready", occurred_at=stamp, received_at=stamp,
+                session_id=str(uuid4()), properties={}, payload_hash="counter-fixture"))
+        session.commit()
+    assert project_pending(factory, at=stamp)["processed"] == 2
+    with factory() as session:
+        assert session.get(ProductState, 1).processed_events == INT_MAX + 1
+    assert project_pending(factory, at=stamp)["processed"] == 0
+    with factory() as session:
+        assert session.get(ProductState, 1).processed_events == INT_MAX + 1
+    with pytest.raises(RuntimeError, match="exceeds the INTEGER range"):
+        command.downgrade(configuration(counter_app.state.engine), PREVIOUS)
+    with factory() as session:
+        assert session.get(ProductState, 1).processed_events == INT_MAX + 1
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == REVISION
+
+
+def test_migration_emits_native_bigint_and_model_matches():
+    migration = importlib.import_module(
+        "bmt_backend.migrations.versions.0044_telemetry_counter_bigint")
+    output = StringIO()
+    context = MigrationContext.configure(dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output})
+    with Operations.context(context):
+        migration.upgrade()
+    assert "ALTER TABLE product_state ALTER COLUMN processed_events TYPE BIGINT" in output.getvalue()
+    assert ProductState.__table__.c.processed_events.type.compile(dialect=postgresql.dialect()) == "BIGINT"

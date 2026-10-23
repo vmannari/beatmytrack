@@ -1,0 +1,92 @@
+{
+  "date": "2026-10-16",
+  "status": "complete",
+  "requirement": "Deploy the larger touch-target update to the phone, retaining progress and tracks.",
+  "device": "OnePlus DN2103 / PRQKU4U4PREQNRWG",
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "candidate_apk_sha256": "c00170d73f82002df3326152e41a160b4ea36c9b1bcdc5454c091d77518410dd",
+  "touch_source_sha256": "11b7280641d30f8cd7a8d53f1f0b572974438df952b5768f9c2fda3b63c071d1",
+  "checks": {
+    "startup": "APP_READY",
+    "driving": {
+      "checks": 72,
+      "failures": 0
+    },
+    "catalog": {
+      "checks": 21,
+      "failures": 0
+    },
+    "menus": {
+      "checks": 48,
+      "failures": 0
+    }
+  },
+  "progress": "Two current progress files backed up privately; both are byte-exact after installation and before first launch. All37 existing catalog document/index/saved-track files are hash-exact. No uninstall, clear-data, record overwrite or track replacement performed.",
+  "installation": "Non-streaming adb install -r --no-streaming of the frozen candidate returned Success. Installed package SHA-256 matches the candidate. Normal launch returned Status: ok.",
+  "commands": [
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action ExportAndroid -QuickValidation -CommandTimeoutSeconds 600",
+    "python build/touch-target-phone-deploy-2026-10-16/verify_deployment.py backup",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action InstallAndroid -DeviceSerial PRQKU4U4PREQNRWG",
+    "adb -s PRQKU4U4PREQNRWG get-state; adb devices -l; adb reconnect offline",
+    "python build/touch-target-phone-deploy-2026-10-16/verify_deployment.py backup (previous snapshots archived before taking fresh progress backups)",
+    "adb -s PRQKU4U4PREQNRWG install -r --no-streaming \"C:\\Codes\\Godot\\Beat my track\\build\\touch-target-phone-deploy-2026-10-16\\deployed.apk\"",
+    "python build/touch-target-phone-deploy-2026-10-16/verify_deployment.py verify",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action LaunchAndroid -DeviceSerial PRQKU4U4PREQNRWG",
+    "adb -s PRQKU4U4PREQNRWG logcat -d --pid=15892 -v brief; adb exec-out screencap -p",
+    "adb -s PRQKU4U4PREQNRWG reverse tcp:18181 tcp:18181; adb shell input tap 1200 820 (Retry connection)"
+  ],
+  "private_artifacts": "build/touch-target-phone-deploy-2026-10-16",
+  "limitations": [
+    "No additional driving sweep or physical touch-feel/FPS acceptance test.",
+    "Prepared frozen APK is installed; subsequent concurrent source work was not rebuilt into it.",
+    "No backend code, database, deployment or service restart; only existing USB forwarding was restored."
+  ],
+  "retry_attempts": [
+    {
+      "request": "try again",
+      "adb_initial": "serial PRQKU4U4PREQNRWG offline",
+      "transport_reconnect": "adb reconnect offline; 24-second bounded recheck found no online transport",
+      "server_restart": "adb kill-server; adb start-server; 20-second bounded recheck still reports offline",
+      "windows_usb": "DN2103 present, status OK, instance USB VID_22D9 PID_2769 with matching serial",
+      "user_action_requested": "Keep the phone unlocked, toggle USB debugging off/on, and accept any authorization prompt."
+    },
+    {
+      "request": "try again (second retry)",
+      "adb": "No connected debugging device after a bounded 20-second check",
+      "windows_usb": "Matching serial PRQKU4U4PREQNRWG is present as USB Composite Device VID_22D9 PID_2046 and MIDI function MI_00, status OK; no ADB interface found.",
+      "wireless": "adb mdns services returned no available service.",
+      "user_action_requested": "Change USB mode from MIDI to File transfer and enable USB debugging; accept authorization prompt."
+    },
+    {
+      "request": "done",
+      "windows_usb": "File transfer now appears as OnePlus Nord2 5G, WPD, USB VID_22D9 PID_2764, matching serial; driver WUDFWpdMtp, problem code 0, MTP compatible IDs only.",
+      "adb": "No connected debugging device after bounded reconnect check; no wireless service discovered.",
+      "user_action_requested": "Enable and confirm the separate USB debugging switch under Developer options and accept any authorization prompt."
+    },
+    {
+      "request": "try again (successful retry)",
+      "usb": "ADB Interface visible, VID_22D9 PID_2765; serial PRQKU4U4PREQNRWG online",
+      "result": "fresh backup, push install, installed hash/data verification and startup all pass"
+    }
+  ],
+  "verification": {
+    "installed_apk_sha256": "c00170d73f82002df3326152e41a160b4ea36c9b1bcdc5454c091d77518410dd",
+    "progress_files_exact": 2,
+    "track_files_exact": 37,
+    "catalog_entries": 27,
+    "saved_tracks": 9,
+    "verified_before_first_launch": true
+  },
+  "startup": {
+    "app_ready": true,
+    "process_id": "15892",
+    "fatal_script_errors": [],
+    "screenshot": "phone-launched.png"
+  },
+  "connection_recovery": "Owner restored USB debugging: Windows exposes ADB Interface under VID_22D9 PID_2765 and ADB reports device. Restored adb reverse tcp:18181 tcp:18181 to the already-running local service after normal launch showed a service-connection notice; tapped Retry connection. Actual connected Guest Free Race/Ajorata menu captured and left ready.",
+  "captures": [
+    "phone-launched.png",
+    "phone-connected.png"
+  ],
+  "checkpoint": "task-only.patch contains only this completion paragraph in AGENTS.md; deployment report, logs, receipts and phone captures accompany it. Shared runtime source/index retained."
+}

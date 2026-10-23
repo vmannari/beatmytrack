@@ -1,0 +1,1881 @@
+--- a/backend/bmt_backend/contracts.py
++++ b/backend/bmt_backend/contracts.py
+@@ -22,8 +22,10 @@
+         "standing-5-road-gates-v17",
+         "standing-5-road-gates-v18",
+         "standing-5-road-gates-v19",
++        "standing-5-road-gates-v20",
++        "standing-5-road-gates-v21",
+     ):
+-        result["rules_key"] = "standing-5-road-gates-v20"
++        result["rules_key"] = "standing-5-road-gates-v22"
+     if result.get("physics_version") in {f"arcade-planar-0.{n}" for n in range(39, 53)}:
+         result["physics_version"] = "arcade-planar-0.53"
+     return result
+--- a/backend/bmt_backend/lap_bests.py
++++ b/backend/bmt_backend/lap_bests.py
+@@ -1,10 +1,10 @@
+ """Bounded, reset-fenced backfill of accepted flying-lap personal bests."""
+-from sqlalchemy import func, or_, select
++from sqlalchemy import select
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
+ from .identity_models import Player
+-from .track_models import Board, LapBestState, LapPersonalBest, OperationState, PersonalBest, Run
++from .track_models import Board, LapBestState, LapPersonalBest, Run
+ 
+ 
+ def accepted_lap(run, manifest):
+@@ -88,32 +88,3 @@
+     while backfill_one(factory)["worked"]:
+         batches += 1
+     return batches
+-
+-
+-def legacy_best_lap_times(board_id, session, *, test_population=False):
+-    """Offline parity oracle only; never called by requests or the worker."""
+-    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
+-    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
+-    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
+-        Player, Player.id == Run.player_id).join(PersonalBest,
+-        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
+-        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
+-        *(lap > 0 for lap in laps))
+-    if not test_population:
+-        statement = statement.where(Player.is_test_driver.is_(False))
+-    else:
+-        # Retained audit runs from an owner-requested test-record reset must not
+-        # restore retired lap records. Real players are never part of that reset.
+-        board = session.get(Board, board_id)
+-        if board:
+-            resets = session.scalars(select(OperationState).where(
+-                OperationState.id.startswith("test-pop-batch:"),
+-                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
+-            cutoff = max((row.details.get("created_at", 0) for row in resets
+-                          if row.details.get("request", {}).get("clear_test_records")
+-                          and any(entry.get("version_id") == board.version_id
+-                                  for entry in row.details.get("tracks", []))), default=0)
+-            if cutoff:
+-                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
+-    return statement.group_by(Run.player_id).subquery()
+-
+--- a/backend/bmt_backend/publications.py
++++ b/backend/bmt_backend/publications.py
+@@ -36,7 +36,7 @@
+     now,
+     replay_response,
+ )
+-from .tracks import UploadTrack, discovery_projection, track_payload
++from .tracks import TrackContent, discovery_projection, track_payload
+ from .trajectory_verifier import validate_envelope
+ from .verifier import VerificationError, VerifierStopping
+ from .worker_lifecycle import aborting, stopping
+@@ -61,7 +61,7 @@
+     @field_validator("name")
+     @classmethod
+     def clean_name(cls, value):
+-        return UploadTrack.clean_name(value)
++        return TrackContent.clean_name(value)
+ 
+ 
+ def payload(intent):
+@@ -111,7 +111,7 @@
+             or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", source_id)):
+         raise HTTPException(422, "INVALID_PUBLICATION_ENVELOPE")
+     # Naming and creator ownership use exactly the existing immutable contract.
+-    clean = UploadTrack(name=body.name, document={**body.document, "creator": player.display_name})
++    clean = TrackContent(name=body.name, document={**body.document, "creator": player.display_name})
+     if (set(body.contract) != set(CONTRACT_FIELDS)
+             or type(body.contract.get("tick_rate")) is not int or not 1 <= body.contract["tick_rate"] <= 1000
+             or any(type(body.contract.get(field)) is not str or not 1 <= len(body.contract[field]) <= 160
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -90,7 +90,7 @@
+     conditions = []
+     for field in PINNED_FIELDS:
+         values = [active[field]]
+-        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20"):
++        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22"):
+             upper = int(active[field].rsplit("v", 1)[1])
+             values += [f"standing-5-road-gates-v{n}" for n in range(12, upper)]
+         if field == "physics_version" and active[field] in ("arcade-planar-0.50", "arcade-planar-0.51", "arcade-planar-0.52", "arcade-planar-0.53"):
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -49,7 +49,7 @@
+     "laps",
+ )
+ MAX_FRAMES = 216000
+-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v18")
++CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v22")
+ 
+ 
+ def leaderboard_session(request: Request, credentials=Depends(bearer), session=Depends(get_session)):
+--- a/backend/bmt_backend/studio_cases.py
++++ b/backend/bmt_backend/studio_cases.py
+@@ -218,7 +218,7 @@
+         target = str(payload.reported_player_id) if payload.reported_player_id else track.owner_id if track else None
+         if target and (session.get(Player, target) is None or track and track.owner_id != target):
+             raise HTTPException(404, "PLAYER_NOT_FOUND")
+-        if target == player.id:
++        if target == player.id and track is None:
+             raise HTTPException(422, "CANNOT_REPORT_SELF")
+         case = StudioCase(player_id=player.id, track_id=track.id if track else None, reported_player_id=target,
+             title=payload.reason.replace("_", " ").capitalize())
+--- a/backend/bmt_backend/track_validation.py
++++ /dev/null
+@@ -1,75 +0,0 @@
+-"""Canonical track validation with durable admission, leases and fenced writes."""
+-
+-from sqlalchemy import func, select
+-
+-from .queueing import record_claim
+-from .track_models import QueuePlayer, Track, TrackValidation, TrackVersion, new_id, now
+-from .verifier import VerificationError, VerifierStopping
+-from .worker_lifecycle import aborting, stopping
+-
+-
+-def process_one(app) -> bool:
+-    if stopping(app) or app.state.settings.local_drafts_only:
+-        return False
+-    settings = app.state.settings
+-    token = new_id()
+-    with app.state.session_factory() as session:
+-        job = session.scalar(select(TrackValidation).join(TrackVersion).join(Track)
+-            .outerjoin(QueuePlayer, QueuePlayer.player_id == Track.owner_id).where(
+-            TrackValidation.status.in_(("queued", "validating")),
+-            TrackValidation.lease_until <= now(),
+-        ).order_by(func.coalesce(QueuePlayer.last_claim_at, 0), TrackValidation.created_at, TrackValidation.version_id)
+-            .with_for_update(skip_locked=True, of=TrackValidation).limit(1))
+-        if job is None:
+-            return False
+-        if stopping(app):
+-            return False
+-        if job.attempts >= settings.max_job_attempts:
+-            job.status, job.failure_code = "failed", "validator_unavailable"
+-            job.detail = "Track validation exhausted its retries; your draft is saved. Retry validation to continue."
+-            job.lease_until, job.lease_token = 0, None
+-            session.commit()
+-            return True
+-        version = session.get(TrackVersion, job.version_id)
+-        record_claim(session, None, session.get(Track, version.track_id).owner_id)
+-        job.status, job.lease_token = "validating", token
+-        job.lease_until = now() + settings.job_lease_seconds
+-        job.attempts += 1
+-        version_id, content_hash = version.id, version.content_hash
+-        if stopping(app):
+-            session.rollback()
+-            return False
+-        session.commit()
+-    manifest, failure, detail = None, None, None
+-    try:
+-        manifest = app.state.verifier.validate_track(app.state.blobs.get_json(content_hash))
+-        if manifest.get("laps") != 5 or manifest.get("tick_rate") != 120 or not manifest.get("track_content_hash"):
+-            raise RuntimeError("Unsupported canonical validation manifest")
+-        from .verifier import GodotVerifier
+-        if isinstance(app.state.verifier,GodotVerifier):
+-            from .trajectory_verifier import prepared_geometry
+-            prepared_geometry(app,content_hash,app.state.blobs.get_json(content_hash))
+-    except VerifierStopping:
+-        return True
+-    except VerificationError as error:
+-        failure, detail = "invalid_document", str(error)[:500]
+-    except Exception:  # noqa: BLE001 - persist a bounded retry for any infrastructure failure
+-        failure, detail = "validator_unavailable", "Track validation is temporarily unavailable; your draft is saved."
+-    if aborting(app):
+-        return True
+-    with app.state.session_factory() as session:
+-        job = session.scalar(select(TrackValidation).where(TrackValidation.version_id == version_id).with_for_update())
+-        if job.status != "validating" or job.lease_token != token or job.lease_until <= now():
+-            return True
+-        version = session.get(TrackVersion, version_id)
+-        job.failure_code, job.detail, job.lease_token = failure, detail, None
+-        if failure == "invalid_document":
+-            job.status, version.state, job.lease_until = "invalid", "invalid", 0
+-        elif failure:
+-            job.status = "failed" if job.attempts >= settings.max_job_attempts else "queued"
+-            job.lease_until = now() + min(60, 2 ** min(job.attempts, 6))
+-        else:
+-            job.status, job.lease_until = "validated", 0
+-            version.manifest, version.state = manifest, "draft"
+-        session.commit()
+-    return True
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -2,8 +2,6 @@
+ 
+ from __future__ import annotations
+ 
+-import json
+-import re
+ from typing import Annotated
+ 
+ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+@@ -15,14 +13,12 @@
+ from .contracts import current_manifest
+ from .cursors import decode_cursor, encode_cursor
+ from .db import get_session
+-from .identity_models import Identity, Player
++from .identity_models import Player
+ from .middleware import ParsedJSONRoute
+-from .queueing import admit, check_capacity
+ from .security import bearer, current_player
+ from .storage import canonical_json
+ from .track_models import (
+     Board,
+-    IdempotencyRecord,
+     PersonalBest,
+     Rating,
+     Run,
+@@ -30,7 +26,6 @@
+     TrackValidation,
+     TrackVersion,
+     commit_response,
+-    digest,
+     now,
+     replay_response,
+ )
+@@ -41,13 +36,10 @@
+ Key = Annotated[str, Header(alias="Idempotency-Key")]
+ 
+ 
+-class UploadTrack(BaseModel):
++class TrackContent(BaseModel):
+     model_config = ConfigDict(extra="forbid")
+     name: str = Field(min_length=1, max_length=80)
+     document: dict
+-    authoring_id: str | None = Field(default=None, max_length=80)
+-    defer_validation: bool = False
+-    expected_head_revision_id: str | None = Field(default=None, max_length=36)
+ 
+     @field_validator("name")
+     @classmethod
+@@ -103,6 +95,16 @@
+     return result
+ 
+ 
++@router.post("/tracks", include_in_schema=False)
++@router.post("/tracks/{track_id}/versions", include_in_schema=False)
++@router.post("/me/track-versions/{version_id}/retry-validation", include_in_schema=False)
++@router.post("/track-versions/{version_id}/publish", include_in_schema=False)
++@router.post("/me/drafts/{authoring_id}/archive", include_in_schema=False)
++@router.get("/me/drafts/{authoring_id}/head", include_in_schema=False)
++def retired_authoring(player: Auth):
++    raise HTTPException(410, "LOCAL_DRAFTS_ONLY: keep drafts on this device; use an explicit verified publication request")
++
++
+ def discovery_projection(document: dict) -> dict:
+     points = document.get("points", [])
+     if not isinstance(points, list):
+@@ -110,224 +112,6 @@
+     count = min(96, len(points))
+     return {"theme": document.get("theme", "pine"), "authoring_id": document.get("id"),
+             "points": [points[i * len(points) // count] for i in range(count)]}
+-
+-
+-def _legacy_authoring(request: Request) -> None:
+-    if request.app.state.settings.local_drafts_only:
+-        raise HTTPException(410, "LOCAL_DRAFTS_ONLY: keep drafts on this device; use an explicit verified publication request")
+-
+-
+-def _validate_revision(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
+-    if player.needs_username:
+-        raise HTTPException(409, "USERNAME_REQUIRED")
+-    # Authenticated ownership is authoritative, including the downloadable document.
+-    payload.document = {**payload.document, "creator": player.display_name}
+-    try:
+-        encoded = json.dumps(
+-            payload.document, allow_nan=False, ensure_ascii=False, separators=(",", ":")
+-        ).encode()
+-    except (ValueError, RecursionError, UnicodeError):
+-        raise HTTPException(422, "Track document must be finite JSON") from None
+-    if len(encoded) > 524288:
+-        raise HTTPException(413, "Track document exceeds 512 KiB")
+-    try:
+-        manifest = request.app.state.verifier.validate_track(payload.document)
+-    except ValueError as exc:
+-        raise HTTPException(422, f"Invalid track: {exc}") from None
+-    except RuntimeError:
+-        raise HTTPException(503, "Track validator temporarily unavailable") from None
+-    if (
+-        manifest.get("laps") != 5
+-        or manifest.get("tick_rate") != 120
+-        or not manifest.get("track_content_hash")
+-    ):
+-        raise HTTPException(503, "Track validator returned an unsupported manifest")
+-    document_hash = digest(payload.document)
+-    from .verifier import GodotVerifier
+-    if isinstance(request.app.state.verifier,GodotVerifier):
+-        from .trajectory_verifier import prepared_geometry
+-        prepared_geometry(request.app,document_hash,payload.document)
+-    return document_hash, manifest
+-
+-
+-@router.post("/tracks", status_code=201)
+-def create_track(payload: UploadTrack, request: Request, session: DB, player: Auth, key: Key) -> dict:
+-    _legacy_authoring(request)
+-    body = payload.model_dump(exclude_unset=True)
+-    old = replay_response(session, player.id, "create_track", key, body)
+-    if old is not None:
+-        return old
+-    source_id = payload.authoring_id or payload.document.get("id")
+-    if payload.authoring_id and payload.document.get("id") != payload.authoring_id:
+-        raise HTTPException(422, "AUTHORING_ID_MISMATCH")
+-    if source_id is not None and (not isinstance(source_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", source_id)):
+-        raise HTTPException(422, "INVALID_AUTHORING_ID")
+-    content_hash, manifest = _prepare_revision(request, payload, player)
+-    prepared_track = _recover_track(request, session, player.id, source_id) if source_id else None
+-    with session.no_autoflush:
+-        if prepared_track is not None:
+-            existing_revision = _check_revision(session, prepared_track, payload)
+-            if existing_revision is not None:
+-                return commit_response(session, player.id, "create_track", key, body, _payload(request, session, existing_revision))
+-        if payload.defer_validation:
+-            check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+-    prepared_id = prepared_track.id if prepared_track is not None else None
+-    owner_id = player.id
+-    session.rollback()
+-    if request.app.state.blobs.put_json(payload.document) != content_hash:
+-        raise HTTPException(503, "Track storage hash mismatch")
+-    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
+-    old = replay_response(session, player.id, "create_track", key, body)
+-    if old is not None:
+-        return old
+-    track = session.get(Track, prepared_id) if prepared_id else None
+-    if track is not None and source_id and track.authoring_id is None:
+-        track.authoring_id = source_id
+-    if track is None and source_id:
+-        track = session.scalar(select(Track).where(Track.owner_id == owner_id, Track.authoring_id == source_id))
+-    if track is None:
+-        track = Track(owner_id=player.id, authoring_id=source_id)
+-        session.add(track)
+-        session.flush()
+-    if session.scalar(select(Identity.player_id).where(Identity.player_id == player.id,
+-            Identity.provider == "development", Identity.subject == "developer")) is not None:
+-        track.official = True
+-    version = _save_revision(session, track, payload, content_hash, manifest, request.app.state.settings.max_queued_runs, request.app.state.blobs)
+-    return commit_response(session, player.id, "create_track", key, body, _payload(request, session, version))
+-
+-
+-def _prepare_revision(request: Request, payload: UploadTrack, player: Player) -> tuple[str, dict]:
+-    from .community import require_terms
+-    with request.app.state.session_factory() as safety_session:
+-        require_terms(safety_session, player.id)
+-    if not request.app.state.settings.allow_sync_track_validation:
+-        payload.defer_validation = True
+-    if not payload.defer_validation:
+-        return _validate_revision(request, payload, player)
+-    if player.needs_username:
+-        raise HTTPException(409, "USERNAME_REQUIRED")
+-    if payload.document.get("schema") != "creator-track-v5" or not isinstance(payload.document.get("id"), str):
+-        raise HTTPException(422, "INVALID_DRAFT_ENVELOPE")
+-    payload.document = {**payload.document, "creator": player.display_name}
+-    try:
+-        size = len(canonical_json(payload.document))
+-    except (ValueError, RecursionError, UnicodeError):
+-        raise HTTPException(422, "Track document must be finite JSON") from None
+-    if size > 524288:
+-        raise HTTPException(413, "Track document exceeds 512 KiB")
+-    return digest(payload.document), {}
+-
+-
+-def _recover_track(request: Request, session: Session, owner_id: str, source_id: str) -> Track | None:
+-    track = session.scalar(select(Track).where(Track.owner_id == owner_id, Track.authoring_id == source_id))
+-    if track is not None:
+-        return track
+-    # Adopt the stable ID embedded in legacy owned documents, never a display name.
+-    # Immutable versions, links, ratings and boards remain on their existing IDs.
+-    candidate = session.scalar(select(Track).join(TrackVersion).where(Track.owner_id == owner_id,
+-        Track.authoring_id.is_(None), TrackVersion.discovery["authoring_id"].as_string() == source_id).limit(1))
+-    if candidate is not None:
+-        candidate.authoring_id = source_id
+-        return candidate
+-    rows = session.execute(select(Track.id, TrackVersion.content_hash).join(TrackVersion)
+-        .where(Track.owner_id == owner_id, Track.authoring_id.is_(None),
+-            or_(TrackVersion.discovery.is_(None), TrackVersion.discovery["authoring_id"].as_string().is_(None)))
+-        .order_by(Track.created_at, Track.id, TrackVersion.number).limit(101)).all()
+-    if len(rows) > 100:
+-        raise HTTPException(503, "LEGACY_DRAFT_BACKFILL_REQUIRED")
+-    session.rollback()
+-    for candidate_id, content_hash in rows:
+-        document = request.app.state.blobs.get_json(content_hash)
+-        if document.get("id") == source_id:
+-            candidate = session.get(Track, candidate_id)
+-            candidate.authoring_id = source_id
+-            return candidate
+-    return None
+-
+-
+-def _save_revision(session: Session, track: Track, payload: UploadTrack, content_hash: str, manifest: dict, capacity: int, blobs) -> TrackVersion:
+-    if track.archived:
+-        raise HTTPException(409, "DRAFT_ARCHIVED: save as a new track to continue")
+-    existing = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id,
+-        TrackVersion.content_hash == content_hash, TrackVersion.name == payload.name)
+-        .order_by(TrackVersion.number.desc()).limit(1))
+-    if existing is not None:
+-        return existing
+-    head = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id)
+-        .order_by(TrackVersion.number.desc()).limit(1))
+-    expected = payload.expected_head_revision_id
+-    conflict = head is not None if expected == "new" else (head is None or head.id != expected)
+-    if expected and conflict:
+-        raise HTTPException(409, "REVISION_CONFLICT: the remote draft changed; both snapshots are preserved")
+-    if payload.defer_validation:
+-        pending = session.scalar(select(func.count()).select_from(TrackValidation).join(TrackVersion).join(Track)
+-            .where(Track.owner_id == track.owner_id, TrackValidation.status.in_(("queued", "validating"))))
+-        if pending >= 32:
+-            raise HTTPException(429, "Track validation capacity reached; your local draft can safely retry")
+-    if payload.defer_validation:
+-        check_capacity(session, track.owner_id, capacity)
+-    if payload.defer_validation:
+-        admit(session, track.owner_id, capacity)
+-    projection = discovery_projection(payload.document)
+-    version = TrackVersion(track_id=track.id, number=head.number + 1 if head else 1,
+-        name=payload.name, content_hash=content_hash, revision_key=digest({"name": payload.name, "hash": content_hash}), manifest=manifest,
+-        discovery=projection, state="validating" if payload.defer_validation else "draft")
+-    session.add(version)
+-    session.flush()
+-    if payload.defer_validation:
+-        session.add(TrackValidation(version_id=version.id))
+-    return version
+-
+-
+-def _check_revision(session, track, payload):
+-    if track.archived:
+-        raise HTTPException(409, "DRAFT_ARCHIVED: save as a new track to continue")
+-    # A retry of the identical immutable revision is harmless even if its old
+-    # expected head has since advanced; the final transaction rechecks identity.
+-    existing = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id,
+-        TrackVersion.content_hash == digest(payload.document), TrackVersion.name == payload.name)
+-        .order_by(TrackVersion.number.desc()).limit(1))
+-    if existing is not None:
+-        return existing
+-    head = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id)
+-        .order_by(TrackVersion.number.desc()).limit(1))
+-    expected = payload.expected_head_revision_id
+-    conflict = head is not None if expected == "new" else head is None or head.id != expected
+-    if expected and conflict:
+-        raise HTTPException(409, "REVISION_CONFLICT: the remote draft changed; both snapshots are preserved")
+-
+-
+-@router.post("/tracks/{track_id}/versions", status_code=201)
+-def create_version(
+-    track_id: str, payload: UploadTrack, request: Request, session: DB, player: Auth, key: Key
+-) -> dict:
+-    _legacy_authoring(request)
+-    scope, body = f"version:{track_id}", payload.model_dump(exclude_unset=True)
+-    old = replay_response(session, player.id, scope, key, body)
+-    if old is not None:
+-        return old
+-    track = session.scalar(
+-        select(Track).where(Track.id == track_id, Track.owner_id == player.id)
+-    )
+-    if track is None:
+-        raise HTTPException(404, "Track not found")
+-    content_hash, manifest = _prepare_revision(request, payload, player)
+-    existing_revision = _check_revision(session, track, payload)
+-    if existing_revision is not None:
+-        return commit_response(session, player.id, scope, key, body, _payload(request, session, existing_revision))
+-    if payload.defer_validation:
+-        check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+-    owner_id = player.id
+-    session.rollback()
+-    if request.app.state.blobs.put_json(payload.document) != content_hash:
+-        raise HTTPException(503, "Track storage hash mismatch")
+-    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
+-    track = session.scalar(select(Track).where(Track.id == track_id, Track.owner_id == player.id).with_for_update())
+-    if track is None: raise HTTPException(404, "Track not found")
+-    old = replay_response(session, player.id, scope, key, body)
+-    if old is not None: return old
+-    version = _save_revision(session, track, payload, content_hash, manifest, request.app.state.settings.max_queued_runs, request.app.state.blobs)
+-    return commit_response(session, player.id, scope, key, body, _payload(request, session, version))
+ 
+ 
+ @router.get("/me/track-versions/{version_id}")
+@@ -347,70 +131,6 @@
+             "retryable": proof.status == "failed" and proof.failure_code in ("verifier_unavailable", "build_mismatch")} if proof else None}
+ 
+ 
+-@router.post("/me/track-versions/{version_id}/retry-validation")
+-def retry_validation(version_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+-    _legacy_authoring(request)
+-    scope = f"retry_validation:{version_id}"
+-    old = replay_response(session, player.id, scope, key, {})
+-    if old is not None:
+-        return old
+-    version = session.scalar(select(TrackVersion).join(Track)
+-        .where(TrackVersion.id == version_id, Track.owner_id == player.id).with_for_update())
+-    job = session.get(TrackValidation, version_id) if version else None
+-    if job is None:
+-        raise HTTPException(404, "Validation not found")
+-    if job.status == "failed" and job.failure_code == "validator_unavailable":
+-        admit(session, player.id, request.app.state.settings.max_queued_runs)
+-        job.status, job.attempts, job.lease_until, job.lease_token = "queued", 0, 0, None
+-    return commit_response(session, player.id, scope, key, {}, {"version_id": version_id, "status": job.status})
+-
+-
+-@router.post("/track-versions/{version_id}/publish")
+-def publish(version_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+-    _legacy_authoring(request)
+-    from .commerce import consume_publication_slot, lock_entitlements
+-    entitlement = lock_entitlements(session, player.id)
+-    from .community import require_terms
+-    require_terms(session, player.id)
+-    scope = f"publish:{version_id}"
+-    old = replay_response(session, player.id, scope, key, {})
+-    if old is not None:
+-        return old
+-    version = session.scalar(
+-        select(TrackVersion)
+-        .join(Track)
+-        .where(TrackVersion.id == version_id, Track.owner_id == player.id)
+-        .with_for_update()
+-    )
+-    if version is None:
+-        raise HTTPException(404, "Track version not found")
+-    if version.state not in ("tested", "published") or not version.creator_test_run_id:
+-        raise HTTPException(409, "Creator test has not passed server verification. Complete a new test drive or retry after verification finishes")
+-    if session.get(Track, version.track_id).hidden:
+-        raise HTTPException(409, "Hidden track cannot be published")
+-    if session.get(Track, version.track_id).archived and version.state != "published":
+-        raise HTTPException(409, "DRAFT_ARCHIVED")
+-    consume_publication_slot(session, request.app.state.settings, entitlement, version,
+-        official=session.get(Track, version.track_id).official)
+-    first_publication = version.state != "published"
+-    version.state = "published"
+-    version.published_at = version.published_at or now()
+-    if first_publication:
+-        from .news import capture_publication
+-        capture_publication(session, version, session.get(Track, version.track_id), player)
+-    if first_publication and getattr(request.app.state.settings, "telemetry_enabled", False):
+-        from .telemetry import append_server_event
+-        dimensions = {"track_version": version.id}
+-        discovery = version.discovery or {}
+-        biome = discovery.get("theme", discovery.get("biome"))
+-        if biome:
+-            dimensions["biome"] = biome
+-        append_server_event(session, "track_published", version.id, player.id, dimensions,
+-                            occurred_at=version.published_at, is_test_driver=player.is_test_driver)
+-    session.flush()
+-    return commit_response(session, player.id, scope, key, {}, _payload(request, session, version))
+-
+-
+ @router.post("/tracks/{track_id}/hide")
+ def hide(track_id: str, session: DB, player: Auth, key: Key) -> dict:
+     scope = f"hide:{track_id}"
+@@ -427,47 +147,6 @@
+     return commit_response(
+         session, player.id, scope, key, {}, {"track_id": track.id, "hidden": True, "records_retained": True}
+     )
+-
+-
+-@router.post("/me/drafts/{authoring_id}/archive")
+-def archive_draft(authoring_id: str, request: Request, session: DB, player: Auth, key: Key) -> dict:
+-    _legacy_authoring(request)
+-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", authoring_id):
+-        raise HTTPException(422, "INVALID_AUTHORING_ID")
+-    scope = f"archive_draft:{authoring_id}"
+-    session.rollback()
+-    session.scalar(select(Player).where(Player.id == player.id).with_for_update())
+-    old = replay_response(session, player.id, scope, key, {})
+-    if old is not None:
+-        return old
+-    track = _recover_track(request, session, player.id, authoring_id)
+-    if track is None:
+-        track = Track(owner_id=player.id, authoring_id=authoring_id)
+-        session.add(track)
+-        session.flush()
+-    track.archived = True
+-    # Fence pending validation without touching published links or race records.
+-    session.execute(update(TrackValidation).where(
+-        TrackValidation.version_id.in_(select(TrackVersion.id).where(TrackVersion.track_id == track.id)),
+-        TrackValidation.status.in_(("queued", "validating")),
+-    ).values(status="failed", failure_code="draft_archived", detail="Draft archived by its owner",
+-             lease_token=None, lease_until=0))
+-    return commit_response(session, player.id, scope, key, {},
+-                           {"authoring_id": authoring_id, "archived": True, "shared_versions_retained": True})
+-
+-
+-@router.get("/me/drafts/{authoring_id}/head")
+-def draft_head(authoring_id: str, request: Request, session: DB, player: Auth,
+-               upload_key: str = Query("", max_length=128)) -> dict:
+-    _legacy_authoring(request)
+-    version = session.scalar(select(TrackVersion).join(Track).where(
+-        Track.owner_id == player.id, Track.authoring_id == authoring_id, Track.archived.is_(False),
+-    ).order_by(TrackVersion.number.desc()).limit(1))
+-    if version is None:
+-        raise HTTPException(404, "Draft not found")
+-    operation = session.get(IdempotencyRecord, (player.id, "create_track", upload_key)) if upload_key else None
+-    return {**_payload(request, session, version),
+-            "acknowledged_upload_version_id": operation.response.get("version_id") if operation else None}
+ 
+ 
+ @router.get("/me/tracks")
+@@ -571,8 +250,11 @@
+ 
+ 
+ def _check_viewer(request, session, version, credentials):
+-    if session.get(Track, version.track_id).hidden:
+-        raise HTTPException(404, "Published track version not found")
++    track = session.get(Track, version.track_id)
++    if track.hidden:
++        from .studio_case_models import StudioQuarantine
++        if session.get(StudioQuarantine, track.id) is not None:
++            raise HTTPException(404, "Published track version not found")
+     if credentials:
+         from .community import check_creator
+         viewer = current_player(request, credentials, session)
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -61,7 +61,6 @@
+     # Foreground races take priority. An explicit publication is verified before
+     # artificial races/background generation; editor saves never enter a queue.
+     from .publications import process_one as publish_one
+-    from .track_validation import process_one as validate_one
+     with app.state.session_factory() as session:
+         foreground = session.scalar(select(Run.id).join(Board, Board.id == Run.board_id)
+             .join(Player, Player.id == Run.player_id).where(Player.is_test_driver.is_(False),
+@@ -94,8 +93,6 @@
+             if expire_unserviceable(app):
+                 return True
+             if publish_one(app):
+-                return True
+-            if validate_one(app):
+                 return True
+             if refresh_histograms:
+                 from .achievements import drive_idle as progress_achievements
+--- a/canonical/game/editor/creator_catalog.gd
++++ b/canonical/game/editor/creator_catalog.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## One browser tile per asset family; variants are chosen after selection.
+ const BIOME_ASSETS: Dictionary = {}
+-const OBJECT_BIOMES: Dictionary = {"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"]}
++const OBJECT_BIOMES: Dictionary = {"abandoned_warehouse":["night_city"],"burning_car":["night_city"],"firefly_bush":["night_city"],"burning_barrel":["night_city"],"lantern_post":["night_city"],"neon_arrow":["night_city"],"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"],"igloo":["winter"],"snowman":["winter"],"snow_castle":["winter"],"snow_lantern":["winter"],"ice_lantern":["winter"]}
+ # Only nature families are restricted; equipment is shared across all biomes.
+ const NATURE_BIOMES: Dictionary = {
+  "tree":["pine","winter","storm"], "broadleaf":["pine","night_city","storm"], "bush":["pine","night_city","storm"],
+@@ -13,6 +13,11 @@
+  ["tree","Pine tree","Nature",["tree"]],
+  ["broadleaf","Broadleaf","Nature",["broadleaf"]],
+  ["bush","Bush","Nature",["bush"]],
++ ["firefly_bush","Firefly bush","Nature",["firefly_bush"]],
++ ["burning_barrel","Burning barrel","Props",["burning_barrel"]],
++ ["burning_car","Burning car","Props",["burning_car"]],
++ ["lantern_post","Lantern post","Trackside",["lantern_post"]],
++ ["neon_arrow","Neon arrow","Trackside",["neon_arrow"]],
+  ["grass_clump","Grass clump","Nature",["grass_clump"]],
+  ["flowers","Flowers","Nature",["flowers"]],
+  ["pebbles","Pebbles","Nature",["pebbles"]],
+@@ -43,15 +48,21 @@
+  ["car_wreck","Car wreck","Props",["car_wreck"]],
+  ["container","Container","Props",["container"]],
+  ["shed","Garage","Buildings",["shed"]],
++ ["abandoned_warehouse","Warehouse","Buildings",["abandoned_warehouse"]],
+  ["hut","Marshal hut","Buildings",["hut"]],
+  ["grandstand","Grandstand","Buildings",["grandstand"]],
+  ["egypt_pyramid","Pyramid","Buildings",["egypt_pyramid"]],
+  ["egypt_obelisk","Obelisk","Buildings",["egypt_obelisk"]],
+  ["egypt_column","Lotus column","Buildings",["egypt_column","egypt_column_broken"]],
+- ["egypt_wall","Temple wall","Buildings",["egypt_wall"]]
++ ["egypt_wall","Temple wall","Buildings",["egypt_wall"]],
++ ["igloo","Igloo","Buildings",["igloo"]],
++ ["snow_castle","Snow castle","Buildings",["snow_castle"]],
++ ["snowman","Snowman","Props",["snowman"]],
++ ["snow_lantern","Snow lantern","Props",["snow_lantern"]],
++ ["ice_lantern","Ice lantern","Props",["ice_lantern"]]
+ ]
+-const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet"]
+-const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale"]
++const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet","firefly_bush"]
++const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale","snowman","snow_lantern","ice_lantern","burning_barrel"]
+ const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
+ 
+ static func family(kind: String) -> Array:
+@@ -63,6 +74,11 @@
+ 	return {"egypt_pyramid":"Pyramid","egypt_obelisk":"Obelisk","egypt_column":"Lotus column","egypt_column_broken":"Broken column","egypt_wall":"Temple wall","oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+ 
+ static func behavior(kind: String) -> String:
++	if kind=="burning_barrel": return "Movable / tips and rolls on impact"
++	if kind == "abandoned_warehouse": return "Drive through the open ends / solid side walls"
++	if kind == "snowman": return "Breaks into soft snow chunks and powder"
++	if kind == "snow_lantern": return "Crumbles into snow; the candle goes out"
++	if kind == "ice_lantern": return "Shatters into ice; the candle goes out"
+ 	if kind == "hay_bale": return "Sheds harmless hay; becomes smaller and lighter"
+ 	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
+ 	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
+--- a/canonical/game/editor/creator_objects.gd
++++ b/canonical/game/editor/creator_objects.gd
+@@ -2,10 +2,21 @@
+ extends RefCounted
+ ## Original scalable stamps; the same footprint is used in plans and native cells.
+ 
+-const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale", "egypt_pyramid", "egypt_obelisk", "egypt_column", "egypt_column_broken", "egypt_wall"]
++const KINDS: Array[String] = ["tree", "rock", "barrier", "tyre_wall", "fence", "dirt", "water", "boulder", "slate", "cliff", "oil", "puddle", "jump", "speed_bump", "tyre_stack", "broadleaf", "bush", "grass_clump", "flowers", "pebbles", "log", "guardrail", "wire_fence", "cone", "chevron", "braking_board", "banner", "flag", "light", "gantry", "crate", "barrel", "pallet", "parked_car", "van", "car_wreck", "container", "shed", "hut", "grandstand", "hay_bale", "egypt_pyramid", "egypt_obelisk", "egypt_column", "egypt_column_broken", "egypt_wall", "igloo", "snowman", "snow_castle", "snow_lantern", "ice_lantern", "firefly_bush", "burning_barrel", "lantern_post", "neon_arrow", "burning_car", "abandoned_warehouse"]
+ 
+ static func dimensions(kind: String) -> Vector2:
+ 	match kind:
++		"firefly_bush": return Vector2(2.8,2.8)
++		"burning_barrel": return Vector2(1.2,1.2)
++		"burning_car": return Vector2(4.5,2.2)
++		"abandoned_warehouse": return Vector2(19.2,25.0)
++		"lantern_post": return Vector2(1.9,0.8)
++		"neon_arrow": return Vector2(2.2,0.9)
++		"igloo": return Vector2(7.0,8.6)
++		"snowman": return Vector2(3.0,2.0)
++		"snow_castle": return Vector2(7.4,6.4)
++		"snow_lantern": return Vector2(1.8,1.8)
++		"ice_lantern": return Vector2(1.4,1.4)
+ 		"egypt_pyramid": return Vector2(12,12)
+ 		"egypt_obelisk", "egypt_column", "egypt_column_broken": return Vector2(2.8,2.8)
+ 		"egypt_wall": return Vector2(7.6,1.8)
+@@ -100,7 +111,13 @@
+ static func solid_contains(object: Dictionary, point: Vector2) -> bool:
+ 	var local: Vector2 = (point-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
+ 	var scale: float = float(object.get("scale",1.0))
++	if object.kind == "abandoned_warehouse":
++		var p: Vector2=local.abs()/scale
++		return p.x<=9.0 and p.y<=12.0 and (p.x>=8.4 or (p.y>=11.6 and p.x>=6.15))
++	if object.kind == "igloo": return local.length_squared()<=pow(3.14*scale,2) or (absf(local.x)<=1.12*scale and local.y>=2.0*scale and local.y<=4.2*scale)
+ 	if object.kind in ["tree","broadleaf"]: return local.length()<=maxf(0.36,0.4*scale)
++	if object.kind == "burning_barrel": return local.length()<=0.52*scale
++	if object.kind == "lantern_post": return local.length()<=maxf(0.36,0.24*scale)
+ 	if object.kind == "light": return local.length()<=maxf(0.36,0.22*scale)
+ 	if object.kind == "gantry": return absf(absf(local.x)-5.7*scale)<=maxf(0.36,0.3*scale) and absf(local.y)<=maxf(0.36,0.5*scale)
+ 	return contains(object,point)
+--- a/canonical/game/persistence/track_library.gd
++++ b/canonical/game/persistence/track_library.gd
+@@ -368,17 +368,3 @@
+ 	revision += 1
+ 	last_error = ""
+ 	return OK
+-
+-func publish_document(document: Dictionary) -> Error:
+-	if not owner_name.is_empty(): document["creator"] = owner_name
+-	if is_published(str(document.get("id",""))): return ERR_ALREADY_EXISTS
+-	if not is_tested(document):
+-		last_error = "Complete test run to publish"
+-		return ERR_UNAUTHORIZED
+-	var error: Error = save_document(document)
+-	if error != OK: return error
+-	var published := TrackLibrary.new(directory.path_join(".published"))
+-	error = published.save_document(document)
+-	last_error = published.last_error
+-	if error == OK: revision += 1
+-	return error
+--- a/canonical/game/race/personal_ghost_run.gd
++++ b/canonical/game/race/personal_ghost_run.gd
+@@ -30,7 +30,7 @@
+ 	var height: float = (front + rear) * 0.5 + state.jump_height
+ 	var pitch: float = atan2(front - rear, handling.wheelbase)
+ 	if state.jump_height > 0.0:
+-		pitch = atan2(state.jump_velocity, maxf(5.0, state.velocity.length()))
++		pitch = preload("res://vehicle/bridge_flight.gd").pitch(state)
+ 	elif not state.track_elevated:
+ 		height += TrackHazards.ramp_height(point, track.hazard_objects) - track.water_depth(point)
+ 		pitch += TrackHazards.ramp_pitch(point, axle.normalized(), track.hazard_objects)
+--- a/canonical/game/race/race_rules.gd
++++ b/canonical/game/race/race_rules.gd
+@@ -2,4 +2,6 @@
+ extends RefCounted
+ 
+ const LAPS: int = 5
+-const KEY: String = "standing-5-road-gates-v20"
++const KEY: String = "standing-5-road-gates-v22"
++const CHECKPOINT_RECOVERY_M: float = 2.0
++const SPLINE_GATE_SPACING_M: float = 8.0
+--- /dev/null
++++ b/canonical/game/race/spline_gate_corridor.gd
+@@ -0,0 +1,155 @@
++class_name SplineGateCorridor
++extends RefCounted
++## Select a common ordered gate chain for the full spline lane at preparation.
++## Offset folds at a tight apex are trimmed; a driver need not follow a loop.
++const LANE_HALF_STEPS: int = 28
++const LANE_COUNT: int = LANE_HALF_STEPS*2+1
++
++static func lane(track: NativeTrack, fraction: float, constant_width: bool = false, rejoin_start: bool = true) -> PackedVector2Array:
++	var path := PackedVector2Array()
++	var minimum_half: float = INF
++	for width: float in track.route_widths: minimum_half = minf(minimum_half,width*0.5)
++	for i: int in range(track.route.size()):
++		var tangent: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[posmod(i-1,track.route.size())]).normalized()
++		var half: float = track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0
++		# Include interior lanes which keep their offset as a road widens,
++		# as well as the separate paths following its variable-width edges.
++		if constant_width: half = minf(half,minimum_half)
++		var end_distance: float = minf(track.route_cumulative[i],track.route_length-track.route_cumulative[i])
++		var lateral: float = (half+RaceRules.CHECKPOINT_RECOVERY_M)*fraction
++		path.append(track.route[i]+tangent.orthogonal()*lateral*(smoothstep(0.0,12.0,end_distance) if rejoin_start else 1.0))
++	path.append(path[0]); path.append(path[1])
++	var result := PackedVector2Array()
++	for point: Vector2 in path:
++		if result.size() >= 3:
++			var travelled: float = 0.0
++			for index: int in range(result.size()-3,-1,-1):
++				travelled += result[index].distance_to(result[index+1])
++				if travelled > 20.0: break
++				var hit: Variant = Geometry2D.segment_intersects_segment(result[index],result[index+1],result[-1],point)
++				if hit is Vector2 and hit.distance_to(point) > 0.001:
++					result.resize(index+1); result.append(hit); break
++		result.append(point)
++	return result
++
++static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
++	var crossings: Array[PackedFloat64Array] = []
++	var lanes: Array[PackedVector2Array] = []
++	var route_bins: Dictionary = {}
++	for i: int in range(track.route.size()):
++		var key := Vector2i((track.route[i]/8.0).floor())
++		if not route_bins.has(key): route_bins[key] = []
++		route_bins[key].append(i)
++	for lane_index: int in range(LANE_COUNT*3):
++		var path: PackedVector2Array = lane(track,float(lane_index%LANE_COUNT-LANE_HALF_STEPS)/LANE_HALF_STEPS,lane_index >= LANE_COUNT,lane_index < LANE_COUNT*2)
++		lanes.append(path)
++		var events := PackedFloat64Array()
++		for gate: int in range(session._centers.size()):
++			var event: float = -1.0
++			var nearest: float = INF
++			var center: Vector2 = session._centers[gate]
++			var direction: Vector2 = session._directions[gate]
++			var normal: Vector2 = direction.orthogonal()
++			var widths: Vector2 = session._widths[gate]
++			var before: float = (path[0]-center).dot(direction)
++			for i: int in range(path.size()-1):
++				var after: float = (path[i+1]-center).dot(direction)
++				var fraction: float = -before/(after-before) if before <= 0.0 and after > 0.0 else -1.0
++				before = after
++				if fraction < 0.0: continue
++				var point: Vector2 = path[i].lerp(path[i+1],fraction)
++				var lateral: float = (point-center).dot(normal)
++				if lateral < -widths.x or lateral > widths.y: continue
++				var separation: float = point.distance_squared_to(center)
++				if separation < nearest:
++					nearest = separation; event = i+fraction
++			events.append(event)
++		crossings.append(events)
++	var counts := PackedInt32Array()
++	var previous := PackedInt32Array()
++	var costs := PackedFloat32Array()
++	var best: int = -1
++	for gate: int in range(session._centers.size()):
++		var valid: bool = true
++		for events: PackedFloat64Array in crossings:
++			if events[gate] < 0.0: valid = false; break
++		counts.append(1 if valid else 0); previous.append(-1)
++		var width: Vector2 = session._widths[gate]
++		costs.append(width.x+width.y)
++		if not valid: continue
++		for earlier: int in range(gate):
++			if counts[earlier] == 0: continue
++			var ordered: bool = true
++			for events: PackedFloat64Array in crossings:
++				if events[earlier] >= events[gate]-0.00001: ordered = false; break
++			if ordered and (counts[earlier]+1 > counts[gate] or (counts[earlier]+1 == counts[gate] and costs[earlier]+width.x+width.y < costs[gate])):
++				counts[gate] = counts[earlier]+1; previous[gate] = earlier
++				costs[gate] = costs[earlier]+width.x+width.y
++		if best < 0 or counts[gate] > counts[best] or (counts[gate] == counts[best] and costs[gate] < costs[best]): best = gate
++	var selected := PackedInt32Array()
++	while best >= 0:
++		selected.append(best); best = previous[best]
++	selected.reverse()
++	# The nearest physical road can be the returning arm before this gate.
++	# Bound that display-only projection along every accepted lane approach.
++	var projections: Dictionary = {}
++	for gate: int in range(session._centers.size()): session._notice_approaches.append({})
++	for lane_index: int in range(lanes.size()):
++		var path: PackedVector2Array = lanes[lane_index]
++		var events: PackedFloat64Array = crossings[lane_index]
++		var previous_event: float = 0.0
++		var accepted_event: float = 0.0
++		for gate: int in selected:
++			var event: float = events[gate]
++			var reach: float = session._notice_reach[gate]
++			var cells: Dictionary = session._notice_approaches[gate]
++			# Runtime can accept an earlier valid crossing than the nearest
++			# crossing used to select the common chain on a folded spline.
++			# Protect the approach actually driven after that earlier crossing.
++			var next_event: float = event
++			for i: int in range(floori(accepted_event),path.size()-1):
++				var fraction: float = session._crossing(gate,path[i],path[i+1])
++				if fraction < 0.0 or i+fraction < accepted_event-0.000001: continue
++				if session._inside(gate,path[i].lerp(path[i+1],fraction)):
++					next_event = i+fraction; break
++			for i: int in range(floori(accepted_event),mini(floori(next_event)+1,path.size()-1)):
++				var a: Vector2 = path[i].lerp(path[i+1],clampf(accepted_event-i,0.0,1.0))
++				var b: Vector2 = path[i].lerp(path[i+1],clampf(next_event-i,0.0,1.0))
++				var steps: int = maxi(1,ceili(a.distance_to(b)*2.0))
++				for step: int in range(steps+1): cells[Vector2i(a.lerp(b,float(step)/steps).floor())] = true
++			accepted_event = next_event
++			for i: int in range(floori(previous_event),mini(ceili(event)+1,path.size()-1)):
++				var point: Vector2 = path[i]
++				var progress: float = float(projections.get(point,NAN))
++				if is_nan(progress):
++					progress = _projection(track,point,route_bins)
++					projections[point] = progress
++				var ahead: float = wrapf(progress-session._start_progress-session._progress[gate],-track.route_length*0.5,track.route_length*0.5)
++				reach = maxf(reach,ahead+1.0)
++			session._notice_reach[gate] = reach
++			previous_event = event
++	return selected
++
++static func _projection(track: NativeTrack, point: Vector2, bins: Dictionary) -> float:
++	var key := Vector2i((point/8.0).floor())
++	var best: float = INF
++	var nearest: int = 0
++	for y: int in range(-2,3):
++		for x: int in range(-2,3):
++			for index: int in bins.get(key+Vector2i(x,y),[]):
++				var distance: float = point.distance_squared_to(track.route[index])
++				if distance < best or (distance == best and index < nearest):
++					best = distance; nearest = index
++	# The unvisited cells are at least 16 m away. Sparse routes retain the
++	# original exact global search when that bound cannot prove the result.
++	if best > 256.0: nearest = track.nearest_route(point)
++	best = INF
++	var progress: float = track.route_cumulative[nearest]
++	for offset: int in range(-1,2):
++		var index: int = posmod(nearest+offset,track.route.size())
++		var edge: Vector2 = track.route[(index+1)%track.route.size()]-track.route[index]
++		var fraction: float = clampf((point-track.route[index]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
++		var distance: float = point.distance_squared_to(track.route[index]+edge*fraction)
++		if distance < best:
++			best = distance; progress = track.route_cumulative[index]+edge.length()*fraction
++	return progress
+--- /dev/null
++++ b/canonical/game/race/spline_gate_corridor.gd.uid
+@@ -0,0 +1 @@
++uid://bo2qfwc67ftf1
+--- a/canonical/game/race/track_session.gd
++++ b/canonical/game/race/track_session.gd
+@@ -1,7 +1,6 @@
+ class_name TrackSession
+ extends RefCounted
+ ## Ordered swept gates; no route-history/shortcut search per tick.
+-signal shortcut_detected # Legacy observer API; never emitted by checkpoint rules.
+ var next_checkpoint: int = 0
+ var completed_laps: int = 0
+ var elapsed_ticks: int = 0
+@@ -14,12 +13,6 @@
+ var finish_armed: bool = false
+ var initialized: bool = false
+ var missed_checkpoint: int = -1
+-# Retained read-model fields; these rules never add time penalties.
+-var shortcut_count: int = 0
+-var shortcut_distance: float = 0.0
+-var penalty_seconds: float = 0.0
+-var lap_penalty_seconds: float = 0.0
+-var last_shortcut_tick: int = -1
+ var last_progress: float = 0.0
+ var _widths: Array[Vector2] = []
+ var _road_widths: Array[Vector2] = []
+@@ -31,14 +24,26 @@
+ var _start_progress: float = 0.0
+ var _layers: Array[bool] = []
+ var _finish_elevated: bool = false
++var _spline_corridor: bool = false
++var _notice_route_bins: Dictionary = {}
++var _notice_approaches: Array[Dictionary] = []
++const NOTICE_LAYOUT_VERSION: int = 3
++const NOTICE_CELL_M: float = 8.0
++const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches"]
+ 
+ func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
+ 	tick_rate = rate
+ 	target_laps = laps
+ 
+ func _configure(track: NativeTrack) -> void:
+-	# Bake the gate corridor once. Runtime visits only the current gate and
++	# Bake the gate corridor once. Acceptance visits only the current gate and
+ 	# its neighbour, regardless of track length or total gate count.
++	if track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION:
++		for field: String in GATE_LAYOUT_FIELDS:
++			var value: Variant = track._race_gates[field]
++			set(field,value.duplicate() if value is Array else value)
++		initialized = true
++		return
+ 	_start_progress = track.route_progress(track.finish_center)
+ 	_finish_elevated = track.elevated_at(track.finish_center,track.nearest_route(track.finish_center,0))
+ 	if not track.creator_bridges.is_empty():
+@@ -46,15 +51,19 @@
+ 	var layer_distance: float = 0.0
+ 	var route_elevated: bool = _finish_elevated
+ 	var targets: Array[float] = []
+-	var count: int = maxi(4,ceili(track.route_length/12.0))
++	_spline_corridor = false
++	for piece: Dictionary in track.metadata.get("creator_document",{}).get("pieces",[]):
++		if piece.kind == "spline": _spline_corridor = true; break
++	var count: int = maxi(4,ceili(track.route_length/(RaceRules.SPLINE_GATE_SPACING_M if _spline_corridor else 12.0)))
+ 	var corners: Array[Dictionary] = _road_corners(track)
+ 	for i: int in range(1,count):
+ 		var distance: float = track.route_length*i/count
+ 		var overlaps_corner: bool = false
+-		for corner: Dictionary in corners:
+-			var separation: float = absf(distance-float(corner.distance))
+-			separation = minf(separation,track.route_length-separation)
+-			if separation < float(corner.reach): overlaps_corner = true; break
++		if not _spline_corridor:
++			for corner: Dictionary in corners:
++				var separation: float = absf(distance-float(corner.distance))
++				separation = minf(separation,track.route_length-separation)
++				if separation < float(corner.reach): overlaps_corner = true; break
+ 		if not overlaps_corner: targets.append(distance)
+ 	for corner: Dictionary in corners: targets.append(corner.distance)
+ 	targets.sort()
+@@ -63,7 +72,7 @@
+ 		var junction: Dictionary = {}
+ 		for corner: Dictionary in corners:
+ 			if is_equal_approx(distance,float(corner.distance)): junction = corner; break
+-		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < 3.0: continue
++		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (1.5 if _spline_corridor else 3.0): continue
+ 		var absolute: float = _start_progress+distance
+ 		var center: Vector2 = track._race_route_point(absolute)
+ 		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
+@@ -108,15 +117,15 @@
+ 				var sign_value: float = -1.0 if side == 0 else 1.0
+ 				while span < scan_limit and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
+ 				road_widths[side] = maxf(0.0,span-0.125)
+-				# Permit a shallow wheel-off-road recovery at sharp bends too.
+-				# Grass shortcuts still have to cross every bounded gate.
+-				widths[side] = road_widths[side]+1.0
++				# Keep a forgiving centre recovery beyond the
++				# connected road/kerb edge, including sharp spline bends.
++				widths[side] = road_widths[side]+RaceRules.CHECKPOINT_RECOVERY_M
+ 		# A shallow excursion already loses grip/time. Allow extra inside
+ 		# recovery space, fading it out before a tight hairpin can be cut.
+ 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
+ 		var departure: Vector2 = (track._race_route_point(absolute+8.0)-center).normalized()
+ 		var turn: float = absf(approach.angle_to(departure))
+-		if turn > 0.01:
++		if turn > 0.01 and track.grid_width == 0:
+ 			var allowance: float = 3.0*(1.0-smoothstep(deg_to_rad(30.0),deg_to_rad(60.0),turn))
+ 			var inside: int = 1 if (departure-approach).dot(normal) > 0.0 else 0
+ 			widths[inside] += allowance
+@@ -137,7 +146,37 @@
+ 			var ahead: float = fposmod(projected-absolute+track.route_length*0.5,track.route_length)-track.route_length*0.5
+ 			notice_reach = maxf(notice_reach,ahead+0.5)
+ 		_notice_reach.append(notice_reach)
++	if _spline_corridor:
++		var selected: PackedInt32Array = SplineGateCorridor.select(self,track)
++		for index: int in range(_centers.size()-1,-1,-1):
++			if index in selected: continue
++			_widths.remove_at(index); _road_widths.remove_at(index); _layers.remove_at(index)
++			_centers.remove_at(index); _directions.remove_at(index); _progress.remove_at(index)
++			_notice_reach.remove_at(index); _route_hints.remove_at(index)
++			_notice_approaches.remove_at(index)
++	_prepare_notice_route(track)
+ 	initialized = true
++	var prepared: Dictionary = {"rules_key":RaceRules.KEY,"notice_version":NOTICE_LAYOUT_VERSION}
++	for field: String in GATE_LAYOUT_FIELDS:
++		var value: Variant = get(field)
++		prepared[field] = value.duplicate() if value is Array else value
++	track._race_gates = prepared
++
++func _prepare_notice_route(track: NativeTrack) -> void:
++	# Index segments once, including long sparse fixture edges. A local
++	# collision hint deliberately cannot jump across a shortcut; notices need
++	# the road physically reached by the car, without scanning the whole lap.
++	for index: int in range(track.route.size()):
++		var a: Vector2 = track.route[index]
++		var b: Vector2 = track.route[(index+1)%track.route.size()]
++		var steps: int = maxi(1,ceili(a.distance_to(b)/(NOTICE_CELL_M*0.5)))
++		var visited: Dictionary = {}
++		for step: int in range(steps+1):
++			var key := Vector2i((a.lerp(b,float(step)/steps)/NOTICE_CELL_M).floor())
++			if visited.has(key): continue
++			visited[key] = true
++			if not _notice_route_bins.has(key): _notice_route_bins[key] = PackedInt32Array()
++			_notice_route_bins[key].append(index)
+ 
+ func _road_corners(track: NativeTrack) -> Array[Dictionary]:
+ 	var points: PackedVector2Array = track.route
+@@ -264,25 +303,35 @@
+ 		var fraction: float = _crossing(next_checkpoint,from,to)
+ 		if fraction < 0.0 or fraction < consumed-0.000001: break
+ 		var point: Vector2 = from.lerp(to,fraction)
+-		if _layers[next_checkpoint] != _crossing_layer(track,from,to,fraction,route_index,elevated,previous_layer) or not _inside(next_checkpoint,point):
++		var crossing_layer: bool = _crossing_layer(track,from,to,fraction,route_index,elevated,previous_layer)
++		var wrong_layer: bool = _layers[next_checkpoint] != crossing_layer
++		if wrong_layer or not _inside(next_checkpoint,point):
+ 			if point.distance_squared_to(_centers[next_checkpoint]) < 1600.0:
+ 				# A lower road may cross the plane of a future deck gate. Only
+ 				# warn on its intended route approach, not that earlier branch.
+-				var progress: float = _route_progress_near(track,point,route_index)
+-				if _notice_offset(track,progress) >= -_notice_reach[next_checkpoint]: missed_checkpoint = next_checkpoint
++				var progress: float = _route_progress_near(track,point,route_index,int(crossing_layer))
++				var offset: float = _notice_offset(track,progress)
++				# A spline approach can cross this plane outside the gate before
++				# its valid crossing. Wait until it leaves the prepared approach
++				# envelope; wrong-layer misses still report immediately.
++				if offset >= -_notice_reach[next_checkpoint] and (wrong_layer or not _spline_corridor or _notice_bypassed(track,point,progress)): missed_checkpoint = next_checkpoint
+ 			break
+ 		consumed = fraction
+ 		next_checkpoint += 1
+ 		missed_checkpoint = -1
+ 	if next_checkpoint+1 < _centers.size():
+ 		var later: float = _crossing(next_checkpoint+1,from,to)
+-		if later >= 0.0 and _inside(next_checkpoint+1,from.lerp(to,later)) and _layers[next_checkpoint+1] == _crossing_layer(track,from,to,later,route_index,elevated,previous_layer): missed_checkpoint = next_checkpoint
+-	_update_display_progress(track,to,route_index)
++		if later >= 0.0 and _inside(next_checkpoint+1,from.lerp(to,later)) and _layers[next_checkpoint+1] == _crossing_layer(track,from,to,later,route_index,elevated,previous_layer):
++			# A returning arm can cross that later plane while the required
++			# gate is still ahead. Such an early crossing is not a bypass.
++			var point: Vector2 = from.lerp(to,later)
++			if _notice_offset(track,_route_progress_near(track,point,route_index,int(_layers[next_checkpoint+1]))) >= 0.0 and not _on_notice_approach(point): missed_checkpoint = next_checkpoint
++	_update_display_progress(track,to,route_index,int(elevated))
+ 	if next_checkpoint < _centers.size() and missed_checkpoint < 0:
+ 		# A cut can rejoin beyond a bend without ever crossing its gate plane
+ 		# (or the next gate). Report it on reentry instead of at a later gate
+ 		# or the finish. This read model never consumes or relaxes any gate.
+-		if _notice_offset(track,last_progress) > _notice_reach[next_checkpoint]: missed_checkpoint = next_checkpoint
++		if _notice_bypassed(track,to,last_progress): missed_checkpoint = next_checkpoint
+ 	# Crossing the start and the first dense gate in the same fast tick is
+ 	# departure, not an incomplete lap. Arm only after meaningful progress.
+ 	if route_distance >= minf(15.0,track.route_length*0.25): finish_armed = true
+@@ -313,6 +362,22 @@
+ 	# like a bypass at the end of the lap.
+ 	return fposmod(progress-_start_progress-_progress[next_checkpoint]+track.route_length*0.5,track.route_length)-track.route_length*0.5
+ 
++func _on_notice_approach(point: Vector2) -> bool:
++	if not _spline_corridor or next_checkpoint >= _notice_approaches.size(): return false
++	# Legal offset lanes can project far along a returning arm. Protect their
++	# actual approach, rather than delaying every warning by that whole distance.
++	var key := Vector2i(point.floor())
++	var cells: Dictionary = _notice_approaches[next_checkpoint]
++	for y: int in range(-1,2):
++		for x: int in range(-1,2):
++			if cells.has(key+Vector2i(x,y)): return true
++	return false
++
++func _notice_bypassed(track: NativeTrack, point: Vector2, progress: float) -> bool:
++	var offset: float = _notice_offset(track,progress)
++	if not _spline_corridor: return offset > _notice_reach[next_checkpoint]
++	return offset > 1.0 and not _on_notice_approach(point)
++
+ func _crossing_layer(track: NativeTrack, from: Vector2, to: Vector2, fraction: float, route_index: int, elevated: bool, previous_layer: int) -> bool:
+ 	# A gate can precede a ramp boundary within the same fast simulation tick.
+ 	# Preserve strict layer checks, using the state at the crossing rather than
+@@ -327,11 +392,18 @@
+ 		layer = CreatorBridges.layer_at(track.creator_bridges,from.lerp(crossing,float(step)/steps),layer)
+ 	return layer
+ 
+-func _route_progress_near(track: NativeTrack, point: Vector2, hint: int) -> float:
++func _route_progress_near(track: NativeTrack, point: Vector2, hint: int, layer: int = -1) -> float:
+ 	# Keep the collision resolver's branch at overlapping roads. A fresh
+ 	# nearest-vertex search can jump to a future bridge at the same position.
+ 	var best: float = INF
+ 	var progress: float = last_progress
++	var approach_best: float = INF
++	var approach_progress: float = last_progress
++	var approach_reach: float = 0.0
++	var check_layers: bool = layer >= 0 and (not track.creator_bridges.is_empty() or track.bridge_height != 0.0)
++	var target: float = _progress[next_checkpoint] if next_checkpoint < _progress.size() else track.route_length
++	var approach_low: float = (_progress[next_checkpoint-1]-_notice_reach[next_checkpoint-1] if next_checkpoint > 0 else -3.0)-target
++	var approach_high: float = _notice_reach[next_checkpoint] if next_checkpoint < _notice_reach.size() else 1.0
+ 	var hints: Array[int] = [hint]
+ 	# A shortcut return can reach the required gate while the collision hint
+ 	# still follows a distant branch. The last accepted gate anchors the
+@@ -349,29 +421,43 @@
+ 			if distance < best-0.000001:
+ 				best = distance
+ 				progress = track.route_cumulative[i]+edge.length()*t
++			if distance < approach_best-0.000001:
++				var projected: float = track.route_cumulative[i]+edge.length()*t
++				var approach_offset: float = wrapf(projected-_start_progress-target,-track.route_length*0.5,track.route_length*0.5)
++				if approach_offset >= approach_low and approach_offset <= approach_high and (not check_layers or track.elevated_at(point,i) == bool(layer)):
++					approach_best = distance; approach_progress = projected
++					approach_reach = (track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0)+RaceRules.CHECKPOINT_RECOVERY_M
++	# Preserve the simulation branch on exact overlaps, but recover from a
++	# stale hint as soon as another road segment is physically closer.
++	if best < 0.000001: return progress
++	var key := Vector2i((point/NOTICE_CELL_M).floor())
++	for y: int in range(-2,3):
++		for x: int in range(-2,3):
++			for i: int in _notice_route_bins.get(key+Vector2i(x,y),PackedInt32Array()):
++				var edge: Vector2 = track.route[(i+1)%track.route.size()]-track.route[i]
++				var t: float = clampf((point-track.route[i]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
++				var distance: float = point.distance_squared_to(track.route[i]+edge*t)
++				if distance < best-0.000001:
++					best = distance
++					progress = track.route_cumulative[i]+edge.length()*t
++				if distance < approach_best-0.000001:
++					var projected: float = track.route_cumulative[i]+edge.length()*t
++					var approach_offset: float = wrapf(projected-_start_progress-target,-track.route_length*0.5,track.route_length*0.5)
++					if approach_offset >= approach_low and approach_offset <= approach_high and (not check_layers or track.elevated_at(point,i) == bool(layer)):
++						approach_best = distance; approach_progress = projected
++						approach_reach = (track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0)+RaceRules.CHECKPOINT_RECOVERY_M
++	# Nearby arms can share both X/Z and the same road layer. Prefer the
++	# required approach while the car is still in its recovery corridor;
++	# outside it, the physically reached branch supplies bypass evidence.
++	if approach_best <= approach_reach*approach_reach: return approach_progress
+ 	return progress
+ 
+-func _update_display_progress(track: NativeTrack, point: Vector2, hint: int) -> void:
++func _update_display_progress(track: NativeTrack, point: Vector2, hint: int, layer: int = -1) -> void:
+ 	# Display/notice progress only; acceptance remains swept gates.
+-	last_progress = _route_progress_near(track,point,hint)
++	last_progress = _route_progress_near(track,point,hint,layer)
+ 	var low: float = _progress[next_checkpoint-1] if next_checkpoint > 0 else 0.0
+ 	var high: float = _progress[next_checkpoint] if next_checkpoint < _progress.size() else track.route_length
+ 	route_distance = clampf(fposmod(last_progress-_start_progress,track.route_length),low,high)
+ 
+-func shortcut_notice_active() -> bool: return false
+ func race_time_seconds() -> float:
+ 	return lap_start_time if finished else float(elapsed_ticks)/tick_rate
+-
+-static func entry_fraction(rect: Rect2, from: Vector2, to: Vector2) -> float:
+-	var lo: float = 0.0
+-	var hi: float = 1.0
+-	var motion: Vector2 = to-from
+-	for axis: int in range(2):
+-		if absf(motion[axis]) < 0.000001:
+-			if from[axis] < rect.position[axis] or from[axis] > rect.end[axis]: return -1.0
+-		else:
+-			var a: float = (rect.position[axis]-from[axis])/motion[axis]
+-			var b: float = (rect.end[axis]-from[axis])/motion[axis]
+-			lo = maxf(lo,minf(a,b))
+-			hi = minf(hi,maxf(a,b))
+-	return lo if lo <= hi else -1.0
+--- a/canonical/game/track/bridge_elevation.gd
++++ b/canonical/game/track/bridge_elevation.gd
+@@ -1,7 +1,7 @@
+ class_name BridgeElevation
+ extends RefCounted
+-## Pure spatial elevation shared by client presentation and verified ghosts.
+-## Presentation only: no temporal easing and no changes to canonical handling.
++## Pure spatial elevation shared by canonical bridge flight, cars and ghosts.
++## No temporal easing; preparation is immutable during simulation.
+ 
+ const VERSION: String = "bridge-ramps-6"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+--- a/canonical/game/track/native_track.gd
++++ b/canonical/game/track/native_track.gd
+@@ -16,6 +16,7 @@
+ var deck_rectangles: Array
+ var route := PackedVector2Array()
+ var checkpoints: Array[Rect2] = []
++var _race_gates: Dictionary = {} # Immutable compiled-track preparation; never serialized.
+ var route_widths := PackedFloat32Array()
+ var route_cumulative := PackedFloat32Array()
+ var route_length: float = 0.0
+@@ -92,6 +93,7 @@
+ 
+ 
+ func _build_route_distance() -> void:
++	_race_gates.clear()
+ 	route_cumulative.resize(route.size())
+ 	route_length = 0.0
+ 	for i: int in range(route.size()):
+@@ -165,86 +167,6 @@
+ 			best_score = score
+ 			best = {"progress":progress, "delta":delta, "distance":distance, "index":i}
+ 	return best
+-
+-
+-func crosses_hairpin_infield(from: Vector2, to: Vector2) -> bool:
+-	# The constructed road is authoritative for small hairpins: the smoothed
+-	# lap route and a fixed distance-saving threshold can swallow their island.
+-	for piece: Dictionary in metadata.get("creator_document",{}).get("pieces",[]):
+-		if piece.kind != "hairpin": continue
+-		var origin := Vector2(piece.position[0],piece.position[1])
+-		var angle: float = deg_to_rad(float(piece.heading))
+-		var side: float = -1.0 if piece.flip else 1.0
+-		var a: Vector2 = (from-origin).rotated(-angle)
+-		var b: Vector2 = (to-origin).rotated(-angle)
+-		a.y *= side
+-		b.y *= side
+-		var radius: float = piece.radius
+-		if (a.y-radius)*(b.y-radius) > 0.0 or absf(b.y-a.y) < 0.000001: continue
+-		var fraction: float = (radius-a.y)/(b.y-a.y)
+-		if fraction <= 0.0 or fraction > 1.0: continue
+-		var crossing: Vector2 = a.lerp(b,fraction)
+-		# 0.75m kerb plus half the standard car width: crossing must put
+-		# the whole car clear of the inside kerb, not merely a wheel on grass.
+-		var clearance: float = 1.55
+-		var inner: float = radius-float(piece.width)*0.5-clearance
+-		if inner <= 0.0 or crossing.x < 0.0 or crossing.x > float(piece.length)+inner: continue
+-		var world: Vector2 = from.lerp(to,fraction)
+-		if not _clear_of_road(world,0.8): continue
+-		return true
+-	return false
+-
+-
+-func _clear_of_road(point: Vector2, clearance: float) -> bool:
+-	if kerbs.height_at(point) > 0.0: return false
+-	var cell := Vector2i(floori((point.x+half_extent.x)/cell_size),floori((half_extent.y-point.y)/cell_size))
+-	var reach: int = ceili(clearance/cell_size)+1
+-	for y: int in range(maxi(0,cell.y-reach),mini(grid_height,cell.y+reach+1)):
+-		for x: int in range(maxi(0,cell.x-reach),mini(grid_width,cell.x+reach+1)):
+-			var index: int = y*grid_width+x
+-			if cells[index] not in [0,2,5] and (deck_cells.is_empty() or deck_cells[index] not in [0,2,5]): continue
+-			var bounds := Rect2(Vector2(x*cell_size-half_extent.x,half_extent.y-(y+1)*cell_size),Vector2.ONE*cell_size)
+-			if point.distance_to(point.clamp(bounds.position,bounds.end)) <= clearance: return false
+-	return true
+-
+-
+-func has_cut_gap(previous: float, advance: float, driven: PackedVector2Array) -> bool:
+-	# Progress estimates can catch up after a sharp bend. A penalty also
+-	# needs spatial evidence: road was bypassed beyond its kerb tolerance,
+-	# not merely projected late after the car already drove alongside it.
+-	for i: int in range(route.size()):
+-		var edge: Vector2 = route[(i + 1) % route.size()] - route[i]
+-		var steps: int = maxi(1, ceili(edge.length() / 2.0))
+-		for step: int in range(steps):
+-			var fraction: float = float(step) / steps
+-			var distance: float = fposmod(route_cumulative[i] + edge.length() * fraction - previous, route_length)
+-			if distance > advance: continue
+-			var point: Vector2 = route[i] + edge * fraction
+-			var closest: float = INF
+-			var driven_point := Vector2.ZERO
+-			for j: int in range(driven.size() - 2, -1, -1):
+-				var candidate: Vector2 = Geometry2D.get_closest_point_to_segment(point, driven[j], driven[j + 1])
+-				var separation: float = point.distance_to(candidate)
+-				if separation < closest:
+-					closest = separation
+-					driven_point = candidate
+-				if closest <= route_cut_radii[i] + 1.0: break
+-			if closest <= route_cut_radii[i] + 1.0: continue
+-			# Distance alone cannot distinguish cutting inside from running wide.
+-			# Measure bend direction over metres, not a number of route vertices.
+-			var progress: float = route_cumulative[i] + edge.length() * fraction
+-			var reach: float = minf(8.0, route_length * 0.05)
+-			var incoming: Vector2 = (point - _race_route_point(progress - reach)).normalized()
+-			var outgoing: Vector2 = (_race_route_point(progress + reach) - point).normalized()
+-			var turn: float = incoming.cross(outgoing)
+-			if absf(turn) < 0.02: continue
+-			var tangent: Vector2 = (incoming + outgoing).normalized()
+-			var inside: float = tangent.cross(driven_point - point) * signf(turn)
+-			# Outside samples provide no cut evidence. They must not veto a
+-			# separate inside bypass within the same excursion.
+-			if inside < -1.0: continue
+-			if inside > 1.0: return true
+-	return false
+ 
+ 
+ func _race_route_point(distance: float) -> Vector2:
+--- a/canonical/game/vehicle/breakable_props.gd
++++ b/canonical/game/vehicle/breakable_props.gd
+@@ -1,9 +1,14 @@
+ class_name BreakableProps
+ extends RefCounted
+ ## Canonical run-owned damage/debris; fixed order, no scene physics or randomness.
+-const KINDS: Array[String] = ["hay_bale","crate"]
++const KINDS: Array[String] = ["hay_bale","crate","snowman","snow_lantern","ice_lantern"]
+ const HAY: int = 0
+ const WOOD: int = 1
++const SNOW: int = 2
++const ICE: int = 3
++const POWDER: int = 4
++const WINTER_KINDS: Array[String] = ["snowman","snow_lantern","ice_lantern"]
++const MAX_WINTER_FRAGMENTS: int = 192
+ const HAY_MASS: float = 85.0
+ const CRATE_MASS: float = 22.0
+ const WOOD_PIECES: int = 6
+@@ -21,6 +26,7 @@
+ 			return
+ 
+ static func mass(kind: String, scale: float, integrity: float) -> float:
++	if kind in WINTER_KINDS: return {"snowman":48.0,"snow_lantern":9.0,"ice_lantern":14.0}[kind]*scale*scale*scale
+ 	return (HAY_MASS*integrity if kind == "hay_bale" else CRATE_MASS)*scale*scale*scale
+ 
+ static func size_fraction(kind: String, integrity: float) -> float:
+@@ -61,6 +67,9 @@
+ 						if integrity <= 0.000001:
+ 							integrity = 0.0
+ 							_break_crate(state,index,object,p,velocity,normal,scale)
++					elif object.kind in WINTER_KINDS and approach >= (2.0 if object.kind == "snowman" else 1.6):
++						integrity = 0.0
++						_break_winter(state,index,object,p,velocity,normal,scale)
+ 					if approach >= CRATE_DAMAGE_SPEED: state.collision_count += 1
+ 				row[4] = float(row[4])+normal.dot(state.right())*minf(approach,12.0)*dt*0.7
+ 	# Latch one impact until separation; sustained contact cannot shred each tick.
+@@ -96,6 +105,13 @@
+ 		state.prop_fragments.append([WOOD,source,site.x,site.y,motion.x,motion.y,angle,(piece%2*2-1)*1.4,scale*(0.64+(piece%3)*0.12),scale*(0.11+(piece%2)*0.035),CRATE_MASS*scale*scale*scale/WOOD_PIECES,1.0])
+ 
+ static func step_fragments(state: VehicleState, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	# Winter fragments are finite-life cosmetic material. Their saved lifetime
++	# is canonical, so rewind/reset never leaves effects or light behind.
++	for index: int in range(state.prop_fragments.size()-1,-1,-1):
++		var piece: Array=state.prop_fragments[index]
++		if int(piece[0])>=SNOW:
++			piece[11]=maxf(0.0,float(piece[11])-dt)
++			if float(piece[11])<=0.0: state.prop_fragments.remove_at(index)
+ 	for row: Array in state.prop_fragments:
+ 		var p := Vector2(row[2],row[3]); var velocity := Vector2(row[4],row[5])
+ 		if int(row[0]) == WOOD and not state.track_elevated and state.jump_height <= 0:
+@@ -119,8 +135,32 @@
+ 		if velocity != Vector2.ZERO:
+ 			var next: Vector2 = p+velocity*dt
+ 			# Loose hay never queries collision or changes the car, surfaces or grip.
+-			if int(row[0]) == HAY or Vector3(contact.call(next,float(row[9])*0.5,false)).z <= 0: p = next
++			if int(row[0]) != WOOD or Vector3(contact.call(next,float(row[9])*0.5,false)).z <= 0: p = next
+ 			else: velocity = Vector2.ZERO
+ 		row[2] = p.x; row[3] = p.y; row[4] = velocity.x; row[5] = velocity.y
+ 		row[6] = fposmod(float(row[6])+float(row[7])*dt,TAU)
+ 		row[7] = move_toward(float(row[7]),0.0,3.0*dt)
++
++static func _break_winter(state: VehicleState, source: int, object: Dictionary, p: Vector2, velocity: Vector2, normal: Vector2, scale: float) -> void:
++	var ice: bool=object.kind=="ice_lantern"
++	var snowman: bool=object.kind=="snowman"
++	var chunks: int=8 if ice or snowman else 6
++	var powder: int=2 if ice else 5
++	for i: int in range(chunks+powder):
++		var count: int=0; var oldest: int=-1
++		for j: int in range(state.prop_fragments.size()):
++			if int(state.prop_fragments[j][0])<SNOW: continue
++			count+=1
++			if oldest<0: oldest=j
++		if count>=MAX_WINTER_FRAGMENTS: state.prop_fragments.remove_at(oldest)
++		var angle: float=source*1.71+i*2.399+deg_to_rad(float(object.rotation))
++		var outward:=Vector2(cos(angle),sin(angle))
++		var mist: bool=i>=chunks
++		var kind: int=POWDER if mist else ICE if ice else SNOW
++		var motion: Vector2=velocity*(0.16 if mist else 0.32)+normal*(0.50 if mist else 0.9)+outward*(0.65 if mist else 1.2)
++		var site: Vector2=p+outward*scale*(0.12+(i%3)*0.08)
++		var reach: float=scale*((0.24+(i%3)*0.055) if snowman else (0.17+(i%3)*0.035))
++		var duration: float=0.85+(i%3)*0.1 if mist else 3.0
++		# Type-specific fields 10/11 store duration/remaining life, preserving
++		# the twelve-field snapshot layout and all old hay/wood semantics.
++		state.prop_fragments.append([kind,source,site.x,site.y,motion.x,motion.y,angle,(1.0 if i%2 else -1.0)*2.8,reach,reach*(0.70 if ice else 0.90),duration,duration])
+--- /dev/null
++++ b/canonical/game/vehicle/bridge_flight.gd
+@@ -0,0 +1,115 @@
++extends RefCounted
++## Canonical bridge unloading; heights use the same axle support as the car.
++const GRAVITY: float = 22.0 # Brief game-scale arcs between the owner's two extremes.
++const MAX_RISE_SPEED: float = 3.2
++const RELEASE_GAP: float = 0.00001
++const DESCENT_CLEARANCE: float = 0.12
++const DESCENT_MAX_GRAVITY: float = 512.0
++const DESCENT_TICKS: Array[int] = [8,12,16,20,24,28,32,36]
++
++static func support(bridge: BridgeElevation, point: Vector2, heading: float, route: int, layer: bool, wheelbase: float) -> float:
++	var axle := Vector2(sin(heading),cos(heading))*wheelbase*0.5
++	return (bridge.height_at(point+axle,route,int(layer))+bridge.height_at(point-axle,route,int(layer)))*0.5
++
++static func release(state: VehicleState, previous: Vector2, heading: float, velocity: Vector2, route: int, layer: bool, bridge: BridgeElevation, wheelbase: float, seconds: float) -> void:
++	if state.jump_height > 0.0 or state.roll_ticks > 0 or velocity.length_squared() < 1.0: return
++	# A ground underpass must never borrow the deck above it. Legacy bridges
++	# include their approach in the shared sampler before the layer changes.
++	var before: float = support(bridge,previous,heading,route,layer,wheelbase)
++	var after: float = support(bridge,state.position,state.heading,state.route_index,state.track_elevated,wheelbase)
++	if before <= bridge.road_surface.lift+0.001 and after <= bridge.road_surface.lift+0.001: return
++	var behind: float = support(bridge,previous-velocity*seconds,heading,route,layer,wheelbase)
++	var rise_speed: float = (before-behind)/seconds
++	var support_speed: float = (after-before)/seconds
++	if rise_speed-support_speed <= GRAVITY*seconds: return
++	if support_speed < 0.0 and rise_speed <= 0.0:
++		if velocity.length_squared() < 36.0 or before < bridge.road_surface.lift+0.5: return
++		# The entry landing cooldown must not hide a separate downhill crest on
++		# a short span. A downhill landing still suppresses repeated releases.
++		if state.jump_cooldown > 24 or (state.jump_cooldown > 0 and state.bridge_descending): return
++		_release_descent(state,bridge,wheelbase,seconds,before,after,rise_speed)
++		return
++	if rise_speed <= 0.0 or state.jump_cooldown > 0: return
++	# Bounded suspension rebound keeps a short crest readable when its slope
++	# disappears within one tick. It fades out at low speed.
++	var rebound: float = MAX_RISE_SPEED*smoothstep(5.0,22.0,velocity.length())
++	var vertical: float = maxf(minf(MAX_RISE_SPEED,rise_speed)-GRAVITY*seconds,rebound)
++	# Leave enough supported deck for the small arc. A short bridge must not
++	# turn this slight crest lift into a long fall down the opposite ramp.
++	for adjustment: int in range(8):
++		var landing: Vector2 = state.position+state.velocity*(2.0*vertical/GRAVITY)
++		if support(bridge,landing,state.heading,state.route_index,state.track_elevated,wheelbase) >= after-0.03: break
++		vertical *= 0.85
++	# Wait for the axle support to flatten instead of spending the rebound on
++	# a tiny front-axle skip while the rear axle is still climbing.
++	if support_speed > vertical*0.5: return
++	var gap: float = before+vertical*seconds-after
++	if gap <= RELEASE_GAP: return
++	state.jump_height = gap
++	state.jump_velocity = vertical
++	state.bridge_airborne = true
++	state.bridge_gravity = GRAVITY
++	state.bridge_descending = false
++	state.bridge_landing_speed = 0.0
++
++static func _release_descent(state: VehicleState, bridge: BridgeElevation, wheelbase: float, seconds: float, before: float, after: float, vertical: float) -> void:
++	# Follow a short ballistic tangent, with no upward launch impulse. Fit its
++	# downward acceleration to the short game-scale ramp so it lands on the
++	# actual deck instead of sailing over the entire descending bridge.
++	var best_gravity: float = 0.0
++	var best_error: float = INF
++	# At most 37 doubles (296 bytes), shared by all eight candidates. Check
++	# every canonical tick so a short early floor crossing cannot be missed.
++	var floors := PackedFloat64Array()
++	floors.resize(37)
++	floors[0] = before; floors[1] = after
++	for tick: int in range(2,37):
++		var ahead: float = (tick-1)*seconds
++		floors[tick] = support(bridge,state.position+state.velocity*ahead,state.heading+state.yaw_rate*ahead,state.route_index,state.track_elevated,wheelbase)
++	for ticks: int in DESCENT_TICKS:
++		var duration: float = ticks*seconds
++		var landing: float = floors[ticks]
++		var gravity: float = 2.0*(before+vertical*duration-landing)/(duration*(duration+seconds))
++		if gravity < GRAVITY or gravity > DESCENT_MAX_GRAVITY: continue
++		if before+(vertical-gravity*seconds)*seconds-after <= RELEASE_GAP: continue
++		var peak: float = 0.0
++		var clear: bool = true
++		for tick: int in range(1,ticks):
++			var time: float = tick*seconds
++			var gap: float = before+vertical*time-gravity*time*(time+seconds)*0.5-floors[tick]
++			if gap < -RELEASE_GAP: clear = false; break
++			peak = maxf(peak,gap)
++		# Do not spend this crest's release on an invisible front-axle skip.
++		if not clear or peak < 0.025 or peak > 0.25: continue
++		var error: float = absf(peak-DESCENT_CLEARANCE)
++		if error < best_error:
++			best_error = error
++			best_gravity = gravity
++	if best_gravity == 0.0: return
++	state.jump_velocity = vertical-best_gravity*seconds
++	state.jump_height = before+state.jump_velocity*seconds-after
++	state.bridge_airborne = true
++	state.bridge_gravity = best_gravity
++	state.bridge_descending = true
++	state.bridge_landing_speed = 0.0
++
++static func advance(state: VehicleState, previous_support: float, bridge: BridgeElevation, wheelbase: float, seconds: float) -> void:
++	var floor_height: float = support(bridge,state.position,state.heading,state.route_index,state.track_elevated,wheelbase)
++	state.jump_velocity -= state.bridge_gravity*seconds
++	state.jump_height = maxf(0.0,previous_support+state.jump_height+state.jump_velocity*seconds-floor_height)
++	if state.jump_height == 0.0:
++		var relative_speed: float = state.jump_velocity-(floor_height-previous_support)/seconds
++		if state.bridge_descending: state.bridge_landing_speed = maxf(0.0,-relative_speed)
++		state.velocity *= 1.0-clampf(-relative_speed*0.01,0.0,0.08)
++		state.jump_velocity = 0.0
++		state.bridge_airborne = false
++		state.jump_cooldown = maxi(state.jump_cooldown,24)
++
++static func pitch(state: VehicleState) -> float:
++	var direction: float = -1.0 if state.velocity.dot(state.forward()) < 0.0 else 1.0
++	return atan2(state.jump_velocity*direction,maxf(5.0,state.velocity.length()))
++
++static func landing_feedback(state: VehicleState) -> float:
++	# A shallow supported crest release gets a gentle contact cue. Real wall
++	# collisions retain their independent impulse/audio path.
++	return minf(state.bridge_landing_speed,2.5)
+--- /dev/null
++++ b/canonical/game/vehicle/bridge_flight.gd.uid
+@@ -0,0 +1 @@
++uid://0tpf2v5lsrw7
+--- /dev/null
++++ b/canonical/game/vehicle/burning_barrel.gd
+@@ -0,0 +1,74 @@
++class_name BurningBarrel
++extends RefCounted
++## Deterministic cylinder motion. Only burning barrels use the extended row.
++# x,y,vx,vy, tip angle, fall direction, tip velocity, yaw velocity, roll, contact,
++# spilled-fuel age (-1 before impact), spill x/y, impact direction, strength.
++const ROW_SIZE: int=15
++const MASS: float=400.0
++const CAR_SLOWDOWN: float=0.7
++const FIRE_SECONDS: float=8.0
++const SMOKE_SECONDS: float=10.0
++static func initial(object: Dictionary) -> Array:
++	return [object.position[0],object.position[1],0.0,0.0,0.0,0.0,0.0,0.0,0.0,false,-1.0,object.position[0],object.position[1],0.0,0.0]
++
++static func step(state: VehicleState, object: Dictionary, row: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	var scale: float=float(object.get("scale",1.0))
++	var p:=Vector2(row[0],row[1]); var velocity:=Vector2(row[2],row[3])
++	var tilt: float=float(row[4]); var direction: float=float(row[5]); var omega: float=float(row[6]); var yaw: float=float(row[7])
++	var radius: float=lerpf(0.52,0.76,sin(tilt))*scale
++	var touching: bool=false
++	var hit_normal:=Vector2.ZERO
++	var closing: float=0.0
++	if not state.track_elevated and state.jump_height<=0:
++		var delta: Vector2=p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++		touching=delta.length_squared()<pow(car_radius+radius,2)
++		if touching:
++			var relative: Vector2=state.velocity-velocity
++			var normal: Vector2=delta.normalized() if delta.length_squared()>0.000001 else (relative.normalized() if relative.length_squared()>0.000001 else state.forward())
++			var approach: float=relative.dot(normal)
++			hit_normal=normal; closing=approach
++			if approach>0:
++				var mass: float=MASS*scale*scale*scale
++				# Tune the arcade car response independently of drum inertia/toppling.
++				var impulse: float=approach/(1.0/car_mass+1.0/mass)
++				state.velocity-=normal*impulse*CAR_SLOWDOWN/car_mass
++				velocity+=normal*impulse/mass
++				if not bool(row[9]):
++					if tilt<0.15: direction=normal.angle()
++					omega+=impulse*0.65*scale/(mass*0.71*scale*scale)
++					omega=clampf(omega,-4.0,4.0)
++					yaw+=clampf(relative.cross(normal)*0.08,-1.8,1.8)
++				if float(row[10])<0.0 and approach>=1.6:
++					row[10]=0.0; row[11]=p.x; row[12]=p.y; row[13]=normal.angle(); row[14]=clampf(approach/12.0,0.3,1.0)
++	# Gravity uses the cylinder's supported centre height and edge inertia.
++	if tilt>0.00001 or omega>0:
++		omega+=9.81*(0.55*sin(tilt)-0.515*cos(tilt))/(0.71*scale)*dt
++		omega*=maxf(0.0,1.0-1.1*dt)
++		tilt+=omega*dt
++		if tilt<=0:
++			tilt=0.0; omega=-omega*0.06 if absf(omega)>0.25 else 0.0
++		elif tilt>=PI*0.5:
++			tilt=PI*0.5; omega=-omega*0.06 if absf(omega)>0.25 else 0.0
++		if absf(omega)<0.12 and tilt>PI*0.5-0.006: tilt=PI*0.5; omega=0.0
++	direction+=yaw*dt; yaw=move_toward(yaw,0.0,2.4*dt)
++	var rolling: bool=tilt>1.35
++	if rolling:
++		var tangent:=Vector2(-sin(direction),cos(direction))
++		row[8]=float(row[8])+velocity.dot(tangent)*dt/(0.515*scale)
++	velocity=velocity.limit_length(2.0*sqrt(scale)).move_toward(Vector2.ZERO,(12.0 if rolling else 18.0)*dt)
++	var next: Vector2=p+velocity*dt
++	if Vector3(contact.call(next,radius,false)).z<=0: p=next
++	else: velocity=Vector2.ZERO
++	if touching:
++		var offset: Vector2=p-state.position
++		var reach: float=car_radius+radius
++		var crossed: bool=offset.dot(hit_normal)<0.0 and closing>0.0
++		if offset.length_squared()<reach*reach or crossed:
++			# Retain the approached side even when a fast step crosses the centre.
++			var normal: Vector2=hit_normal if crossed or offset.length_squared()<0.000001 else offset.normalized()
++			var corrected: Vector2=p-normal*reach
++			if Vector3(contact.call(corrected,car_radius,false)).z<=0: state.position=corrected
++			elif Vector3(contact.call(previous,car_radius,false)).z<=0: state.position=previous
++	row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
++	row[4]=tilt; row[5]=direction; row[6]=omega; row[7]=yaw; row[9]=touching
++	if float(row[10])>=0.0: row[10]=minf(SMOKE_SECONDS,float(row[10])+dt)
+--- /dev/null
++++ b/canonical/game/vehicle/burning_barrel.gd.uid
+@@ -0,0 +1 @@
++uid://c1y53gubughk1
+--- a/canonical/game/vehicle/launch_start.gd
++++ b/canonical/game/vehicle/launch_start.gd
+@@ -5,7 +5,7 @@
+ 	if state.tick == 0 and marker > 0:
+ 		state.launch_pending = marker == 1
+ 		if marker == 2:
+-			state.launch_result = "Jumped start"
++			state.launch_result = "False start"
+ 			state.launch_delay_until = 72 # 0.6 s, measured from lights-out.
+ 
+ static func advance(state: VehicleState, frame: DriveFrame) -> void:
+@@ -17,7 +17,7 @@
+ 	if frame.throttle == 0: return
+ 	state.launch_pending = false
+ 	if state.tick < 10: # First sample at >=80 ms is tick 10 (83.3 ms).
+-		state.launch_result = "Jumped start"
++		state.launch_result = "False start"
+ 		state.launch_delay_until = state.tick + 6 # Tiny 50 ms delay; no bonus.
+ 	elif state.tick < 22:
+ 		state.launch_result = "Perfect start"
+--- a/canonical/game/vehicle/light_props.gd
++++ b/canonical/game/vehicle/light_props.gd
+@@ -6,9 +6,12 @@
+ 	for object: Dictionary in objects:
+ 		if object.kind in CreatorCatalog.SOFT: props.append(object)
+ 	if state.light_props.is_empty():
+-		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
++		for object: Dictionary in props: state.light_props.append(BurningBarrel.initial(object) if object.kind=="burning_barrel" else [object.position[0],object.position[1],0.0,0.0,0.0])
+ 	BreakableProps.prepare(state,props)
+ 	for index: int in range(props.size()):
++		if props[index].kind=="burning_barrel":
++			BurningBarrel.step(state,props[index],state.light_props[index],contact,previous,dt,car_mass,car_radius)
++			continue
+ 		if props[index].kind in BreakableProps.KINDS:
+ 			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
+ 			continue
+--- a/canonical/game/vehicle/track_hazards.gd
++++ b/canonical/game/vehicle/track_hazards.gd
+@@ -34,6 +34,8 @@
+ 			var crossing: float = lerpf(before.y,after.y,(half.x-before.x)/(after.x-before.x))
+ 			if absf(crossing) <= half.y and state.velocity.length() >= 5.0:
+ 				state.jump_height = float(object.get("scale",1.0))
++				state.bridge_descending = false
++				state.bridge_landing_speed = 0.0
+ 				state.jump_velocity = minf(8.0,2.0+state.velocity.length()*0.20)
+ 				state.jump_cooldown = 120
+ 				return
+--- a/canonical/game/vehicle/vehicle_simulation.gd
++++ b/canonical/game/vehicle/vehicle_simulation.gd
+@@ -4,7 +4,8 @@
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.59"
++const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
++const PHYSICS_VERSION: String = "arcade-planar-0.66"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+ const TICK_RATE: int = 120
+@@ -15,6 +16,8 @@
+ var state := VehicleState.new()
+ var config: HandlingConfig
+ var kerb_probe := VehicleState.new()
++var bridge_elevation: BridgeElevation
++var _prepared_ground: PlaygroundData
+ 
+ 
+ func _init(handling: HandlingConfig) -> void:
+@@ -27,7 +30,15 @@
+ 	state.heading = direction
+ 
+ 
++func prepare_ground(ground: PlaygroundData, elevation: BridgeElevation = null) -> void:
++	_prepared_ground = ground
++	bridge_elevation = null
++	if ground is NativeTrack and (ground.bridge_height > 0.0 or not ground.creator_bridges.is_empty()):
++		bridge_elevation = elevation if elevation != null else BridgeElevation.new(ground)
++
++
+ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
++	if ground != _prepared_ground: prepare_ground(ground)
+ 	state.collision_impulse = Vector2.ZERO
+ 	state.scrape_strength = 0.0
+ 	state.scrape_normal = Vector2.ZERO
+@@ -40,6 +51,8 @@
+ 	var old_position: Vector2 = state.position
+ 	var old_heading: float = state.heading
+ 	var old_velocity: Vector2 = state.velocity
++	var old_layer: bool = state.track_elevated
++	var old_route: int = state.route_index
+ 	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
+ 	if state.roll_ticks > 0:
+ 		state.roll_ticks -= 1
+@@ -60,13 +73,21 @@
+ 	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
+ 	if state.jump_height > 0.0:
+ 		var previous: Vector2 = state.position
++		var bridge_jump: bool = state.bridge_airborne and bridge_elevation != null
++		var previous_support: float = BRIDGE_FLIGHT.support(bridge_elevation,previous,state.heading,state.route_index,state.track_elevated,config.wheelbase) if bridge_jump else 0.0
+ 		state.position += state.velocity*STEP
+-		state.jump_velocity -= 9.81*STEP
+-		state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
++		if bridge_jump:
++			state.heading += state.yaw_rate*STEP
++		else:
++			state.bridge_airborne = false
++			state.jump_velocity -= 9.81*STEP
++			state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
+ 		if ground != null:
+ 			ground.resolve(state,previous,config)
++		if bridge_jump: BRIDGE_FLIGHT.advance(state,previous_support,bridge_elevation,config.wheelbase,STEP)
++		if ground != null:
+ 			ground.step_props(state,previous,config,STEP)
+-		if state.jump_height == 0.0:
++		if state.jump_height == 0.0 and not bridge_jump:
+ 			state.jump_velocity = 0.0
+ 			state.velocity *= 0.88
+ 		_step_kerbs(old_position,old_heading,null)
+@@ -267,6 +288,8 @@
+ 	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
+ 	_step_kerbs(old_position,old_heading,ground)
+ 	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
++	if bridge_elevation != null:
++		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
+ 	state.tick += 1
+ 
+ 
+--- a/canonical/game/vehicle/vehicle_state.gd
++++ b/canonical/game/vehicle/vehicle_state.gd
+@@ -8,6 +8,10 @@
+ var jump_height: float = 0.0
+ var jump_velocity: float = 0.0
+ var jump_cooldown: int = 0
++var bridge_airborne: bool = false
++var bridge_gravity: float = 22.0
++var bridge_descending: bool = false # Retained through landing for per-crest cooldown.
++var bridge_landing_speed: float = 0.0 # Presentation observer; relative to the landing deck.
+ var loose_tyres: Array = []
+ var light_props: Array = []
+ var prop_destruction: Array = []
+@@ -61,7 +65,7 @@
+ 	var result: Array = [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
+ 		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]
+ 	result.append(loose_tyres.duplicate(true))
+-	result.append([jump_height,jump_velocity,jump_cooldown])
++	result.append([jump_height,jump_velocity,jump_cooldown,bridge_airborne,bridge_gravity,bridge_descending])
+ 	result.append(light_props.duplicate(true))
+ 	result.append([tire_oil,tire_water])
+ 	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])
+--- a/backend/deploy/object_archive.py
++++ b/backend/deploy/object_archive.py
+@@ -6,10 +6,20 @@
+ import gzip
+ import io
+ import os
+-import shutil
++import re
+ import sys
+ import tarfile
+ from pathlib import Path, PurePosixPath
++
++from bmt_backend.storage import MAX_STORED_BLOB_BYTES, decode_blob_json, sync_directory
++
++
++def object_digest(relative):
++    parts = relative.parts
++    if (len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{2}", parts[0])
++            or not re.fullmatch(r"[0-9a-f]{64}\.json", parts[1]) or not parts[1].startswith(parts[0])):
++        raise ValueError("Invalid content-addressed object path")
++    return parts[1][:64]
+ 
+ 
+ def require_empty(root: Path) -> None:
+@@ -32,6 +42,8 @@
+             store = S3BlobStore(settings)
+         archive_objects(store)
+         return
++    if root.is_symlink() or not root.is_dir():
++        raise ValueError("Object root must be a regular directory")
+     # An interrupted atomic publish can leave the temporary and final names linked.
+     # Serialize both as regular data; restoring archive link entries is forbidden.
+     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", dereference=True) as output:
+@@ -43,7 +55,23 @@
+                 source = Path(directory) / name
+                 if source.is_symlink() or not (source.is_file() or source.is_dir()):
+                     raise ValueError("Only regular object files and directories can be backed up")
+-                output.add(source, arcname=source.relative_to(root).as_posix(), recursive=False)
++                relative = source.relative_to(root)
++                if source.is_dir():
++                    if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", name):
++                        raise ValueError("Invalid object shard")
++                    output.add(source, arcname=relative.as_posix(), recursive=False)
++                else:
++                    key = object_digest(relative)
++                    with source.open("rb") as stream:
++                        body = stream.read(MAX_STORED_BLOB_BYTES + 1)
++                        entry = output.gettarinfo(fileobj=stream, arcname=relative.as_posix())
++                    if not entry.isfile():
++                        raise ValueError("Object must be a regular file")
++                    decode_blob_json(body, key)
++                    # Verify and archive the same bounded bytes, rather than
++                    # reopening a file after its integrity check.
++                    entry.size = len(body)
++                    output.addfile(entry, io.BytesIO(body))
+ 
+ 
+ def archive_objects(store) -> None:
+@@ -75,15 +103,29 @@
+                 raise ValueError("Archive links and special files are forbidden")
+             destination = root.joinpath(*relative.parts)
+             if member.isdir():
++                if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", relative.parts[0]):
++                    raise ValueError("Invalid object shard")
+                 destination.mkdir(parents=True, exist_ok=True)
+             else:
+-                destination.parent.mkdir(parents=True, exist_ok=True)
++                key = object_digest(relative)
++                if not 0 <= member.size <= MAX_STORED_BLOB_BYTES:
++                    raise ValueError("Stored object exceeds limit")
+                 payload = source.extractfile(member)
+                 if payload is None:
+                     raise ValueError("Object archive file has no content")
++                with payload:
++                    body = payload.read(MAX_STORED_BLOB_BYTES + 1)
++                if len(body) != member.size:
++                    raise ValueError("Truncated object archive")
++                decode_blob_json(body, key)
++                destination.parent.mkdir(parents=True, exist_ok=True)
+                 # Exclusive create rejects duplicate file entries and never overwrites.
+-                with payload, destination.open("xb") as output:
+-                    shutil.copyfileobj(payload, output)
++                with destination.open("xb") as output:
++                    output.write(body)
++                    output.flush()
++                    os.fsync(output.fileno())
++                sync_directory(destination.parent)
++        sync_directory(root)
+ 
+ 
+ if __name__ == "__main__":

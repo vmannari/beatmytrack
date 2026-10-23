@@ -1,0 +1,596 @@
+--- a/game/input/touch_steering.gd
++++ b/game/input/touch_steering.gd
+@@ -1,10 +1,14 @@
+ class_name TouchSteering
+ extends RefCounted
+-## UI-only adapters. Future tilt sources can submit the same normalized command.
+-static func sample(method: String, point: Vector2, rect: Rect2) -> float:
+-	var radius: float = rect.size.x*0.4
+-	var value: float = clampf((point.x-rect.get_center().x)/maxf(radius,1.0),-1.0,1.0)
+-	if method == "joystick":
+-		value = ((point-rect.get_center())/maxf(radius,1.0)).limit_length(1.0).x
+-		if absf(value) < 0.08: return 0.0
+-	return value
++## Presentation-only relative touch axes; the canonical DriveFrame stays unchanged.
++const FULL_TRAVEL_RATIO: float = 0.25
++const DEAD_ZONE_RATIO: float = 0.12
++
++static func axis(displacement: float, travel: float) -> float:
++	var distance: float = maxf(travel,1.0)
++	var dead_zone: float = distance*DEAD_ZONE_RATIO
++	return signf(displacement)*clampf((absf(displacement)-dead_zone)/(distance-dead_zone),0.0,1.0)
++
++static func sample(point: Vector2, origin: Vector2, rect: Rect2) -> float:
++	# Vertical drift never reduces horizontal steering, including joystick artwork.
++	return axis(point.x-origin.x,rect.size.x*FULL_TRAVEL_RATIO)
+--- a/game/input/control_layout.gd
++++ b/game/input/control_layout.gd
+@@ -60,7 +60,11 @@
+ 	var keys: Array[String] = []
+ 	if config.steering_type == "buttons": keys.append_array(["steer_left", "steer_right"])
+ 	else: keys.append(str(config.steering_type))
+-	keys.append_array(["handbrake", "brake", "accelerator"])
++	keys.append("handbrake")
++	# Analog modes share one vertical gas/brake axis at the saved accelerator position.
++	# Keep the separate brake preferences for switching back to buttons.
++	if config.steering_type == "buttons": keys.append("brake")
++	keys.append("accelerator")
+ 	return keys
+ 
+ static func extent(key: String, scale_value: float) -> Vector2:
+--- a/game/ui/touch_controls.gd
++++ b/game/ui/touch_controls.gd
+@@ -21,9 +21,14 @@
+ 		release_all()
+ 		queue_redraw()
+ var owners: Dictionary = {}
++var touch_origins: Dictionary = {}
+ var safe_override := Rect2()
+ var analog_value: float = 0.0
+ var thumb: Control
++var pedal_thumb: Control
++var pedal_value: float = 0.0
++var steering_finger: int = -1
++var pedal_finger: int = -1
+ var steering_rect := Rect2()
+ var stick_offset := Vector2.ZERO
+ var _cached_groups: Dictionary = {}
+@@ -34,8 +39,27 @@
+ 	if driver != null:
+ 		for finger: Variant in owners: driver.release_touch(int(finger))
+ 	owners.clear()
++	touch_origins.clear()
+ 	analog_value = 0.0
++	pedal_value = 0.0
++	steering_finger = -1
++	pedal_finger = -1
+ 	stick_offset = Vector2.ZERO
++
++func analog_controls() -> bool:
++	return not layout.is_empty() and layout.steering_type != "buttons"
++
++func _release_finger(finger: int) -> void:
++	owners.erase(finger)
++	touch_origins.erase(finger)
++	driver.release_touch(finger)
++	if finger == steering_finger:
++		steering_finger = -1
++		analog_value = 0.0
++		stick_offset = Vector2.ZERO
++	if finger == pedal_finger:
++		pedal_finger = -1
++		pedal_value = 0.0
+ 
+ func usable_area() -> Rect2:
+ 	var safe := Rect2(Vector2.ZERO,size)
+@@ -121,6 +145,7 @@
+ 	set(value):
+ 		show_labels = value
+ 		for art: TouchControlArt in artwork: art.show_labels = value
++		queue_redraw()
+ 
+ 
+ func _ready() -> void:
+@@ -137,13 +162,22 @@
+ 			art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 			artwork.append(art)
+ 			add_child(art)
+-	thumb = Control.new()
+-	thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	thumb.draw.connect(func() -> void:
+-		thumb.draw_circle(Vector2.ZERO,16,Color("142021"))
+-		thumb.draw_arc(Vector2.ZERO,16,0,TAU,40,RaceHUDStyle.GOLD,3,true))
+-	add_child(thumb)
+-	resized.connect(queue_redraw)
++	thumb = _make_thumb()
++	pedal_thumb = _make_thumb()
++	resized.connect(func() -> void:
++		release_all()
++		queue_redraw())
++	visibility_changed.connect(func() -> void:
++		if not is_visible_in_tree(): release_all())
++
++func _make_thumb() -> Control:
++	var indicator := Control.new()
++	indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	indicator.draw.connect(func() -> void:
++		indicator.draw_circle(Vector2.ZERO,16,Color("142021"))
++		indicator.draw_arc(Vector2.ZERO,16,0,TAU,40,RaceHUDStyle.GOLD,3,true))
++	add_child(indicator)
++	return indicator
+ 
+ 
+ func zones() -> Array[Rect2]:
+@@ -159,7 +193,10 @@
+ 			var half := Vector2(steering.size.x*0.46,steering.size.y)
+ 			left = Rect2(steering.position,half)
+ 			right = Rect2(Vector2(steering.end.x-half.x,steering.position.y),half)
+-		return [left, right, _pedal_art(groups.brake,false), _pedal_art(groups.accelerator,true), groups.handbrake.grow(-10)]
++		var gas: Rect2 = groups.accelerator
++		var brake: Rect2 = groups.brake if not analog_controls() else Rect2(gas.position+Vector2(0,gas.size.y*0.5),Vector2(gas.size.x,gas.size.y*0.5))
++		if analog_controls(): gas.size.y *= 0.5
++		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10)]
+ 	var result: Array[Rect2] = [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
+ 		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120), Rect2(size.x - 360, size.y - 156, 92, 92)]
+ 	var scale_value: float = control_scale * (1.15 if mobile_layout else 1.0)
+@@ -184,9 +221,10 @@
+ 	if not layout.is_empty():
+ 		var rectangles: Array[Rect2] = zones()
+ 		var groups: Dictionary = group_rects()
+-		rectangles[2] = groups.brake
++		var pedal: Rect2 = groups.accelerator
++		rectangles[2] = groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
+ 		rectangles[4] = groups.handbrake
+-		rectangles[3] = groups.accelerator
++		rectangles[3] = pedal if not analog_controls() else Rect2(pedal.position,Vector2(pedal.size.x,pedal.size.y*0.5))
+ 		if layout.steering_type == "buttons":
+ 			rectangles[0] = groups.steer_left
+ 			rectangles[1] = groups.steer_right
+@@ -225,37 +263,43 @@
+ 	if driver == null: return
+ 	if event is InputEventScreenTouch:
+ 		if not event.pressed or event.canceled:
+-			owners.erase(event.index)
+-			driver.release_touch(event.index)
+-			if not owners.values().has(&"steer_left") and not owners.values().has(&"steer_right"):
+-				analog_value = 0.0
+-				stick_offset = Vector2.ZERO
+-		elif enabled:
++			_release_finger(event.index)
++		elif enabled and is_visible_in_tree():
+ 			var local: Vector2 = get_global_transform_with_canvas().affine_inverse()*event.position
+ 			var action: StringName = action_at(local)
+ 			if action != &"":
+-				if not layout.is_empty() and layout.steering_type != "buttons" and action in [&"steer_left",&"steer_right"]:
+-					# Most recent steering finger takes ownership; old releases cannot cancel it.
++				if analog_controls() and action != &"handbrake":
++					var steering: bool = action in [&"steer_left",&"steer_right"]
++					# Each analog axis has one owner; old releases cannot cancel a handoff.
+ 					for finger: Variant in owners.keys():
+-						if owners[finger] in [&"steer_left",&"steer_right"]:
+-							driver.release_touch(int(finger))
+-							owners.erase(finger)
++						if (steering and owners[finger] in [&"steer_left",&"steer_right"]) or (not steering and owners[finger] in [&"accelerate",&"brake"]):
++							_release_finger(int(finger))
++					if steering: steering_finger = event.index
++					else: pedal_finger = event.index
+ 				owners[event.index] = action
++				touch_origins[event.index] = local
+ 				_update_finger(event.index,local)
+ 				if action in [&"steer_left", &"steer_right"]:
+ 					SteeringHaptics.press(haptic_strength)
+-	elif event is InputEventScreenDrag and enabled and driver.touches.has(event.index):
++	elif event is InputEventScreenDrag and enabled and is_visible_in_tree() and driver.touches.has(event.index):
+ 		# Diagnostic/platform adapters may seed a touch directly through DriverInput.
+ 		if not owners.has(event.index): owners[event.index] = driver.touches[event.index]
++		if not touch_origins.has(event.index): touch_origins[event.index] = get_global_transform_with_canvas().affine_inverse()*event.position
+ 		_update_finger(event.index,get_global_transform_with_canvas().affine_inverse()*event.position)
+ 
+ func _update_finger(finger: int, point: Vector2) -> void:
+ 	var action: StringName = owners[finger]
+-	if not layout.is_empty() and action in [&"steer_left",&"steer_right"] and layout.steering_type != "buttons":
++	if analog_controls() and action in [&"steer_left",&"steer_right"]:
+ 		var rect: Rect2 = group_rects()[layout.steering_type]
+-		analog_value = TouchSteering.sample(layout.steering_type,point,rect)
+-		stick_offset = ((point-rect.get_center())/maxf(rect.size.x*0.4,1.0)).limit_length(1.0)
++		analog_value = TouchSteering.sample(point,touch_origins[finger],rect)
++		stick_offset = Vector2(analog_value,0)
+ 		driver.set_touch(finger,&"steer_left" if analog_value < 0 else &"steer_right",absf(analog_value))
++		return
++	if analog_controls() and action in [&"accelerate",&"brake"]:
++		var rect: Rect2 = group_rects().accelerator
++		var origin: Vector2 = touch_origins[finger]
++		pedal_value = TouchSteering.axis(origin.y-point.y,rect.size.y*TouchSteering.FULL_TRAVEL_RATIO)
++		driver.set_touch(finger,&"accelerate" if pedal_value >= 0 else &"brake",absf(pedal_value))
+ 		return
+ 	var index: int = ACTIONS.find(action)
+ 	var target: Rect2 = touch_zones()[index]
+@@ -269,7 +313,7 @@
+ 			held = true
+ 	# Pedals press fully on touch. Sliding down beyond the face progressively releases them.
+ 	var strength: float = 1.0
+-	if not layout.is_empty() and index >= 2:
++	if not layout.is_empty() and index in [2,3]:
+ 		strength = clampf((target.end.y+28-point.y)/maxf(target.size.y*0.5,1.0),0.0,1.0)
+ 	driver.set_touch(finger,action,strength if held else 0.0)
+ 
+@@ -292,14 +336,17 @@
+ 	# Input state stays immediate. Retain the drawing commands while fingers
+ 	# move within a held button; also observe keyboard and external clear().
+ 	if thumb != null:
+-		thumb.visible = not layout.is_empty() and layout.steering_type != "buttons"
++		thumb.visible = analog_controls()
++		pedal_thumb.visible = thumb.visible
+ 		if thumb.visible:
+-			var steering: Rect2 = steering_rect
+ 			if driver != null and driver.touches.is_empty():
+-				analog_value = 0.0
+-				stick_offset = Vector2.ZERO
+-			thumb.position = steering.get_center()+(stick_offset if layout.steering_type == "joystick" else Vector2(analog_value,0))*steering.size.x*0.4
++				release_all()
++			var steering: Rect2 = group_rects()[layout.steering_type]
++			var pedal: Rect2 = group_rects().accelerator
++			thumb.position = touch_origins.get(steering_finger,steering.get_center())+Vector2(analog_value*steering.size.x*TouchSteering.FULL_TRAVEL_RATIO,0)
++			pedal_thumb.position = touch_origins.get(pedal_finger,pedal.get_center())-Vector2(0,pedal_value*pedal.size.y*TouchSteering.FULL_TRAVEL_RATIO)
+ 			thumb.modulate.a = float(layout[layout.steering_type].opacity)
++			pedal_thumb.modulate.a = float(layout.accelerator.opacity)
+ 	var mask: int = pressed_mask()
+ 	last_pressed_mask = mask
+ 	for art: TouchControlArt in artwork:
+@@ -318,7 +365,7 @@
+ 	draw_count += 1
+ 	last_pressed_mask = pressed_mask()
+ 	var rectangles: Array[Rect2] = zones()
+-	if not layout.is_empty() and layout.steering_type != "buttons":
++	if analog_controls():
+ 		var steer: Rect2 = group_rects()[layout.steering_type]
+ 		steering_rect = steer
+ 		var tint := Color(RaceHUDStyle.GOLD,float(layout[layout.steering_type].opacity))
+@@ -327,7 +374,21 @@
+ 		else:
+ 			draw_arc(steer.get_center(),steer.size.x*0.48,0,TAU,64,tint,3,true)
+ 		draw_circle(steer.get_center(),8,tint)
++		var pedal: Rect2 = group_rects().accelerator
++		var pedal_tint := Color(RaceHUDStyle.GOLD,float(layout.accelerator.opacity))
++		var center: Vector2 = pedal.get_center()
++		draw_line(Vector2(center.x,pedal.position.y+24),Vector2(center.x,pedal.end.y-24),pedal_tint,3,true)
++		draw_line(center-Vector2(12,0),center+Vector2(12,0),pedal_tint,3,true)
++		for direction: float in [-1.0,1.0]:
++			var tip := Vector2(center.x,center.y+direction*(pedal.size.y*0.5-24))
++			draw_line(tip,tip+Vector2(-7,-direction*7),pedal_tint,3,true)
++			draw_line(tip,tip+Vector2(7,-direction*7),pedal_tint,3,true)
++		if show_labels:
++			var font: Font = ThemeDB.fallback_font
++			draw_string(font,Vector2(center.x+20,pedal.position.y+42),"GAS",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
++			draw_string(font,Vector2(center.x+20,pedal.end.y-28),"BRAKE",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
+ 	for art: TouchControlArt in artwork:
++		art.visible = not analog_controls() or art.button_index == 4
+ 		var rect: Rect2 = rectangles[art.button_index]
+ 		if art.artwork_rect != rect:
+ 			art.artwork_rect = rect
+--- a/game/ui/control_layout_editor.gd
++++ b/game/ui/control_layout_editor.gd
+@@ -288,7 +288,7 @@
+ 	return slider
+ 
+ func _refresh() -> void:
+-	heading.text = ControlLayout.TITLES[selected]
++	heading.text = "Gas / brake" if selected == "accelerator" and touch.analog_controls() else ControlLayout.TITLES[selected]
+ 	size_slider.set_value_no_signal(touch.layout[selected].scale)
+ 	opacity_slider.set_value_no_signal(touch.layout[selected].opacity)
+ 	size_value.text = "%d%%" % roundi(float(touch.layout[selected].scale)*100)
+--- a/game/diagnostics/mobile_control_probe.gd
++++ b/game/diagnostics/mobile_control_probe.gd
+@@ -30,6 +30,9 @@
+ 			controls.layout.steering_type = method
+ 			var boxes: Array[Rect2] = controls.touch_zones()
+ 			for rect: Rect2 in boxes: check(controls.usable_area().encloses(rect),"safe touch bounds")
++			if controls.analog_controls():
++				_probe_analog(boxes)
++				continue
+ 			send_touch(2,boxes[0].get_center())
+ 			send_touch(5,boxes[3].get_center())
+ 			check(controls.driver.sample().steer < 0 and controls.driver.sample().throttle == 255,"steer+gas")
+@@ -62,3 +65,35 @@
+ 	finished.emit(report)
+ 	controls.queue_free()
+ 	queue_free()
++
++func _probe_analog(boxes: Array[Rect2]) -> void:
++	var steering: Rect2 = controls.group_rects()[controls.layout.steering_type]
++	var pedal: Rect2 = controls.group_rects().accelerator
++	var origin: Vector2 = boxes[0].get_center()
++	var gas_origin: Vector2 = pedal.get_center()
++	send_touch(2,origin)
++	send_touch(5,gas_origin)
++	check(controls.driver.sample().steer == 0 and controls.driver.sample().throttle == 0 and controls.driver.sample().brake == 0,"analog first touch neutral")
++	send_drag(2,origin-Vector2(steering.size.x*0.25,0))
++	send_drag(5,gas_origin-Vector2(0,pedal.size.y*0.25))
++	check(controls.driver.sample().steer == -127 and controls.driver.sample().throttle == 255,"horizontal steer+vertical gas")
++	send_touch(11,boxes[4].get_center())
++	check(controls.driver.sample().handbrake == 255 and controls.driver.sample().throttle == 255,"independent analog handbrake with gas")
++	send_touch(11,Vector2.ZERO,false,true)
++	check(controls.driver.sample().handbrake == 0 and controls.driver.sample().throttle == 255,"canceled handbrake preserves analog gas")
++	send_drag(5,gas_origin+Vector2(0,pedal.size.y*0.25))
++	check(controls.driver.sample().brake == 255 and controls.driver.sample().throttle == 0,"vertical gas to brake")
++	send_touch(9,gas_origin)
++	send_touch(5,Vector2.ZERO,false)
++	check(controls.driver.sample().brake == 0 and controls.driver.sample().steer == -127,"pedal handoff starts neutral and preserves steer")
++	send_drag(9,gas_origin+Vector2(0,pedal.size.y*0.14))
++	check(controls.driver.sample().brake > 0 and controls.driver.sample().brake < 255,"relative brake ramp")
++	send_touch(9,Vector2.ZERO,false,true)
++	check(controls.driver.sample().brake == 0,"canceled analog brake")
++	send_touch(2,Vector2.ZERO,false)
++	check(controls.driver.sample().steer == 0,"analog steering releases")
++	send_touch(4,gas_origin)
++	send_drag(4,gas_origin-Vector2(0,pedal.size.y*0.25))
++	controls.enabled = false
++	check(controls.driver.sample().throttle == 0,"disabled analog release")
++	controls.enabled = true
+--- a/game/tests/test_control_layout.gd
++++ b/game/tests/test_control_layout.gd
+@@ -63,7 +63,8 @@
+ 		control.layout.steering_type = method
+ 		var rect: Rect2 = control.group_rects()[method]
+ 		press(control,1,rect.get_center())
+-		drag(control,1,rect.get_center()+Vector2(rect.size.x*0.2,0))
++		check(control.driver.sample().steer == 0,"first analog contact is neutral")
++		drag(control,1,rect.get_center()+Vector2(rect.size.x*0.14,0))
+ 		check(control.driver.sample().steer > 40 and control.driver.sample().steer < 90,"analog half right")
+ 		drag(control,1,Vector2(rect.position.x-100,rect.get_center().y))
+ 		check(control.driver.sample().steer == -127,"captured analog saturates outside bounds")
+@@ -73,6 +74,8 @@
+ 	Input.action_press(&"accelerate",0.4)
+ 	check(control.driver.sample().throttle > 90 and control.driver.sample().throttle < 120,"input-map analog throttle preserved")
+ 	press(control,2,control.zones()[3].get_center())
++	check(control.driver.sample().throttle > 90 and control.driver.sample().throttle < 120,"neutral analog contact preserves mapped source")
++	drag(control,2,control.zones()[3].get_center()-Vector2(0,100))
+ 	check(control.driver.sample().throttle == 255,"touch combines with mapped sources")
+ 	press(control,2,Vector2.ZERO,false)
+ 	check(control.driver.sample().throttle > 90,"touch release does not cancel mapped source")
+@@ -81,6 +84,8 @@
+ 	press(control,7,steer.position+Vector2(4,steer.size.y/2))
+ 	press(control,8,steer.end-Vector2(4,steer.size.y/2))
+ 	press(control,7,Vector2.ZERO,false)
++	check(control.driver.sample().steer == 0,"new analog finger starts neutral after handoff")
++	drag(control,8,steer.end-Vector2(4,steer.size.y/2)+Vector2(100,0))
+ 	check(control.driver.sample().steer == 127,"new analog finger owns steering after old finger releases")
+ 	var cancel := InputEventScreenTouch.new()
+ 	cancel.index = 8; cancel.canceled = true
+@@ -124,14 +129,14 @@
+ 	await process_frame
+ 	await process_frame
+ 	check(editor.touch.layout == ControlLayout.from_settings(reloaded.settings),"editor uses saved race geometry")
+-	var before: Rect2 = editor.touch.group_rects().brake
++	var before: Rect2 = editor.touch.group_rects().accelerator
+ 	var event := InputEventScreenTouch.new()
+ 	event.index = 8; event.position = before.get_center(); event.pressed = true
+ 	editor._input(event)
+ 	var motion := InputEventScreenDrag.new()
+ 	motion.index = 8; motion.position = before.get_center()+Vector2(0,-160)
+ 	editor._input(motion)
+-	check(editor.touch.group_rects().brake.position.distance_to(before.position) > 100,"direct drag moves selected pedal")
++	check(editor.touch.group_rects().accelerator.position.distance_to(before.position) > 100,"direct drag moves selected gas/brake axis")
+ 	event.pressed = false; editor._input(event)
+ 	reloaded.load_records()
+ 	check(same_layout(reloaded.settings.control_layout,editor.touch.layout),"drag completion persists")
+--- /dev/null
++++ b/game/tests/test_relative_touch_axes.gd
+@@ -0,0 +1,189 @@
++extends SceneTree
++## REL01-REL05: first-contact origin, dead zone, quick independent axes and lifecycle.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		push_error(message)
++
++func press(control: TouchControls, finger: int, point: Vector2, down: bool = true) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	event.pressed = down
++	control._input(event)
++
++func drag(control: TouchControls, finger: int, point: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	control._input(event)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var control := TouchControls.new()
++	control.driver = DriverInput.new()
++	control.haptic_strength = 0.0
++	root.add_child(control)
++	await process_frame
++	for method: String in ["horizontal","joystick"]:
++		for mirrored: bool in [false,true]:
++			for dimensions: Vector2 in [Vector2(960,540),Vector2(1280,720),Vector2(1600,720)]:
++				for scale_value: float in [0.65,1.0,1.6]:
++					control.size = dimensions
++					control.layout = ControlLayout.preset(mirrored,scale_value)
++					control.layout.steering_type = method
++					_test_axes(control)
++	# Same screen coordinates must work under a translated/scaled CanvasItem.
++	control.position = Vector2(22,31)
++	control.scale = Vector2(0.8,0.8)
++	_test_axes(control)
++	control.position = Vector2.ZERO
++	control.scale = Vector2.ONE
++	_test_lifecycle(control)
++	control.queue_free()
++	await process_frame
++	if DisplayServer.get_name() != "headless": await _capture_gameplay()
++	print("RELATIVE_TOUCH_AXES: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func _test_axes(control: TouchControls) -> void:
++	var groups: Dictionary = control.group_rects()
++	var steering: Rect2 = groups[control.layout.steering_type]
++	var pedal: Rect2 = groups.accelerator
++	check(groups.size() == 3 and not groups.has("brake"),"analog mode has steer, gas/brake and separate handbrake")
++	var saved_brake: Dictionary = control.layout.brake.duplicate(true)
++	for fraction: Vector2 in [Vector2(0.04,0.08),Vector2(0.5,0.5),Vector2(0.96,0.92)]:
++		var origin: Vector2 = steering.position+steering.size*fraction
++		var pedal_origin: Vector2 = pedal.position+pedal.size*fraction
++		var travel: float = steering.size.x*0.25
++		var pedal_travel: float = pedal.size.y*0.25
++		press(control,1,origin)
++		press(control,2,pedal_origin)
++		check(control.driver.sample().steer == 0 and control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"first contact is zero even near edges")
++		for direction: float in [-1.0,1.0]:
++			drag(control,1,origin+Vector2(direction*travel*0.11,0))
++			drag(control,2,pedal_origin+Vector2(0,direction*pedal_travel*0.11))
++			check(control.driver.sample().steer == 0 and control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"small dead zone on both sides of both origins")
++			drag(control,1,origin+Vector2(direction*travel*0.56,0))
++			drag(control,2,pedal_origin-Vector2(0,direction*pedal_travel*0.56))
++			var frame: DriveFrame = control.driver.sample()
++			check(absi(frame.steer) >= 62 and absi(frame.steer) <= 65 and signi(frame.steer) == int(direction),"quick continuous steering ramp in both directions")
++			var pedal_strength: int = frame.throttle if direction > 0 else frame.brake
++			check(pedal_strength >= 126 and pedal_strength <= 129 and (frame.brake if direction > 0 else frame.throttle) == 0,"quick vertical gas/brake ramp excludes opposite pedal")
++			drag(control,1,origin+Vector2(direction*travel*1.01,500))
++			drag(control,2,pedal_origin+Vector2(500,-direction*pedal_travel*1.01))
++			frame = control.driver.sample()
++			check(frame.steer == int(direction)*127,"vertical drift cannot reduce or reverse horizontal steering")
++			check((frame.throttle if direction > 0 else frame.brake) == 255 and (frame.brake if direction > 0 else frame.throttle) == 0,"horizontal drift cannot reduce vertical gas/brake")
++			drag(control,1,origin)
++			drag(control,2,pedal_origin)
++			check(control.driver.sample().steer == 0 and control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"returning to original contact is neutral")
++		press(control,1,Vector2.ZERO,false)
++		press(control,2,Vector2.ZERO,false)
++		check(control.touch_origins.is_empty() and control.owners.is_empty(),"release removes both origins")
++	check(control.layout.brake == saved_brake,"analog driving preserves separate button preferences")
++
++func _test_lifecycle(control: TouchControls) -> void:
++	control.size = Vector2(1280,720)
++	control.layout = ControlLayout.preset()
++	control.layout.steering_type = "horizontal"
++	var steer: Rect2 = control.group_rects().horizontal
++	var pedal: Rect2 = control.group_rects().accelerator
++	var hb: Rect2 = control.group_rects().handbrake
++	press(control,1,steer.get_center())
++	drag(control,1,steer.get_center()+Vector2(100,0))
++	press(control,2,pedal.get_center())
++	drag(control,2,pedal.get_center()-Vector2(0,100))
++	press(control,3,hb.get_center())
++	check(control.driver.sample().steer == 127 and control.driver.sample().throttle == 255 and control.driver.sample().handbrake == 255,"three independent fingers steer, accelerate and handbrake")
++	press(control,4,steer.position+Vector2(2,2))
++	check(control.driver.sample().steer == 0 and control.driver.sample().throttle == 255,"steering handoff resets only its own origin")
++	press(control,1,Vector2.ZERO,false)
++	drag(control,1,steer.position-Vector2(100,0))
++	drag(control,4,steer.position+Vector2(102,2))
++	check(control.driver.sample().steer == 127,"old steering release and drag cannot affect new owner")
++	press(control,5,pedal.position+Vector2(2,2))
++	press(control,2,Vector2.ZERO,false)
++	drag(control,2,pedal.position-Vector2(0,100))
++	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 0 and control.driver.sample().steer == 127,"pedal handoff stays neutral after old owner events")
++	drag(control,5,pedal.position+Vector2(2,102))
++	check(control.driver.sample().brake == 255 and control.driver.sample().throttle == 0 and control.driver.sample().handbrake == 255,"new pedal finger brakes with independent handbrake")
++	press(control,3,Vector2.ZERO,false)
++	check(control.driver.sample().handbrake == 0 and control.driver.sample().brake == 255,"handbrake release preserves analog brake")
++	var cancel := InputEventScreenTouch.new()
++	cancel.index = 5
++	cancel.canceled = true
++	control._input(cancel)
++	check(control.driver.sample().brake == 0 and control.driver.sample().steer == 127,"pedal cancellation preserves steering")
++	control.hide()
++	check(control.owners.is_empty() and control.touch_origins.is_empty() and control.driver.sample().steer == 0,"hidden controls release all origins and actions")
++	press(control,9,steer.get_center())
++	check(control.owners.is_empty(),"hidden controls cannot capture fingers")
++	control.show()
++	for notification: int in [Node.NOTIFICATION_APPLICATION_FOCUS_OUT,Node.NOTIFICATION_APPLICATION_PAUSED]:
++		press(control,1,steer.get_center())
++		drag(control,1,steer.get_center()-Vector2(100,0))
++		control._notification(notification)
++		check(control.owners.is_empty() and control.touch_origins.is_empty() and control.driver.sample().steer == 0,"focus/pause clears touch state")
++	press(control,1,steer.get_center())
++	control.layout = ControlLayout.preset()
++	check(control.touch_origins.is_empty() and control.driver.sample().steer == 0,"layout replacement clears origins")
++	press(control,2,control.touch_zones()[3].get_center())
++	press(control,3,control.touch_zones()[2].get_center())
++	check(control.driver.sample().throttle == 255 and control.driver.sample().brake == 255,"button scheme retains full press on separate pedals")
++	control.enabled = false
++	check(control.owners.is_empty() and control.touch_origins.is_empty() and control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"disable clears all buttons")
++	control.enabled = true
++
++func _capture_gameplay() -> void:
++	var output: String = ProjectSettings.globalize_path("res://../build/analog-touch-2026-10-16/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.set("production_mode",true)
++	root.add_child(game)
++	game.set_physics_process(false)
++	var control: TouchControls = game.get("hud").touch
++	control.haptic_strength = 0.0
++	for method: String in ["horizontal","joystick"]:
++		control.layout = ControlLayout.preset()
++		control.layout.steering_type = method
++		control.queue_redraw()
++		var steer: Rect2 = control.group_rects()[method]
++		var pedal: Rect2 = control.group_rects().accelerator
++		var origin: Vector2 = steer.get_center()-Vector2(18,0)
++		var pedal_origin: Vector2 = pedal.get_center()
++		press(control,1,origin)
++		press(control,2,pedal_origin)
++		await _save(output.path_join(method+"-neutral.png"))
++		check(control.thumb.position == origin and control.pedal_thumb.position == pedal_origin,"native indicators start at actual first contact")
++		drag(control,1,origin+Vector2(steer.size.x*0.25,90))
++		drag(control,2,pedal_origin-Vector2(60,pedal.size.y*0.25))
++		await _save(output.path_join(method+"-gas-right.png"))
++		check(control.thumb.position.y == origin.y and control.pedal_thumb.position.x == pedal_origin.x,"native indicators only move along intended axes")
++		var draws: int = control.draw_count
++		for tick: int in range(12):
++			drag(control,1,origin+Vector2(steer.size.x*0.25,sin(tick)*90))
++			drag(control,2,pedal_origin+Vector2(sin(tick)*90,-pedal.size.y*0.25))
++			await process_frame
++		check(control.draw_count == draws,"analog motion retains prepared drawing commands")
++		drag(control,1,origin-Vector2(steer.size.x*0.25,0))
++		drag(control,2,pedal_origin+Vector2(0,pedal.size.y*0.25))
++		press(control,3,(control.group_rects().handbrake as Rect2).get_center())
++		await _save(output.path_join(method+"-brake-left-handbrake.png"))
++		check(control.driver.sample().steer == -127 and control.driver.sample().brake == 255 and control.driver.sample().handbrake == 255,"native opposite axes and separate handbrake")
++		control.release_all()
++	game.queue_free()
++	await process_frame
++
++func _save(path: String) -> void:
++	await process_frame
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(path) == OK,"native gameplay capture: "+path.get_file())
+--- /dev/null
++++ b/game/tests/test_relative_touch_axes.gd.uid
+@@ -0,0 +1 @@
++uid://5d6oe4fsyjro
+--- a/docs/schemas/control-layout-v2.schema.json
++++ b/docs/schemas/control-layout-v2.schema.json
+@@ -31,9 +31,11 @@
+       "$ref": "#/$defs/control"
+     },
+     "accelerator": {
++      "description": "Accelerator button in buttons mode; shared vertical gas/brake axis in analog modes, up for gas and down for brake relative to first contact.",
+       "$ref": "#/$defs/control"
+     },
+     "brake": {
++      "description": "Separate brake button preferences, retained while analog modes use the shared accelerator region.",
+       "$ref": "#/$defs/control"
+     },
+     "steer_left": {
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Relative analog touch axes override (2026-10-16)
++The owner requires first contact to be zero, a small dead zone and a quick ramp, with horizontal steering, vertical gas/brake and a separate handbrake button. Both analog modes now use per-finger origins; the shared vertical axis uses up for gas/down for brake at the saved accelerator position, retaining separate brake preferences for button mode. Proposed full travel is25% of the control extent, with12% of that travel neutral. Preserve canonical DriveFrame/physics, keyboard/gamepad, safe bounds and retained drawing. Focused1642headless/1656Compatibility/1656Mobile, existing buttons747headless/913native, layout407 including viewport90 and parser818 pass. Actual commands, twelve gameplay captures, initial environment/concurrent-parse failures and task-only patch: `docs/evidence/relative-analog-touch-2026-10-16/report.json`. Owner/physical-phone feel acceptance remains; no phone attachment check/test, APK, backend or deployment.
+ 
+ ## Forgiving customisation dirt tolerance override (2026-10-16)
+ The owner accepts small leftover dirt to avoid hunting tiny hidden patches. This supersedes the initial strict clean epsilon: allow at most5% sampled exterior points above0.05 residue and mean residue at most0.05, including faint whole-car film. Broad dirt still shows WASH REQUIRED; both masks/snow, bounded cached native inspection, local dirt/history, car/camera and canonical behavior remain. Actual livery/kit saves with tolerated dirt and all-five-car trace/missed-patch/broad-dirt checks pass126 headless/133 Compatibility/133 Mobile. See `docs/GARAGE_CLEAN_TOLERANCE_2026_10_16.md` and its report/patch/captures. Owner/phone feel acceptance remains; no phone attachment check/test, APK, backend change or deployment.

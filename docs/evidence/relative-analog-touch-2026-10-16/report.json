@@ -1,0 +1,138 @@
+{
+  "date": "2026-10-16",
+  "requirements": {
+    "REL01": "Every analog contact is zero at its own first point; replacement fingers get fresh origins.",
+    "REL02": "Small symmetric neutral interval, followed by a short continuous linear ramp to saturation.",
+    "REL03": "Steering samples horizontal displacement only; vertical gas/brake samples vertical displacement only, up for gas and down for brake.",
+    "REL04": "Handbrake remains a separate full-strength held button; each axis has independent finger ownership and lifecycle cleanup.",
+    "REL05": "Retain buttons, keyboard/gamepad, saved layouts and canonical input/physics; native markers move without rebuilding control draw commands."
+  },
+  "implementation": {
+    "full_travel_fraction_of_axis_extent": 0.25,
+    "dead_zone_fraction_of_full_travel": 0.12,
+    "default_logical_distances": {
+      "slider_full": 61,
+      "slider_dead_zone": 7.32,
+      "joystick_full": 39,
+      "joystick_dead_zone": 4.68,
+      "gas_brake_full": 52,
+      "gas_brake_dead_zone": 6.24
+    },
+    "pedal_layout": "One vertical axis in both analog modes, using the saved accelerator position/scale/opacity; separate brake settings remain intact for buttons mode.",
+    "manual_choice": "No reply to the optional combined-versus-separate-pedal clarification arrived during implementation; used one vertical gas/brake axis as described in commentary.",
+    "canonical_changes": false
+  },
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "tests": [
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_relative_touch_axes.gd",
+      "checks": 1642,
+      "failures": 0,
+      "log": "logs/relative-headless.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_relative_touch_axes.gd -Graphical -RenderingMethod gl_compatibility",
+      "checks": 1656,
+      "failures": 0,
+      "log": "logs/relative-compatibility.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_relative_touch_axes.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan",
+      "checks": 1656,
+      "failures": 0,
+      "log": "logs/relative-mobile.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestMobileControls",
+      "checks": 747,
+      "failures": 0,
+      "log": "logs/buttons-headless.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_mobile_controls.gd -Graphical -RenderingMethod gl_compatibility",
+      "checks": 913,
+      "failures": 0,
+      "log": "logs/buttons-compatibility.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestControlLayout",
+      "checks": 407,
+      "failures": 0,
+      "includes_viewport_probe_checks": 90,
+      "log": "logs/layout.log"
+    },
+    {
+      "command": "$env:APPDATA = Join-Path (Get-Location) 'build/analog-touch-2026-10-16/userdata'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "scripts": 818,
+      "failures": 0,
+      "log": "logs/parser.log"
+    }
+  ],
+  "coverage": [
+    "both analog methods",
+    "left/right-handed layouts",
+    "960x540/1280x720/1600x720",
+    "0.65/1.0/1.6 control scales",
+    "edge and centre initial contacts",
+    "dead zones on all signed axes",
+    "partial and saturated output",
+    "orthogonal drift",
+    "return to initial origin",
+    "translated/scaled CanvasItem",
+    "three-finger handbrake and axis combination",
+    "replacement-finger stale drag/release",
+    "cancel/focus/pause/hide/disable/layout replacement",
+    "native origin indicators",
+    "retained draw counts",
+    "existing Settings/editor/persistence/race integration"
+  ],
+  "initial_attempts": [
+    "Direct scripts/dev.ps1 invocation was rejected by the local PowerShell execution policy. Retried with a per-process -ExecutionPolicy Bypass, without changing machine policy.",
+    "Sandbox Godot startup could not write default user logs. Redirected APPDATA to workspace-only test data; startup then hit sandbox certificate-store access denial. Normal-access test execution was approved automatically and completed.",
+    "First layout integration run passed the 90-check viewport probe, then failed on an unrelated concurrent garage_news_menu.gd VehicleCatalog.all_ids parse error. The other work corrected that source; rerun passed 407 checks. This task made no news-menu changes."
+  ],
+  "captures": [
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/horizontal-brake-left-handbrake.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/horizontal-gas-right.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/horizontal-neutral.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/joystick-brake-left-handbrake.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/joystick-gas-right.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/gl_compatibility/joystick-neutral.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/horizontal-brake-left-handbrake.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/horizontal-gas-right.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/horizontal-neutral.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/joystick-brake-left-handbrake.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/joystick-gas-right.png",
+    "docs/evidence/relative-analog-touch-2026-10-16/mobile/joystick-neutral.png"
+  ],
+  "changed_files": [
+    "game/input/touch_steering.gd",
+    "game/input/control_layout.gd",
+    "game/ui/touch_controls.gd",
+    "game/ui/control_layout_editor.gd",
+    "game/diagnostics/mobile_control_probe.gd",
+    "game/tests/test_control_layout.gd",
+    "game/tests/test_relative_touch_axes.gd",
+    "game/tests/test_relative_touch_axes.gd.uid",
+    "docs/schemas/control-layout-v2.schema.json",
+    "AGENTS.md"
+  ],
+  "source_sha256": {
+    "game/input/touch_steering.gd": "22b28d51ac7d9755754b0e6c4d2dfd0fac4c72e47d6fc03a7a68925dbb11cb40",
+    "game/input/control_layout.gd": "7fcaa3d791b56cf8fecafa00c4b66d2e2b7da872a90390bbeb283090056f7849",
+    "game/ui/touch_controls.gd": "fcf9e25584a153ac7f60dcf8a29c6f98446e69f1f56e68fd45b3be89f7b2fe6f",
+    "game/ui/control_layout_editor.gd": "e5c8ff7571d94afe7b64b6f0a193bf22e244d01312211d35d18980e4ccbc9e17",
+    "game/diagnostics/mobile_control_probe.gd": "b486b243aedff8cf9a9c296db702d4a0366a4ef0e7359376c543ebb76f434b22",
+    "game/tests/test_control_layout.gd": "d3265b912e9d3b7b12cf64b40e8d54922affcc1f7efb31b3db2d93fa25267df8",
+    "game/tests/test_relative_touch_axes.gd": "af06b6d47bf1a8ea0b2b83037aa029f0ac60363114ef0e6f214e6124072ec861",
+    "game/tests/test_relative_touch_axes.gd.uid": "621a0650d72fc817a7be825fca385980d4d5df3e1de12ed4a1221e82d69909c0",
+    "docs/schemas/control-layout-v2.schema.json": "a8aace4b39bea78972d1cab164edfa72f23f81a5116ac25bb0c0d7cdaac8028a"
+  },
+  "checkpoint": "task-only.patch contains only these source changes and this task's added AGENTS paragraph; shared worktree/index otherwise retained. Evidence files accompany the patch.",
+  "limitations": [
+    "No phone attachment check or physical-phone test performed.",
+    "Distances and driving feel remain owner/device acceptance values.",
+    "Native screenshots use a stationary real gameplay scene; synthetic touch checks are not a phone-driving or FPS result.",
+    "No APK build/install, backend change or deployment."
+  ]
+}

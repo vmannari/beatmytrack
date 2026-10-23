@@ -1,0 +1,116 @@
+{
+  "date": "2026-10-18",
+  "requirements": [
+    "RRT01",
+    "RRT02",
+    "RRT03",
+    "G01",
+    "R01",
+    "Q01"
+  ],
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "sources_sha256": {
+    "game/backend/finish_rating.gd": "1823ae0bbe6126c76220af37832a3aacc82ac0f14bf1098952ca0b62f2b7491e",
+    "game/ui/track_rating.gd": "0ee7974101e5d5a226a17fd5e409f819735ef847489c96c533d860b5cca162c8",
+    "game/ui/race_complete.gd": "1034fea886aa7d65f10ff622d8d3f2913ff8b49cb8f77534cf7e20bad1e51ede",
+    "game/core/app.gd": "f385f0633c30500f94e05dc0095cbdd17e701224df010119990a5457d111ce8b",
+    "game/tests/test_track_rating_prompt.gd": "5fee56c52b858bf5ab23884679a2473902e14fc3705c8077781da465aa96e107",
+    "DEVELOPMENT_STATUS.md": "3264a6668865b1961520ff2f7d067ef8e0ba9cf7ec9e02cf82cfa60ba4d2094d",
+    "docs/PHASE_0_PLAN.md": "fba46d21e0ec6cf3a8f70052b79a46dfbc9beca4f8a5448dab0ae40d0d0351f2",
+    "docs/RESULTS_RATING_2026_10_18.md": "61427e0806c4385b70f81596d968258be8a4deda6b2bcda231d4baf920f3248a"
+  },
+  "scope": "Client rating handoff, display and caption only. Existing dirty-tree changes are preserved; checkpoint diffs against task-start snapshots.",
+  "environment": {
+    "APPDATA": "build/results-rating-test/appdata",
+    "LOCALAPPDATA": "build/results-rating-test/localappdata",
+    "network": "Fictional clients and isolated local records; no live rating or backend writes."
+  },
+  "commands": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -RenderingMethod gl_compatibility",
+      "variant": "Saved original runtime, automatically restored in finally",
+      "result": "53 checks, 9 failures",
+      "log": "reproduction.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -RenderingMethod gl_compatibility",
+      "variant": "Final runtime",
+      "result": "54 checks, 0 failures",
+      "log": "headless-final.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --capture-rating=res://../docs/evidence/results-rating-2026-10-18/gl_compatibility",
+      "result": "63 checks, 0 failures",
+      "log": "gl_compatibility-capture-final.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_track_rating_prompt.gd -Graphical -RenderingMethod mobile -TestArgument --capture-rating=res://../docs/evidence/results-rating-2026-10-18/mobile",
+      "result": "63 checks, 0 failures",
+      "log": "mobile-capture-final.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp",
+      "result": "101 checks, 0 failures",
+      "log": "app-final.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "result": "854 scripts, 0 failures",
+      "log": "parse-final.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestResults",
+      "variant": "Final and saved original runtime",
+      "result": "Both stop at unchanged test_race_results.gd:302: pause() on null reward tween; suite not passed.",
+      "logs": [
+        "results-final.log",
+        "results-original.log"
+      ]
+    },
+    {
+      "command": "git -c core.safecrlf=false diff --check -- game/core/app.gd game/ui/race_complete.gd game/ui/track_rating.gd game/backend/finish_rating.gd game/tests/test_track_rating_prompt.gd",
+      "result": "Passed"
+    }
+  ],
+  "initial_attempts": [
+    {
+      "logs": [
+        "baseline.log",
+        "headless.log"
+      ],
+      "result": "Sandbox log access / Windows root-certificate initialization errors; repeated using native access and workspace save directories."
+    },
+    {
+      "log": "headless-native.log",
+      "result": "Added test initially tried to find Race Complete before pressing Continue. Corrected to use real Continue signal."
+    },
+    {
+      "log": "headless-native-2.log",
+      "result": "52 checks, 0 failures before final capture/finish-coast checks."
+    },
+    {
+      "log": "gl_compatibility.log",
+      "result": "62 checks, 0 failures; relative capture files moved individually from game/docs into evidence. Saved-rating capture exposed missing full-coast progression in the test, subsequently corrected."
+    },
+    {
+      "logs": [
+        "gl_compatibility-final.log",
+        "mobile-final.log"
+      ],
+      "result": "Resource-relative output directory failed Windows absolute directory creation. Capture argument now globalizes before use; final captures pass."
+    }
+  ],
+  "visual_review": [
+    "gl_compatibility/results-pending-four-stars-960x540.png",
+    "gl_compatibility/results-saved-three-stars-1280x720.png",
+    "mobile/results-pending-four-stars-960x540.png"
+  ],
+  "limitations": [
+    "Owner appearance acceptance remains.",
+    "No phone attachment check or physical-device test.",
+    "No Android export, APK or install.",
+    "No live rating/backend mutation or deployment.",
+    "Older TestResults suite retains original reward fixture failure.",
+    "Desktop Mobile renderer checks do not establish physical-device performance."
+  ]
+}

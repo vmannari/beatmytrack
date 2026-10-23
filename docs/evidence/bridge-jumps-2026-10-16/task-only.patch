@@ -1,0 +1,599 @@
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -4,7 +4,8 @@
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.62"
++const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
++const PHYSICS_VERSION: String = "arcade-planar-0.63"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+ const TICK_RATE: int = 120
+@@ -15,6 +16,8 @@
+ var state := VehicleState.new()
+ var config: HandlingConfig
+ var kerb_probe := VehicleState.new()
++var bridge_elevation: BridgeElevation
++var _prepared_ground: PlaygroundData
+ 
+ 
+ func _init(handling: HandlingConfig) -> void:
+@@ -27,7 +30,15 @@
+ 	state.heading = direction
+ 
+ 
++func prepare_ground(ground: PlaygroundData, elevation: BridgeElevation = null) -> void:
++	_prepared_ground = ground
++	bridge_elevation = null
++	if ground is NativeTrack and (ground.bridge_height > 0.0 or not ground.creator_bridges.is_empty()):
++		bridge_elevation = elevation if elevation != null else BridgeElevation.new(ground)
++
++
+ func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
++	if ground != _prepared_ground: prepare_ground(ground)
+ 	state.collision_impulse = Vector2.ZERO
+ 	state.scrape_strength = 0.0
+ 	state.scrape_normal = Vector2.ZERO
+@@ -40,6 +51,8 @@
+ 	var old_position: Vector2 = state.position
+ 	var old_heading: float = state.heading
+ 	var old_velocity: Vector2 = state.velocity
++	var old_layer: bool = state.track_elevated
++	var old_route: int = state.route_index
+ 	state.roll_cooldown = maxi(0, state.roll_cooldown - 1)
+ 	if state.roll_ticks > 0:
+ 		state.roll_ticks -= 1
+@@ -60,13 +73,21 @@
+ 	state.jump_cooldown = maxi(0,state.jump_cooldown-1)
+ 	if state.jump_height > 0.0:
+ 		var previous: Vector2 = state.position
++		var bridge_jump: bool = state.bridge_airborne and bridge_elevation != null
++		var previous_support: float = BRIDGE_FLIGHT.support(bridge_elevation,previous,state.heading,state.route_index,state.track_elevated,config.wheelbase) if bridge_jump else 0.0
+ 		state.position += state.velocity*STEP
+-		state.jump_velocity -= 9.81*STEP
+-		state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
++		if bridge_jump:
++			state.heading += state.yaw_rate*STEP
++		else:
++			state.bridge_airborne = false
++			state.jump_velocity -= 9.81*STEP
++			state.jump_height = maxf(0.0,state.jump_height+state.jump_velocity*STEP)
+ 		if ground != null:
+ 			ground.resolve(state,previous,config)
++		if bridge_jump: BRIDGE_FLIGHT.advance(state,previous_support,bridge_elevation,config.wheelbase,STEP)
++		if ground != null:
+ 			ground.step_props(state,previous,config,STEP)
+-		if state.jump_height == 0.0:
++		if state.jump_height == 0.0 and not bridge_jump:
+ 			state.jump_velocity = 0.0
+ 			state.velocity *= 0.88
+ 		_step_kerbs(old_position,old_heading,null)
+@@ -267,6 +288,8 @@
+ 	state.tire_water = clampf(state.tire_water + (distance / 3.0 if fluids.y > 0.0 else -distance / 20.0), 0.0, 1.0)
+ 	_step_kerbs(old_position,old_heading,ground)
+ 	if ground != null: ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
++	if bridge_elevation != null:
++		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
+ 	state.tick += 1
+ 
+ 
+--- a/game/vehicle/vehicle_state.gd
++++ b/game/vehicle/vehicle_state.gd
+@@ -8,6 +8,7 @@
+ var jump_height: float = 0.0
+ var jump_velocity: float = 0.0
+ var jump_cooldown: int = 0
++var bridge_airborne: bool = false
+ var loose_tyres: Array = []
+ var light_props: Array = []
+ var prop_destruction: Array = []
+@@ -61,7 +62,7 @@
+ 	var result: Array = [position.x, position.y, velocity.x, velocity.y, heading, yaw_rate,
+ 		steering, grip, reverse_wait, tick, collision_count, route_index, track_elevated, tire_dirt]
+ 	result.append(loose_tyres.duplicate(true))
+-	result.append([jump_height,jump_velocity,jump_cooldown])
++	result.append([jump_height,jump_velocity,jump_cooldown,bridge_airborne])
+ 	result.append(light_props.duplicate(true))
+ 	result.append([tire_oil,tire_water])
+ 	result.append([kerb_offset.x,kerb_offset.y,kerb_offset.z,kerb_velocity.x,kerb_velocity.y,kerb_velocity.z])
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -146,7 +146,7 @@
+ 	suspension_speed = suspension_speed.limit_length(MAX_COLLISION_SUSPENSION_SPEED)
+ 
+ 
+-func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool) -> void:
++func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bool, canonical_flight: bool = false) -> void:
+ 	# Small visual unloading at crests, followed by gravity and a damped
+ 	# landing. This never grants canonical airtime or collision immunity.
+ 	if not enabled or ramp_tick < 0 or state.tick < ramp_tick or state.tick-ramp_tick > 30:
+@@ -163,13 +163,17 @@
+ 		var height: float = ramp_support+ramp_lift
+ 		for i: int in range(ticks):
+ 			var floor_height: float = ramp_support+rise*(i+1)
+-			ramp_velocity -= 22.0/120.0
+-			height += ramp_velocity/120.0
++			if canonical_flight:
++				height = floor_height
++				ramp_velocity = 0.0
++			else:
++				ramp_velocity -= 22.0/120.0
++				height += ramp_velocity/120.0
+ 			if height <= floor_height:
+ 				if ramp_lift > 0.005 and ramp_velocity < -1.0:
+ 					suspension_speed.x -= minf(-ramp_velocity*0.10,0.7)
+ 				height = floor_height
+-				ramp_velocity = minf(rise*120.0,4.5)
++				ramp_velocity = 0.0 if canonical_flight else minf(rise*120.0,4.5)
+ 			if height > floor_height+0.55:
+ 				height = floor_height+0.55
+ 				ramp_velocity = minf(ramp_velocity,0.0)
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -85,6 +85,8 @@
+ var trails: SkidTrails
+ var sand_dust: SandDustEffect
+ var vehicle_audio: VehicleAudio
++var drift_haptics = preload("res://platform/drift_haptics.gd").new()
++var drift_haptics_enabled: bool = true
+ var hud: PlaygroundHUD
+ var paused: bool = false
+ var previous_position: Vector2
+@@ -148,6 +150,8 @@
+ 
+ 
+ func _ready() -> void:
++	if preference_records != null:
++		drift_haptics_enabled = bool(preference_records.settings.get("drift_haptics", true))
+ 	_render_viewport = get_viewport()
+ 	_base_msaa = _render_viewport.msaa_3d
+ 	if preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name()):
+@@ -415,6 +419,7 @@
+ 	race_cues.reset()
+ 	# A separate simulation coasts visually; scored state and telemetry stay at the line.
+ 	finish_sim = VehicleSimulation.new(handling)
++	finish_sim.prepare_ground(native_track,bridge_presentation)
+ 	for property: Dictionary in sim.state.get_property_list():
+ 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+ 			var value: Variant = sim.state.get(property.name)
+@@ -467,6 +472,7 @@
+ func _present_frame(delta: float) -> void:
+ 	if sim == null:
+ 		return
++	_present_drift_haptics(delta)
+ 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+ 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	if storm_weather != null and storm_weather.visible: storm_weather.advance(delta,paused,finish_sim != null)
+@@ -513,17 +519,17 @@
+ 	car.rotation.x = 0.0
+ 	if native_track != null:
+ 		var axle: Vector2 = Vector2(sin(heading), cos(heading)) * handling.wheelbase * 0.5
+-		var front: float = bridge_presentation.height_at(point + axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
+-		var rear: float = bridge_presentation.height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
++		var front: float = bridge_presentation.visual_height_at(point + axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
++		var rear: float = bridge_presentation.visual_height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
+ 		car.position.y = (front + rear) * 0.5
+ 		car.rotation.x = atan2(front - rear, handling.wheelbase)
+ 		car.position.y += presented.state.jump_height if presented.state.jump_height > 0.0 else (0.0 if presented.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
+-		if presented.state.jump_height > 0.0: car.rotation.x = atan2(presented.state.jump_velocity,maxf(5.0,presented.state.velocity.length()))
++		if presented.state.jump_height > 0.0: car.rotation.x = VehicleSimulation.BRIDGE_FLIGHT.pitch(presented.state)
+ 		elif not presented.state.track_elevated:
+ 			car.position.y -= water_depth
+ 			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
+ 	car.rotation.z = 0.0
+-	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0)
++	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0,true)
+ 	var body_rumble: float = 0.0
+ 	if native_track != null:
+ 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
+@@ -583,8 +589,14 @@
+ 	if profile_enabled: profile_hud_us += Time.get_ticks_usec() - section_start
+ 
+ 
++func _present_drift_haptics(delta: float) -> void:
++	var active: bool = not paused and countdown_ticks <= 0 and finish_sim == null and not is_instance_valid(rewind_panel) and rewind_return.remaining <= 0 and not ai_enabled and not demo_capture and sim.state.tick > 0
++	drift_haptics.present(delta, sim.state, drift_haptics_enabled, active)
++
++
+ func restart() -> void:
+ 	if is_instance_valid(rewind_panel): return
++	drift_haptics.reset()
+ 	online_frames.clear()
+ 	launch_early = false
+ 	launch_countdown_seen = false
+@@ -800,6 +812,8 @@
+ 		# Boundary ticks reset exactly at the player's accepted finish crossing.
+ 		tick = maxf(0.0,tick - track_session.lap_start_time * VehicleSimulation.TICK_RATE)
+ 	personal_ghost.present(PersonalGhostRun.sample(ghost_bests.get(ghost_mode,{}),tick))
++	if personal_ghost.visible and bridge_presentation != null:
++		personal_ghost.position.y += bridge_presentation.visual_offset(Vector2(personal_ghost.position.x,-personal_ghost.position.z))
+ 
+ 
+ func _prepare_personal_ghost() -> void:
+@@ -863,6 +877,7 @@
+ 		prepared_road_packet = {}
+ 		visual.cache_race_world = production_mode and not editor_test
+ 		bridge_presentation = BridgePresentation.new(native_track)
++		sim.prepare_ground(native_track,bridge_presentation)
+ 		world.add_child(visual)
+ 		visual.build(native_track, bridge_presentation)
+ 		track_ground = visual
+--- a/game/race/personal_ghost_run.gd
++++ b/game/race/personal_ghost_run.gd
+@@ -30,7 +30,7 @@
+ 	var height: float = (front + rear) * 0.5 + state.jump_height
+ 	var pitch: float = atan2(front - rear, handling.wheelbase)
+ 	if state.jump_height > 0.0:
+-		pitch = atan2(state.jump_velocity, maxf(5.0, state.velocity.length()))
++		pitch = preload("res://vehicle/bridge_flight.gd").pitch(state)
+ 	elif not state.track_elevated:
+ 		height += TrackHazards.ramp_height(point, track.hazard_objects) - track.water_depth(point)
+ 		pitch += TrackHazards.ramp_pitch(point, axle.normalized(), track.hazard_objects)
+--- a/game/vehicle/rewind_ghosts.gd
++++ b/game/vehicle/rewind_ghosts.gd
+@@ -7,9 +7,11 @@
+ var bridge: BridgePresentation
+ var entries: Array[Dictionary] = []
+ var origin_tick: int = 0
++var wheelbase: float = 2.26
+ 
+ func configure(car: CarVisual, road: NativeTrack, heights: BridgePresentation, history: Array[Dictionary], tick: int) -> void:
+ 	track = road
++	wheelbase = VehicleCatalog.config(car.vehicle_id).wheelbase
+ 	bridge = heights
+ 	entries = history
+ 	origin_tick = tick
+@@ -59,7 +61,8 @@
+ 
+ func world(state: Dictionary) -> Vector3:
+ 	var point: Vector2 = state.position
+-	var height: float = bridge.height_at(point,int(state.route_index),1 if state.track_elevated else 0)
++	var height: float = VehicleSimulation.BRIDGE_FLIGHT.support(bridge,point,float(state.heading),int(state.route_index),bool(state.track_elevated),wheelbase)
++	height += bridge.visual_offset(point)
+ 	height += float(state.jump_height)
+ 	return Vector3(point.x,height+0.05,-point.y)
+ 
+--- a/game/track/bridge_elevation.gd
++++ b/game/track/bridge_elevation.gd
+@@ -1,7 +1,7 @@
+ class_name BridgeElevation
+ extends RefCounted
+-## Pure spatial elevation shared by client presentation and verified ghosts.
+-## Presentation only: no temporal easing and no changes to canonical handling.
++## Pure spatial elevation shared by canonical bridge flight, cars and ghosts.
++## No temporal easing; preparation is immutable during simulation.
+ 
+ const VERSION: String = "bridge-ramps-6"
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -56,6 +56,7 @@
+         "speed_bumps",
+         "vehicle_catalog",
+         "vehicle_simulation",
++        "bridge_flight",
+         "vehicle_state",
+     ),
+ }
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -81,7 +81,7 @@
+     fixtures = ROOT / "game/tests/fixtures"
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.62"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.63"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+ 
+--- /dev/null
++++ b/game/vehicle/bridge_flight.gd
+@@ -0,0 +1,54 @@
++extends RefCounted
++## Canonical bridge unloading; heights use the same axle support as the car.
++const GRAVITY: float = 22.0 # Brief game-scale arcs between the owner's two extremes.
++const MAX_RISE_SPEED: float = 3.2
++const RELEASE_GAP: float = 0.00001
++
++static func support(bridge: BridgeElevation, point: Vector2, heading: float, route: int, layer: bool, wheelbase: float) -> float:
++	var axle := Vector2(sin(heading),cos(heading))*wheelbase*0.5
++	return (bridge.height_at(point+axle,route,int(layer))+bridge.height_at(point-axle,route,int(layer)))*0.5
++
++static func release(state: VehicleState, previous: Vector2, heading: float, velocity: Vector2, route: int, layer: bool, bridge: BridgeElevation, wheelbase: float, seconds: float) -> void:
++	if state.jump_height > 0.0 or state.jump_cooldown > 0 or state.roll_ticks > 0 or velocity.length_squared() < 1.0: return
++	# A ground underpass must never borrow the deck above it. Legacy bridges
++	# include their approach in the shared sampler before the layer changes.
++	var before: float = support(bridge,previous,heading,route,layer,wheelbase)
++	var after: float = support(bridge,state.position,state.heading,state.route_index,state.track_elevated,wheelbase)
++	if before <= bridge.road_surface.lift+0.001 and after <= bridge.road_surface.lift+0.001: return
++	var behind: float = support(bridge,previous-velocity*seconds,heading,route,layer,wheelbase)
++	var rise_speed: float = (before-behind)/seconds
++	var support_speed: float = (after-before)/seconds
++	if rise_speed <= 0.0 or rise_speed-support_speed <= GRAVITY*seconds: return
++	# Bounded suspension rebound keeps a short crest readable when its slope
++	# disappears within one tick. It fades out at low speed.
++	var rebound: float = MAX_RISE_SPEED*smoothstep(5.0,22.0,velocity.length())
++	var vertical: float = maxf(minf(MAX_RISE_SPEED,rise_speed)-GRAVITY*seconds,rebound)
++	# Leave enough supported deck for the small arc. A short bridge must not
++	# turn this slight crest lift into a long fall down the opposite ramp.
++	for adjustment: int in range(8):
++		var landing: Vector2 = state.position+state.velocity*(2.0*vertical/GRAVITY)
++		if support(bridge,landing,state.heading,state.route_index,state.track_elevated,wheelbase) >= after-0.03: break
++		vertical *= 0.85
++	# Wait for the axle support to flatten instead of spending the rebound on
++	# a tiny front-axle skip while the rear axle is still climbing.
++	if support_speed > vertical*0.5: return
++	var gap: float = before+vertical*seconds-after
++	if gap <= RELEASE_GAP: return
++	state.jump_height = gap
++	state.jump_velocity = vertical
++	state.bridge_airborne = true
++
++static func advance(state: VehicleState, previous_support: float, bridge: BridgeElevation, wheelbase: float, seconds: float) -> void:
++	var floor_height: float = support(bridge,state.position,state.heading,state.route_index,state.track_elevated,wheelbase)
++	state.jump_velocity -= GRAVITY*seconds
++	state.jump_height = maxf(0.0,previous_support+state.jump_height+state.jump_velocity*seconds-floor_height)
++	if state.jump_height == 0.0:
++		var relative_speed: float = state.jump_velocity-(floor_height-previous_support)/seconds
++		state.velocity *= 1.0-clampf(-relative_speed*0.01,0.0,0.08)
++		state.jump_velocity = 0.0
++		state.bridge_airborne = false
++		state.jump_cooldown = maxi(state.jump_cooldown,24)
++
++static func pitch(state: VehicleState) -> float:
++	var direction: float = -1.0 if state.velocity.dot(state.forward()) < 0.0 else 1.0
++	return atan2(state.jump_velocity*direction,maxf(5.0,state.velocity.length()))
+--- /dev/null
++++ b/game/tests/test_bridge_jumps.gd
+@@ -0,0 +1,190 @@
++extends SceneTree
++const FLIGHT = preload("res://vehicle/bridge_flight.gd")
++var checks: int = 0
++var failures: int = 0
++var measurements: Array = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func make_track(length: float = 32.0, angle: float = 0.0) -> NativeTrack:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.pieces = [RoadPieces.create("bridge",Vector2(-length*0.5,0).rotated(deg_to_rad(angle)),angle,12)]
++	doc.pieces[0].length = length
++	doc.paint = [{"surface":0,"width":40.0,"shape":"square","points":[[-20,0],[20,0]]}]
++	print("FIXTURE_VALIDATE: ",TrackDocument.validate(doc))
++	return TrackCompiler.compile(doc)
++
++func run() -> void:
++	var track: NativeTrack = make_track()
++	for id: String in VehicleCatalog.IDS:
++		for reverse: bool in [false,true]:
++			for speed: float in [3.0,12.0,24.0,36.0]:
++				crossing(track,id,reverse,speed)
++		crossing(track,id,true,24.0,true)
++	edges()
++	underpass(track)
++	await scene_checks(track)
++	var report := {"checks":checks,"failures":failures,"physics":VehicleSimulation.PHYSICS_VERSION,"crossings":measurements}
++	var file := FileAccess.open("res://../docs/evidence/bridge-jumps-2026-10-16/measurements.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	print("BRIDGE_JUMP_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func edges() -> void:
++	for length: float in [24.0,48.0]:
++		for angle: float in [0.0,37.0,90.0]:
++			var track: NativeTrack = make_track(length,angle)
++			var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(angle))
++			for direction: float in [-1.0,1.0]:
++				var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
++				sim.reset(axis*(-length*0.5-3.0)*direction,atan2(axis.x*direction,axis.y*direction))
++				sim.state.velocity = axis*36.0*direction
++				sim.state.route_index = track.nearest_route(sim.state.position)
++				var peak: float = 0.0
++				for tick: int in range(240):
++					sim.step(DriveFrame.new(),track)
++					peak = maxf(peak,sim.state.jump_height)
++					if sim.state.position.dot(axis)*direction > length*0.5+3.0: break
++				check(peak > 0.04 and peak < 0.35 and sim.state.jump_height == 0.0,"short/long/oblique bridge has a visible bounded hop")
++				check(sim.state.collision_count == 0,"oblique bridge retains clear driving lane")
++				print("EDGE length=",length," angle=",angle," direction=",direction," peak=",peak)
++
++func crossing(track: NativeTrack, id: String, reverse: bool, speed: float, backing: bool = false) -> void:
++	var config: HandlingConfig = VehicleCatalog.config(id)
++	# Isolate vertical support at fixed coast speed, using each real axle size.
++	config.rolling_resistance = 0.0
++	config.drag = 0.0
++	config.maximum_speed = 60.0
++	var direction: float = -1.0 if reverse else 1.0
++	var sim := VehicleSimulation.new(config)
++	var heading: float = PI*0.5 if backing else PI*0.5*direction
++	sim.reset(Vector2(-20*direction,0),heading)
++	sim.state.velocity = Vector2(speed*direction,0)
++	sim.state.route_index = track.nearest_route(sim.state.position)
++	var frames: Array = []
++	var states: Array = []
++	var branch: Dictionary = {}
++	var branch_tick: int = 0
++	var air_ticks: int = 0
++	var landings: int = 0
++	var peak: float = 0.0
++	var arc_error: float = 0.0
++	var clearance: float = INF
++	for tick: int in range(ceili(45.0/speed*120.0)+180):
++		var frame := DriveFrame.new()
++		var before: VehicleState = sim.state
++		var was_airborne: bool = before.bridge_airborne
++		var old_velocity: Vector2 = before.velocity
++		var old_vertical: float = before.jump_velocity
++		var old_height: float = FLIGHT.support(sim.bridge_elevation,before.position,before.heading,before.route_index,before.track_elevated,config.wheelbase)+before.jump_height if sim.bridge_elevation != null else 0.0
++		sim.step(frame,track)
++		var floor_height: float = FLIGHT.support(sim.bridge_elevation,sim.state.position,sim.state.heading,sim.state.route_index,sim.state.track_elevated,config.wheelbase)
++		clearance = minf(clearance,sim.state.jump_height)
++		if was_airborne and sim.state.bridge_airborne:
++			arc_error = maxf(arc_error,absf(floor_height+sim.state.jump_height-(old_height+(old_vertical-FLIGHT.GRAVITY/120.0)/120.0)))
++			if tick % 30 == 0: check(sim.state.velocity == old_velocity,"air pedals and steering supply no traction")
++		if was_airborne and not sim.state.bridge_airborne: landings += 1
++		if sim.state.bridge_airborne:
++			air_ticks += 1
++			peak = maxf(peak,sim.state.jump_height)
++			if branch.is_empty() and air_ticks > 8:
++				branch = RewindHistory.properties(sim.state)
++				branch_tick = tick+1
++		frames.append([frame.throttle,frame.brake,frame.steer,frame.handbrake])
++		states.append(sim.state.snapshot())
++		if sim.state.position.x*direction > 24.0 and not sim.state.bridge_airborne: break
++	var label: String = "%s reverse=%s speed=%s backing=%s" % [id,reverse,speed,backing]
++	check(peak == 0.0 if speed == 3.0 else peak > 0.01,label+" slow planted / fast release")
++	check(clearance >= 0.0 and arc_error < 0.000001,label+" ballistic world height and solid landing")
++	check(not sim.state.bridge_airborne and sim.state.jump_height == 0.0,label+" settles on the road")
++	check(sim.state.collision_count == 0,label+" clear deck is collision free")
++	check(peak < 0.35,label+" visible short hop stays below 35 cm")
++	var replay := VehicleSimulation.new(config)
++	replay.reset(Vector2(-20*direction,0),heading)
++	replay.state.velocity = Vector2(speed*direction,0)
++	replay.state.route_index = track.nearest_route(replay.state.position)
++	var decoded: Array = JSON.parse_string(JSON.stringify(frames))
++	var exact: bool = true
++	for tick: int in range(decoded.size()):
++		replay.step(input_frame(decoded[tick]),track)
++		if replay.state.snapshot() != states[tick]: exact = false; break
++	check(exact,label+" JSON input replay exact every tick")
++	if not branch.is_empty():
++		var pedal := VehicleSimulation.new(config)
++		var neutral := VehicleSimulation.new(config)
++		RewindHistory.restore(pedal.state,branch)
++		RewindHistory.restore(neutral.state,branch)
++		pedal.step(input_frame([255,255,127,255]),track)
++		neutral.step(DriveFrame.new(),track)
++		check(pedal.state.position == neutral.state.position and pedal.state.velocity == neutral.state.velocity and pedal.state.heading == neutral.state.heading,"air controls supply no traction or steering force")
++		RewindHistory.restore(replay.state,branch)
++		for tick: int in range(branch_tick,decoded.size()): replay.step(input_frame(decoded[tick]),track)
++		check(replay.state.snapshot() == sim.state.snapshot(),label+" midflight rewind exact")
++		replay.reset(Vector2.ZERO)
++		check(not replay.state.bridge_airborne and replay.state.jump_height == 0.0,label+" reset clears flight")
++	measurements.append({"car":id,"reverse":reverse,"backing":backing,"speed":speed,"peak_gap":peak,"air_ticks":air_ticks,"landings":landings,"arc_error":arc_error})
++	print(label," peak=",peak," airtime=",air_ticks/120.0," landings=",landings)
++
++func input_frame(row: Array) -> DriveFrame:
++	var frame := DriveFrame.new()
++	frame.throttle = int(row[0]); frame.brake = int(row[1]); frame.steer = int(row[2]); frame.handbrake = int(row[3])
++	return frame
++
++func underpass(track: NativeTrack) -> void:
++	var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
++	sim.reset(Vector2(0,-9),0.0)
++	sim.state.velocity = Vector2(0,24)
++	var air: bool = false
++	var upper: bool = false
++	for tick: int in range(90):
++		sim.step(DriveFrame.new(),track)
++		air = air or sim.state.bridge_airborne
++		upper = upper or sim.state.track_elevated
++	check(not air and not upper and sim.state.collision_count == 0,"underpass remains ground with no false launch")
++	var state := VehicleState.new()
++	state.velocity = Vector2(-20,0); state.heading = PI*0.5; state.jump_velocity = 3.0
++	check(FLIGHT.pitch(state) < 0.0,"reverse takeoff lifts the travel-facing end")
++
++func scene_checks(track: NativeTrack) -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	root.size = Vector2i(1280,720)
++	root.add_child(game)
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	game.sim.reset(Vector2(-20,0),PI*0.5)
++	game.sim.state.velocity = Vector2(24,0)
++	game.sim.state.route_index = track.nearest_route(game.sim.state.position)
++	var captured: bool = false
++	var seen: bool = false
++	var peak: float = 0.0
++	var landing_compression: float = 0.0
++	for tick: int in range(400):
++		game.sim.step(DriveFrame.new(),track)
++		game.previous_position = game.sim.state.position
++		game.previous_heading = game.sim.state.heading
++		game._process(1.0/120.0)
++		seen = seen or game.sim.state.bridge_airborne
++		peak = maxf(peak,game.sim.state.jump_height)
++		if seen and not game.sim.state.bridge_airborne: landing_compression = minf(landing_compression,game.car.suspension_speed.x)
++		if not captured and game.sim.state.jump_height > 0.18:
++			var before: Array = game.sim.state.snapshot()
++			var pose: Transform3D = game.car.transform
++			game._process(0.0)
++			check(game.sim.state.snapshot() == before and game.car.transform == pose,"duplicate draw freezes canonical flight and displayed pose")
++			if DisplayServer.get_name() != "headless":
++				await process_frame
++				await RenderingServer.frame_post_draw
++				root.get_texture().get_image().save_png("res://../docs/evidence/bridge-jumps-2026-10-16/jump-%s.png" % RenderingServer.get_current_rendering_method())
++			captured = true
++	check(game.sim.bridge_elevation == game.bridge_presentation,"race shares prepared immutable support")
++	check(seen and peak > 0.10 and peak < 0.35 and landing_compression < -0.05,"real game visibly hops and compresses on landing")
++	check(game.car.ramp_lift == 0.0,"real game has no extra cosmetic flight")
++	game.queue_free()
++	await process_frame
+--- /dev/null
++++ b/docs/BRIDGE_JUMPS_2026_10_16.md
+@@ -0,0 +1,23 @@
++# Bridge jumps - 2026-10-16
++
++The owner asked for bridge release, found the initial jumps exaggerated, then found the reduced version invisible. Final tuning restores a visible short hop: bounded suspension rebound up to 3.2 m/s, game-scale gravity of 22 m/s squared, and less than 0.3 seconds of airtime in the tested standard crossings. At 24-36 m/s, 32 m spans lift roughly 22-24 cm; the shortest 24 m high-speed spans lift about 6.8 cm. At 3 m/s the car stays planted. These are controlled desktop measurements; owner feel remains the acceptance test.
++
++BJ01 covers canonical release/landing, BJ02 restrained native motion/shared support/ghosts, and BJ03 exact replay/rewind/reset/version isolation. Existing G01/R01/Q01 remain.
++
++Release samples the same front/rear axle support used by the visible car. A bounded suspension rebound keeps the hop readable when a short crest loses its slope within one tick. Release waits for axle support to flatten. An eight-step landing probe gradually reduces strength on short decks, replacing the overly strict veto that hid the jump. A 24-tick landing cooldown prevents repeated skips at one crest. Descending ramps receive no separate launch impulse.
++
++Airborne movement carries planar and angular momentum without tyre steering or pedal force. Height integrates in world space against the changing deck support. Landing dissipates bounded speed and feeds the existing suspension. Existing jump hazards retain their original integration. Racing suppresses the old independent cosmetic lift, retaining the ground pitch spring. Reverse flight pitch and personal ghosts agree; rewind markers use axle support. Actual road/bridge meshes, collision rails/layers, underpasses, camera and cache bounds remain. The race and finish coasting reuse the prepared immutable sampler; other simulations prepare once per bridged track. Tracks without bridges allocate none.
++
++The bridge slice introduces physics arcade-planar-0.63. Concurrent work advances the shared source/assertion to 0.64, which is preserved. The task-only checkpoint isolates the 0.63 change; final source hashes and staged verifier use shared 0.64. The outer 24-entry snapshot and input/proof schemas remain; the nested jump tuple adds bridge_airborne. Property-based rewind retains it. The verifier stages the new helper. Historical physics0.50/rules20 and existing boards remain unchanged; matching rollout is separate.
++
++Actual validation with pinned Godot 4.7.2 and isolated APPDATA:
++
++- Final headless, Compatibility and Mobile: 430 checks each, zero failures. All five axle sizes, 45 crossings, both directions/backing, slow contact, world-space arcs, ignored air controls, every-tick JSON replay, midflight rewind/reset, twelve short/long/rotated cases, actual game presentation, duplicate-draw stability and landing compression pass.
++- Native captures: [Compatibility](evidence/bridge-jumps-2026-10-16/jump-gl_compatibility.png), [Mobile](evidence/bridge-jumps-2026-10-16/jump-mobile.png). These are scripted practice frames with synthetic frame timing, not FPS evidence.
++- During tuning, bridge contacts16, checkpoint layers259, entry258, exit2527, rewind61 and driving72 pass. Actual five-lap Dust cloud races finish at29139 then29097 ticks; Over and under at25805 then25712 ticks. These larger runs precede the final axle-flattening refinement; final focused runs test the exact final tuning. Whole-project parser passes837 scripts during the iteration.
++- Suspension assertions59 pass headless and Compatibility, but teardown reports leaked renderer resources. Their clean-exit commands remain unsuccessful; no cleanup fix is claimed.
++- Initial isolated verifier suite:68 passed/2 failed. A new ghost reference depended on a constant absent from archived physics0.50; a direct helper preload fixes it. Final archived replay/current-version tests both pass. An intermediate concurrent0.64 versus staged0.63 mismatch is retained, then resolved by refreshing the isolated snapshot. The unrelated HTTP fixture expects14 checks while its isolated client prints13 checks/zero failures; that assertion and client remain unchanged.
++
++Retained initial diagnostics include Windows certificate/log sandbox restrictions, invalid oversized paint, test controls held after landing, the archived helper dependency, and a premature tiny Kart skip fixed by waiting for axle support to flatten. Both earlier4.5m/s and1.5m/s settings are superseded. A Windows encoding error truncated AGENTS during documentation writing; it was restored from the latest task backup plus the exact newer photo-override patch. All unaffected restored sections were compared exactly; final writes use explicit UTF-8.
++
++[report.json](evidence/bridge-jumps-2026-10-16/report.json) records commands/logs, hashes, limitations and the isolated review patch. Owner/physical-phone driving feel and matching client/verifier rollout remain. No phone attachment check/test, APK, live backend mutation or deployment was performed by this task.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -5,6 +5,9 @@
+ 
+ ## Studio platform implementation override (2026-10-16)
+ The owner explicitly proceeds with implementation of the backend product review, superseding its review-only boundary for this task. Keep eight focused Studio workspaces, source/denominator/population/coverage contracts, bounded deduplicated facts, full-scope SQL totals, release comparisons, durable incidents, independent watchdog and all-pipeline queues, signed leased notification outboxes, separate money/Coin ledgers, presentation-only experiments, named audit access and case triage. Preserve original all-player totals and canonical game/race/scoring behavior; business cohorts are a separate disabled-by-default option. Actual42 PostgreSQL/one fixture skip,78 Edge and focused checks, initial corrections, screenshots and scoped checkpoint are in `docs/STUDIO_PLATFORM_2026_10_16.md`. External connections, staff provider/MFA/browser SSO, real Billing/RTDN/settled reconciliation, actual client exposures, production load/restore and owner/phone acceptance remain. No new live migration/deployment/notification/charge, APK or physical-phone action is implied.
++
++## Subtle bridge jump override (2026-10-16)
++The owner requests bridge release, rejects exaggerated jumps, then finds the reduced lift invisible. Final bounded3.2m/s suspension rebound with game gravity22 produces about22-24cm fast standard-span hops, under0.3s airtime, and about6.8cm on the shortest high-speed spans. Gradual landing bounds replace the strict veto; axle flattening/cooldown avoid tiny repeated skips. Shared support, suspension, reverse pitch, rails/layers, exact replay/rewind and old boards remain. Final430headless/430Compatibility/430Mobile pass. Earlier bridge16/259/258/2527, rewind61/driving72 and five-lap runs pass; suspension59 assertions have teardown leaks. Initial verifier68/2 is retained; final historical/current2pass and unrelated HTTP count fixture are documented. Bridge slice physics0.63/shared concurrent0.64 retained. Actual commands/captures/task-only patch: docs/BRIDGE_JUMPS_2026_10_16.md. Owner/phone feel and matching rollout remain; no phone check/test, APK, backend mutation or deployment.
+ 
+ ## Forgiving checkpoints override (2026-10-16)
+ Owner rejects the previous checkpoint strictness as annoying. Rules22 proposes2m recovery beyond connected road/kerbs and8m spline candidates, replacing rules21's0.5m/3m policy. Star retains34/35 ordered gates, down from84/83; the old strict all-one-metre-cut rejection goal is superseded. Twelve reproduced edge failures now pass;38 centre/edge paths through7m offsets pass both directions without false notices. Large91.11m shortcut stays blocked, as do3005 sampled cuts beyond the new recovery zone. Prepared approach bounds prevent premature lateral warnings; bridge layers/forward order/required return/no time penalties remain. Rules-key cache fences stop retained tracks reusing strict gates. Forgiveness48/consistency58/edge201 with five real laps47712ticks/exact replay, gates266/notices533/bridges259+258+2527/rewind61/catalog27/parser833, backend2 and real server trajectory/canonical checks pass. Actual commands, initial failures, native captures and task-only patch: docs/CHECKPOINT_FORGIVENESS_2026_10_16.md. Concurrent legacy cleanup and physics0.63 work remain outside this task. Owner/phone feel/loading and matching client/API/worker rollout remain; no phone attachment check/test/APK/deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,6 +1,8 @@
+ 2026-10-16 GNC01-GNC02/G01/R01/Q01: Garage News now uses five offline native photographs fitted to complete visible mesh bounds. All cars center within0.001px with40px minimum margins at640x400; Formula/Kart no longer clip. Original studio/chassis/pigments and printed shader/captions remain; old livery files, live Garage/camera, canonical behavior and backend work are unchanged. Bake5/focused35/native214+214 pass; parser, captures, provenance, initial cleanup/import diagnostics and task-only checkpoint: docs/GARAGE_NEWS_PHOTO_CENTERING_2026_10_16.md. Owner/device visual acceptance remains; no phone test/attachment check, APK, backend mutation or deployment.
+ 
+ 2026-10-16 BPI01-BPI07: owner-approved implementation of the backend product review. Eight focused Studio workspaces, explicit metric/coverage contracts, new bounded activity/cohort/session facts, full-scope diagnostic totals, release comparisons, durable incident occurrences, independent outage watchdog, all-pipeline queues, signed notification retries, separate money/Coin ledgers, presentation-only experiment service, named staff gate, saved views/CSV and case ownership/priority. Preserve all-player historical totals, immutable race/scoring contracts and concurrent game work; real-player business cohorts remain opt-in/disabled by default. PostgreSQL42/one fixture skip, Edge78 and focused regressions are recorded with initial corrections and limits in docs/STUDIO_PLATFORM_2026_10_16.md and its report/task-only checkpoint. External accounts/hosting/receiver/MFA/browser SSO, live billing/RTDN/settled reconciliation, actual client experiment adoption and production/owner/phone acceptance remain. No real notification/purchase, schema rollout, backend deployment, APK or phone action was performed by this task.
++
++2026-10-16 BJ01-BJ03/G01/R01/Q01: The owner requests bridge release, rejects exaggerated jumps, then finds the reduced lift invisible. Final bounded3.2m/s suspension rebound with game gravity22 produces about22-24cm fast standard-span hops, under0.3s airtime, and about6.8cm on the shortest high-speed spans. Gradual landing bounds replace the strict veto; axle flattening/cooldown avoid tiny repeated skips. Shared support, suspension, reverse pitch, rails/layers, exact replay/rewind and old boards remain. Final430headless/430Compatibility/430Mobile pass. Earlier bridge16/259/258/2527, rewind61/driving72 and five-lap runs pass; suspension59 assertions have teardown leaks. Initial verifier68/2 is retained; final historical/current2pass and unrelated HTTP count fixture are documented. Bridge slice physics0.63/shared concurrent0.64 retained. Actual commands/captures/task-only patch: docs/BRIDGE_JUMPS_2026_10_16.md. Owner/phone feel and matching rollout remain; no phone check/test, APK, backend mutation or deployment.
+ 
+ 2026-10-16 CF01-CF03/G01/R01/Q01: Owner rejects the previous checkpoint strictness as annoying. Rules22 proposes2m recovery beyond connected road/kerbs and8m spline candidates, replacing rules21's0.5m/3m policy. Star retains34/35 ordered gates, down from84/83; the old strict all-one-metre-cut rejection goal is superseded. Twelve reproduced edge failures now pass;38 centre/edge paths through7m offsets pass both directions without false notices. Large91.11m shortcut stays blocked, as do3005 sampled cuts beyond the new recovery zone. Prepared approach bounds prevent premature lateral warnings; bridge layers/forward order/required return/no time penalties remain. Rules-key cache fences stop retained tracks reusing strict gates. Forgiveness48/consistency58/edge201 with five real laps47712ticks/exact replay, gates266/notices533/bridges259+258+2527/rewind61/catalog27/parser833, backend2 and real server trajectory/canonical checks pass. Actual commands, initial failures, native captures and task-only patch: docs/CHECKPOINT_FORGIVENESS_2026_10_16.md. Concurrent legacy cleanup and physics0.63 work remain outside this task. Owner/phone feel/loading and matching client/API/worker rollout remain; no phone attachment check/test/APK/deployment.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,6 +1,8 @@
+ 2026-10-16 GNC01-GNC02/G01/R01/Q01: Garage News now uses five offline native photographs fitted to complete visible mesh bounds. All cars center within0.001px with40px minimum margins at640x400; Formula/Kart no longer clip. Original studio/chassis/pigments and printed shader/captions remain; old livery files, live Garage/camera, canonical behavior and backend work are unchanged. Bake5/focused35/native214+214 pass; parser, captures, provenance, initial cleanup/import diagnostics and task-only checkpoint: docs/GARAGE_NEWS_PHOTO_CENTERING_2026_10_16.md. Owner/device visual acceptance remains; no phone test/attachment check, APK, backend mutation or deployment.
+ 
+ 2026-10-16 BPI01-BPI07: owner-approved implementation of the backend product review. Eight focused Studio workspaces, explicit metric/coverage contracts, new bounded activity/cohort/session facts, full-scope diagnostic totals, release comparisons, durable incident occurrences, independent outage watchdog, all-pipeline queues, signed notification retries, separate money/Coin ledgers, presentation-only experiment service, named staff gate, saved views/CSV and case ownership/priority. Preserve all-player historical totals, immutable race/scoring contracts and concurrent game work; real-player business cohorts remain opt-in/disabled by default. PostgreSQL42/one fixture skip, Edge78 and focused regressions are recorded with initial corrections and limits in docs/STUDIO_PLATFORM_2026_10_16.md and its report/task-only checkpoint. External accounts/hosting/receiver/MFA/browser SSO, live billing/RTDN/settled reconciliation, actual client experiment adoption and production/owner/phone acceptance remain. No real notification/purchase, schema rollout, backend deployment, APK or phone action was performed by this task.
++
++2026-10-16 BJ01-BJ03/G01/R01/Q01: The owner requests bridge release, rejects exaggerated jumps, then finds the reduced lift invisible. Final bounded3.2m/s suspension rebound with game gravity22 produces about22-24cm fast standard-span hops, under0.3s airtime, and about6.8cm on the shortest high-speed spans. Gradual landing bounds replace the strict veto; axle flattening/cooldown avoid tiny repeated skips. Shared support, suspension, reverse pitch, rails/layers, exact replay/rewind and old boards remain. Final430headless/430Compatibility/430Mobile pass. Earlier bridge16/259/258/2527, rewind61/driving72 and five-lap runs pass; suspension59 assertions have teardown leaks. Initial verifier68/2 is retained; final historical/current2pass and unrelated HTTP count fixture are documented. Bridge slice physics0.63/shared concurrent0.64 retained. Actual commands/captures/task-only patch: docs/BRIDGE_JUMPS_2026_10_16.md. Owner/phone feel and matching rollout remain; no phone check/test, APK, backend mutation or deployment.
+ 
+ 2026-10-16 CF01-CF03/G01/R01/Q01: Owner rejects the previous checkpoint strictness as annoying. Rules22 proposes2m recovery beyond connected road/kerbs and8m spline candidates, replacing rules21's0.5m/3m policy. Star retains34/35 ordered gates, down from84/83; the old strict all-one-metre-cut rejection goal is superseded. Twelve reproduced edge failures now pass;38 centre/edge paths through7m offsets pass both directions without false notices. Large91.11m shortcut stays blocked, as do3005 sampled cuts beyond the new recovery zone. Prepared approach bounds prevent premature lateral warnings; bridge layers/forward order/required return/no time penalties remain. Rules-key cache fences stop retained tracks reusing strict gates. Forgiveness48/consistency58/edge201 with five real laps47712ticks/exact replay, gates266/notices533/bridges259+258+2527/rewind61/catalog27/parser833, backend2 and real server trajectory/canonical checks pass. Actual commands, initial failures, native captures and task-only patch: docs/CHECKPOINT_FORGIVENESS_2026_10_16.md. Concurrent legacy cleanup and physics0.63 work remain outside this task. Owner/phone feel/loading and matching client/API/worker rollout remain; no phone attachment check/test/APK/deployment.
+ 

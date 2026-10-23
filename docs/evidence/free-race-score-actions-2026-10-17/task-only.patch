@@ -1,0 +1,154 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -140,6 +140,7 @@
+ 	selection.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720dd"),12))
+ 	records_slot.add_child(selection)
+ 	MenuStyle.fill(selection)
++	records_slot.resized.connect(func() -> void: records_panel.size = records_slot.size)
+ 	detail = VBoxContainer.new()
+ 	selection.add_child(detail)
+ 	pending_records = MenuStyle.label("",18,true)
+@@ -1358,6 +1359,8 @@
+ 		safety_button.custom_minimum_size.y = 48
+ 		actions.add_child(safety_button)
+ 		if not str(snapshot.get("board_error","")).is_empty(): scores_button.tooltip_text = "Scores unavailable - retry"
++		# Reserve the complete action row and its section insets in the clipped slot.
++		friends.get_parent().custom_minimum_size.x = maxf(270.0,friends.get_combined_minimum_size().x)
+ 	race_button.text = "RACE "+title
+ 	race_button.disabled = selecting or _resolve_job != null or (metadata_only and not selected_track.metadata.get("metadata_only",false))
+ 	if race_button.disabled: race_button.text = "Loading track..."
+@@ -1658,7 +1661,7 @@
+ 	inset.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	inset.add_theme_constant_override("margin_left",40)
+ 	inset.add_theme_constant_override("margin_right",12)
+-	inset.add_theme_constant_override("margin_top",8)
++	inset.add_theme_constant_override("margin_top",5)
+ 	inset.add_theme_constant_override("margin_bottom",8)
+ 	parent.add_child(inset)
+ 	var content := VBoxContainer.new()
+--- a/game/tests/test_free_race_list.gd
++++ b/game/tests/test_free_race_list.gd
+@@ -71,6 +71,66 @@
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func score_action_bounds(state: String) -> void:
++	var slot: Control = browser.detail.find_child("Standings",true,false)
++	check(browser.find_child("RecordsSlot",true,false).get_global_rect().encloses(browser.records_panel.get_global_rect()),state+": the records panel keeps its padding inside the view")
++	if not browser.find_child("RecordsSlot",true,false).get_global_rect().encloses(browser.records_panel.get_global_rect()):
++		print("SCORE_PANEL slot=",browser.find_child("RecordsSlot",true,false).get_global_rect()," panel=",browser.records_panel.get_global_rect()," offsets=",Vector2(browser.records_panel.offset_left,browser.records_panel.offset_right)," minimum=",browser.records_panel.get_combined_minimum_size()," detail=",browser.detail.get_combined_minimum_size())
++	var buttons: Array[Node] = browser.detail.find_children("*","Button",true,false).filter(func(node: Button) -> bool: return node.text in ["High scores","Rate","Report / block"])
++	check(buttons.size() == 3,state+": all three score actions remain available")
++	for button: Button in buttons:
++		var bounds: Rect2 = button.get_global_rect()
++		var enclosed: bool = slot.get_global_rect().encloses(bounds) and root.get_visible_rect().encloses(bounds)
++		var ancestor: Node = button.get_parent()
++		while ancestor is Control:
++			if ancestor.clip_contents: enclosed = enclosed and ancestor.get_global_rect().encloses(bounds)
++			ancestor = ancestor.get_parent()
++		check(enclosed and button.is_visible_in_tree() and bounds.size.x >= 48 and bounds.size.y >= 48,state+": "+button.text+" has a complete visible touch target")
++		if not enclosed: print("SCORE_ACTION_BOUNDS state=",state," button=",button.text," bounds=",bounds," slot=",slot.get_global_rect()," records=",browser.records_panel.get_global_rect())
++
++func score_action_checks(dimensions: Vector2i) -> void:
++	score_action_bounds("pending scores")
++	var populated: Dictionary = {"friends":[],"comparison_scope":"all","comparison_bins":RaceComplete.COMPARISON_BINS,"race_ms":218000,"lap_ms":42000}
++	var bins: Array[int] = []
++	var edges: Array[float] = []
++	for index: int in range(RaceComplete.COMPARISON_BINS):
++		bins.append(1+(index*7)%13)
++		edges.append(200000.0+index*1000.0)
++	edges.append(200000.0+RaceComplete.COMPARISON_BINS*1000.0)
++	populated.race_distribution = {"bins":bins,"edges_ms":edges,"markers":[],"min_ms":edges[0],"max_ms":edges[-1]}
++	populated.lap_distribution = populated.race_distribution.duplicate(true)
++	for index: int in range(3): populated.friends.append({"player":"%d. A driver with a long display name" % (index+1),"country_code":["FI","GB","US"][index],"race_ms":210000+index*1000})
++	browser._show_detail(populated)
++	await frames()
++	score_action_bounds("three scores")
++	var rows: Array[Node] = browser.detail.find_child("Standings",true,false).find_children("*","Label",true,false).filter(func(node: Label) -> bool: return node.text.contains("A driver with a long display name"))
++	check(rows.size() == 3 and rows.all(func(node: Label) -> bool: return browser.find_child("RecordsSlot",true,false).get_global_rect().encloses(node.get_parent().get_global_rect())),"all three high-score rows stay inside the records panel")
++	for chart_name: String in ["RaceDistribution","LapDistribution"]:
++		var chart: TrackDistribution = browser.detail.find_child(chart_name,true,false)
++		check(chart.is_visible_in_tree() and chart.size.x >= 112 and chart.size.y >= 96 and browser.find_child("RecordsSlot",true,false).get_global_rect().encloses(chart.get_global_rect()),"comparison chart still fits alongside the full score actions")
++	await capture("scores-populated-%dx%d"%[dimensions.x,dimensions.y])
++	var safety: Button = browser.detail.find_child("TrackSafety",true,false)
++	var reads: int = client.comparison_reads
++	await tap(safety.get_global_rect().get_center())
++	var sheet: AcceptDialog
++	for node: Node in browser.get_children():
++		if node is AcceptDialog and node.get("sheet_kind") == "track": sheet = node
++	check(sheet != null and sheet.visible,"the visible Report / block button opens community safety by touch")
++	if sheet != null:
++		check(sheet.target.version_id == browser.selected_track.metadata.cloud_version,"report sheet retains the selected track version")
++		await capture("report-open-%dx%d"%[dimensions.x,dimensions.y])
++		sheet.canceled.emit()
++		await frames()
++	check(client.comparison_reads == reads,"opening and closing the safety sheet sends no report or comparison request")
++	for state: Dictionary in [{"label":"empty scores","snapshot":{"friends":[],"comparison_error":"Sign in to compare"}},{"label":"unavailable scores","snapshot":{"friends":[],"board_error":"offline fixture","comparison_error":"Sign in to compare"}}]:
++		browser._show_detail(state.snapshot)
++		await frames()
++		score_action_bounds(state.label)
++		await capture(str(state.label).replace(" ","-")+"-%dx%d"%[dimensions.x,dimensions.y])
++	browser._detail_state = []
++	browser._show_detail()
++	await frames()
+ 
+ func slide_checks(point: Vector2, opening: bool, dimensions: Vector2i) -> void:
+ 	var header: Rect2 = app.root_ui.find_child("MenuHeader",true,false).get_global_rect()
+@@ -186,6 +246,7 @@
+ 		check(close != null and favorite.get_global_rect().position.y >= close.get_global_rect().end.y+7,"X sits above the lowered favorite star")
+ 		check(close.get_global_rect().encloses(Rect2(close.get_global_rect().position,Vector2(48,48))),"X retains a full touch target")
+ 		await capture("detail-%dx%d"%[dimensions.x,dimensions.y])
++		await score_action_checks(dimensions)
+ 		await tap(favorite.get_global_rect().get_center())
+ 		check(not browser.list_open,"detail favorite keeps the track view open")
+ 		close = browser.hero.find_child("CloseTrackView",true,false)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Free Race High Scores actions override (2026-10-17)
++The owner reports the Report / block button clipped outside the selected Free Race track view. Reserve the High Scores column from its full content minimum, fit the records panel to its allocated slot and reduce section top padding by3 units. Keep all three full text actions/48-unit targets, three score rows and both charts inside the original180-unit area. Preserve the vertical list, top-down push, close/favorites, selected version, bounded caches and original racing. Native233headless/263Compatibility/263desktopMobile, app101 and parser854 pass. Actual commands, initial reproduction/padding/resize corrections, native views and task-only checkpoint: docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, live report, backend change/deployment or FPS claim.
+ 
+ ## Free Race top-down push override (2026-10-17)
+ The owner requests the track view from above, pushing track rows downward. Use the retained0.32s tween with viewport-height travel, zero horizontal offsets and touching panel/list edges; X reverses the push and restores the same list scroll. Preserve current detail, fixed navigation/actions, selection, favorites, metadata/caches and five-lap racing. This supersedes only the horizontal direction/gap in the preceding slide override. Native155headless/173Compatibility/173Mobile, app101 and parser854 pass. Actual commands, halfway views and task-only checkpoint: docs/FREE_RACE_TOP_PUSH_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-17 FRA01-FRA02/G01/R01/Q01: The owner reports the Report / block button clipped outside the selected Free Race track view. Reserve the High Scores column from its full content minimum, fit the records panel to its allocated slot and reduce section top padding by3 units. Keep all three full text actions/48-unit targets, three score rows and both charts inside the original180-unit area. Preserve the vertical list, top-down push, close/favorites, selected version, bounded caches and original racing. Native233headless/263Compatibility/263desktopMobile, app101 and parser854 pass. Actual commands, initial reproduction/padding/resize corrections, native views and task-only checkpoint: docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, live report, backend change/deployment or FPS claim.
++
+ 2026-10-17 FRT01-FRT02/G01/R01/Q01: The owner requests the track view from above, pushing track rows downward. Use the retained0.32s tween with viewport-height travel, zero horizontal offsets and touching panel/list edges; X reverses the push and restores the same list scroll. Preserve current detail, fixed navigation/actions, selection, favorites, metadata/caches and five-lap racing. This supersedes only the horizontal direction/gap in the preceding slide override. Native155headless/173Compatibility/173Mobile, app101 and parser854 pass. Actual commands, halfway views and task-only checkpoint: docs/FREE_RACE_TOP_PUSH_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+ 
+ 2026-10-17 FRS01-FRS02/G01/R01/Q01: The owner requests sliding motion when the Free Race track view opens or closes. Both retained views move through one clipped viewport over0.32s, detail arriving from the right and reversing on X; header, mode rail and shared actions stay fixed. Preserve list scroll, selected track, original cards/caches and five-lap racing. Moving content blocks input; reversals, resize, open drawers, immediate navigation and retained-menu reparenting settle correctly. Native149headless/167Compatibility/167Mobile, app101/catalog21/parser854 pass. Actual commands, initial sizing/lifecycle corrections, halfway views and task-only checkpoint: docs/FREE_RACE_SLIDE_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-17 FRA01-FRA02/G01/R01/Q01: The owner reports the Report / block button clipped outside the selected Free Race track view. Reserve the High Scores column from its full content minimum, fit the records panel to its allocated slot and reduce section top padding by3 units. Keep all three full text actions/48-unit targets, three score rows and both charts inside the original180-unit area. Preserve the vertical list, top-down push, close/favorites, selected version, bounded caches and original racing. Native233headless/263Compatibility/263desktopMobile, app101 and parser854 pass. Actual commands, initial reproduction/padding/resize corrections, native views and task-only checkpoint: docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, live report, backend change/deployment or FPS claim.
++
+ 2026-10-17 FRT01-FRT02/G01/R01/Q01: The owner requests the track view from above, pushing track rows downward. Use the retained0.32s tween with viewport-height travel, zero horizontal offsets and touching panel/list edges; X reverses the push and restores the same list scroll. Preserve current detail, fixed navigation/actions, selection, favorites, metadata/caches and five-lap racing. This supersedes only the horizontal direction/gap in the preceding slide override. Native155headless/173Compatibility/173Mobile, app101 and parser854 pass. Actual commands, halfway views and task-only checkpoint: docs/FREE_RACE_TOP_PUSH_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+ 
+ 2026-10-17 FRS01-FRS02/G01/R01/Q01: The owner requests sliding motion when the Free Race track view opens or closes. Both retained views move through one clipped viewport over0.32s, detail arriving from the right and reversing on X; header, mode rail and shared actions stay fixed. Preserve list scroll, selected track, original cards/caches and five-lap racing. Moving content blocks input; reversals, resize, open drawers, immediate navigation and retained-menu reparenting settle correctly. Native149headless/167Compatibility/167Mobile, app101/catalog21/parser854 pass. Actual commands, initial sizing/lifecycle corrections, halfway views and task-only checkpoint: docs/FREE_RACE_SLIDE_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+--- /dev/null
++++ b/docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md
+@@ -0,0 +1,20 @@
++# Free Race High Scores actions - 2026-10-17
++
++FRA01 addresses the owner's clipped Report / block button in the selected track view. FRA02 keeps three score rows, both comparison charts and the complete action row inside the records area. G01/R01 retain the vertical track list, top-down push, close/favorite controls, selected track/version, bounded caches and original racing. Q01 covers native layout and touch activation.
++
++`game/ui/track_browser.gd` now reserves the High Scores column's actual minimum width, including all three text buttons and the section insets, instead of clipping them inside 270 units. The current theme requires 344 units. The records panel follows its allocated slot after layout, removing the initial 24-unit right overrun. Section top padding changes from eight to five units so populated charts and three scores fit the existing 180-unit panel. The buttons retain their full labels, 48-unit height and existing callbacks.
++
++`game/tests/test_free_race_list.gd` adds bounds checks for pending, populated, empty and unavailable scores at 960x540, 1280x720 and 1720x900. Three long driver names and country flags exercise populated rows; both histograms retain their minimum dimensions. Actual viewport touch opens the safety sheet and verifies the selected immutable track version, with no submission. The original list, paging, favorites, push, reversal, resize, close and retained-menu checks remain.
++
++Actual commands, outcomes, logs, source hashes and the task-only checkpoint are recorded in [report.json](evidence/free-race-score-actions-2026-10-17/report.json) and [task-only.patch](evidence/free-race-score-actions-2026-10-17/task-only.patch). The original source reproduces 18 failed checks, including the clipped report target and failed touch activation. Initial padding checks retained the right overrun; the first resize callback was attached before panel construction and produced a nil assignment. The final callback is attached after construction and follows the real slot resize. Those attempts are retained in the evidence logs.
++
++Final checks pass: 233 headless, 263 Compatibility, 263 desktop Mobile, app 101 and parser 854. Final logs contain no warnings or errors.
++
++Native previews:
++
++- [Three scores and complete actions, 1280x720](evidence/free-race-score-actions-2026-10-17/gl_compatibility/scores-populated-1280x720.png)
++- [Small window, 960x540](evidence/free-race-score-actions-2026-10-17/gl_compatibility/detail-960x540.png)
++- [Report sheet opened by touch](evidence/free-race-score-actions-2026-10-17/gl_compatibility/report-open-1280x720.png)
++- [Mobile renderer with three scores](evidence/free-race-score-actions-2026-10-17/mobile/scores-populated-1280x720.png)
++
++The native runs use isolated local metadata and score fixtures. Owner appearance acceptance remains. No phone attachment check or device test, APK, live report, backend change/deployment or FPS claim was performed.

@@ -1,0 +1,173 @@
+--- a/game/ui/garage_news_menu.gd
++++ b/game/ui/garage_news_menu.gd
+@@ -312,7 +312,7 @@
+ 	lead.name = "LeadStory"
+ 	lead.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	lead.size_flags_stretch_ratio = 1.8
+-	lead.add_theme_constant_override("separation",8)
++	lead.add_theme_constant_override("separation",6)
+ 	columns.add_child(lead)
+ 	_story(lead,item)
+ 	if stories.size() < 2: return
+@@ -355,14 +355,19 @@
+ 	return "From the paddock."
+ 
+ func _story(parent: VBoxContainer, item: Dictionary) -> void:
+-	_text(parent,_category(item),12,RED)
+-	_text(parent,_headline(item),30,INK,true)
+ 	var track: String = str(item.get("track_name",""))
+ 	var vehicle: String = str(item.get("vehicle_id",""))
+-	_text(parent,track.to_upper()+("  /  "+VehicleCatalog.title(vehicle) if vehicle in VehicleCatalog.IDS else ""),14,MUTED)
++	var byline := HBoxContainer.new()
++	byline.add_theme_constant_override("separation",12)
++	parent.add_child(byline)
++	var category := _text(byline,_category(item),12,RED)
++	category.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
++	category.autowrap_mode = TextServer.AUTOWRAP_OFF
++	_text(byline,track.to_upper()+("  /  "+VehicleCatalog.title(vehicle) if vehicle in VehicleCatalog.IDS else ""),14,MUTED)
++	_text(parent,_headline(item),30,INK,true)
+ 	var media := HBoxContainer.new()
+ 	media.name = "StoryMedia"
+-	media.custom_minimum_size.y = 154
++	media.custom_minimum_size.y = 114
+ 	media.add_theme_constant_override("separation",12)
+ 	parent.add_child(media)
+ 	if vehicle in VehicleCatalog.IDS:
+@@ -382,7 +387,7 @@
+ 		photo.material = _photo_ink
+ 		photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 		photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-		photo.custom_minimum_size.y = 154
++		photo.custom_minimum_size.y = 114
+ 		photo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		photo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		photograph.add_child(photo)
+@@ -396,7 +401,7 @@
+ 	map.name = "NewsCircuit"
+ 	map.kind = "circuit"
+ 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	map.custom_minimum_size.y = 124
++	map.custom_minimum_size.y = 112
+ 	var raw: Variant = item.get("track_points",[])
+ 	if raw is Array:
+ 		for point: Variant in raw.slice(0,96):
+@@ -415,8 +420,17 @@
+ 		"percentile_drop": body = "Your %s time on %s has slipped outside the top %d%%. The competition is moving." % [metric,track,int(item.get("threshold",0))]
+ 		"friend_track": body = "%s has published a new track: %s. A fresh circuit to try." % [actor,track]
+ 	_text(parent,body,17)
+-	if item.has("time_ticks"): _text(parent,_time(int(item.time_ticks),int(item.get("tick_rate",120)))+"  /  "+metric.to_upper()+" TIME",23,RED)
+-	if item.has("your_ticks"): _text(parent,"Your best  "+_time(int(item.your_ticks),int(item.get("tick_rate",120))),14,MUTED)
++	var closing := HBoxContainer.new()
++	closing.name = "StoryClosing"
++	closing.add_theme_constant_override("separation",12)
++	parent.add_child(closing)
++	var times := VBoxContainer.new()
++	times.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	times.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	times.add_theme_constant_override("separation",2)
++	closing.add_child(times)
++	if item.has("time_ticks"): _text(times,_time(int(item.time_ticks),int(item.get("tick_rate",120)))+"  /  "+metric.to_upper()+" TIME",23,RED)
++	if item.has("your_ticks"): _text(times,"Your best  "+_time(int(item.your_ticks),int(item.get("tick_rate",120))),14,MUTED)
+ 	if _has_race_track(item):
+ 		var race := _button("Race track",_race_story.bind(item))
+ 		race.name = "GarageNewsRace"
+@@ -424,12 +438,11 @@
+ 		race.custom_minimum_size.x = 176
+ 		race.add_theme_font_override("font",SERIF)
+ 		race.tooltip_text = "Race "+track
+-		for state: String in ["normal","hover","pressed"]:
+-			var print_box := _box(Color.TRANSPARENT if state == "normal" else Color("d8cfb8") if state == "pressed" else Color("e3dbc6"))
+-			print_box.border_color = INK
+-			print_box.set_border_width_all(1)
+-			race.add_theme_stylebox_override(state,print_box)
+-		parent.add_child(race)
++		for state: String in ["normal","hover","pressed","focus"]:
++			race.add_theme_stylebox_override(state,_box(Color.TRANSPARENT))
++		for state: String in ["font_hover_color","font_pressed_color","font_focus_color"]:
++			race.add_theme_color_override(state,RED)
++		closing.add_child(race)
+ 
+ func _brief(parent: Node, item: Dictionary, index: int) -> void:
+ 	_rule(parent)
+--- a/game/tests/test_garage_news_native.gd
++++ b/game/tests/test_garage_news_native.gd
+@@ -91,9 +91,9 @@
+ 			var action: Button = menu.find_child("GarageNewsRace",true,false)
+ 			check(action != null and not action.disabled,"race action exists for "+str(service.items[index].kind))
+ 			if action != null:
+-				menu._scroll.ensure_control_visible(action)
+-				await settle()
+ 				check(action.size.y >= 48 and menu._scroll.get_global_rect().encloses(action.get_global_rect()),"complete race touch target fits "+str(service.items[index].kind)+" at "+str(dimensions))
++				check(menu._scroll.scroll_vertical == 0 and menu._scroll.get_global_rect().encloses(menu.find_child("LeadStory",true,false).get_global_rect()),"complete article fits without scrolling: "+str(service.items[index].kind)+" at "+str(dimensions))
++				check(not menu._scroll.get_v_scroll_bar().visible,"article has no vertical scrollbar")
+ 				await capture("race-"+str(service.items[index].kind)+"-"+str(dimensions.x))
+ 		menu._choose(1)
+ 		await settle()
+@@ -108,8 +108,6 @@
+ 		check(menu.find_child("NewsCarPhoto",true,false) == null,"publication illustrates the circuit without inventing a car")
+ 		var race_button: Button = menu.find_child("GarageNewsRace",true,false)
+ 		check(race_button != null and not race_button.disabled,"publication offers direct racing")
+-		menu._scroll.ensure_control_visible(race_button)
+-		await settle()
+ 		check(menu._scroll.get_global_rect().encloses(race_button.get_global_rect()),"Race track is reachable inside the article at "+str(dimensions))
+ 		check(backend.calls.is_empty(),"friend publication browsing needs no request")
+ 		await capture("friend-track-"+str(dimensions.x))
+@@ -133,9 +131,8 @@
+ 			check(menu.find_child("NewsCircuit",true,false).points.size() == 96,"local story has a packaged real outline")
+ 			var action: Button = menu.find_child("GarageNewsRace",true,false)
+ 			check(action != null and not action.disabled,"local story has its direct race action")
+-			menu._scroll.ensure_control_visible(action)
+-			await settle()
+ 			check(menu._scroll.get_global_rect().encloses(action.get_global_rect()),"local race action is reachable at "+str(dimensions))
++			check(menu._scroll.scroll_vertical == 0 and menu._scroll.get_global_rect().encloses(menu.find_child("LeadStory",true,false).get_global_rect()),"complete local article fits without scrolling at "+str(dimensions))
+ 			if index == 2: await capture("local-record-"+str(dimensions.x))
+ 		check(backend.calls.size() == reads_before and service.items == actual_items,"local reading leaves API and account news untouched")
+ 		backend.signed = true
+--- a/game/tests/test_garage_news.gd
++++ b/game/tests/test_garage_news.gd
+@@ -103,6 +103,9 @@
+ 	pane.news_race_requested.connect(func(story: Dictionary) -> void: requested.append(story))
+ 	var race_button: Button = menu.find_child("GarageNewsRace",true,false)
+ 	check(race_button != null and not race_button.disabled,"friend publication offers Race track")
++	for state: String in ["normal","hover","pressed","focus"]:
++		var ink: StyleBoxFlat = race_button.get_theme_stylebox(state)
++		check(ink.bg_color.a == 0.0 and ink.border_width_left == 0 and ink.border_width_top == 0 and ink.border_width_right == 0 and ink.border_width_bottom == 0,"race link has no border or button fill in "+state)
+ 	race_button.pressed.emit()
+ 	check(requested.size() == 1 and requested[0] == news.items[4],"Race track emits the exact published story")
+ 	requested[0].track_name = "Changed copy"
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-18 GNF01-GNF02/GNA01/G01/R01/Q01: Remove every Race track border/fill, including hover/press/focus. Fit the complete news article and race link together without scrolling: shared category/track byline, compact original photo/outline and a closing row for times/racing. Keep serif print,52-unit action, all story kinds/local identities and ordinary five-lap racing. New no-scroll checks reproduce78 failures on the prior layout; final client62, native334Compatibility/334desktopMobile, actual race90 and parser854 pass. Native views, commands and task-only checkpoint: docs/GARAGE_NEWS_FIT_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/test, APK or backend/deployment action.
++
+ 2026-10-18 GNA01-GNA03/G01/R01/Q01: Every track-related Garage newspaper article now offers direct racing, including milestones, records, rivalry, comeback and all local stories. Preserve exact published versions and ordinary selected-car five-lap racing; local Underpass/Dust cloud resolve their real authoring IDs on tap. Serif ink/paper action replaces the solid red button, retaining the52-unit touch target. Client58, native race90, rendered layouts289Compatibility/289desktopMobile, app101 and parser854 pass. Initial sandbox/startup/command/fixture corrections, native screenshots and task-only checkpoint: docs/GARAGE_NEWS_ALL_RACES_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/device test, APK, live backend change or deployment.
+ 
+ 2026-10-18 RRT01-RRT03/G01/R01/Q01: Post-race results now share the finish vote, show selected stars immediately and retain the confirmed score after its background save. Keep one Rate the track label; failures discard pending stars and qualified players can retry inline. Original runtime reproduces nine new failures; final focused54headless/63Compatibility/63desktopMobile, app101 and parser854 pass. The older TestResults reward-tween fixture fails identically on original and final code. Native views, actual commands, source hashes and task-only checkpoint: docs/RESULTS_RATING_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/device test, APK, live backend/rating mutation or deployment.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-18 GNF01-GNF02/GNA01/G01/R01/Q01: Remove every Race track border/fill, including hover/press/focus. Fit the complete news article and race link together without scrolling: shared category/track byline, compact original photo/outline and a closing row for times/racing. Keep serif print,52-unit action, all story kinds/local identities and ordinary five-lap racing. New no-scroll checks reproduce78 failures on the prior layout; final client62, native334Compatibility/334desktopMobile, actual race90 and parser854 pass. Native views, commands and task-only checkpoint: docs/GARAGE_NEWS_FIT_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/test, APK or backend/deployment action.
++
+ 2026-10-18 GNA01-GNA03/G01/R01/Q01: Every track-related Garage newspaper article now offers direct racing, including milestones, records, rivalry, comeback and all local stories. Preserve exact published versions and ordinary selected-car five-lap racing; local Underpass/Dust cloud resolve their real authoring IDs on tap. Serif ink/paper action replaces the solid red button, retaining the52-unit touch target. Client58, native race90, rendered layouts289Compatibility/289desktopMobile, app101 and parser854 pass. Initial sandbox/startup/command/fixture corrections, native screenshots and task-only checkpoint: docs/GARAGE_NEWS_ALL_RACES_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/device test, APK, live backend change or deployment.
+ 
+ 2026-10-18 RRT01-RRT03/G01/R01/Q01: Post-race results now share the finish vote, show selected stars immediately and retain the confirmed score after its background save. Keep one Rate the track label; failures discard pending stars and qualified players can retry inline. Original runtime reproduces nine new failures; final focused54headless/63Compatibility/63desktopMobile, app101 and parser854 pass. The older TestResults reward-tween fixture fails identically on original and final code. Native views, actual commands, source hashes and task-only checkpoint: docs/RESULTS_RATING_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/device test, APK, live backend/rating mutation or deployment.
+--- /dev/null
++++ b/docs/GARAGE_NEWS_FIT_2026_10_18.md
+@@ -0,0 +1,17 @@
++# Borderless news racing without scrolling
++
++The owner's correction rejects borders around the racing action. GNF01 removes its border and filled background in normal, hover, pressed and keyboard-focus states. The existing Libre Baskerville type, dark ink,52-unit target and colour feedback remain.
++
++The scrolling wording was ambiguous; an optional clarification was sent, and work proceeded after allowing time for a reply with the stated interpretation that scrolling should be unnecessary. GNF02 fits the complete article on screen: category/track facts share a byline, the original car photo/circuit outline use a114-unit image height, and race times and the direct racing link share the closing row. The headline, full story, captions and known timing facts remain. Newspaper rules elsewhere retain their original appearance. GNA01/G01/R01 preserve racing from all five story types, real local track identities, exact published versions, ordinary selected-car/five-lap racing and the retained Garage.
++
++![Complete article with borderless racing at960px](evidence/garage-news-fit-2026-10-18/gl_compatibility/race-friend_overtake-960.png)
++
++[New circuit](evidence/garage-news-fit-2026-10-18/gl_compatibility/race-friend_track-960.png), [local record in desktop Mobile](evidence/garage-news-fit-2026-10-18/mobile/local-record-960.png).
++
++Changed runtime: `game/ui/garage_news_menu.gd`. Existing tests: `game/tests/test_garage_news.gd` verifies transparent/borderless interaction states; `game/tests/test_garage_news_native.gd` now verifies the complete article is enclosed at scroll position0, the full action target is visible, and no scrollbar appears. These tests no longer scroll the action into view. Both actual and local stories are covered at960x540,1280x720 and1600x720. Status/plan notes are updated.
++
++The prior layout reproduces78 failures in286 checks with the new no-scroll assertions (headless, after removal of the race border only). Final client62, native Compatibility334 and desktop Mobile334, actual native race90, and parser854 all pass with exit0. Existing real-race tests cover the moved action's signal, five story kinds, local Underpass, selected car, five laps, version/cached document/ticket contracts, unavailable tracks and cancellation. No assertions were weakened. All final logs have no captured script/parse errors.
++
++Actual commands/results: [report.json](evidence/garage-news-fit-2026-10-18/report.json). Pinned Godot4.7.2 is invoked through `scripts/dev.ps1` with isolated workspace APPDATA, fixture services and sandbox-approved native execution. Mobile refers to the desktop Vulkan renderer. [Task-only checkpoint](evidence/garage-news-fit-2026-10-18/checkpoint.json) preserves the exact previous workspace and unrelated changes.
++
++No phone attachment check or physical-device test, APK build/install, live backend write or deployment was performed. Owner appearance/touch acceptance remains.

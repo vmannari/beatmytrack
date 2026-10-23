@@ -1,0 +1,321 @@
+extends VBoxContainer
+## A compact collection. Details use one on-demand sheet and no backend reads.
+signal trophy_room_requested
+var service: Node
+var category: String = "All"
+var filter: int = 0
+var selected: String = "races"
+var grid: GridContainer
+var detail: VBoxContainer
+var summary: Label
+var scroll: ScrollContainer
+var _info: Button
+var _sheet_layer: CanvasLayer
+var _sheet_panel: PanelContainer
+var _sheet_footer: VBoxContainer
+var _sheet_kind: String = ""
+const TIER_NAMES: Array[String] = ["Locked","Bronze","Silver","Gold","Platinum"]
+
+func _ready() -> void:
+	name = "AchievementsMenu"
+	size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_theme_constant_override("separation",8)
+	var toolbar := HBoxContainer.new()
+	toolbar.name = "AchievementToolbar"
+	toolbar.add_theme_constant_override("separation",6)
+	add_child(toolbar)
+	var back: Button = _icon_button("trophy", "Trophy Room", func() -> void:
+		_close_sheet()
+		trophy_room_requested.emit())
+	back.name = "AchievementBack"
+	toolbar.add_child(back)
+	var title: Label = MenuStyle.label("ACHIEVEMENTS",26)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(title)
+	summary = MenuStyle.label("0 / 130",20)
+	summary.name = "AchievementSummary"
+	summary.tooltip_text = "Unlocked tiers and prestige honors"
+	toolbar.add_child(summary)
+	var categories := OptionButton.new()
+	categories.name = "AchievementCategories"
+	categories.custom_minimum_size = Vector2(160,52)
+	categories.add_theme_font_size_override("font_size",18)
+	categories.add_item("All categories")
+	var values: Array[String] = ["All"]
+	for f: Dictionary in AchievementProgress.catalog().families:
+		if f.category not in values:
+			values.append(f.category)
+			categories.add_item(f.category)
+	categories.item_selected.connect(func(index: int) -> void:
+		category = values[index]
+		_rebuild())
+	toolbar.add_child(categories)
+	var filters := OptionButton.new()
+	filters.name = "AchievementFilter"
+	filters.custom_minimum_size = Vector2(145,52)
+	filters.add_theme_font_size_override("font_size",18)
+	for text: String in ["All badges","Unlocked","In progress","Prestige"]: filters.add_item(text)
+	filters.item_selected.connect(func(index: int) -> void:
+		filter = index
+		_rebuild())
+	toolbar.add_child(filters)
+	var refresh: Button = _icon_button("restart","Refresh achievements",func() -> void: service.refresh())
+	refresh.name = "AchievementRefresh"
+	toolbar.add_child(refresh)
+	_info = _icon_button("help","About achievements",_show_info)
+	_info.name = "AchievementInfo"
+	toolbar.add_child(_info)
+	scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+	scroll.name = "AchievementScroll"
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.follow_focus = true
+	add_child(scroll)
+	grid = GridContainer.new()
+	grid.name = "AchievementGrid"
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation",8)
+	grid.add_theme_constant_override("v_separation",8)
+	scroll.add_child(grid)
+	service.changed.connect(_rebuild)
+	resized.connect(func() -> void:
+		_columns()
+		_layout_sheet())
+	_rebuild()
+	if is_visible_in_tree(): service.refresh()
+
+func _icon_button(icon: String, caption: String, action: Callable) -> Button:
+	var button: Button = MenuStyle.button("",action)
+	button.icon = MenuIcon.texture(icon)
+	button.expand_icon = true
+	button.add_theme_constant_override("icon_max_width",28)
+	button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.custom_minimum_size = Vector2(52,52)
+	button.tooltip_text = caption
+	return button
+
+func _columns() -> void:
+	if is_instance_valid(grid): grid.columns = clampi(floori((size.x+8.0)/312.0),1,4)
+
+func _rebuild() -> void:
+	if not is_instance_valid(grid): return
+	var position: int = scroll.scroll_vertical
+	for node: Node in grid.get_children():
+		grid.remove_child(node)
+		node.queue_free()
+	var earned: int = 0
+	var visible_families: Array[Dictionary] = []
+	for family: Dictionary in AchievementProgress.catalog().families:
+		var source: Dictionary = service.source(family)
+		var level: int = AchievementProgress.tier(family,source)
+		earned += level
+		if category != "All" and family.category != category: continue
+		if filter == 1 and level == 0: continue
+		if filter == 2 and level >= family.tiers.size(): continue
+		if filter == 3 and not family.prestige: continue
+		visible_families.append(family)
+	var visible_ids: Array[String] = []
+	for family: Dictionary in visible_families: visible_ids.append(family.id)
+	if selected not in visible_ids: selected = visible_ids[0] if not visible_ids.is_empty() else ""
+	for family: Dictionary in visible_families:
+		var source: Dictionary = service.source(family)
+		_card(family,source,AchievementProgress.tier(family,source))
+	if visible_families.is_empty(): grid.add_child(MenuStyle.label("No achievements in this view yet",20,true))
+	summary.text = "%d / 130" % earned
+	_info.icon = MenuIcon.texture("help" if service.status.is_empty() else "warning")
+	_info.tooltip_text = "About achievements" if service.status.is_empty() else service.status
+	_info.modulate = MenuStyle.TEXT if service.status.is_empty() else MenuStyle.ACCENT
+	if _sheet_kind == "achievement": _detail()
+	elif _sheet_kind == "info": _info_text()
+	_columns()
+	scroll.set_deferred("scroll_vertical",position)
+
+func _card(f: Dictionary, source: Dictionary, level: int) -> void:
+	var button := Button.new()
+	button.name = "Achievement_"+f.id
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.custom_minimum_size = Vector2(300,100)
+	button.tooltip_text = f.title
+	button.add_theme_stylebox_override("normal",MenuStyle.box(MenuStyle.PANEL,10))
+	button.pressed.connect(_show_achievement.bind(str(f.id)))
+	grid.add_child(button)
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation",10)
+	button.add_child(row)
+	MenuStyle.fill(row)
+	row.offset_left = 10
+	row.offset_top = 8
+	row.offset_right = -10
+	row.offset_bottom = -8
+	var badge := AchievementBadge.new()
+	badge.tier = level
+	badge.prestige = f.prestige
+	badge.motif = AchievementProgress.catalog().families.find(f)
+	badge.mark = _mark(f.id) if f.prestige else ""
+	row.add_child(badge)
+	badge.custom_minimum_size = Vector2(50,64)
+	var copy := VBoxContainer.new()
+	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	copy.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_child(copy)
+	var title: Label = MenuStyle.label(f.title,22)
+	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	copy.add_child(title)
+	var next: int = mini(level,f.tiers.size()-1)
+	var target: int = int(f.tiers[next])
+	var value: int = mini(int(source.get("metrics",{}).get(f.metric,0)),target)
+	var progress := ProgressBar.new()
+	progress.name = "AchievementProgress_"+f.id
+	progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	progress.custom_minimum_size.y = 7
+	progress.max_value = target
+	progress.value = target if level == f.tiers.size() else value
+	progress.show_percentage = false
+	copy.add_child(progress)
+	var progress_text: String = "%.1f / %d km" % [value/1000.0,target/1000] if f.metric == "distance_m" else "%d / %d" % [value,target]
+	var tier_text: String = "Prestige" if f.prestige else TIER_NAMES[next+1]
+	var caption: String = "Prestige earned" if f.prestige else TIER_NAMES[level]+" complete"
+	if level < f.tiers.size(): caption = progress_text+"  /  "+tier_text+" next"
+	var progress_label: Label = MenuStyle.label(caption,16,true)
+	progress_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	copy.add_child(progress_label)
+
+func _show_achievement(id: String) -> void:
+	selected = id
+	for f: Dictionary in AchievementProgress.catalog().families:
+		if f.id != selected: continue
+		_open_sheet(str(f.title),"achievement")
+		_detail()
+		return
+
+func _open_sheet(title: String, kind: String) -> void:
+	_close_sheet()
+	_sheet_kind = kind
+	_sheet_layer = CanvasLayer.new()
+	_sheet_layer.name = "AchievementSheet"
+	_sheet_layer.layer = 100
+	add_child(_sheet_layer)
+	# The existing menu swipe owner recognizes layers above 20 as modal.
+	scroll.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var shade := ColorRect.new()
+	shade.name = "AchievementScrim"
+	shade.color = MenuStyle.POPUP_DIM
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	_sheet_layer.add_child(shade)
+	MenuStyle.fill(shade)
+	shade.gui_input.connect(func(event: InputEvent) -> void:
+		if (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed) or (event is InputEventScreenTouch and not event.pressed):
+			get_viewport().set_input_as_handled()
+			_close_sheet())
+	_sheet_panel = PanelContainer.new()
+	_sheet_panel.name = "AchievementDetail"
+	_sheet_panel.theme = MenuStyle.theme()
+	_sheet_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_sheet_panel.add_theme_stylebox_override("panel",MenuStyle.popup_panel(20))
+	_sheet_panel.minimum_size_changed.connect(_layout_sheet.call_deferred)
+	_sheet_layer.add_child(_sheet_panel)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation",12)
+	_sheet_panel.add_child(body)
+	var header := HBoxContainer.new()
+	body.add_child(header)
+	var heading: Label = MenuStyle.label(title,30)
+	heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(heading)
+	var close: Button = _icon_button("close","Close",_close_sheet)
+	close.name = "AchievementDetailClose"
+	header.add_child(close)
+	var content := ScrollContainer.new()
+	content.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_child(content)
+	detail = VBoxContainer.new()
+	detail.add_theme_constant_override("separation",12)
+	detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.add_child(detail)
+	_sheet_footer = VBoxContainer.new()
+	body.add_child(_sheet_footer)
+	_layout_sheet()
+	close.grab_focus.call_deferred()
+
+func _layout_sheet() -> void:
+	if not is_instance_valid(_sheet_panel): return
+	var extent: Vector2 = get_viewport_rect().size
+	_sheet_panel.size = Vector2(minf(640,extent.x-32),minf(400,extent.y-32))
+	_sheet_panel.position = (extent-_sheet_panel.size)*0.5
+
+func _close_sheet() -> void:
+	if is_instance_valid(_sheet_layer):
+		_sheet_layer.hide()
+		_sheet_layer.queue_free()
+	_sheet_layer = null
+	_sheet_panel = null
+	_sheet_kind = ""
+	detail = null
+	if is_instance_valid(scroll): scroll.mouse_filter = Control.MOUSE_FILTER_STOP
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if not _sheet_kind.is_empty() and event.is_action_pressed("ui_cancel"):
+		_close_sheet()
+		get_viewport().set_input_as_handled()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree(): _close_sheet()
+
+func _clear(container: Node) -> void:
+	for node: Node in container.get_children():
+		container.remove_child(node)
+		node.queue_free()
+
+func _copy(text: String, font_size: int = 19, muted: bool = false) -> void:
+	var label: Label = MenuStyle.label(text,font_size,muted)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail.add_child(label)
+
+func _detail() -> void:
+	if not is_instance_valid(detail): return
+	_clear(detail)
+	_clear(_sheet_footer)
+	for f: Dictionary in AchievementProgress.catalog().families:
+		if f.id != selected: continue
+		var source: Dictionary = service.source(f)
+		var level: int = AchievementProgress.tier(f,source)
+		var target: int = int(f.tiers[mini(level,f.tiers.size()-1)])
+		var description: String = f.description.replace("{n}",str(target))
+		if f.metric == "distance_m": description = "Drive %d km in completed races." % (target/1000)
+		_copy(description,21)
+		_copy(("Prestige" if f.prestige else TIER_NAMES[level])+" / "+("Saved on this profile" if f.scope == "local" else "Verified account progress" if service.authenticated() else "Local progress"),17,true)
+		var rarity: Dictionary = service.snapshot.get("rarity",{})
+		var population: int = int(rarity.get("eligible",0))
+		var key: String = f.id+"/"+str(maxi(level,1))
+		var text: String = "Rarity available after 100 eligible players"
+		if f.scope == "local" or not service.authenticated(): text = "Local collection / no global rarity"
+		elif population >= 100:
+			text = "Unlocked by %.1f%% of %d eligible players" % [100.0*float(rarity.get("unlocks",{}).get(key,0))/population,population]
+		_copy(text,17,true)
+		var rarity_label: Label = detail.get_child(detail.get_child_count()-1)
+		rarity_label.name = "AchievementRarity"
+		rarity_label.tooltip_text = str(rarity.get("definition",""))
+		var pin: Button = MenuStyle.button("Unfeature" if f.id in service.featured() else "Feature (%d/5)" % service.featured().size(),service.toggle_feature.bind(f.id))
+		pin.name = "AchievementFeature"
+		pin.disabled = level == 0 or service.busy
+		_sheet_footer.add_child(pin)
+
+func _show_info() -> void:
+	_open_sheet("About achievements","info")
+	_info_text()
+
+func _info_text() -> void:
+	if not is_instance_valid(detail): return
+	_clear(detail)
+	if not service.status.is_empty(): _copy(service.status,21)
+	_copy("Permanent career milestones. Tap a badge for its requirement, rarity and featured display.")
+	_copy("Verified milestones sync after race verification. Tracking began with this update; garage care is saved on this profile.",17,true)
+	if not service.authenticated(): _copy("Guest progress is local. Sign in for verified competitive and creator achievements.",17,true)
+
+func _mark(id: String) -> String:
+	return {"untouchable":"UT","perfectionist":"PF","king":"KT","odds":"AO","seasons":"MS","comeback":"CK","legend":"TL","unbeaten":"UB","full_grid":"FG","scholar":"RS"}.get(id,"")

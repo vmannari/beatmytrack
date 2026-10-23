@@ -1,0 +1,687 @@
+--- a/game/track/desert_sand_wind.gd
++++ b/game/track/desert_sand_wind.gd
+@@ -1,18 +1,18 @@
+ class_name DesertSandWind
+ extends Node3D
+ ## Local wind-lifted sand. Presentation only; no track or driving writes.
+-const GRID: int = 9
+-const SPACING: float = 6.0
++const MAX_PATCHES: int = 6
++const GRAINS_PER_PATCH: int = 192
++const SPACING: float = 14.0
++const MIN_SEPARATION: float = 8.0
+ const WIND: Vector2 = Vector2(0.91, 0.414608)
+-const FLOW: Texture2D = preload("res://assets/textures/winter_wind_flow_v1.png")
+ const SAND_SHADER: Shader = preload("res://track/desert_sand_wind.gdshader")
+-var ribbons: MultiMeshInstance3D
++var grains: MultiMeshInstance3D
+ var material: ShaderMaterial
+ var track: NativeTrack
+ var relief: RefCounted
+ var center := Vector2.INF
+ var elapsed: float = 0.0
+-var travel: float = 0.0
+ var intensity: float = 0.0
+ var enabled: bool = false
+ var suspended: bool = false
+@@ -25,37 +25,33 @@
+ 	visible = enabled
+ 	relief = visual.desert_relief if is_instance_valid(visual) and enabled else null
+ 	ground_height = -0.06 if enabled and not data.metadata.get("creator_document", {}).get("pieces", []).is_empty() else 0.0
+-	if enabled and ribbons == null:
++	if enabled and grains == null:
+ 		var plane := PlaneMesh.new()
+-		plane.size = Vector2(8.0, 3.0)
+-		plane.subdivide_width = 7
+-		plane.subdivide_depth = 1
++		plane.size = Vector2.ONE
+ 		var batch := MultiMesh.new()
+ 		batch.transform_format = MultiMesh.TRANSFORM_3D
+ 		batch.use_custom_data = true
+ 		batch.mesh = plane
+-		batch.instance_count = GRID * GRID
++		batch.instance_count = MAX_PATCHES * GRAINS_PER_PATCH
+ 		batch.visible_instance_count = 0
+ 		material = ShaderMaterial.new()
+ 		material.shader = SAND_SHADER
+-		material.set_shader_parameter("flow_texture", FLOW)
+-		ribbons = MultiMeshInstance3D.new()
+-		ribbons.name = "WindLiftedSand"
+-		ribbons.multimesh = batch
+-		ribbons.material_override = material
+-		ribbons.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-		add_child(ribbons)
++		grains = MultiMeshInstance3D.new()
++		grains.name = "WindLiftedSandGrains"
++		grains.multimesh = batch
++		grains.material_override = material
++		grains.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++		add_child(grains)
+ 	reset()
+ 
+ func reset() -> void:
+ 	elapsed = 0.0
+-	travel = 0.0
+ 	intensity = 0.0
+ 	center = Vector2.INF
+ 	sources.clear()
+ 	if material != null:
+ 		material.set_shader_parameter("strength", 0.0)
+-		ribbons.multimesh.visible_instance_count = 0
++		grains.multimesh.visible_instance_count = 0
+ 
+ func present(delta: float, focus: Vector2, gust: float, paused: bool, finished: bool) -> void:
+ 	if not enabled or suspended or paused or not is_visible_in_tree(): return
+@@ -63,40 +59,56 @@
+ 	var step: float = minf(delta, 0.25)
+ 	var wind: float = clampf(gust, 0.0, 1.0)
+ 	elapsed += step
+-	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.22, 0.80, wind), step * 0.5)
+-	travel += step * lerpf(1.6, 3.6, wind)
++	intensity = move_toward(intensity, 0.0 if finished else lerpf(0.07, 0.88, wind), step * 0.5)
+ 	var next_center: Vector2 = (focus / SPACING).floor() * SPACING
+ 	if center != next_center:
+ 		center = next_center
+-		_place()
++		_place(focus)
+ 	material.set_shader_parameter("elapsed", elapsed)
+-	material.set_shader_parameter("travel", travel)
+ 	material.set_shader_parameter("strength", intensity)
+ 	material.set_shader_parameter("focus", VisualGeometry.world(focus))
+ 
+-func _place() -> void:
++func _place(focus: Vector2) -> void:
++	var previous: PackedVector2Array = sources.duplicate()
+ 	sources.clear()
+-	var along: Vector3 = VisualGeometry.world(WIND)
+-	var basis := Basis(along, Vector3.UP, along.cross(Vector3.UP))
++	# Keep sites until their entire hop envelope is beyond the visible fade.
++	# Crossing a collection-cell boundary must not relocate a visible burst.
++	for source: Vector2 in previous:
++		if source.distance_squared_to(focus) < 28.0 * 28.0: sources.append(source)
++	var candidates: Array[Vector2] = []
++	# Empty cells, full-cell jitter and minimum separation avoid the original
++	# carpet of identical evenly spaced ribbons. World sites survive recentering.
++	for y: int in range(-3, 4):
++		for x: int in range(-3, 4):
++			var cell: Vector2 = center / SPACING + Vector2(x, y)
++			if _hash(cell + Vector2(81, 43)) > 0.48: continue
++			var source: Vector2 = (cell + Vector2(_hash(cell + Vector2(17, 31)), _hash(cell + Vector2(67, 11)))) * SPACING
++			if track.cell_at(source) not in [1, 2]: continue
++			if absf(source.x) > track.half_extent.x or absf(source.y) > track.half_extent.y: continue
++			if track.has_overhead_bridge(source, false) or track.has_overhead_bridge(source + WIND * 4.0, false): continue
++			candidates.append(source)
++	candidates.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.distance_squared_to(center) < b.distance_squared_to(center))
++	for source: Vector2 in candidates:
++		if sources.size() >= MAX_PATCHES: break
++		var separated: bool = true
++		for other: Vector2 in sources:
++			if source.distance_squared_to(other) < MIN_SEPARATION * MIN_SEPARATION:
++				separated = false
++				break
++		if separated: sources.append(source)
+ 	var index: int = 0
+-	for y: int in range(-4, 5):
+-		for x: int in range(-4, 5):
+-			var point: Vector2 = center + Vector2(x, y) * SPACING
+-			var seed: float = _hash(point)
+-			point += Vector2(seed - 0.5, _hash(point + Vector2(3, 7)) - 0.5) * 2.0
+-			var source: Vector2 = point - WIND * 4.0
+-			# Lift from loose sand, never water, rock, compacted road or a deck.
+-			if track.cell_at(source) not in [1, 2] or track.cell_at(point) not in [1, 2]: continue
+-			if absf(source.x) > track.half_extent.x or absf(source.y) > track.half_extent.y: continue
+-			if track.has_overhead_bridge(source, false) or track.has_overhead_bridge(point, false): continue
+-			var at: Vector3 = VisualGeometry.world(point)
+-			at.y = ground_height + (float(relief.height(source)) if relief != null else 0.0) + 0.055
+-			ribbons.multimesh.set_instance_transform(index, Transform3D(basis, at))
+-			ribbons.multimesh.set_instance_custom_data(index, Color(seed, _hash(point + Vector2(11, 19)), 0, 1))
+-			sources.append(source)
++	for source: Vector2 in sources:
++		var seed: float = _hash(source)
++		var along: Vector3 = VisualGeometry.world(WIND.rotated((seed - 0.5) * 0.30))
++		var basis := Basis(along, Vector3.UP, along.cross(Vector3.UP))
++		var at: Vector3 = VisualGeometry.world(source)
++		at.y = ground_height + (float(relief.height(source)) if relief != null else 0.0) + 0.025
++		for grain: int in range(GRAINS_PER_PATCH):
++			grains.multimesh.set_instance_transform(index, Transform3D(basis, at))
++			grains.multimesh.set_instance_custom_data(index, Color(seed, (grain + 0.5) / GRAINS_PER_PATCH, _hash(source + Vector2(grain, 73)), 1.0))
+ 			index += 1
+-	ribbons.multimesh.visible_instance_count = index
+-	ribbons.multimesh.custom_aabb = AABB(VisualGeometry.world(center) + Vector3(-32, -1, -32), Vector3(64, 4, 64))
++	grains.multimesh.visible_instance_count = index
++	grains.multimesh.custom_aabb = AABB(VisualGeometry.world(center) + Vector3(-56, -1, -56), Vector3(112, 3, 112))
+ 
+ static func _hash(point: Vector2) -> float:
+ 	return fposmod(sin(point.dot(Vector2(12.9898, 78.233))) * 43758.5453, 1.0)
+--- a/game/track/desert_sand_wind.gdshader
++++ b/game/track/desert_sand_wind.gdshader
+@@ -1,61 +1,77 @@
+-shader_type spatial;
++﻿shader_type spatial;
+ render_mode diffuse_lambert, specular_disabled, blend_mix, depth_draw_never, cull_disabled;
+ 
+-uniform sampler2D flow_texture : filter_linear_mipmap, repeat_enable;
+ uniform sampler2D scene_depth : hint_depth_texture, filter_nearest, repeat_disable;
+ uniform float elapsed = 0.0;
+-uniform float travel = 0.0;
+ uniform float strength = 0.0;
+ uniform vec3 focus;
+ varying vec3 world_position;
+-varying float seed;
++varying float presence;
++varying float pigment;
++
++float sand_hash(float p) {
++    return fract(sin(p * 127.1 + 311.7) * 43758.5453);
++}
++
++float emission(float time, float seed) {
++    // Short unequal bursts with long empty intervals; patches have independent
++    // phases and skip whole cycles. Birth-time gating lets emitted grains settle.
++    float period = 7.0 + sand_hash(seed + 3.0) * 7.0;
++    float clock = time + seed * 31.0;
++    float cycle = floor(clock / period);
++    float local_time = mod(clock, period);
++    float event_seed = sand_hash(seed * 39.0 + cycle * 7.0);
++    float start = 0.8 + event_seed * 1.3;
++    float duration = mix(1.1, 3.2, sand_hash(event_seed + 9.0));
++    return step(0.20, event_seed) * smoothstep(start, start + 0.18, local_time)
++        * (1.0 - smoothstep(start + duration - 0.35, start + duration, local_time));
++}
+ 
+ void vertex() {
+-	seed = INSTANCE_CUSTOM.x;
+-	float u = clamp((VERTEX.x + 4.0) / 8.0, 0.0, 1.0);
+-	// A seated windward foot lifts into an uneven, shallow downwind veil.
+-	float phase = seed * 6.283185;
+-	float gust = 0.76 + 0.24 * sin(elapsed * 0.73 + phase);
+-	float lift = sin(u * PI) * (0.46 + INSTANCE_CUSTOM.y * 0.62) * gust;
+-	VERTEX.y += lift;
+-	VERTEX.z *= mix(0.52, 1.0, u);
+-	VERTEX.z += sin(u * PI) * (0.20 * sin(elapsed * 0.65 + phase + u * 3.0));
+-	NORMAL = normalize(vec3(-cos(u * PI) * (0.46 + INSTANCE_CUSTOM.y * 0.62) * gust * PI / 8.0, 1.0, 0.0));
+-	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++    float patch = INSTANCE_CUSTOM.x;
++    float id = INSTANCE_CUSTOM.y;
++    float grain = INSTANCE_CUSTOM.z;
++    pigment = sand_hash(grain + 17.0);
++    float life = mix(0.55, 1.35, sand_hash(grain + patch));
++    float age = fract(elapsed / life + id) * life;
++    float born = elapsed - age;
++    float u = age / life;
++    float speed = mix(2.4, 4.3, grain) * mix(0.65, 1.1, strength);
++    // Individual short saltation hops, a few centimetres above the surface.
++    // No continuous density sheet or volumetric-looking curl survives.
++    float height = 4.0 * u * (1.0 - u) * mix(0.055, 0.28, sand_hash(grain + 5.0));
++    float width = mix(0.65, 1.8, sand_hash(patch + 11.0));
++    float lane = (sand_hash(id * 83.0 + patch) - 0.5) * width;
++    float start = (sand_hash(grain + 8.0) - 0.5) * 0.65;
++    vec3 corner = VERTEX;
++    VERTEX.x = start + age * speed + corner.x * mix(0.065, 0.16, grain);
++    VERTEX.y = height;
++    VERTEX.z = lane + age * (grain - 0.5) * 0.18 + corner.z * mix(0.030, 0.050, pigment);
++    NORMAL = vec3(0.0, 1.0, 0.0);
++    presence = emission(born, patch) * smoothstep(0.0, 0.06, u) * (1.0 - smoothstep(0.58, 1.0, u));
++    world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+ }
+ 
+ void fragment() {
+-	if (strength <= 0.0) discard;
+-	float distance_fade = 1.0 - smoothstep(16.0, 19.0, length(world_position.xz - focus.xz));
+-	if (distance_fade <= 0.0) discard;
+-	vec2 wind = normalize(vec2(0.91, -0.414608));
+-	vec2 side = vec2(-wind.y, wind.x);
+-	vec2 p = vec2(dot(world_position.xz, wind), dot(world_position.xz, side));
+-	vec2 moving = p - vec2(travel, 0.0);
+-	vec3 broad = texture(flow_texture, moving * vec2(0.055, 0.14)).rgb;
+-	vec3 detail = texture(flow_texture, moving * vec2(0.16, 0.80) + vec2(0.0, (broad.g - 0.5) * 0.45)).rgb;
+-	float edge = abs(UV.y * 2.0 - 1.0 + (broad.g - 0.5) * 0.50);
+-	float sides = 1.0 - smoothstep(0.20, 1.0, edge);
+-	float ends = smoothstep(0.0, 0.12, UV.x) * (1.0 - smoothstep(0.48, 1.0, UV.x));
+-	float fingers = smoothstep(0.24, 0.68, detail.r);
+-	float grains = smoothstep(0.30 - fwidth(detail.b), 0.72 + fwidth(detail.b), detail.b);
+-	float local_gust = 0.64 + 0.36 * sin(elapsed * 0.53 + seed * 6.283185 + broad.r * 2.0);
+-	float shape = sides * ends * fingers * mix(0.35, 1.0, grains) * local_gust;
+-	if (shape <= 0.002) discard;
+-	// Fade against opaque sand, cars and props with both depth conventions.
+-	float depth = texture(scene_depth, SCREEN_UV).r;
++    if (strength <= 0.0 || presence <= 0.01) discard;
++    float distance_fade = 1.0 - smoothstep(14.0, 20.0, length(world_position.xz - focus.xz));
++    if (distance_fade <= 0.0) discard;
++    vec2 p = abs(UV * 2.0 - 1.0);
++    float grain = (1.0 - smoothstep(0.60, 1.0, p.x)) * (1.0 - smoothstep(0.25, 1.0, p.y));
++    // Opaque depth remains authoritative with both renderer conventions.
++    float depth = texture(scene_depth, SCREEN_UV).r;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+-	vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
++    vec3 ndc = vec3(SCREEN_UV, depth) * 2.0 - 1.0;
+ #else
+-	vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
++    vec3 ndc = vec3(SCREEN_UV * 2.0 - 1.0, depth);
+ #endif
+-	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
+-	float gap = -view.z / view.w + VERTEX.z;
+-	float intersection = smoothstep(0.0, 0.12, gap);
+-	vec4 opaque_world = INV_VIEW_MATRIX * view;
+-	intersection *= 1.0 - smoothstep(world_position.y, world_position.y + 0.05, opaque_world.y / opaque_world.w);
+-	ALBEDO = mix(vec3(0.82, 0.67, 0.45), vec3(0.96, 0.84, 0.63), broad.r);
+-	ROUGHNESS = 1.0;
+-	SPECULAR = 0.0;
+-	ALPHA = min(0.82 * strength * shape * distance_fade * intersection, 0.48);
++    vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
++    float gap = -view.z / view.w + VERTEX.z;
++    float intersection = smoothstep(0.0, 0.018, gap);
++    vec4 opaque_world = INV_VIEW_MATRIX * view;
++    intersection *= 1.0 - smoothstep(world_position.y, world_position.y + 0.025, opaque_world.y / opaque_world.w);
++    ALBEDO = mix(vec3(0.49, 0.34, 0.17), vec3(0.84, 0.66, 0.39), pigment);
++    ROUGHNESS = 1.0;
++    SPECULAR = 0.0;
++    ALPHA = grain * presence * strength * mix(0.65, 1.0, pigment) * distance_fade * intersection;
+ }
+--- a/game/tests/test_desert_sand_wind.gd
++++ b/game/tests/test_desert_sand_wind.gd
+@@ -3,7 +3,7 @@
+ const FX = preload("res://track/desert_sand_wind.gd")
+ var checks: int = 0
+ var failures: int = 0
+-var out: String = "res://../docs/evidence/desert-sand-wind-2026-10-22/"
++var out: String = "res://../docs/evidence/desert-sand-grains-2026-10-22/"
+ 
+ func _initialize() -> void:
+ 	run.call_deferred()
+@@ -30,7 +30,7 @@
+ 	return TrackCompiler.compile(RoadPieces.route_from_pieces(doc).document)
+ 
+ func state(fx: DesertSandWind) -> Array:
+-	return [fx.elapsed, fx.travel, fx.intensity, fx.center, fx.sources.duplicate()]
++	return [fx.elapsed, fx.intensity, fx.center, fx.sources.duplicate()]
+ 
+ func run() -> void:
+ 	var track: NativeTrack = circuit()
+@@ -39,9 +39,19 @@
+ 	root.add_child(fx)
+ 	fx.configure(track)
+ 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
+-	check(fx.ribbons.multimesh.instance_count == 81 and fx.sources.size() > 0 and fx.sources.size() <= 81, "bounded nearby sand sources")
++	check(fx.grains.multimesh.instance_count == 1152 and fx.sources.size() > 0 and fx.sources.size() <= 6, "sparse patches within the bounded grain pool")
+ 	for source: Vector2 in fx.sources:
+ 		check(track.cell_at(source) in [1, 2] and not track.has_overhead_bridge(source, false), "source is loose sand with no bridge overhead")
++		for other: Vector2 in fx.sources:
++			if source == other: continue
++			check(source.distance_to(other) >= 8.0, "patches leave real empty ground between sources")
++	var original_sites: PackedVector2Array = fx.sources.duplicate()
++	var next_focus := Vector2(14, -18)
++	fx.present(1.0 / 60.0, next_focus, 1.0, false, false)
++	for source: Vector2 in original_sites:
++		if source.distance_to(next_focus) < 20.0:
++			check(fx.sources.has(source), "visible sites stay fixed when the collection cell changes")
++	fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
+ 	var before: Array = state(fx)
+ 	fx.present(0.25, Vector2(1000, 1000), 0.0, true, false)
+ 	check(state(fx) == before, "pause freezes clock and placement")
+@@ -58,11 +68,11 @@
+ 	check(state(fx) == before, "hidden effect does no work")
+ 	fx.show()
+ 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 0.0, false, false)
+-	check(fx.intensity < float(before[2]) and fx.intensity > 0.0, "sand settles during a wind lull")
++	check(fx.intensity < float(before[1]) and fx.intensity > 0.0, "sand settles during a wind lull")
+ 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, true)
+ 	check(fx.intensity == 0.0, "finish fades sand away")
+ 	fx.reset()
+-	check(fx.intensity == 0.0 and fx.travel == 0.0 and fx.sources.is_empty() and fx.ribbons.multimesh.visible_instance_count == 0, "retry clears all local wind state")
++	check(fx.intensity == 0.0 and fx.sources.is_empty() and fx.grains.multimesh.visible_instance_count == 0, "retry clears all local wind state")
+ 	track.metadata.theme = "pine"
+ 	fx.configure(track)
+ 	check(not fx.enabled and not fx.visible, "other biomes disable sand")
+@@ -116,31 +126,74 @@
+ 	var baseline: Image = root.get_texture().get_image()
+ 	check(baseline.save_png(out + "before.png") == OK, "before screenshot")
+ 	fx.show()
+-	for i: int in range(3): await draw(game, fx)
+-	var lifted: Image = root.get_texture().get_image()
+-	check(lifted.save_png(out + "gust.png") == OK, "gust screenshot")
+-	var changed: int = 0
++	fx.reset()
++	var peak: int = -1
++	var quiet: int = 1000000
++	var peak_time: float = 0.0
++	var peak_image: Image
++	var timeline: Array[Dictionary] = []
++	for sample: int in range(24):
++		for step: int in range(30): fx.present(1.0 / 60.0, focus, 1.0, false, false)
++		for i: int in range(2): await draw(game, fx)
++		var current: Image = root.get_texture().get_image()
++		var changed: int = pixel_changes(baseline, current)
++		timeline.append({"seconds": fx.elapsed, "changed_pixels": changed})
++		if changed > peak:
++			peak = changed
++			peak_time = fx.elapsed
++			peak_image = current
++		quiet = mini(quiet, changed)
++	check(peak > 100 and peak < 1280 * 720 / 100, "visible individual grains occupy less than one percent of the race view")
++	check(quiet < peak * 0.35, "independent bursts leave quiet intervals even in steady strong wind")
++	check(peak_image.save_png(out + "gust.png") == OK, "peak grain screenshot")
++	var receipt := FileAccess.open(out + "timeline.json", FileAccess.WRITE)
++	receipt.store_string(JSON.stringify({"peak_pixels": peak, "quiet_pixels": quiet, "peak_seconds": peak_time, "sources": fx.sources, "samples": timeline}, "\t"))
++	receipt.close()
++	print("SAND_GRAIN_PIXELS: peak=", peak, " quiet=", quiet, " seconds=", peak_time)
++	fx.elapsed = peak_time
++	fx.present(0.000001, focus, 1.0, false, false)
++	await occlusion(game, fx, focus)
++	# Aim the detail camera at the patch that actually emitted in this frame;
++	# cosmetic shader phases need not match between GL and Vulkan hardware.
++	var centroid := Vector2.ZERO
+ 	for y: int in range(720):
+ 		for x: int in range(1280):
+-			if lifted.get_pixel(x, y) != baseline.get_pixel(x, y): changed += 1
+-	check(changed > 500, "sand is visible in actual overhead race view")
+-	print("SAND_CHANGED_PIXELS: ", changed)
+-	await occlusion(game, fx, focus)
+-	camera.position = VisualGeometry.world(focus) + Vector3(0, 18, 13)
+-	camera.look_at(VisualGeometry.world(focus))
+-	camera.size = 22.0
+-	for i: int in range(3): await draw(game, fx)
++			if baseline.get_pixel(x, y) != peak_image.get_pixel(x, y): centroid += Vector2(x, y)
++	centroid /= maxi(1, peak)
++	var detail_focus: Vector2 = fx.sources[0] + DesertSandWind.WIND * 2.0
++	var nearest_pixel: float = INF
++	for source: Vector2 in fx.sources:
++		var screen: Vector2 = camera.unproject_position(VisualGeometry.world(source + DesertSandWind.WIND * 2.0))
++		if screen.distance_squared_to(centroid) < nearest_pixel:
++			nearest_pixel = screen.distance_squared_to(centroid)
++			detail_focus = source + DesertSandWind.WIND * 2.0
++	camera.position = VisualGeometry.world(detail_focus) + Vector3(0, 18, 13)
++	camera.look_at(VisualGeometry.world(detail_focus))
++	camera.size = 14.0
++	fx.hide()
++	for i: int in range(3): await draw(game, fx)
++	var detail_base: Image = root.get_texture().get_image()
++	fx.show()
++	for i: int in range(3): await draw(game, fx)
++	check(pixel_changes(detail_base, root.get_texture().get_image()) > 100, "detail camera shows the patch that actually emitted")
+ 	check(root.get_texture().get_image().save_png(out + "detail.png") == OK, "closer overhead sand view")
+ 	var frames: Array[String] = []
+-	root.size = Vector2i(640, 360)
+-	for i: int in range(3): await draw(game, fx)
+-	for frame: int in range(120):
+-		fx.present(1.0 / 30.0, focus, 1.0 if frame < 75 else 0.0, false, false)
++	root.size = Vector2i(960, 540)
++	for i: int in range(3): await draw(game, fx)
++	for frame: int in range(90):
++		fx.present(1.0 / 15.0, focus, 1.0, false, false)
+ 		await draw(game, fx)
+-		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.80)))
++		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.94)))
+ 	var preview := FileAccess.open(out + "motion.html", FileAccess.WRITE)
+-	preview.store_string("<!doctype html><meta charset='utf-8'><title>Desert sand wind</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%}button{padding:10px}</style><p>Desert wind · actual Godot frames</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;view.src=frames[0];toggle.onclick=()=>{playing=!playing;toggle.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/30)</script>")
++	preview.store_string("<!doctype html><meta charset='utf-8'><title>Desert sand grains</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%}button{padding:10px}</style><p>Desert sand grains - actual Godot detail frames, steady strong wind</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;view.src=frames[0];toggle.onclick=()=>{playing=!playing;toggle.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/15)</script>")
+ 	preview.close()
++
++func pixel_changes(before: Image, after: Image) -> int:
++	var count: int = 0
++	for y: int in range(before.get_height()):
++		for x: int in range(before.get_width()):
++			if before.get_pixel(x, y) != after.get_pixel(x, y): count += 1
++	return count
+ 
+ func draw(game: Node, fx: DesertSandWind) -> void:
+ 	# The desktop OS may focus the chat during capture. A pause menu contains
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Sparse granular Desert wind override (2026-10-22)
++2026-10-22 SGR01-SGR03/G01/R01/Q01: Owner rejects the first Desert wind as gas-like and systematic. Individual earthy flecks make short3-28cm hops from at most six irregular separated patches, with independent brief bursts, skipped cycles and quiet intervals. One1152-instance/2304-triangle batch removes the broad veils/flow texture; visible sites retain exact world positions across collection cells. Existing prepared ground support, depth, lifecycle, camera, vehicle dust, audio and canonical behavior remain. Focused52headless/60Compatibility/60desktopMobile, Desert87, ambience111, biomes108, parser932 and scoped whitespace pass; native peaks303/277pixels include fully quiet samples and 783exact roof pixels. Actual commands, native motion/views, first subpixel/capture corrections, resolved concurrent DLL startup failure and task-only checkpoint: docs/DESERT_SAND_GRAINS_2026_10_22.md. Local client reload and owner appearance acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment. Supersedes the previous DSW broad-veils trial.
+ 
+ ## Three-race or ten-minute interstitial override (2026-10-22)
+ 2026-10-22 ADB01-ADB04/R01/Q01: Owner authorizes an automatic interstitial after three completed ordinary races or ten active foreground minutes, whichever comes first; elapsed time defers to the next race finish. One preloaded AdMob demo placement uses the existing debug Show ads switch. Actual shows reset both session counters; unavailable ads preserve due state. Ad-free/unknown ownership, account/result/background fences, duplicate callbacks, saved results and rewarded resumes remain. Focused57headless/59desktopCompatibility, rewarded44, App141, parser930, import and offline Android Java compilation pass. Commands, fixture/audio/build corrections, synthetic result views and task-only checkpoint: docs/INTERSTITIAL_CADENCE_2026_10_22.md. Production IDs/consent/release setup and actual device/owner acceptance remain; no phone attachment check/device test, APK, live account/backend mutation or deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 SGR01-SGR03/G01/R01/Q01: Owner rejects the first Desert wind as gas-like and systematic. Individual earthy flecks make short3-28cm hops from at most six irregular separated patches, with independent brief bursts, skipped cycles and quiet intervals. One1152-instance/2304-triangle batch removes the broad veils/flow texture; visible sites retain exact world positions across collection cells. Existing prepared ground support, depth, lifecycle, camera, vehicle dust, audio and canonical behavior remain. Focused52headless/60Compatibility/60desktopMobile, Desert87, ambience111, biomes108, parser932 and scoped whitespace pass; native peaks303/277pixels include fully quiet samples and 783exact roof pixels. Actual commands, native motion/views, first subpixel/capture corrections, resolved concurrent DLL startup failure and task-only checkpoint: docs/DESERT_SAND_GRAINS_2026_10_22.md. Local client reload and owner appearance acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment. Supersedes the previous DSW broad-veils trial.
++
+ 2026-10-22 ADB01-ADB04/R01/Q01: Automatic interstitial becomes due after three completed races or ten active foreground minutes, then shows only at a race finish. Actual show resets both session counters; unavailable ads carry forward. Existing debug Show ads, preloaded Google demo unit, authoritative ad-free checks, exact-result/account/background fences and rewarded resumes remain. Focused57headless/59desktopCompatibility, rewarded44, App141, parser930, import and offline Android Java compile pass. Actual commands, retained fixture/audio/build corrections, synthetic views and task-only checkpoint: docs/INTERSTITIAL_CADENCE_2026_10_22.md. Production IDs/consent/release and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 RSQL01-RSQL04/R01/Q01: Single-race claim/acceptance reads share bounded indexed facts and at most six reward milestones; permanent track markers avoid repeat history checks. Opening/earned ledger identities batch together under the existing Player lock, retaining atomic result/PBs/Coins/competition/achievement/news commit and exact retries. Checker files remain byte-identical. Two alternating local PostgreSQL pairs, 80 warm real-proof jobs per variant: total SQL47 to24 and worker79.152ms to50.813ms; finalization38 to18 SQL/48.042ms to25.997ms. Upload/HTTP/cloud/ghost/capacity are excluded. PostgreSQL100 pass plus11 focused pass, SQLite39+9 pass/7 skips, preparation/lifecycle41 and real-native/HTTP10 pass. Three older migration fixtures fail at telemetry0051's downgrade guard on saved originals; assertions/protection retained. Actual commands, initial helper corrections, exact12757-tick proof, receipts and task-only checkpoint: docs/evidence/race-acceptance-sql-2026-10-22/report.json. Concurrent backend/client work is preserved. Matching rollout and representative cloud load/owner acceptance remain; no live account/race mutation/deployment, phone attachment check/device test or APK action.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-22 SGR01-SGR03/G01/R01/Q01: Owner rejects the first Desert wind as gas-like and systematic. Individual earthy flecks make short3-28cm hops from at most six irregular separated patches, with independent brief bursts, skipped cycles and quiet intervals. One1152-instance/2304-triangle batch removes the broad veils/flow texture; visible sites retain exact world positions across collection cells. Existing prepared ground support, depth, lifecycle, camera, vehicle dust, audio and canonical behavior remain. Focused52headless/60Compatibility/60desktopMobile, Desert87, ambience111, biomes108, parser932 and scoped whitespace pass; native peaks303/277pixels include fully quiet samples and 783exact roof pixels. Actual commands, native motion/views, first subpixel/capture corrections, resolved concurrent DLL startup failure and task-only checkpoint: docs/DESERT_SAND_GRAINS_2026_10_22.md. Local client reload and owner appearance acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment. Supersedes the previous DSW broad-veils trial.
++
+ 2026-10-22 ADB01-ADB04/R01/Q01: Automatic interstitial becomes due after three completed races or ten active foreground minutes, then shows only at a race finish. Actual show resets both session counters; unavailable ads carry forward. Existing debug Show ads, preloaded Google demo unit, authoritative ad-free checks, exact-result/account/background fences and rewarded resumes remain. Focused57headless/59desktopCompatibility, rewarded44, App141, parser930, import and offline Android Java compile pass. Actual commands, retained fixture/audio/build corrections, synthetic views and task-only checkpoint: docs/INTERSTITIAL_CADENCE_2026_10_22.md. Production IDs/consent/release and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 RSQL01-RSQL04/R01/Q01: Single-race claim/acceptance reads share bounded indexed facts and at most six reward milestones; permanent track markers avoid repeat history checks. Opening/earned ledger identities batch together under the existing Player lock, retaining atomic result/PBs/Coins/competition/achievement/news commit and exact retries. Checker files remain byte-identical. Two alternating local PostgreSQL pairs, 80 warm real-proof jobs per variant: total SQL47 to24 and worker79.152ms to50.813ms; finalization38 to18 SQL/48.042ms to25.997ms. Upload/HTTP/cloud/ghost/capacity are excluded. PostgreSQL100 pass plus11 focused pass, SQLite39+9 pass/7 skips, preparation/lifecycle41 and real-native/HTTP10 pass. Three older migration fixtures fail at telemetry0051's downgrade guard on saved originals; assertions/protection retained. Actual commands, initial helper corrections, exact12757-tick proof, receipts and task-only checkpoint: docs/evidence/race-acceptance-sql-2026-10-22/report.json. Concurrent backend/client work is preserved. Matching rollout and representative cloud load/owner acceptance remain; no live account/race mutation/deployment, phone attachment check/device test or APK action.
+--- /dev/null
++++ b/docs/DESERT_SAND_GRAINS_2026_10_22.md
+@@ -0,0 +1,58 @@
++# Desert sand: granular and intermittent revision — 2026-10-22
++
++The owner rejects the first wind effect as gas-like and too systematic everywhere. This supersedes the broad curved veils in `DESERT_SAND_WIND_2026_10_22.md`.
++
++## Requirements
++
++- **SGR01:** Remove continuous density sheets, curling flow, pale cloud pigment and metre-high loft. Use small earthy flecks making short ballistic hops, with varying speed, size and pigment. Warm and darker grains share actual directional/ambient light. Maximum cosmetic hop is 28 cm above the seated source, rather than the previous roughly one-metre veil.
++- **SGR02:** Leave most ground clear. Empty candidate cells, full-cell random offsets and at least eight metres between selected sites give at most six irregular local patches. Independent brief emission windows, unequal durations, skipped cycles and long gaps replace continuous activity at every grid point. The existing wind audio controls overall intensity; strong wind does not make every patch emit together.
++- **SGR03:** Keep visible sites in their original world locations as the camera crosses collection cells. Retire a site only outside the whole visible/hop envelope. Preserve pause/background/hidden, finite input, finish/retry, biome teardown and prepared cosmetic ground support.
++- **G01/R01/Q01:** Preserve canonical track and actual driving data, camera, road geometry, vehicle dust, existing wind audio, account flows and concurrent work. Review native moving evidence and retain failures/corrections.
++
++## Implementation and bounds
++
++Only `game/track/desert_sand_wind.gd`, its `.gdshader` and `game/tests/test_desert_sand_wind.gd` change at runtime/test scope. The existing race weather integration in `game/core/game.gd` is retained.
++
++One MultiMesh contains at most **1,152 tiny two-triangle planes / 2,304 triangles**, compared with the original 2,592-triangle veil budget. Each of six sites has 192 optical grain flecks; the shader keeps most inactive during gaps. No separate veil batch, new noise texture, procedural texture generation, runtime image readback, new thread/cache or persistent storage is added. The original flow texture is no longer loaded by this effect. One depth read per visible fragment retains both renderer depth conventions and soft opaque intersections.
++
++Flecks represent visible clusters of fine grains at the overhead scale; their 6.5–16 cm streak geometry is an optical presentation choice, not simulated sand particle size. Source sites remain restricted to loose sand, inside the map and clear of overhead bridges. Source height reuses the existing prepared Desert relief. GPU event phases are cosmetic and can differ between GL/Vulkan implementations; they never enter canonical driving or verification.
++
++## Native evidence
++
++- [Compatibility motion](evidence/desert-sand-grains-2026-10-22/gl_compatibility/motion.html).
++- [Desktop Mobile motion](evidence/desert-sand-grains-2026-10-22/mobile/motion.html).
++- Both folders retain `before.png`, `gust.png`, `detail.png`, `occlusion.png` and `timeline.json`. Before means the same current scene with the revised wind hidden. The rejected broad-veils captures remain in the earlier task directory, untouched.
++- Gameplay images use the original camera. The six-second detail preview uses a closer overhead fixture camera aimed at the patch that actually emitted. It contains 90 actual Godot frames at 15 presentation steps per second under constant strong wind, including quiet intervals. Encoding uses lossless animated WebP from the captured JPEG frames to retain fine flecks. Pause holds a canvas snapshot.
++- The fixture samples 12 seconds of stationary strong wind. It requires more than 100 visible changed pixels at the peak, fewer than 1% of the gameplay image changed, and a quiet sample below 35% of the peak. This replaces the old veil's minimum-coverage check because the owner's new requirement explicitly calls for sparse grains and clear ground. Lifecycle, exact canonical data and strict opaque-roof pixel equality remain.
++
++All graphical checks run on a desktop NVIDIA GeForce RTX 3090. Desktop Mobile is Vulkan Mobile rendering, not physical-phone execution. The receipt records actual counts and coverage.
++
++Final results: **52 headless / 60 Compatibility / 60 desktop Mobile**, existing Desert **87**, ambience **111**, biomes **108**, project parser **932 scripts**, and scoped whitespace all pass. Strong-wind peaks are **303 / 277 pixels** in the 1280×720 gameplay frame, with **zero** in the quietest sample. Both renderers retain all **783** projected opaque-roof interior pixels exactly.
++
++## Commands and results
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. All engine invocations use the established `scripts/dev.ps1` entry point and the approved normal local execution context needed for Windows certificate access.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_ambience.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_biomes.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++.tools/review/Scripts/python.exe docs/evidence/desert-sand-grains-2026-10-22/encode_preview.py
++git diff --check -- game/track/desert_sand_wind.gd game/track/desert_sand_wind.gdshader game/tests/test_desert_sand_wind.gd
++```
++
++Actual terminal outcomes, logs, source hashes, retained attempts and the task-only source patch are in `evidence/desert-sand-grains-2026-10-22/report.json`. This patch compares the three revised source/test files against the saved first-trial files, preserving concurrent work in the shared workspace.
++
++## Retained corrections and limitations
++
++1. The initial patch combined delete/add on one shader path and was rejected without applying. The update was then applied with separate supported edits.
++2. Initial grains were too small to read at gameplay scale (42 changed pixels at the strongest sampled frame). Its image is retained as `before/grains-too-small.png`. The revised optical flecks use 192 grains/site and slightly longer/wider, stronger cores while keeping very sparse coverage and low hops.
++3. Source collection now retains visible old sites across cell changes; focused checks require their exact positions to survive. The fixture chooses the detail source from the actual changed-pixel centroid, since GL and Vulkan can produce different cosmetic hash phases.
++4. A final Mobile rerun initially stopped before engine startup because concurrent audio work referenced a not-yet-built `bmt_windows_audio_v5.dll`. `mobile-refined-final.log` retains that error. No audio source, manifest or binary was altered by this task; the rerun follows the existing build's completion.
++5. Deliberate fixture stepping and screenshot readbacks produce `RACE_HITCH` diagnostic messages. These are not ordinary gameplay measurements. No FPS, frame-pacing or phone-performance claim is made.
++
++Reload the local client to inspect the revision. Owner acceptance of grain readability, patch frequency and natural motion remains. No phone attachment check/device test, APK/export/install, backend/account mutation or deployment was performed.
+--- /dev/null
++++ b/docs/evidence/desert-sand-grains-2026-10-22/encode_preview.py
+@@ -0,0 +1,53 @@
++"""Encode actual native frames losslessly; retain individual grains in playback."""
++import base64
++import io
++import json
++import re
++from pathlib import Path
++
++from PIL import Image
++
++root = Path(__file__).resolve().parent
++player = """<!doctype html><meta charset="utf-8"><title>Desert sand grains</title>
++<style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img,canvas{width:100%}button{padding:10px}[hidden]{display:none}</style>
++<p>Desert sand grains · actual Godot detail frames · steady strong wind</p>
++<img id="view" src="motion.webp"><canvas id="still" hidden></canvas>
++<button id="toggle">Pause</button><script>
++const view=document.getElementById('view'),still=document.getElementById('still'),toggle=document.getElementById('toggle');
++let playing=true;toggle.onclick=()=>{if(playing){still.width=view.naturalWidth;still.height=view.naturalHeight;still.getContext('2d').drawImage(view,0,0);}
++playing=!playing;view.hidden=!playing;still.hidden=playing;toggle.textContent=playing?'Pause':'Play';};
++</script>"""
++for renderer in ("gl_compatibility", "mobile"):
++    folder = root / renderer
++    source = (folder / "motion.html").read_text(encoding="utf-8")
++    match = re.search(r"const frames=(\[.*?\]);let frame=", source)
++    if match is None:
++        print(renderer, "preview already encoded")
++        continue
++    frames = json.loads(match.group(1))
++    images = [
++        Image.open(io.BytesIO(base64.b64decode(frame.split(",", 1)[1]))).convert("RGB")
++        for frame in frames
++    ]
++    images[0].save(
++        folder / "motion.webp", save_all=True, append_images=images[1:],
++        duration=67, loop=0, lossless=True, method=4,
++    )
++    (folder / "motion.html").write_text(player, encoding="utf-8")
++    print(renderer, len(images), "frames", (folder / "motion.webp").stat().st_size, "bytes")
++
++metadata = {}
++for renderer in ("gl_compatibility", "mobile"):
++    path = root / renderer / "motion.webp"
++    image = Image.open(path)
++    duration = 0
++    for frame in range(image.n_frames):
++        image.seek(frame)
++        image.load()
++        duration += image.info["duration"]
++    metadata[renderer] = {
++        "native_frames": 90, "encoded_frames": image.n_frames,
++        "duration_ms": duration, "bytes": path.stat().st_size,
++    }
++(root / "preview-encoding.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
++print(json.dumps(metadata))
+--- /dev/null
++++ b/docs/evidence/desert-sand-grains-2026-10-22/finalize_receipt.py
+@@ -0,0 +1,113 @@
++"""Record passing checks and checkpoint only this revision's source changes."""
++import difflib
++import hashlib
++import json
++import re
++from pathlib import Path
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++
++def read_log(name):
++    data = (OUT / name).read_bytes()
++    return data.decode("utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
++
++specs = [
++    ("focused headless", "test_desert_sand_wind-final.log", "test_desert_sand_wind.gd", "", 52),
++    ("focused Compatibility", "compatibility-final.log", "test_desert_sand_wind.gd", " -Graphical -RenderingMethod gl_compatibility", 60),
++    ("focused desktop Mobile", "mobile-retry-final.log", "test_desert_sand_wind.gd", " -Graphical -RenderingMethod mobile", 60),
++    ("existing Desert", "test_desert-final.log", "test_desert.gd", "", 87),
++    ("existing ambience", "test_desert_ambience-final.log", "test_desert_ambience.gd", "", 111),
++    ("existing biomes", "test_biomes-final.log", "test_biomes.gd", "", 108),
++    ("all project scripts", "test_script_parse-final.log", "test_script_parse.gd", "", 932),
++]
++tests = []
++for label, log, script, flags, count in specs:
++    text = read_log(log)
++    expected = f"{count} scripts, 0 failures" if script == "test_script_parse.gd" else f"{count} checks, 0 failures"
++    if expected not in text:
++        raise RuntimeError(f"Missing passing result in {log}")
++    command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/" + script + flags
++    command += " -CommandTimeoutSeconds " + ("240" if flags else "180")
++    tests.append({"name": label, "log": log, "checks": count, "failures": 0, "command": command})
++
++summary = (
++    "2026-10-22 SGR01-SGR03/G01/R01/Q01: Owner rejects the first Desert wind as gas-like and systematic. "
++    "Individual earthy flecks make short3-28cm hops from at most six irregular separated patches, with "
++    "independent brief bursts, skipped cycles and quiet intervals. One1152-instance/2304-triangle batch "
++    "removes the broad veils/flow texture; visible sites retain exact world positions across collection "
++    "cells. Existing prepared ground support, depth, lifecycle, camera, vehicle dust, audio and canonical "
++    "behavior remain. Focused52headless/60Compatibility/60desktopMobile, Desert87, ambience111, biomes108, "
++    "parser932 and scoped whitespace pass; native peaks303/277pixels include fully quiet samples and "
++    "783exact roof pixels. Actual commands, native motion/views, first subpixel/capture corrections, "
++    "resolved concurrent DLL startup failure and task-only checkpoint: docs/DESERT_SAND_GRAINS_2026_10_22.md. "
++    "Local client reload and owner appearance acceptance remain; no phone attachment check/device test, "
++    "APK, backend/account mutation or deployment. Supersedes the previous DSW broad-veils trial."
++)
++base = OUT / "task-base"
++after = OUT / "task-after"
++statuses = ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]
++for name in statuses:
++    path = ROOT / name
++    raw = path.read_bytes()
++    if b"2026-10-22 SGR01-SGR03/" in raw:
++        if not (base / name).exists(): raise RuntimeError("Missing original status snapshot")
++        continue
++    target = base / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(raw)
++    nl = b"\r\n" if b"\r\n" in raw else b"\n"
++    if name == "AGENTS.md":
++        header, rest = raw.split(nl, 1)
++        block = nl + b"## Sparse granular Desert wind override (2026-10-22)" + nl + summary.encode() + nl
++        path.write_bytes(header + nl + block + rest)
++    else:
++        path.write_bytes(summary.encode() + nl * 2 + raw)
++
++revisions = {
++    "game/track/desert_sand_wind.gd": "desert_sand_wind.gd",
++    "game/track/desert_sand_wind.gdshader": "desert_sand_wind.gdshader",
++    "game/tests/test_desert_sand_wind.gd": "test_desert_sand_wind.gd",
++}
++for name, old in revisions.items():
++    target = base / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes((OUT / "before" / old).read_bytes())
++additions = [
++    "docs/DESERT_SAND_GRAINS_2026_10_22.md",
++    "docs/evidence/desert-sand-grains-2026-10-22/encode_preview.py",
++    "docs/evidence/desert-sand-grains-2026-10-22/finalize_receipt.py",
++]
++files = [*revisions, *statuses, *additions]
++patch = []
++hashes = {}
++for name in files:
++    path = ROOT / name
++    target = after / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(path.read_bytes())
++    old = (base / name).read_text(encoding="utf-8").splitlines(True) if (base / name).exists() else []
++    new = path.read_text(encoding="utf-8").splitlines(True)
++    patch.extend(difflib.unified_diff(old, new, fromfile="a/" + name if old else "/dev/null", tofile="b/" + name))
++    hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
++(OUT / "task.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++timelines = {r: json.loads((OUT / r / "timeline.json").read_text()) for r in ["gl_compatibility", "mobile"]}
++report = {
++    "date": "2026-10-22", "requirements": ["SGR01", "SGR02", "SGR03", "G01", "R01", "Q01"],
++    "engine": "4.7.2.stable.official.ed1daf0bf", "desktop_gpu": "NVIDIA GeForce RTX 3090",
++    "tests": tests, "max_patches": 6, "max_instances": 1152, "max_triangles": 2304,
++    "minimum_site_separation_m": 8, "max_hop_above_source_m": 0.28,
++    "timelines": timelines, "opaque_roof": {"interior_pixels_each_renderer": 783, "changed_pixels_each_renderer": 0},
++    "preview_encoding": json.loads((OUT / "preview-encoding.json").read_text()),
++    "whitespace_command": "git diff --check -- game/track/desert_sand_wind.gd game/track/desert_sand_wind.gdshader game/tests/test_desert_sand_wind.gd",
++    "whitespace_exit_code": 0,
++    "retained_attempts": ["headless-initial.log", "compatibility-initial.log", "compatibility-readable.log", "mobile-final.log", "mobile-refined-final.log"],
++    "corrections": ["unsupported combined delete/add patch rejected atomically", "subpixel first grains enlarged for overhead readability", "visible sites retained across collection cells", "detail source selected from actual emitted-pixel centroid", "concurrent audio DLL became available without modifying audio work"],
++    "source_sha256": hashes, "patch": "task.patch", "patch_sha256": hashlib.sha256((OUT / "task.patch").read_bytes()).hexdigest(),
++    "concurrent_work_preserved": "No core/game.gd or native/audio changes. Source diff starts at the saved first sand trial; status edits are additive.",
++    "acceptance_remaining": ["local client reload", "owner grain readability and natural patch/burst appearance", "physical-device appearance and performance"],
++    "phone_attachment_check": False, "physical_device_test": False, "apk_export_install": False,
++    "backend_account_mutation": False, "deployment": False, "performance_claim": "None; capture readbacks are fixture-only.",
++}
++(OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print("Checkpoint and receipt written:", len(files), "task files")

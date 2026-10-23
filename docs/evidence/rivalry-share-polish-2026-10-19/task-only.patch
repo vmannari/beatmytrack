@@ -1,0 +1,490 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1895,11 +1895,15 @@
+ 	var text: String = rivalry.model.finale_share_text()
+ 	if text.is_empty(): return
+ 	if challenge_links.share(text): return
+-	var dialog := FaultDialog.new()
+-	dialog.dialog_text = "Rivalry results copied.\n"+text
++	var dialog := preload("res://ui/rivalry_share_dialog.gd").new()
++	dialog.model = rivalry.model
++	dialog.player_name = online.player_name() if online.client.signed_in() else ""
++	dialog.livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
++	dialog.customisation = VehicleCustomisation.for_car(records.settings,rivalry.model.vehicle_id)
++	dialog.condition = VehicleCondition.read(records,rivalry.model.vehicle_id)
+ 	_own_dialog(dialog)
+ 	var bounds: Vector2 = root_ui.get_viewport().get_visible_rect().size
+-	dialog.popup_centered(Vector2i(minf(1040,bounds.x-48),minf(600,bounds.y-48)))
++	dialog.popup_centered(Vector2i(minf(1120,bounds.x-48),minf(620,bounds.y-48)))
+ 
+ func _remember_rivalry_standings(parent: Control) -> void:
+ 	if not is_instance_valid(parent): return
+--- a/game/ui/fault_dialog.gd
++++ b/game/ui/fault_dialog.gd
+@@ -46,11 +46,6 @@
+ 		value.category = ""
+ 		value.title = "Track link copied"
+ 		value.message = message.trim_prefix("Track link copied.\n")
+-		value.symbol = "check"
+-	elif message.begins_with("Rivalry results copied.\n"):
+-		value.category = ""
+-		value.title = "Results copied"
+-		value.message = message.trim_prefix("Rivalry results copied.\n")
+ 		value.symbol = "check"
+ 	elif message.begins_with("Track creator:"):
+ 		value.category = "TRACK INFORMATION"
+--- /dev/null
++++ b/game/ui/rivalry_share_dialog.gd
+@@ -0,0 +1,282 @@
++extends "res://ui/fault_dialog.gd"
++## A completed championship receipt; the copied/native payload remains plain text.
++const VictoryCar = preload("res://ui/rivalry_victory_car.gd")
++const Finale = preload("res://ui/weekly_rivalry_finale.gd")
++const SHARE_FRAME: Shader = preload("res://ui/rivalry_share.gdshader")
++var model: WeeklyRivalry
++var livery: Dictionary = {}
++var customisation: Dictionary = {}
++var condition: Dictionary = {}
++var player_name: String = ""
++var summary: Dictionary
++var share_text: String = ""
++var hero: Control
++var hero_heading: Label
++var identity: HBoxContainer
++var vehicle: Control
++var vehicle_label: Label
++var right: VBoxContainer
++var table_heading: HBoxContainer
++var result_rows: Array[Control] = []
++var metric_labels: Array[Label] = []
++var copied: HBoxContainer
++var divider: ColorRect
++
++func _ready() -> void:
++	name = "RivalryShareDialog"
++	title = "Weekly Rivalry results"
++	borderless = true
++	transparent_bg = true
++	transparent = true
++	unresizable = true
++	exclusive = true
++	wrap_controls = false
++	min_size = Vector2i(820,560)
++	add_theme_stylebox_override("panel",StyleBoxEmpty.new())
++	get_label().hide()
++	get_ok_button().hide()
++	summary = model.finale_summary()
++	share_text = model.finale_share_text()
++	surface = Control.new()
++	surface.name = "ShareSurface"
++	surface.theme = MenuStyle.theme()
++	add_child(surface)
++	MenuStyle.fill(surface)
++	art = TextureRect.new()
++	art.texture = ART
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var material := ShaderMaterial.new()
++	material.shader = SHARE_FRAME
++	art.material = material
++	surface.add_child(art)
++	MenuStyle.fill(art)
++	_build_hero()
++	_build_results()
++	_build_footer()
++	surface.resized.connect(_layout)
++	about_to_popup.connect(_opening)
++	visibility_changed.connect(_visibility_changed)
++	_layout()
++
++func _label(parent: Control, text: String, font_size: int, color: Color = MenuStyle.TEXT, display: bool = false) -> Label:
++	var value := MenuStyle.label(text,font_size)
++	value.add_theme_color_override("font_color",color)
++	if display: value.add_theme_font_override("font",MenuStyle.DISPLAY)
++	value.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	parent.add_child(value)
++	return value
++
++func _build_hero() -> void:
++	hero = Control.new()
++	hero.name = "ShareHero"
++	surface.add_child(hero)
++	var event := HBoxContainer.new()
++	event.position = Vector2(28,28)
++	event.add_theme_constant_override("separation",10)
++	hero.add_child(event)
++	var icon := TextureRect.new()
++	icon.texture = MenuIcon.texture("trophy")
++	icon.modulate = MenuStyle.ACCENT
++	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	icon.custom_minimum_size = Vector2(23,23)
++	event.add_child(icon)
++	_label(event,"WEEKLY RIVALRY",23,MenuStyle.TEXT,true)
++	var week: Label = _label(hero,"WEEK %02d" % model.week,16,MenuStyle.ACCENT,true)
++	week.position = Vector2(28,67)
++	hero_heading = _label(hero,summary.title.replace("WEEK COMPLETE","WEEK\nCOMPLETE").replace("PODIUM FINISH","PODIUM\nFINISH").replace("WEEKLY CHAMPION","WEEKLY\nCHAMPION"),58,Color("ffe4a0") if summary.tier > 0 else MenuStyle.TEXT,true)
++	hero_heading.name = "ShareAwardTitle"
++	hero_heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	var own: Dictionary = WeeklyRivalry.self_row(model.standing())
++	identity = HBoxContainer.new()
++	identity.add_theme_constant_override("separation",10)
++	hero.add_child(identity)
++	identity.add_child(PlayerCountry.flag(str(own.get("country_code","")),24))
++	var driver: Label = _label(identity,player_name if not player_name.is_empty() else str(own.get("name","")),19)
++	driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	driver.clip_text = true
++	driver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	vehicle = VictoryCar.new()
++	vehicle.name = "ShareEventCar"
++	vehicle.vehicle_id = model.vehicle_id
++	vehicle.livery = livery
++	vehicle.customisation = customisation
++	vehicle.condition = condition
++	vehicle.podium_presentation = true
++	vehicle.fit_to_frame = true
++	hero.add_child(vehicle)
++	vehicle_label = _label(hero,VehicleCatalog.title(model.vehicle_id),18,MenuStyle.TEXT,true)
++	vehicle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	if summary.perfect:
++		var perfect: Label = _label(hero,"PERFECT WEEK",16,MenuStyle.ACCENT,true)
++		perfect.name = "SharePerfectWeek"
++		perfect.position = Vector2(28,94)
++	var brand: Label = _label(hero,"BEAT MY TRACK",14,MenuStyle.MUTED,true)
++	brand.name = "ShareBrand"
++
++func _build_results() -> void:
++	right = VBoxContainer.new()
++	right.name = "ShareResults"
++	right.add_theme_constant_override("separation",16)
++	surface.add_child(right)
++	heading = _label(right,"YOUR RESULTS",30,MenuStyle.TEXT,true)
++	heading.name = "ShareHeading"
++	var metrics := HBoxContainer.new()
++	metrics.name = "ShareMetrics"
++	metrics.add_theme_constant_override("separation",24)
++	right.add_child(metrics)
++	var position: String = "—" if summary.rank == null else "%02d / %d" % [int(summary.rank),int(summary.drivers)]
++	for fact: Array in [[position,"FINAL POSITION"],[str(summary.points),"TOTAL POINTS"],["%d / 5" % summary.wins,"TRACK VICTORIES"]]:
++		var field := VBoxContainer.new()
++		field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		field.add_theme_constant_override("separation",0)
++		metrics.add_child(field)
++		var value: Label = _label(field,str(fact[0]),40,MenuStyle.ACCENT if summary.tier > 0 else MenuStyle.TEXT,true)
++		metric_labels.append(value)
++		_label(field,str(fact[1]),12,MenuStyle.MUTED)
++	var rule := HSeparator.new()
++	right.add_child(rule)
++	table_heading = HBoxContainer.new()
++	table_heading.add_theme_constant_override("separation",12)
++	var heading_margin := MarginContainer.new()
++	heading_margin.add_theme_constant_override("margin_right",8)
++	right.add_child(heading_margin)
++	heading_margin.add_child(table_heading)
++	for column: Array in [["POS",36],["TRACK",0],["TIME",104],["PTS",42]]:
++		var label: Label = _label(table_heading,str(column[0]),12,MenuStyle.MUTED)
++		label.custom_minimum_size.x = column[1]
++		if column[1] == 0: label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		if column[0] in ["TIME","PTS"]: label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	copy_scroll = ScrollContainer.new()
++	copy_scroll.name = "ShareTrackScroll"
++	copy_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	copy_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	right.add_child(copy_scroll)
++	details = VBoxContainer.new()
++	details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	details.add_theme_constant_override("separation",2)
++	copy_scroll.add_child(details)
++	for result: Dictionary in summary.results: _build_track(result)
++
++func _build_track(result: Dictionary) -> void:
++	var track: Dictionary = model.tracks[result.slot]
++	var own: Dictionary = result.own
++	var row := PanelContainer.new()
++	row.name = "ShareTrack_"+str(result.slot)
++	row.tooltip_text = str(track.name)
++	row.custom_minimum_size.y = 58
++	var style := MenuStyle.box(Color("142631") if result.victory else Color("10212c"),0)
++	style.set_corner_radius_all(4)
++	style.content_margin_top = 6
++	style.content_margin_bottom = 6
++	style.content_margin_right = 8
++	row.add_theme_stylebox_override("panel",style)
++	details.add_child(row)
++	result_rows.append(row)
++	var line := HBoxContainer.new()
++	line.add_theme_constant_override("separation",12)
++	row.add_child(line)
++	var rank: Label = _label(line,"—" if own.get("rank") == null else "%02d" % int(own.rank),25,MenuStyle.ACCENT if result.victory else MenuStyle.MUTED,true)
++	rank.name = "TrackPosition"
++	rank.custom_minimum_size.x = 36
++	rank.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	rank.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	var track_copy := HBoxContainer.new()
++	track_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	track_copy.add_theme_constant_override("separation",12)
++	line.add_child(track_copy)
++	var thumbnail := Finale.RouteThumbnail.new()
++	thumbnail.entry = track.get("entry",track.document).duplicate(true)
++	thumbnail.entry.theme = track.theme
++	thumbnail.custom_minimum_size = Vector2(58,42)
++	track_copy.add_child(thumbnail)
++	var identity_copy := VBoxContainer.new()
++	identity_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity_copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	identity_copy.add_theme_constant_override("separation",0)
++	track_copy.add_child(identity_copy)
++	var track_name: Label = _label(identity_copy,str(track.name),20,MenuStyle.TEXT,true)
++	track_name.name = "TrackName"
++	track_name.clip_text = true
++	track_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	_label(identity_copy,TrackTheme.title(str(track.theme)),12,MenuStyle.MUTED)
++	var time: Label = _label(line,"—" if own.get("ms") == null else MenuStyle.time_text(float(own.ms)/1000.0),18,MenuStyle.MUTED if own.get("ms") == null else MenuStyle.TEXT)
++	time.name = "TrackTime"
++	time.custom_minimum_size.x = 104
++	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	time.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	var points: Label = _label(line,str(int(own.get("points",0))),25,MenuStyle.ACCENT if result.victory else MenuStyle.TEXT,true)
++	points.name = "TrackPoints"
++	points.custom_minimum_size.x = 42
++	points.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	points.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++
++func _build_footer() -> void:
++	divider = ColorRect.new()
++	divider.color = Color("2c414f")
++	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	surface.add_child(divider)
++	copied = HBoxContainer.new()
++	copied.name = "ShareCopied"
++	copied.add_theme_constant_override("separation",9)
++	surface.add_child(copied)
++	var check_icon := TextureRect.new()
++	check_icon.texture = MenuIcon.texture("check")
++	check_icon.modulate = MenuStyle.POSITIVE
++	check_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	check_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	check_icon.custom_minimum_size = Vector2(20,20)
++	copied.add_child(check_icon)
++	_label(copied,"Results copied",17,MenuStyle.POSITIVE)
++	close_button = MenuStyle.button("",_cancel)
++	close_button.name = "ShareClose"
++	close_button.icon = MenuIcon.texture("close")
++	close_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	close_button.tooltip_text = "Close"
++	close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++	surface.add_child(close_button)
++	confirm_button = MenuStyle.button("DONE",_confirm,true)
++	confirm_button.name = "ShareDone"
++	confirm_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
++	confirm_button.add_theme_color_override("font_pressed_color",MenuStyle.INK)
++	surface.add_child(confirm_button)
++
++func _layout() -> void:
++	if not is_instance_valid(right): return
++	var hero_width: float = clampf(surface.size.x*0.32,260,360)
++	var inset: float = hero_width+32
++	var width: float = surface.size.x-inset-32
++	var compact: bool = surface.size.y < 600
++	(art.material as ShaderMaterial).set_shader_parameter("panel_size",surface.size)
++	(art.material as ShaderMaterial).set_shader_parameter("hero_width",hero_width)
++	hero.size = Vector2(hero_width,surface.size.y)
++	hero_heading.position = Vector2(28,123 if summary.perfect else 108)
++	hero_heading.size = Vector2(hero_width-50,160)
++	hero_heading.add_theme_font_size_override("font_size",48 if summary.title.begins_with("JOINT") else 58)
++	identity.position = Vector2(28,290)
++	identity.size = Vector2(hero_width-56,28)
++	vehicle.position = Vector2(8,325)
++	vehicle.size = Vector2(hero_width-16,maxf(120,surface.size.y-430))
++	vehicle_label.position = Vector2(28,surface.size.y-93)
++	vehicle_label.size = Vector2(hero_width-56,28)
++	var brand: Label = hero.get_node("ShareBrand")
++	brand.position = Vector2(28,surface.size.y-42)
++	right.add_theme_constant_override("separation",10 if compact else 16)
++	heading.add_theme_font_size_override("font_size",26 if compact else 30)
++	for label: Label in metric_labels: label.add_theme_font_size_override("font_size",30 if compact else 40)
++	for row: Control in result_rows:
++		row.custom_minimum_size.y = 56 if compact else 58
++		var style: StyleBoxFlat = row.get_theme_stylebox("panel")
++		style.content_margin_top = 4 if compact else 6
++		style.content_margin_bottom = 4 if compact else 6
++	right.position = Vector2(inset,24 if compact else 28)
++	right.size = Vector2(width,surface.size.y-(116 if compact else 124))
++	close_button.position = Vector2(surface.size.x-64,12)
++	close_button.size = Vector2(52,52)
++	divider.position = Vector2(inset,surface.size.y-88)
++	divider.size = Vector2(width,1)
++	copied.position = Vector2(inset,surface.size.y-63)
++	confirm_button.position = Vector2(surface.size.x-200,surface.size.y-73)
++	confirm_button.size = Vector2(168,52)
+--- /dev/null
++++ b/game/ui/rivalry_share.gdshader
+@@ -0,0 +1,22 @@
++shader_type canvas_item;
++uniform vec2 panel_size = vec2(1120.0,620.0);
++uniform float hero_width = 358.0;
++varying vec2 local_position;
++
++void vertex() { local_position = VERTEX; }
++
++void fragment() {
++	vec2 p = local_position / max(panel_size,vec2(1.0));
++	vec3 ink = vec3(0.043,0.082,0.110);
++	vec3 scene = texture(TEXTURE,UV).rgb;
++	scene *= mix(0.40,0.78,smoothstep(0.08,0.68,p.y));
++	scene = mix(scene,ink,smoothstep(0.67,1.0,p.y)*0.88);
++	float divide = hero_width / panel_size.x;
++	vec3 color = mix(scene,ink,smoothstep(divide-0.06,divide+0.025,p.x));
++	vec2 q = abs(local_position-panel_size*0.5)-(panel_size*0.5-vec2(12.0));
++	float distance = length(max(q,vec2(0.0)))+min(max(q.x,q.y),0.0)-12.0;
++	float aa = max(fwidth(distance),0.65);
++	float edge = 1.0-smoothstep(-aa,aa,distance);
++	float border = smoothstep(-1.5-aa,-0.6,distance);
++	COLOR = vec4(mix(color,vec3(0.22,0.30,0.35),border),edge);
++}
+--- a/game/tests/test_rivalry_share.gd
++++ b/game/tests/test_rivalry_share.gd
+@@ -1,6 +1,6 @@
+ extends "res://tests/test_rivalry_awards.gd"
+ ## Exercise the real Share action, copied payload, scroll reachability and dismissal.
+-const Fault = preload("res://ui/fault_dialog.gd")
++const ShareDialog = preload("res://ui/rivalry_share_dialog.gd")
+ 
+ class NativeShare extends RefCounted:
+ 	var payloads: Array[String] = []
+@@ -13,7 +13,7 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-share-2026-10-19/final")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-share-polish-2026-10-19/final")
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
+ 	evidence = ProjectSettings.globalize_path(evidence)
+@@ -25,6 +25,7 @@
+ 	app.cloud_root_override = folder.path_join("cloud")
+ 	root.add_child(app)
+ 	while not app.startup_complete: await process_frame
++	app.records.settings.vehicle_liveries = {"compact":{"version":1,"colors":{"body":"993d3d","accent":"e4ba59"}}}
+ 	for dimensions: Vector2i in [Vector2i(1848,937),Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		for kind: String in ["unranked","perfect"]:
+@@ -51,35 +52,52 @@
+ 			if dialog == null: continue
+ 			if DisplayServer.get_name() != "headless":
+ 				check(DisplayServer.clipboard_get().replace("\r\n","\n") == payload,"clipboard retains every exact result, rank, time and point")
+-			var heading: Label = dialog.find_child("FaultHeading",true,false) if dialog is Fault else dialog.find_child("PopupHeading",true,false)
+-			var message: Label = dialog.find_child("FaultMessage",true,false) if dialog is Fault else dialog.find_child("PopupMessage",true,false)
+-			var confirm: Button = dialog.confirm_button if dialog is Fault else dialog.get_ok_button()
+-			check(heading.get_global_rect().end.y+10 <= message.get_global_rect().position.y,"copied heading never overlaps the results")
+-			check(message.text == payload,"confirmation preserves the exact copied summary")
++			check(dialog is ShareDialog,"sharing uses a dedicated championship presentation")
++			if not dialog is ShareDialog: continue
++			var confirm: Button = dialog.confirm_button
++			check(dialog.share_text == payload,"structured confirmation preserves the exact copied summary")
+ 			check(root.get_visible_rect().encloses(Rect2(Vector2(dialog.position),Vector2(dialog.size))),"confirmation fits the viewport")
+ 			check(confirm.size.y >= 52 and Rect2(Vector2.ZERO,Vector2(dialog.size)).encloses(confirm.get_global_rect()),"OK remains visible with a full touch target")
+-			var scroll: ScrollContainer = dialog.find_child("FaultCopyScroll",true,false)
+-			check(scroll != null,"long results have a scrollable content area")
+-			if scroll != null:
+-				check(scroll.get_global_rect().end.y+12 <= confirm.get_global_rect().position.y,"results viewport stays clear of OK")
+-				scroll.scroll_vertical = 100000
+-				await settle()
+-				check(message.get_global_rect().end.y <= scroll.get_global_rect().end.y+1,"last track and Perfect Week line can be fully reached")
+-				check(message.size.x <= scroll.size.x+1,"wrapped long track names stay within the content width")
+-			else:
+-				check(message.get_global_rect().end.y+12 <= confirm.get_global_rect().position.y,"all unscrolled results must stay clear of OK")
++			var scroll: ScrollContainer = dialog.copy_scroll
++			check(dialog.heading.get_global_rect().end.y+10 <= dialog.get_node("ShareSurface/ShareResults/ShareMetrics").get_global_rect().position.y,"heading stays clear of the summary figures")
++			check(scroll.get_global_rect().end.y+12 <= confirm.get_global_rect().position.y,"results viewport stays clear of Done")
++			check(dialog.result_rows.size() == 5,"all five actual tracks appear as structured result rows")
++			check(not dialog.get_label().visible and not dialog.get_ok_button().visible,"native duplicate text and buttons remain hidden")
++			for slot: int in range(dialog.result_rows.size()):
++				var row: Control = dialog.result_rows[slot]
++				var name_label: Label = row.find_child("TrackName",true,false)
++				var time: Label = row.find_child("TrackTime",true,false)
++				var points: Label = row.find_child("TrackPoints",true,false)
++				var own: Dictionary = dialog.summary.results[slot].own
++				if row.get_global_rect().end.y > scroll.get_global_rect().end.y+1:
++					print("SHARE_ROW_LAYOUT: ",slot," row=",row.get_global_rect()," viewport=",scroll.get_global_rect()," right=",dialog.right.size)
++				check(row.get_global_rect().position.y >= scroll.get_global_rect().position.y-1 and row.get_global_rect().end.y <= scroll.get_global_rect().end.y+1,"all five rows fit before scrolling, including long track names")
++				check(name_label.text == str(app.rivalry.model.tracks[slot].name) and row.tooltip_text == name_label.text,"full actual track names remain available")
++				check(time.text == ("—" if own.get("ms") == null else MenuStyle.time_text(float(own.ms)/1000.0)) and points.text == str(int(own.get("points",0))),"track time and points match the authoritative snapshot")
++				check(name_label.get_global_rect().end.x+10 <= time.get_global_rect().position.x and time.get_global_rect().end.x+10 <= points.get_global_rect().position.x,"names, times and points never overlap")
++			check(dialog.vehicle.car.vehicle_id == app.rivalry.model.vehicle_id and dialog.vehicle.car.livery == VehicleLivery.for_car(app.records.settings,app.rivalry.model.vehicle_id),"hero renders the actual event car and local paint")
++			check(dialog.copied.get_global_rect().end.x+16 <= confirm.get_global_rect().position.x,"quiet copied status stays clear of Done")
++			check(dialog.hero_heading.get_global_rect().end.y <= dialog.identity.get_global_rect().position.y,"award heading stays clear of player identity")
++			check((dialog.find_child("SharePerfectWeek",true,false) != null) == (kind == "perfect"),"Perfect Week treatment appears only for five actual outright victories")
+ 			if DisplayServer.get_name() != "headless": await capture("share-"+kind,dimensions)
+-			if scroll != null:
+-				scroll.scroll_vertical = 0
+-				if DisplayServer.get_name() != "headless": await capture("share-"+kind+"-top",dimensions)
+ 			if kind == "unranked": confirm.pressed.emit()
+ 			else:
+-				var close: Button = dialog.close_button if dialog is Fault else dialog.find_child("PopupClose",true,false)
++				var close: Button = dialog.close_button
+ 				close.pressed.emit()
+ 			await settle()
+ 			check(current_dialog() == null,"OK and X both remove the owned share dialog")
+ 			check(share.has_focus(),"closing the confirmation returns focus to Share results")
+ 			check(JSON.stringify([app.rivalry.model.tracks,app.rivalry.model.server_standings,app.records.settings]) == original,"sharing preserves scores, tracks and local settings")
++	app._share_rivalry_results()
++	await settle()
++	var compact: AcceptDialog = current_dialog()
++	compact.size = Vector2i(820,560)
++	await settle()
++	check(compact.result_rows[-1].get_global_rect().end.y <= compact.copy_scroll.get_global_rect().end.y+1,"minimum-size card keeps all five results visible")
++	check(compact.copy_scroll.get_global_rect().end.y+12 <= compact.confirm_button.get_global_rect().position.y,"minimum-size results stay clear of Done")
++	if DisplayServer.get_name() != "headless": await capture("share-compact",Vector2i(820,560))
++	compact.close_button.pressed.emit()
++	await settle()
+ 	var native := NativeShare.new()
+ 	app.challenge_links._native = native
+ 	var payload: String = app.rivalry.model.finale_share_text()
+--- /dev/null
++++ b/docs/RIVALRY_SHARE_POLISH_2026_10_19.md
+@@ -0,0 +1,35 @@
++# Rivalry sharing presentation refinement — 2026-10-19
++
++The owner rejected the readable but generic copied-results popup as insufficiently polished. RSP01 replaces that presentation with a dedicated championship card: scenic event identity and the player's actual event car on the left, a clear position/points/victories summary and five aligned track rows on the right. A quiet green copied status and a compact Done action finish the card. The giant success symbol, plain-text dump and unused space are removed from this flow.
++
++The hero uses the existing illustrated Winter artwork, bundled fonts/icons, real country/name and the retained event-car renderer with local paint, fitted parts and condition. It uses that renderer's existing static studio lighting, transparency and camera fitting. Track rows reuse the original scenic route thumbnail and actual pinned names, biomes, positions, times and points. Gold achievement treatment follows the real award tier; Perfect Week requires all five outright victories. No new generated or externally sourced artwork is introduced.
++
++RSP02 preserves readable spacing at the regular viewport-bounded 1120×620 preferred size and the 820×560 minimum card size. All five rows fit without initial scrolling in the verified layouts. Short layouts reduce summary type and row padding while preserving the full dismissal targets. Long names use bounded ellipsis with their full name available on the row; the copied payload retains every character. Footer controls sit outside the results viewport. Focused/pressed Done text stays dark on yellow.
++
++RSP03 retains the original text-sharing contract: `finale_share_text()` goes unchanged to the clipboard or native adapter, and the native path opens no desktop confirmation. Busy/cached/active/account-and-car guards, actual scores, local settings, modal dismissal, scrim cleanup and focus restoration remain. The existing owned-dialog lifecycle is inherited; unrelated notices keep their existing presentation. The prior Rivalry-specific plain-text notice classifier is removed because this flow now has its own view.
++
++Changed source: `game/core/app.gd`, `game/ui/fault_dialog.gd`, new `game/ui/rivalry_share_dialog.gd` and `game/ui/rivalry_share.gdshader`, and `game/tests/test_rivalry_share.gd`. This note and `DEVELOPMENT_STATUS.md` record the work. The [task-only.patch](evidence/rivalry-share-polish-2026-10-19/task-only.patch), saved original/final files and [source hashes](evidence/rivalry-share-polish-2026-10-19/source-hashes.json) isolate this refinement from the existing worktree changes. Concurrent publication-prompt edits in `app.gd` are preserved and excluded from the patch: its `checkpoint-base` keeps the current surrounding source and restores only the captured original Rivalry share function. The initial unmodified captures remain under `before`.
++
++R01 actual verification uses pinned Godot `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`, with isolated `APPDATA` directories under `build/rivalry-share-polish-*` and unique fixture saves. Fixtures disable the backend URL; native sharing uses a recording adapter without sending anything. Commands below use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` with normal Windows certificate/rendering access:
++
++- `-Action TestScript -ScriptPath res://tests/test_rivalry_share.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence=res://../docs/evidence/rivalry-share-polish-2026-10-19/checked-gl_compatibility` — 312 checks, zero failures; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-gl_compatibility.log).
++- The same test with `-RenderingMethod mobile -RenderingDriver vulkan` and evidence directory `checked-mobile` — 312 checks, zero failures on the desktop Mobile renderer; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-mobile.log).
++- `-Action TestScript -ScriptPath res://tests/test_rivalry_share.gd` — 295 checks, zero failures; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-test_rivalry_share.log).
++- `-Action TestScript -ScriptPath res://tests/test_fault_dialog.gd` — 95 checks, zero failures; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-test_fault_dialog.log).
++- `-Action TestScript -ScriptPath res://tests/test_rivalry_awards.gd` — 64 headless checks, zero failures; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-test_rivalry_awards.log).
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` — 903 scripts, zero failures; [log](evidence/rivalry-share-polish-2026-10-19/logs/checked-test_script_parse.log).
++- `git diff --check -- game/core/app.gd game/ui/fault_dialog.gd game/tests/test_rivalry_share.gd` — passes, with the existing CRLF normalization warning.
++
++The focused test exercises unranked and Perfect Week snapshots at 1848×937, 1280×720, 960×540 and 1600×720, plus the minimum-size dialog. It checks every row's exact times/points/names, full row visibility, nonoverlapping columns, hierarchy/control clearance, actual car/paint, clipboard/native equality, state guards, dismissal/focus and unchanged settings/scores. The presentation assertions supersede the old plain-message-body assertions and strengthen the requirement from scroll reachability to five immediately visible rows.
++
++Initial corrections remain recorded: [preview.log](evidence/rivalry-share-polish-2026-10-19/logs/preview.log) reproduces eight final-row fit failures in the first design. The retained headless row diagnostic shows the smaller actual dialog surface; the compact layout then exposed eight insufficient-heading-gap failures before row padding and section spacing were corrected. All original invariant checks remain; none were removed to obtain the final passes. The intermediate renders/logs are separate from the final `checked-*` evidence.
++
++G01 inspected native views:
++
++- [Previous generic confirmation](evidence/rivalry-share-2026-10-19/gl_compatibility/share-unranked-top-1848x937.png).
++- [Refined unranked week, Compatibility](evidence/rivalry-share-polish-2026-10-19/checked-gl_compatibility/share-unranked-1848x937.png).
++- [Perfect Week at 960×540, Compatibility](evidence/rivalry-share-polish-2026-10-19/checked-gl_compatibility/share-perfect-960x540.png).
++- [Perfect Week at 960×540, desktop Mobile](evidence/rivalry-share-polish-2026-10-19/checked-mobile/share-perfect-960x540.png).
++- [Minimum-size card](evidence/rivalry-share-polish-2026-10-19/checked-gl_compatibility/share-compact-820x560.png).
++
++Q01: owner appearance acceptance remains. These are desktop window/renderer checks; no phone attachment check or physical-device test, APK/export/install, backend/account mutation, external message or deployment was performed. Native sharing still sends the existing text summary.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-19 RSP01-RSP03/G01/R01/Q01: Refined Rivalry sharing into a dedicated championship card with actual event car/local cosmetics, scenic identity, rank/points/victory summary, route thumbnails and five aligned rows. Quiet copied status and Done replace the generic text notice. Regular/minimum-size layouts retain all five visible results, exact clipboard/native payloads, state/account/car guards and owned modal lifecycle. Focused 295 headless/312 Compatibility/312 desktop Mobile, notices 95, awards 64 and parser 903 pass. Initial row-fit/compact-spacing corrections, actual commands, native views and source-only task checkpoint: docs/RIVALRY_SHARE_POLISH_2026_10_19.md. Owner appearance acceptance remains; no phone attachment check/device test, APK, backend/account mutation or deployment.
++
+ 2026-10-19 SCF01-SCF03/G01/R01/Q01: The owner rejects the bright masonry castle in its Winter race context. A continuous sculpted snow fort with broad rounded crests, packed feet and a real arch/court now uses the exact existing world snow texture and neutral bank values. Original contacts/placements/saves, other craft, caches/uploads and concurrent work remain; prop14 fences visuals. Castle9890 to7950 triangles. Focused35Compatibility/35desktopMobile with strict repeated other-craft pixels, architecture57/editor, Winter595, kits983, worlds85, import and parser900 pass. Original reproduces two focused failures; initial corrections retained. Native race/studio/editor before/after, commands and task-only checkpoint: docs/SNOW_CASTLE_WORLD_FIT_2026_10_19.md. Owner style/device acceptance remains; no phone attachment check/test, APK or backend/deployment action.
+ 
+ 2026-10-19 PDB01/R01/Q01: Ancient is already published; an older different orphan .json.bak reappeared through draft recovery after the current original/autosave retired. Full/summary scans now exclude older orphan backups with a complete backend binding while retaining every byte and explicit recovery reads. Primary/temporary files, newer recovery and absent/incomplete bindings keep drafts editable. Original11checks/3failures reproduce, including actual Ancient once; final37headless/39Compatibility/39desktopMobile show zero Ancient drafts with its backup hash unchanged. Publication31/badges25/workflow252/App141/save69/parser900 pass. Actual commands, fixture/capture corrections, native views and task-only checkpoint: docs/PUBLISHED_DRAFT_BACKUP_2026_10_19.md. Local client reload and owner/device acceptance remain; no owner recovery modification, re-publication, backend/account/queue mutation, deployment, phone attachment check/test or APK action.

@@ -1,0 +1,325 @@
+diff --git a/game/ui/achievements_menu.gd b/game/ui/achievements_menu.gd
+--- a/game/ui/achievements_menu.gd
++++ b/game/ui/achievements_menu.gd
+@@ -2,14 +2,11 @@
+ ## A compact collection. Details use one on-demand sheet and no backend reads.
+ signal trophy_room_requested
+ var service: Node
+-var category: String = "All"
+-var filter: int = 0
+ var selected: String = "races"
+ var grid: GridContainer
+ var detail: VBoxContainer
+ var summary: Label
+ var scroll: ScrollContainer
+-var _info: Button
+ var _sheet_layer: CanvasLayer
+ var _sheet_panel: PanelContainer
+ var _sheet_footer: VBoxContainer
+@@ -30,47 +27,19 @@
+ 	toolbar.name = "AchievementToolbar"
+ 	toolbar.add_theme_constant_override("separation",6)
+ 	add_child(toolbar)
+-	var back: Button = _icon_button("trophy", "Trophy Room", func() -> void:
+-		_close_sheet()
+-		trophy_room_requested.emit())
+-	back.name = "AchievementBack"
+-	toolbar.add_child(back)
+ 	var title: Label = MenuStyle.label("ACHIEVEMENTS",26)
++	title.name = "AchievementTitle"
+ 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	toolbar.add_child(title)
+ 	summary = MenuStyle.label("0 / 130",20)
+ 	summary.name = "AchievementSummary"
+ 	summary.tooltip_text = "Unlocked tiers and prestige honors"
+ 	toolbar.add_child(summary)
+-	var categories := OptionButton.new()
+-	categories.name = "AchievementCategories"
+-	categories.custom_minimum_size = Vector2(160,52)
+-	categories.add_theme_font_size_override("font_size",18)
+-	categories.add_item("All categories")
+-	var values: Array[String] = ["All"]
+-	for f: Dictionary in AchievementProgress.catalog().families:
+-		if f.category not in values:
+-			values.append(f.category)
+-			categories.add_item(f.category)
+-	categories.item_selected.connect(func(index: int) -> void:
+-		category = values[index]
+-		_rebuild())
+-	toolbar.add_child(categories)
+-	var filters := OptionButton.new()
+-	filters.name = "AchievementFilter"
+-	filters.custom_minimum_size = Vector2(145,52)
+-	filters.add_theme_font_size_override("font_size",18)
+-	for text: String in ["All badges","Unlocked","In progress","Prestige"]: filters.add_item(text)
+-	filters.item_selected.connect(func(index: int) -> void:
+-		filter = index
+-		_rebuild())
+-	toolbar.add_child(filters)
+-	var refresh: Button = _icon_button("restart","Refresh achievements",func() -> void: service.refresh())
+-	refresh.name = "AchievementRefresh"
+-	toolbar.add_child(refresh)
+-	_info = _icon_button("help","About achievements",_show_info)
+-	_info.name = "AchievementInfo"
+-	toolbar.add_child(_info)
++	var close: Button = _icon_button("close","Back to Trophy Room",func() -> void:
++		_close_sheet()
++		trophy_room_requested.emit())
++	close.name = "AchievementClose"
++	toolbar.add_child(close)
+ 	scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+ 	scroll.name = "AchievementScroll"
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -116,10 +85,6 @@
+ 		var source: Dictionary = service.source(family)
+ 		var level: int = AchievementProgress.tier(family,source)
+ 		earned += level
+-		if category != "All" and family.category != category: continue
+-		if filter == 1 and level == 0: continue
+-		if filter == 2 and level >= family.tiers.size(): continue
+-		if filter == 3 and not family.prestige: continue
+ 		visible_families.append(family)
+ 	var visible_ids: Array[String] = []
+ 	for family: Dictionary in visible_families: visible_ids.append(family.id)
+@@ -129,11 +94,8 @@
+ 		_card(family,source,AchievementProgress.tier(family,source))
+ 	if visible_families.is_empty(): grid.add_child(MenuStyle.label("No achievements in this view yet",20,true))
+ 	summary.text = "%d / 130" % earned
+-	_info.icon = MenuIcon.texture("help" if service.status.is_empty() else "warning")
+-	_info.tooltip_text = "About achievements" if service.status.is_empty() else service.status
+-	_info.modulate = MenuStyle.TEXT if service.status.is_empty() else MenuStyle.ACCENT
++	summary.tooltip_text = "Unlocked tiers and prestige honors" if service.status.is_empty() else service.status
+ 	if _sheet_kind == "achievement": _detail()
+-	elif _sheet_kind == "info": _info_text()
+ 	_columns()
+ 	scroll.set_deferred("scroll_vertical",position)
+ 
+@@ -365,11 +327,6 @@
+ 		container.remove_child(node)
+ 		node.queue_free()
+ 
+-func _copy(text: String, font_size: int = 19, muted: bool = false) -> void:
+-	var label: Label = MenuStyle.label(text,font_size,muted)
+-	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	detail.add_child(label)
+-
+ func _detail() -> void:
+ 	if not is_instance_valid(detail): return
+ 	var previous_pin: Button = _sheet_footer.find_child("AchievementFeature",true,false)
+@@ -387,16 +344,4 @@
+ 		preload("res://ui/achievement_detail.gd").build(detail,_sheet_footer,f,source,level,service)
+ 		if restore_focus: _sheet_footer.find_child("AchievementFeature",true,false).grab_focus.call_deferred()
+ 
+-func _show_info() -> void:
+-	_open_sheet("About achievements","info")
+-	_info_text()
+-
+-func _info_text() -> void:
+-	if not is_instance_valid(detail): return
+-	_clear(detail)
+-	if not service.status.is_empty(): _copy(service.status,21)
+-	_copy("Build your collection by racing, creating tracks and caring for your cars.")
+-	_copy("Earn Bronze, Silver, Gold and Platinum medals as you reach each milestone. Prestige honors celebrate your biggest achievements.",17,true)
+-	_copy("Display up to five earned medals in your Trophy Room.",17,true)
+-	if not service.authenticated(): _copy("Sign in to earn Rivalry, challenge and track creator achievements.",17,true)
+-
++
+diff --git a/game/tests/test_achievements.gd b/game/tests/test_achievements.gd
+--- a/game/tests/test_achievements.gd
++++ b/game/tests/test_achievements.gd
+@@ -260,7 +260,7 @@
+ 		check(wall_album.find_child("AchievementFeature",true,false).disabled,"locked wall medal cannot be featured")
+ 		capture("wall-locked-detail")
+ 		wall_album._close_sheet()
+-		(wall_album.find_child("AchievementBack",true,false) as Button).pressed.emit()
++		(wall_album.find_child("AchievementClose",true,false) as Button).pressed.emit()
+ 	await settle()
+ 	await settle()
+ 	var king_point: Vector2 = wall_point(page.showroom,"king",true)
+@@ -278,7 +278,7 @@
+ 	if wall_album != null:
+ 		check(not wall_album.find_child("AchievementFeature",true,false).disabled,"earned wall medal exposes the saved feature choice")
+ 		wall_album._close_sheet()
+-		(wall_album.find_child("AchievementBack",true,false) as Button).pressed.emit()
++		(wall_album.find_child("AchievementClose",true,false) as Button).pressed.emit()
+ 	await settle()
+ 	await settle()
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,914)]:
+@@ -339,18 +339,12 @@
+ 		await process_frame
+ 		check(album._sheet_kind.is_empty(),"Escape closes details "+str(dimensions))
+ 	var album: Node = page.find_child("AchievementsMenu",true,false)
+-	var categories: OptionButton = album.find_child("AchievementCategories",true,false)
+-	for i: int in range(categories.item_count):
+-		if categories.get_item_text(i) == "Rivalry":
+-			categories.select(i)
+-			categories.item_selected.emit(i)
+-	await settle()
+-	check(album.grid.get_child_count() == 5,"category selection filters the actual families locally")
++	check(album.grid.get_child_count() == 40,"collection keeps every family available")
+ 	(album.find_child("Achievement_king",true,false) as Button).pressed.emit()
+ 	await settle()
+-	check(album.selected == "king" and album.find_child("AchievementRequirement",true,false).text.contains("Win a Weekly Rivalry"),"selected category card presents its own unlock requirement")
++	check(album.selected == "king" and album.find_child("AchievementRequirement",true,false).text.contains("Win a Weekly Rivalry"),"selected card presents its own unlock requirement")
+ 	check(album.find_child("AchievementRarity",true,false) == null and service.snapshot.rarity.eligible < 100,"small rarity populations do not fabricate percentages")
+-	check(backend.calls.size() == requests,"category and detail browsing issue no backend reads")
++	check(backend.calls.size() == requests,"detail browsing issues no backend reads")
+ 	capture("achievement-detail")
+ 	(album.find_child("AchievementFeature",true,false) as Button).pressed.emit()
+ 	await settle()
+@@ -360,34 +354,30 @@
+ 	check(service.featured().has("king"),"modal feature choice can be restored")
+ 	(album.find_child("AchievementDetailClose",true,false) as Button).pressed.emit()
+ 	await settle()
+-	capture("rivalry-category")
++	capture("full-collection")
+ 	var saved_snapshot: Dictionary = service.snapshot.duplicate(true)
+ 	service.snapshot = {"schema":1,"states":{},"rarity":{"eligible":0,"minimum":100,"unlocks":{}}}
+ 	service.status = "The achievement service needs an update."
+ 	service.changed.emit()
+-	categories.select(0)
+-	categories.item_selected.emit(0)
+ 	root.size = Vector2i(1280,625)
+ 	root.content_scale_size = Vector2i(1280,625)
+ 	await settle()
+ 	check(album.summary.text == "0 / 130" and album.find_child("AchievementStatus",true,false) == null,"empty service state adds no permanent status row")
+-	check(album.find_child("AchievementInfo",true,false).tooltip_text == service.status,"service notice remains available on the information control")
+-	check(album.find_child("AchievementToolbar",true,false).size.y <= 54,"high-resolution warning icon cannot enlarge the compact toolbar")
++	check(album.summary.tooltip_text == service.status,"service notice remains available on the count tooltip")
++	check(album.find_child("AchievementToolbar",true,false).size.y <= 54,"header stays compact with a service notice")
+ 	check(album.scroll.size.y >= 625*0.78,"empty service state retains the same generous achievement area")
+ 	capture("empty-service")
+-	var before_info: int = backend.calls.size()
+-	(album.find_child("AchievementInfo",true,false) as Button).pressed.emit()
+-	await settle()
+-	check(album._sheet_kind == "info" and album.detail.get_child(0).text == service.status,"tap reveals the full service notice without a backend request")
+-	check(backend.calls.size() == before_info,"opening the service notice makes no request")
+-	capture("service-info")
+-	album._close_sheet()
++	var toolbar: HBoxContainer = album.find_child("AchievementToolbar",true,false)
++	check(toolbar.get_child_count() == 3 and toolbar.get_child(0).name == "AchievementTitle" and toolbar.get_child(1).name == "AchievementSummary" and toolbar.get_child(2).name == "AchievementClose","only title, live count and close occupy the title bar")
++	check(album.find_child("AchievementClose",true,false).size.x >= 52 and album.find_child("AchievementClose",true,false).size.y >= 52,"close retains a touch-sized target")
+ 	service.snapshot = saved_snapshot
+ 	service.status = ""
+ 	service.changed.emit()
+-	(album.find_child("AchievementBack",true,false) as Button).pressed.emit()
+-	await settle()
+-	check(page.section == "trophies" and page.preview.visible,"header action returns to the actual Trophy Room")
++	var close_point: Vector2 = album.find_child("AchievementClose",true,false).get_global_rect().get_center()
++	touch(close_point,true)
++	touch(close_point,false)
++	await settle()
++	check(page.section == "trophies" and page.preview.visible,"touching X returns to the actual Trophy Room")
+ 	page._show_section("care")
+ 	await settle()
+ 	var dirty: Dictionary = page.showroom.weathering.snapshot()
+diff --git a/game/tests/test_achievement_detail_layout.gd b/game/tests/test_achievement_detail_layout.gd
+--- a/game/tests/test_achievement_detail_layout.gd
++++ b/game/tests/test_achievement_detail_layout.gd
+@@ -81,10 +81,8 @@
+ 			for f: Dictionary in AchievementProgress.catalog().families:
+ 				await measure(str(f.id),true)
+ 				if f.id == "rivalry_wins": capture("rarity-"+str(dimensions.x)+"x"+str(dimensions.y))
+-			album._show_info()
+-			await settle()
+-			var info_scroll: ScrollContainer = album.find_child("AchievementDetailScroll",true,false)
+-			check(not info_scroll.get_v_scroll_bar().is_visible_in_tree(),"About fits "+str(dimensions))
++			var toolbar: Control = album.find_child("AchievementToolbar",true,false)
++			check(toolbar.get_child_count() == 3 and toolbar.get_child(0).name == "AchievementTitle" and toolbar.get_child(1).name == "AchievementSummary" and toolbar.get_child(2).name == "AchievementClose","header contains only title, count and close "+str(dimensions))
+ 		root.size = Vector2i(740,360)
+ 		root.content_scale_size = root.size
+ 		await settle()
+@@ -117,7 +115,7 @@
+ 		root.content_scale_size = root.size
+ 		await settle()
+ 		check(not viewport.get_v_scroll_bar().is_visible_in_tree() and viewport.scroll_vertical == 0,"resize restores fully visible content")
+-		check(backend.calls.size() == requests,"layout, scrolling and About make no backend requests")
++		check(backend.calls.size() == requests,"layout and scrolling make no backend requests")
+ 	var file := FileAccess.open(output.path_join("layout.json"),FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(layout_metrics,"  "))
+ 	album._close_sheet()
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Simplified achievement title bar override (2026-10-22)
++2026-10-22 AHB01-AHB02/G01/R01/Q01: Achievement title bar now contains only ACHIEVEMENTS, the actual earned count out of130 and a right-aligned52-unit X. Remove the trophy/back icon, category/badge filters, refresh and information controls; all40 families remain browsable. Real touch on X returns to the actual Trophy Room through the original navigation signal; progress, details, display choices, collection space and account fences remain. Existing 424headless/558Compatibility/558desktopMobile and parser927 pass. Actual commands, native before/after views and task-only checkpoint: docs/ACHIEVEMENT_HEADER_2026_10_22.md. Owner appearance/device acceptance remains; no phone attachment check/device test, APK, backend/account mutation or deployment.
+ 
+ ## Histogram capacity follow-up override (2026-10-22)
+ 2026-10-22 HFO01-HFO05/R01/Q01: Histogram snapshots retain up to128 entries within the existing128MiB weighted allowance, pack immutable32/64-bit numeric buffers and omit duplicate stored counts. One indexed personal query and private ETags reuse the existing client304 handling. Indexed recently viewed demand, bounded expiry and a reserved turn each16 jobs prevent continuous-race starvation; historical prerequisites target at most two boards/200 attempts. Prefix prototype agrees on ordinary public fields but stays offline after retained-lap/combined-dedup mismatches. Broad SQLite69pass/5skip, comparison10 and isolated PostgreSQL33 pass; final prerequisite SQLite39/PostgreSQL6 pass; native44, prior-reader and Ruff pass. Synthetic216000-tick frequency JSON drops20.1%, estimated cache weight87.5%; bin CPU is about11us slower. Commands, source hashes, initial shared-migration/rollback/backfill corrections and task-only checkpoint: docs/evidence/histogram-followup-2026-10-22/report.json. Historical rollback tests crossing separate irreversible0051 remain limited. Matching0052/API/worker rollout, production load/memory and owner acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 AHB01-AHB02/G01/R01/Q01: Achievement title bar now contains only ACHIEVEMENTS, the actual earned count out of130 and a right-aligned52-unit X. Remove the trophy/back icon, category/badge filters, refresh and information controls; all40 families remain browsable. Real touch on X returns to the actual Trophy Room through the original navigation signal; progress, details, display choices, collection space and account fences remain. Existing 424headless/558Compatibility/558desktopMobile and parser927 pass. Actual commands, native before/after views and task-only checkpoint: docs/ACHIEVEMENT_HEADER_2026_10_22.md. Owner appearance/device acceptance remains; no phone attachment check/device test, APK, backend/account mutation or deployment.
++
+ 2026-10-22 HFO01-HFO05/R01/Q01: Histogram snapshots retain up to128 entries within the existing128MiB weighted allowance, pack immutable32/64-bit numeric buffers and omit duplicate stored counts. One indexed personal query and private ETags reuse the existing client304 handling. Indexed recently viewed demand, bounded expiry and a reserved turn each16 jobs prevent continuous-race starvation; historical prerequisites target at most two boards/200 attempts. Prefix prototype agrees on ordinary public fields but stays offline after retained-lap/combined-dedup mismatches. Broad SQLite69pass/5skip, comparison10 and isolated PostgreSQL33 pass; final prerequisite SQLite39/PostgreSQL6 pass; native44, prior-reader and Ruff pass. Synthetic216000-tick frequency JSON drops20.1%, estimated cache weight87.5%; bin CPU is about11us slower. Commands, source hashes, initial shared-migration/rollback/backfill corrections and task-only checkpoint: docs/evidence/histogram-followup-2026-10-22/report.json. Historical rollback tests crossing separate irreversible0051 remain limited. Matching0052/API/worker rollout, production load/memory and owner acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 DSW01-DSW03/G01/R01/Q01: Trial Desert wind-lifted sand uses low curved, branching veils driven by the existing wind audio. One bounded81-instance/2592-triangle batch reuses the original flow texture and prepared cosmetic ground support; actual source cells, opaque depth, pause/background/hidden, finish/retry and biome teardown remain fenced. Canonical driving/track data, camera, vehicle dust and concurrent graphics work remain. Focused65headless/71Compatibility/71desktopMobile, Desert87, ambience111, biomes108, parser926, import and scoped whitespace pass. Initial constant-expression, faint appearance, low-box/fog-colour/pause-overlay fixture corrections, actual commands, native motion/views and task-only source checkpoint: docs/DESERT_SAND_WIND_2026_10_22.md. Local client reload and owner density/lift/colour acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+diff --git a/docs/ACHIEVEMENT_HEADER_2026_10_22.md b/docs/ACHIEVEMENT_HEADER_2026_10_22.md
+new file mode 100644
+--- /dev/null
++++ b/docs/ACHIEVEMENT_HEADER_2026_10_22.md
+@@ -0,0 +1,60 @@
++# Simplified achievement title bar — 2026-10-22
++
++The owner requests only the title and earned count in the achievement card title
++bar, plus an X that closes the collection and returns to the Trophy Room.
++
++| Requirement | Result |
++| --- | --- |
++| AHB01 | The title bar contains ACHIEVEMENTS, the live earned-tier count out of 130, and X. Retire the trophy/back icon, category and badge filters, refresh and information controls. All forty families stay available. |
++| AHB02 | The right-aligned X has a 52-unit touch target and uses the existing Trophy Room navigation signal, cleaning up any owned detail sheet. Real touch input returns to the actual Garage Trophy Room and restores its showroom. |
++| G01 / R01 | Preserve actual progress, medal details, display choices, account/source fences, cached automatic entry reads, collection space and canonical racing. Existing service notices remain available in the count tooltip without another control. |
++| Q01 | Inspect native before/after views, run the existing achievement workflows and parser, and retain a task-only checkpoint. |
++
++`game/ui/achievements_menu.gd` contains the implementation. The original
++`game/tests/test_achievements.gd` now exercises the requested header and X return;
++the layout fixture replaces its retired About interaction with a header check.
++The count remains data-driven; the owner's example 8/130 is never hardcoded.
++
++Actual pinned Godot `4.7.2.stable.official.ed1daf0bf` validation:
++
++| Check | Result |
++| --- | --- |
++| Existing full achievement fixture, headless | 424 checks, zero failures |
++| Native Compatibility | 558 checks, zero failures |
++| Desktop Mobile / Vulkan | 558 checks, zero failures |
++| Complete script parser | 927 scripts, zero failures |
++
++The native fixture retains wall selection, collection scrolling, detail input
++blocking, display saving and account fencing. It checks 960 × 540, 1280 × 720 and
++1720 × 914, confirms the three-control header and touch target, and sends real
++touch input to X. Collection space and complete visible cards remain unchanged.
++The retired About screenshot accounts for one fewer native capture/check than
++the previous 559-check run. No progression or account assertion was weakened.
++
++Actual commands used the workspace wrapper below with modes `headless`,
++`compatibility`, `mobile` and `parser`:
++
++```powershell
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File build/run_achievement_header.ps1 -Mode compatibility
++```
++
++The wrapper calls `scripts/dev.ps1 -Action TestScript` with the existing fixture,
++uses `-Graphical -RenderingMethod gl_compatibility` or
++`-Graphical -RenderingMethod mobile -RenderingDriver vulkan`, and selects
++`res://tests/test_script_parse.gd` for parsing. Workspace APPDATA isolates fixture
++records; native execution was approved for Windows certificate-store access.
++
++Before:
++
++![Original title bar](evidence/achievement-header-2026-10-22/before-collection.png)
++
++After, actual Garage collection:
++
++![Title, live count and X](evidence/achievement-header-2026-10-22/compatibility/collection-1280.png)
++
++Logs, source hashes and the patch relative to archived pre-task working sources
++are in [report.json](evidence/achievement-header-2026-10-22/report.json).
++Concurrent Garage, achievement notification, Desert and backend work is preserved.
++No staging or commit was performed. Owner appearance/touch and physical-device
++acceptance remain. No phone attachment check or physical-device test,
++APK/export/install, backend/account mutation or deployment was performed.

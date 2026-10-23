@@ -1,0 +1,76 @@
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -1547,9 +1547,17 @@
+ 	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,16))
+ 	var heading := MenuStyle.label(title,60)
+ 	heading.name = "HeroTrackTitle"
++	var title_width: float = MenuStyle.DISPLAY.get_string_size(title,HORIZONTAL_ALIGNMENT_LEFT,-1,60).x
+ 	heading.clip_text = true
+ 	heading.tooltip_text = title
+-	info.add_child(heading)
++	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	var title_slot := Control.new()
++	title_slot.custom_minimum_size.y = MenuStyle.DISPLAY.get_height(60)
++	info.add_child(title_slot)
++	var title_row := HBoxContainer.new()
++	title_row.add_theme_constant_override("separation",12)
++	title_slot.add_child(title_row)
++	title_row.add_child(heading)
+ 	var creator := MenuStyle.label("by "+hero_creator,18)
+ 	creator.clip_text = true
+ 	var attribution := HBoxContainer.new()
+@@ -1580,30 +1588,35 @@
+ 	favorite.icon = MenuIcon.texture("star_filled" if is_favorite else "star")
+ 	favorite.tooltip_text = "Remove favorite" if is_favorite else "Save favorite"
+ 	favorite.custom_minimum_size = Vector2(48,48)
++	favorite.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	favorite.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
+ 	favorite.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if is_favorite else MenuStyle.TEXT)
++	title_row.add_child(favorite)
++	# Keep the star beside short titles while clipping long names within the hero.
++	title_slot.resized.connect(func() -> void:
++		title_row.size = Vector2(minf(title_slot.size.x,title_width+12+favorite.get_combined_minimum_size().x),title_slot.size.y))
+ 	var route_column := VBoxContainer.new()
+ 	route_column.add_theme_constant_override("separation",4)
+ 	route_column.custom_minimum_size.x = 220
+ 	row.add_child(route_column)
+-	var favorite_column := VBoxContainer.new()
+-	favorite_column.add_theme_constant_override("separation",8)
+-	row.add_child(favorite_column)
++	var actions := VBoxContainer.new()
++	actions.add_theme_constant_override("separation",8)
++	row.add_child(actions)
+ 	var close := MenuStyle.button("",_close_track_view)
+ 	close.name = "CloseTrackView"
+ 	close.icon = MenuIcon.texture("close")
+ 	close.tooltip_text = "Back to all tracks"
+ 	close.custom_minimum_size = Vector2(48,48)
+ 	close.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b202b99"),8))
+-	favorite_column.add_child(close)
+-	favorite_column.add_child(favorite)
++	actions.add_child(close)
+ 	if str(rating_entry.get("version_id","")).length() == 36:
+ 		var share := MenuStyle.button("",func() -> void: share_requested.emit(rating_entry.duplicate(true)))
+ 		share.name = "ShareTrackLink"
+ 		share.icon = MenuIcon.texture("share")
+ 		share.tooltip_text = "Share track link"
+-		share.custom_minimum_size = Vector2(52,52)
+-		favorite_column.add_child(share)
++		share.custom_minimum_size = Vector2(48,48)
++		share.add_theme_stylebox_override("normal",close.get_theme_stylebox("normal"))
++		actions.add_child(share)
+ 	var outline := Control.new()
+ 	outline.name = "HeroRouteOutline"
+ 	outline.custom_minimum_size = Vector2(220,96)
+--- a/game/tests/test_free_race_list.gd
++++ b/game/tests/test_free_race_list.gd
+@@ -243,7 +243,8 @@
+ 		check(browser.selected_track.identity == identity,"detail belongs to the selected card")
+ 		var close: Button = browser.hero.find_child("CloseTrackView",true,false)
+ 		favorite = browser.hero.find_child("HeroFavorite",true,false)
+-		check(close != null and favorite.get_global_rect().position.y >= close.get_global_rect().end.y+7,"X sits above the lowered favorite star")
++		var title: Label = browser.hero.find_child("HeroTrackTitle",true,false)
++		check(close != null and is_equal_approx(favorite.get_global_rect().position.x,title.get_global_rect().end.x+12) and is_equal_approx(favorite.get_global_rect().get_center().y,title.get_global_rect().get_center().y),"favorite star sits immediately beside the track title")
+ 		check(close.get_global_rect().encloses(Rect2(close.get_global_rect().position,Vector2(48,48))),"X retains a full touch target")
+ 		await capture("detail-%dx%d"%[dimensions.x,dimensions.y])
+ 		await score_action_checks(dimensions)

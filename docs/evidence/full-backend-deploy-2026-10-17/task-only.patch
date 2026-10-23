@@ -1,0 +1,1385 @@
+--- /dev/null
++++ b/.tools/full_backend_browser_20261017.py
+@@ -0,0 +1,98 @@
++"""GET-only inspection of populated Studio, using the retained owner credential."""
++import importlib.util
++import json
++import time
++import urllib.request
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++
++ROOT=Path(__file__).resolve().parents[1]
++spec=importlib.util.spec_from_file_location('sim_cloud',ROOT/'.tools/full_backend_deploy_20261017.py')
++cloud=importlib.util.module_from_spec(spec);spec.loader.exec_module(cloud)
++d=cloud.d
++base=d.r['url']
++key=d.u.staff_key(d.service.describe('api',d.service.n['api']))
++until=int(time.time())+1;since=(until//86400-59)*86400
++scope='since='+str(since)+'&until='+str(until)
++reads=[]
++def get(path):
++    started=time.perf_counter()
++    request=urllib.request.Request(base+'/v1/admin/'+path,headers={'Authorization':'Bearer '+key})
++    with urllib.request.urlopen(request,timeout=60) as response:result=json.load(response)
++    reads.append({'path':path,'seconds':round(time.perf_counter()-started,3)})
++    return result
++
++behaviour=get('analysis/behaviour?'+scope)
++recent=get('analysis/behaviour')
++quality=get('analysis/releases?build_id=0.59.1&baseline=0.59.0&'+scope)
++recovery=get('analysis/releases?build_id=0.59.2&baseline=0.59.1&'+scope)
++finance=get('finance?'+scope)
++incidents=get('incidents?state=all')
++cases=get('cases?limit=30')
++experiments=get('experiments')
++scorecard=get('experiments/'+experiments['items'][0]['id']+'/scorecard') if experiments['items'] else None
++report={'complete_population':bool(d.r.get('population_complete')),'scope':{'since':since,'until':until},
++    'behaviour':behaviour,'recent_behaviour':recent,'quality':quality,'recovery':recovery,
++    'finance':finance,'incident_states':incidents['counts'],'case_count':len(cases['items']),
++    'experiment_scorecard':scorecard,'api_reads':reads}
++(d.WORK/'browser-api-current.private.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++assert behaviour['coverage']['available'] and behaviour['active_players']>0
++if d.r.get('population_complete'):
++    assert behaviour['active_players']==600,behaviour['active_players']
++    assert recent['active_players']>0
++    assert quality['candidate'] and quality['baseline'] and quality['comparison']['completion_change']<0
++    assert quality['candidate']['slow_frames']/quality['candidate']['frames']>quality['baseline']['slow_frames']/quality['baseline']['frames']
++    assert finance['money'] and finance['coins'] and len(cases['items'])>=24
++    assert all(incidents['counts'].get(s,0)>0 for s in ['open','acknowledged','recovered','closed'])
++    assert any(r['d30']['mature'] for r in behaviour['retention'])
++
++routes=['overview','alarms','alarms?state=all','alarms?tab=checks','alarms?tab=history','alarms?tab=notifications',
++    'product','product?tab=retention','product?tab=journey','product?tab=engagement','product?tab=history',
++    'quality?build_id=0.59.1&baseline=0.59.0','quality?build_id=0.59.2&baseline=0.59.1','quality?tab=diagnostics',
++    'economy','economy?tab=delivery','tracks','cases','studio','studio?tab=releases','studio?tab=experiments',
++    'studio?tab=access','system/jobs','system/network']
++if cases['items']:routes.append('cases/'+cases['items'][0]['id'])
++for state in ['open','acknowledged','recovered','closed']:
++    row=next((r for r in incidents['items'] if r['state']==state),None)
++    if row:routes.append('alarms/'+row['id'])
++errors=[];writes=[];failures=[];checks=[];screens=[]
++with sync_playwright() as driver:
++    browser=driver.chromium.launch(headless=True,executable_path='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
++    page=browser.new_page(viewport={'width':1440,'height':1050})
++    page.on('pageerror',lambda error:errors.append(str(error)))
++    page.on('request',lambda req:writes.append({'method':req.method,'path':req.url.split(base)[-1]}) if req.url.startswith(base) and req.method not in ('GET','HEAD','OPTIONS') else None)
++    page.on('response',lambda res:failures.append({'status':res.status,'path':res.url.split(base)[-1]}) if res.url.startswith(base+'/v1/admin/') and res.status>=400 else None)
++    page.goto(base+'/admin#overview');page.fill('#key',key);page.locator('#login button').click()
++    expect(page.locator('h1')).to_have_text('Know what needs attention.',timeout=60000)
++    for width,height in [(1440,1050),(390,844)]:
++        page.set_viewport_size({'width':width,'height':height})
++        for index,route in enumerate(routes):
++            raw=route+('&' if '?' in route else '?')+scope
++            started=time.perf_counter();page.evaluate('(r)=>location.hash=r',raw)
++            page.wait_for_function('(r)=>lastRenderedRoute===r',arg=raw,timeout=60000)
++            expect(page.locator('h1').first).to_be_visible()
++            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'),(width,route,'page overflow')
++            assert not page.locator('#main .console-error:visible').count(),(width,route,'render error')
++            if route.startswith('alarms/'):
++                state=next(r['state'] for r in incidents['items'] if route.endswith(r['id']))
++                if state=='recovered':expect(page.locator('[data-incident="clear"]')).to_be_visible()
++                if state=='open':expect(page.locator('[data-incident="acknowledge"]')).to_be_visible()
++            checks.append({'width':width,'route':route,'title':page.locator('h1').first.inner_text(),'seconds':round(time.perf_counter()-started,3)})
++            if route in ['overview','alarms','product?tab=journey','product?tab=retention','quality?build_id=0.59.1&baseline=0.59.0','economy','cases'] or route.startswith('alarms/'):
++                filename=f'populated-{width}-{index:02d}.png';page.screenshot(path=str(d.OUTPUT/filename),full_page=True);screens.append(filename)
++        if width==1440 and scorecard:
++            page.evaluate('(r)=>location.hash=r','studio?tab=experiments&'+scope)
++            page.wait_for_function('(r)=>lastRenderedRoute===r',arg='studio?tab=experiments&'+scope)
++            page.locator('[data-scorecard]').first.click();expect(page.locator('#dialog')).to_be_visible()
++            expect(page.locator('#dialog')).to_contain_text('Decision: hold')
++            page.keyboard.press('Escape')
++    page.locator('#logout').click();expect(page.locator('#login')).to_be_visible()
++    assert page.evaluate("key===''&&role===''&&reporting===null&&localStorage.length===0&&sessionStorage.length===0")
++    browser.close()
++assert not errors and not writes and not failures,(errors,writes,failures)
++report.update(browser_checks=checks,javascript_errors=errors,live_mutations=writes,failed_admin_reads=failures,screenshots=screens,read_only=True)
++(d.OUTPUT/'populated-browser.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++if d.r.get('population_complete'):
++    d.r['live_browser']=True;d.save()
++print(json.dumps({'view_checks':len(checks),'players':behaviour['active_players'],'recent_active':recent['active_players'],'errors':len(errors),'mutations':len(writes),'slowest_api_seconds':max(r['seconds'] for r in reads)}))
+--- /dev/null
++++ b/.tools/full_backend_deploy_20261017.py
+@@ -0,0 +1,335 @@
++"""Owner-authorized complete backend/verifier rollout from an immutable snapshot."""
++import argparse
++import ctypes
++import importlib.util
++import json
++import locale
++import shutil
++import subprocess
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++spec = importlib.util.spec_from_file_location('full_release_base', ROOT / '.tools/backend_latest_rollout_20261016.py')
++d = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(d)
++locale.getpreferredencoding = lambda _setlocale=True: 'cp' + str(ctypes.windll.kernel32.GetACP())
++d.WORK = ROOT / 'build/full-backend-deploy-2026-10-17'
++d.OUTPUT = ROOT / 'docs/evidence/full-backend-deploy-2026-10-17'
++d.CONTEXT = d.WORK / 'image'
++d.RECEIPT = d.OUTPUT / 'rollout.json'
++d.WORK.mkdir(parents=True, exist_ok=True)
++d.OUTPUT.mkdir(parents=True, exist_ok=True)
++d.r = json.loads(d.RECEIPT.read_text()) if d.RECEIPT.exists() else {}
++
++
++class ReleaseRunner(d.Runner):
++    def run(self, argv, **kwargs):
++        if 'pytest' not in argv:
++            return super().run(argv, **kwargs)
++        result = subprocess.run(argv, input=kwargs.get('input_data'), capture_output=True, text=True,
++            encoding='utf-8', errors='strict', cwd=kwargs.get('cwd'), timeout=7200, check=False)
++        if result.returncode:
++            (d.WORK / 'last-error.private.log').write_text(result.stdout + result.stderr, encoding='utf-8')
++            raise RuntimeError('Regression command failed; see private release error log')
++        return result.stdout.strip()
++
++
++d.Runner = ReleaseRunner
++
++inventory_path = d.OUTPUT / 'owned-job-inventory.json'
++if inventory_path.exists():
++    for job in json.loads(inventory_path.read_text())['owned_jobs']:
++        name = job['name']
++        latest = job.get('latest_execution')
++        assert latest is None or latest.get('completionStatus') in ('EXECUTION_SUCCEEDED', 'EXECUTION_FAILED', 'EXECUTION_CANCELLED')
++        d.r.setdefault('targets', {})[name] = 'job'
++        d.r.setdefault('target_parents', {})[name] = job['image']
++        before = d.WORK / ('before-' + name + '.private.json')
++        if not before.exists():
++            shutil.copyfile(d.WORK / ('inventory-' + name + '.private.json'), before)
++
++original_guard = d.guard
++
++
++def guard(kind, name, images):
++    initial = d.r.get('target_parents', {}).get(name, d.r.get('parent'))
++    images = [initial if value == d.r.get('parent') else value for value in images]
++    return original_guard(kind, name, images)
++
++
++d.guard = guard
++
++
++def inspect():
++    d.inspect_live()
++    name = 'bmt-stg-' + d.config['owner'][:8] + '-studio-simulator'
++    job = d.service.describe('job', name)
++    assert d.stage.resource_image(job) == d.r['parent']
++    (d.WORK / ('before-' + name + '.private.json')).write_text(json.dumps(job))
++    d.r['targets'][name] = 'job'
++    d.r.update(schema='0042_achievements', image_variant='complete-physics066',
++        catalog_mode='append matching immutable revisions; preserve original documents, versions and scores')
++    d.save()
++
++
++def hashes(folder):
++    return {p.relative_to(folder).as_posix(): d.digest(p.read_bytes()) for p in folder.rglob('*')
++            if p.is_file() and not any(n in p.parts for n in ('__pycache__', '.godot', '.pytest_cache', '.ruff_cache'))}
++
++
++def freeze():
++    d.freeze()
++    frozen = d.WORK / 'frozen'
++    # The new physics contract leaves this no-prop oval's input and timing golden unchanged.
++    fixture = frozen / 'backend/tests/fixtures/verified_oval.json'
++    value = json.loads(fixture.read_text())
++    assert value['expected_manifest']['physics_version'] == 'arcade-planar-0.65'
++    value['expected_manifest']['physics_version'] = 'arcade-planar-0.66'
++    fixture.write_text(json.dumps(value, separators=(',', ':')) + '\n', encoding='utf-8')
++    # Freeze text source/fixtures referenced by backend integration tests as well.
++    suffixes = {'.gd', '.uid', '.json', '.tres', '.godot', '.cfg', '.gdshader', '.gdshaderinc', '.txt', '.md', '.gdextension'}
++    for source in (ROOT / 'game').rglob('*'):
++        if source.is_file() and source.suffix in suffixes and '.godot' not in source.parts:
++            target = frozen / source.relative_to(ROOT)
++            target.parent.mkdir(parents=True, exist_ok=True)
++            shutil.copyfile(source, target)
++    d.r.update(schema='0042_achievements', frozen_files=hashes(frozen))
++    d.r['source_hash'] = d.digest(json.dumps(d.r['frozen_files'], sort_keys=True).encode())
++    d.save()
++    (d.OUTPUT / 'frozen-source.json').write_text(json.dumps({
++        'source_hash': d.r['source_hash'], 'files': d.r['frozen_files'],
++        'adjustments': ['retain existing write-maintenance middleware',
++                        'advance oval expected physics 0.65 to 0.66; actual native replay/rewind must confirm exact golden timing']}, indent=2) + '\n')
++    print(json.dumps({'frozen_files': len(d.r['frozen_files']), 'physics': '0.66', 'rules': 22}))
++
++
++def prepare():
++    d.prepare_build()
++    install = d.CONTEXT / 'install.py'
++    install.write_text(install.read_text().replace("SCHEMA_HEAD=='0036_community_safety'", "SCHEMA_HEAD=='0042_achievements'"))
++    # Dependencies are unchanged from the already tested parent image.
++    assert (d.CONTEXT / 'requirements.lock').read_bytes().replace(b'\r\n', b'\n') == (d.WORK / 'parent-requirements.lock').read_bytes().replace(b'\r\n', b'\n')
++    dockerfile = d.CONTEXT / 'Dockerfile'
++    shutil.copyfile(d.WORK / 'frozen/backend/deploy/object_archive.py', d.CONTEXT / 'object_archive.py')
++    dockerfile.write_text(dockerfile.read_text()
++        .replace('RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /app/requirements.lock\n', '')
++        .replace('COPY check_godot.py /app/deploy/check_godot.py\n', 'COPY check_godot.py /app/deploy/check_godot.py\nCOPY object_archive.py /app/deploy/object_archive.py\n'))
++    d.r['build_files'] = hashes(d.CONTEXT)
++    d.save()
++
++
++def build():
++    assert hashes(d.CONTEXT) == d.r['build_files']
++    b = d.builder()
++    tag = 'bmt-full-20261017:' + d.r['source_hash'][:16]
++    output = b.runner.run([*b.c['docker'], 'build', '--network=none', '--pull=false', '--platform=linux/amd64', '--file=image/Dockerfile', '--tag=' + tag, 'image'])
++    (d.WORK / 'build.private.log').write_text(output, encoding='utf-8')
++    proof = json.loads(b.runner.run([*b.c['docker'], 'run', '--rm', '--network=none', '--entrypoint=cat', tag, '/app/latest-package-proof.json']))
++    manifest = json.loads(b.runner.run([*b.c['docker'], 'run', '--rm', '--network=none', '--entrypoint=python', tag, '-c',
++        'import json;from bmt_backend.config import Settings;from bmt_backend.verifier import GodotVerifier;v=GodotVerifier(Settings.from_env());print(json.dumps(v.manifest()));v.close()']))
++    assert manifest['physics_version'] == 'arcade-planar-0.66' and manifest['rules_key'] == 'standing-5-road-gates-v22'
++    assert manifest['compiler_version'] == 'creator-compiler-27'
++    (d.OUTPUT / 'packaged-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
++    (d.OUTPUT / 'candidate-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
++    d.r.update(local_tag=tag, candidate_id=json.loads(b.runner.run([*b.c['docker'], 'image', 'inspect', tag, '--format={{json .Id}}'])), expected_manifest=manifest)
++    d.save()
++    print(json.dumps({'candidate': d.r['candidate_id'], 'physics': '0.66', 'rules': 22, 'native_import_replay_rewind': True}))
++
++
++def test():
++    import secrets
++    import time
++    b = d.builder()
++    docker = b.c['docker']
++    suffix = secrets.token_hex(4)
++    pg, network = 'bmt-full-pg-' + suffix, 'bmt-full-test-' + suffix
++    password = secrets.token_urlsafe(24)
++    label = 'bmt.full-release-owner=' + d.config['owner']
++    b.runner.run([*docker, 'network', 'create', '--internal', '--label=' + label, network])
++    created = False
++    def linux(p): return '/mnt/' + p.drive[0].lower() + p.as_posix()[2:]
++    try:
++        b.runner.run([*docker, 'run', '--rm', '-d', '--name=' + pg, '--network=' + network, '--label=' + label,
++                      '-e', 'POSTGRES_USER=full_test', '-e', 'POSTGRES_DB=full_test', '-e', 'POSTGRES_PASSWORD=' + password, 'postgres:17'])
++        created = True
++        for _ in range(40):
++            try: ready = b.runner.run([*docker, 'exec', pg, 'pg_isready', '-U', 'full_test'])
++            except RuntimeError: ready = ''
++            if 'accepting connections' in ready: break
++            time.sleep(.3)
++        else: raise RuntimeError('Owned PostgreSQL did not start')
++        frozen = d.WORK / 'frozen'
++        gate_tests = d.WORK / 'gate-tests'
++        if not gate_tests.exists():
++            shutil.copytree(ROOT / 'backend/tests', gate_tests, ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache'))
++        (d.OUTPUT / 'gate-test-inputs.json').write_text(json.dumps(hashes(gate_tests), indent=2) + '\n')
++        cmd = [*docker, 'run', '--rm', '--network=' + network, '--label=' + label, '--entrypoint=python',
++            '--mount=type=bind,source=' + linux(frozen) + ',target=/test-work,readonly',
++            '--mount=type=bind,source=' + linux(gate_tests) + ',target=/test-work/backend/tests,readonly',
++            '--mount=type=bind,source=' + linux(gate_tests / 'fixtures') + ',target=/app/tests/fixtures,readonly',
++            '-e', 'PYTHONPATH=/app:/test-work:/test-work/backend/tests',
++            '-e', 'BMT_TEST_DATABASE_URL=postgresql+psycopg://full_test:' + password + '@' + pg + ':5432/full_test',
++            d.r['local_tag'], '-m', 'pytest']
++        files = ['test_achievements.py', 'test_challenge_discovery.py', 'test_challenges.py', 'test_earned_coins.py',
++            'test_rivalry_awards.py', 'test_news.py', 'test_privacy.py', 'test_studio_simulator.py', 'test_race_statistics.py',
++            'test_race_statistics_postgres.py', 'test_studio_platform.py', 'test_end_to_end.py', 'test_lightweight_verifier.py',
++            'test_publication_intents.py', 'test_worker_lifecycle.py', 'test_verifier.py',
++            'test_lap_bests.py::test_migration_bounded_backfill_matches_legacy_and_survives_restart',
++            'test_community_safety.py', 'test_domains.py::test_hide_preserves_records_and_share_links',
++            'test_domains.py::test_checkpoint_rules_upgrade_keeps_track_and_historical_board']
++        d.r['final_test_files'] = files
++        d.save()
++        cmd += ['/test-work/backend/tests/' + name for name in files] + ['-q', '--tb=short', '--show-capture=no', '--durations=15',
++            '-c', '/app/pyproject.toml', '-o', 'cache_dir=/tmp/full-release-pytest']
++        try: output = b.runner.run(cmd)
++        except RuntimeError:
++            output = (d.WORK / 'last-error.private.log').read_text(encoding='utf-8')
++            (d.OUTPUT / 'exact-image-tests-initial.log').write_text(output.replace(password, '[REDACTED]'), encoding='utf-8')
++            raise
++        (d.OUTPUT / 'exact-image-tests.log').write_text(output.replace(password, '[REDACTED]') + '\n', encoding='utf-8')
++        d.r['exact_image_tests'] = True
++        d.save()
++        print(output[-3500:])
++    finally:
++        if created:
++            labels = json.loads(b.runner.run([*docker, 'inspect', pg, '--format={{json .Config.Labels}}']))
++            assert labels.get('bmt.full-release-owner') == d.config['owner']
++            b.runner.run([*docker, 'stop', pg])
++        labels = json.loads(b.runner.run([*docker, 'network', 'inspect', network, '--format={{json .Labels}}']))
++        assert labels.get('bmt.full-release-owner') == d.config['owner']
++        b.runner.run([*docker, 'network', 'rm', network])
++
++
++def snapshot(name):
++    before = d.r.get('data_before')
++    names = list(json.loads((ROOT / 'docs/evidence/achievements-backend-deploy-2026-10-17/data-before.json').read_text())['tables'])
++    names += ['studio_quarantines', 'admin_audit']
++    code = '''import hashlib,json
++from sqlalchemy import inspect,text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url);before=__BEFORE__;names=__NAMES__
++with e.connect() as c:
++ c.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'));i=inspect(c);available=set(i.get_table_names());tables={}
++ names+=sorted(t for t in available if t.startswith('achievement_'))
++ for name in names:
++  if name not in available:continue
++  columns=before['tables'][name]['columns'] if before else [r['name'] for r in i.get_columns(name)]
++  primary=i.get_pk_constraint(name)['constrained_columns'];assert primary
++  condition=' WHERE created_at<='+str(before['tables'][name]['max_created_at']) if before and name=='track_versions' else ''
++  query='SELECT '+','.join('"'+v+'"' for v in columns)+' FROM "'+name+'"'+condition+' ORDER BY '+','.join('"'+v+'"' for v in primary)
++  h=hashlib.sha256();count=0
++  for row in c.execute(text(query)):
++   h.update(json.dumps(list(row),sort_keys=True,separators=(',',':'),default=str).encode()+b'\\n');count+=1
++  tables[name]={'columns':columns,'rows':count,'sha256':h.hexdigest()}
++  if name=='track_versions':tables[name]['max_created_at']=before['tables'][name]['max_created_at'] if before else c.execute(text('SELECT COALESCE(MAX(created_at),0) FROM track_versions')).scalar()
++ pending={name:c.execute(text('SELECT count(*) FROM '+name+" WHERE status IN ('queued','verifying','validating')")).scalar() for name in ['runs','track_validations','publication_intents'] if name in available}
++ assert not any(pending.values()),pending
++ journal=c.execute(text("SELECT details FROM operation_state WHERE id='studio-simulator:studio-october'")).scalar()
++ assert journal and journal['workspaces_done'] and journal['plan']['players']==600
++ result={'tables':tables,'schema':c.execute(text('SELECT version_num FROM alembic_version')).scalar(),'pending':pending,'simulator_journal_sha256':hashlib.sha256(json.dumps(journal,sort_keys=True).encode()).hexdigest()}
++ if before:
++  assert result['simulator_journal_sha256']==before['simulator_journal_sha256']
++  assert result['tables']==before['tables']
++ print('LATEST_RESULT='+json.dumps(result))
++e.dispose()
++'''.replace('__BEFORE__', repr(before)).replace('__NAMES__', repr(names))
++    result = d.execute(name, code)
++    if before is None: d.r['data_before'] = result
++    else: d.r['data_preserved'] = True
++    d.r['population_complete'] = True
++    d.save()
++    print(json.dumps({'snapshot': name, 'tables': len(result['tables']), 'existing_rows_exact': before is not None}))
++
++
++d.snapshot = snapshot
++original_catalog_program = d.catalog_program
++
++
++def catalog_program(apply=False):
++    # Every raceable published head needs the new contract, including community tracks.
++    return original_catalog_program(apply).replace('t.official=true AND ', '').replace('assert track.official and not track.hidden', 'assert not track.hidden')
++
++
++d.catalog_program = catalog_program
++base_verify_http = d.verify_http
++
++
++def verify_http(origin, worker=False):
++    result = base_verify_http(origin, worker)
++    manifest = d.u.fetch(origin, '/v1/manifest').json()
++    assert manifest == d.r['expected_manifest']
++    bootstrap = d.u.fetch(origin, '/v1/bootstrap').json()
++    assert bootstrap['challenge_discovery_version'] == 1 and bootstrap['race_incident_rewards_version'] == 1
++    import requests
++    assert requests.get(origin + '/v1/achievements', timeout=(5, 30)).status_code == 401
++    result['manifest'] = manifest
++    return result
++
++
++d.verify_http = verify_http
++
++
++def browser():
++    import subprocess
++    path = ROOT / '.tools/full_backend_browser_20261017.py'
++    source = (ROOT / '.tools/studio_simulator_browser_20261017.py').read_text()
++    source = source.replace("ROOT/'.tools/studio_simulator_cloud_20261017.py'", "ROOT/'.tools/full_backend_deploy_20261017.py'")
++    path.write_text(source, encoding='utf-8')
++    result = subprocess.run([str(ROOT / '.tools/backend-venv/Scripts/python.exe'), '-X', 'utf8', str(path)], capture_output=True, text=True, encoding='utf-8')
++    (d.OUTPUT / 'browser-run.log').write_text(result.stdout + result.stderr, encoding='utf-8')
++    assert result.returncode == 0, 'See browser-run.log'
++    d.r = json.loads(d.RECEIPT.read_text())
++    print(result.stdout[-1200:])
++
++
++def catalog_http():
++    from concurrent.futures import ThreadPoolExecutor
++    from urllib.parse import urlencode
++    previous = json.loads((ROOT / 'docs/evidence/backend-approved-followup-2026-10-16/catalog-live-http.json').read_text())
++    expected = {row['track_id']: row for row in previous['tracks']}
++    prior = {row['track_id']: row for row in json.loads((d.OUTPUT / 'offline-catalog-validation.json').read_text())['tracks']}
++    path, items, pages = '/v1/tracks?limit=20', [], []
++    while path:
++        data = d.u.fetch(d.r['url'], path).json()
++        items.extend(data['items'])
++        pages.append(len(data['items']))
++        path = '/v1/tracks?' + urlencode({'limit': 20, 'cursor': data['next_cursor']}) if data.get('next_cursor') else None
++        assert len(pages) <= 5
++    assert len([row for row in items if row['track_id'] in expected]) == 27
++    def check(row):
++        detail = d.u.fetch(d.r['url'], '/v1/track-versions/' + row['version_id']).json()
++        for field in ('physics_version', 'rules_key', 'compiler_version', 'engine_version'):
++            assert detail['manifest'][field] == d.r['expected_manifest'][field], (row['name'], field)
++        assert d.digest(d.u.fetch(d.r['url'], '/v1/track-versions/' + row['version_id'] + '/document').content) == row['content_hash']
++        result = {'track_id': row['track_id'], 'version_id': row['version_id'], 'name': row['name'], 'document_exact': True, 'latest_contract': True}
++        earlier_head = d.u.fetch(d.r['url'], '/v1/track-versions/' + prior[row['track_id']]['version_id']).json()
++        assert earlier_head['content_hash'] == row['content_hash'] == prior[row['track_id']]['content_hash']
++        result['prior_current_link_valid'] = True
++        if row['track_id'] in expected:
++            old = expected[row['track_id']]
++            assert row['version_id'] != old['new_version_id'] and row['version'] > old['version']
++            for identity in [old['new_version_id'], old['previous_version_id']]:
++                earlier = d.u.fetch(d.r['url'], '/v1/track-versions/' + identity).json()
++                assert earlier['content_hash'] == row['content_hash']
++            result['both_previous_links_valid'] = True
++        return result
++    with ThreadPoolExecutor(max_workers=3) as pool: rows = list(pool.map(check, items))
++    (d.OUTPUT / 'catalog-live-http.json').write_text(json.dumps({'pages': pages, 'tracks': rows, 'read_only': True}, indent=2) + '\n')
++    d.r['catalog_live_http_verified'] = True
++    d.save()
++    print(json.dumps({'latest_public_heads': len(rows), 'official_old_links_preserved': 27}))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('stage', choices=['inspect', 'extract', 'freeze', 'prepare', 'build', 'test', 'push', 'backup', 'preview', 'maintenance', 'snapshot', 'migrate', 'catalog', 'canary', 'promote', 'smoke', 'browser', 'catalog-http', 'finish'])
++    args = parser.parse_args()
++    actions = {'inspect': inspect, 'extract': d.extract_parent, 'freeze': freeze, 'prepare': prepare, 'build': build, 'test': test,
++        'push': d.push_image, 'backup': d.backup, 'preview': d.preview_catalog, 'maintenance': d.maintenance,
++        'snapshot': lambda: snapshot('data-before'), 'migrate': d.migrate, 'catalog': d.apply_catalog,
++        'canary': d.canary, 'promote': d.promote, 'smoke': d.smoke, 'browser': browser, 'catalog-http': catalog_http, 'finish': d.finish}
++    actions[args.stage]()
++
++
++if __name__ == '__main__': main()
+--- /dev/null
++++ b/.tools/full_backend_pc_20261017.py
+@@ -0,0 +1,202 @@
++"""Deploy the exact tested complete image to the existing PC project, retaining data."""
++import argparse
++import hashlib
++import importlib.util
++import json
++import subprocess
++import time
++import urllib.request
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / 'build/full-backend-deploy-2026-10-17'
++OUTPUT = ROOT / 'docs/evidence/full-backend-deploy-2026-10-17'
++RECEIPT = OUTPUT / 'pc-rollout.json'
++r = json.loads(RECEIPT.read_text()) if RECEIPT.exists() else {}
++docker = ['wsl.exe', '-d', 'Ubuntu', '--cd', '/mnt/c/Codes/Godot/Beat my track', '--', 'docker']
++
++
++def save(): RECEIPT.write_text(json.dumps(r, indent=2) + '\n')
++
++
++def run(args, **kw):
++    result = subprocess.run([*docker, *args], capture_output=True, **kw)
++    if result.returncode:
++        (WORK / 'pc-last-error.private.log').write_bytes(result.stdout + result.stderr)
++        raise RuntimeError('PC command failed; see private PC error log')
++    return result.stdout
++
++
++def inspect(name): return json.loads(run(['inspect', name]))[0]
++
++
++def program(code, image=None, *, objects=False, readonly=False):
++    api = json.loads((WORK / 'bmt-pc-dev-api-1-before.private.json').read_text())
++    env = [v for v in api['Config']['Env'] if v.startswith('BMT_')]
++    args = ['run', '--rm', '-i', '--network=bmt-pc-dev_default', '--label=bmt.full-pc-release=20261017', '--entrypoint=python']
++    for v in env: args += ['-e', v]
++    if objects:
++        args += ['--mount=type=volume,source=bmt-pc-dev_objects,target=/var/lib/bmt/objects' + (',readonly' if readonly else '')]
++    return run([*args, image or r['image'], '-'], input=code.encode('utf-8'))
++
++
++def prepare():
++    cloud = json.loads((OUTPUT / 'rollout.json').read_text())
++    r.update(image=cloud['local_tag'], image_id=cloud['candidate_id'], expected_manifest=cloud['expected_manifest'])
++    for name in ['api', 'worker', 'db']:
++        actual = inspect('bmt-pc-dev-' + name + '-1')
++        assert actual['Config']['Labels']['com.docker.compose.project'] == 'bmt-pc-dev'
++        before = json.loads((WORK / ('bmt-pc-dev-' + name + '-1-before.private.json')).read_text())
++        assert actual['Id'] == before['Id']
++    # The source bind is pinned to the tested snapshot, while named volumes and credentials stay intact.
++    source = '/mnt/' + WORK.drive[0].lower() + WORK.as_posix()[2:] + '/frozen/backend/bmt_backend'
++    override = {'services': {}}
++    for name in ['api', 'worker', 'migrate']:
++        override['services'][name] = {'image': r['image'], 'volumes': [source + ':/app/bmt_backend:ro']}
++    override['services']['api']['healthcheck'] = {
++        'test': ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready',timeout=5).close()"],
++        'interval': '5s', 'timeout': '8s', 'retries': 24}
++    (WORK / 'pc.override.json').write_text(json.dumps(override, indent=2) + '\n')
++    r['prepared'] = True
++    save()
++    print(json.dumps({'pc_candidate': r['image_id'], 'frozen_source': True, 'existing_volumes_retained': True}))
++
++
++def compose(*args):
++    return run(['compose', '--env-file', '.tools/bmt-pc.env', '-f', 'backend/deploy/compose.pc.yaml',
++                '-f', 'build/full-backend-deploy-2026-10-17/pc.override.json', *args])
++
++
++def backup():
++    assert r['prepared'] and not r.get('promoted')
++    compose('stop', 'api', 'worker')
++    r['writers_paused'] = True
++    save()
++    destination = WORK / 'pc-backup'
++    destination.mkdir(exist_ok=False)
++    commands = {
++        'database.dump': ['exec', 'bmt-pc-dev-db-1', 'pg_dump', '-U', 'bmt', '-d', 'bmt', '--format=custom', '--no-owner', '--no-privileges'],
++    }
++    hashes = {}
++    for name, args in commands.items():
++        with (destination / name).open('xb') as output:
++            result = subprocess.run([*docker, *args], stdout=output, stderr=subprocess.PIPE)
++        assert result.returncode == 0, result.stderr.decode(errors='replace')
++        hashes[name] = hashlib.sha256((destination / name).read_bytes()).hexdigest()
++    # The tested image has the bounded immutable-object archive utility.
++    code = "from pathlib import Path;from importlib.util import spec_from_file_location,module_from_spec;s=spec_from_file_location('archive','/app/deploy/object_archive.py');m=module_from_spec(s);s.loader.exec_module(m);m.archive(Path('/var/lib/bmt/objects'))"
++    payload = program(code, objects=True, readonly=True)
++    (destination / 'objects.tar').write_bytes(payload)
++    hashes['objects.tar'] = hashlib.sha256(payload).hexdigest()
++    (destination / 'SHA256SUMS').write_text(''.join(v + '  ' + k + '\n' for k, v in hashes.items()))
++    (destination / 'COMPLETE').write_text('Complete quiesced PC database and object backup\n')
++    r['backup'] = hashes
++    save()
++    print(json.dumps({'pc_backup_complete': True, 'files': list(hashes)}))
++
++
++def snapshot(name):
++    before = r.get('data_before')
++    # Preserve every row of every original semantic table. Only worker/runtime leases are volatile.
++    code = '''import hashlib,json
++from sqlalchemy import inspect,text
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++e=make_engine(Settings.from_env().database_url);before=__BEFORE__
++with e.connect() as c:
++ c.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'));i=inspect(c);tables={}
++ names=list(before['tables']) if before else sorted(set(i.get_table_names())-{'alembic_version','worker_heartbeats','worker_leases','rate_budgets','request_budgets','readiness_observations'})
++ for name in names:
++  primary=i.get_pk_constraint(name)['constrained_columns']
++  if not primary:continue
++  columns=before['tables'][name]['columns'] if before else [x['name'] for x in i.get_columns(name)]
++  condition=' WHERE created_at<='+str(before['tables'][name]['max_created_at']) if before and name=='track_versions' else ''
++  if before and name=='histogram_snapshots':condition=' WHERE version_id IN (SELECT id FROM track_versions WHERE created_at<='+str(before['tables']['track_versions']['max_created_at'])+')'
++  rows=c.execute(text('SELECT '+','.join('"'+v+'"' for v in columns)+' FROM "'+name+'"'+condition+' ORDER BY '+','.join('"'+v+'"' for v in primary)))
++  h=hashlib.sha256();count=0
++  for row in rows:h.update(json.dumps(list(row),sort_keys=True,separators=(',',':'),default=str).encode()+b'\\n');count+=1
++  tables[name]={'columns':columns,'rows':count,'sha256':h.hexdigest()}
++  if name=='track_versions':tables[name]['max_created_at']=before['tables'][name]['max_created_at'] if before else c.execute(text('SELECT COALESCE(MAX(created_at),0) FROM track_versions')).scalar()
++ result={'tables':tables,'schema':c.execute(text('SELECT version_num FROM alembic_version')).scalar()}
++ if before:assert result['tables']==before['tables'],[n for n in tables if tables[n]!=before['tables'][n]]
++ print(json.dumps(result))
++e.dispose()
++'''.replace('__BEFORE__', repr(before))
++    result = json.loads(program(code))
++    (OUTPUT / ('pc-' + name + '.json')).write_text(json.dumps(result, indent=2) + '\n')
++    if before is None: r['data_before'] = result
++    else: r['data_preserved'] = True
++    save()
++    print(json.dumps({'pc_snapshot': name, 'tables': len(result['tables']), 'original_rows_exact': before is not None, 'schema': result['schema']}))
++
++
++def migrate():
++    assert r.get('backup') and r.get('data_before')
++    compose('run', '--rm', '--no-deps', '-T', 'migrate')
++    snapshot('data-after-migration')
++    r['migrated'] = True
++    save()
++
++
++def catalog(apply=False):
++    assert r.get('migrated')
++    spec = importlib.util.spec_from_file_location('full_release', ROOT / '.tools/full_backend_deploy_20261017.py')
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    code = module.catalog_program(apply)
++    code = code.replace('from bmt_backend.gcs_storage import GCSBlobStore', 'from bmt_backend.storage import LocalBlobStore').replace('store=GCSBlobStore(s)', 'store=LocalBlobStore(s.object_dir)')
++    result = json.loads(program(code, objects=True, readonly=True).decode().split('LATEST_RESULT=', 1)[1])
++    (OUTPUT / ('pc-catalog-' + ('apply' if apply else 'preview') + '.json')).write_text(json.dumps(result, indent=2) + '\n')
++    if apply:
++        r['catalog_applied'] = True
++        save()
++        snapshot('data-after-catalog')
++        r['catalog_preserved'] = True
++        save()
++    print(json.dumps(result))
++
++
++def promote():
++    assert r.get('catalog_applied') and r.get('catalog_preserved') and r.get('data_preserved')
++    compose('up', '-d', '--no-build', '--no-deps', '--wait', '--wait-timeout', '180', 'api', 'worker')
++    r['promoted'] = True
++    r['writers_paused'] = False
++    save()
++    print(json.dumps({'pc_promoted': True, 'same_tested_image': r['image_id']}))
++
++
++def verify():
++    assert r.get('promoted')
++    with urllib.request.urlopen('http://127.0.0.1:18181/v1/manifest', timeout=20) as response:
++        assert json.load(response) == r['expected_manifest']
++    api = json.loads((WORK / 'bmt-pc-dev-api-1-before.private.json').read_text())
++    env = dict(v.split('=', 1) for v in api['Config']['Env'])
++    headers = {'Authorization': 'Bearer ' + env['BMT_ADMIN_OWNER_KEY']}
++    for _ in range(30):
++        req = urllib.request.Request('http://127.0.0.1:18181/v1/admin/competition-health', headers=headers)
++        with urllib.request.urlopen(req, timeout=20) as response: health = json.load(response)
++        if health['status'] == 'ready' and health['available_workers'] >= 1: break
++        time.sleep(2)
++    assert health['status'] == 'ready', health['status']
++    assert health['expected_build'] == {k: v for k, v in r['expected_manifest'].items() if k != 'max_frames'}
++    for name in ['api', 'worker']:
++        actual = inspect('bmt-pc-dev-' + name + '-1')
++        assert actual['Image'] == r['image_id']
++        assert actual['Config']['Labels']['com.docker.compose.project'] == 'bmt-pc-dev'
++        mount = next(m for m in actual['Mounts'] if m['Destination'] == '/var/lib/bmt/objects')
++        assert mount['Name'] == 'bmt-pc-dev_objects'
++    result = {'ready': True, 'available_workers': health['available_workers'], 'expected_build': health['expected_build'],
++              'image_id': r['image_id'], 'data_retained': True}
++    (OUTPUT / 'pc-verify-live.json').write_text(json.dumps(result, indent=2) + '\n')
++    r['writers_paused'] = False
++    r['completed'] = True
++    save()
++    print(json.dumps(result))
++
++
++if __name__ == '__main__':
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument('stage', choices=['prepare', 'backup', 'snapshot', 'migrate', 'preview', 'catalog', 'promote', 'verify'])
++    a = p.parse_args()
++    {'prepare': prepare, 'backup': backup, 'snapshot': lambda: snapshot('data-before'), 'migrate': migrate,
++     'preview': catalog, 'catalog': lambda: catalog(True), 'promote': promote, 'verify': verify}[a.stage]()
+--- /dev/null
++++ b/.tools/full_backend_probe_20261017.py
+@@ -0,0 +1,71 @@
++"""Isolated regression probes for corrections found during the complete rollout."""
++import argparse
++import json
++import secrets
++import subprocess
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / 'build/full-backend-deploy-2026-10-17'
++OUT = ROOT / 'docs/evidence/full-backend-deploy-2026-10-17'
++docker = ['wsl.exe', '-d', 'Ubuntu', '--cd', '/mnt/c/Codes/Godot/Beat my track', '--', 'docker']
++
++
++def run(args):
++    return subprocess.run([*docker, *args], capture_output=True, text=True, encoding='utf-8', check=True).stdout
++
++
++def linux(path): return '/mnt/' + path.drive[0].lower() + path.as_posix()[2:]
++
++
++def main():
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--name', default='corrected-regressions')
++    p.add_argument('--postgres', action='store_true')
++    p.add_argument('tests', nargs='+')
++    args = p.parse_args()
++    assert args.name.replace('-', '').isalnum()
++    r = json.loads((OUT / 'rollout.json').read_text())
++    label = 'bmt.full-probe-owner=' + r['owner']
++    suffix = secrets.token_hex(4)
++    network, pg = 'bmt-full-probe-' + suffix, 'bmt-full-probe-pg-' + suffix
++    password = secrets.token_urlsafe(24)
++    created = False
++    try:
++        cmd = ['run', '--rm', '--entrypoint=python', '--label=' + label,
++            '--mount=type=bind,source=' + linux(WORK / 'frozen') + ',target=/test-work,readonly',
++            '--mount=type=bind,source=' + linux(ROOT / 'backend/tests') + ',target=/test-work/backend/tests,readonly',
++            '--mount=type=bind,source=' + linux(ROOT / 'backend/tests/fixtures') + ',target=/app/tests/fixtures,readonly',
++            '-e', 'PYTHONPATH=/app:/test-work:/test-work/backend/tests']
++        for name in ['tracks.py', 'runs.py']:
++            cmd += ['--mount=type=bind,source=' + linux(ROOT / 'backend/bmt_backend' / name) + ',target=/app/bmt_backend/' + name + ',readonly']
++        if args.postgres:
++            run(['network', 'create', '--internal', '--label=' + label, network])
++            run(['run', '--rm', '-d', '--name=' + pg, '--network=' + network, '--label=' + label,
++                 '-e', 'POSTGRES_USER=probe', '-e', 'POSTGRES_DB=probe', '-e', 'POSTGRES_PASSWORD=' + password, 'postgres:17'])
++            created = True
++            for _ in range(40):
++                ready = subprocess.run([*docker, 'exec', pg, 'pg_isready', '-U', 'probe'], capture_output=True, text=True)
++                if ready.returncode == 0: break
++                time.sleep(.3)
++            cmd += ['--network=' + network, '-e', 'BMT_TEST_DATABASE_URL=postgresql+psycopg://probe:' + password + '@' + pg + ':5432/probe']
++        else: cmd += ['--network=none']
++        tests = ['/test-work/backend/tests/' + s for s in args.tests]
++        result = subprocess.run([*docker, *cmd, r['local_tag'], '-m', 'pytest', *tests, '-q', '--tb=short', '--show-capture=no',
++            '-c', '/app/pyproject.toml', '-o', 'cache_dir=/tmp/probe-cache'], capture_output=True, text=True, encoding='utf-8', timeout=900)
++        output = (result.stdout + result.stderr).replace(password, '[REDACTED]')
++        (OUT / (args.name + '.log')).write_text(output, encoding='utf-8')
++        print(output[-9500:])
++        print('Probe exit:', result.returncode)
++    finally:
++        if created:
++            labels = json.loads(run(['inspect', pg, '--format={{json .Config.Labels}}']))
++            assert labels.get('bmt.full-probe-owner') == r['owner']
++            run(['stop', pg])
++            labels = json.loads(run(['network', 'inspect', network, '--format={{json .Labels}}']))
++            assert labels.get('bmt.full-probe-owner') == r['owner']
++            run(['network', 'rm', network])
++
++
++if __name__ == '__main__': main()
+--- /dev/null
++++ b/.tools/full_backend_report_20261017.py
+@@ -0,0 +1,104 @@
++"""Record the completed full rollout, its actual checks and scoped source patch."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++WORK = ROOT / 'build/full-backend-deploy-2026-10-17'
++OUT = ROOT / 'docs/evidence/full-backend-deploy-2026-10-17'
++
++
++def read(name): return json.loads((OUT / name).read_text())
++
++
++def main():
++    r, pc = read('rollout.json'), read('pc-rollout.json')
++    assert r['completed'] and pc['completed'] and r['data_preserved'] and pc['data_preserved']
++    browser, catalog = read('populated-browser.json'), read('catalog-live-http.json')
++    assert not browser['javascript_errors'] and not browser['failed_admin_reads'] and not browser['live_mutations']
++    report = {
++        'requirements': ['FB01', 'FB02', 'FB03', 'FB04', 'G01', 'R01', 'Q01'],
++        'completed_utc': r['completed_utc'], 'image': r['image'], 'api_revision': r['canary_revision'],
++        'schema': r['schema'], 'contract': r['expected_manifest'], 'runtime_targets': r['targets'],
++        'database_backup': r['backup_id'],
++        'cloud_original_table_fingerprints': len(r['data_before']['tables']),
++        'cloud_new_catalog_revisions': read('catalog-apply.json')['inserted_versions'],
++        'cloud_public_heads_checked': len(catalog['tracks']),
++        'prior_links_valid': all(row['prior_current_link_valid'] for row in catalog['tracks']),
++        'pc': {'schema_before': pc['data_before']['schema'], 'schema_after': '0042_achievements',
++               'original_table_fingerprints': len(pc['data_before']['tables']),
++               'original_players': pc['data_before']['tables']['players']['rows'],
++               'original_runs': pc['data_before']['tables']['runs']['rows'],
++               'original_track_versions': pc['data_before']['tables']['track_versions']['rows'],
++               'catalog_final_counts': read('pc-catalog-final-counts.json'),
++               'backup': pc['backup'], 'histogram_preservation': read('pc-histogram-preservation.json'),
++               'live': read('pc-verify-live.json')},
++        'studio': {'view_checks': len(browser['browser_checks']),
++                   'active_players_full_scope': browser['behaviour']['active_players'],
++                   'javascript_errors': 0, 'failed_admin_reads': 0, 'mutation_requests': 0},
++        'validation': r['validation'],
++        'validation_details': {
++            'api_test_image': r['api_test_image_id'], 'final_runtime': read('final-runtime-candidate.json'),
++            'final_api_and_native_hashes_exact': read('final-runtime-proof.json')['api_and_native_exact_to_test_image'],
++            'initial_broad_audit': '800 passed, 25 failed, 56 skipped, 2 errors; interrupted; not a complete-suite pass',
++            'extended_calibration_audit': '203 passed, 2 failed, 15 skipped; interrupted during artificial-driver calibration',
++            'focused_gate_initial': '390 passed, 5 failed, 9 skipped; failures were corrected test fixtures',
++            'focused_rechecks': '4 POSIX shutdown/recovery checks passed; native SDK checked separately on Windows',
++            'windows': '2 native network/privacy + 5 saved recovery + 1 SDK HTTP tests passed',
++            'backup_utility': '1 archive/restore/corruption test passed on the final image',
++            'full_calibration_or_production_load_pass_claimed': False},
++        'maintenance': {'started_utc': r['maintenance_started_utc'], 'ended_utc': r['maintenance_ended_utc'],
++                        'writes_restored': True, 'temporary_tags_removed': r['temporary_tags_removed']},
++        'no_phone_connection_check_apk_or_device_test': True,
++        'last_phone_build_physics': 'arcade-planar-0.64; matching client update remains required',
++        'external_monitoring_provider_notification_settings': 'preserved; no new activation',
++        'remaining_acceptance': ['matching phone client update', 'owner workflow/feel acceptance',
++                                 'production load and managed restore acceptance', 'separate artificial-driver calibration'],
++    }
++    (OUT / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
++    # Review the exact deployed runtime/canonical changes relative to the previous image.
++    patches = []
++    for old, new, prefix in [(WORK / 'parent-backend', WORK / 'frozen/backend/bmt_backend', 'backend/bmt_backend'),
++                              (WORK / 'parent-canonical/game', WORK / 'frozen/canonical/game', 'canonical/game')]:
++        def files(folder):
++            return {p.relative_to(folder).as_posix() for p in folder.rglob('*') if p.is_file()
++                    and not any(x in p.parts for x in ('.godot', '__pycache__'))}
++        for name in sorted(files(old) | files(new)):
++            a, b = old / name, new / name
++            before = a.read_text(encoding='utf-8').splitlines(True) if a.exists() else []
++            after = b.read_text(encoding='utf-8').splitlines(True) if b.exists() else []
++            if before != after:
++                path = prefix + '/' + name
++                patches.extend(difflib.unified_diff(before, after, fromfile='a/' + path if before else '/dev/null',
++                    tofile='b/' + path if after else '/dev/null'))
++    archive_before = WORK / 'parent-object_archive.py'
++    if archive_before.exists():
++        patches.extend(difflib.unified_diff(archive_before.read_text().splitlines(True),
++            (WORK / 'frozen/backend/deploy/object_archive.py').read_text().splitlines(True),
++            fromfile='a/backend/deploy/object_archive.py', tofile='b/backend/deploy/object_archive.py'))
++    (OUT / 'release-overlay.patch').write_text(''.join(patches), encoding='utf-8', newline='\n')
++
++    before_dir = WORK / 'task-before'
++    new_files = ['.tools/full_backend_deploy_20261017.py', '.tools/full_backend_pc_20261017.py',
++        '.tools/full_backend_probe_20261017.py', '.tools/full_backend_report_20261017.py',
++        '.tools/full_backend_browser_20261017.py', 'docs/FULL_BACKEND_DEPLOY_2026_10_17.md']
++    paths = {p.relative_to(before_dir).as_posix() for p in before_dir.rglob('*') if p.is_file()} | set(new_files)
++    patches, changed = [], {}
++    for name in sorted(paths):
++        target, original = ROOT / name, before_dir / name
++        if not target.exists(): continue
++        before = original.read_text(encoding='utf-8').splitlines(True) if original.exists() else []
++        after = target.read_text(encoding='utf-8').splitlines(True)
++        if before != after:
++            patches.extend(difflib.unified_diff(before, after, fromfile='a/' + name if before else '/dev/null', tofile='b/' + name))
++            changed[name] = hashlib.sha256(target.read_bytes()).hexdigest()
++    (OUT / 'task-only.patch').write_text(''.join(patches), encoding='utf-8', newline='\n')
++    (OUT / 'checkpoint.json').write_text(json.dumps({'files': changed, 'git_index_modified': False,
++        'review_artifact': 'task-only.patch', 'runtime_overlay': 'release-overlay.patch'}, indent=2) + '\n')
++    print(json.dumps({'report': 'docs/evidence/full-backend-deploy-2026-10-17/report.json',
++                      'api_revision': r['canary_revision'], 'runtime_targets': len(r['targets']),
++                      'studio_checks': len(browser['browser_checks']), 'scoped_files': len(changed)}))
++
++
++if __name__ == '__main__': main()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,8 @@
+ # Project agent instructions
++
++## Complete backend and verifier deployment override (2026-10-17)
++The owner explicitly requests the full latest backend after the game/server mismatch. Cloud API bmt-stg-e7a444ab-api-00081-lat/schema42, its matching worker and all five owned job definitions now use image8707116d7acaf1a8ced96d231402eccc3a461742ccb1274bcc1260b923f55c4c. The existing PC API/worker use the same complete image, with schema35-to42 migration. Actual compiler27/physics0.66/rules22 replaces the earlier retained0.59/rules20 pin. Backup1792262296541 and complete PC SQL/object backup,56 cloud/62 PC original-data fingerprints,28 cloud/27 PC new immutable revisions and preserved old links pass. Original888 PC histogram rows are exact;270 cache rows belong only to new revisions. Focused390 backend checks plus four corrected POSIX rechecks, eight Windows native checks, final archive check, native/storage smoke and58 Studio desktop/390px checks pass; interrupted broad/calibration audits and all fixture corrections remain documented. Owner-hide links retain access while Studio quarantine remains effective. The previously omitted manual pace2 job definition is updated without rerunning it; its historical failure remains. API/native hashes remain exact through the final current-archive-utility layer. Source, actual commands, validation scope and task-only checkpoint: docs/FULL_BACKEND_DEPLOY_2026_10_17.md. The last phone APK is physics0.64 and still needs a matching client update; no phone connection check/test/APK action. Existing external-provider, notification and continuous-watchdog settings remain; production load/restore, artificial-driver calibration and owner/device acceptance remain.
++
+ 
+ ## Free Race High Scores actions override (2026-10-17)
+ The owner reports the Report / block button clipped outside the selected Free Race track view. Reserve the High Scores column from its full content minimum, fit the records panel to its allocated slot and reduce section top padding by3 units. Keep all three full text actions/48-unit targets, three score rows and both charts inside the original180-unit area. Preserve the vertical list, top-down push, close/favorites, selected version, bounded caches and original racing. Native233headless/263Compatibility/263desktopMobile, app101 and parser854 pass. Actual commands, initial reproduction/padding/resize corrections, native views and task-only checkpoint: docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, live report, backend change/deployment or FPS claim.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-17 FB01-FB04/G01/R01/Q01: Complete backend/verifier and Studio deployed to cloud API81/schema42 and existing PC API/worker (schema35 to42), with all five owned cloud jobs on the same tested image8707116d. Actual compiler27/physics0.66/rules22,56 cloud/62 PC original-data fingerprints,28/27 immutable catalog revisions, native/storage smoke and58 desktop/390px Studio checks pass. Focused390 checks, four corrected POSIX rechecks, eight Windows native checks and final archive check pass; interrupted broad/calibration audits are not full-suite passes. Original records,600-player Studio history and old links remain. Last phone build0.64 needs matching client update; no phone check/test/APK or new provider/notification/watchdog activation. Actual rollout, retained initial failures, scoped validation and task-only checkpoint: docs/FULL_BACKEND_DEPLOY_2026_10_17.md.
++
+ 2026-10-17 FRA01-FRA02/G01/R01/Q01: The owner reports the Report / block button clipped outside the selected Free Race track view. Reserve the High Scores column from its full content minimum, fit the records panel to its allocated slot and reduce section top padding by3 units. Keep all three full text actions/48-unit targets, three score rows and both charts inside the original180-unit area. Preserve the vertical list, top-down push, close/favorites, selected version, bounded caches and original racing. Native233headless/263Compatibility/263desktopMobile, app101 and parser854 pass. Actual commands, initial reproduction/padding/resize corrections, native views and task-only checkpoint: docs/FREE_RACE_SCORE_ACTIONS_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, live report, backend change/deployment or FPS claim.
+ 
+ 2026-10-17 FRT01-FRT02/G01/R01/Q01: The owner requests the track view from above, pushing track rows downward. Use the retained0.32s tween with viewport-height travel, zero horizontal offsets and touching panel/list edges; X reverses the push and restores the same list scroll. Preserve current detail, fixed navigation/actions, selection, favorites, metadata/caches and five-lap racing. This supersedes only the horizontal direction/gap in the preceding slide override. Native155headless/173Compatibility/173Mobile, app101 and parser854 pass. Actual commands, halfway views and task-only checkpoint: docs/FREE_RACE_TOP_PUSH_2026_10_17.md. Owner appearance acceptance remains; no phone attachment check/test, APK, backend change/deployment or FPS claim.
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -49,7 +49,7 @@
+     "laps",
+ )
+ MAX_FRAMES = 216000
+-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v18")
++CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v22")
+ 
+ 
+ def leaderboard_session(request: Request, credentials=Depends(bearer), session=Depends(get_session)):
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -250,8 +250,11 @@
+ 
+ 
+ def _check_viewer(request, session, version, credentials):
+-    if session.get(Track, version.track_id).hidden:
+-        raise HTTPException(404, "Published track version not found")
++    track = session.get(Track, version.track_id)
++    if track.hidden:
++        from .studio_case_models import StudioQuarantine
++        if session.get(StudioQuarantine, track.id) is not None:
++            raise HTTPException(404, "Published track version not found")
+     if credentials:
+         from .community import check_creator
+         viewer = current_player(request, credentials, session)
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64413,7 +64413,7 @@
+     "engine_version": "4.7.2.stable.official.ed1daf0bf",
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.65",
++    "physics_version": "arcade-planar-0.66",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+     "rules_key": "standing-5-road-gates-v22",
+--- a/backend/tests/test_community_safety.py
++++ b/backend/tests/test_community_safety.py
+@@ -49,10 +49,10 @@
+         assert reply.status_code == 403 and reply.json()["detail"] == "COMMUNITY_TERMS_REQUIRED"
+     auth_app.state.settings = replace(auth_app.state.settings, local_drafts_only=False, environment="test", allow_sync_track_validation=True)
+     legacy = auth_client.post("/v1/tracks", headers=headers, json={"name": "Unaccepted", "document": {}})
+-    assert legacy.status_code == 403 and legacy.json()["detail"] == "COMMUNITY_TERMS_REQUIRED"
++    assert legacy.status_code == 410 and legacy.json()["detail"].startswith("LOCAL_DRAFTS_ONLY")
+     deferred = auth_client.post("/v1/tracks", headers=headers,
+         json={"name": "Unaccepted", "document": {}, "defer_validation": True})
+-    assert deferred.status_code == 403 and deferred.json()["detail"] == "COMMUNITY_TERMS_REQUIRED"
++    assert deferred.status_code == 410 and deferred.json()["detail"].startswith("LOCAL_DRAFTS_ONLY")
+     accepted = auth_client.post("/v1/community/terms", headers=headers,
+         json={"version": TERMS_VERSION, "accepted": True})
+     assert accepted.status_code == 200
+--- a/backend/tests/test_domains.py
++++ b/backend/tests/test_domains.py
+@@ -277,6 +277,7 @@
+         == 200
+     )
+     assert domain.client.get("/v1/tracks").json()["items"] == []
++    assert domain.client.get(f"/v1/track-versions/{version['version_id']}").status_code == 200
+     assert domain.client.get(f"/v1/track-versions/{version['version_id']}/document").status_code == 200
+     assert domain.client.get(f"/v1/boards/{board}").json()["population"] == 1
+ 
+--- a/backend/tests/test_end_to_end.py
++++ b/backend/tests/test_end_to_end.py
+@@ -9,13 +9,19 @@
+ import pytest
+ from fastapi.testclient import TestClient
+ from sqlalchemy import create_engine
++from test_lightweight_verifier import creator_proof as creator_proof_fixture
++from test_lightweight_verifier import proof as proof_fixture
++from test_verifier import real_verifier as real_verifier_fixture
+ 
+ from bmt_backend.app import create_app
+ from bmt_backend.config import Settings
+ from bmt_backend.migrate import upgrade
+-from bmt_backend.worker import process_one
++from bmt_backend.worker import process_one, process_worker_job
+ 
+ REPO = Path(__file__).resolve().parents[2]
++proof = proof_fixture
++real_verifier = real_verifier_fixture
++creator_proof = creator_proof_fixture
+ 
+ 
+ @pytest.fixture(params=["sqlite", "postgres"])
+@@ -51,7 +57,7 @@
+ 
+ 
+ @pytest.mark.godot
+-def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_database):
++def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_database, proof, creator_proof, real_verifier):
+     binary = os.environ.get("BMT_GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
+     if not Path(binary).is_file():
+         pytest.skip("Exact Godot binary not configured")
+@@ -63,7 +69,7 @@
+             database_url=f"sqlite:///{(tmp_path / 'integration.sqlite').as_posix()}",
+             object_dir=str(tmp_path / "objects"),
+             godot_bin=binary,
+-            game_project=str(REPO / "game"),
++            game_project=str(real_verifier.project),
+         ),
+         engine=integration_database,
+     )
+@@ -91,11 +97,24 @@
+             )
+ 
+         creator, racer = login("creator"), login("racer")
+-        uploaded = write("/v1/tracks", {"name": "Verified oval", "document": fixture["document"]}, creator)
+-        assert uploaded.status_code == 201, uploaded.text
+-        version = uploaded.json()["version_id"]
+-        assert client.get(f"/v1/track-versions/{version}").status_code == 404
+-        assert write(f"/v1/track-versions/{version}/publish", {}, creator).status_code == 409
++        from bmt_backend.community import TERMS_VERSION
++        assert write("/v1/community/terms", {"version": TERMS_VERSION, "accepted": True}, creator).status_code == 200
++        assert write("/v1/tracks", {"name": "Verified oval", "document": fixture["document"]}, creator).status_code == 410
++        document = {**fixture["document"], "name": "Verified oval", "creator": creator["player"]["display_name"]}
++        manifest = app.state.verifier.validate_track(document)
++        contract = {key: manifest[key] for key in ("engine_version", "verifier_version", "physics_version", "rules_key",
++            "compiler_version", "track_schema", "replay_schema", "tick_rate", "track_content_hash")}
++        contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
++        uploaded = write("/v1/publications", {"name": document["name"], "document": document, "vehicle_id": "compact",
++            "contract": contract, "replay": creator_proof}, creator)
++        assert uploaded.status_code == 202, uploaded.text
++        assert client.get("/v1/tracks").json()["items"] == []
++        assert process_one(app)
++        publication = client.get("/v1/me/publications/" + uploaded.json()["publication_id"],
++            headers={"Authorization": "Bearer " + creator["access_token"]}).json()
++        assert publication["state"] == "published", publication
++        version = publication["receipt"]["version_id"]
++        trajectory = {"schema": "bmt-trajectory-v1", "input_count": fixture["time_ticks"], "race_proof": proof}
+ 
+         def race(player, replay):
+             ticket = write("/v1/run-tickets", {"version_id": version, "vehicle_id": "compact"}, player)
+@@ -112,15 +131,11 @@
+             )
+             return result.json(), ticket.json()["board_id"]
+ 
+-        creator_run, board = race(creator, fixture["replay"])
++        creator_run, board = race(creator, trajectory)
+         assert creator_run["status"] == "verified", creator_run
+-        assert write(f"/v1/track-versions/{version}/publish", {}, creator).status_code == 200
+-        assert client.get(f"/v1/track-versions/{version}/document").json() == {
+-            **fixture["document"],
+-            "creator": creator["player"]["display_name"],
+-        }
++        assert client.get(f"/v1/track-versions/{version}/document").json() == document
+         assert client.get("/v1/tracks", params={"q": "oval"}).json()["items"][0]["version_id"] == version
+-        racer_run, same_board = race(racer, fixture["replay"])
++        racer_run, same_board = race(racer, trajectory)
+         assert racer_run["status"] == "verified" and same_board == board
+         assert racer_run["time_ticks"] == creator_run["time_ticks"] == 12757
+         rating = client.put(
+@@ -134,13 +149,20 @@
+         assert rating.status_code == 200, rating.text
+         top = client.get(f"/v1/boards/{board}").json()
+         assert top["population"] == 2 and [row["rank"] for row in top["items"]] == [1, 1]
+-        histogram = client.get(f"/v1/boards/{board}/histogram").json()
++        for _ in range(16):
++            histogram_response = client.get(f"/v1/boards/{board}/histogram")
++            if histogram_response.status_code == 200:
++                break
++            assert histogram_response.status_code == 503, histogram_response.text
++            assert process_worker_job(app)
++        assert histogram_response.status_code == 200, histogram_response.text
++        histogram = histogram_response.json()
+         assert sum(row["count"] for row in histogram["bins"]) == histogram["population"] == 2
+         ghost = client.get(
+             f"/v1/boards/{board}/ghosts/{racer['player']['id']}",
+             headers={"Authorization": "Bearer " + racer["access_token"]},
+         )
+-        assert ghost.json()["replay"] == fixture["replay"]
++        assert ghost.json()["replay"] == trajectory
+         rejected, _ = race(racer, {"schema": "bmt-replay-v1", "frames": [[0, 0, 0]]})
+         assert rejected["status"] == "rejected"
+         assert client.get(f"/v1/boards/{board}").json()["population"] == 2
+--- a/backend/tests/test_histogram_recovery.py
++++ b/backend/tests/test_histogram_recovery.py
+@@ -174,7 +174,7 @@
+ 
+ def test_real_reset_fences_a_verification_already_computing(domain,monkeypatch):
+     _,public=public_course(domain)
+-    domain.app.state.settings=replace(domain.app.state.settings,environment="development",dev_auth_enabled=True,
++    domain.app.state.settings=replace(domain.app.state.settings,environment="development",local_drafts_only=True,dev_auth_enabled=True,
+         dev_auth_key=DEV_KEY,test_drivers_enabled=True)
+     with domain.factory() as session:
+         session.get(Player,domain.players["Alice"]).is_test_driver=True
+@@ -221,7 +221,7 @@
+ def test_reset_waiting_for_finalization_preserves_inventory_without_deadlock(domain):
+     if not domain.postgres:pytest.skip("Real PostgreSQL writer locks required")
+     _,public=public_course(domain)
+-    domain.app.state.settings=replace(domain.app.state.settings,environment="development",dev_auth_enabled=True,
++    domain.app.state.settings=replace(domain.app.state.settings,environment="development",local_drafts_only=True,dev_auth_enabled=True,
+         dev_auth_key=DEV_KEY,test_drivers_enabled=True)
+     with domain.factory() as session:
+         session.get(Player,domain.players["Alice"]).is_test_driver=True
+--- a/backend/tests/test_histogram_snapshots.py
++++ b/backend/tests/test_histogram_snapshots.py
+@@ -200,5 +200,8 @@
+     with domain.factory() as session:
+         assert session.get(Run, queued["run_id"]).status == "verified"
+     assert snapshot(domain, version).generation == ""
+-    assert process_worker_job(domain.app)
++    for _ in range(16):
++        if snapshot(domain, version).generation:
++            break
++        assert process_worker_job(domain.app)
+     assert snapshot(domain, version).generation != ""
+--- a/backend/tests/test_lap_bests.py
++++ b/backend/tests/test_lap_bests.py
+@@ -140,7 +140,7 @@
+     with domain.factory() as session:
+         fact(session,board,domain.players["Alice"],laps=[1,19,30,30,45],total=125)
+         session.commit()
+-        expected = session.execute(select(legacy_best_lap_times(board,session))).all()
++        expected = sorted(session.execute(select(legacy_best_lap_times(board,session))).all())
+         provenance = session.execute(select(Run.id,Run.status,Run.lap_ticks)).all()
+     command.downgrade(configuration(domain.app.state.engine),"0023_operational_read_indexes")
+     upgrade(domain.app.state.engine)
+@@ -152,7 +152,7 @@
+     while backfill_one(domain.factory,limit=1)["worked"]: batches+=1
+     assert batches>=3
+     with domain.factory() as session:
+-        assert session.execute(select(best_lap_times(board,session))).all()==expected
++        assert sorted(session.execute(select(best_lap_times(board,session))).all())==expected
+         assert session.get(LapBestState,board).complete
+     assert backfill_one(domain.factory)["complete"]
+ 
+@@ -282,7 +282,11 @@
+         assert session.get(Run,queued["run_id"]).status=="verified"
+         assert not session.get(LapBestState,board).complete
+         assert session.get(LapBestState,board).cursor==""
+-    assert process_worker_job(domain.app)
++    for _ in range(16):
++        with domain.factory() as session:
++            if session.get(LapBestState,board).complete:
++                break
++        assert process_worker_job(domain.app)
+     with domain.factory() as session:
+         assert session.get(LapBestState,board).complete
+ 
+--- a/backend/tests/test_lightweight_verifier.py
++++ b/backend/tests/test_lightweight_verifier.py
+@@ -23,15 +23,69 @@
+ 
+ @pytest.fixture(scope="module")
+ def proof(real_verifier, tmp_path_factory):
++    import shutil
+     folder = tmp_path_factory.mktemp("lightweight-proof")
+     output = folder / "proof.json"
+     root = Path(__file__).resolve().parents[2]
+-    command = [real_verifier.binary, "--headless", "--path", str(root / "game"), "--script",
++    project = folder / "game"
++    shutil.copytree(real_verifier.project, project)
++    for path in (project, *project.rglob("*")):
++        path.chmod(path.stat().st_mode | 0o200)
++    (project / "tests").mkdir(exist_ok=True)
++    shutil.copyfile(root / "game/tests/test_lightweight_verifier.gd", project / "tests/test_lightweight_verifier.gd")
++    command = [real_verifier.binary, "--headless", "--path", str(project), "--script",
+         "res://tests/test_lightweight_verifier.gd", "--", f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
+         f"--proof-output={output}"]
+     result = subprocess.run(command, capture_output=True, timeout=90, check=False)
+     assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+     return json.loads(output.read_text())
++
++
++@pytest.fixture(scope="module")
++def creator_proof(real_verifier, tmp_path_factory):
++    import shutil
++    folder = tmp_path_factory.mktemp("creator-proof")
++    project = folder / "game"
++    shutil.copytree(real_verifier.project, project)
++    for path in (project, *project.rglob("*")):
++        path.chmod(path.stat().st_mode | 0o200)
++    script = project / "backend/record_creator_fixture.gd"
++    script.write_text('''extends "res://backend/runner.gd"
++func run() -> void:
++ var fixture_path: String = ""
++ for arg: String in OS.get_cmdline_user_args():
++  if arg.begins_with("--fixture="): fixture_path = arg.trim_prefix("--fixture=")
++  if arg.begins_with("--output="): output_path = arg.trim_prefix("--output=")
++ var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(fixture_path))
++ var track: NativeTrack = TrackCompiler.compile(fixture.document)
++ track.spawn = Vector2(fixture.document.start_line.position[0],fixture.document.start_line.position[1])
++ track.spawn_heading = PI*0.5-deg_to_rad(float(fixture.document.start_line.heading))
++ var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
++ sim.reset(track.spawn,track.spawn_heading)
++ var session := TrackSession.new(120,1)
++ var trace = preload("res://backend/race_proof.gd").new()
++ trace.capture(sim.state,session,true)
++ var driver := RouteDriver.new()
++ for tick: int in range(24000):
++  var frame: DriveFrame = driver.sample(sim.state,track,sim.config)
++  var before: Vector2 = sim.state.position
++  var layer: int = int(sim.state.track_elevated)
++  sim.step(frame,track)
++  session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
++  trace.capture(sim.state,session)
++  if session.finished: break
++ if not session.finished: respond({},"Creator fixture did not finish"); return
++ respond({"schema":"bmt-trajectory-v1","input_count":session.elapsed_ticks,"race_proof":trace.recording(session)})
++''')
++    output = folder / "creator.json"
++    root = Path(__file__).resolve().parents[2]
++    result = subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--script",
++        "res://backend/record_creator_fixture.gd", "--", f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
++        f"--output={output}"], capture_output=True, timeout=90, check=False)
++    assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
++    response = json.loads(output.read_text())
++    assert response["ok"], response
++    return response["result"]
+ 
+ 
+ @pytest.mark.godot
+@@ -103,10 +157,8 @@
+ 
+ 
+ @pytest.mark.godot
+-def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app, auth_client, sign_in, real_verifier, race_fixture, proof):
++def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app, auth_client, sign_in, real_verifier, race_fixture, proof, creator_proof):
+     import uuid
+-    from dataclasses import replace
+-    auth_app.state.settings = replace(auth_app.state.settings, environment="test", allow_sync_track_validation=True)
+     verifier = GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary,
+         game_project=real_verifier.project, verifier_timeout_seconds=90, persistent_verifier=True))
+     auth_app.state.verifier = verifier
+@@ -123,9 +175,20 @@
+         def write(path, body, key=None):
+             return auth_client.post("/v1" + path, json=body,
+                 headers={**headers, "Idempotency-Key": key or str(uuid.uuid4())})
+-        track = write("/tracks", {"name": "Light proof oval", "document": race_fixture["document"]})
+-        assert track.status_code == 201, track.text
+-        ticket = write("/run-tickets", {"version_id": track.json()["version_id"], "vehicle_id": "compact"})
++        from bmt_backend.community import TERMS_VERSION
++        from bmt_backend.publications import CONTRACT_FIELDS
++        assert write("/community/terms", {"version": TERMS_VERSION, "accepted": True}).status_code == 200
++        document = {**race_fixture["document"], "name": "Light proof oval", "creator": login["player"]["display_name"]}
++        manifest = verifier.validate_track(document)
++        contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
++        contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
++        track = write("/publications", {"name": document["name"], "document": document,
++            "vehicle_id": "compact", "contract": contract, "replay": creator_proof})
++        assert track.status_code == 202, track.text
++        assert process_one(auth_app)
++        publication = auth_client.get("/v1/me/publications/" + track.json()["publication_id"], headers=headers).json()
++        assert publication["state"] == "published", publication
++        ticket = write("/run-tickets", {"version_id": publication["receipt"]["version_id"], "vehicle_id": "compact"})
+         assert ticket.status_code == 201, ticket.text
+         ghost = verifier.verify_canonical_diagnostic(race_fixture["document"],race_fixture["replay"],"compact")["ghost"]
+         wire = {"schema":"bmt-trajectory-v1","input_count":race_fixture["time_ticks"],"race_proof":proof,"ghost":ghost}
+@@ -136,7 +199,7 @@
+         run_id = submitted.json()["run_id"]
+         assert write("/runs", body, key).json()["run_id"] == run_id
+         assert process_one(auth_app)
+-        assert methods == ["trajectory-v1"]
++        assert methods == ["trajectory-v1", "trajectory-v1"]
+         result = auth_client.get("/v1/runs/" + run_id, headers=headers).json()
+         assert result["status"] == "verified" and result["time_ticks"] == 12757
+         assert result["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]
+--- a/backend/tests/test_network_health_http.py
++++ b/backend/tests/test_network_health_http.py
+@@ -23,6 +23,7 @@
+ 
+ 
+ @pytest.mark.godot
++@pytest.mark.skipif(os.name != "nt", reason="Native transport probe uses the pinned Windows PowerShell launcher")
+ def test_real_native_network_packet_and_server_request_id_correlation(tmp_path):
+     root = Path(__file__).resolve().parents[2]
+     key, analyst = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+--- a/backend/tests/test_privacy_http.py
++++ b/backend/tests/test_privacy_http.py
+@@ -7,6 +7,7 @@
+ import time
+ from pathlib import Path
+ 
++import pytest
+ import uvicorn
+ from sqlalchemy import func, select
+ 
+@@ -17,6 +18,7 @@
+ from bmt_backend.privacy_models import AccountDeletion
+ 
+ 
++@pytest.mark.skipif(os.name != "nt", reason="Native privacy probe uses the pinned Windows PowerShell launcher")
+ def test_native_deletion_and_new_identity_over_http(tmp_path):
+     root = Path(__file__).resolve().parents[2]
+     listener = socket.socket(); listener.bind(("127.0.0.1", 0)); listener.listen()
+--- a/backend/tests/test_replica_failures.py
++++ b/backend/tests/test_replica_failures.py
+@@ -149,6 +149,10 @@
+ 
+ def published(replicas):
+     creator = sign_in(replicas, "Creator")
++    from bmt_backend.community import TERMS_VERSION
++    accepted = replicas.a.client.post("/v1/community/terms", headers=auth(creator),
++        json={"version": TERMS_VERSION, "accepted": True})
++    assert accepted.status_code == 200, accepted.text
+     document = {"schema": "creator-track-v5", "id": "replica_fixture", "shape": "oval",
+                 "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
+     from bmt_backend.publications import CONTRACT_FIELDS
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -363,7 +363,9 @@
+ 
+ 
+ @pytest.mark.godot
+-def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
++@pytest.mark.skipif(not (ROOT / "game/assets/menu/rivalry_winter_v1.png").is_file(),
++    reason="Native SDK probe requires the complete client asset project, verified separately")
++def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier, tmp_path):
+     # Test the real Godot HTTP stack against an isolated deterministic HTTP peer.
+     calls = []
+ 
+@@ -429,6 +431,8 @@
+             self.end_headers()
+ 
+     real_verifier._check_engine()
++    profile = tmp_path / "profile"
++    profile.mkdir()
+     server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
+     thread = threading.Thread(target=server.serve_forever, daemon=True)
+     thread.start()
+@@ -440,6 +444,7 @@
+                 "--headless",
+                 "--path",
+                 str(ROOT / "game"),
++                "--audio-driver", "Dummy",
+                 "--script",
+                 "res://backend/test_client.gd",
+                 "--",
+@@ -449,13 +454,14 @@
+             text=True,
+             timeout=40,
+             check=False,
++            env={**os.environ, "APPDATA": str(profile)},
+         )
+     finally:
+         server.shutdown()
+         server.server_close()
+         thread.join(timeout=2)
+     assert process.returncode == 0, process.stdout + process.stderr
+-    assert "14 checks, 0 failures" in process.stdout
++    assert "13 checks, 0 failures" in process.stdout
+     assert "SCRIPT ERROR" not in process.stderr
+     mutations = [call for call in calls if call[0] == "/v1/adapter-mutation"]
+     assert len(mutations) == 2 and mutations[0][2:] == mutations[1][2:]
+--- a/backend/tests/test_worker_lifecycle.py
++++ b/backend/tests/test_worker_lifecycle.py
+@@ -305,7 +305,7 @@
+         deadline = time.monotonic() + 15
+         while not (tmp_path / name).exists() and process.poll() is None and time.monotonic() < deadline:
+             time.sleep(0.02)
+-        assert (tmp_path / name).exists(), f"Probe failed to reach {name}"
++        assert (tmp_path / name).exists(), f"Probe failed to reach {name}: " + (tmp_path / "probe.log").read_text(errors="replace")
+     with (tmp_path / "probe.log").open("wb") as log:
+         process = subprocess.Popen([sys.executable, str(harness), str(tmp_path), mode], stdout=log, stderr=log)
+         try:
+--- a/backend/tests/worker_signal_probe.py
++++ b/backend/tests/worker_signal_probe.py
+@@ -8,7 +8,7 @@
+ from fastapi import Request
+ from fastapi.testclient import TestClient
+ from sqlalchemy import select
+-from test_domains import FakeVerifier, public_course, submit, ticket
++from test_domains import FakeVerifier, headers, public_course, submit, ticket
+ 
+ from bmt_backend.app import create_app
+ from bmt_backend.config import Settings
+@@ -83,6 +83,10 @@
+         app.dependency_overrides[current_player] = player
+         with TestClient(app) as client:
+             domain = SimpleNamespace(app=app, client=client, factory=app.state.session_factory, players=players)
++            from bmt_backend.community import TERMS_VERSION
++            accepted = client.post("/v1/community/terms", headers=headers(domain),
++                json={"version": TERMS_VERSION, "accepted": True})
++            assert accepted.status_code == 200, accepted.text
+             version, _ = public_course(domain)
+             first = submit(domain, ticket(domain, version, "Alice"), "Alice")
+             second = submit(domain, ticket(domain, version, "Bob"), "Bob")
+--- /dev/null
++++ b/docs/FULL_BACKEND_DEPLOY_2026_10_17.md
+@@ -0,0 +1,48 @@
++# Complete backend deployment, 2026-10-17
++
++The owner explicitly requests the full latest backend after the installed game reports an incompatible server contract. FB01 deploys the complete current Python backend and Studio; FB02 includes the actual matching compiler27 / physics0.66 / rules22 native verifier; FB03 appends matching immutable published track revisions while retaining original documents, old versions, scores and player data; FB04 applies the same tested image to the cloud and existing PC service. This supersedes the earlier deployment's deliberate physics0.59/rules20 pin.
++
++The previous phone APK uses physics0.64/rules22. Updating the backend to latest0.66 does not make that old APK compatible. A matching game update remains necessary; this task does not inspect a phone connection, build/install an APK or perform physical-phone testing.
++
++Sources are frozen before building. The complete Python source tree replaces the old tree, including removal of the retired legacy authoring module, so old files cannot remain accidentally importable. Dependencies retain their exact existing lock. The additive maintenance write gate is retained in the frozen package. The no-prop oval golden advances its expected physics field from0.65 to0.66; the actual native build must still reproduce the same document, inputs, five-lap timing and rewind result. No racing check is bypassed and no older simulation is relabelled as the latest one.
++
++Cloud API, worker and every existing job receive one tested digest. A fresh managed SQL backup precedes the write fence. Original semantic rows, the ordinary600-player Studio history and achievement state are fingerprinted while writers are paused. New revisions are appended for every visible published head, including community tracks. Old versions/documents, records and competitions remain stored; their pinned historical contracts are not rewritten. Existing external-provider, notification and continuous-monitoring settings remain in force.
++
++Weekly Rivalry membership and matchmaking include the actual build contract key, so the latest build enters a compatible field using matching published revisions. Challenge discovery filters by the active contract; incompatible historical challenges remain stored and retain their results. Their original timing evidence is not reused as a new-physics result.
++
++The existing PC project receives the same image and a frozen source bind. Its original credentials, PostgreSQL volume and object volume remain. API/worker writers pause for a complete logical SQL dump and immutable-object archive; original semantic rows are compared across migration and catalog revision insertion. The previously unhealthy PC API health probe is aligned with the existing `/ready` route.
++
++Actual commands, initial failures and final outcomes belong in `docs/evidence/full-backend-deploy-2026-10-17/`. The first complete test collection exposed missing repository mounts/imports in the isolated harness; the corrected harness mounts the entire frozen test root. This was a test setup failure before assertions ran. Deployment completion and test counts must be taken from the final receipt and logs, not this prepared procedure.
++
++The initial broad audit was stopped after800 passes,25 failures,56 skips and two setup errors in1217.54s; it is not a complete-suite pass. It exposed the owner-hide/share-link regression and a stale exported checkpoint-transition constant, both corrected in runtime source. The share-link regression check and existing Studio quarantine check pass together. Historical upload expectations are updated to the retired endpoint's410 response while the active publication endpoint retains its explicit terms gate. The two-player integration now records an actual creator-start lap, publishes its verified trajectory, records real five-lap races and waits for bounded idle projections before checking histogram totals. It retains idempotent upload, rating, tied ranking, exact recording and invalid-score assertions.
++
++Other initial failures were test fixtures: changing an explicit historical authoring fixture into development mode without restoring the current draft policy; assuming histogram/backfill was the worker's next idle job before achievement projection; omitting explicit community acceptance in the multi-process publication helper; and missing load-test golden/country-art inputs in the isolated image test environment. PowerShell-native transport/privacy tests now run on Windows rather than attempting to launch PowerShell inside Linux. The saved-recovery size fixture receives its required tick_rate so it reaches the existing terminal413 path instead of failing its contract before HTTP. No runtime client retry policy is changed.
++
++The final candidate again passes the actual Linux oval replay/rewind checks. All28 public document byte hashes and their new native manifests are verified read-only against that exact image before catalog mutation. Windows transport/privacy checks pass (two tests), and saved native wire/charge-recovery checks pass (five tests); their initial failed size-fixture attempt is retained. The extended follow-up was also stopped during artificial-driver calibration (203 passes, two fixture failures,15 skips). The final gate focuses on deployment-relevant race, publication, achievement, economy, Studio, privacy, migration and worker behavior; it does not claim a complete calibration or full-suite pass. Initial and final passes are reported separately.
++
++Operational entry points:
++
++```powershell
++.tools/backend-venv/Scripts/python.exe -X utf8 .tools/full_backend_deploy_20261017.py <stage>
++.tools/backend-venv/Scripts/python.exe -X utf8 .tools/full_backend_pc_20261017.py <stage>
++```
++
++The staged rollout follows inspect/extract/freeze/prepare/build/test/push/backup/preview, then maintenance/snapshot/migrate/catalog/canary/promote/smoke/catalog-http/browser/finish. The PC rollout follows prepare/backup/snapshot/migrate/preview/catalog/promote/verify. Mutating stages that share a receipt run sequentially.
++
++## Completed rollout
++
++Cloud API **bmt-stg-e7a444ab-api-00081-lat**, one matching worker and **all five owned job definitions** now use `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:8707116d7acaf1a8ced96d231402eccc3a461742ccb1274bcc1260b923f55c4c`. The same image serves the existing PC API/worker. Both advertise compiler27 / physics0.66 / rules22 on pinned Godot4.7.2. Cloud schema remains42; PC advances35 to42. Cloud write maintenance is restored and temporary tags/lock are removed. Backup **1792262296541** is successful; the complete quiesced PC SQL dump/object archive and SHA256 receipts remain private under the owned build directory.
++
++All56 selected cloud semantic table fingerprints are exact across migration and catalog insertion. All62 original PC table fingerprints are exact across35-to42 migration and catalog insertion when selecting the original revision population. PC retains15 original players,190 original runs and154 original versions;27 matching versions bring the catalog to181. The catalog trigger adds270 new histogram rows for those versions; all888 original histogram rows retain their exact complete row hash. The cloud appends28 matching versions. All28 new public heads/documents, all28 immediately previous links and two earlier official links per each of27 official tracks are checked live. The600-player Studio history, cases, incidents and financial/Coin ledgers remain.
++
++The focused gate initially reports390 passes, five fixture failures and nine skips in571.40s. Four POSIX cases pass after the process producer explicitly accepts current community terms. The full-client SDK check passes separately on Windows: its current script contains13 semantic checks, with no legacy upload call; backend-only images lack its presentation assets. The remaining Windows checks comprise two network/privacy tests and five saved-recovery tests. The final archive utility passes its archive/restore/corruption regression. No simulation, score, auth, quarantine or idempotency invariant is removed. The broad audits and their actual failures remain in the evidence directory; no full artificial-driver calibration, production load or managed restore pass is claimed.
++
++The inherited object archive utility was older than the current recipe. The final image adds exactly the current utility; **all API and canonical file hashes are byte-exact to the API test image6bf0fb5a**. Its utility test runs on the final image; the final cloud native/schema/storage smoke and HTTP checks also run on that image. Registry pulls verify the immutable image identity. Python remains the pinned3.12.15. Image IDs use the OCI index in this engine; registry identity is checked by pulling the digest rather than equating its child config digest with the index ID.
++
++Inventory inspection also finds the older manual `pace2` job omitted from prior deployment lists. Its default program/permissions remain and its definition receives the full image; its last failed historical execution is retained and it is not started. Other runtime settings, secrets and IAM remain. No new external monitoring/provider, notification or scheduler is activated.
++
++Live Studio passes58 read-only Edge checks at1440px and390px, with600 full-window /369 recent active players, no JavaScript errors, failed admin reads, write requests or global overflow. All19 assets match the release source. Cloud and PC report one matching healthy worker each. The final shared receipt reloads the successful browser child result before cleanup; the first cleanup assertion and its correction caused no traffic/data change.
++
++The first PC catalog adapter attempt named the storage protocol rather than its concrete local implementation and failed before catalog writes; the corrected adapter mounts objects read-only. An initial all-row cache comparison then correctly noticed the270 newly created cache rows. A separate read-only hash check proves all888 old rows exact before the preservation selector is restricted to original revision IDs. The idempotent repeat adds zero further versions. These attempts and their receipts are retained.
++
++The installed phone snapshot remains physics0.64. A matching game update is required before that older client can race against this latest backend. No phone connection check, physical-phone test, APK build or installation is performed by this task. Existing historical competition contracts are retained; their scores are not converted into new-physics scores. Owner workflow/feel, separate artificial-driver calibration and production load/restore acceptance remain.
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -308,7 +308,7 @@
+ 	size_flow.cloud = size_cloud
+ 	size_flow.library = TrackLibrary.new(workspace.path_join("publication-size-library"))
+ 	root.add_child(size_flow)
+-	var size_job: Dictionary = {"schema":"track-lifecycle-1","scope":size_flow.scope(),"library_directory":size_flow.library.directory,"fingerprint":"size-fixture","upload_key":"original-size-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"publishing","created_at":1900000000,"document":{"id":"publication_size_fixture","name":"Size fixture"},"publish_requested":true,"publish_workflow":2,"vehicle":"compact","contract":{},"proof_file":"size.proof.json"}
++	var size_job: Dictionary = {"schema":"track-lifecycle-1","scope":size_flow.scope(),"library_directory":size_flow.library.directory,"fingerprint":"size-fixture","upload_key":"original-size-publication-key","publish_key":"publish-key","ticket_key":"ticket-key","state":"publishing","created_at":1900000000,"document":{"id":"publication_size_fixture","name":"Size fixture"},"publish_requested":true,"publish_workflow":2,"vehicle":"compact","contract":{"tick_rate":120},"proof_file":"size.proof.json"}
+ 	var size_path: String = size_flow._root().path_join("size.job.json")
+ 	check(size_flow._save(size_path,size_job),"oversize publication job saved")
+ 	check(Files.write(size_path.get_base_dir().path_join("size.proof.json"),{"input_count":6,"race_proof":{"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0]]}}),"oversize publication evidence saved")

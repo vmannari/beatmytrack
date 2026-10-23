@@ -1,0 +1,1194 @@
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -10,6 +10,7 @@
+ from pydantic import BaseModel, ConfigDict, Field
+ from sqlalchemy import func, or_, select, update
+ from sqlalchemy.exc import IntegrityError
++from sqlalchemy.orm import load_only
+ 
+ from .admin_models import AdminAudit
+ from .admin_ranges import calendar_range, during, time_range
+@@ -20,7 +21,8 @@
+ from .migrate import SCHEMA_HEAD
+ from .operations import competition_health
+ from .resume_models import ResumeGrant, ResumeWallet
+-from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
++from .studio_paging import identifier, page
++from .track_models import Board, PersonalBest, QueueCapacity, Run, Track, TrackVersion, digest, now
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
+ UI = Path(__file__).with_name("admin_ui")
+@@ -87,44 +89,20 @@
+ 
+ @router.get("/v1/admin/overview")
+ def overview(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
+-    from .publication_models import PublicationIntent
++    """Current operating pulse; lifetime catalogue totals are retired."""
+     window = window or calendar_range(days)
+-    with request.app.state.session_factory() as db:
+-        count = lambda model, *where: db.scalar(select(func.count()).select_from(model).where(*where))
+-        states = dict(
+-            db.execute(
+-                select(Run.status, func.count()).where(*during(Run.created_at, window)).group_by(Run.status)
+-            ).all()
+-        )
+-        utc_day = func.floor(Run.created_at / 86400)
+-        daily = db.execute(
+-            select(utc_day, func.count()).where(*during(Run.created_at, window)).group_by(utc_day)
+-        ).all()
+-        publication_failed = db.scalar(select(func.count()).select_from(select(PublicationIntent.id)
+-            .where(PublicationIntent.status == "failed").limit(5001).subquery()))
+-        return {
+-            "role": role,
+-            "environment": request.app.state.settings.environment,
+-            "as_of": now(),
+-            "days": days,
+-            "since": window[0],
+-            "until": window[1],
+-            "players": count(Player),
+-            "tracks": count(Track, select(TrackVersion.id).where(TrackVersion.track_id == Track.id,
+-                TrackVersion.state == "published").exists()) if request.app.state.settings.local_drafts_only else count(Track),
+-            "versions": count(TrackVersion, TrackVersion.state == "published") if request.app.state.settings.local_drafts_only else count(TrackVersion),
+-            "racers": db.scalar(
+-                select(func.count(func.distinct(Run.player_id))).where(*during(Run.created_at, window))
+-            ),
+-            "states": states,
+-            "daily": [{"day": int(day), "count": n} for day, n in daily],
+-            "pending": count(Run, Run.status.in_(["queued", "verifying"])),
+-            "publications": {"pending": count(PublicationIntent, PublicationIntent.status.in_(("queued", "verifying"))),
+-                "failed": min(publication_failed, 5000), "failed_count_capped": publication_failed > 5000},
+-            "disabled": count(Player, Player.disabled.is_(True)),
+-            "database": "reachable",
+-            "schema": SCHEMA_HEAD,
+-        }
++    stamp = now()
++    with request.app.state.session_factory() as db:
++        states = dict(db.execute(select(Run.status, func.count()).where(
++            Run.status.in_(("verified", "failed", "rejected")),
++            Run.finished_at >= stamp - 300, Run.finished_at <= stamp).group_by(Run.status)).all())
++        queue = db.get(QueueCapacity, 1)
++        return {"role": role, "environment": request.app.state.settings.environment,
++            "as_of": stamp, "days": days, "since": window[0], "until": window[1],
++            "pending": queue.pending if queue else 0, "states": states,
++            "pulse_since": stamp - 300, "pulse_until": stamp,
++            "database": "reachable", "schema": SCHEMA_HEAD,
++            "coverage": "Current shared verification queue and terminal results in the last five minutes; all player types. Lifetime account/content totals and raw submission-history charts are retired."}
+ 
+ 
+ @router.get("/v1/admin/entities/{kind}")
+@@ -138,6 +116,7 @@
+     failure_code: str = Query("", max_length=64),
+     offset: int = Query(0, ge=0, le=1000000),
+     limit: int = Query(25, ge=1, le=100),
++    cursor: str = Query("", max_length=2048),
+ ):
+     if kind not in FIELDS:
+         raise HTTPException(404)
+@@ -151,7 +130,9 @@
+             for key in fields.split()
+             if key in ("id", "display_name", "name", "player_id", "entity_id", "command_id", "request_id", "failure_code")
+         ]
+-        conditions.append(or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
++        key = identifier(q)
++        conditions.append(or_(*(field == key for field in search_fields)) if key else
++                          or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
+     if failure_code:
+         if kind not in ("races", "jobs"):
+             raise HTTPException(422, "FAILURE_FILTER_REQUIRES_RACES")
+@@ -165,14 +146,12 @@
+         elif kind in ("races", "jobs", "tracks"):
+             conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
+     with request.app.state.session_factory() as db:
+-        total = db.scalar(select(func.count()).select_from(model).where(*conditions))
+-        rows = db.scalars(
+-            select(model)
+-            .where(*conditions)
+-            .order_by(model.created_at.desc(), model.id)
+-            .offset(offset)
+-            .limit(limit)
+-        ).all()
++        selected, paging = page(db, select(model).where(*conditions).options(
++            load_only(*(getattr(model, field) for field in fields.split()))), model.created_at, model.id,
++            scope=digest({"kind": kind, "window": window, "q": q, "state": state,
++                          "failure": failure_code, "published": request.app.state.settings.local_drafts_only}),
++            cursor=cursor, offset=offset, limit=limit, descending=True, numeric=True)
++        rows = [row[0] for row in selected]
+         items = [record(kind, row) for row in rows]
+         if kind == "tracks":
+             tracks = {
+@@ -181,7 +160,7 @@
+             for item in items:
+                 parent = tracks[item["track_id"]]
+                 item.update(hidden=parent.hidden, owner_id=parent.owner_id)
+-        return {"items": items, "total": total, "offset": offset, "limit": limit}
++        return {"items": items, **paging}
+ 
+ 
+ @router.get("/v1/admin/entities/{kind}/{entity_id}")
+--- a/backend/bmt_backend/cursors.py
++++ b/backend/bmt_backend/cursors.py
+@@ -9,9 +9,9 @@
+     return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
+ 
+ 
+-def decode_cursor(value: str) -> dict:
++def decode_cursor(value: str, *, max_length: int = 400) -> dict:
+     try:
+-        if len(value) > 400:
++        if len(value) > max_length:
+             raise ValueError
+         result = json.loads(base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True))
+         if not isinstance(result, dict):
+--- /dev/null
++++ b/backend/bmt_backend/studio_paging.py
+@@ -0,0 +1,82 @@
++"""Count-free, scope-fenced Studio pages with indexed forward/backward cursors."""
++import math
++import re
++from uuid import UUID
++
++from fastapi import HTTPException
++from sqlalchemy import and_, or_, tuple_
++
++from .cursors import decode_cursor, encode_cursor
++
++
++def identifier(value):
++    """Canonical IDs use equality; never a leading-wildcard text search."""
++    try:
++        return str(UUID(value)) if len(value) == 36 else (value.lower() if re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{64}", value) else None)
++    except ValueError:
++        return None
++
++
++def page(session, query, order, identity, *, scope, cursor, offset, limit,
++         descending=True, identity_descending=None, numeric=False, nullable=False):
++    """The selected entity is first; its SQL sort value is fetched once per row.
++
++    Offset remains a bounded compatibility input. Cursor pages never use OFFSET
++    or COUNT, including when navigating back. Mutable names/ranks can reorder
++    records; these are current investigation pages, not immutable exports.
++    """
++    identity_descending = descending if identity_descending is None else identity_descending
++    backwards = False
++    if cursor:
++        anchor = decode_cursor(cursor, max_length=2048)
++        value, key = anchor.get("value"), anchor.get("id")
++        valid_value = (type(value) in (int, float) and math.isfinite(value)) if numeric else (
++            isinstance(value, str) and len(value) <= 200)
++        valid_value = valid_value or nullable and value is None
++        if (anchor.get("scope") != scope or not valid_value or not isinstance(key, str)
++                or not 1 <= len(key) <= 128 or type(anchor.get("position")) is not int
++                or not 0 <= anchor["position"] <= 10**12 or anchor.get("move") not in ("next", "previous")):
++            raise HTTPException(422, "INVALID_CURSOR")
++        offset, backwards = anchor["position"], anchor["move"] == "previous"
++        sort_less = descending != backwards
++        id_less = identity_descending != backwards
++        id_condition = identity < key if id_less else identity > key
++        if value is None:
++            condition = and_(order.is_(None), id_condition)
++            if backwards:
++                condition = or_(order.is_not(None), condition)
++        else:
++            # A row comparison is an index range. An OR expansion may instead
++            # become an index filter that revisits every earlier page in PG.
++            if descending == identity_descending:
++                condition = tuple_(order, identity) < (value, key) if sort_less else tuple_(order, identity) > (value, key)
++            else:
++                condition = or_(order < value if sort_less else order > value, and_(order == value, id_condition))
++            if nullable and not backwards:
++                condition = or_(condition, order.is_(None))
++        query = query.where(condition)
++    ordered = order.desc() if descending != backwards else order.asc()
++    if nullable:
++        ordered = ordered.nulls_first() if backwards else ordered.nulls_last()
++    query = query.add_columns(order.label("studio_page_value")).order_by(ordered,
++        identity.desc() if identity_descending != backwards else identity.asc())
++    if not cursor and offset:
++        query = query.offset(offset)
++    rows = list(session.execute(query.limit(limit + 1)))
++    more = len(rows) > limit
++    rows = rows[:limit]
++    if backwards:
++        rows.reverse()
++    has_previous = more if backwards else bool(cursor or offset)
++    has_next = bool(rows) if backwards else more
++
++    def token(row, move, position):
++        return encode_cursor({"scope": scope, "value": row[-1], "id": row[0].id,
++                              "move": move, "position": position})
++
++    return [tuple(row[:-1]) for row in rows], {
++        "offset": offset, "limit": limit, "has_more": has_next,
++        "total": len(rows) if not cursor and not offset and not more else None,
++        "next_cursor": token(rows[-1], "next", offset + len(rows)) if rows and has_next else None,
++        "previous_cursor": token(rows[0], "previous", max(0, offset - limit)) if rows and has_previous else None,
++    }
+--- a/backend/bmt_backend/studio_catalogue.py
++++ b/backend/bmt_backend/studio_catalogue.py
+@@ -12,7 +12,7 @@
+ from fastapi import APIRouter, HTTPException, Query, Request
+ from fastapi.responses import JSONResponse
+ from sqlalchemy import func, or_, select, text
+-from sqlalchemy.orm import aliased
++from sqlalchemy.orm import aliased, load_only
+ 
+ from .admin import Access, Window, record
+ from .admin_ranges import calendar_range
+@@ -24,8 +24,9 @@
+ from .resume_models import ResumeWallet
+ from .studio import MANIFEST_FIELDS
+ from .studio_case_models import StudioCase, StudioCaseEvent
++from .studio_paging import identifier, page
+ from .telemetry_models import ProductPlayerDay, ProductProfile, ProductState
+-from .track_models import Board, PersonalBest, Run, Track, TrackVersion, now
++from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
+ 
+ router = APIRouter(route_class=ParsedJSONRoute, tags=["Studio catalogue"])
+ 
+@@ -101,7 +102,8 @@
+     versions: Literal["latest", "all"] = "latest",
+     sort: Literal["published", "name", "creator", "rating", "finishers"] = "published",
+     direction: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0, le=10000),
+-    limit: int = Query(25, ge=1, le=100), anchor: int | None = Query(None, ge=0)):
++    limit: int = Query(25, ge=1, le=100), anchor: int | None = Query(None, ge=0),
++    cursor: str = Query("", max_length=2048)):
+     anchor = now() if anchor is None else anchor
+     if anchor > now():
+         raise HTTPException(422, "INVALID_CATALOGUE_ANCHOR")
+@@ -114,7 +116,8 @@
+                 newer.state == "published", newer.created_at <= anchor,
+                 newer.number > TrackVersion.number).exists())
+         if q:
+-            conditions.append(or_(*(field.icontains(q, autoescape=True) for field in
++            key = identifier(q)
++            conditions.append(or_(TrackVersion.id == key, Track.id == key) if key else or_(*(field.icontains(q, autoescape=True) for field in
+                 (TrackVersion.name, TrackVersion.id, Track.id, Player.display_name,
+                  TrackVersion.discovery["theme"].as_string()))))
+         if theme:
+@@ -135,16 +138,21 @@
+         if min_finishers:
+             conditions.append(TrackVersion.verified_finishers >= min_finishers)
+         query = select(TrackVersion, Track, Player).join(Track, Track.id == TrackVersion.track_id).join(
+-            Player, Player.id == Track.owner_id).where(*conditions)
+-        count_query = select(func.count()).select_from(query.subquery())
++            Player, Player.id == Track.owner_id).where(*conditions).options(
++                load_only(TrackVersion.id, TrackVersion.track_id, TrackVersion.number, TrackVersion.name,
++                    TrackVersion.created_at, TrackVersion.published_at, TrackVersion.discovery,
++                    TrackVersion.rating_count, TrackVersion.rating_sum, TrackVersion.verified_finishers),
++                load_only(Track.id, Track.owner_id, Track.official, Track.hidden, Track.archived),
++                load_only(Player.id, Player.display_name, Player.is_test_driver))
+         order = {"published": TrackVersion.published_at, "name": func.lower(TrackVersion.name),
+             "creator": func.lower(Player.display_name), "rating": rating,
+             "finishers": TrackVersion.verified_finishers}[sort]
+-        ordering = order.asc() if direction == "asc" else order.desc()
+-        if sort in ("rating", "published"):
+-            ordering = ordering.nulls_last()
+-        rows = session.execute(query.order_by(ordering,
+-            TrackVersion.id.asc() if direction == "asc" else TrackVersion.id.desc()).offset(offset).limit(limit)).all()
++        scope = digest({"kind": "studio_tracks", "anchor": anchor, "q": q, "theme": theme,
++            "visibility": visibility, "origin": origin, "creator": str(creator_id), "rating": min_rating,
++            "finishers": min_finishers, "versions": versions, "sort": sort, "direction": direction, "window": window})
++        rows, paging = page(session, query, order, TrackVersion.id, scope=scope, cursor=cursor,
++            offset=offset, limit=limit, descending=direction == "desc", numeric=sort in ("published", "rating", "finishers"),
++            nullable=sort in ("published", "rating"))
+         facts, coverage = observations(session, [version.id for version, _track, _player in rows],
+             window or calendar_range(7))
+         items = []
+@@ -152,9 +160,8 @@
+             item = track_record(version, track, player)
+             item["discovery"] = facts.get(version.id)
+             items.append(item)
+-        total = session.scalar(count_query)
+-        return response({"role": role, "items": items, "total": total, "offset": offset, "limit": limit,
+-            "summary": {"published_versions": total, "scope": "Matching published immutable versions"},
++        return response({"role": role, "items": items, **paging,
++            "summary": {"published_versions": len(items), "scope": "This page of published immutable versions"},
+             "coverage": coverage, "as_of": now(), "anchor": anchor, "read_only": True,
+             "paging": "Creation-time anchor excludes later inserts; rating, visibility and publication changes are current and can reorder pages.",
+             "catalogue_policy": "Published content only. Local drafts are not a server monitoring source."})
+@@ -162,7 +169,7 @@
+ 
+ @router.get("/v1/admin/catalogue/track-options")
+ def track_options(request: Request, role: Access, q: str = Query("", max_length=100),
+-                  limit: int = Query(100, ge=1, le=200), cursor: str = Query("", max_length=400)):
++                  limit: int = Query(100, ge=1, le=200), cursor: str = Query("", max_length=2048)):
+     """Small selector projection: no routes, ownership, manifests or observations."""
+     from .cursors import decode_cursor, encode_cursor
+     conditions = [TrackVersion.state == "published"]
+@@ -260,7 +267,7 @@
+     population: Literal["all", "real", "artificial"] = "all", provider: str = Query("", max_length=32),
+     sort: Literal["created", "name"] = "created", direction: Literal["asc", "desc"] = "desc",
+     offset: int = Query(0, ge=0, le=10000), limit: int = Query(25, ge=1, le=100),
+-    anchor: int | None = Query(None, ge=0)):
++    anchor: int | None = Query(None, ge=0), cursor: str = Query("", max_length=2048)):
+     anchor = now() if anchor is None else anchor
+     if anchor > now():
+         raise HTTPException(422, "INVALID_CATALOGUE_ANCHOR")
+@@ -268,7 +275,8 @@
+         snapshot(session)
+         conditions = [Player.created_at <= anchor]
+         if q:
+-            conditions.append(or_(Player.id.icontains(q, autoescape=True), Player.display_name.icontains(q, autoescape=True)))
++            key = identifier(q)
++            conditions.append(Player.id == key if key else or_(Player.id.icontains(q, autoescape=True), Player.display_name.icontains(q, autoescape=True)))
+         if state in ("active", "disabled"):
+             conditions.append(Player.disabled == (state == "disabled"))
+         elif state == "username_pending":
+@@ -278,28 +286,28 @@
+         if provider:
+             conditions.append(select(Identity.id).where(Identity.player_id == Player.id,
+                 Identity.provider == provider).exists())
+-        query = select(Player).where(*conditions)
++        query = select(Player).where(*conditions).options(load_only(Player.id, Player.display_name, Player.created_at,
++            Player.country_code, Player.disabled, Player.is_test_driver, Player.needs_username))
+         order = Player.created_at if sort == "created" else func.lower(Player.display_name)
+-        rows = session.scalars(query.order_by(order.asc() if direction == "asc" else order.desc(),
+-            Player.id.asc() if direction == "asc" else Player.id.desc()).offset(offset).limit(limit)).all()
++        scope = digest({"kind": "studio_players", "anchor": anchor, "q": q, "state": state,
++            "population": population, "provider": provider, "sort": sort, "direction": direction})
++        selected, paging = page(session, query, order, Player.id, scope=scope, cursor=cursor, offset=offset,
++            limit=limit, descending=direction == "desc", numeric=sort == "created")
++        rows = [row[0] for row in selected]
+         ids = [player.id for player in rows]
+-        race, bests, publications, cases, active = player_counts(session, ids)
+         providers = {}
+         for identity, login in session.execute(select(Identity.player_id, Identity.provider).where(Identity.player_id.in_(ids))):
+             providers.setdefault(identity, set()).add(login)
+         items = [{"id": player.id, "display_name": player.display_name, "is_test_driver": player.is_test_driver,
+             "disabled": player.disabled, "needs_username": player.needs_username, "created_at": player.created_at,
+             "country_code": player.country_code or None, "providers": sorted(providers.get(player.id, [])),
+-            "races": race.get(player.id, {"submissions": 0, "verified_submissions": 0, "last_submission_at": None}),
+-            "personal_bests": bests.get(player.id, 0), "published_versions": publications.get(player.id, 0),
+-            "open_cases": cases.get(player.id, 0), "last_observed_activity_day": active.get(player.id)} for player in rows]
+-        summary = session.execute(select(func.count(), func.count().filter(Player.is_test_driver.is_(True)),
+-            func.count().filter(Player.disabled.is_(True))).where(*conditions)).one()
+-        return response({"role": role, "items": items, "total": summary[0], "offset": offset, "limit": limit,
+-            "summary": {"accounts": summary[0], "artificial": summary[1], "restricted": summary[2]},
++            } for player in rows]
++        return response({"role": role, "items": items, **paging,
++            "summary": {"accounts": len(rows), "artificial": sum(p.is_test_driver for p in rows),
++                "restricted": sum(p.disabled for p in rows)}, "summary_scope": "page",
+             "as_of": now(), "anchor": anchor,
+             "paging": "Creation-time anchor excludes later inserts; account names and restrictions are current and can reorder pages.",
+-            "coverage": "Server race counts include artificial drivers. Last observed activity is a retained signed-in UTC day, not precise last-online time. Guest, email, recovery proof, revenue and device identity are unavailable."})
++            "coverage": "All account types are included unless filtered. Open a player for race, creator, case and observed-activity evidence. Guest, email, recovery proof, revenue and device identity are unavailable."})
+ 
+ 
+ @router.get("/v1/admin/catalogue/players/{player_id}")
+--- a/backend/bmt_backend/studio_analysis.py
++++ b/backend/bmt_backend/studio_analysis.py
+@@ -2,6 +2,7 @@
+ 
+ from collections import Counter
+ from datetime import datetime, timezone
++from typing import Literal
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+ from sqlalchemy import BigInteger, Integer, case, cast, delete, func, select, tuple_
+@@ -257,6 +258,7 @@
+     platform: str = Query("", max_length=12),
+     mode: str = Query("", max_length=24),
+     population: str = "all",
++    view: Literal["activity", "retention", "journey", "engagement", "all"] = "activity",
+ ):
+     requested, (first, until) = interval(window)
+     at = now()
+@@ -269,21 +271,19 @@
+         for field, value in (("build_id", build_id), ("platform", platform), ("mode", mode)):
+             if value:
+                 conditions.append(getattr(AnalysisDay, field) == value)
+-        counts = dict(session.execute(select(*sums(AnalysisDay)).where(*conditions)).mappings().one())
++        counts, players, daily = None, None, []
++        engagement, retention, first_race = None, [], None
+         active = AnalysisDay.counters["active"].as_integer() > 0
+-        players = session.scalar(
+-            select(func.count(func.distinct(AnalysisDay.player_id))).where(*conditions, active)
+-        )
+-        daily = session.execute(
+-            select(
+-                AnalysisDay.day,
++        if view in ("activity", "all"):
++            aggregate = dict(session.execute(select(
++                func.count(func.distinct(case((active, AnalysisDay.player_id)))).label("active_players"),
++                *sums(AnalysisDay)).where(*conditions)).mappings().one())
++            players = aggregate.pop("active_players")
++            counts = aggregate
++            daily = session.execute(select(AnalysisDay.day,
+                 func.count(func.distinct(case((active, AnalysisDay.player_id)))),
+-                *sums(AnalysisDay, ("foreground_ms", "race_started", "race_finished", "race_accepted")),
+-            )
+-            .where(*conditions)
+-            .group_by(AnalysisDay.day)
+-            .order_by(AnalysisDay.day)
+-        ).all()
++                *sums(AnalysisDay, ("foreground_ms", "race_started", "race_finished", "race_accepted")))
++                .where(*conditions).group_by(AnalysisDay.day).order_by(AnalysisDay.day)).all()
+         options = session.execute(
+             select(AnalysisDay.build_id, AnalysisDay.platform, AnalysisDay.mode)
+             .where(AnalysisDay.day >= first // DAY, AnalysisDay.day < until // DAY)
+@@ -304,38 +304,34 @@
+             session_conditions.append(AnalysisSession.platform == platform)
+         # Session population is joined to the same immutable first-observation classification.
+         session_conditions += population_conditions(request.app.state.settings, AnalysisPerson, population)
+-        engagement = dict(
+-            session.execute(
+-                select(
+-                    func.count().label("sessions"),
+-                    func.coalesce(func.sum(AnalysisSession.foreground_ms), 0).label("foreground_ms"),
+-                    func.count(case((AnalysisSession.foreground_ms > 0, 1))).label("sessions_with_duration"),
++        if view in ("engagement", "all"):
++            engagement = dict(
++                session.execute(
++                    select(
++                        func.count().label("sessions"),
++                        func.coalesce(func.sum(AnalysisSession.foreground_ms), 0).label("foreground_ms"),
++                        func.count(case((AnalysisSession.foreground_ms > 0, 1))).label("sessions_with_duration"),
++                    )
++                    .select_from(AnalysisSession)
++                    .join(AnalysisPerson, AnalysisPerson.player_id == AnalysisSession.player_id)
++                    .where(*session_conditions)
+                 )
+-                .select_from(AnalysisSession)
+-                .join(AnalysisPerson, AnalysisPerson.player_id == AnalysisSession.player_id)
+-                .where(*session_conditions)
+-            )
+-            .mappings()
+-            .one()
+-        )
++                .mappings()
++                .one()
++            )
+         cohort_day = cast(func.floor(AnalysisPerson.first_at / DAY), Integer)
+-        sizes = dict(
+-            session.execute(select(cohort_day, func.count()).where(*cohorts).group_by(cohort_day)).all()
+-        )
+-        returns = {}
+-        for offset in (1, 7, 30):
+-            returns[offset] = dict(
+-                session.execute(
+-                    select(cohort_day, func.count(func.distinct(AnalysisPerson.player_id)))
+-                    .join(
+-                        AnalysisDay,
+-                        (AnalysisDay.player_id == AnalysisPerson.player_id)
+-                        & (AnalysisDay.day == cohort_day + offset),
+-                    )
+-                    .where(*cohorts, AnalysisDay.counters["active"].as_integer() > 0)
+-                    .group_by(cohort_day)
+-                ).all()
+-            )
++        sizes, returns = {}, {offset: {} for offset in (1, 7, 30)}
++        if view in ("retention", "all"):
++            sizes = dict(session.execute(select(cohort_day, func.count()).where(*cohorts).group_by(cohort_day)).all())
++            offset_day = AnalysisDay.day - cohort_day
++            returned = session.execute(select(cohort_day, offset_day,
++                func.count(func.distinct(AnalysisPerson.player_id))).join(AnalysisDay,
++                    (AnalysisDay.player_id == AnalysisPerson.player_id)
++                    & AnalysisDay.day.in_([cohort_day + offset for offset in (1, 7, 30)]))
++                .where(*cohorts, AnalysisDay.counters["active"].as_integer() > 0)
++                .group_by(cohort_day, offset_day)).all()
++            for day, offset, count in returned:
++                returns[int(offset)][day] = count
+         watermark = state.processed_through if state else None
+         retention = []
+         for day, size in sorted(sizes.items()):
+@@ -357,33 +353,18 @@
+                     "finalised": mature and (day + offset + 8) * DAY <= at,
+                 }
+             retention.append(item)
+-        first_race = []
+-        from .product_analytics import FIRST_RACE
+-
+-        anchor = AnalysisPerson.journey["anchor"].as_integer()
+-        eligible = [
+-            *cohorts,
+-            anchor >= max(first, state.started_at if state else first),
+-            anchor < until,
+-            anchor + DAY + 600 <= min(at, watermark or 0),
+-        ]
+-        funnel_size = session.scalar(select(func.count()).select_from(AnalysisPerson).where(*eligible))
+-        truncated = session.scalar(
+-            select(func.count())
+-            .select_from(AnalysisPerson)
+-            .where(*eligible, AnalysisPerson.journey["truncated"].as_boolean().is_(True))
+-        )
+-        for index, name in enumerate(FIRST_RACE):
+-            count = (
+-                session.scalar(
+-                    select(func.count())
+-                    .select_from(AnalysisPerson)
+-                    .where(*eligible, AnalysisPerson.journey["steps"].as_integer() > index)
+-                )
+-                if not truncated
+-                else None
+-            )
+-            first_race.append({"name": name, "players": count})
++        if view in ("journey", "all"):
++            from .product_analytics import FIRST_RACE
++            anchor = AnalysisPerson.journey["anchor"].as_integer()
++            eligible = [*cohorts, anchor >= max(first, state.started_at if state else first), anchor < until,
++                anchor + DAY + 600 <= min(at, watermark or 0)]
++            totals = session.execute(select(func.count(),
++                func.count(case((AnalysisPerson.journey["truncated"].as_boolean().is_(True), 1))),
++                *[func.count(case((AnalysisPerson.journey["steps"].as_integer() > index, 1)))
++                  for index in range(len(FIRST_RACE))]).select_from(AnalysisPerson).where(*eligible)).one()
++            first_race = {"eligible": totals[0], "truncated_profiles": totals[1],
++                "steps": [{"name": name, "players": None if totals[1] else totals[index + 2]}
++                          for index, name in enumerate(FIRST_RACE)]}
+         return {
+             "schema": "bmt-studio-behaviour-v1",
+             "role": role,
+@@ -408,9 +389,10 @@
+                 }
+                 for day, n, duration, starts, finishes, accepted in daily
+             ],
++            "view": view,
+             "engagement": engagement,
+             "retention": retention,
+-            "first_race": {"eligible": funnel_size, "steps": first_race, "truncated_profiles": truncated},
++            "first_race": first_race,
+             "business_cohorts_enabled": request.app.state.settings.studio_business_cohorts,
+             "coverage": {
+                 "collection_enabled": request.app.state.settings.telemetry_enabled,
+--- a/backend/bmt_backend/studio_finance.py
++++ b/backend/bmt_backend/studio_finance.py
+@@ -12,7 +12,6 @@
+ from .admin_ranges import calendar_range
+ from .commerce import CATALOG, entitlement_payload, fulfill_verified, lock_entitlements
+ from .commerce_models import Purchase
+-from .economy_models import CoinWallet
+ from .middleware import ParsedJSONRoute
+ from .studio_cases import begin
+ from .studio_platform_models import StudioCoinEntry, StudioFinanceEvent
+@@ -141,17 +140,6 @@
+             .where(StudioCoinEntry.created_at >= first, StudioCoinEntry.created_at < until)
+             .group_by(StudioCoinEntry.kind)
+         ).all()
+-        purchases = dict(
+-            db.execute(
+-                select(Purchase.state, func.count())
+-                .where(
+-                    Purchase.provider == "google_play",
+-                    Purchase.created_at >= first,
+-                    Purchase.created_at < until,
+-                )
+-                .group_by(Purchase.state)
+-            ).all()
+-        )
+         return {
+             "role": role,
+             "as_of": now(),
+@@ -175,11 +163,6 @@
+                 for r in money
+             ],
+             "coins": [dict(zip(("kind", "amount", "entries"), r)) for r in coins],
+-            "wallets": {
+-                "count": db.scalar(select(func.count()).select_from(CoinWallet)),
+-                "balance": db.scalar(select(func.coalesce(func.sum(CoinWallet.balance), 0))),
+-            },
+-            "purchases": purchases,
+             "sources": {
+                 "play_configured": bool(request.app.state.settings.studio_play_package),
+                 "admob_configured": bool(request.app.state.settings.studio_admob_account),
+--- a/backend/bmt_backend/studio_metrics.py
++++ b/backend/bmt_backend/studio_metrics.py
+@@ -192,14 +192,11 @@
+             ]
+             if platform:
+                 affected.append(AnalysisDay.platform == platform)
+-            result["reporting_players"] = db.scalar(
+-                select(func.count(func.distinct(AnalysisDay.player_id))).where(*affected)
+-            )
+-            result["affected_players"] = db.scalar(
+-                select(func.count(func.distinct(AnalysisDay.player_id))).where(
+-                    *affected, AnalysisDay.counters["quality_slow_frames"].as_integer() > 0
+-                )
+-            )
++            reporting, slow = db.execute(select(
++                func.count(func.distinct(AnalysisDay.player_id)),
++                func.count(func.distinct(case((AnalysisDay.counters["quality_slow_frames"].as_integer() > 0,
++                                               AnalysisDay.player_id))))).where(*affected)).one()
++            result["reporting_players"], result["affected_players"] = reporting, slow
+             return result
+ 
+         candidate, control = one(build_id), one(baseline)
+--- a/backend/bmt_backend/studio_platform_models.py
++++ b/backend/bmt_backend/studio_platform_models.py
+@@ -175,6 +175,7 @@
+         UniqueConstraint("provider", "reference"),
+         Index("ix_finance_period", "occurred_at", "currency", "kind"),
+         Index("ix_finance_player", "player_id", "occurred_at"),
++        Index("ix_studio_finance_received", "received_at"),
+     )
+     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+     provider: Mapped[str] = mapped_column(String(24))
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0045_studio_report_reads.py
+@@ -0,0 +1,17 @@
++"""Index the latest provider receipt used by Studio coverage and finance."""
++from alembic import op
++
++revision = "0045_studio_report_reads"
++down_revision = "0044_telemetry_counter_bigint"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    # Explicit one-shot migration; live large-ledger rollout needs an index-build
++    # window or its reviewed concurrent equivalent before switching the readers.
++    op.create_index("ix_studio_finance_received", "studio_finance_events", ["received_at"])
++
++
++def downgrade():
++    op.drop_index("ix_studio_finance_received", table_name="studio_finance_events")
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -36,11 +36,6 @@
+ }
+ function tabs(items,current){return `<div class="tabs">${items.map(([id,label])=>`<a class="tab ${id===current?'active':''}" href="#${id}">${esc(label)}</a>`).join('')}</div>`;}
+ function metric(name,value,target,note){return `<a href="#${target}" class="metric"><div class="metric-label">${esc(name)} →</div><div class="metric-value">${esc(value)}</div><div class="metric-meta">${esc(note)}</div></a>`;}
+-function chart(d){
+- const first=Math.floor(d.since/86400),last=Math.floor((d.until-1)/86400),days=Array.from({length:last-first+1},(_,i)=>first+i),values=new Map(d.daily.map(x=>[x.day,x.count])),max=Math.max(1,...days.map(day=>values.get(day)||0));
+- const dayLink=day=>'#races?since='+Math.max(d.since,day*86400)+'&until='+Math.min(d.until,(day+1)*86400);
+- return `<div class="console-chart-wrap"><div class="console-chart" style="min-width:${Math.max(420,days.length*44)}px">${days.map(day=>`<a class="console-bar" aria-label="${new Date(day*86400000).toISOString().slice(0,10)}: ${values.get(day)||0} submissions" href="${dayLink(day)}" style="height:${Math.max(2,(values.get(day)||0)/max*90)}%"><b>${values.get(day)||0}</b><span>${new Date(day*86400000).toISOString().slice(5,10)}</span></a>`).join('')}</div></div><p class="console-note">${days.length} UTC calendar days · Submitted attempts, including unverified attempts.</p><details class="studio-chart-data"><summary>View daily evidence table</summary><div class="console-table"><table><thead><tr><th scope="col">UTC day</th><th scope="col">Submitted attempts</th></tr></thead><tbody>${days.map(day=>`<tr><th scope="row"><a href="${dayLink(day)}">${new Date(day*86400000).toISOString().slice(0,10)}</a></th><td>${values.get(day)||0}</td></tr>`).join('')}</tbody></table></div></details>`;
+-}
+ function periodTarget(target,d){return target+(target.includes('?')?'&':'?')+'since='+d.since+'&until='+d.until;}
+ function rangeParams(params){const result=new URLSearchParams(params);if(result.has('all')){result.delete('since');result.delete('until');}else if(!result.has('since')&&reporting){result.set('since',reporting.since);result.set('until',reporting.until);}return result;}
+ function reportingDates(){
+@@ -50,11 +45,15 @@
+  $('#reporting-dates').onsubmit=event=>{event.preventDefault();const since=Date.parse($('#report-from').value+'T00:00:00Z')/1000,until=Date.parse($('#report-through').value+'T00:00:00Z')/1000+86400;if(!Number.isFinite(since)||!Number.isFinite(until)||since<0||until<=since||until-since>90*86400){$('#dates-error').hidden=false;$('#dates-error').textContent='Choose a range of 1–90 calendar days.';return;}const [path,qs]=location.hash.slice(1).split('?'),params=new URLSearchParams(qs);for(const name of ['all','offset','cursor'])params.delete(name);params.set('since',since);params.set('until',until);$('#days').value='custom';$('#dialog').close();location.hash=path+'?'+params;};
+ }
+ 
+-async function overview(d){return intro('The game, at a glance.','A clear view of accounts, immutable tracks and verification workload.')+`<div class="health-strip"><b>Service pulse</b><span class="console-success">● API responding</span><span class="console-success">● Database reachable</span><span>Verification: ${d.pending} pending</span><a href="#system">Inspect health →</a></div><div class="metrics">${metric('Registered players',d.players,'players?all=1','All accounts · lifetime')}${metric('Submitting racers',d.racers,periodTarget('races',d),`Unique players · selected dates`)}${metric('Track identities',d.tracks,'tracks?all=1','All publication states · lifetime')}${metric('Track versions',d.versions,'tracks?all=1','Immutable documents · lifetime')}${metric('Verified submissions',d.states.verified||0,periodTarget('races?state=verified',d),`Selected dates`)}${metric('Awaiting verification',d.pending,'system/jobs?all=1','Current queue · all time')}</div><div class="console-grid">${card('Race submissions',chart(d))}${card('Needs attention',`<div class="console-kv"><dt>Queued / verifying</dt><dd>${link('system','jobs',`${d.pending} pending submissions`)}</dd></div><div class="console-kv"><dt>Rejected / failed</dt><dd><a href="#${periodTarget('races?state=rejected',d)}">${d.states.rejected||0} rejected</a> · <a href="#${periodTarget('races?state=failed',d)}">${d.states.failed||0} failed</a> in selected window</dd></div><div class="console-kv"><dt>Restricted accounts</dt><dd><a href="#players?state=disabled">${d.disabled} accounts</a></dd></div><p class="console-note">Verification outcomes are evidence, not allegations. Worker freshness, queue age and storage capacity are available under System. Purchase records and catalog controls are available under Economy; crash telemetry has no configured data source.</p>`)}</div><div class="console-grid">${card('Investigate a record','<p class="console-note">Follow stable player, track-version and race identities into their evidence. Published geometry and competition manifests remain immutable.</p><div class="console-actions"><a class="btn" href="#players">Players →</a><a class="btn" href="#tracks">Track library →</a><a class="btn" href="#races">Race submissions →</a></div>')}${card('Reporting coverage','<p class="console-note">These counts come from operational database records. Signed-in observed activity and exact-day return cohorts are available in Product analytics. Session duration, revenue and device performance have no configured data source.</p>')}</div>`;}
+ function playerType(value){return value===true?'Artificial':value===false?'Real':'Unavailable';}
+ const columns={players:['display_name','id','is_test_driver','disabled','created_at'],tracks:['name','state','hidden','number','rating_count','owner_id'],races:['id','player_id','status','time_ticks','attempts','created_at'],jobs:['id','status','attempts','failure_code','created_at'],audit:['action','entity_id','actor','reason','created_at'],grants:['id','player_id','source','quantity','created_at']};
+ function cell(kind,k,v,row){if(k==='is_test_driver')return esc(playerType(v));if(k==='created_at')return esc(date(v));if(k==='id'||k==='name'||k==='display_name')return link(kind,row.id,v);if(k==='player_id'||k==='owner_id')return link('players',v);if(k==='status'||k==='state')return status(v);if(k==='disabled')return status(row.deleted_at?'removed':v?'disabled':'active');if(k==='hidden')return status(v?'hidden':'visible');return esc(v);}
+-async function listing(kind,params){const query=new URLSearchParams({q:params.get('q')||'',state:params.get('state')||'',offset:params.get('offset')||'0'});for(const name of ['since','until','failure_code'])if(params.has(name))query.set(name,params.get(name));const d=await api('entities/'+kind+'?'+query),cols=columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];return `<section class="card"><p class="console-padding console-note">${params.has('since')?esc(date(Number(params.get('since'))))+' to '+esc(date(Number(params.get('until'))))+' (end excluded)':'All time'}</p><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.total?d.offset+1:0}–${d.offset+d.items.length} of ${d.total}</span><button class="btn" data-offset="${Math.max(0,d.offset-d.limit)}" ${d.offset===0?'disabled':''}>Previous</button><button class="btn" data-offset="${d.offset+d.limit}" ${d.offset+d.limit>=d.total?'disabled':''}>Next</button></div></section>`;}
++async function listing(kind,params){
++ const query=new URLSearchParams({q:params.get('q')||'',state:params.get('state')||''});
++ for(const name of ['since','until','failure_code','cursor','offset'])if(params.has(name))query.set(name,params.get(name));
++ const d=await api('entities/'+kind+'?'+query),cols=columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];
++ return `<section class="card"><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.items.length?d.offset+1:0}–${d.offset+d.items.length} · ${d.items.length} records shown</span><button class="btn" data-page-cursor="${esc(d.previous_cursor||'')}" ${d.previous_cursor?'':'disabled'}>Previous</button><button class="btn" data-page-cursor="${esc(d.next_cursor||'')}" ${d.next_cursor?'':'disabled'}>Next</button></div></section>`;
++}
+ function routeMap(preview){
+  const points=(preview.points||[]).filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1]));
+  if(points.length<2)return '<p class="console-note">Route preview unavailable.</p>';
+@@ -85,7 +84,7 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api((['alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
++  const d=await api((['alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+   if(section==='alarms')html=await platformIncidents(id,params);
+@@ -105,7 +104,7 @@
+    else html=platformOpsTabs('system',params)+monitorReliability(d,await api('competition-health'));
+   }else if(section==='economy')html=await platformMoney(params);
+   else if(section==='live'){const q=new URLSearchParams(params);q.set('tab','experiments');html=await platformAdmin(q);}
+-  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+card('Observed product activity','<p class="console-note">Submitted attempts and observed product activity answer different questions. <a href="'+scopedHref('product',params)+'">Open Product analytics</a> for signed-in activity, ordered journeys and exact-day return cohorts. Client quality provides bounded race frame summaries, device/OS comparisons and observed process exits.</p>');
++  else if(section==='analytics')html=intro('Race evidence','Inspect submitted results and their verification outcomes.','INVESTIGATE')+await listing('races',params);
+   else html=intro('Page not found','Use the navigation to choose a workspace.');
+   if(ticket!==generation)return;
+   if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+(section==='product'?'<button class="btn" id="platform-export">Export activity in scope</button>':'')+'</div>'+html;$('#main').innerHTML=html;
+@@ -125,7 +124,7 @@
+   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
+  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
+ }
+-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();wirePlatform(params);}
++function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();wirePlatform(params);}
+ function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
+ function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
+ function modal(html){
+--- a/backend/bmt_backend/admin_ui/catalogue.js
++++ b/backend/bmt_backend/admin_ui/catalogue.js
+@@ -8,7 +8,7 @@
+ }
+ function catalogueBackHref(section,params) {
+  const target=params.get('catalogue_return');
+- return target&&target.startsWith(section+'?')&&target.length<2500?'#'+esc(target):scopedHref(section,params);
++ return target&&target.startsWith(section+'?')&&target.length<4096?'#'+esc(target):scopedHref(section,params);
+ }
+ function catalogueHref(section, params, extra={}) {
+  const query=new URLSearchParams(params);
+@@ -30,10 +30,11 @@
+  return `<svg class="stc-route ${compact?'stc-route-small':''}" viewBox="0 0 200 200" role="img" aria-label="Stored lap route shape"><rect width="200" height="200" rx="10" fill="#edf3ef"/><polyline points="${coordinates}" fill="none" stroke="#c2d5cc" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><polyline points="${coordinates}" fill="none" stroke="#397e70" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${left+(start[0]-minX)*scale}" cy="${200-top-(start[1]-minY)*scale}" r="4" fill="#bf8c35"/></svg>`;
+ }
+ function cataloguePager(data,section,params) {
+- return `<div class="console-pager"><span>${data.total?data.offset+1:0}–${data.offset+data.items.length} of ${data.total} matching records</span><a class="btn ${data.offset===0?'stc-disabled':''}" ${data.offset===0?'aria-disabled="true" tabindex="-1"':''} href="${catalogueHref(section,params,{offset:Math.max(0,data.offset-data.limit),anchor:data.anchor})}">Previous</a><a class="btn ${data.offset+data.limit>=data.total||data.offset+data.limit>10000?'stc-disabled':''}" ${data.offset+data.limit>=data.total||data.offset+data.limit>10000?'aria-disabled="true" tabindex="-1"':''} href="${catalogueHref(section,params,{offset:data.offset+data.limit,anchor:data.anchor})}">Next</a></div>`;
++ const target=cursor=>catalogueHref(section,params,{cursor,offset:null,anchor:data.anchor});
++ return `<div class="console-pager"><span>${data.items.length?data.offset+1:0}–${data.offset+data.items.length} · ${data.items.length} records shown</span><a class="btn ${data.previous_cursor?'':'stc-disabled'}" ${data.previous_cursor?'':'aria-disabled="true" tabindex="-1"'} href="${target(data.previous_cursor)}">Previous</a><a class="btn ${data.next_cursor?'':'stc-disabled'}" ${data.next_cursor?'':'aria-disabled="true" tabindex="-1"'} href="${target(data.next_cursor)}">Next</a></div>`;
+ }
+ function catalogueQuery(section,params) {
+- const fields=section==='tracks'?['q','theme','visibility','origin','creator_id','min_rating','min_finishers','versions','sort','direction','offset','limit','anchor','since','until']:['q','state','population','provider','sort','direction','offset','limit','anchor'];
++ const fields=section==='tracks'?['q','theme','visibility','origin','creator_id','min_rating','min_finishers','versions','sort','direction','offset','limit','anchor','cursor','since','until']:['q','state','population','provider','sort','direction','offset','limit','anchor','cursor'];
+  const query=new URLSearchParams();for(const field of fields)if(params.has(field))query.set(field,params.get(field));
+  if(section==='players'&&query.get('state')==='')query.delete('state');
+  return query;
+@@ -48,14 +49,14 @@
+  if(section==='tracks'){
+   const rows=data.items.map(row=>`<tr><td><a class="stc-track-identity" href="${catalogueEntityHref('tracks',row.id,params)}">${catalogueShape(row.preview,true)}<span><strong>${esc(row.name)}</strong><small>Version ${row.number} · ${esc(row.preview.theme||'Biome unavailable')}</small><span class="stc-id">${esc(row.id)}</span></span></a></td><td>${link('players',row.creator_id,row.creator_name)}<small class="stc-table-note">${row.official?'Official':'Community'}</small></td><td>${status(row.archived?'Archived':row.hidden?'Hidden':'Visible')}</td><td>${row.rating_average==null?'Not rated':row.rating_average.toFixed(1)+' / 5'}<small class="stc-table-note">${row.rating_count} ratings</small></td><td>${esc(row.verified_finishers)}</td><td>${row.discovery?esc(row.discovery.exposures):'<span class="stc-unknown">Unavailable</span>'}<small class="stc-table-note">${row.discovery?row.discovery.selections+' selections':'No observed coverage'}</small></td><td>${esc(date(row.published_at))}</td></tr>`).join('');
+   return intro('Tracks & creators','Published content, discoverability and immutable version health.','CONTENT HEALTH')+
+-   `<div class="stc-summary">${catalogueStat('Matching published versions',data.total,params.get('versions')==='all'?'All published versions':'Latest published version per track')}${catalogueStat('Rows in this investigation',data.items.length,'Bounded catalogue page')}${catalogueStat('Observation watermark',data.coverage.processed_through?date(data.coverage.processed_through):null,'Discovery facts · selected UTC days')}</div>`+
++   `<div class="stc-summary">${catalogueStat('Rows in this investigation',data.items.length,'Bounded catalogue page')}${catalogueStat('Observation watermark',data.coverage.processed_through?date(data.coverage.processed_through):null,'Discovery facts · selected UTC days')}</div>`+
+    card('Published track catalogue',`<form id="catalogue-filters" class="stc-filters"><label class="stc-search">Find a track<input name="q" maxlength="100" placeholder="Name, creator, version ID or biome" value="${esc(params.get('q')||'')}"></label>${catalogueSelect('theme','Biome',[['','All biomes'],['pine','Grass'],['winter','Winter'],['night_city','City'],['desert','Desert'],['storm','Storm']],params.get('theme')||'')}${catalogueSelect('visibility','Visibility',[['all','All published'],['visible','Visible'],['hidden','Hidden'],['archived','Archived']],params.get('visibility')||'all')}${catalogueSelect('origin','Source',[['all','All creators'],['official','Official'],['community','Community']],params.get('origin')||'all')}${catalogueSelect('versions','Versions',[['latest','Latest published'],['all','All published versions']],params.get('versions')||'latest')}${catalogueSelect('sort','Sort by',[['published','Publication date'],['name','Track name'],['creator','Creator'],['rating','Average rating'],['finishers','Verified finishers']],params.get('sort')||'published')}${catalogueSelect('direction','Order',[['desc','Descending'],['asc','Ascending']],params.get('direction')||'desc')}<label>Minimum rating<input name="min_rating" type="number" min="0" max="5" step="0.1" value="${esc(params.get('min_rating')||'0')}"></label><label>Minimum finishers<input name="min_finishers" type="number" min="0" max="1000000000" step="1" value="${esc(params.get('min_finishers')||'0')}"></label><button class="btn btn-primary">Apply</button><a class="btn" href="${catalogueHref('tracks',new URLSearchParams([...params].filter(([name])=>['since','until'].includes(name))))}">Reset</a></form>${params.get('creator_id')?`<p class="console-note">Creator filter: ${link('players',params.get('creator_id'))} <a href="${catalogueHref('tracks',params,{creator_id:null,offset:null,anchor:null})}">Clear creator</a></p>`:''}<div class="console-table stc-table"><table><thead><tr><th>Track / shape</th><th>Creator</th><th>Visibility</th><th>Rating</th><th>Verified finishers</th><th>Card exposures</th><th>Published</th></tr></thead><tbody>${rows}</tbody></table>${rows?'':'<div class="stc-empty"><h3>No matching published tracks</h3><p>Change the search, biome or publication filters.</p></div>'}</div>${cataloguePager(data,section,params)}`)+
+    `<p class="stc-footnote">${esc(data.catalogue_policy)} Shape uses the prepared lap-route projection; elevation and full road geometry are not shown. Exposure and selection are observations, not verified race counts.${data.coverage.fact_rows_truncated?' Observation rows exceeded the reporting budget; counts are partial.':''}</p>`;
+  }
+- const rows=data.items.map(p=>`<tr><td><a class="stc-player-link" href="${catalogueEntityHref('players',p.id,params)}"><span class="stc-avatar stc-avatar-small">${esc(p.display_name.slice(0,2).toUpperCase())}</span><span><strong>${esc(p.display_name)}</strong><small class="stc-id">${esc(p.id)}</small></span></a></td><td>${status(p.disabled?'Restricted':p.needs_username?'Username pending':'Active')}<small class="stc-table-note">${esc(playerType(p.is_test_driver))} · ${esc(p.providers.join(', ')||'No provider recorded')}</small></td><td><strong>${p.races.verified_submissions}</strong> verified<small class="stc-table-note">${p.races.submissions} submissions · ${p.personal_bests} PBs</small></td><td>${p.published_versions} versions<small class="stc-table-note">${p.open_cases} open cases</small></td><td>${p.last_observed_activity_day==null?'<span class="stc-unknown">Unavailable</span>':esc(new Date(p.last_observed_activity_day*86400000).toISOString().slice(0,10))}<small class="stc-table-note">Last observed UTC day</small></td><td>${esc(date(p.created_at))}</td></tr>`).join('');
++ const rows=data.items.map(p=>`<tr><td><a class="stc-player-link" href="${catalogueEntityHref('players',p.id,params)}"><span class="stc-avatar stc-avatar-small">${esc(p.display_name.slice(0,2).toUpperCase())}</span><span><strong>${esc(p.display_name)}</strong><small class="stc-id">${esc(p.id)}</small></span></a></td><td>${status(p.disabled?'Restricted':p.needs_username?'Username pending':'Active')}<small class="stc-table-note">${esc(playerType(p.is_test_driver))} · ${esc(p.providers.join(', ')||'No provider recorded')}</small></td><td>${esc(date(p.created_at))}</td><td><a class="btn" href="${catalogueEntityHref('players',p.id,params)}">Open support evidence</a></td></tr>`).join('');
+  return intro('Player support','Find a canonical account and follow its access, races and support evidence.','SUPPORT WORKSPACE')+
+-  `<div class="stc-summary">${catalogueStat('Matching accounts',data.summary.accounts,'All identity types by default')}${catalogueStat('Restricted accounts',data.summary.restricted,'Matching scope')}${catalogueStat('Artificial drivers',data.summary.artificial,'Authoritative account flag')}</div>`+
+-  card('Find a player',`<form id="catalogue-filters" class="stc-filters"><label class="stc-search">Player<input name="q" maxlength="100" value="${esc(params.get('q')||'')}" placeholder="Display name or canonical player ID"></label>${catalogueSelect('state','Account',[['all','All accounts'],['active','Active'],['disabled','Restricted'],['username_pending','Username pending']],params.get('state')||'all')}${catalogueSelect('population','Players',[['all','Everyone'],['real','Real'],['artificial','Artificial']],params.get('population')||'all')}${catalogueSelect('provider','Sign-in',[['','All providers'],['google','Google'],['development','Development']],params.get('provider')||'')}${catalogueSelect('sort','Sort by',[['created','Account created'],['name','Display name']],params.get('sort')||'created')}${catalogueSelect('direction','Order',[['desc','Descending'],['asc','Ascending']],params.get('direction')||'desc')}<button class="btn btn-primary">Apply</button><a class="btn" href="${scopedHref('players',params)}">Reset</a></form><div class="console-table stc-table"><table><thead><tr><th>Player</th><th>Account</th><th>Race evidence</th><th>Creator / support</th><th>Observed activity</th><th>Created</th></tr></thead><tbody>${rows}</tbody></table>${rows?'':'<div class="stc-empty"><h3>No matching players</h3><p>Try a name or clear the account filters.</p></div>'}</div>${cataloguePager(data,section,params)}`)+`<p class="stc-footnote">${esc(data.coverage)}</p>`;
++  `<div class="stc-summary">${catalogueStat('Accounts on this page',data.items.length,'All account types are included unless filtered')}</div>`+
++  card('Find a player',`<form id="catalogue-filters" class="stc-filters"><label class="stc-search">Player<input name="q" maxlength="100" value="${esc(params.get('q')||'')}" placeholder="Display name or canonical player ID"></label>${catalogueSelect('state','Account',[['all','All accounts'],['active','Active'],['disabled','Restricted'],['username_pending','Username pending']],params.get('state')||'all')}${catalogueSelect('population','Players',[['all','Everyone'],['real','Real'],['artificial','Artificial']],params.get('population')||'all')}${catalogueSelect('provider','Sign-in',[['','All providers'],['google','Google'],['development','Development']],params.get('provider')||'')}${catalogueSelect('sort','Sort by',[['created','Account created'],['name','Display name']],params.get('sort')||'created')}${catalogueSelect('direction','Order',[['desc','Descending'],['asc','Ascending']],params.get('direction')||'desc')}<button class="btn btn-primary">Apply</button><a class="btn" href="${scopedHref('players',params)}">Reset</a></form><div class="console-table stc-table"><table><thead><tr><th>Player</th><th>Account</th><th>Created</th><th>Support</th></tr></thead><tbody>${rows}</tbody></table>${rows?'':'<div class="stc-empty"><h3>No matching players</h3><p>Try a name or clear the account filters.</p></div>'}</div>${cataloguePager(data,section,params)}`)+`<p class="stc-footnote">${esc(data.coverage)}</p>`;
+ }
+ async function catalogueTrack(id,params) {
+  const query=new URLSearchParams();for(const field of ['since','until'])if(params.has(field))query.set(field,params.get(field));
+@@ -72,10 +73,10 @@
+ }
+ async function cataloguePlayer(id,params) {
+  const current=generation,query=supportQuery(params);
+- const [d,history]=await Promise.all([api('catalogue/players/'+encodeURIComponent(id)),api('players/'+encodeURIComponent(id)+'/history?'+query)]);
++ const tab=['timeline','access','purchases','identity'].includes(params.get('tab'))?params.get('tab'):'timeline';
++ const [d,history]=await Promise.all([api('catalogue/players/'+encodeURIComponent(id)),tab==='timeline'?api('players/'+encodeURIComponent(id)+'/history?'+query):Promise.resolve({items:[],next_cursor:null})]);
+  if(current===generation)supportCurrent={id,data:d.support,history,params:new URLSearchParams(params)};
+  role=d.role;const data=d.support,p=data.player,a=d.activity,controls=data.development_controls;
+- const tab=['timeline','access','purchases','identity'].includes(params.get('tab'))?params.get('tab'):'timeline';
+  const navigation=`<div class="tabs stc-tabs">${[['timeline','Timeline & evidence'],['access','Entitlements & resumes'],['purchases','Purchases & grants'],['identity','Identity & coverage']].map(([name,label])=>`<a class="tab ${name===tab?'active':''}" href="${catalogueHref('players/'+id,params,{tab:name})}">${label}</a>`).join('')}</div>`;
+  const filters=`<form id="support-filters" class="stc-filters">${catalogueSelect('kind','Activity',[['','All activity'],['purchase','Purchases'],['publication','Publications'],['resume','Resume receipts'],['grant','Resume grants'],['race','Races'],['audit','Admin changes']],params.get('kind')||'')}<label class="stc-search">Find evidence<input name="q" maxlength="100" placeholder="Race, purchase, command or request ID" value="${esc(params.get('q')||'')}"></label>${catalogueSelect('state','State',[['','All states'],...['pending','approved','declined','cancelled','queued','verifying','verified','rejected','failed'].map(v=>[v,v])],params.get('state')||'')}<button class="btn btn-primary">Apply</button><button class="btn" id="support-clear" type="button">All time</button><button class="btn" id="support-export" type="button">Export page</button></form>`;
+  const timeline=history.items.map((item,index)=>{const r=item.record,href=item.kind==='race'?scopedHref('races/'+encodeURIComponent(item.id),params):item.kind==='publication'?scopedHref('tracks/'+encodeURIComponent(item.id),params):null;return `<li><time>${esc(date(item.created_at))}</time><div><span class="stc-authority">Server record · ${esc(item.kind)}</span><strong>${esc(activitySummary(item))}</strong><small class="stc-id">${href?`<a href="${href}">${esc(item.id)}</a>`:esc(item.id)}</small><div class="stc-timeline-actions">${status(r.state||r.status||(item.kind==='resume'?(r.refunded?'Refunded':r.settled?'Settled':'Pending'):'Recorded'))}<button class="btn" data-history-detail="${index}">Inspect evidence</button>${controls.editable&&item.kind==='purchase'&&r.simulated&&r.state==='pending'?`<button class="btn" data-resolve-purchase="${index}">Resolve development purchase</button>`:''}</div></div></li>`;}).join('');
+@@ -95,5 +96,5 @@
+  if(supportCurrent&&!$('#support-filters'))document.querySelectorAll('[data-support-action]').forEach(button=>button.onclick=()=>developmentCommand(supportCurrent.id,supportCurrent.data,button.dataset.supportAction));
+  const form=$('#catalogue-filters');if(!form||!cataloguePage)return;
+  const {section,params}=cataloguePage;
+- form.onsubmit=event=>{event.preventDefault();const query=new URLSearchParams(params);for(const field of ['offset','anchor'])query.delete(field);for(const [name,value] of new FormData(form))value?query.set(name,value):query.delete(name);location.hash=catalogueHref(section,query);};
++ form.onsubmit=event=>{event.preventDefault();const query=new URLSearchParams(params);for(const field of ['offset','anchor','cursor'])query.delete(field);for(const [name,value] of new FormData(form))value?query.set(name,value):query.delete(name);location.hash=catalogueHref(section,query);};
+ }
+--- a/backend/bmt_backend/admin_ui/platform.js
++++ b/backend/bmt_backend/admin_ui/platform.js
+@@ -21,17 +21,16 @@
+  const [incidents,metrics]=await Promise.all([api('incidents?limit=6'),api('metrics')]);
+  const actionable=(incidents.counts.open||0)+(incidents.counts.acknowledged||0),coverage=metrics.coverage;
+  return intro('Know what needs attention.','Start with player impact, then follow the evidence into a focused workspace.','GAME OPERATIONS')+
+- `<div class="platform-stats">${pStat('Active incidents',pNumber(actionable),'Open and acknowledged occurrences','alarms')}${pStat('Results waiting',pNumber(d.pending),'Current verification queue','system/jobs')}${pStat('Verified results',pNumber(d.states.verified||0),'Selected reporting dates','races?state=verified')}${pStat('Reporting data age',coverage.latest_client_at?Math.max(0,Math.floor((Date.now()/1000-coverage.latest_client_at)/60))+' min':'Unavailable','Latest received client observation','product')}</div>`+
++ `<div class="platform-stats">${pStat('Active incidents',pNumber(actionable),'Open and acknowledged occurrences','alarms')}${pStat('Verification jobs',pNumber(d.pending),'Current shared verification queue','system/jobs')}${pStat('Verified results',pNumber(d.states.verified||0),'Last five minutes - all players','races?state=verified')}${pStat('Reporting data age',coverage.latest_client_at?Math.max(0,Math.floor((Date.now()/1000-coverage.latest_client_at)/60))+' min':'Unavailable','Latest received client observation','product')}</div>`+
+  card('React and recover',incidents.items.length?incidents.items.map(r=>`<article class="platform-row"><div><span class="platform-tag ${esc(r.severity)}">${esc(r.state)}</span><h3>${esc(r.title)}</h3><p>${esc(r.evidence.evidence)}</p></div>${pLink('alarms/'+r.id,'Investigate',params)}</article>`).join(''):pNotice('No retained incidents',incidents.sources.length?'No actionable occurrences in the current detector history. Check monitor freshness before concluding the service is healthy.':'No continuous monitor observations have arrived. Configure and start the independent watchdog.','warning'))+
+  `<div class="platform-grid">${card('Understand player behaviour','<p>Follow activity, exact-day returns and the first-race journey. Read population and follow-up coverage before interpreting changes.</p>'+pLink('product','Explore behaviour',params))}${card('Protect game quality','<p>Compare a release with a baseline, find affected devices and follow a track into its diagnostic evidence.</p>'+pLink('quality','Compare releases',params))}${card('Optimise monetisation','<p>Review provider earnings, purchase delivery and Coin sources and sinks as separate measures.</p>'+pLink('economy','Review monetisation',params))}${card('Can these numbers be trusted?',`<dl class="platform-definitions"><dt>Client observations</dt><dd>${coverage.latest_client_at?esc(date(coverage.latest_client_at)):'Unavailable'}</dd><dt>Reporting watermark</dt><dd>${esc(date(coverage.processed_through))}</dd><dt>Monetary revenue import</dt><dd>${esc(date(coverage.latest_finance_import))}</dd><dt>Guests / crash stacks / Play Vitals</dt><dd>Unavailable</dd></dl>`+pLink('studio','Inspect definitions & coverage',params))}</div>`;
+ }
+ 
+ async function platformBehaviour(params){
+- const tab=params.get('tab')||'activity';
++ const tab=['retention','journey','engagement'].includes(params.get('tab'))?params.get('tab'):'activity';
+  const head=intro('Player behaviour','Find where players return, struggle or leave, with the observation limits visible.','UNDERSTAND')+
+- pTabs([['product','Activity'],['product?tab=retention','Retention'],['product?tab=journey','First-race journey'],['product?tab=engagement','Engagement'],['product?tab=history','Historical totals']],tab==='activity'?'product':'product?tab='+tab,params);
+- if(tab==='history'){const historical=await api('product-analytics?'+pQuery(params,[]));return head+pNotice('Historical calendar-day totals','Effective scope: '+date(historical.effective_since)+' to '+date(historical.effective_until)+'. A partial-day request includes its entire UTC day bucket. These totals retain their original all-player definition.')+productAnalyticsView(historical);}
+- const d=await api('analysis/behaviour?'+pQuery(params,['build_id','platform','mode','population'])),c=d.counters;
++ pTabs([['product','Activity'],['product?tab=retention','Retention'],['product?tab=journey','First-race journey'],['product?tab=engagement','Engagement']],tab==='activity'?'product':'product?tab='+tab,params);
++ const d=await api('analysis/behaviour?'+pQuery(params,['build_id','platform','mode','population'])+'&view='+tab),c=d.counters;
+  const coverage=d.coverage;
+  let body='';
+  if(tab==='engagement'){
+@@ -47,9 +46,7 @@
+   card('Activity by day',pTable(['UTC day','Active players','Starts','Observed finishes','Accepted results'],d.daily.map(r=>[esc(new Date(r.day*86400000).toISOString().slice(0,10)),pNumber(r.players),pNumber(r.starts),pNumber(r.finishes),pNumber(r.accepted)])))+
+   card('Next questions',`<div class="console-actions">${pLink('product?tab=retention','Are players returning?',params)}${pLink('product?tab=journey','Where do first races stop?',params)}${pLink('quality','Does release quality explain a drop?',params)}</div>`);
+  }
+- const mature=d.retention.filter(r=>r.d7.mature&&r.d7.eligible>0),latest=mature.at(-1),f=d.first_race,losses=f.steps.slice(1).map((s,i)=>({from:f.steps[i],to:s,lost:(f.steps[i].players||0)-(s.players||0)})).filter(r=>r.lost>0).sort((a,b)=>b.lost-a.lost);
+- const insight=tab==='activity'?(losses[0]?pNotice('First-race step to investigate',pNumber(losses[0].lost)+' of '+pNumber(losses[0].from.players)+' eligible players did not reach '+losses[0].to.name.replaceAll('_',' ')+'. Open First-race journey and check collection coverage before choosing a change.'):latest?pNotice('Latest mature day-seven cohort',pNumber(latest.d7.returned)+' / '+pNumber(latest.d7.eligible)+' returned on D7 ('+pPercent(latest.d7.returned,latest.d7.eligible)+'). '+(latest.d7.eligible<100?'This small cohort is insufficient for a reliable optimisation decision.':'Compare equivalent mature cohorts before interpreting a trend.')):pNotice('Collect mature evidence before optimising','No eligible D7 return cohort is available in this scope. Follow collection coverage and first-race progress while the return window matures.')):'';
+- return head+pFilters(d,params)+pScope(d)+(coverage.collection_enabled===false?pNotice('Collection is disabled','Retained observations remain available. They do not establish current player activity.','warning'):'')+(coverage.available?'':pNotice('Client coverage is unavailable','No client observations have reached this analytical projection. Server activity alone does not establish complete behaviour coverage.','warning'))+insight+body+
++ return head+pFilters(d,params)+pScope(d)+(coverage.collection_enabled===false?pNotice('Collection is disabled','Retained observations remain available. They do not establish current player activity.','warning'):'')+(coverage.available?'':pNotice('Client coverage is unavailable','No client observations have reached this analytical projection. Server activity alone does not establish complete behaviour coverage.','warning'))+body+
+  `<details class="platform-method"><summary>Definition, freshness and limits</summary><p>Analysis began ${esc(date(coverage.started_at))}; processed through ${esc(date(coverage.processed_through))}. ${pNumber(coverage.pending_events)} observations pending.</p><p>${esc(coverage.definition)}</p><p>${esc(coverage.foreground)}</p><p>Guests are unavailable. These totals include artificial drivers unless an explicitly enabled population filter is selected. Existing historical totals remain available separately.</p>${d.options_truncated?'<p>Build selector is limited to 200 combinations; metrics use the full selected scope.</p>':''}</details>`;
+ }
+ 
+@@ -127,7 +124,7 @@
+  pTabs([['economy','Value & revenue'],['economy?tab=delivery','Purchase delivery']], 'economy',params)+pScope(d)+
+  (!d.money.length?pNotice('Monetary revenue is unavailable','No provider revenue entries exist in this scope. Product prices, purchase requests and Coins are not revenue.','warning'):'')+
+  card('Provider earnings',pTable(['Provider','Type','Currency','Accounting basis','Amount','Last import'],d.money.map(r=>[esc(r.provider),esc(r.kind.replaceAll('_',' ')),esc(r.currency),esc(r.basis),(r.amount_micros/1000000).toFixed(2),esc(date(r.last_import_at))])))+
+- `<div class="platform-grid">${card('Coin sources and sinks',pTable(['Movement','Coins','Entries'],d.coins.map(r=>[esc(r.kind),pNumber(r.amount),pNumber(r.entries)]))+`<p>Current wallets: ${pNumber(d.wallets.count)} · total balance ${pNumber(d.wallets.balance)} Coins. Opening balances are excluded from earnings.</p>`)}${card('Source connections',`<dl class="platform-definitions"><dt>Google Play verification</dt><dd>${d.sources.play_configured?'Configured':'Not configured'}</dd><dt>AdMob network reports</dt><dd>${d.sources.admob_configured?'Configured':'Not configured'}</dd><dt>Latest money import</dt><dd>${esc(date(d.sources.latest_import_at))}</dd><dt>Player LTV / ARPDAU</dt><dd>Unavailable until attributable value and population coverage exist</dd></dl>`+pLink('economy?tab=delivery','Inspect purchase delivery',params))}</div><p class="platform-method">${esc(d.coverage)}</p>`;
++ `<div class="platform-grid">${card('Coin sources and sinks',pTable(['Movement','Coins','Entries'],d.coins.map(r=>[esc(r.kind),pNumber(r.amount),pNumber(r.entries)]))+`<p>Opening balances are excluded from earnings. Open a player to inspect their current wallet and access.</p>`)}${card('Source connections',`<dl class="platform-definitions"><dt>Google Play verification</dt><dd>${d.sources.play_configured?'Configured':'Not configured'}</dd><dt>AdMob network reports</dt><dd>${d.sources.admob_configured?'Configured':'Not configured'}</dd><dt>Latest money import</dt><dd>${esc(date(d.sources.latest_import_at))}</dd><dt>Player LTV / ARPDAU</dt><dd>Unavailable until attributable value and population coverage exist</dd></dl>`+pLink('economy?tab=delivery','Inspect purchase delivery',params))}</div><p class="platform-method">${esc(d.coverage)}</p>`;
+ }
+ 
+ async function platformAdmin(params){
+--- a/backend/tests/test_admin.py
++++ b/backend/tests/test_admin.py
+@@ -95,7 +95,8 @@
+     assert client.get("/v1/admin/entities/players?q=%25", headers=headers()).json()["total"] == 0
+     assert client.get("/v1/admin/entities/players/" + str(uuid4()), headers=headers()).status_code == 404
+     assert client.get("/v1/admin/overview?days=0", headers=headers()).status_code == 422
+-    assert client.get("/v1/admin/overview", headers=headers()).json()["players"] == 1
++    pulse = client.get("/v1/admin/overview", headers=headers()).json()
++    assert "players" not in pulse and pulse["pulse_until"] - pulse["pulse_since"] == 300
+ 
+ 
+ @pytest.mark.parametrize("artificial,provider", [(False, "development"), (True, "google")])
+@@ -111,7 +112,7 @@
+     support = client.get("/v1/admin/players/" + ids[0] + "/support", headers=headers("analyst")).json()
+     assert detail["is_test_driver"] is support["player"]["is_test_driver"] is artificial
+     assert detail["providers"] == [provider]
+-    assert client.get("/v1/admin/overview", headers=headers("analyst")).json()["players"] == 1
++    assert "all player types" in client.get("/v1/admin/overview", headers=headers("analyst")).json()["coverage"]
+     assert "private-provider-subject" not in str(detail) + str(support)
+ 
+ 
+--- a/backend/tests/test_admin_support.py
++++ b/backend/tests/test_admin_support.py
+@@ -51,7 +51,9 @@
+     assert data["effective"]["publishing_slots"] == 1 and not data["initialized"]
+     assert data["development_controls"]["eligible"] and not data["development_controls"]["editable"]
+     assert data["player"]["is_test_driver"] is True
+-    assert store.client.get("/v1/admin/overview", headers=OWNER).json()["players"] == 4
++    listed = store.client.get("/v1/admin/catalogue/players", headers=OWNER).json()["items"]
++    assert {row["id"] for row in listed} == set(store.players.values())
++    assert next(row for row in listed if row["id"] == store.players["Creator"])["is_test_driver"] is data["player"]["is_test_driver"]
+     with store.factory() as session:
+         assert session.get(Entitlements, store.players["Creator"]) is None
+         assert session.scalar(select(func.count()).select_from(AdminAudit)) == 0
+@@ -65,7 +67,9 @@
+     assert data["player"]["providers"] == ["development"]
+     assert data["player"]["is_test_driver"] is False
+     assert data["development_controls"]["eligible"] is True
+-    assert store.client.get("/v1/admin/overview", headers=OWNER).json()["players"] == 4
++    listed = store.client.get("/v1/admin/catalogue/players", headers=OWNER).json()["items"]
++    assert {row["id"] for row in listed} == set(store.players.values())
++    assert next(row for row in listed if row["id"] == store.players["Creator"])["is_test_driver"] is data["player"]["is_test_driver"]
+     with store.factory() as session:
+         assert session.get(Entitlements, store.players["Creator"]) is None
+ 
+--- a/backend/tests/test_studio_catalogue.py
++++ b/backend/tests/test_studio_catalogue.py
+@@ -102,7 +102,8 @@
+             manifest={}, state="published", created_at=2000000001, published_at=2000000001))
+         db.commit()
+     second = get("versions=all&sort=name&direction=asc&limit=1&offset=1&anchor=" + str(first["anchor"]))
+-    assert second["total"] == first["total"] == 3
++    assert second["total"] is first["total"] is None
++    assert first["has_more"] and first["next_cursor"] and second["previous_cursor"]
+     assert second["items"][0]["id"] != first["items"][0]["id"]
+     for query in ("sort=raw-sql", "limit=101", "offset=10001", "min_rating=nan", "anchor=2000000001",
+                   "creator_id=nope", "visibility=draft", "versions=drafts"):
+@@ -153,16 +154,18 @@
+     data = client.get("/v1/admin/catalogue/players", headers=headers()).json()
+     assert data["total"] == 2 and data["summary"]["artificial"] == 1
+     row = next(p for p in data["items"] if p["id"] == ids["player"])
+-    assert row["races"] == {"submissions": 1, "verified_submissions": 1, "last_submission_at": 200}
+-    assert row["providers"] == ["google"] and row["published_versions"] == 2
+-    assert row["open_cases"] == 1 and row["personal_bests"] == 1 and row["last_observed_activity_day"] == 50
++    assert row["providers"] == ["google"] and "races" not in row
++    assert data["summary_scope"] == "page"
+     assert client.get("/v1/admin/catalogue/players?population=real", headers=headers()).json()["total"] == 1
+     assert client.get("/v1/admin/catalogue/players?population=artificial", headers=headers()).json()["total"] == 1
+     assert client.get("/v1/admin/catalogue/players?provider=google", headers=headers()).json()["total"] == 1
+     detail = client.get("/v1/admin/catalogue/players/" + ids["player"], headers=headers())
+     record = detail.json()
+     assert record["support"]["effective"]["publishing_slots"] == 1
+-    assert record["activity"]["open_cases"] == 1
++    activity = record["activity"]
++    assert activity["submissions"] == activity["verified_submissions"] == 1 and activity["last_submission_at"] == 200
++    assert activity["published_versions"] == 2 and activity["personal_bests"] == 1
++    assert activity["open_cases"] == 1 and activity["last_observed_activity_day"] == 50
+     assert record["case_activity"][0]["kind"] == "note"
+     assert record["observed_journey"]["milestones"] == [{"name": "menu_ready", "at": 400}]
+     assert record["coverage"]["verified_recovery"] == record["coverage"]["financial_revenue"] == "unavailable"
+--- a/backend/tests/test_studio_platform.py
++++ b/backend/tests/test_studio_platform.py
+@@ -208,7 +208,7 @@
+         db.commit()
+     project_pending(app.state.session_factory, at=now())
+     project_pending(app.state.session_factory, at=now())
+-    url = f"/v1/admin/analysis/behaviour?since={at - 100}&until={at + 100}&build_id=release-a"
++    url = f"/v1/admin/analysis/behaviour?since={at - 100}&until={at + 100}&build_id=release-a&view=all"
+     result = client.get(url, headers=ANALYST)
+     assert result.status_code == 200, result.text
+     report = result.json()
+--- /dev/null
++++ b/backend/tests/test_studio_performance.py
+@@ -0,0 +1,197 @@
++"""Useful Studio evidence remains exact while directory and tab work is bounded."""
++# ruff: noqa: F811 - imported pytest fixtures are dependencies by name
++from contextlib import contextmanager
++from uuid import uuid4
++
++import pytest
++from sqlalchemy import event, inspect
++from test_studio import evidence  # noqa: F401
++from test_studio_catalogue import catalogue  # noqa: F401
++from test_studio_platform import ANALYST, DAY, OWNER, platform  # noqa: F401
++
++from bmt_backend.cursors import decode_cursor, encode_cursor
++from bmt_backend.identity_models import Player
++from bmt_backend.studio_platform_models import AnalysisDay, AnalysisPerson, AnalysisSession, AnalysisState
++from bmt_backend.track_models import now
++
++
++@contextmanager
++def statements(app):
++    queries = []
++
++    class SQL(str):
++        pass
++
++    def capture(_connection, _cursor, statement, _parameters, context, _executemany):
++        # Exclude fixed HTTP rate-budget writes and the indexed bearer probe.
++        # These assertions measure report SQL, including its read transaction.
++        if "rate_buckets" in statement or "WHERE session_tokens.access_hash" in statement:
++            return
++        query = SQL(statement)
++        compiled = getattr(context, "compiled", None)
++        query.offset = getattr(getattr(compiled, "statement", None), "_offset_clause", None)
++        queries.append(query)
++
++    event.listen(app.state.engine, "before_cursor_execute", capture)
++    try:
++        yield queries
++    finally:
++        event.remove(app.state.engine, "before_cursor_execute", capture)
++
++
++def test_overview_has_no_lifetime_account_content_or_history_scan(platform):
++    app, client, _player, _auth = platform
++    with statements(app) as sql:
++        response = client.get("/v1/admin/overview?days=90", headers=ANALYST)
++    assert response.status_code == 200
++    data = response.json()
++    assert data["pulse_until"] - data["pulse_since"] == 300
++    assert not {"players", "disabled", "tracks", "versions", "racers", "daily"} & data.keys()
++    assert len(sql) == 2 and not any("FROM players" in query or "track_versions" in query for query in sql)
++    assert "runs.finished_at >=" in sql[0] and "runs.finished_at <=" in sql[0]
++
++
++@pytest.mark.parametrize("kind", ["players", "tracks"])
++def test_catalogue_uses_lookahead_and_never_counts_population_or_player_history(catalogue, kind):
++    client, app, _ids = catalogue
++    with statements(app) as sql:
++        response = client.get(f"/v1/admin/catalogue/{kind}?limit=1", headers=ANALYST)
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data["total"] is None and data["next_cursor"] and len(data["items"]) == 1
++    assert not any("count(" in query.lower() for query in sql)
++    if kind == "players":
++        assert len(sql) == 3, sql  # read transaction, one player page, one provider batch
++        assert not any(name in query for name in ("FROM runs", "personal_bests", "studio_cases", "product_player_days") for query in sql)
++        assert data["summary_scope"] == "page" and "races" not in data["items"][0]
++
++
++@pytest.mark.parametrize("sort", ["created", "name"])
++@pytest.mark.parametrize("direction", ["asc", "desc"])
++def test_player_cursor_forward_backward_ties_filter_fence_and_later_inserts(platform, sort, direction):
++    app, client, _player, _auth = platform
++    stamp = now() - 100
++    with app.state.session_factory() as db:
++        rows = [Player(id=str(uuid4()), display_name=f"Page fixture {i:03}", created_at=stamp,
++                       is_test_driver=i % 2 == 0) for i in range(9)]
++        db.add_all(rows)
++        db.commit()
++        expected = [p.id for p in sorted(rows, key=lambda p: (p.created_at if sort == "created" else p.display_name.lower(), p.id),
++                                        reverse=direction == "desc")]
++    params = {"q": "Page fixture", "sort": sort, "direction": direction, "limit": 3, "anchor": now()}
++    url = "/v1/admin/catalogue/players"
++    first = client.get(url, params=params, headers=OWNER).json()
++    with app.state.session_factory() as db:
++        db.add(Player(display_name="Page fixture later", created_at=params["anchor"] + 1))
++        db.commit()
++    with statements(app) as sql:
++        second = client.get(url, params={**params, "cursor": first["next_cursor"]}, headers=OWNER).json()
++        third = client.get(url, params={**params, "cursor": second["next_cursor"]}, headers=OWNER).json()
++        previous = client.get(url, params={**params, "cursor": third["previous_cursor"]}, headers=OWNER).json()
++    assert [p["id"] for page in (first, second, third) for p in page["items"]] == expected
++    assert previous["items"] == second["items"] and not third["has_more"]
++    assert all(query.offset is None for query in sql) and not any("count(" in query.lower() for query in sql)
++    assert client.get(url, params={**params, "state": "disabled", "cursor": first["next_cursor"]}, headers=OWNER).status_code == 422
++    invalid = decode_cursor(first["next_cursor"])
++    invalid["value"] = True
++    assert client.get(url, params={**params, "cursor": encode_cursor(invalid)}, headers=OWNER).status_code == 422
++
++
++@pytest.mark.parametrize("sort", ["published", "name", "creator", "rating", "finishers"])
++@pytest.mark.parametrize("direction", ["asc", "desc"])
++def test_track_cursor_matches_full_sort_including_unrated_and_backwards(catalogue, sort, direction):
++    client, _app, _ids = catalogue
++    url = "/v1/admin/catalogue/tracks"
++    params = {"versions": "all", "sort": sort, "direction": direction, "anchor": 2000000000}
++    expected = client.get(url, params=params, headers=ANALYST).json()["items"]
++    pages, cursor = [], None
++    for _ in range(3):
++        data = client.get(url, params={**params, "limit": 1, **({"cursor": cursor} if cursor else {})}, headers=ANALYST).json()
++        pages.append(data)
++        cursor = data["next_cursor"]
++    assert [r for data in pages for r in data["items"]] == expected and cursor is None
++    previous = client.get(url, params={**params, "limit": 1, "cursor": pages[-1]["previous_cursor"]}, headers=ANALYST).json()
++    assert previous["items"] == pages[-2]["items"]
++
++
++def test_exact_player_identifier_uses_equality_not_text_scan(platform):
++    app, client, player, _auth = platform
++    for path in ("catalogue/players", "entities/players"):
++        with statements(app) as sql:
++            data = client.get("/v1/admin/" + path, params={"q": player}, headers=OWNER).json()
++        assert [row["id"] for row in data["items"]] == [player]
++        assert not any("LIKE" in query for query in sql)
++
++
++def test_full_length_unicode_names_have_valid_bounded_cursors(platform):
++    app, client, _player, _auth = platform
++    prefix = "\U0001f3ce" * 39
++    with app.state.session_factory() as db:
++        db.add_all([Player(display_name=prefix + str(i), created_at=now() - 10) for i in range(3)])
++        db.commit()
++    params = {"q": prefix, "sort": "name", "direction": "asc", "limit": 1, "anchor": now()}
++    url = "/v1/admin/catalogue/players"
++    first = client.get(url, params=params, headers=OWNER).json()
++    assert len(first["next_cursor"]) <= 2048
++    response = client.get(url, params={**params, "cursor": first["next_cursor"]}, headers=OWNER)
++    assert response.status_code == 200, response.text
++    assert response.json()["items"][0]["display_name"] == prefix + "1"
++
++
++def test_finance_keeps_period_flows_without_global_wallet_or_unused_purchase_counts(platform):
++    app, client, _p, _a = platform
++    with statements(app) as sql:
++        response = client.get("/v1/admin/finance", headers=OWNER)
++    assert response.status_code == 200
++    assert "money" in response.json() and "coins" in response.json() and "wallets" not in response.json()
++    assert not any("coin_wallets" in query or "FROM purchases" in query for query in sql)
++    assert "ix_studio_finance_received" in {index["name"] for index in inspect(app.state.engine).get_indexes("studio_finance_events")}
++
++
++@pytest.fixture
++def observations(platform):
++    app, client, _p, _a = platform
++    start = (now() // DAY - 45) * DAY
++    with app.state.session_factory() as db:
++        state = db.get(AnalysisState, 1)
++        state.started_at, state.processed_through, state.latest_client_at = start, now(), now()
++        for i in range(3):
++            identity = str(uuid4())
++            db.add(AnalysisPerson(player_id=identity, first_at=start + 100, first_build="report-fixture", first_platform="android",
++                journey={"anchor": start + 100, "steps": i + 1, "truncated": False}))
++            db.add(AnalysisSession(player_id=identity, session_id=str(uuid4()), first_at=start + 100, last_at=start + 200,
++                foreground_ms=(i + 1) * 1000, build_id="report-fixture", platform="android"))
++            for day in (0, 1, 7, 30):
++                for dimension in ("one", "two"):
++                    db.add(AnalysisDay(day=start // DAY + day, player_id=identity, dimension=dimension, build_id="report-fixture",
++                        platform="android", mode="free_race", first_at=start + day * DAY, last_at=start + day * DAY,
++                        counters={"active": 1, "race_started": i + 1, "race_finished": 1, "race_accepted": 1, "foreground_ms": 1000}))
++        db.commit()
++    return app, client, {"since": start, "until": start + DAY, "build_id": "report-fixture"}
++
++
++@pytest.mark.parametrize("view", ["activity", "retention", "journey", "engagement"])
++def test_behaviour_tabs_match_combined_exact_report_without_other_analyses(observations, view, record_property):
++    app, client, params = observations
++    url = "/v1/admin/analysis/behaviour"
++    combined = client.get(url, params={**params, "view": "all"}, headers=ANALYST).json()
++    with statements(app) as sql:
++        response = client.get(url, params={**params, "view": view}, headers=ANALYST)
++    assert response.status_code == 200, response.text
++    data = response.json()
++    fields = {"activity": ("active_players", "counters", "daily"), "retention": ("retention",),
++              "journey": ("first_race",), "engagement": ("engagement",)}[view]
++    assert all(data[field] == combined[field] for field in fields)
++    if view == "activity":
++        assert data["active_players"] == 3 and data["counters"]["race_started"] == 12
++        assert not any("studio_analysis_people" in query or "studio_analysis_sessions" in query for query in sql)
++    if view == "retention":
++        assert all(data["retention"][0]["d" + str(n)]["returned"] == 3 for n in (1, 7, 30))
++        assert not any("studio_analysis_sessions" in query for query in sql)
++    if view == "journey":
++        assert data["first_race"]["eligible"] == 3 and [r["players"] for r in data["first_race"]["steps"]][:3] == [3, 2, 1]
++        assert sum("FROM studio_analysis_people" in query for query in sql) == 1
++    if view == "engagement":
++        assert data["engagement"]["foreground_ms"] == 6000 and data["engagement"]["sessions"] == 3
++    assert len(sql) <= 6
++    record_property("report_sql_statements", len(sql))
+--- /dev/null
++++ b/backend/tests/test_studio_performance_postgres.py
+@@ -0,0 +1,64 @@
++"""The Studio paging and report budgets on an isolated real PostgreSQL schema."""
++# ruff: noqa: F401, F811
++from uuid import uuid4
++
++import pytest
++from test_auth_postgres import postgres_auth
++from test_studio_performance import (
++    catalogue,
++    evidence,
++    observations,
++    platform,
++    test_behaviour_tabs_match_combined_exact_report_without_other_analyses,
++    test_catalogue_uses_lookahead_and_never_counts_population_or_player_history,
++    test_exact_player_identifier_uses_equality_not_text_scan,
++    test_finance_keeps_period_flows_without_global_wallet_or_unused_purchase_counts,
++    test_full_length_unicode_names_have_valid_bounded_cursors,
++    test_overview_has_no_lifetime_account_content_or_history_scan,
++    test_player_cursor_forward_backward_ties_filter_fence_and_later_inserts,
++    test_track_cursor_matches_full_sort_including_unrated_and_backwards,
++)
++
++pytestmark = pytest.mark.postgres
++
++
++@pytest.fixture
++def auth_app(postgres_auth):
++    return postgres_auth[0]
++
++
++@pytest.fixture
++def auth_client(postgres_auth):
++    return postgres_auth[1]
++
++
++@pytest.fixture
++def catalogue(auth_app, auth_client, monkeypatch):
++    """Read-only catalogue data needs no fabricated accepted race/PB writes.
++
++    Seed projections at insert time. The separate legacy PB fixture currently
++    fails inside concurrent migration 0050's JSON comparison before a Studio
++    read executes; retain its failure rather than changing its trigger here.
++    """
++    from dataclasses import replace
++
++    from bmt_backend.identity_models import Identity, Player
++    from bmt_backend.track_models import Track, TrackVersion
++    auth_app.state.settings = replace(auth_app.state.settings, admin_owner_key="o" * 40, admin_analyst_key="a" * 40)
++    monkeypatch.setattr("bmt_backend.studio_catalogue.now", lambda: 2000000000)
++    with auth_app.state.session_factory() as db:
++        owner = Player(display_name="Catalogue owner")
++        other = Player(display_name="Catalogue artificial", is_test_driver=True)
++        db.add_all([owner, other])
++        db.flush()
++        db.add(Identity(player_id=owner.id, provider="google", subject=str(uuid4())))
++        for i in range(3):
++            track = Track(owner_id=owner.id, official=i == 1)
++            db.add(track)
++            db.flush()
++            db.add(TrackVersion(track_id=track.id, number=1, name=f"Read-only course {i}", content_hash=str(i) * 64,
++                manifest={}, state="published", created_at=100 + i, published_at=None if i == 2 else 100 + i,
++                rating_count=0 if i == 2 else 2, rating_sum=0 if i == 2 else 8 + i,
++                verified_finishers=10 + i, discovery={"theme": "pine", "points": [[0, 0], [1, 1]]}))
++        db.commit()
++    return auth_client, auth_app, {}
+--- a/scripts/test_backend_studio_console.py
++++ b/scripts/test_backend_studio_console.py
+@@ -168,10 +168,11 @@
+                     auth = {"Authorization": "Bearer " + config["owner"]}
+                     overview = http.get("/v1/admin/overview", headers=auth).json()
+                     players = http.get("/v1/admin/entities/players", headers=auth).json()
+-                    assert overview["players"] == players["total"] == 2
++                    assert len(players["items"]) == players["total"] == 2
++                    assert overview["pulse_until"] - overview["pulse_since"] == 300
+                     flags = {item["id"]: item["is_test_driver"] for item in players["items"]}
+                     assert flags == {fixture["player_id"]: False, fixture["artificial_player_id"]: True}
+-                    checks.append("All player totals include both classes; development sign-in does not imply artificial")
++                    checks.append("Player directory includes both classes; development sign-in does not imply artificial")
+                     navigate("players")
+                     expect(page.locator("#filters")).to_be_visible()
+                     expect(page.locator("#main")).to_contain_text("Real")
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -1,4 +1,6 @@
+ # Beat my track backend
++
++Local Studio performance update (2026-10-22): directory pages use bounded forward/backward cursors and omit whole-catalogue counts and per-row history. Player history remains in selected-player support. Behaviour tabs request only their own exact analysis; the duplicate historical view, unused lifetime overview totals and aggregate wallet balances are retired. Revenue and Coin flows retain their reporting periods. Migration `0045_studio_report_reads` indexes latest financial receipts and belongs to the current merged migration chain. API and Studio assets must roll out together because list totals can be null and behaviour defaults to Activity. [Disposition, measurements, actual checks and remaining limits](../docs/evidence/studio-performance-2026-10-22/report.json). This local change has not been deployed.
+ 
+ Local queue-capacity fix (2026-10-22): migration `0047_queue_capacity_slots` replaces the global pending-counter write with independently owned transactional slots for races, publications and historical validations. The exact configured total limit, eight pending jobs per player, leases and retries remain. `queue_capacity` is now a read-only aggregate view. All writers must use matching API/worker code; quiesce them for migration and coordinate capacity configuration across replicas. Limit reductions can require draining occupied higher slots. [Implementation, actual PostgreSQL reproductions and rollout limits](../docs/evidence/queue-capacity-slots-2026-10-22/report.json). This local change has not been deployed.
+ 

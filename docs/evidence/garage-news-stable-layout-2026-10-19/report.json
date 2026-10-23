@@ -1,0 +1,133 @@
+{
+  "date": "2026-10-19",
+  "requirements": {
+    "NPT01": "Keep the editorial and picture section widths stable; prevent translucent articles or pictures overprinting.",
+    "NPT02": "Adapt the supplied Turn.js reference into a native page fold covering the entire newspaper sheet, including masthead, tabs and footer. Keep the external Garage and desk stationary.",
+    "NPT03": "Preserve reading/actions/account boundaries, bounded transient work, cancellation, exact native rendering evidence and original validation assertions."
+  },
+  "reference": {
+    "url": "https://www.turnjs.com/",
+    "documentation": "https://www.turnjs.com/docs/index.php/Main_Page",
+    "use": "Visual reference only. No Turn.js code, browser, JavaScript library, licensed asset or runtime dependency was imported."
+  },
+  "implementation": {
+    "duration_seconds": 0.52,
+    "coverage": "Complete Newspaper PanelContainer rectangle, not just the article well.",
+    "effect": "Opaque corner fold with a shaded reverse, faint reverse ink and a cast shadow; Previous mirrors the fold.",
+    "stable_layout": "Fixed-proportion editorial/photo slots; an allocated page host isolates transient text minimums; inherited theme is retained in the printed page.",
+    "snapshot": "One attached 2D SubViewport, rendered once, capped at2048x1024 with logical-size override. Only test probes use CPU readback.",
+    "lifecycle": "Two attached whole-sheet trees during a turn; outgoing controls are inert, and completion, rapid selection, refresh, hide, resize and tab changes settle and release the old sheet."
+  },
+  "changed_files": [
+    "game/ui/garage_news_menu.gd",
+    "game/ui/garage_news_photo.gdshader",
+    "game/tests/test_garage_news.gd",
+    "game/tests/test_garage_news_native.gd",
+    "AGENTS.md",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "game/ui/garage_news_turn.gdshader",
+    "game/ui/garage_news_turn.gdshader.uid"
+  ],
+  "validation": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news.gd",
+      "result": "GARAGE NEWS: 70 checks, 0 failures",
+      "exit_code": 0,
+      "log": "focused.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news_native.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence-root=res://../docs/evidence/garage-news-stable-layout-2026-10-19/whole-paper'",
+      "result": "GARAGE NEWS NATIVE: 868 checks, 0 failures",
+      "exit_code": 0,
+      "log": "whole-paper-compatibility.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news_native.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/garage-news-stable-layout-2026-10-19/whole-paper'",
+      "result": "GARAGE NEWS NATIVE: 868 checks, 0 failures",
+      "exit_code": 0,
+      "log": "whole-paper-mobile.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news_race.gd",
+      "result": "GARAGE NEWS RACE: 90 checks, 0 failures",
+      "exit_code": 0,
+      "log": "race.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_share.gd",
+      "result": "PUBLICATION_SHARE: 45 checks, 0 failures",
+      "exit_code": 0,
+      "log": "sharing.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "result": "SCRIPT_PARSE: 909 scripts, 0 failures",
+      "exit_code": 0,
+      "log": "parser.log"
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import",
+      "result": "Import completed successfully; the sequential runner proceeded to the parser.",
+      "exit_code": 0,
+      "log": "import.log"
+    }
+  ],
+  "reproductions": [
+    {
+      "result": "GARAGE NEWS NATIVE: 742 checks, 74 failures",
+      "log": "original-compatibility.log",
+      "scope": "Seven transition samples at four sizes reproduced changing section geometry, overprinting and pictures leaving their article. This precedes the later local-story and full-sheet coverage additions."
+    },
+    {
+      "result": "NEWS PHOTO ALPHA: 4 checks, 2 failures",
+      "log": "original-photo-alpha.log",
+      "scope": "The original photo shader rendered alpha1.0 for inherited0.25 and0.75 in an actual64x64 GPU viewport."
+    }
+  ],
+  "iterations": [
+    {
+      "result": "Intermediate fixed-column sequential fade passed818 native checks per renderer.",
+      "evidence": "final/",
+      "scope": "Superseded when the owner supplied the Turn.js reference."
+    },
+    {
+      "result": "Article-only native fold passed860 checks per renderer.",
+      "evidence": "turn/",
+      "scope": "Superseded when the owner explicitly requested the whole newspaper."
+    },
+    {
+      "result": "Initial whole-sheet builds exposed temporary text minimums canceling the tween; a provisional passing run also emitted anchor-size warnings.",
+      "logs": [
+        "attempt-24092.log",
+        "attempt-13688.log",
+        "attempt-13712.log",
+        "attempt-20012.log",
+        "attempt-25032.log",
+        "attempt-11524.log",
+        "attempt-full-sheet-anchor-warning.log"
+      ],
+      "correction": "Use an allocated page host, deferred valid-width minimum updates, and anchor-based fitting. Final focused/native logs contain no such warnings or script errors."
+    }
+  ],
+  "test_changes": "The previous assertion deliberately expecting two translucent impressions was replaced after the owner rejected the overprint. Fixed-column checks remain strict. Rendered opacity, opaque fold masks in both directions, complete start/finish coverage, and full masthead/footer inclusion now test the final requested behavior.",
+  "visual_evidence": [
+    "whole-paper/gl_compatibility/story-turn-2-1280.png",
+    "whole-paper/gl_compatibility/story-turn-4-1280.png",
+    "whole-paper/gl_compatibility/story-turn-6-1280.png",
+    "whole-paper/gl_compatibility/record-960.png",
+    "whole-paper/gl_compatibility/record-1280.png",
+    "whole-paper/mobile/story-turn-2-1280.png",
+    "whole-paper/mobile/story-turn-4-1280.png",
+    "whole-paper/mobile/story-turn-6-1280.png",
+    "whole-paper/mobile/record-960.png",
+    "whole-paper/mobile/record-1280.png"
+  ],
+  "limits": [
+    "Owner animation/touch acceptance remains.",
+    "Desktop Mobile is the Windows Vulkan renderer; no Android execution or physical-device performance is claimed.",
+    "No phone attachment check/device test, APK/export/install, backend/account mutation or deployment was performed.",
+    "Concurrent unrelated Garage/sidebar and other work was preserved."
+  ],
+  "checkpoint": "checkpoint.json"
+}

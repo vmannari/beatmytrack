@@ -1,0 +1,222 @@
+{
+  "date": "2026-10-16",
+  "recorded_at_utc": "2026-10-16T15:56:00.610738+00:00",
+  "scope": "Garage News implementation only; concurrent community, economy, editor, audio and deployment work retained.",
+  "implemented": [
+    "100/1000/10000 distinct physical-track racers, deduplicated across cars/revisions",
+    "Verified track/lap world records; ties and slower times silent",
+    "Mutual friend requests/accept/decline/remove with 100-relationship limits",
+    "Observed daily friend overtakes and percentile drops on public comparable boards",
+    "Native Garage News/Friends with retained live showroom and scoped caches"
+  ],
+  "load_bounds": {
+    "demand": "POST on explicit News entry; one pass per UTC day, ten-minute runnable window; no automatic next-day or inactive-player jobs",
+    "batch_boards": 8,
+    "friend_limit": 100,
+    "peer_pb_queries_per_changed_batch_max": 2,
+    "percentile_scalars_per_metric": 9,
+    "percentile_cache": "Rebuild at most once per demanded board per UTC day; unchanged revisions reused across days; only presentation-cache row locks",
+    "unchanged": "History query joins small revision/roster metadata; skips watch JSON, PB peer reads and rank aggregation",
+    "idle": "One indexed active-demand candidate query, with no raced-board reads when no demand exists",
+    "feed": "Pure keyset read, 30 items + one lookahead; no COUNT; only needed labels/tick-rate returned",
+    "client": "At most 100 rows; account/origin-scoped 60-second reads; at most four visible follow-up reads; no hidden/prepared/outgoing refresh",
+    "retention": "90-day read floor; at most 100 expired rows pruned per minute via expiry index, up to 100 excess inbox rows per active pass; chunked erasure",
+    "race_capture": "No friend/racer fanout; indexed result capture and constant-size owner news. Lifetime participation has one-time SQL seeding. No new worker process."
+  },
+  "semantics": [
+    "First daily check/new friendship establishes a baseline; no historical defeat spam.",
+    "Daily comparisons show observed state; transient crossings that reverse between checks can be missed.",
+    "Track revision/car/rules stay pinned; deleted-account public times remain comparable.",
+    "Blocking removes the friendship, suppresses actor/creator news and clears matching native cache rows without background reads."
+  ],
+  "verification": {
+    "news_sqlite_postgres_and_native_http": {
+      "passed": 38,
+      "skipped": 2,
+      "log": "checks/news-release-checks.log",
+      "xml": "checks/news-release-checks.xml",
+      "skips": "Two SQLite variants of PostgreSQL row-lock tests; both PostgreSQL variants passed."
+    },
+    "regression": {
+      "passed": 172,
+      "skipped": 22,
+      "deselected": 6,
+      "log": "checks/news-regression-final.log",
+      "xml": "checks/news-regression-final.xml",
+      "modules": [
+        "test_news",
+        "test_news_http",
+        "test_domains",
+        "test_lap_bests",
+        "test_privacy",
+        "test_privacy_postgres",
+        "test_service_worker",
+        "test_worker_lifecycle",
+        "test_rivalry_concurrency"
+      ]
+    },
+    "final_block_interop_and_http": {
+      "passed": 5,
+      "log": "checks/news-block-final.log",
+      "xml": "checks/news-block-final.xml"
+    },
+    "native_client": {
+      "checks": 17,
+      "failures": 0,
+      "log": "checks/news-client-complete.log"
+    },
+    "native_layout": {
+      "gl_compatibility_checks": 30,
+      "mobile_checks": 30,
+      "failures": 0,
+      "sizes": [
+        [
+          960,
+          540
+        ],
+        [
+          1280,
+          720
+        ],
+        [
+          1600,
+          720
+        ]
+      ],
+      "logs": [
+        "checks/news-native-gl.log",
+        "checks/news-native-mobile-final.log"
+      ],
+      "notes": "Rendered fixture identities/events, not live player news; final Mobile rerun exited after bounded teardown settling."
+    },
+    "parser": {
+      "scripts": 813,
+      "failures": 0,
+      "log": "checks/news-parse-final.log"
+    },
+    "index_plans": "SQLite EXPLAIN QUERY PLAN and PostgreSQL forced-index capability checks pass for feed, active demands, history cursor and lap rank; sparse fixtures are not a production capacity benchmark.",
+    "lint": "Ruff passed on new Python modules/migration/tests. Scoped whitespace and task-only reverse-apply checks passed."
+  },
+  "baseline_failures": {
+    "count": 6,
+    "log": "checks/news-baseline.log",
+    "xml": "checks/news-baseline.xml",
+    "method": "Same isolated suite with News capture/demand disabled and finalizer recompiled in memory with original FOR UPDATE lock mode. No source rollback or shared-data change. This is not a full pre-task checkout.",
+    "cases": [
+      "test_hide_preserves_records_and_share_links: document 404 instead of historical expected 200, both databases",
+      "test_checkpoint_rules_upgrade_keeps_track_and_historical_board: verifier contract 409, both databases",
+      "test_recorded_practice_through_real_publish_worker: validator unavailable 503, both databases"
+    ]
+  },
+  "initial_iterations": [
+    "Concurrent 0037 earned-coins migration required moving this additive migration to 0038.",
+    "Corrected initial SQLAlchemy join ambiguity and cache-row autoflush ordering.",
+    "Corrected test expectations for the existing creator public result.",
+    "Replaced truncated SQLAlchemy Row repr in index-plan evidence with full tuples.",
+    "Initial PostgreSQL test began before the stopped disposable fixture was started; all final PostgreSQL checks passed. Test URL used loopback IPv4 to avoid IPv6 connection fallback delay.",
+    "Initial HTTP guest fixture cleared player metadata but left its token; corrected fixture and required an explicit account ID for News availability.",
+    "Initial Mobile render completed all 30 checks but stalled at shutdown; only its verified processes were stopped. Harness now allows twenty teardown frames; final Mobile completed.",
+    "Sandbox Godot processes emit a root-certificate-store warning; loopback fixture HTTP and native checks passed."
+  ],
+  "commands": {
+    "news": [
+      ".tools/backend-venv/Scripts/python.exe",
+      "-m",
+      "pytest",
+      "backend/tests/test_news.py",
+      "backend/tests/test_news_http.py",
+      "-q",
+      "--tb=short",
+      "--junitxml=build/news-release-checks.xml",
+      "-o",
+      "junit_family=legacy"
+    ],
+    "regression": "Same interpreter, nine modules listed above, -k not (hide_preserves_records_and_share_links or checkpoint_rules_upgrade_keeps_track_and_historical_board or recorded_practice_through_real_publish_worker), --junitxml=build/news-regression-final.xml -o junit_family=legacy",
+    "postgres_environment": "Existing disposable fixture configuration read privately from .tools/backend-postgres.env; localhost host replaced with 127.0.0.1 only in the child test process. Credentials were never printed or saved here.",
+    "native_client": [
+      "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe",
+      "--headless",
+      "--path",
+      "game",
+      "--script",
+      "res://tests/test_garage_news.gd"
+    ],
+    "native_layout": "Same pinned Godot, --path game --rendering-method gl_compatibility or mobile --resolution 1280x720 --script res://tests/test_garage_news_native.gd",
+    "parse": "Same pinned Godot, --headless --path game --script res://tests/test_script_parse.gd"
+  },
+  "release": {
+    "migration": "0038_garage_news, after concurrent 0037_earned_coins",
+    "bootstrap": "garage_news_version: 1",
+    "retained_backend_migration_or_deployment_performed_by_this_task": false,
+    "new_worker_or_push_service": false,
+    "phone_test_apk_or_production_capacity_test": false
+  },
+  "checkpoint": {
+    "scope": "Only Garage News additions; shared-file before images reconstruct the exact reversed task hunks. Concurrent changes remain identical on both sides. No main index or HEAD mutation.",
+    "sha256": {
+      "backend/bmt_backend/news.py": "53da73ebe32b61d3a67af5dc0bbfdd772a444666020502a512acf45ab31f037a",
+      "backend/bmt_backend/news_models.py": "02e32bdaa20933231d35f234470bd79383f749132663f37544ed7107e7c5ba25",
+      "backend/bmt_backend/migrations/versions/0038_garage_news.py": "e8a544d92c5c69223047f390499fb664a58e3303d44f8e6ac3f01f66f0e08ba8",
+      "backend/tests/test_news.py": "e593c87a4b221e13ccd83f093cebb99add5d4cb3adb6c16a7e09cd14b3e82087",
+      "backend/tests/test_news_http.py": "571fc9c8c2de69c24eaa139cf2b08939cfdea6ab5206cf0e2adaac8c09c20bb8",
+      "game/backend/news_client.gd": "0b3269493a3155b3a0e2cf1c63816b4c113ff8c251953d4436cc6a4817b560f2",
+      "game/backend/news_client.gd.uid": "e090f0f44038edad4051fd5041ced946f6cac3906ff2c9bf19ecc804fab1d34e",
+      "game/ui/garage_news_menu.gd": "7391553996031baadd7a3144a3a242bd024fd6c5c401807f85a6d1a2274179ac",
+      "game/ui/garage_news_menu.gd.uid": "7adf4fa3b761e666ef925e7bf5fc3e21c7e6bbec969e37f50533183e90293ea9",
+      "game/tests/test_garage_news.gd": "7f58b825e5c5ff80e201a0eccbe50cb5c233d943b4e3b223ae1e90b78b03a2fa",
+      "game/tests/test_garage_news_native.gd": "959ba293b913224fa8bdbda819256ed9576da89e3d28c5a5206459de933dd2ff",
+      "game/tests/test_garage_news_http.gd": "8ce24428277abaebcf82051497a785400dd6c28f2053f823c54fabf67e30d795",
+      "backend/bmt_backend/app.py": "0d09f3f8620f8db18348de74434fce5bd7be94c07e5c3948d1b3c6c040501368",
+      "backend/bmt_backend/migrations/env.py": "6f8f2861bd4f5137809525dfc5914ec0712ba9a7a3e8dafa3b4ea391f69dbef3",
+      "backend/bmt_backend/worker.py": "6d583e44f2925672f89bb251e5184e2c963799928232df8bc13e752f3e9cc7d2",
+      "backend/bmt_backend/privacy.py": "0f1b2b997ae1f3ecbf1b2eba9a839e04606441c8bb09da7423d29b98d4e887ee",
+      "backend/bmt_backend/community.py": "6bb6c177bd25ded9ac7628b36332c7b1e5943638a191b12b2ee82a6c67f9b786",
+      "game/backend/backend_client.gd": "2deef473c57b8e58fb6ca9eddd0be38537217b95d4c3855cd66df957691efd1c",
+      "game/core/app.gd": "063fd9f28972b54fd687e233ede4e2894248272029222a34629712d729322607",
+      "game/ui/garage_mode_icons.gd": "0b262ced65d76421b953ed07fb458543874431c9185fb49fc498d2deb0915057",
+      "game/ui/garage_page.gd": "7c327ac55dfe2577d91e9e9b1b3731fae9d147caefd86f4c836d6c24a92b112a",
+      "backend/README.md": "f878444aa106a9a817734c180c6bc4e6b815ad384fd0b49c754df4e30c15d313"
+    },
+    "task_patch": "task-only.patch",
+    "reverse_apply_check": "passed"
+  },
+  "remaining_acceptance": [
+    "Owner News/Friends usability and phone touch/appearance",
+    "Physical-phone latency/memory; realistic production traffic and billing",
+    "Selected-environment backup/migration and matching API/worker/client release"
+  ],
+  "artifact_sha256": {
+    "checkpoint.json": "c579fcd899708c67de1e99620a402212e73d1d6ef42eefc5f698ea3a223ab13d",
+    "task-only.patch": "737a924dd0054b62cbc8ae1045aa248f909d52c545de78a8b8e3f45ff5486a40",
+    "checks/news-backend-first.log": "f31e0f4fdcb4c354cb8c9a7512c04e621d333332520b3cf18055f49df870c68a",
+    "checks/news-baseline.log": "095a645af58de6c0549531b904050ed8135afc24ba057cc27289c9e9817119b1",
+    "checks/news-baseline.xml": "f83b5427f0f4e30111954be8608f79924349becf0f9adadbf9554c8be46fd81f",
+    "checks/news-block-final.log": "45134f3ba68afeafb61726c52ceba85a372a1a9c601db5878dfa90309e45fa82",
+    "checks/news-block-final.xml": "28d57bd4a69c60e77f9d6e6f8457e77374976f558a57e7358e3bc7dd3aa76697",
+    "checks/news-client-complete.log": "cbee5216e604934c5fb97758bc1664decccd2861572aee0732b7982964298c68",
+    "checks/news-http.log": "af21dee86815cc33e2d8e00704ae3f6f55ba28dbab3cbbf02586fa083753c831",
+    "checks/news-native-gl.log": "5e25d9c831778f1c8fdaf9c8bfb32d76dfe6865a1c265fb7b5bd892eafe00642",
+    "checks/news-native-mobile-final.log": "042cdc9a10fea5ad2894a37394e5366b0c0d84a79f8b96b561227e68d04561db",
+    "checks/news-parse-final.log": "4dbc263d47d3f79e076b508b339b5352fecc88916712ff2e333f7436a739f17e",
+    "checks/news-regression-final.log": "bb2f56d64b3dc6195208603eea9479f31d58943409816bc365473bbfa5ff02f4",
+    "checks/news-regression-final.xml": "627136cf59bc762f5c386b8a6f6a334b3c0f81123a9878726bcf03726fe7a1dc",
+    "checks/news-regression.log": "e779f9cc6ecf8c890d68b99966978936c7c80f9fe28551c7ed779572f31926a5",
+    "checks/news-regression.xml": "caf5fe9dc047d13e4ebd69600dcf5d35ed0355eed3d9297a2f8606c84c103df3",
+    "checks/news-release-checks.log": "fa54aabb97630cb767dac6f664cbc105421a4b804af394ff9914a6bb80430c75",
+    "checks/news-release-checks.xml": "6c401eafa6d11fed63692cd3e5aad2364d14c8141355fa8a80946cea91b17d6d",
+    "gl_compatibility/friends-1280.png": "2cfbc45dfba445d03519a4719ee0f20c29b58968d40f7ecee8063b65b3d1243c",
+    "gl_compatibility/friends-1600.png": "748066320038051cd7174ebb221259e991db1fcf87d9d2f137f32018fac69ad3",
+    "gl_compatibility/friends-960.png": "55c217acc70c3eb50689cf3a06bb23efbc5c6201cb1e9fe68f769996fce7547b",
+    "gl_compatibility/news-1280.png": "04ce944aca06bc0b1475cbbf6bdab382f3891452dea4c872b3413a895bcdd8e5",
+    "gl_compatibility/news-1600.png": "5cbeb4931ce2adbfc11e3a054095f0d727744220bc4bcc014558e7bb8fdf9a1a",
+    "gl_compatibility/news-960.png": "db1e69afe8e269687b1c9735249ed5630bec4761a957be3e49336059408ededa",
+    "mobile/friends-1280.png": "9902c17d6fbd9a0acced83539b146c8d602107d8c151de62c0439c893f8a7398",
+    "mobile/friends-1600.png": "d6ee4b7d575a3db4405076080bad5fe04f9ebe7ec6681d855345815650255f4b",
+    "mobile/friends-960.png": "d057f265c0a5a8bb4ad8dab50b58f0a9f0c8e8737a5c833fe3aef386f7c2ef5f",
+    "mobile/news-1280.png": "7241592f6643b5aaa3d8e3c3d85842da974fa3b8e7ea3d493b5bdf4a0e53eaa6",
+    "mobile/news-1600.png": "a1365f4a0fcdbf6ef0182872b90c318b2f8a9e90af95b177e7f9d4cff94915b4",
+    "mobile/news-960.png": "660e17bbb8f84b223b48d9e6b95267deb8039430ffa9a8b81446ab6552a01ad1",
+    "tools/news_checkpoint.py": "866dccc3783d9749b98383016b3e8701e04466d74c2753e9bc8731252b2b744a"
+  },
+  "test_fixture": "Previously stopped bmt-backend-test was started for disposable PostgreSQL checks, verified unused afterward and stopped again."
+}

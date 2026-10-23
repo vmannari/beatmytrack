@@ -1,0 +1,1164 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Backend overview and alarm desk review (2026-10-16)
++The owner requests better backend information, direct insights, guided investigation and a clear alarm view. The local implementation leads with current priorities and scoped findings, then links to source evidence. Eight on-demand metadata checks use shared, audited acknowledgement and recovery-only closure with revision/idempotency fences; active, unknown and recurrent conditions stay visible. Existing state/audit tables and public gameplay contracts are retained. SQLite/PostgreSQL57, health8, real Edge11 and presentation4 checks pass. See `docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md` for actual captures, initial attempts, thresholds and task-only checkpoint. Owner presentation/threshold acceptance remains; no continuous detector/notifications, deployment or physical-phone test.
+ 
+ ## Egyptian Desert objects override (2026-10-16)
+ The owner requests ancient Egyptian Desert objects at the AAA quality target. Add original limestone Pyramid, carved granite Obelisk, intact/broken Lotus column and Temple wall families to Desert Buildings and its bounded Populate command. Retain actual solid footprints, saved editable objects, road/start clearance, original camera/lighting/shadows/canonical behavior and cache bounds. Preserve authored stone/curved-column normals and separate Egyptian stone from ordinary retained editor materials. See `docs/DESERT_EGYPT_OBJECTS_2026_10_16.md` and its evidence report for native both-renderer views, actual checks, retained failures and scoped patch. Existing tracks are not rewritten; no phone/APK/backend/deployment. Owner/physical-phone artistic and performance acceptance remain.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-16 EGY01-EGY05/V05/G01/R01/Q01: original Desert Pyramid, Obelisk, intact/broken Lotus column and Temple wall added to Buildings and bounded saved Populate. Fitted stone courses, recessed ornament, curved capital/cornice, filtered rough stone and native previews retain solid footprints, camera/lighting/shadows/canonical contracts and cache bounds. Authored flat/curved normals survive cached world/editor assembly. Final focused79 headless/96 Compatibility/96 Mobile, population20582, prop669, creator113, raster8 and parser788 pass; actual commands/captures/initial failures/scoped patch: docs/DESERT_EGYPT_OBJECTS_2026_10_16.md. Concurrent shared-prop optimization/editor/backend work is preserved. Existing tracks are not rewritten; no phone test/attachment check/APK/backend/deployment/FPS claim. Owner/device artistic and performance acceptance remain.
++
++2026-10-16 BUI01-BUI05: local backend Overview now prioritises current conditions, scoped findings and task links. Shared alarm desk supports severity/state/area search, source evidence, audited revision-fenced acknowledgement, recovery recheck/closure and recurrence. Eight metadata checks reuse existing state/audit tables; no migration. SQLite/PostgreSQL57, health8, Edge11 and presentation4 pass; responsive seeded captures and task-only checkpoint are in docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md. Owner hierarchy/threshold acceptance remains; on-demand checks only, no notification service, deployment or physical-phone test. Concurrent game work is preserved.
+ 
+ 2026-10-15 MREV03-MREV09/R01/G01/V03-V05/Q01: seven medium menu findings fixed. Independent cancellable browser jobs remove departure joins; covered native picking and exact wash batching reduce64 mask uploads to2. Rivalry retains unchanged/status/score controls and native cars; passive Store previews make zero requests and scoped reads coalesce for60s. One bounded background snapshot writer and selected-record32/2MiB LRU bound repeated IO/memory. Four native settling draws retain exact idle images and stop repeated Garage passes; playing LP/camera/snow/washing stay animated. Focused313headless/317Compatibility/317Mobile, washing197+197, motion228+228, reflections25+25, high-priority71Mobile/47headless, app101, histograms127/loading27/parser775 pass. Stopped-LP native total draws53vs452; timings are desktop callback evidence. Final Compatibility transient1-byte variation matches original-only measured values; no arbitrary colour tolerance. Existing purchase fixture fails identically on baseline. Commands, initial failures, source hashes and task-only patch: docs/evidence/menu-medium-fixes-2026-10-15/report.json. No phone/APK/backend/deployment/FPS claim; owner/device acceptance remains.
+ 
+diff --git a/backend/bmt_backend/admin.py b/backend/bmt_backend/admin.py
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -58,7 +58,7 @@
+ 
+ @router.get("/admin/assets/{name}", include_in_schema=False)
+ def asset(name: str):
+-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css"):
++    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+diff --git a/backend/bmt_backend/admin_ui/app.js b/backend/bmt_backend/admin_ui/app.js
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -1,11 +1,12 @@
+ 'use strict';
+ const $=s=>document.querySelector(s), esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
+-let dialogGeneration=0, dialogOpener=null;
+-const sections=[['overview','Studio pulse','◫','LEARN'],['product','Product analytics','↗',''],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
+-sections.splice(4,0,['competitions','Competition inspector','⚑',''],['cases','Support cases','♙','OPERATE']);
+-sections.splice(2,0,['quality','Client quality & heatmaps','↗','']);
+-sections.find(s=>s[0]==='players')[3]='';
++let dialogGeneration=0, dialogOpener=null, lastRenderedRoute='';
++const sections=[['overview','Overview','\u25eb','START HERE'],['alarms','Alarms','!',''],
++ ['product','Player behaviour','\u2197','UNDERSTAND'],['quality','Client quality','\u2301',''],['analytics','Race submissions','\u2691',''],
++ ['tracks','Tracks & creators','\u25b1','INVESTIGATE'],['publications','Publications','\u21a5',''],['players','Players','\u2659',''],
++ ['races','Race evidence','\u2691',''],['competitions','Competitions','\u25a4',''],['cases','Support cases','\u25c7',''],
++ ['economy','Monetisation','\u25a3',''],['system','Reliability & access','\u25a4','MANAGE'],['live','Configuration','\u2637',''],['studio','Data coverage','\u25c7','']];
+ const titles=Object.fromEntries(sections.map(x=>[x[0],x[1]]));
+ const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
+ const status=v=>`<span class="console-state ${['failed','rejected','queued','disabled','hidden'].includes(String(v))?'warn':''}">${esc(v)}</span>`;
+@@ -85,14 +86,15 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api((['quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
++  const d=await api((['alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+-  if(section==='quality')html=await monitorQualityView(params);
++  if(section==='alarms')html=await insightAlarms(id,params);
++  else if(section==='quality')html=await monitorQualityView(params);
+   else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
+   else if(['competitions','cases','publications'].includes(section))html=await operationsView(section,id,params);
+   else if(section==='product')html=productAnalyticsView(d);
+-  else if(section==='overview')html=await monitorPulse(d,params);
++  else if(section==='overview')html=await insightOverview(d,params);
+   else if(section==='studio')html=await studioCoverage();
+   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
+    html=id?await inspect(section,id,params):intro(titles[section]||section,'Server records · search, filter and inspect stable identities')+await listing(section,params);
+@@ -107,6 +109,7 @@
+   else html=intro('Page not found','Use the navigation to choose a workspace.');
+   if(ticket!==generation)return;
+   $('#main').innerHTML=html;
++  if(lastRenderedRoute!==raw){window.scrollTo({top:0,behavior:'instant'});lastRenderedRoute=raw;}
+   $('#role').textContent=role+' access';$('#environment').textContent=d.environment;
+   $('#connection').textContent=location.host;$('#connection').title=location.origin;
+   $('#freshness').textContent='Queried '+date(d.as_of);
+@@ -122,7 +125,7 @@
+   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
+  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
+ }
+-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();}
++function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();}
+ function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
+ function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
+ function modal(html){
+diff --git a/backend/bmt_backend/admin_ui/index.html b/backend/bmt_backend/admin_ui/index.html
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -8,6 +8,7 @@
+   <link rel="stylesheet" href="/admin/assets/catalogue.css">
+   <link rel="stylesheet" href="/admin/assets/monitor.css">
+   <link rel="stylesheet" href="/admin/assets/monitor_views.css">
++  <link rel="stylesheet" href="/admin/assets/insights.css">
+   <script src="/admin/assets/commerce.js" defer></script>
+   <script src="/admin/assets/support.js" defer></script>
+   <script src="/admin/assets/catalogue.js" defer></script>
+@@ -17,6 +18,7 @@
+   <script src="/admin/assets/studio.js" defer></script>
+   <script src="/admin/assets/product_analytics.js" defer></script>
+   <script src="/admin/assets/operations.js" defer></script>
++  <script src="/admin/assets/insights.js" defer></script>
+   <script src="/admin/assets/app.js" defer></script>
+ </head>
+ <body>
+@@ -34,6 +36,7 @@
+       <span class="badge" id="environment">Disconnected</span>
+       <button class="btn search-trigger" id="search">Find a record <kbd>Ctrl K</kbd></button>
+       <span class="spacer"></span>
++      <a class="alarm-shortcut" href="#alarms">Alarms</a>
+       <label for="days">Window</label>
+       <select id="days" aria-label="Reporting window">
+         <option value="7">Last 7 days</option><option value="30">Last 30 days</option>
+diff --git a/backend/bmt_backend/admin_ui/insights.css b/backend/bmt_backend/admin_ui/insights.css
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/insights.css
+@@ -0,0 +1,5 @@
++/* Decision-led overview and shared operational alarm workspace. */
++.insight-column{display:flex;flex-direction:column;gap:20px;min-width:0}
++.insight-view{max-width:1600px;margin:0 auto}.insight-view .console-intro h1{font-size:30px;letter-spacing:-.8px}.insight-pulse{display:flex;align-items:center;justify-content:space-between;gap:24px;background:#183b40;border:1px solid #234c50;border-radius:14px;padding:26px 28px;color:#fff;margin:24px 0 18px}.insight-pulse.critical{background:#472d34;border-color:#704149}.insight-pulse.warning{background:#423829;border-color:#6a5737}.insight-pulse.unknown{background:#31414e}.insight-eyebrow{font-size:10px;letter-spacing:1.05px;color:#c6d5d4}.insight-pulse h2{font-size:23px;line-height:1.35;letter-spacing:-.4px;margin:11px 0 9px;color:white;max-width:750px}.insight-pulse p{font-size:12px;color:#e0e8e6;max-width:750px;margin:0;line-height:1.8}.insight-pulse>.btn{background:#fff;color:#233b3d;border:0;flex-shrink:0;font-weight:650;padding:12px 16px}.insight-priorities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.insight-priority{background:white;border:1px solid var(--line);border-radius:11px;padding:19px 20px;display:flex;flex-direction:column;transition:border-color .15s,box-shadow .15s}.insight-priority:hover{border-color:#a8bdb7;box-shadow:0 5px 16px #1c383c0a}.insight-priority>div{display:flex;gap:9px;align-items:center;font-size:10px;color:#687d85}.insight-priority h3{font-size:14px;line-height:1.5;margin:13px 0 6px}.insight-priority p{font-size:12px;line-height:1.75;color:#647780;margin:0 0 18px;flex:1}.insight-priority>strong{font-size:11px;font-weight:600;color:var(--brand);display:flex;justify-content:space-between}.insight-stats{gap:14px;margin:18px 0 22px}.insight-stats .mon-stat{min-height:125px;padding:18px 20px}.insight-stats .mon-stat>strong{font-size:28px;margin:9px 0 7px}.insight-stats .mon-stat>small{color:#657780}.insight-main-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);gap:20px;margin:20px 0}.insight-main-grid>*{min-width:0}.insight-findings article{padding:16px 0;border-bottom:1px solid var(--line)}.insight-findings article:first-child{padding-top:8px}.insight-findings article:last-child{border:0;padding-bottom:2px}.insight-findings h4{font-size:14px;line-height:1.5;margin:0 0 7px}.insight-findings p{color:#657780;font-size:12px;line-height:1.8;margin:0 0 10px;max-width:720px}.insight-task{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:17px 0;border-bottom:1px solid var(--line)}.insight-task:last-child{border:0}.insight-task strong{font-size:13px;font-weight:600;display:block}.insight-task small{display:block;font-size:11px;line-height:1.7;color:#6c7e86;margin-top:4px}.insight-task>span:last-child{color:var(--brand);font-size:20px}.insight-task:hover strong{color:var(--brand)}
++.alarm-snapshot{display:flex;align-items:center;gap:17px;color:#62777f;font-size:11px;margin:20px 0}.alarm-snapshot .btn{margin-left:auto}.alarm-tabs{display:flex;gap:24px;border-bottom:1px solid #d8e3e6;overflow-x:auto}.alarm-tabs a{white-space:nowrap;font-size:12px;padding:13px 0;display:flex;gap:8px;color:#627680;border-bottom:2px solid transparent}.alarm-tabs a[aria-current]{color:var(--brand);border-color:var(--brand);font-weight:650}.alarm-tabs span{background:#e7eeee;border-radius:5px;padding:1px 6px;font-size:10px}.alarm-filters{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:18px 0}.alarm-filters label{font-size:10px;color:#526c75;display:flex;flex-direction:column;gap:6px;min-width:120px}.alarm-filters label:first-child{flex:1;min-width:190px}.alarm-filters input,.alarm-filters select{width:100%;border:1px solid #d8e3e6;border-radius:6px;padding:9px 11px;background:#fff;min-height:36px;font-size:12px}.alarm-filters .btn{min-height:36px}.alarm-layout{display:grid;grid-template-columns:minmax(300px,1fr) minmax(0,1.3fr);gap:20px;align-items:start}.alarm-layout>*{min-width:0}.alarm-list-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 21px;border-bottom:1px solid var(--line)}.alarm-list-heading h2{font-size:13px;margin:0}.alarm-list-heading>span{font-size:10px;color:#71858c}.alarm-row{display:block;padding:21px;border-bottom:1px solid var(--line);border-left:3px solid transparent}.alarm-row:last-child{border-bottom:0}.alarm-row:hover{background:#f8faf9}.alarm-row.selected{background:#f0f7f4;border-left-color:#25816f}.alarm-row-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:10px;color:#607980}.alarm-badge{display:inline-flex;align-items:center;border-radius:5px;padding:3px 7px;font-size:10px;font-weight:650;text-transform:capitalize;line-height:1.5;white-space:nowrap}.alarm-badge.critical{background:#f9e9e8;color:#a0363c}.alarm-badge.warning{background:#fff1d7;color:#87570b}.alarm-badge.neutral{background:#e6efed;color:#39665f}.alarm-status{margin-left:auto}.alarm-row h3{font-size:14px;margin:13px 0 7px;line-height:1.5}.alarm-row p{font-size:12px;color:#5d727c;line-height:1.8;margin:0 0 8px}.alarm-row>small{display:block;color:#71828b;font-size:11px;line-height:1.7}.alarm-row>strong{display:flex;justify-content:space-between;color:var(--brand);font-size:11px;font-weight:600;margin-top:16px}.alarm-detail-heading{padding:24px;border-bottom:1px solid var(--line)}.alarm-detail-heading>span:nth-child(2){font-size:11px;color:#647b83;margin-left:10px}.alarm-detail-heading h2{font-size:21px;line-height:1.45;letter-spacing:-.35px;margin:17px 0 9px}.alarm-detail-heading p{font-size:13px;line-height:1.8;color:#607780;margin:0}.alarm-detail-body{padding:24px}.alarm-guide{list-style:none;padding:0;margin:0}.alarm-guide>li{display:flex;gap:14px;margin-bottom:24px}.alarm-guide>li>span{height:27px;width:27px;border:1px solid #dce8e3;border-radius:50%;font-size:11px;display:grid;place-items:center;flex-shrink:0;color:#367366;background:#f3f8f5}.alarm-guide h3{font-size:13px;margin:2px 0 7px}.alarm-guide p{font-size:12px;color:#5f7580;line-height:1.8;margin:0 0 8px}.alarm-guide small{font-size:10px;color:#74868d}.alarm-decisions{display:flex;gap:10px;flex-wrap:wrap;margin:7px 0 24px}.alarm-history{border-top:1px solid var(--line);padding-top:20px}.alarm-history h3{font-size:13px;margin:0 0 16px}.alarm-history>p,.alarm-readonly{font-size:12px;color:#677d84;line-height:1.8}.alarm-history ol{list-style:none;padding:0;margin:0}.alarm-history li{border-left:2px solid #dce9e3;padding:0 0 20px 14px;overflow-wrap:anywhere}.alarm-history strong{font-size:12px}.alarm-history strong span{color:#71868d;font-weight:400}.alarm-history li p{font-size:12px;line-height:1.8;white-space:pre-wrap;color:#566e78;margin:7px 0}.alarm-history time{font-size:10px;color:#748790}.alarm-selection,.alarm-empty{text-align:center;padding:45px 30px;color:#647981}.alarm-selection>span,.alarm-empty>span{display:inline-block;color:#38816f;background:#edf5f1;padding:8px 15px;font-size:25px;border-radius:12px;margin-bottom:15px}.alarm-selection h2,.alarm-empty h3{font-size:17px;color:#304e57;margin:0 0 10px}.alarm-selection p,.alarm-empty p{font-size:12px;line-height:1.9;max-width:360px;margin:0 auto}.alarm-selection ol{text-align:left;max-width:310px;margin:25px auto 0;padding-left:22px;font-size:12px;line-height:2.3}#alarm-decision label{display:block;font-size:12px;margin-top:18px}#alarm-reason{width:100%;display:block;min-height:110px;border:1px solid #cddcde;border-radius:7px;margin-top:9px;padding:11px;font-size:13px;resize:vertical}.topbar .alarm-shortcut{font-size:11px;white-space:nowrap;color:#386a65}
++@media(min-width:1400px){.alarm-detail{position:sticky;top:88px}}@media(max-width:1100px){.insight-main-grid{grid-template-columns:1fr}.insight-pulse{align-items:start}.insight-pulse h2{font-size:21px}.insight-priorities{grid-template-columns:repeat(2,minmax(0,1fr))}.insight-priority:last-child:nth-child(3){grid-column:1/-1}.alarm-layout{grid-template-columns:1fr}.alarm-detail{grid-row:1}.alarm-view:has(.alarm-detail) .alarm-list{grid-row:2}.alarm-selection{display:none}}@media(max-width:740px){.insight-pulse{flex-direction:column;padding:22px;gap:18px}.insight-pulse h2{font-size:20px}.insight-priorities{grid-template-columns:1fr}.insight-priority:last-child:nth-child(3){grid-column:auto}.insight-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.insight-stats .mon-stat{padding:14px;min-height:127px}.insight-stats .mon-stat>strong{font-size:23px}.insight-stats .mon-stat>small{font-size:10px}.insight-view .console-intro h1{font-size:27px}.alarm-snapshot{flex-wrap:wrap;gap:8px 12px}.alarm-snapshot .btn{margin-left:0}.alarm-tabs{gap:19px}.alarm-layout{gap:14px}.alarm-detail-heading,.alarm-detail-body{padding:19px}.alarm-row{padding:18px}.alarm-filters label{flex:1}.alarm-filters label:first-child{flex-basis:100%}.alarm-status{margin-left:0}.alarm-detail-heading h2{font-size:19px}.topbar .alarm-shortcut{display:none}}
+diff --git a/backend/bmt_backend/admin_ui/insights.js b/backend/bmt_backend/admin_ui/insights.js
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/insights.js
+@@ -0,0 +1,71 @@
++'use strict';
++const alarmLabels={open:'Needs action',acknowledged:'Acknowledged',recovered:'Ready to clear',cleared:'Cleared',unknown:'Check unavailable',inactive:'No active condition'};
++let alarmWorkspace=null;
++function insightSourceError(error){if(error.name==='AbortError'||error.status===401)throw error;return {error:error.message};}
++function alarmCounts(data){
++ const items=data?.items||[],active=items.filter(item=>item.active===true);
++ return {active:active.length,critical:active.filter(item=>item.severity==='critical').length,
++  open:items.filter(item=>item.status==='open').length,acknowledged:items.filter(item=>item.status==='acknowledged').length,
++  recovered:items.filter(item=>item.status==='recovered').length,unknown:data?.unknown_checks||0};
++}
++function alarmBadge(item){return `<span class="alarm-badge ${item.active?esc(item.severity):'neutral'}">${item.active?esc(item.severity):item.active===null?'Unknown':item.status==='inactive'?'Inactive':'Recovered'}</span>`;}
++function alarmHref(key,params){return scopedHref('alarms/'+encodeURIComponent(key),params);}
++function alarmRank(item){return item.active?(item.severity==='critical'?0:10)+(item.status==='acknowledged'?1:0):({unknown:20,recovered:30,cleared:40}[item.status]??50);}
++function orderedAlarms(items){return [...items].sort((a,b)=>alarmRank(a)-alarmRank(b)||a.key.localeCompare(b.key));}
++function insightTask(target,title,description,params){return `<a class="insight-task" href="${scopedHref(target,params)}"><span><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span aria-hidden="true">↗</span></a>`;}
++async function insightOverview(d,params){
++ const query=new URLSearchParams();for(const field of ['since','until'])if(params.has(field))query.set(field,params.get(field));
++ const [product,alarms]=await Promise.all([api('product-analytics?'+query).catch(insightSourceError),api('alarms').catch(insightSourceError)]);
++ const p=product.error?null:product,counts=alarmCounts(alarms),active=orderedAlarms(alarms.items||[]).filter(item=>item.status!=='cleared');
++ const tone=alarms.error||counts.unknown?'unknown':counts.critical?'critical':counts.active?'warning':'good';
++ const headline=alarms.error?'Alarm checks could not be loaded':counts.critical?'A critical backend condition needs attention':counts.active?'There are issues to investigate':counts.unknown?'Some checks could not be completed':counts.recovered?'Issues have recovered and are ready to clear':'No configured alarm is firing';
++ const summary=alarms.error?alarms.error:counts.active?`${counts.critical} critical · ${counts.active-counts.critical} warning · ${counts.acknowledged} acknowledged. Start with the highest-priority issue below.`:counts.unknown?`${counts.unknown} checks are unavailable. Open the alarm desk before treating this snapshot as healthy.`:counts.recovered?`${counts.recovered} previously acknowledged conditions are no longer detected. Review the evidence and record closure.`:`${alarms.checks} backend checks completed. This snapshot covers current operations and recent failures.`;
++ const last=[...(p?.daily||[])].reverse().find(row=>row.observed&&!row.current_partial);
++ const retention=[...(p?.retention||[])].reverse().find(row=>row.d7?.mature&&row.d7.eligible>0&&Number.isInteger(row.d7.returned));
++ const completed=(d.states?.verified||0)+(d.states?.failed||0)+(d.states?.rejected||0),verified=d.states?.verified||0;
++ const funnel=p?.funnels?.first_race,steps=funnel?.steps||[],losses=[];
++ for(let i=1;i<steps.length;i++)if(Number.isInteger(steps[i-1].count)&&Number.isInteger(steps[i].count)&&steps[i-1].count>0&&steps[i].count<steps[i-1].count)losses.push({from:steps[i-1],to:steps[i],lost:steps[i-1].count-steps[i].count});
++ losses.sort((a,b)=>b.lost-a.lost);
++ const names={app_first_open:'first open',menu_ready:'menu ready',race_attempt:'race attempt',race_started:'race start',race_finished:'race finish',second_voluntary_race:'second voluntary race'};
++ const observations=[];
++ if(product.error)observations.push({title:'Player activity cannot be assessed',body:product.error,target:'product',action:'Retry activity evidence'});
++ else if(!p?.coverage?.collection_started_at||p?.telemetry_enabled===false)observations.push({title:'Activity coverage needs attention',body:p?.telemetry_enabled===false?'Collection is disabled. Retained observations cannot establish current player activity.':'No signed-in observation receipt has established coverage yet. Empty charts do not mean there are no players.',target:'quality?tab=collection',action:'Check collection'});
++ if(funnel?.mature&&losses[0]){const loss=losses[0];observations.push({title:'Largest observed first-race drop-off',body:`${loss.lost} of ${loss.from.count} cohort players did not reach ${names[loss.to.name]||loss.to.name} after ${names[loss.from.name]||loss.from.name}. Inspect this step before choosing a product change.`,target:'product',action:'Inspect the first-race journey'});}
++ if(retention)observations.push({title:`${monPercent(retention.d7.returned/retention.d7.eligible)} returned on day seven`,body:`${retention.d7.returned} of ${retention.d7.eligible} eligible players in the ${retention.cohort_day} cohort returned on exactly D7. Compare mature cohorts before judging a trend.`,target:'product',action:'Explore return cohorts'});
++ if(d.publications?.failed>0)observations.push({title:`${d.publications.failed_count_capped?'At least ':''}${monCount(d.publications.failed)} retained failed publications`,body:'This is a historical review queue. The alarm desk separately checks failures in the last five minutes.',target:'publications?state=failed&all=1',action:'Review failed requests'});
++ if(!observations.length)observations.push({title:'Build a comparable view of player experience',body:'Choose the same build, device and render setup to inspect slow frames. Missing observations cannot establish release quality.',target:'quality',action:'Inspect client quality'});
++ const priorities=active.slice(0,3).map(item=>`<a class="insight-priority" href="${alarmHref(item.key,params)}"><div>${alarmBadge(item)}<span>${esc(alarmLabels[item.status])}</span></div><h3>${esc(item.title)}</h3><p>${esc(item.impact)}</p><strong>Investigate issue <span aria-hidden="true">→</span></strong></a>`).join('');
++ return `<div class="mon-view insight-view">${intro('Overview','Understand the situation. Choose the next action.','OPERATIONS OVERVIEW')}<section class="insight-pulse ${tone}" aria-labelledby="pulse-title"><div><div class="insight-eyebrow">CURRENT BACKEND SNAPSHOT · ${esc(date(alarms.as_of||d.as_of))}</div><h2 id="pulse-title">${esc(headline)}</h2><p>${esc(summary)}</p></div><a class="btn" href="${scopedHref('alarms',params)}">Open alarm desk <span aria-hidden="true">→</span></a></section>${priorities?`<div class="insight-priorities">${priorities}</div>`:''}<div class="mon-stats insight-stats">${monStat('Active alarms',alarms.error?'Unavailable':monCount(counts.active),counts.unknown?counts.unknown+' checks unavailable':counts.open+' need action · '+counts.acknowledged+' acknowledged',counts.active?'attention':'')}${monStat('Awaiting verification',monCount(d.pending),'Current race queue · all dates')}${monStat('Observed active players',monCount(p?.period_active_players,'Not observed'),'Distinct signed-in accounts · selected dates')}${monStat('Verified terminal outcomes',completed?monPercent(verified/completed):'No outcomes',completed?`${monCount(verified)} / ${monCount(completed)} terminal submissions · selected dates`:'No verified, rejected or failed submissions in this window')}</div><div class="insight-main-grid"><div class="insight-column">${monCard('What the evidence is telling us','Findings from this reporting window; follow the source to decide',`<div class="insight-findings">${observations.slice(0,3).map(item=>`<article><h4>${esc(item.title)}</h4><p>${esc(item.body)}</p>${monLink(item.target,item.action,params)}</article>`).join('')}</div>`)}${monCard('How many players are active?',last?`Latest complete day: ${last.day} · ${monCount(last.active_players)} observed players`:'Daily signed-in activity · selected dates',monDailyChart(p?.daily)+monLink('product','Explore player activity',params))}</div><div class="insight-column">${monCard('Where do you want to go?','Choose the question you need to answer',insightTask('players','Help a player','Find their account, purchases and race history',params)+insightTask('quality','Investigate a release','Compare devices, slow frames and process exits',params)+insightTask('publications','Unblock a publication','Follow creator proof and processing failures',params)+insightTask('competitions','Check a competitive result','Trace rankings to the accepted source race',params))}${monCard('Source coverage','Check these before interpreting a change',monDefinition([['Activity collection',p?.telemetry_enabled===false?'Disabled':p?.coverage?.collection_started_at?'Receiving observations':'Not established'],['Latest activity receipt',esc(date(p?.coverage?.latest_receipt_at))],['Prepared through',esc(date(p?.coverage?.processed_through))],['Population','All accounts, including artificial drivers'],['Crash-free rate / revenue','Sources unavailable']])+`<details><summary>How to read this overview</summary><p>Operational alarms use current backend conditions and rolling five-minute failures. Product findings use the selected UTC dates. Only comparable, fully observed cohorts support return rates. Alarm acknowledgement records the credential role; automated notifications and continuous monitoring are not configured.</p>${monLink('studio','Review all source coverage',params)}</details>`)}</div></div></div>`;
++}
++function alarmDetailPanel(d){
++ const item=d.item;
++ return `<section class="card alarm-detail" aria-labelledby="alarm-title"><div class="alarm-detail-heading">${alarmBadge(item)}<span>${esc(alarmLabels[item.status])}</span><h2 id="alarm-title">${esc(item.title)}</h2><p>${esc(item.impact)}</p></div><div class="alarm-detail-body"><ol class="alarm-guide"><li><span>1</span><div><h3>Check the evidence</h3><p>${esc(item.evidence)}</p><small>Checked ${esc(date(item.observed_at))}</small></div></li><li><span>2</span><div><h3>Take the next step</h3><p>${esc(item.next_step)}</p>${monLink(item.target,'Open source evidence')}</div></li><li><span>3</span><div><h3>Verify and clear</h3><p>${item.active===null?'The source is unavailable. Restore the check before recording recovery.':item.active?'Refresh after remediation. Clear becomes available when this check recovers.':item.status==='cleared'?'Closure has been recorded. A new occurrence will return to the active queue.':'This condition is no longer detected. Record what was fixed and clear the alarm.'}</p></div></li></ol>${role==='owner'?`<div class="alarm-decisions">${item.active?`<button class="btn btn-primary" data-alarm-action="acknowledge">${item.status==='acknowledged'?'Update acknowledgement':'Acknowledge & investigate'}</button>`:''}${item.can_clear?'<button class="btn btn-primary" data-alarm-action="clear">Clear recovered alarm</button>':''}<button class="btn" id="alarm-recheck">Recheck now</button></div>`:'<p class="alarm-readonly">Analyst access · an owner can acknowledge and clear alarms.</p>'}<div class="alarm-history"><h3>Decision history</h3>${d.history.length?`<ol>${[...d.history].sort((a,b)=>b.revision-a.revision).map(event=>`<li><strong>${event.action==='alarm_clear'?'Cleared after recovery':'Acknowledged'} <span>· ${esc(event.actor)}</span></strong><p>${esc(event.reason)}</p><time>${esc(date(event.created_at))} · revision ${event.revision}</time></li>`).join('')}</ol>`:'<p>No decisions recorded. Acknowledgement preserves the issue while you investigate.</p>'}${d.history_truncated?'<p>Latest 25 decisions shown. Earlier records remain in Audit history.</p>':''}</div></div></section>`;
++}
++async function insightAlarms(id,params){
++ const [data,detail]=await Promise.all([api('alarms'),id?api('alarms/'+encodeURIComponent(id)):Promise.resolve(null)]);
++ alarmWorkspace=detail?{...detail,page:generation,auth:authGeneration}:null;
++ const counts=alarmCounts(data),selected=params.get('status')||'attention',severity=params.get('severity')||'',category=params.get('category')||'',search=params.get('q')||'';
++ const matches=item=>(selected==='all'||selected==='attention'&&item.status!=='cleared'||item.status===selected)&&(!severity||item.severity===severity)&&(!category||item.category===category)&&(!search||`${item.title} ${item.evidence} ${item.impact}`.toLowerCase().includes(search.toLowerCase()));
++ const items=orderedAlarms(data.items).filter(matches),categories=[...new Set(data.items.map(item=>item.category))].sort();
++ const tabs=[['attention','Needs attention'],['acknowledged','Acknowledged'],['recovered','Ready to clear'],['cleared','Cleared'],['all','All']].map(([value,label])=>{const q=new URLSearchParams(params);q.set('status',value);return `<a ${selected===value?'aria-current="page"':''} href="${scopedHref('alarms',q)}">${label}<span>${value==='attention'?data.items.filter(item=>item.status!=='cleared').length:value==='all'?data.items.length:data.items.filter(item=>item.status===value).length}</span></a>`;}).join('');
++ const rows=items.map(item=>`<a class="alarm-row ${id===item.key?'selected':''}" ${id===item.key?'aria-current="true"':''} href="${alarmHref(item.key,params)}"><div class="alarm-row-label">${alarmBadge(item)}<span>${esc(item.category)}</span><span class="alarm-status">${esc(alarmLabels[item.status])}</span></div><h3>${esc(item.title)}</h3><p>${esc(item.impact)}</p><small>${esc(item.evidence)}</small><strong>${item.can_clear?'Review recovery':'Inspect & act'} <span aria-hidden="true">→</span></strong></a>`).join('');
++ return `<div class="mon-view insight-view alarm-view">${intro('Alarms','Prioritise issues, follow the evidence, and record recovery.','ACTION DESK')}<div class="alarm-snapshot"><span>Checked ${esc(date(data.as_of))}</span><span>${data.checks-data.unknown_checks} / ${data.checks} checks available</span><button class="btn" id="alarms-refresh">Refresh checks</button></div><div class="mon-stats insight-stats">${monStat('Critical',monCount(counts.critical),'Active conditions · act first',counts.critical?'attention':'')}${monStat('Needs action',monCount(counts.open),'Active and unacknowledged')}${monStat('Acknowledged',monCount(counts.acknowledged),'Investigation recorded · still active')}${monStat('Ready to clear',monCount(counts.recovered),'Recovered · closure needs a reason')}</div>${counts.unknown?monNotice('Some checks are unavailable',`${counts.unknown} checks could not establish the current condition. Missing evidence cannot clear an alarm.`,'warn'):''}<nav class="alarm-tabs" aria-label="Alarm state">${tabs}</nav><form id="alarm-filters" class="alarm-filters"><label>Find an issue<input name="q" maxlength="100" value="${esc(search)}" placeholder="Search issues or evidence"></label><label>Severity<select name="severity"><option value="">All severities</option>${['critical','warning'].map(value=>`<option value="${value}" ${severity===value?'selected':''}>${value[0].toUpperCase()+value.slice(1)}</option>`).join('')}</select></label><label>Area<select name="category"><option value="">All areas</option>${categories.map(value=>`<option ${value===category?'selected':''}>${esc(value)}</option>`).join('')}</select></label><button class="btn">Apply</button><a class="btn" href="${scopedHref('alarms')}">Reset</a></form><div class="alarm-layout"><section class="card alarm-list" aria-label="Alarm queue"><div class="alarm-list-heading"><h2>${monCount(items.length)} ${items.length===1?'issue':'issues'}</h2><span>Priority order</span></div>${rows||`<div class="alarm-empty"><span aria-hidden="true">✓</span><h3>${data.items.length?'No issues match these filters':'No configured alarm is firing'}</h3><p>${data.items.length?'Choose another state or reset the filters.':'Refresh to check for new conditions. Acknowledged issues remain visible until they recover and are cleared.'}</p></div>`}</section>${detail?alarmDetailPanel(detail):`<section class="card alarm-selection"><span aria-hidden="true">↖</span><h2>Choose an issue to investigate</h2><p>See why it matters, inspect the source, then acknowledge or clear it with a recorded reason.</p><ol><li>Critical conditions first</li><li>Acknowledgement keeps active faults visible</li><li>Clear after the check confirms recovery</li></ol></section>`}</div><p class="mon-caption">${esc(data.scope)} Decisions are stored on the backend and shared between administrator tabs. A recurrence after closure reopens the issue when checked. Conditions occurring entirely between checks are not recorded.</p></div>`;
++}
++function wireInsights(){
++ $('#alarms-refresh')?.addEventListener('click',render);$('#alarm-recheck')?.addEventListener('click',render);
++ const form=$('#alarm-filters');if(form)form.onsubmit=event=>{event.preventDefault();const query=new URLSearchParams(location.hash.split('?')[1]);for(const [name,value] of new FormData(form))value?query.set(name,value):query.delete(name);location.hash='alarms?'+query;};
++ document.querySelectorAll('[data-alarm-action]').forEach(button=>button.onclick=()=>{
++  const current=alarmWorkspace;if(!current||role!=='owner')return;
++  const action=button.dataset.alarmAction,clearing=action==='clear';
++  modal(`<form id="alarm-decision"><h2>${clearing?'Clear recovered alarm':'Acknowledge alarm'}</h2><p>${esc(current.item.title)}</p><p class="console-note">${clearing?'The backend will recheck recovery before recording closure.':'This records that the issue is being investigated. The active condition remains visible.'}</p><label for="alarm-reason">${clearing?'What was fixed and verified?':'Investigation plan or update'}<textarea id="alarm-reason" required minlength="8" maxlength="500" autofocus></textarea></label><p id="alarm-error" class="console-error" role="alert"></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" id="alarm-save">${clearing?'Record closure':'Record acknowledgement'}</button></div></form>`);
++  const token=dialogToken(),command=crypto.randomUUID();let body=null;
++  $('#alarm-decision').onsubmit=async event=>{
++   event.preventDefault();if(!dialogIsCurrent(token)||current.page!==generation||current.auth!==authGeneration)return;
++   body=body||{command_id:command,expected_revision:current.item.revision,action,reason:$('#alarm-reason').value};
++   $('#alarm-save').disabled=true;$('#alarm-reason').readOnly=true;
++   try{await api('alarms/'+encodeURIComponent(current.item.key)+'/actions',body);if(!dialogIsCurrent(token))return;$('#dialog').close();await render();}
++   catch(error){if(!dialogIsCurrent(token))return;$('#alarm-error').textContent=(error.status===409?'The condition or decision changed. Close this dialog and refresh checks. ':error.status===403?'Owner access is required. ':'')+error.message;
++    if(error.status!==409&&error.status!==403){$('#alarm-save').disabled=false;if(error.status===422){body=null;$('#alarm-reason').readOnly=false;}}}
++  };
++ });
++}
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -40,6 +40,7 @@
+         rivalry,
+         runs,
+         studio,
++        studio_alarms,
+         studio_cases,
+         studio_catalogue,
+         studio_competitions,
+@@ -97,6 +98,7 @@
+     app.include_router(admin_purchase_controls.router)
+     app.include_router(admin_support.router)
+     app.include_router(studio.router)
++    app.include_router(studio_alarms.router)
+     app.include_router(studio_cases.router)
+     app.include_router(studio_competitions.router)
+     app.include_router(studio_catalogue.router)
+diff --git a/backend/bmt_backend/operations.py b/backend/bmt_backend/operations.py
+--- a/backend/bmt_backend/operations.py
++++ b/backend/bmt_backend/operations.py
+@@ -69,8 +69,8 @@
+         return copy.deepcopy(state.details.get("build"))
+ 
+ 
+-def competition_health(app) -> dict:
+-    with app.state.session_factory() as session:
++def competition_health(app, *, existing_session=None) -> dict:
++    with nullcontext(existing_session) if existing_session is not None else app.state.session_factory() as session:
+         current = now()
+         depth, oldest = session.execute(select(func.count(), func.min(Run.created_at)).where(Run.status.in_(("queued", "verifying")))).one()
+         recent_workers = session.scalars(select(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at >= current - app.state.settings.worker_stale_seconds)).all()
+diff --git a/backend/bmt_backend/studio_alarms.py b/backend/bmt_backend/studio_alarms.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/studio_alarms.py
+@@ -0,0 +1,201 @@
++"""On-demand operational alarms with durable, audited operator decisions.
++
++The fixed registry bounds state to eight rows in the existing operation store.
++Reads never acknowledge or clear a condition. No background monitoring is implied.
++"""
++from contextlib import nullcontext
++from typing import Literal
++from uuid import NAMESPACE_URL, UUID, uuid5
++
++from fastapi import APIRouter, HTTPException, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import func, select
++from sqlalchemy.exc import IntegrityError
++
++from .admin import Access
++from .admin_models import AdminAudit
++from .middleware import ParsedJSONRoute
++from .operations import competition_health
++from .publication_models import PublicationIntent
++from .studio_cases import begin, safe_text
++from .telemetry_models import ProductEvent
++from .track_models import OperationState, digest, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["studio alarms"])
++KEYS = ("verification_unavailable", "queue_delay", "queue_capacity", "verification_failures",
++        "publication_failures", "storage_low", "backup_marker", "projection_delay")
++
++
++def identity(key):
++    if key not in KEYS:
++        raise HTTPException(404, "ALARM_NOT_FOUND")
++    return str(uuid5(NAMESPACE_URL, "bmt:studio:alarm:" + key))
++
++
++def observe(app, *, existing_session=None):
++    """Metadata only; time windows and review thresholds are explicit."""
++    at = now()
++    try:
++        health = competition_health(app, existing_session=existing_session)
++    except (OSError, RuntimeError):
++        health = None
++    with nullcontext(existing_session) if existing_session is not None else app.state.session_factory() as session:
++        failures = session.scalar(select(func.count()).select_from(select(PublicationIntent.id).where(
++            PublicationIntent.status == "failed", PublicationIntent.finished_at >= at - 300).limit(5001).subquery()))
++        oldest = session.scalar(select(ProductEvent.received_at).where(ProductEvent.processed_at.is_(None))
++            .order_by(ProductEvent.received_at, ProductEvent.id).limit(1))
++    signals = {}
++
++    def add(key, active, severity, title, impact, evidence, next_step, target, category):
++        signals[key] = {"key": key, "active": active, "severity": severity, "title": title, "impact": impact,
++            "evidence": evidence, "next_step": next_step, "target": target, "category": category, "observed_at": at}
++
++    h = health or {}
++    known = health is not None
++    depth, age = h.get("queue_depth", 0), h.get("oldest_age_seconds", 0)
++    add("verification_unavailable", h.get("status") != "ready" if known else None,
++        "critical" if depth else "warning", "Verification workers unavailable",
++        "Submitted results and new track publications may wait for a compatible worker.",
++        f"{h.get('available_workers', 'Unknown')} compatible workers; {depth} queued items. "
++        + (h.get("status", "Health source unavailable").replace("_", " ")),
++        "Compare API and worker builds, then restore a compatible worker. Refresh to check recovery.",
++        "system", "Verification")
++    add("queue_delay", age >= 120 if known else None, "critical" if age >= 600 else "warning",
++        "Verification queue is delayed", "Players are waiting for accepted results or publications.",
++        f"Oldest queued item: {age} seconds. Review at 120 s; critical at 600 s.",
++        "Inspect pending jobs and worker availability before retrying affected submissions.",
++        "system/jobs?all=1", "Verification")
++    capacity = h.get("queue_capacity", 0)
++    add("queue_capacity", depth >= capacity if known and capacity > 0 else (False if known else None),
++        "critical", "Verification queue is full", "New submissions may be refused until capacity returns.",
++        f"{depth} queued items / {capacity} configured capacity.",
++        "Restore worker throughput and inspect the oldest jobs; keep accepted evidence intact.",
++        "system", "Verification")
++    failed = h.get("failed_last_5_minutes", 0)
++    add("verification_failures", failed > 0 if known else None, "warning", "Recent verification failures",
++        "Some submitted races ended with an infrastructure failure.", f"{failed} failed races in the last 5 minutes.",
++        "Inspect failure categories and affected race evidence. Rejected proofs are a separate outcome.",
++        "races?state=failed&all=1", "Verification")
++    add("publication_failures", failures > 0, "warning", "Recent publication failures",
++        "Creators could not complete requested publications.",
++        f"{'At least ' if failures > 5000 else ''}{min(failures, 5000)} failed requests in the last 5 minutes.",
++        "Open the failed request and check its failure category and retry eligibility.",
++        "publications?state=failed&all=1", "Content")
++    free = h.get("storage_free_bytes")
++    add("storage_low", free < 5 * 1024**3 if free is not None else (False if known else None),
++        "critical" if free is not None and free < 1024**3 else "warning", "Local object storage is low",
++        "Insufficient free space can interrupt uploads and verification.",
++        f"{free / 1024**3:.2f} GiB free; review below 5 GiB, critical below 1 GiB." if free is not None
++        else "Local free space is not measured for remote object storage.",
++        "Check storage capacity and retention in Reliability before removing any data.", "system", "Storage")
++    backup = h.get("backup", {}).get("status")
++    add("backup_marker", backup in ("missing", "unreadable") if known else None, "warning",
++        "Configured backup marker unavailable", "The configured backup completion marker cannot be confirmed.",
++        "Backup marker: " + str(backup or "unknown").replace("_", " ") + ". A marker does not prove restore success.",
++        "Inspect the configured backup job and marker path, then check recovery evidence.", "system", "Storage")
++    lag = max(0, at - oldest) if oldest is not None else 0
++    add("projection_delay", lag >= 300, "critical" if lag >= 1800 else "warning", "Activity reporting is delayed",
++        "Prepared activity and cohort reports may not include recently received observations.",
++        f"Oldest unprocessed observation: {lag} seconds. Review at 300 s; critical at 1800 s.",
++        "Inspect the reporting watermark and restore event processing before interpreting activity changes.",
++        "product", "Reporting")
++    return at, signals
++
++
++def project(signal, state):
++    details = state.details if state else {}
++    active = signal["active"]
++    acknowledged = details.get("status") == "acknowledged" and (
++        details.get("severity") == signal["severity"] or details.get("severity") == "critical")
++    status = ("acknowledged" if acknowledged else "open") if active else (
++        "unknown" if active is None else "inactive" if not state else "cleared" if details.get("status") == "cleared" else "recovered")
++    return {**signal, "status": status, "revision": details.get("revision", 0),
++        "last_action_at": state.updated_at if state else None, "last_reason": details.get("reason"),
++        "last_actor": details.get("actor"), "can_clear": active is False and bool(state)
++        and details.get("status") != "cleared"}
++
++
++@router.get("/v1/admin/alarms")
++def alarms(request: Request, role: Access):
++    at, signals = observe(request.app)
++    with request.app.state.session_factory() as session:
++        states = {row.id: row for row in session.scalars(select(OperationState).where(
++            OperationState.id.in_(["admin-alarm:" + key for key in KEYS])))}
++        items = [project(signal, states.get("admin-alarm:" + key)) for key, signal in signals.items()
++            if signal["active"] is not False or "admin-alarm:" + key in states]
++    return {"as_of": at, "role": role, "items": items, "checks": len(KEYS),
++        "unknown_checks": sum(signal["active"] is None for signal in signals.values()),
++        "scope": "Current backend snapshot; five-minute failure windows. Refresh to recheck. No background alerting or notification delivery."}
++
++
++@router.get("/v1/admin/alarms/{key}")
++def alarm_detail(key: str, request: Request, role: Access):
++    entity_id = identity(key)
++    at, signals = observe(request.app)
++    with request.app.state.session_factory() as session:
++        state = session.get(OperationState, "admin-alarm:" + key)
++        events = session.scalars(select(AdminAudit).where(AdminAudit.entity_id == entity_id,
++            AdminAudit.action.in_(("alarm_acknowledge", "alarm_clear")))
++            .order_by(AdminAudit.created_at.desc(), AdminAudit.id).limit(26)).all()
++        return {"as_of": at, "role": role, "item": project(signals[key], state),
++            "history": [{"action": event.action, "reason": event.reason, "actor": event.actor,
++                "created_at": event.created_at, "revision": event.after["revision"]} for event in events[:25]],
++            "history_truncated": len(events) > 25}
++
++
++class Decision(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=0)
++    action: Literal["acknowledge", "clear"]
++    reason: str = Field(min_length=8, max_length=500)
++
++
++@router.post("/v1/admin/alarms/{key}/actions")
++def decide(key: str, payload: Decision, request: Request, role: Access):
++    if role != "owner":
++        raise HTTPException(403, "OWNER_REQUIRED")
++    entity_id, command_id = identity(key), str(payload.command_id)
++    reason = safe_text(payload.reason, 500)
++    if len(reason) < 8:
++        raise HTTPException(422, "REASON_REQUIRED")
++    request_hash = digest({"key": key, **payload.model_dump(mode="json")})
++    with request.app.state.session_factory() as session:
++        # One lock per signal also serializes creation of the first state row.
++        begin(session, entity_id)
++        prior = session.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
++        if prior:
++            if prior.request_hash != request_hash:
++                raise HTTPException(409, "COMMAND_ID_REUSED")
++            return {"after": prior.after}
++        state = session.get(OperationState, "admin-alarm:" + key)
++        before = dict(state.details) if state else {}
++        if before.get("revision", 0) != payload.expected_revision:
++            raise HTTPException(409, "ALARM_CHANGED_REFRESH_REQUIRED")
++        # Recheck immediately before a decision. Missing evidence cannot clear.
++        at, signals = observe(request.app, existing_session=session)
++        signal = signals[key]
++        if payload.action == "clear" and (signal["active"] is not False or not state
++                or before.get("status") == "cleared"):
++            raise HTTPException(409, "ALARM_NOT_RECOVERED_REFRESH_REQUIRED")
++        if payload.action == "acknowledge" and signal["active"] is not True:
++            raise HTTPException(409, "ALARM_NOT_ACTIVE_REFRESH_REQUIRED")
++        after = {"status": "acknowledged" if payload.action == "acknowledge" else "cleared",
++            "revision": before.get("revision", 0) + 1, "severity": signal["severity"],
++            "reason": reason, "actor": role, "evidence": signal["evidence"], "observed_at": at}
++        if state is None:
++            state = OperationState(id="admin-alarm:" + key)
++            session.add(state)
++        state.details, state.updated_at = after, at
++        session.add(AdminAudit(command_id=command_id, actor=role, action="alarm_" + payload.action,
++            entity_id=entity_id, reason=reason, before=before, after=after,
++            request_hash=request_hash, request_id=request.state.request_id))
++        try:
++            session.commit()
++        except IntegrityError:
++            session.rollback()
++            prior = session.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
++            if prior and prior.request_hash == request_hash:
++                return {"after": prior.after}
++            raise HTTPException(409, "COMMAND_ID_REUSED") from None
++        return {"after": after}
+diff --git a/backend/tests/test_studio_alarms.py b/backend/tests/test_studio_alarms.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_studio_alarms.py
+@@ -0,0 +1,181 @@
++"""Real metadata projection and shared, revision-fenced alarm decisions."""
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from uuid import uuid4
++
++import pytest
++from sqlalchemy import func, select
++from test_auth_postgres import postgres_auth  # noqa: F401
++from test_studio import headers
++
++from bmt_backend.admin_models import AdminAudit
++from bmt_backend.identity_models import Player
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.telemetry_models import ProductEvent
++from bmt_backend.track_models import OperationState
++
++AT = 2000000000
++
++
++@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
++def alarms(request, monkeypatch):
++    if request.param == "postgres":
++        app, client = request.getfixturevalue("postgres_auth")
++    else:
++        app, client = request.getfixturevalue("auth_app"), request.getfixturevalue("auth_client")
++    app.state.settings = replace(app.state.settings, admin_owner_key="o" * 40, admin_analyst_key="a" * 40)
++    with app.state.session_factory() as session:
++        player = Player(display_name="Alarm fixture driver")
++        session.add(player); session.commit(); ids = {"player": player.id}
++    health = {"status": "ready", "available_workers": 1, "queue_depth": 0,
++        "queue_capacity": 100, "oldest_age_seconds": 0, "failed_last_5_minutes": 0,
++        "storage_free_bytes": 20 * 1024**3, "backup": {"status": "complete"}}
++    monkeypatch.setattr("bmt_backend.studio_alarms.now", lambda: AT)
++    monkeypatch.setattr("bmt_backend.studio_alarms.competition_health", lambda app, **kw: dict(health))
++    return client, app, ids, health
++
++
++def action(client, key="verification_unavailable", revision=0, **changes):
++    body = {"command_id": str(uuid4()), "expected_revision": revision,
++        "action": "acknowledge", "reason": "Investigate compatible workers", **changes}
++    return client.post(f"/v1/admin/alarms/{key}/actions", headers=headers("owner"), json=body), body
++
++
++def test_alarm_auth_and_reads_do_not_create_state(alarms):
++    client, app, _, health = alarms
++    for endpoint in ("alarms", "alarms/queue_delay"):
++        assert client.get("/v1/admin/" + endpoint).status_code == 401
++        assert client.get("/v1/admin/" + endpoint, headers=headers()).status_code == 200
++    assert client.get("/v1/admin/alarms/unknown", headers=headers()).status_code == 404
++    result = client.get("/v1/admin/alarms", headers=headers()).json()
++    assert result["items"] == [] and result["checks"] == 8 and result["unknown_checks"] == 0
++    health.update(status="worker_unavailable", queue_depth=2)
++    result = client.get("/v1/admin/alarms", headers=headers()).json()
++    assert result["items"][0]["severity"] == "critical"
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(OperationState).where(
++            OperationState.id.startswith("admin-alarm:"))) == 0
++
++
++def test_shared_ack_recovery_clear_recurrence_and_audit(alarms):
++    client, app, _, health = alarms
++    health.update(status="worker_build_mismatch", queue_depth=3)
++    response, body = action(client)
++    assert response.status_code == 200, response.text
++    assert response.json()["after"]["revision"] == 1
++    assert client.post("/v1/admin/alarms/verification_unavailable/actions", headers=headers("owner"),
++        json=body).json() == response.json()
++    report = client.get("/v1/admin/alarms/verification_unavailable", headers=headers()).json()
++    assert report["item"]["status"] == "acknowledged" and not report["item"]["can_clear"]
++    assert len(report["history"]) == 1 and report["history"][0]["actor"] == "owner"
++    assert action(client, revision=0)[0].status_code == 409
++    assert action(client, revision=1, action="clear")[0].status_code == 409
++    health.update(status="ready", queue_depth=0)
++    report = client.get("/v1/admin/alarms", headers=headers()).json()
++    assert report["items"][0]["status"] == "recovered" and report["items"][0]["can_clear"]
++    assert action(client, revision=1, action="clear", reason="Worker restored and evidence checked")[0].status_code == 200
++    report = client.get("/v1/admin/alarms/verification_unavailable", headers=headers()).json()
++    assert report["item"]["status"] == "cleared" and len(report["history"]) == 2
++    health.update(status="worker_unavailable", queue_depth=1)
++    assert client.get("/v1/admin/alarms", headers=headers()).json()["items"][0]["status"] == "open"
++    assert action(client, revision=2)[0].status_code == 200
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(AdminAudit).where(
++            AdminAudit.action.like("alarm_%"))) == 3
++        assert session.scalar(select(func.count()).select_from(OperationState).where(
++            OperationState.id.startswith("admin-alarm:"))) == 1
++
++
++def test_analyst_reason_unknown_signal_and_idempotency_conflicts(alarms, monkeypatch):
++    client, _, _, health = alarms
++    health.update(status="worker_unavailable", queue_depth=1)
++    _, body = action(client)
++    endpoint = "/v1/admin/alarms/verification_unavailable/actions"
++    assert client.post(endpoint, headers=headers(), json=body).status_code == 403
++    assert client.post(endpoint, headers=headers("owner"), json={**body, "reason": "changed reason"}).status_code == 409
++    assert action(client, revision=1, reason="Bearer SECRET_CREDENTIAL")[0].status_code == 422
++    assert action(client, revision=1, reason="        ")[0].status_code == 422
++    def unavailable(*args, **kwargs):
++        raise OSError("private filesystem information")
++    monkeypatch.setattr("bmt_backend.studio_alarms.competition_health", unavailable)
++    report = client.get("/v1/admin/alarms", headers=headers())
++    assert report.status_code == 200 and report.json()["unknown_checks"] == 6
++    assert "private filesystem" not in report.text
++    assert report.json()["items"][0]["status"] == "unknown"
++    assert action(client, revision=1, action="clear")[0].status_code == 409
++
++
++def test_severity_escalation_returns_to_action_queue(alarms):
++    client, _, _, health = alarms
++    health.update(oldest_age_seconds=150, queue_depth=2)
++    assert action(client, "queue_delay")[0].status_code == 200
++    health["oldest_age_seconds"] = 601
++    report = client.get("/v1/admin/alarms/queue_delay", headers=headers()).json()
++    assert report["item"]["status"] == "open" and report["item"]["severity"] == "critical"
++    assert action(client, "queue_delay", revision=1)[0].status_code == 200
++    health["oldest_age_seconds"] = 150
++    assert client.get("/v1/admin/alarms/queue_delay", headers=headers()).json()["item"]["status"] == "acknowledged"
++
++
++@pytest.mark.parametrize("field,value,key", [("queue_depth", 100, "queue_capacity"),
++    ("oldest_age_seconds", 120, "queue_delay"), ("failed_last_5_minutes", 1, "verification_failures"),
++    ("storage_free_bytes", 1024**3 - 1, "storage_low"), ("backup", {"status": "missing"}, "backup_marker")])
++def test_actual_check_thresholds(alarms, field, value, key):
++    client, _, _, health = alarms
++    health[field] = value
++    items = client.get("/v1/admin/alarms", headers=headers()).json()["items"]
++    assert key in [item["key"] for item in items]
++
++
++def test_recent_publication_failure_expires_without_hiding_historical_request(alarms):
++    client, app, ids, _ = alarms
++    with app.state.session_factory() as session:
++        publication = PublicationIntent(player_id=ids["player"], operation_key="alarm-fixture",
++            request_hash="a" * 64, authoring_id="alarm-fixture", name="Failed publication",
++            content_hash="b" * 64, replay_hash="c" * 64, vehicle_id="compact", contract={},
++            status="failed", created_at=AT-600, finished_at=AT-1)
++        session.add(publication); session.commit(); publication_id = publication.id
++    assert action(client, "publication_failures")[0].status_code == 200
++    with app.state.session_factory() as session:
++        session.get(PublicationIntent, publication_id).finished_at = AT-301; session.commit()
++    item = client.get("/v1/admin/alarms/publication_failures", headers=headers()).json()["item"]
++    assert item["status"] == "recovered" and item["can_clear"]
++    with app.state.session_factory() as session:
++        assert session.get(PublicationIntent, publication_id).status == "failed"
++
++
++def test_concurrent_decisions_preserve_one_revision(alarms):
++    client, app, _, health = alarms
++    health.update(status="worker_unavailable", queue_depth=1)
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        responses = list(pool.map(lambda _: action(client)[0].status_code, range(2)))
++    assert sorted(responses) == [200, 409]
++    with app.state.session_factory() as session:
++        assert session.get(OperationState, "admin-alarm:verification_unavailable").details["revision"] == 1
++
++
++def test_reporting_delay_uses_oldest_unprocessed_receipt(alarms):
++    client, app, ids, _ = alarms
++    with app.state.session_factory() as session:
++        event = ProductEvent(id=str(uuid4()), player_id=ids["player"], source="server", name="race_accepted",
++            occurred_at=AT-99999, received_at=AT-300, payload_hash="a" * 64)
++        session.add(event); session.commit(); event_id = event.id
++    item = client.get("/v1/admin/alarms/projection_delay", headers=headers()).json()["item"]
++    assert item["active"] and item["severity"] == "warning"
++    assert action(client, "projection_delay")[0].status_code == 200
++    with app.state.session_factory() as session:
++        session.get(ProductEvent, event_id).processed_at = AT; session.commit()
++    assert client.get("/v1/admin/alarms/projection_delay", headers=headers()).json()["item"]["can_clear"]
++
++
++def test_two_alarm_keys_cannot_share_a_command_identity(alarms):
++    client, app, _, health = alarms
++    health.update(status="worker_unavailable", queue_depth=2, oldest_age_seconds=200)
++    command = str(uuid4())
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        responses = list(pool.map(lambda key: action(client, key, command_id=command)[0].status_code,
++            ["verification_unavailable", "queue_delay"]))
++    assert sorted(responses) == [200, 409]
++    with app.state.session_factory() as session:
++        assert session.scalar(select(func.count()).select_from(OperationState).where(
++            OperationState.id.startswith("admin-alarm:"))) == 1
+diff --git a/docs/BACKEND_UI.md b/docs/BACKEND_UI.md
+--- a/docs/BACKEND_UI.md
++++ b/docs/BACKEND_UI.md
+@@ -435,3 +435,8 @@
+ ## Authorized Studio staging deployment, 2026-10-11
+ 
+ The owner subsequently authorized deployment. The reviewed nine-file Studio overlay is now live on the existing retained staging service, with fresh backup, zero-traffic canary, unchanged schema/game/commerce and preserved configuration. Exact-image47 tests and live API/asset/flag/browser/native-worker checks passed. Earlier no-deployment statements describe their original local tasks. See [the actual deployment report](BACKEND_STUDIO_DEPLOY_2026_10_11.md) for commands, evidence, image/revision and remaining boundaries.
++
++
++## Decision-led overview and alarms, 2026-10-16
++
++The local default Overview now explains current priorities and scoped product findings, with direct investigation links. Alarms has a severity/state/area queue, evidence and next steps, shared audited acknowledgement and closure after a fresh recovery check. Active faults cannot be cleared, unavailable checks remain unknown, and recurrence returns to the action queue. The eight checks run on request; notifications and continuous incident detection are not configured. See [implementation, actual tests and seeded before/after views](STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md). Owner presentation/threshold acceptance and explicit deployment authorisation remain.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-16 EGY01-EGY05/V05/G01/R01/Q01: original Desert Pyramid, Obelisk, intact/broken Lotus column and Temple wall added to Buildings and bounded saved Populate. Fitted stone courses, recessed ornament, curved capital/cornice, filtered rough stone and native previews retain solid footprints, camera/lighting/shadows/canonical contracts and cache bounds. Authored flat/curved normals survive cached world/editor assembly. Final focused79 headless/96 Compatibility/96 Mobile, population20582, prop669, creator113, raster8 and parser788 pass; actual commands/captures/initial failures/scoped patch: docs/DESERT_EGYPT_OBJECTS_2026_10_16.md. Concurrent shared-prop optimization/editor/backend work is preserved. Existing tracks are not rewritten; no phone test/attachment check/APK/backend/deployment/FPS claim. Owner/device artistic and performance acceptance remain.
++
++2026-10-16 BUI01-BUI05: local backend Overview now prioritises current conditions, scoped findings and task links. Shared alarm desk supports severity/state/area search, source evidence, audited revision-fenced acknowledgement, recovery recheck/closure and recurrence. Eight metadata checks reuse existing state/audit tables; no migration. SQLite/PostgreSQL57, health8, Edge11 and presentation4 pass; responsive seeded captures and task-only checkpoint are in docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md. Owner hierarchy/threshold acceptance remains; on-demand checks only, no notification service, deployment or physical-phone test. Concurrent game work is preserved.
+ 
+ 2026-10-15 MREV03-MREV09/R01/G01/V03-V05/Q01: seven medium menu findings fixed. Independent cancellable browser jobs remove departure joins; covered native picking and exact wash batching reduce64 mask uploads to2. Rivalry retains unchanged/status/score controls and native cars; passive Store previews make zero requests and scoped reads coalesce for60s. One bounded background snapshot writer and selected-record32/2MiB LRU bound repeated IO/memory. Four native settling draws retain exact idle images and stop repeated Garage passes; playing LP/camera/snow/washing stay animated. Focused313headless/317Compatibility/317Mobile, washing197+197, motion228+228, reflections25+25, high-priority71Mobile/47headless, app101, histograms127/loading27/parser775 pass. Stopped-LP native total draws53vs452; timings are desktop callback evidence. Final Compatibility transient1-byte variation matches original-only measured values; no arbitrary colour tolerance. Existing purchase fixture fails identically on baseline. Commands, initial failures, source hashes and task-only patch: docs/evidence/menu-medium-fixes-2026-10-15/report.json. No phone/APK/backend/deployment/FPS claim; owner/device acceptance remains.
+ 
+diff --git a/docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md b/docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md
+new file mode 100644
+--- /dev/null
++++ b/docs/STUDIO_INSIGHTS_AND_ALARMS_2026_10_16.md
+@@ -0,0 +1,145 @@
++# Studio insights and alarm desk, 2026-10-16
++
++The owner requests clearer backend information, direct insights, guidance to the
++right evidence, and an explicit view for reacting to and clearing issues. This
++local implementation replaces the default Studio pulse with a decision-led
++Overview and adds an authenticated Alarms workspace.
++
++Requirements for this slice:
++
++- **BUI01**: lead with the current situation, prioritised issues and relevant metrics.
++- **BUI02**: explain findings and link each investigation to its source evidence.
++- **BUI03**: provide a searchable alarm queue with severity, area and state filters.
++- **BUI04**: share durable, audited acknowledgement and recovery closure between admins.
++- **BUI05**: preserve permissions, request fences and usable desktop/narrow layouts.
++
++## Visible behaviour
++
++The Overview starts with a current status statement, highest-priority issues and
++the alarm-desk action. Scoped findings identify the largest observed first-race
++cohort loss, mature exact-D7 return and retained failed publications when those
++sources exist. The first-race finding is descriptive; it does not infer a cause.
++Verified terminal outcomes use verified / (verified + rejected + failed), with
++the denominator shown. Queued attempts do not inflate that denominator.
++
++Task links guide users to player support, client quality, publication processing
++and competition provenance. Activity, source watermarks and population stay
++visible. Unavailable sources and immature cohorts are not rendered as zeros or
++healthy-service claims. The navigation groups starting points, understanding,
++investigation and management; publication processing is directly discoverable.
++
++The alarm queue separates Needs attention, Acknowledged, Ready to clear, Cleared
++and All. Critical active conditions remain above warnings after acknowledgement.
++Each selected issue explains impact, current evidence and the next action.
++The detail stays below the desktop toolbar when scrolling and precedes the
++queue on narrow layouts. Resetting issue filters retains the reporting dates.
++
++An owner can acknowledge an active condition with an investigation note. An
++acknowledged fault stays active. Once the check recovers, the owner can record
++what was fixed and clear it. The backend rechecks immediately before closure;
++an active or unavailable condition rejects the decision. A recurrence after
++closure returns to Needs action. Escalation from acknowledged warning to critical
++also requires renewed attention. Analysts inspect the same shared state without
++write controls or write permission. Reasons are escaped and common pasted
++credential formats are rejected by the existing case-text guard.
++
++## Checks and state contract
++
++Eight fixed metadata checks run on request. These review defaults are operational
++thresholds, not owner-accepted SLOs:
++
++| Check | Condition |
++| --- | --- |
++| Worker availability | No compatible available verifier; critical when work is pending, warning otherwise |
++| Queue delay | Oldest pending work at least 120 s; critical at 600 s |
++| Queue capacity | Current depth reaches configured capacity |
++| Race verification failures | Any infrastructure failure completed in the last five minutes; rejected proofs are separate |
++| Publication failures | Any failed explicit request completed in the last five minutes; capped count of 5,000 |
++| Local object capacity | Below 5 GiB free; critical below 1 GiB; remote free space is not inferred |
++| Backup marker | An explicitly configured completion marker is missing or unreadable; no restore-success inference |
++| Reporting delay | Oldest unprocessed receipt at least 300 s old; critical at 1,800 s |
++
++`GET /v1/admin/alarms` returns current conditions plus previously actioned state,
++observation time, available-check count and scope. Reads create no alarm state.
++`GET /v1/admin/alarms/{key}` adds the latest 25 decisions, with an explicit
++history-truncation flag. Existing Audit history retains earlier decisions.
++`POST /v1/admin/alarms/{key}/actions` accepts a UUID `command_id`, nonnegative
++`expected_revision`, `acknowledge|clear` action and an 8–500-character reason.
++Retries are idempotent; changed revisions or reused command IDs return 409.
++
++The existing `OperationState` store holds at most eight `admin-alarm:` rows;
++the existing append-only `AdminAudit` records decisions. A per-signal transaction
++lock serialises first creation and later decisions on PostgreSQL; SQLite uses
++the existing immediate-write lock. The unique audit command constraint also
++fences simultaneous reuse across different alarm keys. No migration is required.
++Health observation can reuse the action's database session, avoiding a nested
++pool checkout while holding the decision lock. No proof blobs are read or races
++replayed by the new publication/reporting projections.
++
++This is **on-demand checking**. There is no background detector, notification
++delivery or complete incident-occurrence ledger. Only decisions are persisted;
++unacknowledged conditions that recover and faults entirely between checks are
++not retained as incidents. Remote storage capacity, unconfigured backups,
++crash-free rates, provider revenue and individual staff SSO remain separate
++coverage gaps. Broader retained publication failures remain a review queue,
++not a permanently firing five-minute alarm.
++
++## Changed files
++
++- Runtime: `studio_alarms.py`, router registration in `app.py`, asset allowlist in
++  `admin.py`, optional session reuse in `operations.py`.
++- UI: `admin_ui/insights.js`, `insights.css`, `index.html`, and navigation/routing
++  in `app.js`.
++- Verification: `test_studio_alarms.py`, `test_studio_insights_views.js`,
++  `test_studio_insights_console.py`, `test_studio_insights_postgres.py`.
++- This report, the backend UI guide, project/status/phase notes and the task-only
++  evidence/checkpoint. Concurrent community-safety/backend and game/track edits
++  are excluded. The shared `app.py` checkpoint baseline removes only this
++  task's two router lines from the final file, preserving the parallel router
++  work on both sides of the patch. The unrelated support-case UI edit is excluded.
++
++## Actual verification
++
++Commands run from the repository root, using `.tools/backend-venv/Scripts/python.exe`
++and the existing Playwright Node executable:
++
++| Command | Actual result |
++| --- | --- |
++| `python scripts/test_studio_insights_postgres.py` | **57 passed**, 60.62 s; SQLite plus disposable PostgreSQL17, including 13 new alarm scenarios on both databases, original Studio/admin/case tests and concurrency checks. The labelled owned container was removed. [Log](evidence/studio-insights-2026-10-16/postgres.log). |
++| `python -m pytest backend/tests/test_studio_alarms.py backend/tests/test_studio.py backend/tests/test_studio_operations.py backend/tests/test_admin.py -q -m 'not postgres' --disable-warnings --tb=short --junitxml=docs/evidence/studio-insights-2026-10-16/api.xml` | **42 passed, 2 deselected**, 42.34 s in the recorded local run. This overlaps the broader database run; the counts are not additive. [Receipt](evidence/studio-insights-2026-10-16/api.xml). |
++| `python -m pytest backend/tests/test_review_reliability.py backend/tests/test_review_followups.py backend/tests/test_worker_lifecycle.py -q -k 'health and not postgres' --disable-warnings --tb=short --junitxml=docs/evidence/studio-insights-2026-10-16/health-regression.xml` | **8 passed, 126 deselected**, 4.22 s; existing health-contract checks. [Receipt](evidence/studio-insights-2026-10-16/health-regression.xml). |
++| `python scripts/test_studio_insights_console.py` | **11 browser checks, zero JavaScript exceptions**, real Edge against newly owned loopback SQLite. Cross-tab state, analyst permissions, recovery/clear/reload/recurrence, escaped evidence, source loss during closure, filtering, 390/1024 containment and sticky desktop detail pass. [Receipt](evidence/studio-insights-2026-10-16/browser.json). |
++| `python -m pytest backend/tests/test_studio_alarms.py -q -k 'not postgres' --disable-warnings --tb=short --junitxml=docs/evidence/studio-insights-2026-10-16/final-integration.xml` | Final shared-workspace integration: **13 passed, 13 deselected**, 13.49 s, with the concurrently added backend router retained. The browser suite was also rerun successfully in that combined workspace. This overlaps the earlier suite. |
++| `node scripts/test_studio_insights_views.js` | **4 presentation checks**: scoped denominators/findings, immature/missing sources, cancellation/escaping and critical priority. |
++| Ruff on changed Python; Node syntax on new/changed JS; scoped whitespace and reverse task-patch application | Passed; [static receipt](evidence/studio-insights-2026-10-16/static.json) and [checkpoint](evidence/studio-insights-2026-10-16/checkpoint.json). |
++
++Initial attempts are retained as limitations of the actual process: the browser
++fixture first tried inserting a product-state row already created by migrations;
++the fixture was corrected to update that row. Initial lint caught a reused
++session argument and later an obsolete fixture suppression; both were corrected.
++An initial broad health selection included unmarked PostgreSQL parametrisations
++that used the old unavailable local configuration; that run was interrupted.
++The final health-only SQLite selection and separately owned PostgreSQL suite
++above passed. The first sandboxed WSL availability check was denied by the OS;
++the approved local test runner then succeeded. No assertion was weakened.
++The existing Starlette/httpx deprecation warning remains.
++
++## Visual review and remaining acceptance
++
++These captures contain **seeded local fixture data**, not production incidents
++or actual client measurements. Worker-health scenarios and prepared activity
++were explicitly seeded; production monitoring has not been exercised.
++
++- [Previous overview](evidence/studio-insights-2026-10-16/overview-before-1440.png)
++- [New overview](evidence/studio-insights-2026-10-16/overview-after-1440.png)
++- [Active alarm desk](evidence/studio-insights-2026-10-16/alarms-active-1440.png)
++- [Recovered issue](evidence/studio-insights-2026-10-16/alarm-recovered-1440.png)
++- [Cleared history](evidence/studio-insights-2026-10-16/alarms-cleared-1440.png)
++- [Recovered overview](evidence/studio-insights-2026-10-16/overview-healthy-1440.png)
++- [Narrow alarm desk](evidence/studio-insights-2026-10-16/alarms-after-390.png)
++- [Narrow overview](evidence/studio-insights-2026-10-16/overview-after-390.png)
++
++Owner review of information hierarchy, guidance and review thresholds remains.
++No deployment, migration, production write, provider integration, gameplay
++change, Android build/install or physical-phone test occurred. Phone attachment
++was not checked. Deployment requires the owner's explicit authorisation.
+diff --git a/scripts/test_studio_insights_console.py b/scripts/test_studio_insights_console.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_studio_insights_console.py
+@@ -0,0 +1,242 @@
++"""Browser evidence against a newly owned SQLite service; all values are seeded.
++
++No existing database, remote service, device or deployment is accessed.
++"""
++import argparse
++import json
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++from uuid import uuid4
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "backend"))
++sys.path.insert(0, str(ROOT / "backend/tests"))
++
++
++def serve(folder, port):
++    from dataclasses import replace
++
++    import bmt_backend.app as application
++    import bmt_backend.studio_alarms as alarms
++    import uvicorn
++    from test_backend_studio_console import serve as base_serve
++
++    original_create, original_run = application.create_app, uvicorn.run
++
++    def create(settings, **kwargs):
++        return original_create(replace(settings, telemetry_enabled=True), **kwargs)
++
++    def health(app, **kwargs):
++        scenario = json.loads((folder / "scenario.json").read_text())
++        if scenario.get("unavailable"):
++            raise OSError("Seeded source unavailable")
++        return {"status": "ready", "available_workers": 1, "queue_depth": 0,
++            "oldest_age_seconds": 0, "queue_capacity": 100, "failed_last_5_minutes": 0,
++            "storage_free_bytes": 25 * 1024**3, "backup": {"status": "complete"}, **scenario}
++
++    def seeded(app, **kwargs):
++        from bmt_backend.telemetry_models import (
++            ProductMetric,
++            ProductPlayerDay,
++            ProductState,
++        )
++        from bmt_backend.track_models import now
++        fixture = json.loads((folder / "fixture.json").read_text())
++        at, day = now(), now() // 86400
++        with app.state.session_factory() as session:
++            state = session.get(ProductState, 1)
++            state.collection_started_at = (day-14)*86400
++            state.processed_through, state.latest_receipt_at, state.observed_at = at-20, at-15, at-10
++            for offset, count in enumerate([1, 1, 2, 1, 2, 2, 2]):
++                session.add(ProductMetric(day=day-6+offset, key="active_players", value=count))
++                for player in [fixture["player_id"], fixture["artificial_player_id"]][:count]:
++                    session.add(ProductPlayerDay(day=day-6+offset, player_id=player))
++            for name, count in [("app_first_open", 2), ("menu_ready", 2), ("race_attempt", 2),
++                ("race_started", 2), ("race_finished", 1), ("second_voluntary_race", 1)]:
++                session.add(ProductMetric(day=day-4, key="first_race_"+name, value=count))
++            session.commit()
++        original_run(app, **kwargs)
++
++    application.create_app, uvicorn.run = create, seeded
++    alarms.competition_health = health
++    base_serve(folder, port)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--serve", type=Path)
++    parser.add_argument("--port", type=int)
++    parser.add_argument("--output", type=Path, default=ROOT / "docs/evidence/studio-insights-2026-10-16")
++    args = parser.parse_args()
++    if args.serve:
++        serve(args.serve, args.port)
++        return
++    import httpx
++    from playwright.sync_api import expect, sync_playwright
++    folder = ROOT / "build" / ("studio-insights-browser-" + uuid4().hex[:8])
++    folder.mkdir(parents=True)
++    output = args.output.resolve(); output.mkdir(parents=True, exist_ok=True)
++    credentials = {name: secrets.token_urlsafe(32) for name in ("owner", "analyst", "development")}
++    (folder / "config.private.json").write_text(json.dumps(credentials))
++    scenario = folder / "scenario.json"
++    scenario.write_text(json.dumps({"status": "worker_build_mismatch", "queue_depth": 4,
++        "available_workers": 0, "oldest_age_seconds": 245, "failed_last_5_minutes": 2}))
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0)); port = reservation.getsockname()[1]
++    base = f"http://127.0.0.1:{port}"
++    checks, errors = [], []
++    with (folder / "server.log").open("w", encoding="utf-8") as log:
++        process = subprocess.Popen([sys.executable, str(Path(__file__)), "--serve", str(folder), "--port", str(port)],
++            stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
++        try:
++            with httpx.Client(base_url=base, timeout=10) as client:
++                for _ in range(100):
++                    if process.poll() is not None:
++                        raise RuntimeError("Owned fixture exited; inspect " + str(folder / "server.log"))
++                    try:
++                        if client.get("/health").status_code == 200:
++                            break
++                    except httpx.ConnectError:
++                        pass
++                    time.sleep(.2)
++                else:
++                    raise RuntimeError("Owned fixture did not start")
++            with sync_playwright() as driver:
++                browser = driver.chromium.launch(headless=True,
++                    executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe")
++                page = browser.new_page(viewport={"width": 1440, "height": 1050})
++                page.on("pageerror", lambda error: errors.append(str(error)))
++                # Preserve a same-fixture view with actual pre-change HTML/JS.
++                before = ROOT / "build/studio-insights-2026-10-16/before"
++                def original(route):
++                    name = route.request.url.split("/")[-1].split("?")[0]
++                    source = before / ("backend__bmt_backend__admin_ui__" + ("index.html" if name == "admin" else name))
++                    if source.is_file():
++                        route.fulfill(body=source.read_bytes(), content_type="text/html" if name == "admin" else "application/javascript")
++                    else:
++                        route.continue_()
++                page.route(base + "/admin**", original)
++                page.goto(base + "/admin#overview")
++                page.fill("#key", credentials["owner"]); page.locator("#login button").click()
++                expect(page.locator("h1")).to_have_text("Studio pulse")
++                page.screenshot(path=str(output / "overview-before-1440.png"), full_page=True)
++                page.unroute(base + "/admin**", original)
++                page.reload(); page.fill("#key", credentials["owner"]); page.locator("#login button").click()
++                expect(page.locator("h1")).to_have_text("Overview")
++                expect(page.locator(".insight-pulse")).to_contain_text("critical backend condition")
++                expect(page.locator("#main")).to_contain_text("Largest observed first-race drop-off")
++                expect(page.locator(".insight-priority")).to_have_count(3)
++                page.screenshot(path=str(output / "overview-after-1440.png"), full_page=True)
++                checks.append("overview prioritises active issues and derives a scoped first-race finding with source links")
++                page.locator(".insight-priority").filter(has_text="Verification workers unavailable").click()
++                expect(page.locator("h1")).to_have_text("Alarms")
++                expect(page.locator("#alarm-title")).to_have_text("Verification workers unavailable")
++                expect(page.locator('[data-alarm-action="clear"]')).to_have_count(0)
++                page.screenshot(path=str(output / "alarms-active-1440.png"), full_page=True)
++                page.evaluate("scrollTo({top:650,behavior:'instant'})")
++                assert page.locator('.alarm-detail').bounding_box()['y'] >= page.locator('.topbar').bounding_box()['height']
++                page.evaluate("scrollTo({top:0,behavior:'instant'})")
++                page.locator('[data-alarm-action="acknowledge"]').click()
++                page.fill("#alarm-reason", "Compare worker build, then restart the matching verifier.")
++                page.locator("#alarm-save").click()
++                expect(page.locator(".alarm-history")).to_contain_text("Compare worker build")
++                checks.append("overview deep-link opens evidence and guided investigation; acknowledgement is recorded")
++                # Independent authenticated tab sees the same persisted decision.
++                other = browser.new_page(viewport={"width": 1440, "height": 1000})
++                other.goto(base + "/admin#alarms/verification_unavailable")
++                other.fill("#key", credentials["analyst"]); other.locator("#login button").click()
++                expect(other.locator(".alarm-detail-heading")).to_contain_text("Acknowledged")
++                expect(other.locator("[data-alarm-action]")).to_have_count(0)
++                checks.append("separate analyst tab sees shared acknowledgement and cannot mutate")
++                for width in (1024, 390):
++                    page.set_viewport_size({"width": width, "height": 900})
++                    page.screenshot(path=str(output / f"alarms-after-{width}.png"), full_page=True)
++                    assert page.evaluate("document.documentElement.scrollWidth<=innerWidth"), f"Overflow at {width}"
++                page.set_viewport_size({"width": 1440, "height": 1050})
++                scenario.write_text("{}")
++                page.locator("#alarm-recheck").click()
++                expect(page.locator('[data-alarm-action="clear"]')).to_be_visible()
++                page.screenshot(path=str(output / "alarm-recovered-1440.png"), full_page=True)
++                page.locator('[data-alarm-action="clear"]').click()
++                page.fill("#alarm-reason", "Compatible worker restored; queue and builds rechecked.")
++                page.locator("#alarm-save").click()
++                expect(page.locator(".alarm-history")).to_contain_text("Cleared after recovery")
++                page.reload(); page.fill("#key", credentials["owner"]); page.locator("#login button").click()
++                expect(page.locator(".alarm-detail-heading")).to_contain_text("Cleared")
++                checks.append("recovery enables closure; clear history survives lock and reload")
++                page.evaluate("location.hash='alarms?status=cleared'")
++                expect(page.locator(".alarm-row")).to_have_count(1)
++                expect(page.locator(".alarm-row")).to_contain_text("Cleared")
++                page.screenshot(path=str(output / "alarms-cleared-1440.png"), full_page=True)
++                page.evaluate("location.hash='overview'")
++                expect(page.locator(".insight-pulse")).to_contain_text("No configured alarm is firing")
++                page.screenshot(path=str(output / "overview-healthy-1440.png"), full_page=True)
++                page.evaluate("location.hash='alarms/verification_unavailable'")
++                expect(page.locator("#alarm-recheck")).to_be_visible()
++                checks.append("cleared-state filter retains history and recovered overview does not imply an active fault")
++                scenario.write_text(json.dumps({"status": "worker_unavailable", "queue_depth": 2, "available_workers": 0}))
++                page.locator("#alarm-recheck").click()
++                expect(page.locator(".alarm-detail-heading")).to_contain_text("Needs action")
++                checks.append("recurrence after closure returns to active action queue")
++                page.locator('[data-alarm-action="acknowledge"]').click()
++                page.fill("#alarm-reason", "<img src=x onerror=alert(1)> is plain evidence text")
++                page.locator("#alarm-save").click()
++                expect(page.locator(".alarm-history img")).to_have_count(0)
++                expect(page.locator(".alarm-history")).to_contain_text("<img src=x")
++                checks.append("recorded operator evidence is escaped")
++                scenario.write_text("{}")
++                page.locator("#alarm-recheck").click()
++                page.locator('[data-alarm-action="clear"]').click()
++                page.fill("#alarm-reason", "Recovery reviewed before committing closure")
++                scenario.write_text(json.dumps({"unavailable": True}))
++                page.locator("#alarm-save").click()
++                expect(page.locator("#alarm-error")).to_contain_text("ALARM_NOT_RECOVERED")
++                page.locator('[data-close]').click()
++                page.locator("#alarm-recheck").click()
++                expect(page.locator("#main")).to_contain_text("Some checks are unavailable")
++                expect(page.locator('[data-alarm-action="clear"]')).to_have_count(0)
++                checks.append("source loss between preview and commit cannot clear an alarm")
++                scenario.write_text(json.dumps({"status": "worker_unavailable", "queue_depth": 2, "available_workers": 0}))
++                page.evaluate("location.hash='alarms'")
++                expect(page.locator("h1")).to_have_text("Alarms")
++                page.fill('#alarm-filters input[name="q"]', "no matching alarm")
++                page.locator('#alarm-filters button').click()
++                expect(page.locator(".alarm-empty")).to_contain_text("No issues match")
++                checks.append("filters have a distinct, useful no-match state")
++                page.evaluate("location.hash='alarms/verification_unavailable'")
++                expect(page.locator("#alarm-title")).to_be_visible()
++                for width in (1024, 390):
++                    page.set_viewport_size({"width": width, "height": 900})
++                    assert page.evaluate("document.documentElement.scrollWidth<=innerWidth"), f"Overflow at {width}"
++                page.evaluate("location.hash='overview'")
++                expect(page.locator("h1")).to_have_text("Overview")
++                page.screenshot(path=str(output / "overview-after-390.png"), full_page=True)
++                assert page.evaluate("document.documentElement.scrollWidth<=innerWidth")
++                checks.append("overview and selected alarm contain at 390px; alarm also contains at 1024px")
++                page.set_viewport_size({"width": 1440, "height": 1000})
++                page.route("**/v1/admin/alarms", lambda route: route.fulfill(status=503,
++                    content_type="application/json", body='{"detail":"Seeded alarm source unavailable"}'))
++                page.locator("#refresh").click()
++                expect(page.locator(".insight-pulse")).to_contain_text("could not be loaded")
++                expect(page.locator("#main")).to_contain_text("Seeded alarm source unavailable")
++                checks.append("alarm read failure is shown as unavailable while operational overview remains usable")
++                assert not errors, errors
++                browser.close()
++            (output / "browser.json").write_text(json.dumps({"checks": checks, "javascript_errors": errors,
++                "fixture": "Owned loopback SQLite; seeded worker health and prepared activity", "screenshots":
++                [file.name for file in output.glob("*.png")]}, indent=2) + "\n")
++            print(json.dumps({"checks": len(checks), "javascript_errors": errors, "output": str(output)}))
++        finally:
++            process.terminate()
++            try:
++                process.wait(timeout=10)
++            except subprocess.TimeoutExpired:
++                process.kill(); process.wait(timeout=5)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/test_studio_insights_postgres.py b/scripts/test_studio_insights_postgres.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_studio_insights_postgres.py
+@@ -0,0 +1,67 @@
++"""Insight/alarm acceptance using one owned disposable PostgreSQL container."""
++
++import argparse
++import json
++import os
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output", type=Path, default=ROOT / "docs/evidence/studio-insights-2026-10-16")
++    args = parser.parse_args()
++    config = ROOT / ".tools/gcp-staging/config.json"
++    docker = json.loads(config.read_text())["docker"] if config.is_file() else ["docker"]
++    name = "bmt-studio-pg-" + secrets.token_hex(4)
++    label = "backend-studio-" + secrets.token_hex(8)
++    password = secrets.token_urlsafe(24)
++    with socket.socket() as reservation:
++        reservation.bind(("127.0.0.1", 0))
++        port = reservation.getsockname()[1]
++
++    def call(*args):
++        return subprocess.run([*docker, *args], capture_output=True, text=True, check=False, timeout=30)
++
++    started = call("run", "-d", "--rm", "--name", name, "--label", "bmt.task=" + label,
++        "-p", f"127.0.0.1:{port}:5432", "-e", "POSTGRES_USER=studio_test", "-e",
++        "POSTGRES_DB=studio_test", "-e", "POSTGRES_PASSWORD=" + password, "postgres:17")
++    if started.returncode:
++        raise RuntimeError("Owned PostgreSQL could not start; no existing service was replaced")
++    try:
++        for _attempt in range(30):
++            if call("exec", name, "pg_isready", "-U", "studio_test").returncode == 0:
++                break
++            time.sleep(0.5)
++        else:
++            raise RuntimeError("Owned database did not become ready")
++        env = dict(os.environ)
++        env["BMT_TEST_DATABASE_URL"] = f"postgresql+psycopg://studio_test:{password}@127.0.0.1:{port}/studio_test"
++        command = [sys.executable, "-m", "pytest", "tests/test_studio.py", "tests/test_admin.py",
++            "tests/test_studio_operations.py", "tests/test_studio_alarms.py", "-q", "--tb=short"]
++        tested = subprocess.run(command, cwd=ROOT / "backend", env=env,
++            capture_output=True, text=True, check=False, timeout=300)
++        output = tested.stdout + tested.stderr
++        output = output.replace(password, "[REDACTED]")
++        evidence = args.output
++        evidence.mkdir(parents=True, exist_ok=True)
++        (evidence / "postgres.log").write_text(output, encoding="utf-8")
++        print(output[-5000:])
++    finally:
++        checked = call("inspect", name, "--format", "{{json .Config.Labels}}")
++        if checked.returncode == 0 and json.loads(checked.stdout).get("bmt.task") == label:
++            removed = call("stop", name)
++            print("Owned PostgreSQL removed:", removed.returncode == 0)
++        else:
++            raise RuntimeError("Database ownership changed; leaving it untouched")
++    return tested.returncode
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/scripts/test_studio_insights_views.js b/scripts/test_studio_insights_views.js
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_studio_insights_views.js
+@@ -0,0 +1,40 @@
++'use strict';
++const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
++const escape=value=>String(value??'Unavailable').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
++const context={URLSearchParams,Map,Number,Math,generation:1,authGeneration:1,esc:escape,
++ date:value=>value?'UTC '+value:'Unavailable',scopedHref:target=>'#'+target,
++ intro:(title,body)=>`<h1>${escape(title)}</h1><p>${escape(body)}</p>`};
++vm.createContext(context);
++for(const file of ['monitor_views.js','insights.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../backend/bmt_backend/admin_ui',file),'utf8'),context);
++const operational={as_of:200,since:100,until:200,pending:4,states:{verified:8,rejected:1,failed:1,queued:99}};
++const prepared={telemetry_enabled:true,period_active_players:7,daily:[],coverage:{collection_started_at:100},
++ retention:[{cohort_day:'mature',d7:{mature:true,returned:2,eligible:5}},{cohort_day:'immature',d7:{mature:false,returned:0,eligible:50}}],
++ funnels:{first_race:{mature:true,steps:[{name:'menu_ready',count:10},{name:'race_started',count:8},{name:'race_finished',count:3}]}}};
++async function main(){
++ let calls=[];context.api=async target=>{calls.push(target);return target==='alarms'?{checks:8,as_of:200,items:[],unknown_checks:0}:prepared;};
++ const html=await context.insightOverview(operational,new URLSearchParams({since:'100',until:'200'}));
++ assert.deepEqual(calls,['product-analytics?since=100&until=200','alarms']);
++ assert.match(html,/80\.0%/);assert.match(html,/8 \/ 10 terminal submissions/);
++ assert.match(html,/5 of 8 cohort players did not reach race finish after race start/);
++ assert.match(html,/40\.0% returned on day seven/);assert.doesNotMatch(html,/immature cohort/);
++ assert.match(html,/No configured alarm is firing/);
++ console.log('PASS scoped findings use terminal outcomes, largest ordered cohort loss and mature exact D7 denominators');
++ context.api=async target=>target==='alarms'?{checks:8,unknown_checks:6,items:[]}:{...prepared,funnels:{first_race:{mature:false,steps:prepared.funnels.first_race.steps}}};
++ const missing=await context.insightOverview(operational,new URLSearchParams());
++ assert.match(missing,/Some checks could not be completed/);assert.doesNotMatch(missing,/No configured alarm is firing|Largest observed first-race drop-off/);
++ console.log('PASS unavailable checks and immature cohorts do not imply healthy service or mature product findings');
++ context.api=async target=>{if(target==='alarms')throw Error('Source <script> failed');return prepared;};
++ const failure=await context.insightOverview(operational,new URLSearchParams());
++ assert.match(failure,/Alarm checks could not be loaded/);assert.match(failure,/Source &lt;script&gt; failed/);
++ assert.doesNotMatch(failure,/No configured alarm is firing|<script>/);
++ context.api=async()=>{throw Object.assign(Error('Aborted'),{name:'AbortError'});};
++ await assert.rejects(context.insightOverview(operational,new URLSearchParams()),{name:'AbortError'});
++ console.log('PASS source failure is explicit and escaped; cancelled reads preserve navigation fences');
++ const items=[{key:'warning',active:true,severity:'warning',status:'open'},
++  {key:'critical',active:true,severity:'critical',status:'acknowledged'},
++  {key:'recovered',active:false,severity:'critical',status:'recovered'}];
++ assert.deepEqual(Array.from(context.orderedAlarms(items),item=>item.key),['critical','warning','recovered']);
++ assert.equal(items[0].key,'warning');
++ console.log('PASS active critical conditions lead warnings even after acknowledgement; evidence order is not mutated');
++}
++main().catch(error=>{console.error(error);process.exitCode=1;});

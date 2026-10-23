@@ -1,0 +1,899 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -319,6 +319,7 @@
+ 	add_child(challenge_links)
+ 	challenge_links.invitation_received.connect(_receive_challenge)
+ 	challenge_links.track_received.connect(_receive_track_link)
++	challenge_links.results_share_failed.connect(_rivalry_share_failed)
+ 	var rivalry_timer := Timer.new()
+ 	rivalry_timer.wait_time = 0.5
+ 	rivalry_timer.autostart = true
+@@ -1894,16 +1895,103 @@
+ 	if not rivalry.model.sample and rivalry.snapshot_scope != rivalry.scope(): return
+ 	var text: String = rivalry.model.finale_share_text()
+ 	if text.is_empty(): return
+-	if challenge_links.share(text): return
++	if root_ui.get_node_or_null("RivalryShareDialog") != null: return
+ 	var dialog := preload("res://ui/rivalry_share_dialog.gd").new()
+ 	dialog.model = rivalry.model
++	dialog.native_sharing = challenge_links.can_share_results()
+ 	dialog.player_name = online.player_name() if online.client.signed_in() else ""
+ 	dialog.livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
+ 	dialog.customisation = VehicleCustomisation.for_car(records.settings,rivalry.model.vehicle_id)
+ 	dialog.condition = VehicleCondition.read(records,rivalry.model.vehicle_id)
++	if not dialog.native_sharing: DisplayServer.clipboard_set(text)
++	var context: Dictionary = {"scope":rivalry.scope(),"group":rivalry.model.group_id,"week":rivalry.model.week,"text":text,"screen":screen}
++	dialog.share_requested.connect(_share_rivalry_card.bind(weakref(dialog),context))
++	dialog.save_requested.connect(_save_rivalry_card.bind(weakref(dialog),context))
+ 	_own_dialog(dialog)
+ 	var bounds: Vector2 = root_ui.get_viewport().get_visible_rect().size
+ 	dialog.popup_centered(Vector2i(minf(1120,bounds.x-48),minf(620,bounds.y-48)))
++	if dialog.native_sharing: _share_rivalry_card.call_deferred(weakref(dialog),context)
++
++func _rivalry_card_valid(dialog: AcceptDialog, context: Dictionary) -> bool:
++	return is_instance_valid(dialog) and not dialog.is_queued_for_deletion() and dialog.visible \
++		and screen == context.screen and rivalry.scope() == context.scope and not rivalry.cached_snapshot \
++		and (rivalry.model.sample or rivalry.snapshot_scope == context.scope) \
++		and rivalry.model.completed and rivalry.model.group_id == context.group and rivalry.model.week == context.week \
++		and rivalry.model.finale_share_text() == context.text
++
++func _share_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
++	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
++	dialog.set_sharing(true,"Preparing image…")
++	dialog.request_id = ""
++	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
++	dialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context):
++		if is_instance_valid(dialog): dialog.set_sharing(false,"Results changed. Close and share again.")
++		return
++	if png.is_empty():
++		dialog.set_sharing(false,"Couldn't prepare the image. Try again.")
++		return
++	dialog.request_id = TrackLibrary.unique_id()
++	dialog.set_sharing(false,"Ready to share")
++	var opened: bool = challenge_links.share_results(dialog.request_id,png,str(context.text))
++	if not opened: dialog.set_sharing(false,"Couldn't open sharing. Try again.")
++
++func _prepare_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> PackedByteArray:
++	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context): return PackedByteArray()
++	if not dialog.prepared_png.is_empty(): return dialog.prepared_png
++	var values: Dictionary = dialog.image_values()
++	values.owner = dialog_ref
++	var renderer: Callable = dialog.image_renderer
++	var png: PackedByteArray
++	if renderer.is_valid(): png = await renderer.call(root_ui,values)
++	else: png = await load("res://ui/rivalry_share_image.gd").render(root_ui,values)
++	dialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context): return PackedByteArray()
++	dialog.prepared_png = png
++	return png
++
++func _rivalry_share_failed(request_id: String, message: String) -> void:
++	var dialog: AcceptDialog = root_ui.get_node_or_null("RivalryShareDialog") as AcceptDialog
++	if is_instance_valid(dialog) and dialog.request_id == request_id: dialog.set_sharing(false,message)
++
++func _save_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
++	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
++	dialog.set_sharing(true,"Preparing image…")
++	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
++	dialog = dialog_ref.get_ref() as AcceptDialog
++	if not _rivalry_card_valid(dialog,context):
++		if is_instance_valid(dialog): dialog.set_sharing(false,"Results changed. Close and share again.")
++		return
++	if png.is_empty():
++		dialog.set_sharing(false,"Couldn't prepare the image. Try again.")
++		return
++	var picker := FileDialog.new()
++	picker.title = "Save results card"
++	picker.access = FileDialog.ACCESS_FILESYSTEM
++	picker.file_mode = FileDialog.FILE_MODE_SAVE_FILE
++	picker.use_native_dialog = true
++	picker.theme = MenuStyle.theme()
++	picker.filters = PackedStringArray(["*.png ; PNG image"])
++	picker.current_file = "Beat my track - Rivalry - Week %02d.png" % int(context.week)
++	dialog.add_child(picker)
++	picker.file_selected.connect(func(path: String) -> void:
++		if _rivalry_card_valid(dialog,context):
++			var file := FileAccess.open(path,FileAccess.WRITE)
++			if file != null:
++				file.store_buffer(png)
++				file.flush()
++				var error: Error = file.get_error()
++				file.close()
++				dialog.set_sharing(false,"Image saved" if error == OK else "Couldn't save the image. Try again.")
++			else: dialog.set_sharing(false,"Couldn't save the image. Try again.")
++		picker.queue_free())
++	picker.canceled.connect(func() -> void:
++		if is_instance_valid(dialog): dialog.set_sharing(false,"Results copied")
++		picker.queue_free())
++	picker.popup_centered_ratio(0.8)
+ 
+ func _remember_rivalry_standings(parent: Control) -> void:
+ 	if not is_instance_valid(parent): return
+--- a/game/platform/challenge_links.gd
++++ b/game/platform/challenge_links.gd
+@@ -2,12 +2,15 @@
+ ## Platform sharing and invitation intents; no SDK or external runtime service.
+ signal invitation_received(value: String)
+ signal track_received(value: String)
++signal results_share_failed(request_id: String, message: String)
+ var _native: Object
+ 
+ func _ready() -> void:
+ 	process_mode = Node.PROCESS_MODE_ALWAYS
+ 	if OS.get_name() == "Android" and Engine.has_singleton("BmtChallenges"):
+ 		_native = Engine.get_singleton("BmtChallenges")
++		if _native.has_signal("results_share_failed"):
++			_native.connect("results_share_failed",func(request_id: String, message: String) -> void: results_share_failed.emit(request_id,message))
+ 		var pending: String = str(_native.call("takePendingLink"))
+ 		if not pending.is_empty(): _received.call_deferred(pending)
+ 		var poll := Timer.new()
+@@ -39,3 +42,10 @@
+ 	DisplayServer.clipboard_set(value)
+ 	return false
+ 
++func can_share_results() -> bool:
++	return _native != null and _native.has_method("shareResults")
++
++func share_results(request_id: String, png: PackedByteArray, text: String) -> bool:
++	if not can_share_results() or png.is_empty() or png.size() > 4*1024*1024 or text.is_empty() or text.length() > 4096: return false
++	return bool(_native.call("shareResults",request_id,png,text))
++
+--- a/game/ui/rivalry_share_dialog.gd
++++ b/game/ui/rivalry_share_dialog.gd
+@@ -1,5 +1,7 @@
+ extends "res://ui/fault_dialog.gd"
+-## A completed championship receipt; the copied/native payload remains plain text.
++## Completed championship preview and clean image export for platform sharing.
++signal share_requested
++signal save_requested
+ const VictoryCar = preload("res://ui/rivalry_victory_car.gd")
+ const Finale = preload("res://ui/weekly_rivalry_finale.gd")
+ const SHARE_FRAME: Shader = preload("res://ui/rivalry_share.gdshader")
+@@ -8,6 +10,12 @@
+ var customisation: Dictionary = {}
+ var condition: Dictionary = {}
+ var player_name: String = ""
++var export_mode: bool = false
++var native_sharing: bool = false
++var sharing: bool = false
++var request_id: String = ""
++var prepared_png := PackedByteArray()
++var image_renderer: Callable
+ var summary: Dictionary
+ var share_text: String = ""
+ var hero: Control
+@@ -20,6 +28,7 @@
+ var result_rows: Array[Control] = []
+ var metric_labels: Array[Label] = []
+ var copied: HBoxContainer
++var status_label: Label
+ var divider: ColorRect
+ 
+ func _ready() -> void:
+@@ -55,6 +64,11 @@
+ 	_build_hero()
+ 	_build_results()
+ 	_build_footer()
++	if export_mode:
++		close_button.hide()
++		confirm_button.hide()
++		copied.hide()
++		divider.hide()
+ 	surface.resized.connect(_layout)
+ 	about_to_popup.connect(_opening)
+ 	visibility_changed.connect(_visibility_changed)
+@@ -156,6 +170,7 @@
+ 	right.add_child(copy_scroll)
+ 	details = VBoxContainer.new()
+ 	details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	if export_mode: details.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	details.add_theme_constant_override("separation",2)
+ 	copy_scroll.add_child(details)
+ 	for result: Dictionary in summary.results: _build_track(result)
+@@ -167,6 +182,7 @@
+ 	row.name = "ShareTrack_"+str(result.slot)
+ 	row.tooltip_text = str(track.name)
+ 	row.custom_minimum_size.y = 58
++	if export_mode: row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	var style := MenuStyle.box(Color("142631") if result.victory else Color("10212c"),0)
+ 	style.set_corner_radius_all(4)
+ 	style.content_margin_top = 6
+@@ -191,6 +207,7 @@
+ 	thumbnail.entry = track.get("entry",track.document).duplicate(true)
+ 	thumbnail.entry.theme = track.theme
+ 	thumbnail.custom_minimum_size = Vector2(58,42)
++	thumbnail.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	track_copy.add_child(thumbnail)
+ 	var identity_copy := VBoxContainer.new()
+ 	identity_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -223,13 +240,17 @@
+ 	copied.add_theme_constant_override("separation",9)
+ 	surface.add_child(copied)
+ 	var check_icon := TextureRect.new()
+-	check_icon.texture = MenuIcon.texture("check")
+-	check_icon.modulate = MenuStyle.POSITIVE
++	check_icon.texture = MenuIcon.texture("share" if native_sharing else "check")
++	check_icon.modulate = MenuStyle.MUTED if native_sharing else MenuStyle.POSITIVE
+ 	check_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	check_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+ 	check_icon.custom_minimum_size = Vector2(20,20)
+ 	copied.add_child(check_icon)
+-	_label(copied,"Results copied",17,MenuStyle.POSITIVE)
++	status_label = _label(copied,"Ready to share" if native_sharing else "Results copied",17,MenuStyle.MUTED if native_sharing else MenuStyle.POSITIVE)
++	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	status_label.clip_text = true
++	status_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 	close_button = MenuStyle.button("",_cancel)
+ 	close_button.name = "ShareClose"
+ 	close_button.icon = MenuIcon.texture("close")
+@@ -237,7 +258,7 @@
+ 	close_button.tooltip_text = "Close"
+ 	close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
+ 	surface.add_child(close_button)
+-	confirm_button = MenuStyle.button("DONE",_confirm,true)
++	confirm_button = MenuStyle.button("SHARE" if native_sharing else "SAVE IMAGE",_primary_action,true)
+ 	confirm_button.name = "ShareDone"
+ 	confirm_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
+ 	confirm_button.add_theme_color_override("font_pressed_color",MenuStyle.INK)
+@@ -248,7 +269,7 @@
+ 	var hero_width: float = clampf(surface.size.x*0.32,260,360)
+ 	var inset: float = hero_width+32
+ 	var width: float = surface.size.x-inset-32
+-	var compact: bool = surface.size.y < 600
++	var compact: bool = surface.size.y < 600 and not export_mode
+ 	(art.material as ShaderMaterial).set_shader_parameter("panel_size",surface.size)
+ 	(art.material as ShaderMaterial).set_shader_parameter("hero_width",hero_width)
+ 	hero.size = Vector2(hero_width,surface.size.y)
+@@ -258,11 +279,11 @@
+ 	identity.position = Vector2(28,290)
+ 	identity.size = Vector2(hero_width-56,28)
+ 	vehicle.position = Vector2(8,325)
+-	vehicle.size = Vector2(hero_width-16,maxf(120,surface.size.y-430))
+-	vehicle_label.position = Vector2(28,surface.size.y-93)
++	vehicle.size = Vector2(hero_width-16,maxf(120,surface.size.y-(414 if export_mode else 430)))
++	vehicle_label.position = Vector2(28,surface.size.y-(63 if export_mode else 93))
+ 	vehicle_label.size = Vector2(hero_width-56,28)
+ 	var brand: Label = hero.get_node("ShareBrand")
+-	brand.position = Vector2(28,surface.size.y-42)
++	brand.position = Vector2(28,surface.size.y-(28 if export_mode else 42))
+ 	right.add_theme_constant_override("separation",10 if compact else 16)
+ 	heading.add_theme_font_size_override("font_size",26 if compact else 30)
+ 	for label: Label in metric_labels: label.add_theme_font_size_override("font_size",30 if compact else 40)
+@@ -272,11 +293,30 @@
+ 		style.content_margin_top = 4 if compact else 6
+ 		style.content_margin_bottom = 4 if compact else 6
+ 	right.position = Vector2(inset,24 if compact else 28)
+-	right.size = Vector2(width,surface.size.y-(116 if compact else 124))
++	right.size = Vector2(width,surface.size.y-(44 if export_mode else 116 if compact else 124))
+ 	close_button.position = Vector2(surface.size.x-64,12)
+ 	close_button.size = Vector2(52,52)
+ 	divider.position = Vector2(inset,surface.size.y-88)
+ 	divider.size = Vector2(width,1)
+ 	copied.position = Vector2(inset,surface.size.y-63)
++	copied.size = Vector2(maxf(80,width-184),32)
+ 	confirm_button.position = Vector2(surface.size.x-200,surface.size.y-73)
+ 	confirm_button.size = Vector2(168,52)
++
++func _primary_action() -> void:
++	if sharing: return
++	if native_sharing: share_requested.emit()
++	else: save_requested.emit()
++
++func _confirm() -> void:
++	_primary_action()
++
++func set_sharing(active: bool, message: String = "") -> void:
++	sharing = active
++	confirm_button.disabled = active
++	if not message.is_empty():
++		status_label.text = message
++		status_label.tooltip_text = message
++
++func image_values() -> Dictionary:
++	return {"model":model,"player_name":player_name,"livery":livery,"customisation":customisation,"condition":condition}
+--- /dev/null
++++ b/game/ui/rivalry_share_image.gd
+@@ -0,0 +1,37 @@
++extends RefCounted
++## Render only the branded receipt, with no app background or dialog controls.
++const Card = preload("res://ui/rivalry_share_dialog.gd")
++
++static func render(host: Node, values: Dictionary) -> PackedByteArray:
++	if DisplayServer.get_name() == "headless" or not is_instance_valid(host) or not host.is_inside_tree(): return PackedByteArray()
++	var viewport := SubViewport.new()
++	viewport.name = "RivalryShareImage"
++	viewport.size = Vector2i(1600,860)
++	viewport.size_2d_override = Vector2i(1120,602)
++	viewport.size_2d_override_stretch = true
++	viewport.transparent_bg = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	host.add_child(viewport)
++	var card := Card.new()
++	card.export_mode = true
++	card.model = values.model
++	card.player_name = str(values.player_name)
++	card.livery = values.livery.duplicate(true)
++	card.customisation = values.customisation.duplicate(true)
++	card.condition = values.condition.duplicate(true)
++	host.add_child(card)
++	card.surface.reparent(viewport)
++	MenuStyle.fill(card.surface)
++	for frame: int in range(6):
++		await RenderingServer.frame_post_draw
++		var owner: Window = values.owner.get_ref() as Window if values.get("owner") is WeakRef else null
++		var cancelled: bool = values.get("owner") is WeakRef and (not is_instance_valid(owner) or owner.is_queued_for_deletion() or not owner.visible)
++		if cancelled or not is_instance_valid(card) or card.is_queued_for_deletion() or not is_instance_valid(viewport) or viewport.is_queued_for_deletion():
++			if is_instance_valid(card): card.queue_free()
++			if is_instance_valid(viewport): viewport.queue_free()
++			return PackedByteArray()
++	var image: Image = viewport.get_texture().get_image()
++	var png: PackedByteArray = image.save_png_to_buffer() if image != null else PackedByteArray()
++	card.queue_free()
++	viewport.queue_free()
++	return png if png.size() <= 4*1024*1024 else PackedByteArray()
+--- a/game/addons/bmt_challenges/export_plugin.gd
++++ b/game/addons/bmt_challenges/export_plugin.gd
+@@ -14,7 +14,10 @@
+ 	func _get_name() -> String: return "BMTChallengeLinks"
+ 	func _supports_platform(platform: EditorExportPlatform) -> bool: return platform is EditorExportPlatformAndroid
+ 	func _get_android_manifest_application_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
+-		return '<meta-data android:name="org.godotengine.plugin.v2.BmtChallenges" android:value="org.beatmytrack.challenges.BmtChallenges"/>'
++		return application_contents()
++	static func application_contents() -> String:
++		return '<meta-data android:name="org.godotengine.plugin.v2.BmtChallenges" android:value="org.beatmytrack.challenges.BmtChallenges"/>' \
++			+ '<provider android:name="org.beatmytrack.challenges.RivalryShareProvider" android:authorities="${applicationId}.rivalry-share" android:exported="false" android:grantUriPermissions="true"/>'
+ 	func _get_android_manifest_activity_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
+ 		return activity_filters()
+ 	static func activity_filters() -> String:
+--- a/native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java
++++ b/native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java
+@@ -2,12 +2,18 @@
+ 
+ import android.app.Activity;
+ import android.content.Intent;
++import android.content.ClipData;
+ import android.net.Uri;
+ import androidx.annotation.NonNull;
+ import java.util.concurrent.atomic.AtomicReference;
++import java.io.File;
++import java.io.IOException;
++import java.util.Collections;
++import java.util.Set;
+ import org.godotengine.godot.Godot;
+ import org.godotengine.godot.plugin.GodotPlugin;
+ import org.godotengine.godot.plugin.UsedByGodot;
++import org.godotengine.godot.plugin.SignalInfo;
+ 
+ /** Original Android platform bridge, using only the existing Godot/Android APIs. */
+ public final class BmtChallenges extends GodotPlugin {
+@@ -18,6 +24,10 @@
+     public BmtChallenges(Godot godot) { super(godot); }
+ 
+     @NonNull @Override public String getPluginName() { return "BmtChallenges"; }
++
++    @NonNull @Override public Set<SignalInfo> getPluginSignals() {
++        return Collections.singleton(new SignalInfo("results_share_failed",String.class,String.class));
++    }
+ 
+     private static String invitation(Intent intent) {
+         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return "";
+@@ -58,6 +68,37 @@
+         shareText(text, "Share track");
+     }
+ 
++    @UsedByGodot public boolean shareResults(String requestId, byte[] png, String text) {
++        Activity activity = getActivity();
++        if (activity == null || activity.isFinishing() || requestId == null || requestId.length() > 64
++                || text == null || text.isEmpty() || text.length() > 4096 || !RivalryShareFiles.validPng(png)) return false;
++        final File image;
++        try { image = RivalryShareFiles.save(activity.getCacheDir(),png); }
++        catch (IOException error) { return false; }
++        Uri uri = new Uri.Builder().scheme("content").authority(activity.getPackageName()+".rivalry-share")
++                .appendPath(image.getName()).build();
++        activity.runOnUiThread(() -> {
++            try {
++                if (activity.isFinishing()) throw new IllegalStateException("Activity closed");
++                Intent send = new Intent(Intent.ACTION_SEND);
++                send.setType("image/png");
++                send.putExtra(Intent.EXTRA_STREAM,uri);
++                send.putExtra(Intent.EXTRA_TEXT,text);
++                send.putExtra(Intent.EXTRA_TITLE,"Weekly Rivalry results");
++                send.setClipData(ClipData.newRawUri("Weekly Rivalry results",uri));
++                send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++                Intent chooser = Intent.createChooser(send,"Share Rivalry results");
++                chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++                chooser.setClipData(send.getClipData());
++                activity.startActivity(chooser);
++            } catch (RuntimeException error) {
++                image.delete();
++                emitSignal("results_share_failed",requestId,"Couldn't open sharing. Try again.");
++            }
++        });
++        return true;
++    }
++
+     private void shareText(String text, String title) {
+         Activity activity = getActivity();
+         if (activity == null || text == null || text.length() > 4096) return;
+--- /dev/null
++++ b/native/challenges/src/org/beatmytrack/challenges/RivalryShareFiles.java
+@@ -0,0 +1,63 @@
++package org.beatmytrack.challenges;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.util.Arrays;
++import java.util.Comparator;
++import java.util.UUID;
++
++/** Only generated PNG receipts live here; no player saves or public storage. */
++final class RivalryShareFiles {
++    static final int MAX_BYTES = 4 * 1024 * 1024;
++    private static final int MAX_FILES = 6;
++    private static final long MAX_AGE = 24L * 60 * 60 * 1000;
++    private static final byte[] PNG = {(byte)137,80,78,71,13,10,26,10};
++
++    static boolean validPng(byte[] png) {
++        if (png == null || png.length < 33 || png.length > MAX_BYTES) return false;
++        for (int i = 0; i < PNG.length; i++) if (png[i] != PNG[i]) return false;
++        if (png[8] != 0 || png[9] != 0 || png[10] != 0 || png[11] != 13
++                || png[12] != 'I' || png[13] != 'H' || png[14] != 'D' || png[15] != 'R') return false;
++        int width = integer(png,16), height = integer(png,20);
++        return width > 0 && height > 0 && width <= 2048 && height <= 2048;
++    }
++
++    private static int integer(byte[] value, int index) {
++        return (value[index] & 255) << 24 | (value[index+1] & 255) << 16
++                | (value[index+2] & 255) << 8 | value[index+3] & 255;
++    }
++
++    static synchronized File save(File cache, byte[] png) throws IOException {
++        if (!validPng(png)) throw new IOException("Invalid result image");
++        File directory = new File(cache,"rivalry-shares");
++        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Share cache unavailable");
++        String name = "rivalry-" + UUID.randomUUID().toString().replace("-","") + ".png";
++        File staging = new File(directory,name+".tmp"), result = new File(directory,name);
++        try {
++            try (FileOutputStream stream = new FileOutputStream(staging)) { stream.write(png); }
++            if (!staging.renameTo(result)) throw new IOException("Result image could not be saved");
++        } finally { if (staging.exists()) staging.delete(); }
++        File[] files = directory.listFiles(file -> file.getName().matches("rivalry-[a-f0-9]{32}\\.png(\\.tmp)?"));
++        if (files != null) {
++            Arrays.sort(files,Comparator.comparingLong(File::lastModified).reversed());
++            long oldest = System.currentTimeMillis()-MAX_AGE;
++            int kept = 1;
++            for (File file : files) {
++                if (file.equals(result)) continue;
++                if (file.getName().endsWith(".tmp") || file.lastModified() < oldest || kept >= MAX_FILES) file.delete();
++                else kept++;
++            }
++        }
++        return result;
++    }
++
++    static File resolve(File cache, String name) throws IOException {
++        if (name == null || !name.matches("rivalry-[a-f0-9]{32}\\.png")) throw new IOException("Unknown result image");
++        File directory = new File(cache,"rivalry-shares").getCanonicalFile();
++        File image = new File(directory,name).getCanonicalFile();
++        if (!directory.equals(image.getParentFile()) || !image.isFile() || image.length() > MAX_BYTES)
++            throw new IOException("Unknown result image");
++        return image;
++    }
++}
+--- /dev/null
++++ b/native/challenges/src/org/beatmytrack/challenges/RivalryShareProvider.java
+@@ -0,0 +1,50 @@
++package org.beatmytrack.challenges;
++
++import android.content.ContentProvider;
++import android.content.ContentValues;
++import android.database.Cursor;
++import android.database.MatrixCursor;
++import android.net.Uri;
++import android.os.ParcelFileDescriptor;
++import android.provider.OpenableColumns;
++import java.io.File;
++import java.io.FileNotFoundException;
++import java.io.IOException;
++
++/** A private, read-only provider; recipients receive a temporary URI read grant. */
++public final class RivalryShareProvider extends ContentProvider {
++    @Override public boolean onCreate() { return true; }
++
++    private File image(Uri uri) throws FileNotFoundException {
++        if (getContext() == null || uri == null || !"content".equals(uri.getScheme())
++                || !(getContext().getPackageName()+".rivalry-share").equals(uri.getAuthority())
++                || uri.getPathSegments().size() != 1) throw new FileNotFoundException("Unknown result image");
++        try { return RivalryShareFiles.resolve(getContext().getCacheDir(),uri.getLastPathSegment()); }
++        catch (IOException error) { throw new FileNotFoundException("Unknown result image"); }
++    }
++
++    @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
++        if (!"r".equals(mode)) throw new FileNotFoundException("Result images are read-only");
++        return ParcelFileDescriptor.open(image(uri),ParcelFileDescriptor.MODE_READ_ONLY);
++    }
++
++    @Override public String getType(Uri uri) { return "image/png"; }
++
++    @Override public Cursor query(Uri uri, String[] projection, String selection, String[] arguments, String order) {
++        File file;
++        try { file = image(uri); } catch (FileNotFoundException error) { return null; }
++        String[] columns = projection == null ? new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE} : projection;
++        Object[] values = new Object[columns.length];
++        for (int index = 0; index < columns.length; index++) {
++            if (OpenableColumns.DISPLAY_NAME.equals(columns[index])) values[index] = "Beat my track - Weekly Rivalry.png";
++            else if (OpenableColumns.SIZE.equals(columns[index])) values[index] = file.length();
++        }
++        MatrixCursor cursor = new MatrixCursor(columns,1);
++        cursor.addRow(values);
++        return cursor;
++    }
++
++    @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException("Read-only"); }
++    @Override public int update(Uri uri, ContentValues values, String selection, String[] arguments) { throw new UnsupportedOperationException("Read-only"); }
++    @Override public int delete(Uri uri, String selection, String[] arguments) { throw new UnsupportedOperationException("Read-only"); }
++}
+--- a/game/tests/test_rivalry_share.gd
++++ b/game/tests/test_rivalry_share.gd
+@@ -4,16 +4,36 @@
+ 
+ class NativeShare extends RefCounted:
+ 	var payloads: Array[String] = []
+-	func shareChallenge(value: String) -> void: payloads.append(value)
++	var images: Array[PackedByteArray] = []
++	var request_ids: Array[String] = []
++	func shareResults(request_id: String, png: PackedByteArray, value: String) -> bool:
++		request_ids.append(request_id)
++		images.append(png)
++		payloads.append(value)
++		return true
++
++class ImageGate extends RefCounted:
++	signal release
++	var calls: int = 0
++	func render(_host: Node, _values: Dictionary) -> PackedByteArray:
++		calls += 1
++		await release
++		return Image.create_empty(2,2,false,Image.FORMAT_RGBA8).save_png_to_buffer()
++
++func test_image(_host: Node, _values: Dictionary) -> PackedByteArray:
++	return Image.create_empty(2,2,false,Image.FORMAT_RGBA8).save_png_to_buffer()
+ 
+ func current_dialog() -> AcceptDialog:
+ 	for child: Node in app.root_ui.get_children():
+-		if child is AcceptDialog: return child
++		if child is AcceptDialog and child.visible: return child
+ 	return null
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-share-polish-2026-10-19/final")
++	var manifest: String = preload("res://addons/bmt_challenges/export_plugin.gd").ChallengeExport.application_contents()
++	check(manifest.contains('android:name="org.beatmytrack.challenges.RivalryShareProvider"'),"Android export registers the actual image provider")
++	check(manifest.contains('android:authorities="${applicationId}.rivalry-share"') and manifest.contains('android:exported="false"') and manifest.contains('android:grantUriPermissions="true"'),"image provider stays private with package-specific temporary read grants")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-social-share-2026-10-19/final")
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence="): evidence = argument.trim_prefix("--evidence=")
+ 	evidence = ProjectSettings.globalize_path(evidence)
+@@ -57,7 +77,7 @@
+ 			var confirm: Button = dialog.confirm_button
+ 			check(dialog.share_text == payload,"structured confirmation preserves the exact copied summary")
+ 			check(root.get_visible_rect().encloses(Rect2(Vector2(dialog.position),Vector2(dialog.size))),"confirmation fits the viewport")
+-			check(confirm.size.y >= 52 and Rect2(Vector2.ZERO,Vector2(dialog.size)).encloses(confirm.get_global_rect()),"OK remains visible with a full touch target")
++			check(confirm.size.y >= 52 and Rect2(Vector2.ZERO,Vector2(dialog.size)).encloses(confirm.get_global_rect()),"image action remains visible with a full touch target")
+ 			var scroll: ScrollContainer = dialog.copy_scroll
+ 			check(dialog.heading.get_global_rect().end.y+10 <= dialog.get_node("ShareSurface/ShareResults/ShareMetrics").get_global_rect().position.y,"heading stays clear of the summary figures")
+ 			check(scroll.get_global_rect().end.y+12 <= confirm.get_global_rect().position.y,"results viewport stays clear of Done")
+@@ -80,12 +100,10 @@
+ 			check(dialog.hero_heading.get_global_rect().end.y <= dialog.identity.get_global_rect().position.y,"award heading stays clear of player identity")
+ 			check((dialog.find_child("SharePerfectWeek",true,false) != null) == (kind == "perfect"),"Perfect Week treatment appears only for five actual outright victories")
+ 			if DisplayServer.get_name() != "headless": await capture("share-"+kind,dimensions)
+-			if kind == "unranked": confirm.pressed.emit()
+-			else:
+-				var close: Button = dialog.close_button
+-				close.pressed.emit()
+-			await settle()
+-			check(current_dialog() == null,"OK and X both remove the owned share dialog")
++			check(confirm.text == "SAVE IMAGE" and not dialog.native_sharing,"desktop preview offers saving the card alongside copied text")
++			dialog.close_button.pressed.emit()
++			await settle()
++			check(current_dialog() == null,"X removes the owned share dialog")
+ 			check(share.has_focus(),"closing the confirmation returns focus to Share results")
+ 			check(JSON.stringify([app.rivalry.model.tracks,app.rivalry.model.server_standings,app.records.settings]) == original,"sharing preserves scores, tracks and local settings")
+ 	app._share_rivalry_results()
+@@ -102,16 +120,89 @@
+ 	app.challenge_links._native = native
+ 	var payload: String = app.rivalry.model.finale_share_text()
+ 	app._share_rivalry_results()
+-	check(native.payloads == [payload] and current_dialog() == null,"native share receives the exact summary once without a copied dialog")
++	var native_dialog: AcceptDialog = current_dialog()
++	if DisplayServer.get_name() == "headless": native_dialog.image_renderer = test_image
++	for frame: int in range(90):
++		if not native.payloads.is_empty(): break
++		await process_frame
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	check(native.payloads == [payload] and native.images.size() == 1,"first Share automatically hands the exact summary and image to native sharing")
++	check(native_dialog.confirm_button.text == "SHARE" and native_dialog.status_label.text == "Ready to share","native preview offers Share again without claiming delivery or copying")
++	check(not native.images.is_empty() and not native.images[0].is_empty(),"native sharing receives an actual PNG")
++	if DisplayServer.get_name() != "headless" and not native.images.is_empty():
++		var image := Image.new()
++		check(image.load_png_from_buffer(native.images[0]) == OK and image.get_size() == Vector2i(1600,860),"share image decodes at the bounded full resolution")
++		check(image.get_pixel(0,0).a < 0.05 and image.get_pixel(800,430).a > 0.95,"image contains the isolated card with no underlying menu")
++		check(image.save_png(evidence.path_join("exported-results-card.png")) == OK,"save the actual native share image for review")
++	var first_request: String = native.request_ids[0] if not native.request_ids.is_empty() else ""
++	native_dialog.confirm_button.pressed.emit()
++	await settle()
++	check(native.images.size() == 2 and native.images[0] == native.images[1],"Share again reuses the exact prepared image")
++	check(native.request_ids.size() == 2 and native.request_ids[1] != first_request,"each explicit share has a fresh native request identity")
++	app.challenge_links.results_share_failed.emit(first_request,"Old request failed")
++	check(native_dialog.status_label.text == "Ready to share","old native errors cannot replace a newer share state")
++	app.challenge_links.results_share_failed.emit(native_dialog.request_id,"Couldn't open sharing. Try again.")
++	check(native_dialog.status_label.text == "Couldn't open sharing. Try again." and not native_dialog.confirm_button.disabled,"native launch failure remains actionable in the same preview")
++	native_dialog.set_sharing(false,"Results changed. Close and share again. ".repeat(4))
++	await settle()
++	check(native_dialog.copied.get_global_rect().end.x+16 <= native_dialog.confirm_button.get_global_rect().position.x,"long share errors stay clear of the primary action")
++	native_dialog.close_button.pressed.emit()
++	await settle()
++	var calls_before: int = native.payloads.size()
+ 	for blocked: String in ["busy","cached","active","scope"]:
+ 		app.rivalry.busy = blocked == "busy"
+ 		app.rivalry.cached_snapshot = blocked == "cached"
+ 		app.rivalry.model.completed = blocked != "active"
+ 		app.rivalry.snapshot_scope = "another-account" if blocked == "scope" else app.rivalry.scope()
+ 		app._share_rivalry_results()
+-		check(native.payloads.size() == 1 and current_dialog() == null,"sharing remains guarded for "+blocked+" state")
++		check(native.payloads.size() == calls_before and current_dialog() == null,"sharing remains guarded for "+blocked+" state")
++	await asynchronous_fences(native)
+ 	app.challenge_links._native = null
+ 	app.queue_free()
+ 	await process_frame
+ 	print("RIVALRY_SHARE: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
++
++func asynchronous_fences(native: NativeShare) -> void:
++	var selected: String = VehicleCatalog.selected
++	var player: Dictionary = app.online.client.player.duplicate(true)
++	for mode: String in ["double_click","closed","account","car","week","group","cached","snapshot","navigation"]:
++		VehicleCatalog.selected = selected
++		app.online.client.player = player.duplicate(true)
++		app.rivalry.model.apply_snapshot(awarded_snapshot("perfect"))
++		app.rivalry.snapshot_scope = app.rivalry.scope()
++		app.rivalry.busy = false
++		app.rivalry.cached_snapshot = false
++		app.rivalry_section = "overview"
++		app._show_screen("rivalry")
++		await settle()
++		var calls_before: int = native.payloads.size()
++		app._share_rivalry_results()
++		var dialog: AcceptDialog = current_dialog()
++		var gate := ImageGate.new()
++		dialog.image_renderer = gate.render
++		await settle()
++		check(gate.calls == 1 and dialog.sharing,"one bounded image preparation starts for "+mode)
++		if mode == "double_click":
++			app._share_rivalry_results()
++			dialog.share_requested.emit()
++			check(gate.calls == 1,"repeated inputs coalesce while preparing the image")
++		elif mode == "closed":
++			dialog.close_button.pressed.emit()
++			await settle()
++		elif mode == "account": app.online.client.player = {"id":"another-account"}
++		elif mode == "car": VehicleCatalog.selected = "pickup" if selected != "pickup" else "kart"
++		elif mode == "week": app.rivalry.model.week += 1
++		elif mode == "group": app.rivalry.model.group_id = "another-group"
++		elif mode == "cached": app.rivalry.cached_snapshot = true
++		elif mode == "snapshot": app.rivalry.snapshot_scope = "another-owner"
++		elif mode == "navigation": app._show_screen("tracks")
++		gate.release.emit()
++		await settle()
++		check(native.payloads.size() == calls_before+(1 if mode == "double_click" else 0),"late image completion respects the "+mode+" fence")
++		if is_instance_valid(dialog):
++			check(not dialog.sharing,"cancelled image preparation releases its UI state: "+mode)
++			dialog.close_button.pressed.emit()
++			await settle()
++	VehicleCatalog.selected = selected
++	app.online.client.player = player
+--- a/scripts/test_track_link_bridge.py
++++ b/scripts/test_track_link_bridge.py
+@@ -16,23 +16,46 @@
+ STUBS = {
+     "android/net/Uri.java": '''package android.net; public class Uri {
+  private java.net.URI value; public static Uri parse(String text) { Uri u=new Uri(); u.value=java.net.URI.create(text); return u; }
+- public String getScheme(){return value.getScheme();} public String getHost(){return value.getHost();}
+- public String getPath(){return value.getPath();} public String toString(){return value.toString();}}''',
++ public String getScheme(){return value.getScheme();} public String getHost(){return value.getHost();} public String getAuthority(){return value.getAuthority();}
++ public String getPath(){return value.getPath();} public String getLastPathSegment(){return getPath().substring(getPath().lastIndexOf('/')+1);}
++ public java.util.List<String> getPathSegments(){return java.util.Arrays.asList(getPath().substring(1).split("/"));}
++ public String toString(){return value.toString();}
++ public static class Builder {String scheme,authority,path;public Builder scheme(String s){scheme=s;return this;}public Builder authority(String a){authority=a;return this;}
++ public Builder appendPath(String p){path=p;return this;}public Uri build(){return Uri.parse(scheme+"://"+authority+"/"+path);}}}''',
+     "android/content/Intent.java": '''package android.content; import android.net.Uri; public class Intent {
+- public static final String ACTION_VIEW="view",ACTION_SEND="send",EXTRA_TEXT="text"; public static String chooser;
+- private String action; private Uri data; public String text,type; public Intent(String a){action=a;}
++ public static final String ACTION_VIEW="view",ACTION_SEND="send",EXTRA_TEXT="text",EXTRA_STREAM="stream",EXTRA_TITLE="title"; public static String chooser;
++ public static final int FLAG_GRANT_READ_URI_PERMISSION=1;public int flags; public Uri stream; public ClipData clip;
++ private String action; private Uri data; public String text,type,title; public Intent(String a){action=a;}
+  public String getAction(){return action;} public Uri getData(){return data;} public Intent setData(Uri u){data=u;return this;}
+- public void setType(String v){type=v;} public void putExtra(String k,String v){text=v;}
++ public void setType(String v){type=v;} public void putExtra(String k,String v){if(EXTRA_TEXT.equals(k))text=v;else title=v;}
++ public void putExtra(String k,Uri v){stream=v;}public void setClipData(ClipData c){clip=c;} public ClipData getClipData(){return clip;}
++ public Intent addFlags(int value){flags|=value;return this;}
+  public static Intent createChooser(Intent value,String title){chooser=title;return value;}}''',
+-    "android/app/Activity.java": '''package android.app; import android.content.Intent; public class Activity {
+- public Intent intent,started; public Intent getIntent(){return intent;} public void runOnUiThread(Runnable r){r.run();}
+- public boolean isFinishing(){return false;} public void startActivity(Intent value){started=value;}}''',
++    "android/content/ClipData.java": '''package android.content; public class ClipData {public android.net.Uri uri;public static ClipData newRawUri(String label,android.net.Uri uri){ClipData c=new ClipData();c.uri=uri;return c;}}''',
++    "android/content/Context.java": '''package android.content; public class Context {public java.io.File cache=new java.io.File(System.getProperty("bmt.test.cache")); public java.io.File getCacheDir(){cache.mkdirs();return cache;}public String getPackageName(){return "fixture.bmt";}}''',
++    "android/app/Activity.java": '''package android.app; import android.content.Intent; public class Activity extends android.content.Context {
++ public Intent intent,started;public boolean finishing,failStart,defer;public Runnable waiting; public Intent getIntent(){return intent;}
++ public void runOnUiThread(Runnable r){if(defer)waiting=r;else r.run();}
++ public boolean isFinishing(){return finishing;} public void startActivity(Intent value){if(failStart)throw new IllegalStateException("fixture failure");started=value;}}''',
++    "android/content/ContentValues.java": "package android.content; public class ContentValues {}",
++    "android/content/ContentProvider.java": '''package android.content; import android.net.Uri; public abstract class ContentProvider {
++ public Context context;public Context getContext(){return context;}public abstract boolean onCreate();
++ public abstract android.os.ParcelFileDescriptor openFile(Uri u,String m)throws java.io.FileNotFoundException; public abstract String getType(Uri u);
++ public abstract android.database.Cursor query(Uri u,String[] p,String s,String[] a,String o);public abstract Uri insert(Uri u,ContentValues v);
++ public abstract int update(Uri u,ContentValues v,String s,String[] a);public abstract int delete(Uri u,String s,String[] a);}''',
++    "android/database/Cursor.java": "package android.database; public interface Cursor {}",
++    "android/database/MatrixCursor.java": '''package android.database; public class MatrixCursor implements Cursor {public String[] columns;public Object[] row;public MatrixCursor(String[] c,int n){columns=c;}public void addRow(Object[] r){row=r;}}''',
++    "android/provider/OpenableColumns.java": "package android.provider; public interface OpenableColumns {String DISPLAY_NAME=\"_display_name\",SIZE=\"_size\";}",
++    "android/os/ParcelFileDescriptor.java": '''package android.os; public class ParcelFileDescriptor {public static final int MODE_READ_ONLY=1;public java.io.File file; public static ParcelFileDescriptor open(java.io.File f,int mode){ParcelFileDescriptor p=new ParcelFileDescriptor();p.file=f;return p;}}''',
+     "androidx/annotation/NonNull.java": "package androidx.annotation; public @interface NonNull {}",
+     "org/godotengine/godot/Godot.java": '''package org.godotengine.godot; public class Godot {
+  public android.app.Activity activity; public Godot(android.app.Activity a){activity=a;}}''',
+     "org/godotengine/godot/plugin/GodotPlugin.java": '''package org.godotengine.godot.plugin; public class GodotPlugin {
+  private org.godotengine.godot.Godot godot; public GodotPlugin(org.godotengine.godot.Godot g){godot=g;}
+- public String getPluginName(){return "";} public android.app.Activity getActivity(){return godot.activity;}}''',
++ public String getPluginName(){return "";} public android.app.Activity getActivity(){return godot.activity;}
++ public java.util.Set<SignalInfo> getPluginSignals(){return java.util.Collections.emptySet();}public String lastSignal;public Object[] lastValues;
++ public void emitSignal(String name,Object... values){lastSignal=name;lastValues=values;}}''',
++    "org/godotengine/godot/plugin/SignalInfo.java": "package org.godotengine.godot.plugin; public class SignalInfo {public SignalInfo(String name,Class<?>... types){}}",
+     "org/godotengine/godot/plugin/UsedByGodot.java": "package org.godotengine.godot.plugin; public @interface UsedByGodot {}",
+     "TrackLinksTest.java": '''import org.beatmytrack.challenges.BmtChallenges;
+ import android.app.Activity; import android.content.Intent; import android.net.Uri;
+@@ -51,6 +74,41 @@
+  Intent before=a.started;p.shareTrack("x".repeat(4097));check(a.started==before);
+  System.out.println("JAVA_TRACK_LINKS: "+checks+" checks, 0 failures");}}
+ ''',
++    "org/beatmytrack/challenges/RivalrySharingTest.java": '''package org.beatmytrack.challenges;
++import android.app.Activity;import android.content.Intent;import android.net.Uri;import android.database.MatrixCursor;
++import java.io.*;import java.nio.file.Files;import java.util.Arrays;import javax.imageio.ImageIO;import java.awt.image.BufferedImage;
++public class RivalrySharingTest {
++ static int checks;static void check(boolean value){checks++;if(!value)throw new AssertionError("share check "+checks);}
++ static void refuses(Runnable action){boolean denied=false;try{action.run();}catch(RuntimeException e){denied=true;}check(denied);}
++ public static void main(String[] args)throws Exception {
++  Activity activity=new Activity();BmtChallenges bridge=new BmtChallenges(new org.godotengine.godot.Godot(activity));
++  ByteArrayOutputStream bytes=new ByteArrayOutputStream();ImageIO.write(new BufferedImage(2,2,BufferedImage.TYPE_INT_ARGB),"png",bytes);byte[] png=bytes.toByteArray();
++  String text="Beat my track - Weekly Rivalry - Week 42\\n#1 / 20 | 150 points | 5/5 track victories";
++  check(bridge.shareResults("request-1",png,text));Intent send=activity.started;
++  check("image/png".equals(send.type));check(text.equals(send.text));check("Share Rivalry results".equals(Intent.chooser));
++  check(send.stream!=null&&"content".equals(send.stream.getScheme()));check(send.stream.getAuthority().equals("fixture.bmt.rivalry-share"));
++  check(send.clip.uri.equals(send.stream));check(send.flags==Intent.FLAG_GRANT_READ_URI_PERMISSION);
++  RivalryShareProvider provider=new RivalryShareProvider();provider.context=activity;check(provider.onCreate());
++  check(provider.getType(send.stream).equals("image/png"));check(Arrays.equals(Files.readAllBytes(provider.openFile(send.stream,"r").file.toPath()),png));
++  MatrixCursor cursor=(MatrixCursor)provider.query(send.stream,null,null,null,null);check(cursor.row[0].equals("Beat my track - Weekly Rivalry.png"));check(((Long)cursor.row[1])==png.length);
++  boolean denied=false;try{provider.openFile(send.stream,"rw");}catch(FileNotFoundException e){denied=true;}check(denied);
++  for(String uri:new String[]{"content://fixture.bmt.rivalry-share/../records.json","content://wrong/"+send.stream.getLastPathSegment(),"content://fixture.bmt.rivalry-share/records.json"}) {
++   denied=false;try{provider.openFile(Uri.parse(uri),"r");}catch(FileNotFoundException e){denied=true;}check(denied);
++  }
++  refuses(()->provider.insert(send.stream,null));refuses(()->provider.delete(send.stream,null,null));refuses(()->provider.update(send.stream,null,null,null));
++  check(!bridge.shareResults("bad",new byte[40],text));check(!bridge.shareResults("bad",new byte[RivalryShareFiles.MAX_BYTES+1],text));
++  check(!bridge.shareResults("bad",png,"x".repeat(4097)));check(!bridge.shareResults("bad",png,""));
++  byte[] oversized=png.clone();oversized[16]=0x7f;check(!bridge.shareResults("bad",oversized,text));
++  activity.finishing=true;check(!bridge.shareResults("closed",png,text));activity.finishing=false;
++  activity.failStart=true;check(bridge.shareResults("failed",png,text));check(bridge.lastSignal.equals("results_share_failed")&&bridge.lastValues[0].equals("failed"));activity.failStart=false;
++  activity.defer=true;check(bridge.shareResults("closing",png,text));activity.finishing=true;activity.waiting.run();check(bridge.lastValues[0].equals("closing"));activity.finishing=false;activity.defer=false;
++  File directory=new File(activity.getCacheDir(),"rivalry-shares");File untouched=new File(directory,"unrelated.txt");Files.write(untouched.toPath(),new byte[]{1,2,3});
++  for(int i=0;i<12;i++)RivalryShareFiles.save(activity.getCacheDir(),png);
++  check(directory.listFiles(f->f.getName().endsWith(".png")).length<=6);check(untouched.isFile());check(directory.listFiles(f->f.getName().endsWith(".tmp")).length==0);
++  check(new BmtChallenges(new org.godotengine.godot.Godot(null)).shareResults("absent",png,text)==false);
++  System.out.println("JAVA_RIVALRY_SHARING: "+checks+" checks, 0 failures");
++ }
++}''',
+ }
+ 
+ 
+@@ -69,11 +127,12 @@
+         sources.append(str(path))
+     classes = WORK / "classes"
+     classes.mkdir(parents=True, exist_ok=True)
+-    actual = ROOT / "native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java"
+-    subprocess.run([javac, "-d", str(classes), *sources, str(actual)], check=True)
+-    result = subprocess.run([java, "-cp", str(classes), "TrackLinksTest"], check=True,
++    actual = sorted((ROOT / "native/challenges/src").rglob("*.java"))
++    subprocess.run([javac, "-d", str(classes), *sources, *map(str,actual)], check=True)
++    result = subprocess.run([java, "-Dbmt.test.cache="+str(WORK / "cache"), "-cp", str(classes), "TrackLinksTest"], check=True,
+                             text=True, capture_output=True)
+     print(result.stdout, end="")
++    subprocess.run([java, "-Dbmt.test.cache="+str(WORK / "rivalry-cache"), "-cp", str(classes), "org.beatmytrack.challenges.RivalrySharingTest"], check=True)
+     if args.android_compile:
+         sdk = Path(os.environ.get("ANDROID_HOME", str(Path.home() / "AppData/Local/Android/Sdk")))
+         native = WORK / "android-compile"
+@@ -85,7 +144,7 @@
+             (native / "godot-classes.jar").write_bytes(archive.read("classes.jar"))
+         classpath = str(native / "android.jar") + os.pathsep + str(native / "godot-classes.jar")
+         result = subprocess.run([javac, "--release", "17", "-classpath", classpath, "-d", str(native / "classes-final"),
+-            str(WORK / "src/androidx/annotation/NonNull.java"), str(actual)], text=True, capture_output=True)
++            str(WORK / "src/androidx/annotation/NonNull.java"), *map(str,actual)], text=True, capture_output=True)
+         assert result.returncode == 0 and "exception" not in result.stderr.lower(), result.stderr
+         assert (native / "classes-final/org/beatmytrack/challenges/BmtChallenges.class").is_file()
+         javap = str(JAVA / "javap.exe") if (JAVA / "javap.exe").is_file() else shutil.which("javap")
+--- a/native/challenges/PROVENANCE.md
++++ b/native/challenges/PROVENANCE.md
+@@ -6,10 +6,14 @@
+ 
+ Android share behavior uses `ACTION_SEND`, `text/plain` and `Intent.createChooser`. Custom invitations use `beatmytrack://challenge/{code}`. Optional HTTPS filters come from the explicitly configured export host; production App Links require that host's association file and actual signing fingerprint.
+ 
++2026-10-19 Rivalry results add `shareResults(requestId, png, text)`: `ACTION_SEND` with `image/png`, `EXTRA_STREAM`, `EXTRA_TEXT`, matching `ClipData` and temporary read permission. `RivalryShareProvider` is an original, private, read-only Android `ContentProvider` restricted to generated receipt names in the app cache. Its authority uses `${applicationId}.rivalry-share`; no public storage permission, AndroidX dependency or social-media SDK is added. `RivalryShareFiles` validates PNG bounds, writes unique staged files and retains at most six images of at most 4 MiB each, expiring older entries after 24 hours on the next share. The chooser lets the player select the receiving app/person and confirm delivery there; starting it never claims a message was sent. Legacy track/challenge text sharing remains unchanged. Actual compilation, host tests and device acceptance limits: [Rivalry social sharing](../../docs/RIVALRY_SOCIAL_SHARE_2026_10_19.md).
++
+ References checked during implementation:
+ 
+ - [Godot Android manifest export hooks](https://docs.godotengine.org/en/stable/classes/class_editorexportplugin.html)
+ - [Android App Links and website associations](https://developer.android.com/training/app-links/about)
+ - [Android sharing](https://developer.android.com/training/sharing/send)
++- [Android ContentProvider API](https://developer.android.com/reference/android/content/ContentProvider)
++- [Android manifest application-ID placeholders](https://developer.android.com/build/manage-manifests#inject_build_variables_into_the_manifest)
+ 
+ Menu previews reuse `TrackTile.scenery_texture`, the established original scenic art and actual route metadata. Their existing provenance remains in the project's illustrated/discovery menu documentation. No pasted reference image became a shipping asset.
+--- a/docs/RIVALRY_AWARDS.md
++++ b/docs/RIVALRY_AWARDS.md
+@@ -18,7 +18,7 @@
+ | AR06 | Compact five-row final field includes the leader, player and nearest competitors. The player retains the yellow highlight; signed points gaps are relative to the player. The active hub's full scrolling field remains unchanged. |
+ | AR07 | Facts generate highlights: track wins, winning margin/shared championship/podium, five completed tracks, and distinct verified PB tracks. Unsupported clean-driving and historical PB claims are omitted. |
+ | AR08 | Perfect Week requires five **outright** competitive track victories and the completed championship. Tied track wins do not earn Perfect Week. This is a finale badge; no permanent profile trophy or reward ledger was added. |
+-| AR09 | Share Results uses the existing Android native text share sheet. Desktop copies the actual week, vehicle, final place/points/victories and each track's rank/time/points, with a confirmation. It does not send a message automatically or generate a public results URL/image. Account/car scope, cached snapshot and busy guards apply. |
++| AR09 | Share Results renders the branded results card and offers that PNG plus the exact results text through Android's native share sheet, for WhatsApp and other compatible installed apps. The first tap prepares and opens sharing; the preview offers Share again. Desktop copies the text and offers Save image. Account/car/week/group/navigation and cached-snapshot fences apply across image preparation; no message is sent automatically. See [the 2026-10-19 image-sharing implementation](RIVALRY_SOCIAL_SHARE_2026_10_19.md). |
+ | AR10 | Equal-width Share/Continue actions sit outside the cards. Continue uses the existing tested acknowledgement/current-week enrollment flow; both actions disable during the transition, and an actionable failure stays on the ceremony. |
+ 
+ The attached image guides composition only. Its player identities, track names, race times, rank/points, population and stated achievements are not inserted into live data. All new artwork is original repo-native vector drawing; no reference raster was shipped. The landscape, font, biome imagery, car meshes, local cosmetics and contact-shadow assets reuse their existing provenance.
+--- /dev/null
++++ b/docs/RIVALRY_SOCIAL_SHARE_2026_10_19.md
+@@ -0,0 +1,34 @@
++# Rivalry card sharing to social apps — 2026-10-19
++
++The owner requests direct sharing to WhatsApp and other social apps, and explicitly selects the designed results-card image with accompanying text. RSS01-RSS03 replaces Rivalry's Android text-only handoff with a rendered PNG plus the exact `finale_share_text()` caption through the system chooser. One Share results tap prepares the image and opens sharing. The preview offers Share again; the recipient and final Send action remain in the selected app. This implementation targets the game's Android platform. The Windows preview keeps copied text and adds Save image; a Windows native sharing chooser is not implemented.
++
++RSS01 renders the existing refined card independently at 1600×860, with actual pinned results, country/name, car and local cosmetics. The surrounding game, close button, copied status and action controls are absent from the image. The capture uses an isolated bounded viewport, warms the existing static car render, then frees its temporary window/viewport. It cancels if the owning preview disappears. The prepared PNG is cached only in that preview and capped at 4 MiB. No public results URL, new image-generation service or backend data is created.
++
++RSS02 extends the original Android adapter with `shareResults(requestId, png, text)`. The intent contains `image/png`, the stream URI and exact text, with matching ClipData and read grants. A private, non-exported, read-only `RivalryShareProvider` exposes only generated PNG files in the app's cache. Package-specific `${applicationId}` authority wiring works with the configured application ID. Unique staged writes and a six-image/24-hour cleanup policy give a 24 MiB retained-image budget; one new receipt can temporarily coexist during a save. Unknown names, traversal, foreign authorities and write access are refused. No new SDK, dependency, storage permission or external account connection is added. Existing challenge/track text sharing is retained.
++
++RSS03 coalesces repeated taps during image preparation and rechecks account/car scope, snapshot ownership, week/group, results text and navigation before native dispatch. Closing or navigating cancels late image completion. Native launch errors carry the request identity and allow retry; older errors cannot replace a newer request. The UI says Ready to share, and never treats opening/cancelling a chooser as confirmed delivery. On desktop, the Save image action uses the native save dialog, rechecks the same context and writes the generated PNG; the user chooses the file path.
++
++Changed files: `game/core/app.gd`, `game/platform/challenge_links.gd`, `game/ui/rivalry_share_dialog.gd`, new `game/ui/rivalry_share_image.gd`, `game/addons/bmt_challenges/export_plugin.gd`, `native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java`, new `RivalryShareFiles.java`/`RivalryShareProvider.java`, `game/tests/test_rivalry_share.gd`, `scripts/test_track_link_bridge.py`, native provenance, the live AR09 documentation, this note and `DEVELOPMENT_STATUS.md`. Saved originals, final sources and the [task-only patch](evidence/rivalry-social-share-2026-10-19/task-only.patch) are accompanied by [source receipts](evidence/rivalry-social-share-2026-10-19/source-hashes.json).
++
++R01 actual commands use pinned Godot `4.7.2.stable.official.ed1daf0bf` via `scripts/dev.ps1`, isolated `APPDATA` under `build/rivalry-social-share-*`, disabled backend URLs and unique fixture saves. Engine commands below use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with normal host certificate/rendering access:
++
++- `python scripts/test_track_link_bridge.py --android-compile` — original Java link/text-sharing 22 checks and new image-sharing/provider/cache 34 checks, all passing. All three production Java classes compile against Android 36 and the pinned Godot AAR with Java release 17; [log](evidence/rivalry-social-share-2026-10-19/logs/android-bridge.log). No APK export.
++- `-Action TestScript -ScriptPath res://tests/test_rivalry_share.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence=res://../docs/evidence/rivalry-social-share-2026-10-19/checked-gl_compatibility` — 358 checks, zero failures; [log](evidence/rivalry-social-share-2026-10-19/logs/checked-gl_compatibility.log).
++- The same focused test with `-RenderingMethod mobile -RenderingDriver vulkan` and evidence directory `checked-mobile` — 358 checks, zero failures on the desktop Mobile renderer; [log](evidence/rivalry-social-share-2026-10-19/logs/checked-mobile.log).
++- `-Action TestScript -ScriptPath res://tests/test_rivalry_share.gd` — 338 headless checks, zero failures; [log](evidence/rivalry-social-share-2026-10-19/logs/checked-test_rivalry_share.log).
++- `-Action TestScript -ScriptPath res://tests/test_fault_dialog.gd` — 95 checks, zero failures; [log](evidence/rivalry-social-share-2026-10-19/logs/final-test_fault_dialog.log).
++- `-Action TestScript -ScriptPath res://tests/test_app.gd` — 141 checks, zero failures; [log](evidence/rivalry-social-share-2026-10-19/logs/final-test_app.log).
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd` — 906 scripts, zero failures; [log](evidence/rivalry-social-share-2026-10-19/logs/checked-test_script_parse.log).
++- `git diff --check -- game/core/app.gd game/ui/rivalry_share_dialog.gd game/platform/challenge_links.gd game/addons/bmt_challenges/export_plugin.gd native/challenges scripts/test_track_link_bridge.py game/tests/test_rivalry_share.gd` — passes, with the existing CRLF normalization warning.
++
++Focused cases include the real rendered PNG, its decoded dimensions/transparency, exact caption, bounded long-error feedback, first-tap native handoff, cached repeat shares, fresh request identities, retryable/stale native failures and held image completion across double taps, closing, account, car, week, group, cached/ownership and navigation changes. The export provider's manifest contract is checked without exporting an APK. Java tests run the actual bridge/provider/files against platform doubles, exercise URI reads and denials plus cache limits, and compile the production classes against the real Android/Godot libraries. These are not cross-app phone tests. No assertion or runtime check was weakened. Initial narrower runs are retained separately from the final expanded checks.
++
++G01 inspected artifacts:
++
++- [Actual shared PNG, Compatibility](evidence/rivalry-social-share-2026-10-19/checked-gl_compatibility/exported-results-card.png).
++- [Actual shared PNG, desktop Mobile](evidence/rivalry-social-share-2026-10-19/checked-mobile/exported-results-card.png).
++- [Desktop preview with Save image](evidence/rivalry-social-share-2026-10-19/checked-gl_compatibility/share-perfect-960x540.png).
++
++Platform references: Android's [sharing guidance](https://developer.android.com/develop/ui/compose/sharing/send) specifies the chooser and stream/text handoff; the [ContentProvider API](https://developer.android.com/reference/android/content/ContentProvider) supplies the read-only file interface; [manifest placeholders](https://developer.android.com/build/manage-manifests#inject_build_variables_into_the_manifest) supply the application-specific authority. The existing Godot v2 plugin and Android APIs are reused.
++
++Q01: owner appearance/workflow acceptance, actual Android chooser/WhatsApp/other-app handoff and the desktop native save dialog remain device/manual acceptance checks. Receiving apps decide how to use the supplied caption. No phone attachment check or physical-device test, APK/export/install, real social message, live account/backend mutation or deployment was performed. A matching future Android client build is required to use the new native method/provider; Windows direct sharing remains outside this implementation.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-19 RSS01-RSS03/G01/R01/Q01: Rivalry Share results renders the branded 1600x860 card and offers PNG plus the exact caption through Android native sharing. The first tap prepares/opens the chooser; preview Share again and desktop Save image remain. Private read-only cache URIs, temporary grants, six retained receipts, launch-error identities and account/car/week/group/navigation/ownership fences protect asynchronous preparation. Original Java links22/new sharing34 and real Android36/Godot Java17 compilation pass; focused338 headless/358 Compatibility/358 desktop Mobile, notices95/App141/parser906 pass. Actual shared images, commands and task-only checkpoint: docs/RIVALRY_SOCIAL_SHARE_2026_10_19.md. Android/WhatsApp/device and desktop native-save acceptance remain; no phone attachment check/device test, APK/export/install, social message, backend/account mutation or deployment. Windows native sharing is not implemented.
++
+ 2026-10-19 GNT01-GNT02/G01/R01/Q01: Trackside story changes use a 0.28s directional print crossfade for Next, Previous and sidebar briefs, with fixed masthead/navigation. At most two article control trees are attached during a turn; outgoing actions are inert and completion, repeat taps, refresh, resize, tab changes and hiding settle cleanly. Older-page navigation retains account/selection/visibility fences. Original feed/cache, exact story/race/share identities and retained Garage resources remain. Focused70headless, native498Compatibility/498desktopMobile, race90, sharing45 and parser903 pass. Actual commands, initial sandbox log restriction, native halfway/settled views and task-only patch: docs/evidence/garage-news-story-transition-2026-10-19/report.json. Owner animation/touch acceptance remains; no phone attachment check/device test, APK, backend change or deployment.
+ 
+ 2026-10-19 PCF01-PCF03/G01/R01/Q01: Authenticated Publish first warns that the track cannot be changed afterward. Explicit confirmation retains one owned modal with the original indeterminate loading indicator, locked dismissal and a5s monotonic wait. Same-window success/failure/timeout follows authoritative receipts; late acceptance, durable requests, slot checks, consent, exact saved revisions and owner/navigation fences remain. Success acknowledgement retains editor cleanup/public-track handoff; delayed consent cannot attach to a freed/queued parent. Original4checks/3failures reproduce; focused61headless/72Compatibility/72desktopMobile, notices75/notifications55/slots56/local-publication31/fault95/safety23/App141/parser903 and import pass. Actual commands, retained pointer-fixture corrections, native views and task-only checkpoint: docs/PUBLICATION_CONFIRMATION_2026_10_19.md. Local client reload and owner/device acceptance remain; no live publication/account/queue mutation, backend deployment, phone attachment check/test or APK action.

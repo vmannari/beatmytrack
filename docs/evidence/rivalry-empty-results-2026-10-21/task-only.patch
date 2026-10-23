@@ -1,0 +1,152 @@
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -332,7 +332,10 @@
+         .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
+                RivalryGroup.test_population.is_(test_population),
+                RivalryMember.week_start < start, RivalryMember.acknowledged.is_(False))
+-        .order_by(RivalryMember.week_start.desc()).limit(1))
++        # A build update can create several memberships in the same week.
++        # Resume the player's latest field instead of an arbitrary old build.
++        .order_by(RivalryMember.week_start.desc(), RivalryMember.joined_at.desc(),
++                  RivalryGroup.created_at.desc(), RivalryGroup.id).limit(1))
+     if previous:
+         return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, previous.group_id), player.id))
+     return {"state": "not_joined", "test_population": test_population, "week": week, "year": year, "ends_at": end, "server_now": now(),
+diff --git a/backend/tests/test_rivalry_week_completion.py b/backend/tests/test_rivalry_week_completion.py
+--- a/backend/tests/test_rivalry_week_completion.py
++++ b/backend/tests/test_rivalry_week_completion.py
+@@ -1,4 +1,5 @@
+ """One finale action advances across missed weeks without changing race results."""
++import pytest
+ from sqlalchemy import select
+ from test_domains import domain as _domain_fixture
+ from test_domains import headers, submit
+@@ -6,6 +7,7 @@
+ 
+ from bmt_backend.rivalry import week_window
+ from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.track_models import now
+ from bmt_backend.worker import process_one
+ 
+ rivalry_domain = _domain_fixture
+@@ -15,6 +17,62 @@
+     response = domain.client.get("/v1/rivalry/current?vehicle_id=compact", headers=headers(domain, player))
+     assert response.status_code == 200, response.text
+     return response.json()
++
++
++@pytest.mark.parametrize("older_group_created_later", [False, True])
++def test_finale_uses_latest_membership_when_builds_changed_in_the_same_week(
++        rivalry_domain, monkeypatch, older_group_created_later):
++    seed(rivalry_domain)
++    timestamp = now()
++    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
++    latest = join(rivalry_domain)
++    empty = {"group_id": "00000000-0000-4000-8000-000000000001"}
++    alice = rivalry_domain.players["Alice"]
++    # Preserve an earlier build's empty membership. Its contract sorts
++    # first in the week index, reproducing the cloud's obsolete finale choice.
++    with rivalry_domain.factory() as session:
++        source = session.get(RivalryGroup, latest["group_id"])
++        group = RivalryGroup(id=empty["group_id"], week_start=source.week_start,
++            ends_at=source.ends_at, vehicle_id=source.vehicle_id, contract_key="f" * 64,
++            skill_band=source.skill_band, tracks=source.tracks, member_count=1,
++            created_at=timestamp + (200 if older_group_created_later else 0))
++        session.add(group)
++        session.flush()
++        session.add(RivalryMember(group_id=group.id, player_id=alice,
++            week_start=group.week_start, contract_key=group.contract_key, joined_at=timestamp))
++        source.created_at = timestamp + 100
++        session.get(RivalryMember, (source.id, alice)).joined_at = timestamp + 100
++        session.commit()
++    timestamp += 100
++    assert latest["group_id"] != empty["group_id"]
++    join(rivalry_domain, "Bob")
++    issued = rivalry_ticket(rivalry_domain, latest["group_id"], "Bob")
++    submit(rivalry_domain, issued, "Bob", frames=20)
++    assert process_one(rivalry_domain.app)
++    verified = current(rivalry_domain)
++    assert verified["group_id"] == latest["group_id"]
++    assert next(row for row in verified["standings"] if row["name"] == "Bob")["points"] == 30
++
++    timestamp = latest["ends_at"]
++    finale = current(rivalry_domain)
++    assert finale["group_id"] == latest["group_id"]
++    assert finale["state"] == "complete"
++    assert finale["standings"] == verified["standings"]
++    assert finale["tracks"] == verified["tracks"]
++    # Direct history reads retain their exact separate championship identities.
++    historical = rivalry_domain.client.get(f"/v1/rivalry/{empty['group_id']}",
++        headers=headers(rivalry_domain, "Alice")).json()
++    assert all(row["points"] == 0 for row in historical["standings"])
++    assert all(row["ticks"] is None for track in historical["tracks"] for row in track["entries"])
++    assert rivalry_domain.client.get(f"/v1/rivalry/{latest['group_id']}",
++        headers=headers(rivalry_domain, "Alice")).json() == finale
++    response = rivalry_domain.client.post(f"/v1/rivalry/{latest['group_id']}/continue",
++        json={}, headers=headers(rivalry_domain, "Alice"))
++    assert response.status_code == 200
++    assert current(rivalry_domain)["state"] == "not_joined"
++    with rivalry_domain.factory() as session:
++        assert all(session.get(RivalryMember, (item["group_id"], alice)).acknowledged
++                   for item in (empty, latest))
+ 
+ 
+ def test_continue_skips_all_older_finales_with_scoped_idempotency(rivalry_domain, monkeypatch):
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-21 RER01/WR03-WR07/TD05/R01/Q01: Read-only cloud and actual PC-cache inspection traces the empty Rivalry finale to an obsolete same-week build membership. Previous-week lookup now selects the latest player join with stable tie-breaks; original exact contracts, results and Continue remain. Original reproduces two identity failures; final Rivalry/week-completion/test-driver/automatic regressions 32 pass, Ruff and whitespace pass. Actual diagnosis, commands, fixture corrections and task-only checkpoint: docs/RIVALRY_EMPTY_RESULTS_2026_10_21.md. Cloud rollout and owner acceptance remain; no phone attachment check/device test, APK, live player/race/queue mutation or deployment.
++
+ 2026-10-19 NPT01-NPT03/G01/R01/Q01: Trackside now turns the complete newspaper sheet, including masthead, tabs, article and footer, with an original Turn.js-inspired 0.52s corner fold, shaded paper back and cast shadow. Fixed editorial/photo slots and a stable sheet host prevent content-driven width/height shifts; opaque printed pages prevent overprinting, and the photo shader now honors inherited opacity. Next/Previous and briefs retain exact story/race/share identities, bounded page lifetime, cancellation and account fences. One transient 2D printed-page target is capped at2048x1024 and rendered once, with no runtime CPU image readback or persistent cache. Original reproduces74 frame/layout failures and2 photo-opacity failures. Final focused70headless, native868Compatibility/868desktopMobile, race90, sharing45, import and parser909 pass. Native whole-sheet frames, actual commands, initial layout/anchor corrections and task-only patch: docs/evidence/garage-news-stable-layout-2026-10-19/report.json. Concurrent Garage/sidebar work is preserved. Owner animation/touch and physical-device acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+ 
+ 2026-10-19 GWE01-GWE03/R01/Q01: Inspect the running Compact and copied local wash state: faint slow film on upper panels kept its 0.165 mean residue at Needs a rinse. Separate 0.30 missed-patch/0.20 mean cutoffs accept the exact state as Clean enough for company. Brush radius0.48 to0.60 and rate0.85 to1.15 ease actual scrubbing. Masks, local condition, underbody exclusion, five grades, editing gates and canonical behavior remain. Original40checks/18failures reproduce; focused40headless/40Compatibility/40desktopMobile, surfaces45, scrubbing501, original wash1402, customisation262headless/286Compatibility/286desktopMobile, parser909 and import pass. Actual diagnosis, commands, native views and task-only checkpoint: docs/GARAGE_WASH_EASIER_2026_10_19.md. Client restart and owner/device effort acceptance remain; no phone attachment check/device test, APK, backend change or deployment.
+diff --git a/docs/RIVALRY_EMPTY_RESULTS_2026_10_21.md b/docs/RIVALRY_EMPTY_RESULTS_2026_10_21.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RIVALRY_EMPTY_RESULTS_2026_10_21.md
+@@ -0,0 +1,43 @@
++# Rivalry empty results diagnosis and correction — 2026-10-21
++
++Requirements: WR03–WR07, TD05, R01, Q01.
++
++The running PC app receives an obsolete, empty Week 42 championship after the week changes. The backend's previous-membership lookup orders by week alone. Several game builds created separate memberships during that same week, so the query can return the oldest empty field rather than the player's latest championship. The app faithfully displays that response.
++
++Read-only inspection of the configured cloud service, revision `bmt-stg-e7a444ab-api-00086-vud`, and the PC's existing Rivalry snapshot confirms:
++
++| Week 42 championship | Human joined (UTC) | Verified best rows | Test-driver best rows |
++| --- | --- | ---: | ---: |
++| `4da7e6cf-9681-4d6a-8f57-dc459dc3e6b0` — displayed empty finale | October 12, 13:45:51 | 0 | 0 |
++| `adead233-2e23-4024-a430-d9aaa4e9129e` | October 12, 15:27:08 | 69 | 64 |
++| `caa37a7b-221f-46c4-9d8d-fe2904e03c68` | October 16, 17:41:17 | 63 | 63 |
++| `54a04bb5-3642-46cc-b665-829db6ef7eda` | October 17, 19:23:24 | 67 | 62 |
++| `555cf549-451b-4b10-b84b-5e075b2a223b` — latest membership | October 18, 18:31:21 | 15 | 11 |
++
++Each field has 13 artificial drivers. The displayed field has no race attempts. Its first pinned track still belongs to physics 0.53/compiler 22; the service now runs physics 0.66/compiler 27/rules 23. These championships are distinct immutable contracts, and their results must remain separate. The current worker is ready with one available worker and zero queued races/publications. The latest championship has test-driver best counts `[5, 0, 2, 2, 2]`; this fix does not claim every driver finished every track. Ended championships do not receive newly generated races.
++
++`backend/bmt_backend/rivalry.py` now orders previous memberships by week, the player's join time, group creation time and a stable group ID. Current-week exact-contract membership, player/car/population fences, separate history reads, accepted results and Continue acknowledgements remain unchanged. No data migration is required.
++
++`backend/tests/test_rivalry_week_completion.py` adds two regression cases: an older empty build beside a newer membership containing an ordinarily submitted and worker-verified race, including a case where group creation time disagrees with membership join time. Both require the correct active/final championship, exact retained standings/tracks, direct access to the separate empty history, and Continue acknowledging both ended memberships.
++
++Actual commands from the repository root:
++
++```powershell
++# Existing operator access; GET/describe/secret-read only, no session login or race writes.
++& .tools/backend-venv/Scripts/python.exe build/rivalry-results-diagnosis-2026-10-21/inspect_live.py
++& .tools/backend-venv/Scripts/python.exe build/rivalry-results-diagnosis-2026-10-21/inspect_live.py --pinned-build
++
++$env:PYTHONPATH = 'backend'
++# Before the runtime change: 2 failures at the finale group identity assertion.
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_week_completion.py -k 'finale_uses_latest and sqlite' -q --tb=short -o cache_dir=build/rivalry-results-diagnosis-2026-10-21/pytest-cache
++# After the runtime change: 32 passed, 15 deselected; one existing Starlette/httpx warning.
++& .tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_rivalry_week_completion.py backend/tests/test_rivalry.py backend/tests/test_test_drivers.py backend/tests/test_automatic_test_drivers.py -k 'not postgres and not godot' -q --tb=short -o cache_dir=build/rivalry-results-diagnosis-2026-10-21/pytest-cache
++& .tools/backend-venv/Scripts/python.exe -m ruff check backend/bmt_backend/rivalry.py backend/tests/test_rivalry_week_completion.py
++git diff --check -- backend/bmt_backend/rivalry.py backend/tests/test_rivalry_week_completion.py
++```
++
++Ruff and whitespace checks pass. The new regression first needed a clock correction because a frozen Monday ticket had expired against the real upload clock. Initial random group IDs did not reliably expose unspecified SQLite ordering; a fixed obsolete group identity reproduces the actual selection error in both cases. Assertions were retained. Initial cloud reads required normal operator credential access outside the filesystem sandbox. An admin bearer on a public player-auth route returned 401; the anonymous public metadata read succeeds. None of these attempts modified service configuration or player data.
++
++[Sanitized diagnosis and task-only checkpoint](evidence/rivalry-empty-results-2026-10-21/report.json) retain the source hashes, exact focused failure, regression results and patch. Private API configuration remains only in the ignored build directory. The existing shared workspace contains unrelated changes, which are preserved.
++
++The correction is local and requires an explicitly authorized backend rollout to affect the cloud client. PostgreSQL execution, native UI appearance and owner acceptance remain untested for this task. No phone attachment check/device test, APK action, live publication/race/account/queue mutation, restart or deployment was performed.

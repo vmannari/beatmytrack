@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-18",
+  "requirements": [
+    "GNF01: borderless race action in every interaction state",
+    "GNF02: complete articles and race actions visible without scrolling",
+    "GNA01/G01/R01/Q01: all track stories, original racing/Garage and actual evidence"
+  ],
+  "setup": "$env:APPDATA = Join-Path (Get-Location) 'build/news-fit-user/<check>'; New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null",
+  "reproduction": {
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_native.gd' -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-fit-2026-10-18/before-layout')\"",
+    "log": "before-layout.log",
+    "result": "GARAGE NEWS NATIVE: 286 checks, 78 failures",
+    "exit_code": 1,
+    "scope": "Previous article layout after removal of the race border only, with new no-scroll checks"
+  },
+  "validation": [
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_garage_news.gd",
+      "log": "client.log",
+      "result": "GARAGE NEWS: 62 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_native.gd' -Graphical -RenderingMethod gl_compatibility -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-fit-2026-10-18')\"",
+      "log": "layout-gl.log",
+      "result": "GARAGE NEWS NATIVE: 334 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_native.gd' -Graphical -RenderingMethod mobile -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-fit-2026-10-18')\"",
+      "log": "layout-mobile.log",
+      "result": "GARAGE NEWS NATIVE: 334 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' -Action TestScript -ScriptPath 'res://tests/test_garage_news_race.gd' -TestArgument @('--evidence-root=res://../docs/evidence/garage-news-fit-2026-10-18')\"",
+      "log": "race.log",
+      "result": "GARAGE NEWS RACE: 90 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "log": "parser.log",
+      "result": "SCRIPT_PARSE: 854 scripts, 0 failures",
+      "exit_code": 0
+    }
+  ],
+  "screenshots": [
+    "gl_compatibility/race-friend_overtake-960.png",
+    "gl_compatibility/race-friend_track-960.png",
+    "mobile/local-record-960.png"
+  ],
+  "phone_attachment_checked": false,
+  "physical_device_tested": false,
+  "apk_built": false,
+  "backend_changed_or_deployed": false,
+  "remaining_acceptance": [
+    "Owner appearance/touch acceptance"
+  ]
+}

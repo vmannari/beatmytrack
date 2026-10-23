@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-earned-coins-v1",
+  "description": "Guest saves never import into an account wallet. Catalog membership is additionally checked against the shipped cosmetic IDs.",
+  "oneOf": [
+    {"$ref": "#/$defs/guest"},
+    {"$ref": "#/$defs/wallet"},
+    {"$ref": "#/$defs/purchase"},
+    {"$ref": "#/$defs/purchase_receipt"},
+    {"$ref": "#/$defs/reward_receipt"}
+  ],
+  "$defs": {
+    "coins": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "item": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^(livery/[a-z0-9_]+|kit/compact/(hood|aero|rims|body)/[a-z0-9_]+)$"},
+    "owned": {"type": "array", "uniqueItems": true, "maxItems": 87, "items": {"$ref": "#/$defs/item"}},
+    "guest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "balance", "owned", "sequence"],
+      "properties": {"version": {"const": 1}, "balance": {"$ref": "#/$defs/coins"}, "owned": {"$ref": "#/$defs/owned"}, "sequence": {"$ref": "#/$defs/coins"}}
+    },
+    "wallet": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "balance", "revision", "owned", "prices"],
+      "properties": {
+        "schema": {"const": 1}, "balance": {"$ref": "#/$defs/coins"}, "revision": {"$ref": "#/$defs/coins"}, "owned": {"$ref": "#/$defs/owned"},
+        "prices": {"type": "object", "maxProperties": 256, "propertyNames": {"$ref": "#/$defs/item"}, "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 1000000}}
+      }
+    },
+    "purchase": {
+      "type": "object", "additionalProperties": false, "required": ["item_id", "expected_price"],
+      "properties": {"item_id": {"$ref": "#/$defs/item"}, "expected_price": {"type": "integer", "minimum": 1, "maximum": 1000000}}
+    },
+    "purchase_receipt": {
+      "type": "object", "additionalProperties": false, "required": ["item_id", "charged", "wallet"],
+      "properties": {"item_id": {"$ref": "#/$defs/item"}, "charged": {"$ref": "#/$defs/coins"}, "wallet": {"$ref": "#/$defs/wallet"}}
+    },
+    "reward_receipt": {
+      "type": "object", "additionalProperties": false, "required": ["status", "amount", "rows"],
+      "properties": {
+        "status": {"enum": ["pending", "credited", "unavailable"]}, "amount": {"$ref": "#/$defs/coins"},
+        "rows": {"type": "array", "maxItems": 12, "items": {
+          "type": "object", "additionalProperties": false, "required": ["title", "amount", "icon", "eligible", "status"],
+          "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 256}, "amount": {"$ref": "#/$defs/coins"}, "icon": {"enum": ["flag", "coin", "timer", "bars", "trophy"]}, "eligible": {"const": true}, "status": {"const": "Credited"}}
+        }}
+      }
+    }
+  }
+}

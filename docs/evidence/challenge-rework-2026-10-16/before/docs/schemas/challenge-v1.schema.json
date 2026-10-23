@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beat-my-track:challenge-v1",
+  "title": "Beat my track challenge snapshot",
+  "type": "object",
+  "required": ["id", "code", "mode", "state", "creator_id", "creator", "self_id", "joined", "vehicle_id", "created_at", "ends_at", "server_now", "manifest", "entry", "standings", "share_url"],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "code": {"type": "string", "pattern": "^[A-F0-9]{16}$"},
+    "mode": {"enum": ["beat", "group"]},
+    "state": {"enum": ["active", "settling", "complete", "cancelled"]},
+    "creator_id": {"type": "string"},
+    "creator": {"type": "string", "minLength": 1, "maxLength": 40},
+    "self_id": {"type": "string"},
+    "joined": {"type": "boolean"},
+    "vehicle_id": {"enum": ["compact", "pickup", "classic", "formula", "kart"]},
+    "created_at": {"type": "integer", "minimum": 0},
+    "ends_at": {"type": "integer", "minimum": 0},
+    "server_now": {"type": "integer", "minimum": 0},
+    "target_ticks": {"type": ["integer", "null"], "minimum": 1, "maximum": 216000},
+    "target_ms": {"type": ["integer", "null"], "minimum": 1},
+    "target_id": {"type": ["string", "null"]},
+    "manifest": {"type": "object", "required": ["laps", "tick_rate", "vehicle_id", "rules_key", "physics_version", "config_hash", "track_content_hash"], "properties": {"laps": {"const": 5}, "tick_rate": {"const": 120}}},
+    "entry": {"type": "object", "required": ["track_id", "version_id", "content_hash", "name", "creator", "points"]},
+    "share_url": {"type": "string", "format": "uri"},
+    "standings": {
+      "type": "array", "minItems": 1, "maxItems": 20,
+      "items": {
+        "type": "object", "required": ["id", "name", "ticks", "ms", "rank", "run_id"],
+        "properties": {
+          "id": {"type": "string"}, "name": {"type": "string"},
+          "ticks": {"type": ["integer", "null"], "minimum": 1, "maximum": 216000},
+          "ms": {"type": ["integer", "null"], "minimum": 1},
+          "rank": {"type": ["integer", "null"], "minimum": 1, "maximum": 20},
+          "run_id": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

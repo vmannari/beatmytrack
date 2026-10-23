@@ -1,0 +1,115 @@
+diff --git a/game/vehicle/vehicle_audio.gd b/game/vehicle/vehicle_audio.gd
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -7,6 +7,8 @@
+ const BODY_CLIPS: Array[String] = ["impact_0","impact_1","impact_2","chassis"]
+ const GRIT: Array[String] = ["grit_0","grit_1","grit_2"]
+ const GRIT_SPACING: Array[float] = [4.2,6.6,5.1,3.7]
++const COMPACT_KERB_ROLL_GAIN_DB: float = 4.5
++const COMPACT_KERB_ENTRY_GAIN_DB: float = 3.0
+ const STREAM_CACHE_BYTES: int = 24 * 1024 * 1024
+ static var prepared_streams: Array[Dictionary] = []
+ var model := VehicleAudioModel.new()
+@@ -298,7 +300,8 @@
+ 	if crossed>0.0 and speed>.5:
+ 		pending_kerb = maxf(pending_kerb,crossed)
+ 		if not kerb_touching and kerb_cooldown==0.0:
+-			_event("chassis",lerpf(.15,.36,smoothstep(.5,24.0,speed))*(.65+.35*sqrt(crossed)),.78)
++			var entry_gain: float = db_to_linear(COMPACT_KERB_ENTRY_GAIN_DB) if model.vehicle_id=="compact" else 1.0
++			_event("chassis",entry_gain*lerpf(.15,.36,smoothstep(.5,24.0,speed))*(.65+.35*sqrt(crossed)),.78)
+ 			kerb_count += 1
+ 			kerb_cooldown = .08
+ 	kerb_touching = current>0.0
+@@ -457,7 +460,9 @@
+ 	if not grounded or speed<=.5 or desert: kerb_hold = 0.0
+ 	# Keep recorded rubber/body colour across speeds. Extreme resampling made
+ 	# slow kerbs sound like separate knocks and fast kerbs like a thin buzz.
+-	_layer("kerb_roll",1.5*movement*(.25+rolling*.35)*sqrt(held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
++	# Bring the Compact's existing thuds forward against its engine.
++	var kerb_gain: float = db_to_linear(COMPACT_KERB_ROLL_GAIN_DB) if model.vehicle_id=="compact" else 1.0
++	_layer("kerb_roll",kerb_gain*1.5*movement*(.25+rolling*.35)*sqrt(held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
+ 	pending_kerb = 0.0
+ 	var sand_contact: bool = surface_model.sand>0.0
+ 	# Modest speed-driven spectral motion; pedal/acceleration change intensity.
+diff --git a/docs/COMPACT_KERB_AUDIO_2026_10_22.md b/docs/COMPACT_KERB_AUDIO_2026_10_22.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COMPACT_KERB_AUDIO_2026_10_22.md
+@@ -0,0 +1,59 @@
++# Compact kerb audio — 2026-10-22
++
++Owner feedback: driving over kerbs sounds too muted in the Compact.
++CKA01/CKA02 refine SND53 with G01/R01/Q01 presentation separation.
++
++`game/vehicle/vehicle_audio.gd` now raises the Compact's existing kerb thud loop
++by **4.5 dB** and its actual entry chassis bump by **3 dB**. The gain is selected
++by the configured vehicle identity. Other vehicles retain their original mix.
++The existing thud asset, pitch/rhythm, wheel contact/sweep, 40 ms hold, silence
++gates, Desert exclusion, voice/cache bounds and canonical driving remain intact.
++The existing concurrent bridge-landing feedback change is preserved.
++
++Pinned Godot: `4.7.2.stable.official.ed1daf0bf`, through `scripts/dev.ps1`.
++Successful runs use task-specific `APPDATA` beneath
++`build/compact-kerb-audio-2026-10-22/`, without owner account/save changes.
++
++Actual commands and outcomes:
++
++| Command | Outcome |
++| --- | --- |
++| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_kerb_audio.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence-dir=res://../docs/evidence/compact-kerb-audio-2026-10-22/before-approved' -CommandTimeoutSeconds 180` | Original: **88 checks, zero failures**, 12 native recordings. |
++| Same command, evidence directory ending `/after` | Adjusted: **88 checks, zero failures**, 12 native recordings. Includes all five cars, contact gates, canonical snapshot equivalence and the actual Game callback. |
++| `... -Action TestScript -ScriptPath res://tests/test_vehicle_audio.gd -Graphical -RenderingMethod gl_compatibility` | Final: **1,469 checks, zero failures**. |
++| `... -Action TestScript -ScriptPath res://tests/test_desert_soft_sand_audio.gd` | **67 checks, zero failures**. |
++| `... -Action TestScript -ScriptPath res://tests/test_bridge_contact_audio.gd` | **42,184 checks, zero failures**; original real-bridge cues, contact identities and silence fences retained. |
++| `... -Action CheckScript -ScriptPath res://vehicle/vehicle_audio.gd` | Exit 0. |
++| `python build/review_compact_kerb_audio.py` | **24 captures pass**; isolated kerb peaks increase 4.5 dB, silent pause tails and no false kerb on grass. Both original runtime asset hashes match. |
++| `git diff --check -- game/vehicle/vehicle_audio.gd` | Exit 0; routine existing CRLF normalization notice only. |
++| `git apply --check --reverse docs/evidence/compact-kerb-audio-2026-10-22/task-only.patch` | Exit 0 against the final working tree. |
++
++The adjusted mixed crossing/riding/three-speed peaks are 0.4721/0.6124/0.7735
++(highest about −2.23 dBFS), with no clipped samples. The actual Game crossing
++still gives two entry bumps and no physical crashes; its maximum loop gain
++changes from 0.6012 to 1.0093, exactly the requested multiplier. A player gain
++above one is supported and is not a PCM clipping measurement.
++
++Initial attempts are retained separately: sandbox runs hit Windows log/certificate
++permissions; a local import attempt failed copying an in-use native geometry DLL.
++The broad audio test in headless mode completed 1,454 checks with its one
++`pause suspends loop playback` failure, because headless mode does not start audio
++streams. Initial graphical retries encountered concurrent new ambience class/cache
++and constant-expression parse errors. Their code/assertions were not changed here.
++After that separate work settled, the full graphical audio and headless bridge
++regressions above passed. No failed assertions were removed or weakened.
++
++Evidence: `docs/evidence/compact-kerb-audio-2026-10-22/`, including before/after
++WAVs, digital review, actual logs and a task-only runtime patch against the saved
++working-tree source. The shared Git index is untouched. No new test assertions,
++audio assets, physics/rules/schema changes or dependencies were introduced.
++Changed documentation: this receipt, `DEVELOPMENT_STATUS.md` and
++`docs/PHASE_0_PLAN.md`. The task-only patch includes those documentation changes;
++`checkpoint.json` records their final hashes alongside the runtime source.
++
++Remaining acceptance: restart/update the local client and listen while driving
++actual kerbs, especially through phone speakers/headphones. Recordings use
++controlled contact poses and a coasting engine at 5/18/36 m/s; they are desktop
++digital measurements, not a complete-race or physical-device listening result.
++No phone attachment check/device test, APK/export/install, backend/account mutation
++or deployment was performed.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 CKA01-CKA02/G01/R01/Q01: Compact kerb thuds gain4.5dB and real entry bumps3dB against its engine; original assets/pitch/contact gates, other cars, Desert/bridge cues and canonical behavior remain. Native before88/after88, vehicle1469, Desert67, bridge42184, mixer parse and24-capture digital review pass. Peak mixed0.7735, pause tails0; initial sandbox/cache/concurrent-ambience and headless-playback failures are retained in the receipt. Commands, WAVs and task-only checkpoint: docs/COMPACT_KERB_AUDIO_2026_10_22.md. Client restart and owner/phone listening remain; no phone attachment check/device test, APK, live mutation or deployment.
++
+ 2026-10-22 AN01-AN03/R01/Q01: Granted achievements now show a native medal overlay with tier accents, restrained animation, queued automatic dismissal and input pass-through. Committed local saves and authoritative account reads retain original progress boundaries and exact identities; old history, duplicates, failed saves and stale replies stay quiet. App-owned event reads coalesce without a collection polling timer. Focused291headless/302Compatibility/302desktopMobile, original2failures, achievements424headless/559Compatibility, records54, App141 and publication31 pass. Actual commands, parser receipt, initial corrections, native views and task-only checkpoint: docs/evidence/achievement-overlay-2026-10-22/report.json. Concurrent detail/Garage/discovery/backend work remains. Owner animation/appearance and physical-device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 RVO01-RVO03/R01/Q01: Profiled actual warmed race verification: exact build/content-keyed immutable descriptors avoid repeat track-object reads and geometry SQL, with64 entries/8MiB encoded bytes and independent caller dictionaries. Strict JSON scalar iteration retains all guards;3744 differential cases agree. Local five-lap SQLite worker medians38.841ms to30.931ms,50 to48 SQL statements, exclude upload/network/optional ghost work; checker stays about1.6ms with identical12757 ticks/five lap times and zero native calls during measured acceptance. Focused27, regressions102pass/1skip and real-native/HTTP10 pass; original reproduces the warm descriptor SQL failure. Commands, initial helper/import/profiling corrections, source fingerprints and task-only checkpoint: docs/evidence/race-verification-2026-10-22/report.json. Matching backend rollout and representative PostgreSQL/cloud/memory/owner acceptance remain; no live backend/account mutation/deployment, phone attachment check/device test or APK action.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-22 CKA01-CKA02/G01/R01/Q01: Compact kerb thuds gain4.5dB and real entry bumps3dB against its engine; original assets/pitch/contact gates, other cars, Desert/bridge cues and canonical behavior remain. Native before88/after88, vehicle1469, Desert67, bridge42184, mixer parse and24-capture digital review pass. Peak mixed0.7735, pause tails0; initial sandbox/cache/concurrent-ambience and headless-playback failures are retained in the receipt. Commands, WAVs and task-only checkpoint: docs/COMPACT_KERB_AUDIO_2026_10_22.md. Client restart and owner/phone listening remain; no phone attachment check/device test, APK, live mutation or deployment.
++
+ 2026-10-22 AN01-AN03/R01/Q01: Granted achievements now show a native medal overlay with tier accents, restrained animation, queued automatic dismissal and input pass-through. Committed local saves and authoritative account reads retain original progress boundaries and exact identities; old history, duplicates, failed saves and stale replies stay quiet. App-owned event reads coalesce without a collection polling timer. Focused291headless/302Compatibility/302desktopMobile, original2failures, achievements424headless/559Compatibility, records54, App141 and publication31 pass. Actual commands, parser receipt, initial corrections, native views and task-only checkpoint: docs/evidence/achievement-overlay-2026-10-22/report.json. Concurrent detail/Garage/discovery/backend work remains. Owner animation/appearance and physical-device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 RVO01-RVO03/R01/Q01: Profiled actual warmed race verification: exact build/content-keyed immutable descriptors avoid repeat track-object reads and geometry SQL, with64 entries/8MiB encoded bytes and independent caller dictionaries. Strict JSON scalar iteration retains all guards;3744 differential cases agree. Local five-lap SQLite worker medians38.841ms to30.931ms,50 to48 SQL statements, exclude upload/network/optional ghost work; checker stays about1.6ms with identical12757 ticks/five lap times and zero native calls during measured acceptance. Focused27, regressions102pass/1skip and real-native/HTTP10 pass; original reproduces the warm descriptor SQL failure. Commands, initial helper/import/profiling corrections, source fingerprints and task-only checkpoint: docs/evidence/race-verification-2026-10-22/report.json. Matching backend rollout and representative PostgreSQL/cloud/memory/owner acceptance remain; no live backend/account mutation/deployment, phone attachment check/device test or APK action.

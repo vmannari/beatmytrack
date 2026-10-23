@@ -1,0 +1,328 @@
+{
+  "title": "Backend scalability review against 1 million daily players and 500 million accounts",
+  "date": "2026-10-22",
+  "requirements": {
+    "BSR01": "Identify work worse than linear, repeated population scans and hidden database costs.",
+    "BSR02": "Review contention, memory, scheduling and storage against the requested scale.",
+    "BSR03": "Separate source findings and isolated reproductions from unmeasured deployment capacity."
+  },
+  "verdict": "The current backend is not ready for the requested scale. Indexed identity lookup and bounded small competitions are useful foundations, but reward scans, global serialization, population-sized snapshots, catalogue limits and worker scheduling require changes before a capacity claim.",
+  "scope": {
+    "reviewed": [
+      "identity/session lookup",
+      "race upload/admission/claim/finalization",
+      "reward and PB projections including SQL triggers",
+      "leaderboards and histograms",
+      "discovery and query snapshots",
+      "Rivalry matching and standings",
+      "Trackside and achievements background work",
+      "telemetry ingestion/projection",
+      "Studio player/finance queries",
+      "retention and object listing",
+      "database pools and checked-in staging deployment"
+    ],
+    "runtime_source_changes": false,
+    "live_environment_access": false,
+    "database_mutation": "Only synthetic in-memory SQLite probe tables and disposable SQLite regression fixtures.",
+    "device_test_performed": false,
+    "deployment_performed": false,
+    "qualification": "Source review plus isolated probes; not a production readiness certification or an exhaustive proof of every query plan. Current live settings and deployed source parity were not inspected."
+  },
+  "notation": {
+    "A": "total accounts",
+    "B": "drivers with a PB on one pinned board",
+    "U": "distinct tick values on a board, bounded by the replay tick domain",
+    "T": "matching published tracks",
+    "R7": "verified race attempts within seven days",
+    "Q": "independent requests or filtered snapshot creations",
+    "N": "objects in a local filesystem shard",
+    "k": "fixed object-listing page size, normally 1000"
+  },
+  "findings": [
+    {
+      "id": "BSR-F01",
+      "priority": "P1",
+      "title": "Every accepted race performs population-sized percentile scans while finalization locks remain held",
+      "sources": [
+        "backend/bmt_backend/economy.py:166",
+        "backend/bmt_backend/worker.py:290",
+        "backend/bmt_backend/worker.py:314",
+        "backend/bmt_backend/worker.py:341"
+      ],
+      "growth": "Four COUNT queries per eligible accepted race: total and faster players for both race and lap. Work grows with the board population and visibility joins. Summed over B new entrants to a growing board, population visits grow quadratically. With Q races on an established board, the population work is proportional to Q*B.",
+      "evidence": "The actual award function emitted four COUNT statements. Executing those statements in indexed synthetic SQLite at 1000/10000/100000 drivers required approximately 52000/520000/3900000 VM operations. This is an operation-count probe, not PostgreSQL timing.",
+      "impact": "A popular shared track becomes more expensive to finish on as its history grows, even for slower repeat races. Finalization includes the scans before commit.",
+      "recommendation": "Replace repeated PB population counts with maintained race/lap rank statistics and bounded cumulative queries. Preserve exact ties, account visibility, once-only rewards and atomic wallet updates. Avoid computing already-earned maximum reward tiers."
+    },
+    {
+      "id": "BSR-F02",
+      "priority": "P1",
+      "title": "Global race admission and completion serialize on queue_capacity(1)",
+      "sources": [
+        "backend/bmt_backend/queueing.py:17",
+        "backend/bmt_backend/migrations/versions/0013_scalability.py:159",
+        "backend/bmt_backend/migrations/versions/0028_publication_intents.py:64",
+        "backend/bmt_backend/worker.py:290"
+      ],
+      "growth": "Constant row-update complexity does not imply scalable concurrency. Admission locks one shared row; triggers update that row when pending state changes. The row stays locked to transaction completion. Board counters/revisions, histogram dirty rows and track reach add narrower hot keys.",
+      "impact": "Finalization on one large board can delay admissions and completions on unrelated tracks. Adding API/worker replicas does not remove this serialization point.",
+      "recommendation": "Partition admission capacity and queue ownership with conservative hard limits and per-player fairness; shorten globally shared transactions. Review hot board and track counters separately. Preserve durable acceptance, leases, idempotency and retry fences. Validate contention on PostgreSQL before rollout.",
+      "qualification": "Lock coupling is established by source and trigger inspection. No PostgreSQL contention benchmark was run."
+    },
+    {
+      "id": "BSR-F03",
+      "priority": "P1",
+      "title": "Histogram snapshots contain every player's result and oversized snapshots never stay cached",
+      "sources": [
+        "backend/bmt_backend/histogram_snapshots.py:25",
+        "backend/bmt_backend/histogram_snapshots.py:37",
+        "backend/bmt_backend/histogram_snapshots.py:86",
+        "backend/bmt_backend/board_cache.py:36",
+        "backend/bmt_backend/runs.py:602",
+        "backend/bmt_backend/histogram_population.py:18"
+      ],
+      "growth": "Refresh reads and stores O(B) player-result mappings plus O(U log U) frequency sorting. U is capped by the tick domain; this is not an unbounded account sort. Cold loads deserialize O(B) JSON. The cache holds at most four entries and estimates weight against 128 MiB; an oversized newly inserted entry evicts itself.",
+      "evidence": "Actual load_snapshot and cache code with an instrumented SQL adapter loaded the full payload twice for two sequential requests at 400000 drivers, even with only one distinct time. Estimated weight was 144000192 bytes against 134217728 bytes. At one million drivers the two own mappings alone have an estimated 360000000-byte weight; this is the code's estimate, not measured RSS.",
+      "impact": "Large boards turn small comparison responses into repeated large database transfers and Python allocations. Normal cache eviction or replica startup also repeats the cost.",
+      "recommendation": "Store shared frequencies/cumulative summaries separately from per-player best values. Fetch the requesting player's exact PB by index. Keep snapshot request payload and cache footprint independent of B; preserve the documented snapshot-time semantics."
+    },
+    {
+      "id": "BSR-F04",
+      "priority": "P1",
+      "title": "Discovery materializes whole result catalogues and popular feeds re-aggregate seven days of races",
+      "sources": [
+        "backend/bmt_backend/discovery.py:107",
+        "backend/bmt_backend/discovery.py:136",
+        "backend/bmt_backend/discovery.py:149",
+        "backend/bmt_backend/discovery.py:238",
+        "backend/bmt_backend/discovery.py:256",
+        "backend/bmt_backend/config.py:62"
+      ],
+      "growth": "New filtered snapshots enumerate O(T) IDs, potentially sort O(T log T), and for popular ordering aggregate R7 attempts including distinct players. Sort/distinct query cost depends on the plan, memory and spills. Different filters, favorites/raced lists and block lists reduce reuse. Random selection also shuffles the complete ID vector. A global snapshot-budget row serializes stored vector creation.",
+      "evidence": "Actual _ordered_ids with an instrumented 100001-row result raises HTTP 503 DISCOVERY_CATALOGUE_LIMIT under the default 100000-track cap. Global defaults permit 1000000 snapshot IDs and 2048 snapshots; ten distinct 100000-track vectors exhaust the ID allowance until expiry cleanup.",
+      "impact": "A small page is not a small query. Increasing the catalogue cap alone increases CPU, memory, JSON storage and database work.",
+      "recommendation": "Maintain recent distinct-finisher/popularity projections incrementally and prepare shared feed orders. Page indexed order keys or bounded persisted chunks rather than full per-query catalogues. Keep stable cursors and visibility/account fences. PostgreSQL trigram indexes already exist; missing text indexes are not the primary finding."
+    },
+    {
+      "id": "BSR-F05",
+      "priority": "P2",
+      "title": "Local filesystem object pagination has quadratic total scan work",
+      "sources": [
+        "backend/bmt_backend/storage.py:156",
+        "backend/bmt_backend/storage.py:168",
+        "backend/bmt_backend/gcs_storage.py:151",
+        "backend/bmt_backend/s3_storage.py:104"
+      ],
+      "growth": "Each local page reopens scandir from the beginning and skips its previous offset with islice. A complete fixed-page scan of one shard advances O(N^2/k) directory entries. The reported inspected/page cap excludes skipped entries. There are a fixed 256 shards, so distributing objects across them does not remove the asymptotic problem.",
+      "evidence": "The actual listing method with instrumented directory entries advanced 2000/65000/5150000 entries to return 1000/10000/100000 objects with page size 1000. No files were created. This includes the final call that detects shard exhaustion.",
+      "impact": "NAS/local retention can slow badly as object counts grow despite returning bounded pages. The native GCS/S3 adapters use continuation tokens and do not use this local rescan loop.",
+      "recommendation": "Use provider continuation tokens for cloud storage; replace local offset rescanning with a durable object inventory or an enumeration strategy with a genuine bounded continuation. Preserve publication pins and deletion safety."
+    },
+    {
+      "id": "BSR-F06",
+      "priority": "P1",
+      "title": "Telemetry ingestion competes with the entire projector batch for one state row",
+      "sources": [
+        "backend/bmt_backend/telemetry.py:261",
+        "backend/bmt_backend/product_analytics.py:146",
+        "backend/bmt_backend/product_analytics.py:154",
+        "backend/bmt_backend/product_worker.py:50"
+      ],
+      "growth": "Client telemetry batches and project_pending both SELECT FOR UPDATE product_state(1). Projection holds it during up to 500 events by default, profile and analytical projection, and bounded retention. Additional projectors serialize on the same row. Each projector loop also waits 0.2 seconds while backlogged.",
+      "impact": "When telemetry is enabled, a batch can block ingestion for all accounts. A small 50-event request limit does not make global ingress concurrent.",
+      "recommendation": "Partition projection ownership and backlog accounting by stable player/event partition. Retain durable event-ID deduplication and atomic facts, and separate ingress admission from long projection transactions. Telemetry is disabled by default, so this finding is conditional on activation."
+    },
+    {
+      "id": "BSR-F07",
+      "priority": "P1",
+      "title": "Presentation and achievement jobs can starve behind continuous racing",
+      "sources": [
+        "backend/bmt_backend/worker.py:93",
+        "backend/bmt_backend/worker.py:99",
+        "backend/bmt_backend/worker.py:352",
+        "backend/bmt_backend/service_worker.py:71"
+      ],
+      "growth": "Achievements, requested news, lap backfill and histogram refresh run only when no claimable race exists. Privacy has a separate every-sixteen-completions turn; these other jobs do not. Publication and optional product processing have separate supervised processes.",
+      "impact": "At a persistently nonempty race queue, adding more work can make comparison snapshots and other promised updates stop progressing, independent of algorithm complexity.",
+      "recommendation": "Reserve a measured scheduling share or separate worker role/pool for these jobs, with deadlines, bounded leases, queue-age metrics and enough CPU/memory capacity."
+    },
+    {
+      "id": "BSR-F08",
+      "priority": "P2",
+      "title": "Studio pages compute whole-population totals against the transactional database",
+      "sources": [
+        "backend/bmt_backend/studio_catalogue.py:258",
+        "backend/bmt_backend/studio_catalogue.py:296",
+        "backend/bmt_backend/studio_finance.py:179"
+      ],
+      "growth": "A 25-row player page performs full-scope exact account/classification counts; finance counts and sums all wallets. Broad unfiltered player reads therefore do O(A) population work, regardless of the page limit. Per-page player history counts also grow with those players' retained history.",
+      "impact": "At 500 million accounts, one operator's page refresh can cause a very large query on the same database serving players.",
+      "recommendation": "Use prepared, timestamped reporting summaries and a reporting replica/analytics store. Keep direct exact lookups for selected-player support and transactional support mutations. Avoid exact full-catalogue counts on every page."
+    },
+    {
+      "id": "BSR-F09",
+      "priority": "P2",
+      "title": "Expired identity cleanup uses unbounded DELETE transactions",
+      "sources": [
+        "backend/bmt_backend/maintenance.py:191",
+        "backend/bmt_backend/maintenance.py:201",
+        "backend/bmt_backend/identity_models.py:98"
+      ],
+      "growth": "Expired login challenges, browser logins, rate buckets and session families are deleted without a row cap. Session-family deletion cascades into tokens. Other maintenance paths have limits, but a LIMIT on candidate output does not itself bound antijoin/reference-check work.",
+      "impact": "A backlog can cause large transactions, WAL bursts, replication lag and vacuum debt. High-frequency rate-bucket writes amplify the volume.",
+      "recommendation": "Use indexed bounded cleanup transactions and explicit progress/throughput monitoring; evaluate time partitions for high-volume expiring history. Retain permanent reward/grant/idempotency records according to their actual contracts."
+    },
+    {
+      "id": "BSR-F10",
+      "priority": "P1",
+      "title": "Lifetime processed telemetry count uses PostgreSQL INTEGER",
+      "sources": [
+        "backend/bmt_backend/telemetry_models.py:80",
+        "backend/bmt_backend/product_analytics.py:305",
+        "backend/bmt_backend/migrations/versions/0025_product_telemetry.py:50"
+      ],
+      "growth": "processed_events increases for every projected event and is a signed 32-bit database integer. PostgreSQL rejects values above 2147483647. At the illustrative 100 million events/day, a zero-based lifetime counter reaches that bound in about 21.5 days.",
+      "impact": "The projector transaction can fail permanently at the counter boundary even when CPU and storage are sufficient.",
+      "recommendation": "Migrate cumulative event counters to BIGINT before scale activation and review other global accumulators for unit, lifetime and maximum range. This does not imply all Integer fields should change.",
+      "qualification": "Schema and increment path verified in source; no live or PostgreSQL overflow mutation attempted."
+    },
+    {
+      "id": "BSR-F11",
+      "priority": "P1",
+      "title": "Checked-in staging topology is intentionally small and is not a million-DAU capacity design",
+      "sources": [
+        "backend/deploy/gcp/staging.py:58",
+        "backend/deploy/gcp/staging.py:65",
+        "backend/deploy/gcp/staging.py:123",
+        "backend/deploy/gcp/staging.py:165",
+        "backend/deploy/gcp/staging.py:183",
+        "backend/bmt_backend/worker_lifecycle.py:67"
+      ],
+      "growth": "Staging validation allows at most two API replicas and two worker instances, API concurrency 16 per instance, small bounded connection pools, queue capacity 128, and a db-custom-1-3840 SQL tier. Competitive verification is serial within each worker process.",
+      "impact": "These bounds safely reject overload but do not provide the throughput needed by the requested scenario. Additional connections or replicas without a database/lock budget can move overload into SQL.",
+      "recommendation": "Create a distinct production capacity plan with measured per-job cost, autoscaling worker counts based on backlog age, database connection budgeting, failover and restore objectives, and tested overload/recovery behavior. Do not simply raise every cap.",
+      "qualification": "Reviewed checked-in defaults and the prior deployment report, not current cloud settings."
+    },
+    {
+      "id": "BSR-F12",
+      "priority": "P2",
+      "title": "Track downloads pass through API/object parsing and require origin revalidation",
+      "sources": [
+        "backend/bmt_backend/tracks.py:272",
+        "backend/bmt_backend/tracks.py:279",
+        "backend/bmt_backend/tracks.py:284"
+      ],
+      "growth": "A cold document download reads and parses object JSON and serializes it through the API. Repeated conditional reads still perform authoritative visibility checks; private max-age=0 requires revalidation. The shared-asset path currently supplies no CDN offload in this handler.",
+      "impact": "Popular content produces repeated origin/storage work and egress through application instances. This is O(bytes) per transfer, not a quadratic algorithm.",
+      "recommendation": "Evaluate an authenticated content delivery design for immutable artifacts, with explicit revocation, account visibility, redaction and cache invalidation guarantees. Measure bytes as well as request counts; do not silently make currently private/revocable artifacts permanently public."
+    }
+  ],
+  "existing_strengths": [
+    "Player, provider/subject, session-token hashes and unique username keys have primary/unique indexes. Login and direct account lookup do not enumerate all accounts; expect indexed lookup behavior, typically O(log A).",
+    "Rivalry groups are capped at 20 drivers and five tracks, challenges also have small membership caps. Their nested standings loops do not grow with 500 million accounts.",
+    "Rank pages and neighboring windows use composite indexes and bounded output. Exact percentile range sums still visit U tick-frequency rows; a B-tree does not provide subtree totals automatically. U is capped by the replay tick domain.",
+    "Race and independent flying-lap PBs are durable projections; ordinary lap comparison generation no longer enumerates all historical attempts.",
+    "Trajectory verification walks samples and ordered gate progress; the gate cursor advances rather than rescanning every gate for every sample. Work is amortized linear in samples plus accepted gate crossings.",
+    "GCS/S3 object listing uses continuation tokens. Upload, replay, cache and database pool limits already bound some overload consequences.",
+    "Discovery name and creator trigram indexes already exist in PostgreSQL migration 0019."
+  ],
+  "illustrative_workload": {
+    "qualification": "Explicit planning assumptions, not measured demand or a forecast. Row rates overlap and should not be summed without defining the request mix. Peak multiplier 10 is an example to test, not a guarantee.",
+    "daily_active_players": 1000000,
+    "registered_accounts": 500000000,
+    "api_calls_per_player_per_day": 100,
+    "api_calls_per_day": 100000000,
+    "api_calls_per_second_average": 1157.407,
+    "api_calls_per_second_10x_peak": 11574.074,
+    "races_per_player_per_day": 20,
+    "races_per_day": 20000000,
+    "race_finalizations_per_second_average": 231.481,
+    "race_finalizations_per_second_10x_peak": 2314.815,
+    "telemetry_events_per_player_per_day": 100,
+    "telemetry_events_per_day": 100000000,
+    "raw_telemetry_rows_at_7_days_before_other_retirement": 700000000,
+    "race_rows_at_90_days_before_pruning": 1800000000,
+    "storage_example": "At an assumed 1-5 decimal KB per registered account, account-related logical data alone is 500 GB to 2.5 TB before additional indexes, histories, replicas and backups. Measure actual per-account and per-race bytes; this is not a schema size measurement."
+  },
+  "recommended_sequence": [
+    "Remove reward population scans, the global queue critical section and population-sized histogram request loads first. Promote lifetime counters to BIGINT where required.",
+    "Replace full discovery vectors/history aggregates with prepared indexed orders and recent-driver projections; reserve presentation/background capacity.",
+    "Partition telemetry processing and move broad operator/reporting aggregates off foreground transactions. Bound identity cleanup and repair local storage continuation if that backend remains in use.",
+    "Measure production-like PostgreSQL at increasing total-account and hot-board sizes, not just DAU. Include skew, repeated retries, Monday Rivalry joins, cold caches/replicas and active background work.",
+    "Run mixed open-loop HTTP and actual verification load at illustrative 1200 and 12000 API requests/second and 230 and 2300 race finalizations/second, with enough generators to avoid generator saturation. Record scheduled p95/p99, failed/dropped requests, lock/pool waits, queue age, peak RSS, disk/WAL/replica lag, cost and recovery.",
+    "Establish failover and restore tests and a production storage/partition/shard plan before claiming 500-million-account readiness. Preserve exact authoritative results, rewards, entitlements and account fences."
+  ],
+  "validation": {
+    "probe_command": "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe docs/evidence/backend-scale-review-2026-10-22/probe.py",
+    "probe_result": "Passed: four emitted reward-count SQL statements; linear count-work growth; repeated oversized snapshot payload loads; default discovery 503; quadratic local directory scan.",
+    "regression_command": "$env:PYTHONPATH='backend'; $env:PYTHONUTF8='1'; & .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_scalability.py backend/tests/test_scalability_followup.py backend/tests/test_histogram_snapshots.py backend/tests/test_earned_coins.py -k 'not postgres' -q --tb=short --junitxml=docs/evidence/backend-scale-review-2026-10-22/regression.xml",
+    "regression_result": {
+      "passed": 42,
+      "failed": 2,
+      "skipped": 3,
+      "deselected": 34,
+      "seconds": 31.35
+    },
+    "failures": [
+      {
+        "test": "test_snapshot_is_batched_read_and_etag_rechecks_visibility[sqlite]",
+        "actual": "17 SQL statements against expected 4. Existing query-budget failure in current source; assertions retained. Current additional snapshot/profile/result queries were inspected. No claim that all extra queries are inherently unbounded."
+      },
+      {
+        "test": "test_artificial_reset_only_affects_named_tracks_car_and_population[sqlite]",
+        "actual": "Fixture Settings replacement rejected: Legacy remote drafts are available only to explicit compatibility test fixtures. No runtime or fixture change made."
+      }
+    ],
+    "postgres": "A two-second TCP-only probe of the documented disposable fixture at 127.0.0.1:55439 was not reachable. PostgreSQL concurrency cases were explicitly excluded. No service was started and no live database was used.",
+    "remaining": [
+      "PostgreSQL EXPLAIN ANALYZE BUFFERS at representative sizes",
+      "PostgreSQL lock/concurrency and overload tests",
+      "sustained mixed HTTP/verification load",
+      "real deployment resource/replica configuration verification",
+      "storage/RSS/WAL/egress measurements",
+      "restore/failover exercise"
+    ],
+    "source_changes": "Only this evidence directory was added; backend runtime and existing test assertions were not changed. Unrelated workspace changes were preserved."
+  },
+  "references": [
+    "https://www.postgresql.org/docs/17/functions-aggregate.html",
+    "https://www.postgresql.org/docs/17/explicit-locking.html",
+    "https://www.postgresql.org/docs/17/datatype-numeric.html",
+    "https://www.postgresql.org/docs/17/pgtrgm.html"
+  ],
+  "reviewed_source_sha256": {
+    "backend/bmt_backend/board_cache.py": "39cadc2a16fcff17e9ea253e4d4230dd24a85f6027e479a8aa8f5ad5b95b7a7c",
+    "backend/bmt_backend/config.py": "6d45329e2c3ca2df08a03a16e9b6ec697fe309deb8340238e396e1995115667b",
+    "backend/bmt_backend/discovery.py": "0cccd6d20f54c7df2928d4d3e6a614b8ce852aa8449fc37cec2a01b65e4e4884",
+    "backend/bmt_backend/economy.py": "be1a101cb75d4da9f31c6d5aa457d0f5d21744e7403e4cf9d79f24dce323e208",
+    "backend/bmt_backend/gcs_storage.py": "5499b55ea0d28c72e1873e9096bb47cbd30df239d1e42c36e16acf7f54ece515",
+    "backend/bmt_backend/histogram_population.py": "28648c39e04a28bec8ea50f9b44a579cd6ac84e73c6e3ec17f5c58b461b142a3",
+    "backend/bmt_backend/histogram_snapshots.py": "586c07379f2272fa9308404b0a87fd1e115d555bcfb0dcb5c2fc7a038c86abee",
+    "backend/bmt_backend/identity_models.py": "5fb3e37a019f7a67c1bcc249c3386f829a656804d07942228ba50c561812d4b3",
+    "backend/bmt_backend/maintenance.py": "18f36258f65ecee445c7b51a6558f1d05b0287d55c26f635fcc1a7db32f1eb6d",
+    "backend/bmt_backend/migrations/versions/0013_scalability.py": "498296b6d0f859c5b28721a70fd6b097ec7e3e84ead0a95dd80caa4866aa8d4c",
+    "backend/bmt_backend/migrations/versions/0025_product_telemetry.py": "b45e2a8436ab53d7a8ef3043b3c266b813703e7d0f7dfa9da908e277ff8ae22e",
+    "backend/bmt_backend/migrations/versions/0028_publication_intents.py": "721f275ab2ba635bde0dd22865a78ed18550a28204e5a1bf2a9beaddd4cfe953",
+    "backend/bmt_backend/product_analytics.py": "acda4cf96e019ac01057519fca620f3e09618a01fc01c3adef574db00bc26fd7",
+    "backend/bmt_backend/product_worker.py": "5ef1868634984cee75ec79433f9f4890a2088dfd0d42754d390909862f0c0415",
+    "backend/bmt_backend/queueing.py": "8a679f6f1e48c2394edaf634a46e58eb61de2f3c92ff4f7da6bf17ecfea242f2",
+    "backend/bmt_backend/runs.py": "29b5aa0454a9308f022338105657053fd255ebb2a3795d0175e2ff53eecc5bde",
+    "backend/bmt_backend/s3_storage.py": "fcc6e669661bfae63b93a52391d7f1034b1c70a8e0f880e1a4c3bb51cbb220cd",
+    "backend/bmt_backend/service_worker.py": "100f1ccfb8aaae132680c330123a8625e1d20c6f8e5ecab835d3f8d864b5178e",
+    "backend/bmt_backend/storage.py": "551173bb61b5d3bea295feee2dba4375ac6754e3eb456794fc8c1f80aa27b7e7",
+    "backend/bmt_backend/studio_catalogue.py": "0d6e6dd9d29dbb41e633c60ee9ac24b583b88dfc5c2b548827cc5f8c6716208e",
+    "backend/bmt_backend/studio_finance.py": "86161679e918aedfdd1750de17026b538214204f64716b0d101e3168df070293",
+    "backend/bmt_backend/telemetry.py": "d7caa156a499f7193e6b6e20aced9b28f073b7cb29d9347bffe82a0aff16dba2",
+    "backend/bmt_backend/telemetry_models.py": "57c2e4c6babab47f058cfd9d4f6771f30d9fcd9e5e14812ae8682dddbd28a352",
+    "backend/bmt_backend/tracks.py": "3cbf7f108e2b4706fb3bc1f1fb4e2c82ba36f8f7f244282729de0bd1ebb547b1",
+    "backend/bmt_backend/worker.py": "98a27130578bb6bdbd1ea459185c215e83e042c2dd013066f78dac797356ebf8",
+    "backend/bmt_backend/worker_lifecycle.py": "867af0c44f4caae34daaa5d02e0dae6a36d0bb991804ff40b479b5fc1692cf57",
+    "backend/deploy/gcp/staging.py": "f519714dc90ccb99dff9568d679283558881229b46798d0a6571c4a4d9f95faa"
+  },
+  "artifacts": [
+    "review.json",
+    "probe.py",
+    "probe-results.json",
+    "regression.xml"
+  ]
+}

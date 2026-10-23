@@ -1,0 +1,127 @@
+From 4f236cf351b3d479bbf1e368f81a4311e9624e11 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Sun, 18 Oct 2026 20:34:09 +0300
+Subject: [PATCH] Initialize editor background and lighting from selected biome
+
+---
+ game/core/app.gd                              |  1 +
+ game/editor/editor_world.gd                   | 16 ++++---
+ game/tests/capture_editor_start_background.gd | 43 +++++++++++++++++++
+ 3 files changed, 55 insertions(+), 5 deletions(-)
+ create mode 100644 game/tests/capture_editor_start_background.gd
+
+diff --git a/game/core/app.gd b/game/core/app.gd
+index f236bad..d10c6f3 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2192,6 +2192,7 @@ func _editor() -> void:
+ 		editor_wip_disk_hash = ""
+ 		editor_issue_cursor = -1
+ 	editor_world = EditorWorld.new()
++	editor_world.theme_id = str(document.theme)
+ 	root_ui.add_child(editor_world)
+ 	MenuStyle.fill(editor_world)
+ 	canvas = EditorCanvas.new()
+diff --git a/game/editor/editor_world.gd b/game/editor/editor_world.gd
+index a368a17..612f2fd 100644
+--- a/game/editor/editor_world.gd
++++ b/game/editor/editor_world.gd
+@@ -4,6 +4,7 @@ extends SubViewportContainer
+ ## planning camera preserves the canvas's exact metre-to-pixel mapping.
+ 
+ var track: NativeTrack
++var theme_id: String = "pine"
+ var camera: Camera3D
+ var canvas: EditorCanvas
+ var viewport: SubViewport
+@@ -63,7 +64,7 @@ func _ready() -> void:
+ 	var ground_plane := PlaneMesh.new()
+ 	ground_plane.size = Vector2(4096, 4096)
+ 	ground.mesh = ground_plane
+-	ground_material = VisualGeometry.material(TrackTheme.PINE[1])
++	ground_material = VisualGeometry.material(TrackTheme.palette(theme_id)[1])
+ 	ground.material_override = ground_material
+ 	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 	ground.position.y = -0.21
+@@ -77,6 +78,7 @@ func _ready() -> void:
+ 	camera.rotation = Vector3(-deg_to_rad(EditorCanvas.PLANNING_PITCH), 0, 0)
+ 	world.add_child(camera)
+ 	camera.current = true
++	_apply_theme(str(track.metadata.get("theme", theme_id)) if track != null else theme_id)
+ 	resized.connect(_sync_camera)
+ 	if track != null:
+ 		_build_track()
+@@ -200,13 +202,17 @@ func _build_track() -> void:
+ 	visual = candidate
+ 	visual.visible = true
+ 	_visual_track = target
+-	var palette: Array[Color] = TrackTheme.palette(str(target.metadata.get("theme", "pine")))
+-	TrackTheme.apply_lighting(str(target.metadata.get("theme", "pine")),environment,sunlight)
+-	environment.background_color = palette[1]
+-	ground_material.albedo_color = palette[1]
++	_apply_theme(str(target.metadata.get("theme", "pine")))
+ 	_mark_presented()
+ 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+ 
++func _apply_theme(theme: String) -> void:
++	theme_id = TrackTheme.normalized(theme)
++	var palette: Array[Color] = TrackTheme.palette(theme_id)
++	TrackTheme.apply_lighting(theme_id,environment,sunlight)
++	environment.background_color = palette[1]
++	ground_material.albedo_color = palette[1]
++
+ func _mark_presented() -> void:
+ 	if is_instance_valid(canvas):
+ 		canvas.visual_preview = _visual_track
+diff --git a/game/tests/capture_editor_start_background.gd b/game/tests/capture_editor_start_background.gd
+new file mode 100644
+index 0000000..784c7a2
+--- /dev/null
++++ b/game/tests/capture_editor_start_background.gd
+@@ -0,0 +1,43 @@
++extends SceneTree
++## Capture the actual initial editor while detailed preview work is held back.
++## All persistence is redirected to disposable local storage.
++
++class CaptureApp extends "res://core/app.gd":
++	func _ready() -> void:
++		capture_path = "editor-start-background"
++		super._ready()
++	func _capture() -> void: pass
++	func _queue_editor_preview() -> void: pass
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = Vector2i(1280,720)
++	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/editor-start-background-2026-10-18").simplify_path().path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(folder)
++	var storage: String = "user://editor-start-background-"+TrackLibrary.unique_id()
++	var app := CaptureApp.new()
++	app.library = TrackLibrary.new(storage)
++	app.records = LocalRecords.new(storage.path_join("records.json"))
++	app.cloud_root_override = storage.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var observations: Array[Dictionary] = []
++	for biome: String in TrackTheme.IDS:
++		app._start_new_document()
++		app._select_creation_biome(biome)
++		for frame: int in range(3): await process_frame
++		await RenderingServer.frame_post_draw
++		var world: EditorWorld = app.editor_world
++		var path: String = folder.path_join(biome+"-start.png")
++		var error: Error = root.get_texture().get_image().save_png(path)
++		observations.append({"biome":biome,"ground":world.ground_material.albedo_color.to_html(),"background":world.environment.background_color.to_html(),"preview_pending":world.visual == null and app.canvas.native_preview == null,"capture_error":error})
++		print("EDITOR_START_CAPTURE: ",JSON.stringify(observations.back()))
++	var file := FileAccess.open(folder.path_join("observations.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(observations,"\t"))
++	file.close()
++	app.queue_free()
++	await process_frame
++	quit()
+-- 
+2.54.0.windows.1
+

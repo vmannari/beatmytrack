@@ -1,0 +1,717 @@
+--- a/game/platform/challenge_links.gd
++++ b/game/platform/challenge_links.gd
+@@ -3,12 +3,19 @@
+ signal invitation_received(value: String)
+ signal track_received(value: String)
+ signal results_share_failed(request_id: String, message: String)
++signal track_share_failed(value: String)
+ var _native: Object
++var _windows_share: RefCounted
++var _pending_track_share: String = ""
+ 
+ func _ready() -> void:
+ 	process_mode = Node.PROCESS_MODE_ALWAYS
++	if OS.get_name() == "Windows" and DisplayServer.get_name() != "headless" and ClassDB.class_exists("BmtWindowsShare"):
++		_windows_share = ClassDB.instantiate("BmtWindowsShare")
+ 	if OS.get_name() == "Android" and Engine.has_singleton("BmtChallenges"):
+ 		_native = Engine.get_singleton("BmtChallenges")
++		if _native.has_signal("track_share_failed"):
++			_native.connect("track_share_failed",func(value: String) -> void: _track_share_failed.call_deferred(value))
+ 		if _native.has_signal("results_share_failed"):
+ 			_native.connect("results_share_failed",func(request_id: String, message: String) -> void: results_share_failed.emit(request_id,message))
+ 		var pending: String = str(_native.call("takePendingLink"))
+@@ -29,11 +36,28 @@
+ 	elif not ChallengesClient.code_from(value).is_empty(): invitation_received.emit(value)
+ 
+ func share_track(value: String) -> bool:
++	_pending_track_share = value
+ 	if _native != null and _native.has_method("shareTrack"):
+-		_native.call("shareTrack",value)
+-		return true
++		var opened: Variant = _native.call("shareTrack",value)
++		# Older installed bridges return void after launching the same chooser.
++		if opened == null or bool(opened): return true
++	if _windows_share != null:
++		var lines: PackedStringArray = value.split("\n")
++		var title: String = lines[0].left(256)
++		var link: String = lines[lines.size()-1]
++		var window: int = DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE,get_window().get_window_id())
++		if _windows_share.call("share_text",window,value,title,link): return true
++	_copy_track_text(value)
++	return false
++
++func _track_share_failed(value: String) -> void:
++	if value != _pending_track_share: return
++	_pending_track_share = ""
++	_copy_track_text(value)
++	track_share_failed.emit(value)
++
++func _copy_track_text(value: String) -> void:
+ 	DisplayServer.clipboard_set(value)
+-	return false
+ 
+ func share(value: String) -> bool:
+ 	if _native != null:
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -336,6 +336,7 @@
+ 	challenge_links.invitation_received.connect(_receive_challenge)
+ 	challenge_links.track_received.connect(_receive_track_link)
+ 	challenge_links.results_share_failed.connect(_rivalry_share_failed)
++	challenge_links.track_share_failed.connect(func(value: String) -> void: _notice("Couldn't open sharing. The track link was copied instead.\n"+value.get_slice("\n",value.get_slice_count("\n")-1)))
+ 	var rivalry_timer := Timer.new()
+ 	rivalry_timer.wait_time = 0.5
+ 	rivalry_timer.autostart = true
+--- a/native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java
++++ b/native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java
+@@ -8,7 +8,7 @@
+ import java.util.concurrent.atomic.AtomicReference;
+ import java.io.File;
+ import java.io.IOException;
+-import java.util.Collections;
++import java.util.HashSet;
+ import java.util.Set;
+ import org.godotengine.godot.Godot;
+ import org.godotengine.godot.plugin.GodotPlugin;
+@@ -26,7 +26,10 @@
+     @NonNull @Override public String getPluginName() { return "BmtChallenges"; }
+ 
+     @NonNull @Override public Set<SignalInfo> getPluginSignals() {
+-        return Collections.singleton(new SignalInfo("results_share_failed",String.class,String.class));
++        Set<SignalInfo> signals = new HashSet<>();
++        signals.add(new SignalInfo("results_share_failed",String.class,String.class));
++        signals.add(new SignalInfo("track_share_failed",String.class));
++        return signals;
+     }
+ 
+     private static String invitation(Intent intent) {
+@@ -64,8 +67,8 @@
+         shareText(text, "Share challenge");
+     }
+ 
+-    @UsedByGodot public void shareTrack(String text) {
+-        shareText(text, "Share track");
++    @UsedByGodot public boolean shareTrack(String text) {
++        return shareText(text, "Share track");
+     }
+ 
+     @UsedByGodot public boolean shareResults(String requestId, byte[] png, String text) {
+@@ -99,15 +102,20 @@
+         return true;
+     }
+ 
+-    private void shareText(String text, String title) {
++    private boolean shareText(String text, String title) {
+         Activity activity = getActivity();
+-        if (activity == null || text == null || text.length() > 4096) return;
++        if (activity == null || activity.isFinishing() || text == null || text.isEmpty() || text.length() > 4096) return false;
+         activity.runOnUiThread(() -> {
+-            if (activity.isFinishing()) return;
+-            Intent send = new Intent(Intent.ACTION_SEND);
+-            send.setType("text/plain");
+-            send.putExtra(Intent.EXTRA_TEXT, text);
+-            activity.startActivity(Intent.createChooser(send, title));
++            try {
++                if (activity.isFinishing()) throw new IllegalStateException("Activity closed");
++                Intent send = new Intent(Intent.ACTION_SEND);
++                send.setType("text/plain");
++                send.putExtra(Intent.EXTRA_TEXT, text);
++                activity.startActivity(Intent.createChooser(send, title));
++            } catch (RuntimeException error) {
++                if ("Share track".equals(title)) emitSignal("track_share_failed",text);
++            }
+         });
++        return true;
+     }
+ }
+--- a/scripts/test_track_link_bridge.py
++++ b/scripts/test_track_link_bridge.py
+@@ -69,9 +69,14 @@
+  String[] invalid={"beatmytrack://track/bad","beatmytrack://wrong/"+id,"https://fixture.invalid/t/"+id+"/document","https://fixture.invalid/t/no-id","http://fixture.invalid/t/"+id};
+  for(String url:invalid){a.intent=new Intent(Intent.ACTION_VIEW).setData(Uri.parse(url));check(p.takePendingLink().isEmpty());}
+  a.intent=new Intent(Intent.ACTION_SEND).setData(Uri.parse(valid[0]));check(p.takePendingLink().isEmpty());
+- p.shareTrack("Mountain Run\\n"+valid[1]);check(a.started.text.endsWith(valid[1]));check(a.started.type.equals("text/plain"));check(Intent.chooser.equals("Share track"));
++ check(p.shareTrack("Mountain Run\\n"+valid[1]));check(a.started.text.equals("Mountain Run\\n"+valid[1]));check(a.started.type.equals("text/plain"));check(Intent.chooser.equals("Share track"));
+  p.shareChallenge("Existing challenge");check(a.started.text.equals("Existing challenge"));check(Intent.chooser.equals("Share challenge"));
+- Intent before=a.started;p.shareTrack("x".repeat(4097));check(a.started==before);
++ Intent before=a.started;check(!p.shareTrack("x".repeat(4097)));check(a.started==before);
++ check(!p.shareTrack(""));check(!p.shareTrack(null));
++ a.finishing=true;check(!p.shareTrack("closed"));a.finishing=false;
++ check(!new BmtChallenges(new org.godotengine.godot.Godot(null)).shareTrack("absent"));
++ a.failStart=true;check(p.shareTrack("failed launch"));check(p.lastSignal.equals("track_share_failed")&&p.lastValues[0].equals("failed launch"));a.failStart=false;
++ a.defer=true;check(p.shareTrack("closing"));a.finishing=true;a.waiting.run();check(p.lastSignal.equals("track_share_failed")&&p.lastValues[0].equals("closing"));a.finishing=false;a.defer=false;
+  System.out.println("JAVA_TRACK_LINKS: "+checks+" checks, 0 failures");}}
+ ''',
+     "org/beatmytrack/challenges/RivalrySharingTest.java": '''package org.beatmytrack.challenges;
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -1,6 +1,6 @@
+ [CmdletBinding()]
+ param(
+-    [ValidateSet('BuildTrackGeometry', 'TestWindowsAudioExport', 'BuildWindowsAudio', 'BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
++    [ValidateSet('BuildWindowsShare', 'BuildTrackGeometry', 'TestWindowsAudioExport', 'BuildWindowsAudio', 'BackendDriversFill', 'BackendDriversFleet', 'BackendDriversTick', 'BackendDriversWatch', 'TestCameraModes', 'CaptureCameraModes', 'TestScript', 'CaptureReview', 'CaptureSettings', 'TestReview', 'TestHandbrake', 'CaptureHandbrake', 'BakeStormGlass', 'CapturePause', 'ProfileStormReflections', 'TestRewind', 'CaptureRewind', 'TestRoadCache', 'TestRoadBuild', 'TestShoulders', 'CapturePCAccount', 'BackendTestLifecycle', 'BackendStart', 'BackendStop', 'BackendTest', 'BackendRun', 'BackendWorker', 'BackendMigrate', 'TestMusicExit', 'BuildMusic', 'TestMusic', 'CaptureMusicDrive', 'MusicLab', 'CaptureMusic', 'TestContactShading', 'CaptureContactShading', 'TestTyreEquivalence', 'TestCompilerRaster', 'ProfileTrackLoad', 'ProfileMenus', 'TestMenuLoading', 'ProfileRaceStart', 'CaptureWinter', 'TestHeadlights', 'CaptureHeadlights', 'CaptureWinterBridge', 'CaptureDesertBridge', 'TestControlLayout', 'CaptureControlLayout', 'TestGrass', 'CaptureGrass', 'TestDesert', 'CaptureDesert', 'CaptureCompactDetail', 'CaptureCheckpoints', 'TestSurfaceProfile', 'TestBridgeContacts', 'TestPerformance', 'TestResults', 'CaptureResults', 'TestVehicleBatch', 'TestMobileControls', 'CaptureControls', 'TestStorm', 'CaptureStorm', 'CaptureStormVideo', 'TestIce', 'CaptureObjectModels', 'TestBiomes', 'CaptureBiomes', 'ProfileRoadApproval', 'TestRoadApproval', 'TestSurfaces', 'CaptureSurfaces', 'TestPlacement', 'ProfilePlacementBaseline', 'ProfilePlacement', 'TestStartLine', 'CaptureStartLine', 'ReconcileBackendTracks', 'GenerateBackendStarter', 'GenerateStarter', 'TestEditorRetirement', 'CaptureEditorRetirement', 'TestKart', 'CaptureKart', 'TestRouteValidation', 'TestCarBalance', 'TestCars', 'CaptureCars', 'TestSoil', 'CaptureSoil', 'ProfileMinimap', 'TestBridgeHUD', 'CaptureBridgeHUD', 'TestSuspension', 'CaptureSuspension', 'CaptureKerbs', 'TestKerbs', 'TestHandling', 'TestDriving', 'CaptureHandling', 'TestObjects', 'CaptureObjects', 'TestDeleteTracks', 'CaptureDeleteTracks', 'TestHazards', 'CaptureHazards', 'CaptureStyle', 'Doctor', 'Validate', 'TestTracks', 'TestCorpus', 'TestCreator', 'TestApp', 'TestRecords', 'TestCatalog', 'TestMenus', 'TestEditor', 'TestFreeEditor', 'TestPractice', 'CapturePractice', 'TestPieces', 'TestWorkflow', 'ReviewCreator', 'Import', 'CheckScript', 'TestConstruction', 'CaptureConstruction', 'TestRefinement', 'CaptureRefinement', 'TestTyresLoad', 'CaptureTyresLoad', 'CaptureWorkflow', 'CaptureFreeEditor', 'CaptureEditor', 'CaptureApp', 'CaptureMenus', 'Run', 'Editor', 'Capture', 'Snapshot', 'ExportAndroid', 'InstallAndroid', 'LaunchAndroid', 'DeployAndroid', 'DeployAndroidWithTracks')]
+     [string]$Action = 'Validate',
+     [string]$GodotPath = $env:GODOT_BIN,
+     [string]$DeviceSerial = '',
+@@ -606,6 +606,7 @@
+         'TestRoadBuild' { Invoke-Checked $script:godot (@('--headless', '--path', $projectRoot, '--script', 'res://tests/test_road_build.gd', '--') + $trackArguments) 'road-build-tests.log' }
+         'TestShoulders' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--script', 'res://tests/test_shoulders.gd') 'shoulder-tests.log' }
+         'CheckScript' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--check-only', '--script', $ScriptPath, '--verbose') 'parse.log' }
++        'BuildWindowsShare' { & (Join-Path $PSScriptRoot 'build_windows_share.ps1'); if ($LASTEXITCODE) { throw 'Windows share build failed.' } }
+         'BuildWindowsAudio' { & (Join-Path $PSScriptRoot 'build_windows_audio.ps1'); if ($LASTEXITCODE) { throw 'Windows audio build failed.' } }
+         'TestWindowsAudioExport' { Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-pack', 'Android Debug', (Join-Path $buildRoot 'windows_audio/android-content.zip')) 'android-content.log' }
+         'TestScript' {
+--- a/native/challenges/PROVENANCE.md
++++ b/native/challenges/PROVENANCE.md
+@@ -17,3 +17,5 @@
+ - [Android manifest application-ID placeholders](https://developer.android.com/build/manage-manifests#inject_build_variables_into_the_manifest)
+ 
+ Menu previews reuse `TrackTile.scenery_texture`, the established original scenic art and actual route metadata. Their existing provenance remains in the project's illustrated/discovery menu documentation. No pasted reference image became a shipping asset.
++
++2026-10-22: Track-link sharing now returns an immediate accepted/refused status and emits `track_share_failed(text)` if Android cannot launch the chooser after dispatch. The GDScript adapter accepts older void-returning bridges, copies the exact public link on refusal and ignores failures for a different pending payload. Windows track links additionally use the original local system-share bridge in `native/windows_share`; receiving apps retain all recipient/send confirmation. Actual verification and limits: [Track direct sharing](../../docs/TRACK_DIRECT_SHARE_2026_10_22.md).
+--- a/game/platform/windows/.gitignore
++++ b/game/platform/windows/.gitignore
+@@ -2,3 +2,7 @@
+ /bmt_windows_audio.dll
+ /bmt_windows_audio_v1.dll
+ /bmt_windows_audio_v2.dll
++# Godot's temporary copy of the native sharing adapter while it is loaded.
++/~bmt_windows_share.*.dll
++# Superseded development build held open by an existing Godot process.
++/bmt_windows_share.b5978c818570.dll
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,9 @@
+ 
+ ## Snowbank driving sound override (2026-10-22)
+ 2026-10-22 SBA01-SBA03/R01/Q01: Winter gains recorded snow-compression entry and continuous speed/contact-driven ploughing, including bumper-first/reverse/sideways contact. Exact bank geometry and byte-exact driving remain; one lazy loop gives 24 maximum players in Winter, with the original event pool/cache. Focused89headless/89Compatibility, vehicle1469Compatibility, Desert67/grass-kerb76/loops208, parser927 and native capture6 plus analysis6 pass. Original mixer reproduces five missing-snow failures; the separate existing headless pause assertion also reproduces on the original. Actual commands, initial PCM/debounce corrections, native audio, provenance and task-only checkpoint: docs/SNOWBANK_AUDIO_2026_10_22.md. Owner/physical-device listening and client reload remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
++
++## Direct track-link system sharing override (2026-10-22)
++2026-10-22 TDS01-TDS03/G01/R01/Q01: Track links use Windows system sharing through an original HWND-bound native bridge alongside the existing Android chooser. Frozen exact text/web links, clipboard fallback, older Android bridges and stale-failure fences remain. Native data handoff3, focused10headless/16Compatibility, publication-share45headless/45Compatibility, App141, Rivalry-share338, Java32+34, real Android compilation, import and parser927 pass. Initial compiler/foreground/clipboard/fixture corrections and actual commands, native source/binary fingerprints, views and task-only patch: docs/TRACK_DIRECT_SHARE_2026_10_22.md. Desktop restart, matching Android error-reporting build and owner/recipient acceptance remain; external chooser capture was not retained. No phone attachment check/device or WhatsApp test, APK, social message, backend/account mutation or deployment.
+ 
+ ## Histogram capacity follow-up override (2026-10-22)
+ 2026-10-22 HFO01-HFO05/R01/Q01: Histogram snapshots retain up to128 entries within the existing128MiB weighted allowance, pack immutable32/64-bit numeric buffers and omit duplicate stored counts. One indexed personal query and private ETags reuse the existing client304 handling. Indexed recently viewed demand, bounded expiry and a reserved turn each16 jobs prevent continuous-race starvation; historical prerequisites target at most two boards/200 attempts. Prefix prototype agrees on ordinary public fields but stays offline after retained-lap/combined-dedup mismatches. Broad SQLite69pass/5skip, comparison10 and isolated PostgreSQL33 pass; final prerequisite SQLite39/PostgreSQL6 pass; native44, prior-reader and Ruff pass. Synthetic216000-tick frequency JSON drops20.1%, estimated cache weight87.5%; bin CPU is about11us slower. Commands, source hashes, initial shared-migration/rollback/backfill corrections and task-only checkpoint: docs/evidence/histogram-followup-2026-10-22/report.json. Historical rollback tests crossing separate irreversible0051 remain limited. Matching0052/API/worker rollout, production load/memory and owner acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 KQ01-KQ03/G01/R01/Q01: Clarified kerb feedback concerns timbre. Replace shared falling-note thuds with original dry rubber contacts and short body chatter; remove the earlier Compact volume boosts. Old/new decoded loudness closely matched; original six-contact cadence, wheel/silence/Desert gates, budgets and canonical behavior remain. Native88, vehicle1469, Desert67, native loops208, continuity42 and12-capture review pass; encoding37.32dB SNR, repeat60assets exact, all58 other audio files retained. Concurrent snow/bridge work preserved. Commands, before-after WAV, receipts and scoped checkpoint: docs/KERB_SOUND_QUALITY_2026_10_22.md. Restart and owner/phone sound-quality acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
++
+ 2026-10-22 SBA01-SBA03/R01/Q01: Winter gains recorded snow-compression entry and continuous speed/contact-driven ploughing, including bumper-first/reverse/sideways contact. Exact bank geometry and byte-exact driving remain; one lazy loop gives 24 maximum players in Winter, with the original event pool/cache. Focused89headless/89Compatibility, vehicle1469Compatibility, Desert67/grass-kerb76/loops208, parser927 and native capture6 plus analysis6 pass. Original mixer reproduces five missing-snow failures; the separate existing headless pause assertion also reproduces on the original. Actual commands, initial PCM/debounce corrections, native audio, provenance and task-only checkpoint: docs/SNOWBANK_AUDIO_2026_10_22.md. Owner/physical-device listening and client reload remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+ 
+ 2026-10-22 HFO01-HFO05/R01/Q01: Histogram snapshots retain up to128 entries within the existing128MiB weighted allowance, pack immutable32/64-bit numeric buffers and omit duplicate stored counts. One indexed personal query and private ETags reuse the existing client304 handling. Indexed recently viewed demand, bounded expiry and a reserved turn each16 jobs prevent continuous-race starvation; historical prerequisites target at most two boards/200 attempts. Prefix prototype agrees on ordinary public fields but stays offline after retained-lap/combined-dedup mismatches. Broad SQLite69pass/5skip, comparison10 and isolated PostgreSQL33 pass; final prerequisite SQLite39/PostgreSQL6 pass; native44, prior-reader and Ruff pass. Synthetic216000-tick frequency JSON drops20.1%, estimated cache weight87.5%; bin CPU is about11us slower. Commands, source hashes, initial shared-migration/rollback/backfill corrections and task-only checkpoint: docs/evidence/histogram-followup-2026-10-22/report.json. Historical rollback tests crossing separate irreversible0051 remain limited. Matching0052/API/worker rollout, production load/memory and owner acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+@@ -2201,3 +2203,5 @@
+ 
+ 
+ 2026-10-14 GSW01-GSW04/LV01-LV06/CKT01-CKT06/GMM01-GMM04/V06/G01/R01/Q01: owner requests vertical swipe scrolling in livery and tuning. Shared gesture ownership supports card-start swipes without selection/save, clamps both ends, cancels stale/hidden gestures and retains touch taps, emulated mouse, native wheel/scrollbar/popup, keyboard reveal and sticker placement. Sticker controls/actions share the scroll beneath fixed main tabs to prevent a zero-height list at960x540. Final full-app109Compatibility+109MobileVulkan, existing layout61+61 and parser checks pass; actual car/camera/condition, local IDs and16-photo bound retained. Baseline18checks/4expected failures; collapsed sticker-list and incomplete wheel-release fixture diagnostics retained. No phone/device commands/APK/backend/deployment; physical-touch acceptance remains. Actual commands/captures, scoped checkpoint and limitations: docs/GARAGE_SWIPE_SCROLL_2026_10_14.md.
++
++2026-10-22 TDS01-TDS03/G01/R01/Q01: Track links use Windows system sharing through an original HWND-bound native bridge alongside the existing Android chooser. Frozen exact text/web links, clipboard fallback, older Android bridges and stale-failure fences remain. Native data handoff3, focused10headless/16Compatibility, publication-share45headless/45Compatibility, App141, Rivalry-share338, Java32+34, real Android compilation, import and parser927 pass. Initial compiler/foreground/clipboard/fixture corrections and actual commands, native source/binary fingerprints, views and task-only patch: docs/TRACK_DIRECT_SHARE_2026_10_22.md. Desktop restart, matching Android error-reporting build and owner/recipient acceptance remain; external chooser capture was not retained. No phone attachment check/device or WhatsApp test, APK, social message, backend/account mutation or deployment.
+--- /dev/null
++++ b/native/windows_share/share_extension.cpp
+@@ -0,0 +1,84 @@
++// Original Godot adapter; reuse the project's existing cleared Godot C++ bindings.
++#include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/core/class_db.hpp>
++#include <godot_cpp/godot.hpp>
++#define WIN32_LEAN_AND_MEAN
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <string>
++#include "runtime_name.hpp"
++
++using namespace godot;
++
++class BmtWindowsShare : public RefCounted {
++    GDCLASS(BmtWindowsShare, RefCounted)
++    using Create = void *(*)();
++    using Destroy = void (*)(void *);
++    using Share = bool (*)(void *, HWND, const wchar_t *, const wchar_t *, const wchar_t *);
++    using Requests = int (*)(void *);
++    HMODULE module = nullptr;
++    void *state = nullptr;
++    Destroy destroy = nullptr;
++    Share share = nullptr;
++    Requests requests = nullptr;
++
++protected:
++    static void _bind_methods() {
++        ClassDB::bind_method(D_METHOD("share_text", "window", "text", "title", "url"), &BmtWindowsShare::share_text);
++        ClassDB::bind_method(D_METHOD("data_requests"), &BmtWindowsShare::data_requests);
++    }
++public:
++    BmtWindowsShare() {
++        HMODULE self = nullptr;
++        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                reinterpret_cast<LPCWSTR>(&_bind_methods), &self)) return;
++        wchar_t path[32768];
++        DWORD length = GetModuleFileNameW(self, path, 32768);
++        if (!length || length >= 32768) return;
++        std::wstring file(path, length);
++        file = file.substr(0, file.find_last_of(L"\\/") + 1) + BMT_SHARE_RUNTIME;
++        // Never search the working directory or PATH for the runtime DLL.
++        module = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
++        if (!module) return;
++        auto create = reinterpret_cast<Create>(GetProcAddress(module, "bmt_share_create"));
++        destroy = reinterpret_cast<Destroy>(GetProcAddress(module, "bmt_share_destroy"));
++        share = reinterpret_cast<Share>(GetProcAddress(module, "bmt_share_text"));
++        requests = reinterpret_cast<Requests>(GetProcAddress(module, "bmt_share_requests"));
++        if (create && destroy && share) {
++            // WinRT can finish releasing a delegate after its event is revoked.
++            // Keep this one small runtime mapped until process exit, so a late
++            // COM release can never enter code from an unloaded DLL.
++            HMODULE pinned = nullptr;
++            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
++                    reinterpret_cast<LPCWSTR>(share), &pinned)) state = create();
++        }
++    }
++    ~BmtWindowsShare() {
++        if (state && destroy) destroy(state);
++        if (module) FreeLibrary(module);
++    }
++    bool share_text(int64_t window, const String &text, const String &title, const String &url) {
++        if (!state || !share || !window || text.is_empty() || text.length() > 4096
++                || title.is_empty() || title.length() > 256 || url.length() > 2048) return false;
++        auto body = text.utf16(), heading = title.utf16(), link = url.utf16();
++        return share(state, reinterpret_cast<HWND>(window), reinterpret_cast<const wchar_t *>(body.get_data()),
++                reinterpret_cast<const wchar_t *>(heading.get_data()), reinterpret_cast<const wchar_t *>(link.get_data()));
++    }
++    int data_requests() const { return state && requests ? requests(state) : 0; }
++};
++
++void initialize_share(ModuleInitializationLevel level) {
++    if (level == MODULE_INITIALIZATION_LEVEL_SCENE) ClassDB::register_class<BmtWindowsShare>();
++}
++void uninitialize_share(ModuleInitializationLevel) {}
++
++extern "C" GDExtensionBool GDE_EXPORT bmt_windows_share_init(
++        GDExtensionInterfaceGetProcAddress get_proc, GDExtensionClassLibraryPtr library, GDExtensionInitialization *init) {
++    GDExtensionBinding::InitObject object(get_proc, library, init);
++    object.register_initializer(initialize_share);
++    object.register_terminator(uninitialize_share);
++    object.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_SCENE);
++    return object.init();
++}
+--- /dev/null
++++ b/native/windows_share/share_runtime.cpp
+@@ -0,0 +1,82 @@
++// Original Windows share-sheet bridge. Only the operating system handles recipients.
++#define WIN32_LEAN_AND_MEAN
++#define NOMINMAX
++#include <windows.h>
++#include <shobjidl_core.h>
++#include <roapi.h>
++#include <winrt/Windows.Foundation.h>
++#include <winrt/Windows.ApplicationModel.DataTransfer.h>
++#include <string>
++#include <atomic>
++#include <memory>
++
++using namespace winrt;
++using namespace winrt::Windows::ApplicationModel::DataTransfer;
++
++struct ShareState {
++    DataTransferManager manager{nullptr};
++    event_token requested{};
++    bool subscribed = false;
++    bool apartment = false;
++    std::shared_ptr<std::atomic<int>> requests = std::make_shared<std::atomic<int>>(0);
++
++    void clear() noexcept {
++        if (subscribed) {
++            try { manager.DataRequested(requested); } catch (...) {}
++        }
++        subscribed = false;
++        manager = nullptr;
++    }
++    ~ShareState() { clear(); if (apartment) RoUninitialize(); }
++};
++
++extern "C" __declspec(dllexport) void *bmt_share_create() noexcept {
++    try {
++        auto state = new ShareState;
++        HRESULT result = RoInitialize(RO_INIT_SINGLETHREADED);
++        if (FAILED(result) && result != RPC_E_CHANGED_MODE) { delete state; return nullptr; }
++        state->apartment = SUCCEEDED(result);
++        return state;
++    } catch (...) { return nullptr; }
++}
++
++extern "C" __declspec(dllexport) void bmt_share_destroy(void *value) noexcept {
++    delete static_cast<ShareState *>(value);
++}
++
++extern "C" __declspec(dllexport) int bmt_share_requests(void *value) noexcept {
++    return value ? static_cast<ShareState *>(value)->requests->load() : 0;
++}
++
++extern "C" __declspec(dllexport) bool bmt_share_text(
++        void *value, HWND window, const wchar_t *text, const wchar_t *title, const wchar_t *url) noexcept {
++    DWORD process = 0;
++    DWORD thread = GetWindowThreadProcessId(window, &process);
++    if (!value || !IsWindow(window) || process != GetCurrentProcessId() || thread != GetCurrentThreadId()
++            || !text || !title || !url || !*text || !*title
++            || wcslen(text) > 4096 || wcslen(title) > 256 || wcslen(url) > 2048) return false;
++    auto &state = *static_cast<ShareState *>(value);
++    try {
++        state.clear();
++        state.requests->store(0);
++        auto interop = get_activation_factory<DataTransferManager, IDataTransferManagerInterop>();
++        check_hresult(interop->GetForWindow(window, guid_of<DataTransferManager>(), put_abi(state.manager)));
++        // Freeze this exact public track payload; never look up a newer selection in the callback.
++        std::wstring payload(text), heading(title), link(url);
++        auto requests = state.requests;
++        state.requested = state.manager.DataRequested([payload, heading, link, requests](auto const &, DataRequestedEventArgs const &args) {
++            try {
++                auto data = args.Request().Data();
++                data.Properties().Title(heading);
++                data.SetText(payload);
++                if (link.rfind(L"https://", 0) == 0 || link.rfind(L"http://", 0) == 0)
++                    data.SetWebLink(winrt::Windows::Foundation::Uri(link));
++                data.RequestedOperation(DataPackageOperation::Copy);
++                requests->fetch_add(1);
++            } catch (...) { args.Request().FailWithDisplayText(L"Couldn't prepare this track link. Try again."); }
++        });
++        state.subscribed = true;
++        check_hresult(interop->ShowShareUIForWindow(window));
++        return true;
++    } catch (...) { state.clear(); return false; }
++}
+--- /dev/null
++++ b/native/windows_share/PROVENANCE.md
+@@ -0,0 +1,27 @@
++# Windows track sharing
++
++Original project code uses Windows `IDataTransferManagerInterop` for the owning
++Godot HWND. The WinRT data callback provides frozen title, complete text and web
++link. Only the receiving app handles recipient selection and sending.
++
++The Godot wrapper reuses the existing cleared Godot C++ bindings and MinGW static
++library. A separate runtime compiled with the already installed Visual C++ and
++Windows SDK avoids introducing compiler ABI assumptions across C++ toolchains;
++the boundary uses only C functions, UTF-16 pointers, booleans and an opaque state.
++The wrapper loads the exact content-addressed runtime beside its own DLL, with no
++working-directory/PATH lookup. Each adapter owns one manager and revokes the old
++callback when replacing its payload or being destroyed. Text is bounded to 4096
++UTF-16 units; the HWND must belong to the current process and thread.
++The one small runtime remains mapped until process exit so delayed WinRT delegate
++releases cannot call into unloaded code; per-adapter event/data ownership is still
++released normally.
++
++Build through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1
++-Action BuildWindowsShare`. No SDK/package download is needed. Keep the existing
++compiler/binding notices plus `game/platform/windows/SHARE-NOTICE.txt` with future
++Windows packages. The current Android export excludes the Windows directory.
++
++API references: [Microsoft's desktop sharing interop](https://learn.microsoft.com/en-us/windows/apps/develop/ui/display-ui-objects#for-classes-that-implement-idatatransfermanagerinterop)
++and [Godot native window handles](https://docs.godotengine.org/en/4.6/classes/class_displayserver.html#class-displayserver-method-window-get-native-handle).
++Actual commands, DLL fingerprints, verification scope and remaining acceptance
++are in [the task receipt](../../docs/TRACK_DIRECT_SHARE_2026_10_22.md).
+--- /dev/null
++++ b/scripts/build_windows_share.ps1
+@@ -0,0 +1,44 @@
++param()
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++$bindings = Join-Path $repoRoot '.tools/godot-cpp-music'
++if ((& git -C $bindings rev-parse HEAD) -ne 'e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77') { throw 'Unexpected existing Godot bindings revision.' }
++$buildRoot = Join-Path $repoRoot 'build/track-direct-share/native'
++$outputRoot = Join-Path $repoRoot 'game/platform/windows'
++New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
++$vswhere = 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
++$installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
++if (-not $installation) { throw 'Existing Visual C++ tools are required for the Windows SDK share API.' }
++$toolchain = Get-ChildItem -LiteralPath (Join-Path $installation 'VC/Tools/MSVC') -Directory | Sort-Object Name -Descending | Select-Object -First 1
++$sdkRoot = 'C:/Program Files (x86)/Windows Kits/10'
++$sdk = Get-ChildItem -LiteralPath (Join-Path $sdkRoot 'Include') -Directory | Sort-Object Name -Descending | Select-Object -First 1
++$env:INCLUDE = (Join-Path $toolchain.FullName 'include') + ';' + ((@('ucrt','shared','um','winrt','cppwinrt') | ForEach-Object { Join-Path $sdk.FullName $_ }) -join ';')
++$env:LIB = (Join-Path $toolchain.FullName 'lib/x64') + ';' + (Join-Path $sdkRoot ('Lib/'+$sdk.Name+'/um/x64')) + ';' + (Join-Path $sdkRoot ('Lib/'+$sdk.Name+'/ucrt/x64'))
++$runtime = Join-Path $buildRoot 'bmt_share_runtime.dll'
++& (Join-Path $toolchain.FullName 'bin/Hostx64/x64/cl.exe') /nologo /std:c++17 /EHsc /O2 /MT /LD /DWINVER=0x0A00 /D_WIN32_WINNT=0x0A00 (Join-Path $repoRoot 'native/windows_share/share_runtime.cpp') "/Fo$buildRoot/" /link /Brepro windowsapp.lib user32.lib "/OUT:$runtime" "/IMPLIB:$buildRoot/bmt_share_runtime.lib"
++if ($LASTEXITCODE) { throw 'Windows share runtime build failed.' }
++$runtimeName = 'bmt_share_runtime.'+(Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0,12)+'.dll'
++$runtimeOutput = Join-Path $outputRoot $runtimeName
++if (-not (Test-Path -LiteralPath $runtimeOutput)) { Copy-Item -LiteralPath $runtime -Destination $runtimeOutput }
++$compiled = Join-Path $buildRoot 'bmt_windows_share.dll'
++[System.IO.File]::WriteAllText((Join-Path $buildRoot 'runtime_name.hpp'),('#define BMT_SHARE_RUNTIME L"'+$runtimeName+'"'),[System.Text.UTF8Encoding]::new($false))
++$arguments = @('-std=c++17','-O2','-shared','-static','-s','-Wl,--no-insert-timestamp','-DGDEXTENSION','-DNDEBUG','-DWINDOWS_ENABLED',('-I'+$buildRoot),('-I'+(Join-Path $bindings 'include')),('-I'+(Join-Path $bindings 'gen/include')),('-I'+(Join-Path $bindings 'gdextension')),(Join-Path $repoRoot 'native/windows_share/share_extension.cpp'),(Join-Path $bindings 'bin/libgodot-cpp.windows.template_release.x86_64.a'),'-o',$compiled)
++& 'C:/msys64/mingw64/bin/g++.exe' @arguments
++if ($LASTEXITCODE) { throw 'Windows share Godot adapter build failed.' }
++$binaryName = 'bmt_windows_share.'+(Get-FileHash -LiteralPath $compiled -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0,12)+'.dll'
++$destination = Join-Path $outputRoot $binaryName
++if (-not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $compiled -Destination $destination }
++$descriptor = @"
++[configuration]
++entry_symbol = "bmt_windows_share_init"
++compatibility_minimum = "4.5"
++reloadable = false
++
++[libraries]
++windows.x86_64 = "res://platform/windows/$binaryName"
++
++[dependencies]
++windows.x86_64 = { "res://platform/windows/$runtimeName": "" }
++"@
++[System.IO.File]::WriteAllText((Join-Path $outputRoot 'share.gdextension'),$descriptor,[System.Text.UTF8Encoding]::new($false))
++Get-FileHash -LiteralPath $destination,$runtimeOutput -Algorithm SHA256
+--- /dev/null
++++ b/game/platform/windows/share.gdextension
+@@ -0,0 +1,10 @@
++[configuration]
++entry_symbol = "bmt_windows_share_init"
++compatibility_minimum = "4.5"
++reloadable = false
++
++[libraries]
++windows.x86_64 = "res://platform/windows/bmt_windows_share.b5eca65c8e68.dll"
++
++[dependencies]
++windows.x86_64 = { "res://platform/windows/bmt_share_runtime.38cef28e4179.dll": "" }
+\ No newline at end of file
+--- /dev/null
++++ b/game/platform/windows/share.gdextension.uid
+@@ -0,0 +1 @@
++uid://rarcwkbegqpj
+--- /dev/null
++++ b/game/platform/windows/SHARE-NOTICE.txt
+@@ -0,0 +1,19 @@
++Windows track-link sharing adapter, 2026-10-22
++
++Original project sources: native/windows_share/share_extension.cpp and
++native/windows_share/share_runtime.cpp. Build: scripts/dev.ps1 BuildWindowsShare.
++
++The adapter reuses the existing MIT-licensed Godot C++ bindings, revision
++e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77, and existing MinGW runtimes.
++Retain the notices already supplied in this directory:
++GODOT-CPP-LICENSE.txt, GCC-COPYING3.txt, GCC-RUNTIME-EXCEPTION.txt,
++MINGW-CRT-LICENSE.txt and WINPTHREADS-LICENSE.txt.
++
++The share runtime uses the existing installed Microsoft Windows SDK and
++Visual C++ toolchain, with a static C++ runtime. Its imports are Windows
++system libraries. No Windows App SDK, social SDK, new package download,
++external runtime service or account connection is introduced.
++
++Both DLLs and share.gdextension belong together. The descriptor records the
++runtime dependency for future Windows exports. Existing Android exports
++exclude this Windows directory and retain the Android native chooser.
+--- /dev/null
++++ b/game/tests/test_track_direct_share.gd
+@@ -0,0 +1,114 @@
++extends SceneTree
++const Bridge = preload("res://platform/challenge_links.gd")
++const VERSION: String = "11111111-2222-4333-8444-555555555555"
++const LINK: String = "https://example.invalid/t/"+VERSION
++const PAYLOAD: String = "Mountain Run\n"+LINK
++var checks: int = 0
++var failures: int = 0
++
++class IsolatedBridge extends Bridge:
++	var clipboard: String = ""
++	func _copy_track_text(value: String) -> void: clipboard = value
++
++class WindowsShare extends RefCounted:
++	var calls: Array[Dictionary] = []
++	var accepted: bool = true
++	func share_text(window: int, text: String, title: String, url: String) -> bool:
++		calls.append({"window":window,"text":text,"title":title,"url":url})
++		return accepted
++
++class AndroidShare extends RefCounted:
++	var calls: Array[String] = []
++	var accepted: bool = true
++	func shareTrack(value: String) -> bool:
++		calls.append(value)
++		return accepted
++
++class OlderAndroidShare extends RefCounted:
++	var text: String = ""
++	func shareTrack(value: String) -> void: text = value
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.title = "Beat my track - share validation"
++	var bridge := IsolatedBridge.new()
++	root.add_child(bridge)
++	if "--native-share" in OS.get_cmdline_user_args() or "--native-share-click" in OS.get_cmdline_user_args():
++		if "--native-share-click" in OS.get_cmdline_user_args():
++			root.always_on_top = true
++			var button := Button.new()
++			button.text = "Share track"
++			button.size = Vector2(400,120)
++			button.position = (Vector2(root.size)-button.size)*0.5
++			root.add_child(button)
++			print("WINDOWS_SHARE_CLICK_READY")
++			var pending_button: WeakRef = weakref(button)
++			create_timer(25).timeout.connect(func() -> void:
++				if pending_button.get_ref() != null: print("FAIL: native share click deadline"); quit(1))
++			await button.pressed
++			button.queue_free()
++			root.always_on_top = false
++		await process_frame
++		await process_frame
++		root.grab_focus()
++		await process_frame
++		check(bridge._windows_share != null,"Windows share extension is available in the actual graphical client")
++		if bridge._windows_share != null:
++			check(bridge.share_track(PAYLOAD),"actual Windows system share sheet opens for this window")
++		print("WINDOWS_NATIVE_SHARE_OPEN: ",failures == 0)
++		await create_timer(2).timeout
++		check(bridge._windows_share.call("data_requests") > 0,"Windows actually requests the share payload after opening the chooser")
++		print("WINDOWS_NATIVE_DATA_REQUESTS: ",bridge._windows_share.call("data_requests"))
++		await create_timer(8).timeout
++	else:
++		var original: RefCounted = bridge._windows_share
++		bridge._windows_share = null
++		var android := AndroidShare.new()
++		bridge._native = android
++		check(bridge.share_track(PAYLOAD) and android.calls == [PAYLOAD],"Android chooser gets the complete exact title and immutable track URL")
++		android.accepted = false
++		check(not bridge.share_track(PAYLOAD),"Android immediate launch refusal uses the clipboard fallback")
++		var older := OlderAndroidShare.new()
++		bridge._native = older
++		check(bridge.share_track(PAYLOAD) and older.text == PAYLOAD,"previously installed void-returning Android bridges still open sharing once")
++		bridge._native = null
++		var windows := WindowsShare.new()
++		bridge._windows_share = windows
++		if DisplayServer.get_name() != "headless":
++			bridge.clipboard = "clipboard-before-share"
++			check(bridge.share_track(PAYLOAD),"Windows native handoff is reported as opened")
++			check(windows.calls.size() == 1 and windows.calls[0].window != 0,"Windows chooser is attached to the actual Godot window")
++			check(windows.calls[0].text == PAYLOAD and windows.calls[0].title == "Mountain Run" and windows.calls[0].url == LINK,"Windows apps receive exact text and a separate clickable web link")
++			check(bridge.clipboard == "clipboard-before-share","successful native sharing does not replace the clipboard")
++			windows.accepted = false
++			check(not bridge.share_track(PAYLOAD),"Windows native refusal exposes fallback")
++			check(bridge.clipboard == PAYLOAD,"native refusal hands the complete exact share text to the clipboard")
++		bridge._windows_share = null
++		check(not bridge.share_track(PAYLOAD),"unsupported platforms retain clipboard fallback")
++		var errors: Array[String] = []
++		bridge.track_share_failed.connect(func(value: String) -> void: errors.append(value))
++		bridge._pending_track_share = PAYLOAD+"?new"
++		bridge._track_share_failed(PAYLOAD)
++		check(errors.is_empty(),"late failure for a previous track cannot replace the newer sharing action")
++		bridge._pending_track_share = PAYLOAD
++		bridge._track_share_failed(PAYLOAD)
++		check(errors == [PAYLOAD],"asynchronous Android failure exposes one retryable clipboard fallback")
++		bridge._track_share_failed(PAYLOAD)
++		check(errors.size() == 1,"duplicate native failures do not repeat the fallback notice")
++		if OS.get_name() == "Windows":
++			check(ClassDB.class_exists("BmtWindowsShare"),"Windows native adapter is registered")
++			var native: RefCounted = ClassDB.instantiate("BmtWindowsShare")
++			check(not native.call("share_text",0,PAYLOAD,"Mountain Run",LINK),"actual DLL refuses an absent owner window without opening UI")
++			check(not native.call("share_text",0,"x".repeat(4097),"Mountain Run",LINK),"actual DLL refuses oversized payloads")
++		bridge._windows_share = original
++	bridge.queue_free()
++	await process_frame
++	print("TRACK_DIRECT_SHARE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_track_direct_share.gd.uid
+@@ -0,0 +1 @@
++uid://c7gnyhbiymc0m
+--- /dev/null
++++ b/docs/TRACK_DIRECT_SHARE_2026_10_22.md
+@@ -0,0 +1,97 @@
++# Direct track-link sharing — 2026-10-22
++
++TDS01: The observed “Track link copied” notice is the non-Android fallback in
++`ChallengeLinks.share_track`. Android already had an `ACTION_SEND` chooser; the
++Windows client had no native track sharing. Track links now also use Windows'
++system share UI, attached to the actual game HWND. The receiving app gets the
++exact track title/text and immutable link; HTTP(S) links additionally have the
++Windows web-link format. The player chooses the receiving app/person and confirms
++delivery there. Starting or cancelling sharing never claims a message was sent.
++
++TDS02: Retain the clipboard fallback when native sharing is unavailable or
++immediately refused. Android now reports immediate refusal and asynchronous
++launch failure instead of silently returning. The adapter accepts existing
++void-returning Android bridges, ignores failure for a different pending payload
++and copies the failed payload once with a clear fallback notice. Free Race,
++publication banners and Trackside all retain their existing shared action and
++exact track-version identities. Challenge and Rivalry image flows remain intact.
++
++TDS03: The original Windows adapter reuses the existing Godot C++ bindings and
++installed Windows SDK/toolchains. A small C ABI separates the existing MinGW Godot
++wrapper from Microsoft's WinRT implementation. Its content-addressed runtime is
++loaded only beside the wrapper, remains mapped for safe late COM releases, and
++has only Windows system imports. Each adapter owns one revocable data callback.
++The native boundary bounds the strings and checks that the HWND belongs to the
++calling process/thread. The descriptor records the runtime DLL dependency for a
++future Windows export; the existing Android export excludes the Windows folder.
++
++Changed files: `game/platform/challenge_links.gd`, the sharing-failure connection
++in `game/core/app.gd`, `native/challenges/src/org/beatmytrack/challenges/BmtChallenges.java`,
++`native/challenges/PROVENANCE.md`, new `native/windows_share/share_extension.cpp`,
++`share_runtime.cpp` and `PROVENANCE.md`, new `scripts/build_windows_share.ps1`, the
++`BuildWindowsShare` action in `scripts/dev.ps1`, new
++`game/platform/windows/share.gdextension`/UID, two referenced DLLs and
++`SHARE-NOTICE.txt`, the Windows temporary-DLL ignore rule, new
++`game/tests/test_track_direct_share.gd`/UID, `scripts/test_track_link_bridge.py`,
++this receipt and the project status/instruction notes. The [task-only source
++patch](evidence/track-direct-share-2026-10-22/task-only.patch) uses task-start
++working files plus preserved concurrent changes as its base. Concurrent account,
++advertising, histogram and achievement-header work is excluded from this patch.
++[Source and binary fingerprints](evidence/track-direct-share-2026-10-22/source-hashes.json)
++identify the accompanying native artifacts.
++
++R01 commands use pinned Godot `4.7.2.stable.official.ed1daf0bf` through
++`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, isolated
++`APPDATA` folders below `build/track-direct-share`, and fixture backend data:
++
++- `-Action BuildWindowsShare`: both native DLLs build successfully; the runtime
++  uses Visual C++ 14.43 / Windows SDK 10.0.22621, the wrapper the existing MinGW
++  compiler and Godot bindings revision `e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77`.
++- `python scripts/test_track_link_bridge.py --android-compile`: 32 Java
++  link/text-sharing checks and 34 existing Rivalry/provider checks pass. All
++  production Java classes compile against Android 36 and the pinned Godot AAR,
++  release 17, without exporting an APK.
++- `-Action TestScript -ScriptPath res://tests/test_track_direct_share.gd`:
++  10 headless checks pass; with `-Graphical -RenderingMethod gl_compatibility`,
++  16 pass. Covers native priority, exact HWND/title/text/link, legacy Android,
++  refusal, clipboard handoff and stale/duplicate asynchronous failures.
++- The focused native fixture with `--native-share-click`, launched by the
++  retained capture harness: an actual OS mouse click on only its Share button
++  produces `WINDOWS_NATIVE_DATA_REQUESTS: 1`; all 3 native checks pass. No receiving
++  app/person is selected. This proves Windows accepted and requested the data;
++  it does not prove delivery through WhatsApp.
++- Existing `test_publication_share.gd`: 45 headless and 45 Compatibility checks
++  pass, including banner, newspaper and Free Race share actions, incoming exact
++  versions, navigation and account fences. `test_app.gd`: 141 pass.
++  `test_rivalry_share.gd`: 338 headless checks pass.
++- `-Action Import` and final `test_script_parse.gd` pass; the final parser count is
++  927 scripts, zero failures (see the retained parser log). `git diff --check` passes for task sources.
++- `dumpbin /DEPENDENTS` confirms the Windows runtime imports Windows system DLLs.
++
++Initial corrections are retained candidly: the first native compile needed an
++explicit `winrt::Windows` namespace and a generated header for the DLL filename
++instead of shell-escaped quotes. The first sandboxed import could not read the
++Windows certificate store; normal host-access import passed. Programmatic native
++trials lost foreground focus, and two failed the unchanged two-second data-request
++assertion. The actual-click fixture passes that assertion. A captured freed Button
++caused one fixture deadline error; a `WeakRef` corrects it. Desktop clipboard
++contention interrupted later direct-clipboard trials; final adapter checks inject
++only the clipboard handoff and keep all exact-payload assertions. Earlier actual
++clipboard integration runs also passed 16 checks. No runtime or test invariant was
++removed to hide a failure.
++
++G01: inspected [Free Race share action](evidence/track-direct-share-2026-10-22/gl_compatibility/shared-free-race-detail.png),
++[publication banner](evidence/track-direct-share-2026-10-22/gl_compatibility/publication-banner-share.png)
++and [Trackside](evidence/track-direct-share-2026-10-22/gl_compatibility/publication-news.png).
++External chooser capture attempts did not retain the chooser in the foreground;
++unrelated/blank captures were discarded and are not presented as native UI proof.
++
++Q01: restart the desktop game to load the new extension. The Android error-reporting
++change requires a matching future client build. Owner acceptance of the system
++chooser and actual WhatsApp/other-app recipient workflow remains. No phone
++attachment check or physical-device/WhatsApp test, APK export/install, social
++message, live backend/account mutation or deployment was performed.
++
++Platform references: [Microsoft desktop share interop](https://learn.microsoft.com/en-us/windows/apps/develop/ui/display-ui-objects#for-classes-that-implement-idatatransfermanagerinterop),
++[Godot HWND access](https://docs.godotengine.org/en/4.6/classes/class_displayserver.html#class-displayserver-method-window-get-native-handle)
++and [Android sharing](https://developer.android.com/training/sharing/send).

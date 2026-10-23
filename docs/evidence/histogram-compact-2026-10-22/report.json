@@ -1,0 +1,173 @@
+{
+  "title": "Compact shared histogram snapshots and indexed personal markers",
+  "date": "2026-10-22",
+  "status": "Implemented and locally verified; not deployed",
+  "requirements": {
+    "HCO01": "Use sorted exact time frequencies and cumulative counts for population-independent bin queries.",
+    "HCO02": "Remove unbounded per-driver dictionaries from large shared snapshots and cache loads.",
+    "HCO03": "Use the owner's small-inaccuracy allowance for bounded indexed personal markers in large fields.",
+    "R01": "Preserve one verified PB per driver, ties, scope isolation, visibility invalidation, leases and failed-refresh recovery.",
+    "Q01": "Record executable checks, measured representation changes, source provenance and remaining acceptance."
+  },
+  "decision": {
+    "review": "The original HistogramPopulation already used bisect_left over sorted distinct ticks and cumulative frequencies. Its large cost was reconstructing, persisting, transferring and caching every player's identity/time mapping. The change addresses that source of population growth and shares binary searches for neighboring bin boundaries.",
+    "units": "Retain exact 120 Hz canonical tick values rather than quantizing authoritative times or introducing fixed millisecond buckets. Flexible requested bin counts and retained displayed ranges continue to work; the existing client already handles tail display and comparison range continuity.",
+    "precomputation": "Public race distributions reuse the existing transactionally maintained BoardTimeCount frequencies. Flying-lap and combined real/development distributions are grouped and deduplicated in SQL during background refresh. Only distinct tick counts leave SQL for large fields.",
+    "write_cost": "No new per-race database writes, shared counters, migrations or external dependencies were introduced by this task. Fully incremental flying-lap/cross-board comparison projections were deliberately not added to race finalization.",
+    "small_fields": "At up to 4096 drivers, frozen per-player snapshot values remain exact. The personal-map SQL fetch also has a hard LIMIT of 4097 and discards overflow.",
+    "large_fields": "Larger fields omit personal maps and look up only the requesting player's current race/lap PB by indexed player ID. comparison_approximate=true explicitly marks this path. Compared with removing that player's original snapshot contribution, self-correction can differ by at most one rank place and the population denominator by one. Existing snapshot refresh lag can additionally reflect newer accepted results. No records, rewards or competitive ranks are approximated.",
+    "legacy": "Large legacy payloads are read using only JSON frequency/grid projections, excluding their old personal maps. They remain usable before an ordinary changed-revision refresh rewrites them as format 2. PostgreSQL may still parse/toast legacy JSON on a cold load; this is a transitional database cost, not a population-independent claim for old stored JSON.",
+    "rolling_readers": "Format 2 keeps own={} plus own_mode=indexed in compact fields. The preserved original loader was executed against the new ten-million weighted payload and successfully read its distribution. Older readers can temporarily omit the personal marker until updated, rather than failing to decode it."
+  },
+  "implementation": {
+    "runtime_files": [
+      "backend/bmt_backend/histogram_population.py",
+      "backend/bmt_backend/histogram_snapshots.py",
+      "backend/bmt_backend/runs.py"
+    ],
+    "test_files": [
+      "backend/tests/test_compact_histograms.py"
+    ],
+    "contracts": [
+      "docs/schemas/time-histogram-v1.schema.json",
+      "docs/schemas/results-comparison-v1.schema.json"
+    ],
+    "behavior": [
+      "from_frequencies builds cumulative arrays without expanding weighted samples into driver rows.",
+      "B requested bins use B+1 binary searches over U sorted distinct tick values: O(B log U). A compatible default stored grid remains precomputed.",
+      "Compact snapshot storage and cold Python allocation depend on U plus the fixed small-map cap, rather than driver population. Legitimate tick values are bounded by the replay tick domain.",
+      "Two metadata/payload reads are generation-fenced. Claim/publication queries defer payload loading, including for large legacy snapshots.",
+      "Warm snapshot caching keeps the original four-entry and 128 MiB estimated-weight budgets; omitted personal maps no longer evict otherwise-small large-population snapshots.",
+      "Personal filters are applied before race grouping and inside public/private flying-lap queries. Existing artificial cutoff, public/test deduplication and visibility rules remain.",
+      "Display-only candidates never add samples or alter shared counts. Rank endpoints are clamped safely when the current PB is newer than the distribution."
+    ],
+    "unchanged": [
+      "background refresh cadence",
+      "idle-worker scheduling",
+      "account and manifest fences",
+      "refresh leases and stale-worker cancellation",
+      "API bins/extrema/frame parameters",
+      "existing client UI",
+      "canonical verification",
+      "rewards and authoritative results"
+    ],
+    "status_files": [
+      "AGENTS.md",
+      "DEVELOPMENT_STATUS.md",
+      "docs/PHASE_0_PLAN.md"
+    ]
+  },
+  "measurements": {
+    "artifact": "benchmark.json",
+    "scope": "Synthetic Python representation benchmark using the preserved original class and 1000 distinct time ticks; not HTTP/database/deployment throughput.",
+    "400000_drivers": {
+      "two_metric_json_bytes_before": 35235415,
+      "two_metric_json_bytes_after": 35470,
+      "estimated_two_metric_cache_weight_before": 144192000,
+      "estimated_two_metric_cache_weight_after": 192000,
+      "single_field_build_tracemalloc_peak_before": 61168062,
+      "single_field_build_tracemalloc_peak_after": 210928,
+      "single_field_build_ms_before": 2388.311,
+      "single_field_build_ms_after": 7.931
+    },
+    "10000000_weighted_drivers": {
+      "distinct_ticks": 1000,
+      "two_metric_json_bytes": 41872,
+      "estimated_two_metric_cache_weight": 192000,
+      "histogram_microseconds_per_call_in_this_sample": 39.725,
+      "qualification": "Weighted counts, not ten million seeded players or accepted races."
+    },
+    "actual_http_handler": {
+      "artifact": "synthetic-api-packet.json",
+      "status": 200,
+      "decoded_response_bytes": 2762,
+      "compressed_response_bytes_observed_in_request_log": 435,
+      "qualification": "Actual in-process FastAPI HTTP request over a synthetic ten-million-driver stored snapshot. Only its creator is a normal verified fixture account; the other counts are weighted synthetic data.",
+      "original_reader_compatible": true
+    },
+    "timing_qualification": "These local representation timings were sampled while other local tests could run; sizes, count conservation and cache admission are the main evidence. No deployment speedup or throughput claim."
+  },
+  "validation": {
+    "frozen_source": "frozen-source.json",
+    "frozen_directory": "build/histogram-compact-2026-10-22-verified/backend",
+    "frozen_schema_head": "0047_queue_capacity_slots",
+    "source_provenance": "Concurrent reward/queue work changed the shared schema while early tests ran. A complete 553-file backend snapshot was frozen after migration heads converged. All four histogram implementation/test files were byte-identical between the tested snapshot and the shared source at the final source check. Concurrent reward/queue changes are not authored or claimed by this task.",
+    "commands": [
+      "$env:PYTHONPATH='build/histogram-compact-2026-10-22-verified/backend'; python -m pytest build/histogram-compact-2026-10-22-verified/backend/tests/test_compact_histograms.py build/histogram-compact-2026-10-22-verified/backend/tests/test_histogram_snapshots.py build/histogram-compact-2026-10-22-verified/backend/tests/test_histogram_recovery.py build/histogram-compact-2026-10-22-verified/backend/tests/test_lap_bests.py -k 'not postgres' -q --tb=short --junitxml=docs/evidence/histogram-compact-2026-10-22/frozen-focused.xml",
+      "$env:PYTHONPATH='build/histogram-compact-2026-10-22-verified/backend'; python -m pytest build/histogram-compact-2026-10-22-verified/backend/tests/test_domains.py build/histogram-compact-2026-10-22-verified/backend/tests/test_test_drivers.py build/histogram-compact-2026-10-22-verified/backend/tests/test_results_deployment.py -k '(histogram or comparison) and not postgres' -q --tb=short --junitxml=docs/evidence/histogram-compact-2026-10-22/comparison-regression.xml",
+      "python -m ruff check backend/bmt_backend/histogram_population.py backend/bmt_backend/histogram_snapshots.py backend/bmt_backend/runs.py backend/tests/test_compact_histograms.py",
+      "$env:PYTHONPATH='build/histogram-compact-2026-10-22-verified/backend'; python docs/evidence/histogram-compact-2026-10-22/benchmark.py",
+      "$env:PYTHONPATH='build/histogram-compact-2026-10-22-verified/backend;build/histogram-compact-2026-10-22-verified/backend/tests'; python docs/evidence/histogram-compact-2026-10-22/emit_packet.py",
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_results_histograms.gd",
+      "Godot_v4.7.2-stable_win64_console.exe --headless --path game --log-file C:/Codes/Godot/Beat my track/docs/evidence/histogram-compact-2026-10-22/native-results.log --script res://tests/test_results_histograms.gd (BMT_LIVE_RESULTS_PACKET points to this task's synthetic-api-packet.json)",
+      "Godot_v4.7.2-stable_win64_console.exe --headless --path game --log-file C:/Codes/Godot/Beat my track/docs/evidence/histogram-compact-2026-10-22/native-continuity.log --script res://tests/test_histogram_continuity.gd",
+      "Godot_v4.7.2-stable_win64_console.exe --headless --path game --log-file C:/Codes/Godot/Beat my track/docs/evidence/histogram-compact-2026-10-22/native-unified.log --script res://tests/test_unified_histograms.gd"
+    ],
+    "python_executable": ".tools/backend-secure-venv/Scripts/python.exe",
+    "focused": {
+      "passed": 59,
+      "skipped": 5,
+      "deselected": 59,
+      "seconds": 92.8,
+      "artifact": "frozen-focused.xml"
+    },
+    "comparison_regression": {
+      "passed": 10,
+      "deselected": 66,
+      "seconds": 17.69,
+      "artifact": "comparison-regression.xml",
+      "skipped": 0
+    },
+    "new_tests_alone": {
+      "passed": 8,
+      "deselected": 4,
+      "seconds": 3.86,
+      "artifact": "compact.xml",
+      "qualification": "Already included in the 59 focused passes; not added twice."
+    },
+    "native_results": {
+      "checks": 44,
+      "failures": 0,
+      "artifact": "native-results.log"
+    },
+    "native_continuity": {
+      "checks": 12,
+      "failures": 0,
+      "artifact": "native-continuity.log"
+    },
+    "native_discovery_fixture": {
+      "artifact": "native-unified.log",
+      "result": "Unchanged fixture failed the comparison_bins==16 assertion and then aborted its coroutine on a missing race_distribution.markers key.",
+      "scope": "This fixture uses its own retained October 8 packet and a GDScript fake Client; it never calls this backend. No GDScript or assertions were changed. It is retained as a failing client-fixture result, not counted as a pass.",
+      "cleanup": "The stalled test was stopped after matching the exact Godot executable and this task's unique native-unified.log command-line path. Process inspection required approved escalation after sandbox CIM access was denied. No other process was stopped."
+    },
+    "initial_corrections": [
+      "The first shared-source regression run saw concurrent reward runtime code before reward_rank_counts existed: 50 failed, 1 passed, 5 skipped, 55 deselected. Initial XML is retained; no assertion was changed.",
+      "The next shared-source run passed 56 tests and skipped 4 before three fixture setup errors from transient concurrent migration heads. focused.xml/log retain it. Freezing a complete source snapshot resolved the setup race.",
+      "Ruff initially requested pairwise and removal of range(0,100)'s redundant start. Both were corrected; final Ruff passes.",
+      "The standard dev.ps1 native entry point could not create its user:// log under the sandbox. The same pinned Godot binary with an explicit workspace log path ran the native checks. Native runs also emitted a certificate-store access warning; histogram assertions completed as reported.",
+      "The final compact writer preserves an empty own object for older readers. The final frozen suites were rerun after that compatibility adjustment; the first successful frozen receipts remain in frozen-focused-initial.xml/log."
+    ],
+    "schema": "Both edited JSON schemas parse successfully. No jsonschema dependency was installed; full JSON-Schema validator execution is not claimed.",
+    "postgres": "TCP-only probe of the documented disposable 127.0.0.1:55439 fixture was unreachable. PostgreSQL parameterizations were excluded and real lock tests skipped on SQLite. No PostgreSQL plan or deployment capacity claim.",
+    "assertions_weakened": false,
+    "final_histogram_source_matches_frozen": true,
+    "godot_executable": "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe"
+  },
+  "remaining": [
+    "Deploy matching API/worker artifacts through the normal authorized rollout; this task performs no deployment.",
+    "Measure PostgreSQL query plans, cold/warm memory and sustained HTTP load on representative hot-board sizes.",
+    "Flying-lap and combined development snapshot refresh still perform background SQL grouping proportional to eligible PBs. This change removes population-sized application data and read-path work, not every background database scan.",
+    "The existing idle-worker refresh scheduling and its possible starvation under sustained racing are unchanged.",
+    "Review the separate legacy discovery UI fixture; owner/physical-device acceptance remains."
+  ],
+  "scope_exclusions": {
+    "live_accounts_or_races_mutated": false,
+    "backend_deployed": false,
+    "phone_attachment_checked": false,
+    "device_test_performed": false,
+    "apk_built_or_installed": false,
+    "ui_changed": false
+  },
+  "checkpoint": "task-only.patch and checkpoint.json are generated from preserved task sources, excluding concurrent queue/reward edits."
+}

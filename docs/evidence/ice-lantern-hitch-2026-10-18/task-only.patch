@@ -1,0 +1,265 @@
+diff --git a/game/vehicle/effect_render_preparation.gd b/game/vehicle/effect_render_preparation.gd
+--- a/game/vehicle/effect_render_preparation.gd
++++ b/game/vehicle/effect_render_preparation.gd
+@@ -1,7 +1,8 @@
+ extends RefCounted
+ ## Temporary draws reuse the actual particle/process/mesh materials. Live effect
+ ## nodes, GPU particle ages, trail slots and canonical state remain untouched.
+-const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","GroundDrifts","BankPowder","AirborneGrains"]
++# Winter breakups use distinct instanced ice/snow shaders and custom-data powder.
++const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
+ 
+ static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
+ 	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}
+diff --git a/game/tests/test_winter_break_preparation.gd b/game/tests/test_winter_break_preparation.gd
+--- /dev/null
++++ b/game/tests/test_winter_break_preparation.gd
+@@ -0,0 +1,171 @@
++extends SceneTree
++## Real Winter contacts must use debris draw paths already submitted under cover.
++const EFFECTS = preload("res://vehicle/effect_render_preparation.gd")
++const NAMES: Array[String] = ["LooseHayFragments","WoodFragments","SnowChunks","IceShards","SnowPowder"]
++var checks: int = 0
++var failures: int = 0
++var output: String
++var metrics: Array[Dictionary] = []
++var preparation: GDScript = EFFECTS
++var graphical: bool
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func frames(count: int = 3) -> void:
++	for i: int in range(count):
++		if graphical: await RenderingServer.frame_post_draw
++		else: await process_frame
++
++func capture(name: String) -> Image:
++	if not graphical: return null
++	var pixels: Image = root.get_texture().get_image()
++	check(pixels.save_png(output.path_join(name+".png")) == OK,name+" capture saved")
++	return pixels
++
++func clear(_p: Vector2, _r: float, _d: bool) -> Vector3: return Vector3.ZERO
++
++func advance(state: VehicleState, props: Array) -> void:
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	LightProps.step(state,props,clear,state.position-Vector2(0.35,0),VehicleSimulation.STEP,config.mass,config.collision_radius)
++	state.tick += 1
++
++func hit(state: VehicleState, props: Array, index: int) -> void:
++	state.position = Vector2(props[index].position[0]-0.20,props[index].position[1])
++	state.velocity = Vector2(12,0); state.heading = PI*0.5
++	advance(state,props)
++
++func batches() -> void:
++	var world := Node3D.new(); root.add_child(world)
++	var camera := Camera3D.new(); world.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 12
++	camera.look_at_from_position(Vector3(0,12,9),Vector3.ZERO); camera.current = true
++	var sun := DirectionalLight3D.new(); sun.shadow_enabled = true
++	sun.rotation_degrees = Vector3(-58,-35,0); world.add_child(sun)
++	VisualGeometry.box(world,Vector3(30,0.1,30),Vector3(0,-0.10,0),VisualGeometry.material(Color("b9cedb")))
++	var props: Array = []
++	for i: int in range(PropWinterCraft.BREAKABLE.size()):
++		props.append({"kind":PropWinterCraft.BREAKABLE[i],"position":[(i-1)*3,0],"rotation":0})
++	var track := NativeTrack.new(); track.metadata = {"creator_document":{"objects":props}}
++	var visual := NativeTrackVisual.new(); visual.theme_id = "winter"
++	world.add_child(visual); visual._build_placed_objects(track)
++	var state := VehicleState.new(); state.position = Vector2(100,100); advance(state,props)
++	visual.update_light_props(state)
++	var original: Array = state.snapshot()
++	var camera_pose: Transform3D = camera.transform
++	var retained: Array[Dictionary] = []
++	for name: String in NAMES:
++		var node: MultiMeshInstance3D = visual.get_node(name)
++		retained.append({"node":node,"resource":node.multimesh,"mesh":node.multimesh.mesh,"buffer":node.multimesh.buffer,"count":node.multimesh.instance_count,"visible":node.multimesh.visible_instance_count,"material":node.material_override})
++	await frames(5)
++	var intact: Image = capture("intact-before")
++	var prepared: Dictionary = preparation.begin(world,null,camera)
++	check(prepared.batches == (5 if graphical else 0),"all five existing debris batches prepare before the first impact")
++	for name: String in NAMES:
++		var proxy: MultiMeshInstance3D = world.get_node_or_null("Covered"+name)
++		check((proxy != null) == graphical,name+" gets an actual covered instanced draw")
++		if proxy == null: continue
++		var source: MultiMeshInstance3D = visual.get_node(name)
++		check(proxy.multimesh.mesh == source.multimesh.mesh and proxy.material_override == source.material_override,name+" reuses the live mesh and shader material")
++		check(proxy.multimesh.use_custom_data == source.multimesh.use_custom_data and proxy.multimesh.transform_format == source.multimesh.transform_format,name+" uses the live instancing format")
++		check(proxy.multimesh.instance_count == 1 and camera.is_position_in_frustum(proxy.to_global(proxy.multimesh.get_instance_transform(0).origin)),name+" submits one instance inside the actual camera")
++		if name == "SnowPowder": check(proxy.multimesh.get_instance_custom_data(0).a > 0,"covered powder has visible lifetime data")
++	await frames()
++	preparation.end(prepared)
++	await frames()
++	check(prepared.is_empty() and world.find_children("Covered*","",true,false).is_empty(),"covered draw releases all temporary nodes")
++	for row: Dictionary in retained:
++		check(row.node.multimesh == row.resource and row.node.multimesh.mesh == row.mesh and row.node.multimesh.buffer == row.buffer and row.node.multimesh.instance_count == row.count and row.node.multimesh.visible_instance_count == row.visible and row.node.material_override == row.material,"covered draw preserves the original debris resource, buffers, counts and material")
++	check(state.snapshot() == original and camera.transform == camera_pose,"covered preparation never advances or changes canonical state or camera")
++	var restored: Image = capture("intact-after")
++	if graphical: check(intact.get_data() == restored.get_data(),"clean reveal has exactly the original pixels")
++	for index: int in range(props.size()):
++		var before_hit: Dictionary = RewindHistory.properties(state)
++		var pipelines: float = Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)
++		var began: int = Time.get_ticks_usec()
++		hit(state,props,index)
++		var contact_us: int = Time.get_ticks_usec()-began
++		check(state.prop_destruction[index][0] == 0.0,props[index].kind+" breaks on a real contact")
++		var snapshot: Array = state.snapshot()
++		began = Time.get_ticks_usec(); visual.update_light_props(state)
++		var present_us: int = Time.get_ticks_usec()-began
++		began = Time.get_ticks_usec(); await frames(1)
++		var draw_us: int = Time.get_ticks_usec()-began
++		var added: float = Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)-pipelines
++		if graphical and RenderingServer.get_current_rendering_method() != "gl_compatibility":
++			check(added == 0,props[index].kind+" first impact compiles no new on-demand draw pipeline")
++		check(state.snapshot() == snapshot and not visual.light_instances[index].visible,props[index].kind+" draw hides the intact object and flame without mutating the collision snapshot")
++		await capture(props[index].kind+"-broken")
++		RewindHistory.restore(state,before_hit); visual.update_light_props(state)
++		check(visual.light_instances[index].visible,props[index].kind+" rewind restores the intact object and candle")
++		hit(state,props,index); visual.update_light_props(state)
++		check(state.snapshot() == snapshot,props[index].kind+" impact repeats exactly after rewind")
++		metrics.append({"kind":props[index].kind,"contact_us":contact_us,"presentation_us":present_us,"first_draw_us":draw_us,"on_demand_draw_pipelines":added})
++	visual.update_light_props(VehicleState.new())
++	for name: String in NAMES: check(visual.get_node(name).multimesh.instance_count == 0,"retry immediately clears "+name)
++	for node: Node3D in visual.light_instances: check(node.visible,"retry restores the intact Winter prop")
++	state.position = Vector2(100,100); state.velocity = Vector2.ZERO
++	for i: int in range(400): advance(state,props)
++	visual.update_light_props(state)
++	check(state.prop_fragments.is_empty(),"original finite debris lifetime remains exact")
++	prepared = preparation.begin(world,null,camera)
++	visual.free()
++	for node: Variant in prepared.nodes:
++		if is_instance_valid(node): node.free()
++	preparation.end(prepared)
++	check(prepared.is_empty(),"cancellation tolerates freed original and temporary nodes")
++	world.free(); await process_frame
++
++func app_launch() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var folder: String = "user://winter_break_preparation_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud"); root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+30000
++	while not app.startup_complete and Time.get_ticks_msec() < deadline: await process_frame
++	check(app.startup_complete,"disposable offline App completes startup")
++	if not app.startup_complete: app.free(); return
++	app._show_screen("tracks")
++	var doc: Dictionary = TrackDocument.create_default(); doc.theme = "winter"; doc["automatic_scenery"] = false
++	doc.objects = [{"kind":"ice_lantern","position":[0,0],"rotation":0}]
++	doc.paint = [{"surface":0,"width":20.0,"shape":"square","points":[[0,0]]}]
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	check(track != null,"actual Winter race fixture compiles: "+str(TrackDocument.validate(doc)))
++	if track == null: app.free(); return
++	track.metadata.cloud_version = "isolated-winter-break-preparation"; app.selected_track = track
++	app._start_race(track,false,true)
++	var revealed: Dictionary = {}
++	app.race_loading.tree_exiting.connect(func() -> void:
++		if is_instance_valid(app.game): revealed.tick = app.game.sim.state.tick; revealed.countdown = app.game.countdown_ticks)
++	deadline = Time.get_ticks_msec()+45000
++	while app.cloud_starting and Time.get_ticks_msec() < deadline: await process_frame
++	check(is_instance_valid(app.game) and not app.cloud_starting,"actual covered Winter race loading completes")
++	if is_instance_valid(app.game):
++		app.game.set_physics_process(false)
++		check(revealed.get("tick",-1) == 0 and revealed.get("countdown",-1) == 360 and app.game.track_session.target_laps == 5,"actual reveal preserves tick zero, full countdown and five laps")
++		check(app.game.effect_preparation_counts.batches >= (5 if graphical else 0),"actual race loading covers every Winter breakup batch")
++		check(app.game.get_node("World").find_children("Covered*","",true,false).is_empty(),"actual race reveal retains no preparation nodes")
++		check(app.game.sim.state.prop_fragments.is_empty(),"actual race begins without invented impacts or debris")
++		app._leave_race()
++	app.free(); await process_frame
++
++func run() -> void:
++	graphical = DisplayServer.get_name() != "headless"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/ice-lantern-hitch-2026-10-18/"+(RenderingServer.get_current_rendering_method() if graphical else "headless"))
++	if "--original" in OS.get_cmdline_user_args():
++		preparation = GDScript.new()
++		preparation.source_code = FileAccess.get_file_as_string("res://../docs/evidence/ice-lantern-hitch-2026-10-18/before/game/vehicle/effect_render_preparation.gd.txt")
++		check(preparation.reload() == OK,"saved original preparation helper loads")
++		output = output.path_join("original")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(960,540); root.content_scale_size = root.size
++	await batches()
++	if "--components-only" not in OS.get_cmdline_user_args(): await app_launch()
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t")); file.close()
++	print("WINTER_BREAK_PREPARATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_winter_break_preparation.gd.uid b/game/tests/test_winter_break_preparation.gd.uid
+--- /dev/null
++++ b/game/tests/test_winter_break_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://bta7ntpmmh5k2
+diff --git a/docs/ICE_LANTERN_HITCH_2026_10_18.md b/docs/ICE_LANTERN_HITCH_2026_10_18.md
+--- /dev/null
++++ b/docs/ICE_LANTERN_HITCH_2026_10_18.md
+@@ -0,0 +1,50 @@
++# Ice lantern impact preparation — 2026-10-18
++
++Owner report: “hitting the ice lantern cause a brief freeze”. ILH01 closes the missing first-use rendering preparation; ILH02 preserves actual breakup, rewind and retry; Q01 retains reproducible checks and their limits. G01/R01 preserve the existing art, camera, physics, saved data and unrelated concurrent work.
++
++`game/vehicle/effect_render_preparation.gd` still allowed only wood/hay debris and the older Winter weather batches. The later Winter construction kit creates `SnowChunks`, `IceShards` and `SnowPowder`, but their zero-instance MultiMeshes were omitted from the covered race-loading draws. Loading their meshes/materials alone did not exercise those instanced draw paths. Ice uses a distinct transparent shader; powder uses a distinct shader and per-instance lifetime data.
++
++The change adds those three existing names to the existing preparation allowlist. The original helper already submits one temporary instance using the live mesh, material, instancing format, camera and world, then frees it before the loading cover is released. No simulation, live instance buffer, shader, geometry, collision threshold, flame, lifetime, countdown, cache budget or gameplay draw population changes. This moves the previously uncovered rendering work into loading and can add cold loading work.
++
++The new `game/tests/test_winter_break_preparation.gd` (+UID) uses actual `NativeTrackVisual`, `LightProps` contacts and the shipping App loading path with disposable offline data. It checks all five debris batches, real in-camera preparation, shared original resources, visible powder lifetime data, exact original buffers/counts, unchanged canonical snapshots and camera, byte-identical clean reveal pixels, actual destruction/flame removal, exact rewind/repeated impacts, retry cleanup, finite lifetime and cancellation after nodes have been freed. App reveal retains tick zero, the complete 360-tick countdown, five laps and no invented fragments or temporary preparation nodes.
++
++The saved original helper reproduces four missing-coverage failures in each graphical renderer. This is a reproducible missing-preparation defect, **not a reproduction of the owner's freeze duration**. The desktop driver caches were retained, the host had concurrent work, and both original and final Vulkan samples reported zero new on-demand draw pipelines. The checks establish the added draw coverage and unchanged behavior; they do not establish a cold-phone frame-time improvement or prove this was the only cause of the reported pause. No physical-phone connection check/test, APK/export/install, backend mutation or deployment was performed. Owner confirmation on the affected device remains.
++
++| Actual check | Result |
++| --- | --- |
++| Saved original, Compatibility, components only | 48 checks, 4 expected missing-coverage failures |
++| Saved original, desktop Mobile/Vulkan, components only | 51 checks, 4 expected missing-coverage failures |
++| Final focused, headless, including App | 42 checks, 0 failures |
++| Final focused, Compatibility, including App | 64 checks, 0 failures |
++| Final focused, desktop Mobile/Vulkan, including App | 67 checks, 0 failures |
++| Existing Winter construction, contacts, five-car driven replay, fragment budgets | 595 checks, 0 failures |
++| Existing breakable props | 46 checks, 0 failures |
++| Existing dynamic preparation, headless | 148 checks, 0 failures |
++| Godot import | Passed |
++| Full script compilation after import | 896 scripts, 0 failures |
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`, Windows, NVIDIA RTX 3090. Desktop Mobile/Vulkan is a desktop renderer check, not a phone measurement. Final isolated ice-lantern fixture observations were 2.094 ms contact / 0.540 ms presentation / 2.232 ms wait to one rendered frame in Compatibility, and 1.141 / 0.218 / 1.077 ms in Vulkan. These are diagnostic samples, not whole-race timings, FPS claims or a before/after speedup.
++
++Reports and native captures are in [the evidence directory](evidence/ice-lantern-hitch-2026-10-18/). In each graphical folder, `intact-before.png` and `intact-after.png` have identical pixel data; `ice_lantern-broken.png` retains the original shatter effect. The `.txt` original helper is loaded only by `--original`; shipping sources are never swapped to reproduce it.
++
++The initial restricted runs could not write the default Godot user log or initialize Windows certificate access. Tests subsequently used workspace-local `APPDATA` and approved local execution. An initial direct script call also encountered PowerShell's execution policy; actual engine invocations used the established `-ExecutionPolicy Bypass` entry point. Early full focused attempts failed only the new App fixture: its new `automatic_scenery` key was created as a StringName through dictionary dot assignment, while the authoring validator requires String keys. The fixture now uses the same explicit string key as the existing Winter tests, with its explicit ground paint. Production validation was not changed. The first broad parser attempt encountered the missing temporary `res://tests/review_rivalry_entry_before.gd`; a normal import refreshed the index and the unchanged full parser passed. Initial failures remain separate from the final results.
++
++Actual engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with `$env:APPDATA` set to the workspace's `build/ice-lantern-tests/userdata`. For the two-argument original comparisons, PowerShell `-Command` passes the array directly:
++
++```powershell
++scripts/dev.ps1 -Action CheckScript -ScriptPath res://tests/test_winter_break_preparation.gd
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_break_preparation.gd -Graphical -RenderingMethod gl_compatibility -TestArgument @('--original','--components-only') -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_break_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument @('--original','--components-only') -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_break_preparation.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_break_preparation.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_break_preparation.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_winter_craft.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_breakable_props.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_render_preparation.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++```
++
++The five headless regression commands were invoked sequentially by `powershell -NoProfile -ExecutionPolicy Bypass -File build/ice-lantern-tests/run_regressions.ps1`. That wrapper's repeated action shares its log filename, so the individual 42/595/46/148 outcomes are retained in the tool transcript and summarized here; the final focused JSON and dynamic-preparation JSON also retain their corresponding results. Original comparison logs, the retained final Vulkan log, import/parser logs, source hashes and the task-only patch are copied into this task's evidence. The first successful Compatibility log was subsequently unavailable in the shared build-log directory; its 64/0 JSON and tool output remain.
++
++Changed files: the preparation allowlist, the new focused test/UID, this report, and the task notes prepended to `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`. The source-only [task patch](evidence/ice-lantern-hitch-2026-10-18/task-only.patch) is the reviewable checkpoint. Shared Git HEAD/index and unrelated changes are preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-18 ILH01-ILH02/G01/R01/Q01: Cover the newer SnowChunks/IceShards/SnowPowder instanced paths during existing race loading, alongside wood/hay/weather. Original helper reproduces four missing-coverage failures per graphical renderer. Final focused42headless/64Compatibility/67desktopMobile, Winter595, breakables46, dynamic148 and parser896 pass; import repairs the initial missing temporary Rivalry-script index entry. Exact original buffers/pixels, contacts, flames, rewind/retry, lifetime and tick-zero/full-countdown/five-lap reveal remain. Actual commands, fixture corrections, desktop timing limits and source-only patch: docs/ICE_LANTERN_HITCH_2026_10_18.md. Desktop original/final caches were warm; the owner's pause duration was not reproduced. Affected-device confirmation remains; no phone attachment check/test, APK/export/install, backend action or deployment.
++
+ 2026-10-18 RSC01-RSC03/R01/Q01: Rivalry retains the first Race input during a background refresh, shows loading immediately and requests one authorization after refresh. Confirmed-snapshot Race stays available; account/car/navigation/group/week/version/availability and the existing deadline fence pending starts. Covered polling/page activation stays quiet. Original real-adapter mouse/touch reproduction has four failures; final focused54headless/54Compatibility/54desktopMobile, start29, ghost17, Rivalry1115/detail321/entry66/continue60, App141 and parser896 pass. The old membership fixture reproduces the same30 failures on saved originals; its separate appearance response restores all66 checks. Actual commands, initial fixture corrections, native views and task-only source checkpoint: docs/RIVALRY_ONE_CLICK_2026_10_18.md. Owner/device workflow acceptance remains; no phone attachment check/test, APK, live backend change or deployment.
+ 
+ 2026-10-18 NWR03-NWR04/G01/R01/Q01: Local C++ Winter profiles/normals/upward bank emission and marker selection, variable-width surface rasterisation, ordered paint and RGB/L8 editor masks serve race loading and editing. Exact compiler27/kit212 output, original deposits/materials, scalar fallback/cancellation and cache/upload budgets remain. Three warmed alternating desktop medians: Winter roads4.411s to1.992s, markers1.145s to0.120s, masks46.570ms to2.886ms, compiler657.333ms to488.202ms. Final482 kernels,8 goldens,115 road/30 relief,205 placements and894 parses pass; App141/workflow252/cache70/worlds85/reuse17/driving72/rewind61 pass. Windows and Android ARM64/x86-64 built with16KiB ELF alignment. Compatibility6 pass; Mobile retains one strict delta1 pixel failure reproduced by unchanged original-scene captures. Actual commands, initial API/fixture corrections, views, build provenance and task-only binary checkpoint: docs/NATIVE_WINTER_RASTER_2026_10_18.md. Owner/device fluency, Android execution, full-start/peak-RAM/thermal acceptance remain; no phone attachment check/test, APK, backend/deployment or FPS claim.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-18 ILH01-ILH02/G01/R01/Q01: The existing covered race draw now includes SnowChunks/IceShards/SnowPowder, which the later Winter construction kit left outside the original allowlist. Original missing-coverage4failures per graphical renderer; final focused42headless/64Compatibility/67desktopMobile, Winter595, breakables46, dynamic148 and parser896 pass. Preserve exact pixels/buffers, canonical breakup/rewind/retry, countdown and five laps. Initial fixture/index corrections, actual commands and task-only checkpoint: docs/ICE_LANTERN_HITCH_2026_10_18.md. The reported phone-pause duration remains unverified; no phone attachment check/test, APK, backend or deployment action.
++
+ 2026-10-18 RSC01-RSC03/R01/Q01: Rivalry retains the first Race input during a background refresh, shows loading immediately and requests one authorization after refresh. Confirmed-snapshot Race stays available; account/car/navigation/group/week/version/availability and the existing deadline fence pending starts. Covered polling/page activation stays quiet. Original real-adapter mouse/touch reproduction has four failures; final focused54headless/54Compatibility/54desktopMobile, start29, ghost17, Rivalry1115/detail321/entry66/continue60, App141 and parser896 pass. The old membership fixture reproduces the same30 failures on saved originals; its separate appearance response restores all66 checks. Actual commands, initial fixture corrections, native views and task-only source checkpoint: docs/RIVALRY_ONE_CLICK_2026_10_18.md. Owner/device workflow acceptance remains; no phone attachment check/test, APK, live backend change or deployment.
+ 
+ 2026-10-18 NWR03-NWR04/G01/R01/Q01: Local C++ Winter profiles/normals/upward bank emission and marker selection, variable-width surface rasterisation, ordered paint and RGB/L8 editor masks serve race loading and editing. Exact compiler27/kit212 output, original deposits/materials, scalar fallback/cancellation and cache/upload budgets remain. Three warmed alternating desktop medians: Winter roads4.411s to1.992s, markers1.145s to0.120s, masks46.570ms to2.886ms, compiler657.333ms to488.202ms. Final482 kernels,8 goldens,115 road/30 relief,205 placements and894 parses pass; App141/workflow252/cache70/worlds85/reuse17/driving72/rewind61 pass. Windows and Android ARM64/x86-64 built with16KiB ELF alignment. Compatibility6 pass; Mobile retains one strict delta1 pixel failure reproduced by unchanged original-scene captures. Actual commands, initial API/fixture corrections, views, build provenance and task-only binary checkpoint: docs/NATIVE_WINTER_RASTER_2026_10_18.md. Owner/device fluency, Android execution, full-start/peak-RAM/thermal acceptance remain; no phone attachment check/test, APK, backend/deployment or FPS claim.

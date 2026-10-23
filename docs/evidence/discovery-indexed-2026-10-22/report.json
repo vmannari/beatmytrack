@@ -1,0 +1,374 @@
+{
+  "title": "Indexed discovery implementation and risk dispositions",
+  "date": "2026-10-22",
+  "status": "Implemented and locally verified; not deployed",
+  "requirements": {
+    "DSI01": "Remove complete matching-catalogue construction from shipping discovery.",
+    "DSI02": "Address frozen paging, uniform Random, projection consistency, privacy and bounded state risks.",
+    "DSI03": "Integrate bounded browser/search/publication selection without global totals or offsets.",
+    "DSI04": "Measure representative local scale and document explicit release/capacity limits.",
+    "R01": "Preserve identities, safety, legacy-server client operation and concurrent work.",
+    "Q01": "Record actual commands, results, baseline failures and remaining acceptance."
+  },
+  "risk_dispositions": [
+    {
+      "id": "DRR01",
+      "implementation": "Epoch-vector cursors freeze rank keys, filters, version IDs and candidate page spans. Current removals shorten pages after selection; they cannot backfill across cached pages or reweave recommendations."
+    },
+    {
+      "id": "DRR02",
+      "implementation": "Store one current row plus actual changes, shared across queries. Retain retired rows for cursor TTL plus margin; bounded cleanup."
+    },
+    {
+      "id": "DRR03",
+      "implementation": "Indexed per-partition LIMIT, bounded global merge, SQL/monotonic work deadlines including collection inserts; explicit retry on exhaustion."
+    },
+    {
+      "id": "DRR04",
+      "implementation": "Complete small eligible set or uniform dense-slot rejection; no nearest-UUID or top-N bias; explicit 503 after4096 trials."
+    },
+    {
+      "id": "DRR05",
+      "implementation": "Transactional triggers cover source writers. Pending flags survive late lower-sequence commits; idempotent pair ledger, bounded backfill/source audit and explicit counter repair."
+    },
+    {
+      "id": "DRR06",
+      "implementation": "Pair last_at is event-time maximum. Expiry reads the latest durable row under its partition lock; replay/refresh cannot decrement an obsolete timer."
+    },
+    {
+      "id": "DRR07",
+      "implementation": "Sixteen independently locked partitions, bounded batches and 60s rank coalescing. Main race transaction only appends receipts. Busy-partition scheduling removes sixteen-way empty polling."
+    },
+    {
+      "id": "DRR08",
+      "implementation": "Current hide, account, block and revision-state checks before delivery. Frozen bounded block collections change new-view identity immediately after block/unblock. Actor-bound HMAC cursors, scoped caches, deletion fences and bounded erasure."
+    },
+    {
+      "id": "DRR09",
+      "implementation": "At most13 payload pages/260 cards plus nearby placeholders; rebase scroll and grid columns, reload prior cursors, exact revision anchors, busy/expiry retry states."
+    },
+    {
+      "id": "DRR10",
+      "implementation": "Initial local favourites/raced IDs become typed indexed expiring collection members; later pages send only a cursor. Device-local semantics remain."
+    },
+    {
+      "id": "DRR11",
+      "implementation": "Three-official/one-community two-stream phase, explicit unique tie keys, rated/unrated boolean seek, 18-decimal integer score, expanded Unicode keys and BIGINT rating sum."
+    },
+    {
+      "id": "DRR12",
+      "implementation": "Explicit v3 contract and scoped disk namespace. V2 always426, no overload fallback. Independent supervised process, backfill readiness/freshness gates, full connection budget and coordinated-release runbook."
+    },
+    {
+      "id": "DRR13",
+      "implementation": "Actual SQLite/PostgreSQL/native correctness, million-track read plans/buffers and timed pages, sparse Random and hot receipt/pair/WAL probe; remaining capacity dimensions are explicit."
+    }
+  ],
+  "contracts": {
+    "page_size": 20,
+    "partitions": 16,
+    "cursor_lifetime_seconds": 1800,
+    "rank_coalescing_seconds": 60,
+    "work_budget_seconds": 1.5,
+    "new_view_stale_threshold_seconds": 120,
+    "random_trials": 4096,
+    "client_payload_pages": 13,
+    "client_cards": 260,
+    "client_extent_max": 300,
+    "anchor": "Selected immutable revision begins a forward window. Refresh returns to ordinary feed; no global ordinal or pre-anchor page is promised.",
+    "old_clients": "Existing v2 server endpoints return426. New client still supports a v2 server before coordinated rollout.",
+    "scope": "Discovery only. This does not certify the rest of the backend for500million accounts."
+  },
+  "verification": {
+    "backend": {
+      "artifact": "postgres.xml",
+      "passed": 57,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "security_migration_staging": {
+      "artifact": "backend-safety-complete.xml",
+      "passed": 60,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "retired_v2_and_sqlite": {
+      "artifact": "backend-scheduler-final.xml",
+      "passed": 23,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "native_safety_http": {
+      "artifact": "community-http.xml",
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "native_privacy_http": {
+      "artifact": "privacy-http.xml",
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "native": {
+      "headless": 80,
+      "compatibility": 83,
+      "desktop_mobile": 83,
+      "legacy_paging": 269,
+      "free_race_list": 233,
+      "challenge_discovery": 68,
+      "parser_scripts": 934
+    },
+    "linux_supervisor": {
+      "passed": 14,
+      "artifact": "linux-service-final.log",
+      "scope": "Real isolated Linux signals, priorities, child exits and cleanup"
+    },
+    "skip_reason": "SQLite cannot prove PostgreSQL SKIP LOCKED independence; the PostgreSQL variant runs and passes.",
+    "lint": "See ruff-final.log",
+    "checkpoint": "source-checkpoint.json",
+    "native_views": [
+      "gl_compatibility-window-list.png",
+      "gl_compatibility-window-gallery.png",
+      "gl_compatibility-window-compact.png",
+      "mobile-window-list.png",
+      "mobile-window-gallery.png",
+      "mobile-window-compact.png"
+    ]
+  },
+  "measurements": {
+    "scope": "Local synthetic TestClient/PostgreSQL reader probe; not network or million-DAU capacity",
+    "million_track_level": {
+      "tracks": 1000000,
+      "synthetic": true,
+      "seed_seconds_excluded_from_reads": 549.166,
+      "queries": [
+        {
+          "query": "new",
+          "status": 200,
+          "milliseconds": 1103.721,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "name",
+          "status": 200,
+          "milliseconds": 299.309,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "popular",
+          "status": 200,
+          "milliseconds": 288.307,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "rated",
+          "status": 200,
+          "milliseconds": 383.495,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "combined",
+          "status": 200,
+          "milliseconds": 312.089,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "rare",
+          "status": 200,
+          "milliseconds": 331.084,
+          "returned_items": 1,
+          "entry_statements": 1
+        },
+        {
+          "query": "deep_anchor",
+          "status": 200,
+          "milliseconds": 367.233,
+          "returned_items": 4,
+          "entry_statements": 2
+        },
+        {
+          "query": "short_missing",
+          "status": 503,
+          "milliseconds": 2550.982,
+          "returned_items": 0,
+          "entry_statements": 1
+        }
+      ],
+      "twenty_item_page_median_ms": 60.73,
+      "twenty_item_page_max_ms": 104.627,
+      "random_picks": 16,
+      "random_unique": 16,
+      "database_bytes": 4781596672
+    },
+    "final_100001_level": {
+      "tracks": 100001,
+      "synthetic": true,
+      "seed_seconds_excluded_from_reads": 21.932,
+      "queries": [
+        {
+          "query": "new",
+          "status": 200,
+          "milliseconds": 311.675,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "name",
+          "status": 200,
+          "milliseconds": 147.969,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "popular",
+          "status": 200,
+          "milliseconds": 148.685,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "rated",
+          "status": 200,
+          "milliseconds": 151.855,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "combined",
+          "status": 200,
+          "milliseconds": 140.262,
+          "returned_items": 20,
+          "entry_statements": 1
+        },
+        {
+          "query": "rare",
+          "status": 200,
+          "milliseconds": 212.791,
+          "returned_items": 1,
+          "entry_statements": 1
+        },
+        {
+          "query": "deep_anchor",
+          "status": 200,
+          "milliseconds": 295.947,
+          "returned_items": 4,
+          "entry_statements": 2
+        },
+        {
+          "query": "short_missing",
+          "status": 200,
+          "milliseconds": 217.204,
+          "returned_items": 0,
+          "entry_statements": 1
+        }
+      ],
+      "twenty_item_page_median_ms": 46.053,
+      "twenty_item_page_max_ms": 121.848,
+      "random_picks": 16,
+      "random_unique": 16,
+      "projection_burst": {
+        "receipts": 10000,
+        "recent_pairs": 3000,
+        "hot_track_pairs": 1000,
+        "consumer_turns": 84,
+        "seconds": 13.138,
+        "receipts_per_second": 761.1,
+        "wal_bytes_including_final_rank_flush": 93868224,
+        "scope": "Unthrottled local step loop; excludes HTTP/verification, daemon sleeps and production concurrency"
+      },
+      "database_bytes": 505044992
+    },
+    "burst_before": {
+      "receipts": 10000,
+      "recent_pairs": 3000,
+      "hot_track_pairs": 1000,
+      "consumer_turns": 1017,
+      "seconds": 38.259,
+      "receipts_per_second": 261.4,
+      "wal_bytes_including_final_rank_flush": 92697096,
+      "scope": "Unthrottled local step loop; excludes HTTP/verification, daemon sleeps and production concurrency"
+    },
+    "burst_after": {
+      "receipts": 10000,
+      "recent_pairs": 3000,
+      "hot_track_pairs": 1000,
+      "consumer_turns": 84,
+      "seconds": 13.138,
+      "receipts_per_second": 761.1,
+      "wal_bytes_including_final_rank_flush": 93868224,
+      "scope": "Unthrottled local step loop; excludes HTTP/verification, daemon sleeps and production concurrency"
+    },
+    "plans": [
+      "scale-million-results.json",
+      "scale-results.json"
+    ],
+    "notes": [
+      "Million-row measurements precede final frozen-membership, worker-priority, Unicode-width and scoped reopening-cache edits. Current code repeats all reader query classes at100001 tracks.",
+      "Fixtures seed source and projection explicitly; seed time is excluded from reads and does not measure resumable-worker backfill throughput.",
+      "Median/max come from25 successive local TestClient pages, not concurrent HTTPS p95/p99.",
+      "16 Random picks per level are a reachability check, not a statistical distribution certification.",
+      "The 1.5s work budget is not a hard end-to-end latency promise; the million-row two-character miss returns503 after2550.982ms including planning/rollback/HTTP overhead."
+    ]
+  },
+  "initial_corrections": [
+    "PostgreSQL JSON comparisons require jsonb for distinctness.",
+    "Stats due times derive from receipt creation, not delayed processing.",
+    "Boolean keyset comparisons require explicit transitions between rated/unrated rows.",
+    "Duplicate Retry-After headers removed without changing existing middleware defaults.",
+    "Shared telemetry migration/import startup errors resolved in the concurrent work; no foreign code reverted.",
+    "Linux child probe initially imported the image-installed package; PYTHONPATH=/src verifies mounted source.",
+    "Scale fixture timeout separated from shipping request deadlines; Decimal report field serialized as integer.",
+    "Fresh legacy-schema forward migration test replaces unsupported full-head downgrade.",
+    "Search drawer suppresses unrelated local results and false empty text when global search is busy.",
+    "Late audit adds name/score/recommended hide-revisit identity/order tests. Candidate selection now precedes current delivery checks; bounded block snapshots identify new views after unblock. Removed slots show availability rather than perpetual loading.",
+    "Native fixture waits for resize, tests a non-divisor grid, and models actual anchor cursors. Compact capture settles the page and uses logical viewport scale.",
+    "An empty CheckScript argument ran the isolated App until the bounded launcher timeout; corrected to test_script_parse.gd and934scripts pass."
+  ],
+  "known_baseline_failure": {
+    "test": "game/tests/test_publication_discovery.gd",
+    "finding": "Old fixture overrides App._ready without constructing root_ui, then calls the newer publication-confirmation path. Null add_child in App._own_dialog3466 reproduces with task-original Cloud.",
+    "artifacts": [
+      "native-publication_discovery-regression.log",
+      "publication-baseline-corrected.log"
+    ],
+    "disposition": "Preserved assertions and current App. V3 exact publication-revision handoff is independently covered by the new native test."
+  },
+  "remaining_acceptance": [
+    "Backup and representative-copy migration timing: widening existing rating_sum can rewrite/lock track_versions. New projection indexes start empty; index/WAL/disk and rollback backup need release capacity.",
+    "Apply0050 and all matching current migrations, deploy matching API/supervisor/worker and client, let source/backfill catch up, inspect logged partition lag and canary before traffic. No live rollout performed.",
+    "No generic sublinear guarantee for arbitrary combinations/short substrings. Budget exhaustion is a retry response, and selective Random may also retry.",
+    "Measure production concurrent p95/p99, API/worker peak RSS, database connection saturation, skew, WAL/vacuum/cleanup, backlog and failure recovery. The local burst excludes daemon sleeps and verification/HTTP.",
+    "Measure large recent-pair and changed-history populations separately. Catalogues, accounts, active sessions, revisions and seven-day distinct pairs are independent dimensions;500million accounts and140million pairs were not instantiated.",
+    "Bounded metadata audit sweeps128 tracks/partition/minute, so complete reconciliation time grows with catalogue size. Journal is the normal freshness authority; explicit derived-counter repair may need offline time for huge ledgers.",
+    "Future ranking/collation/protocol changes require a new compatible version or expiry/drain policy. No permanent old-client whole-catalogue fallback.",
+    "Owner workflow and physical-device acceptance remain; no phone attachment check, phone test or APK action."
+  ],
+  "commands": [
+    ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/discovery-indexed-2026-10-22/postgres_lab.py --scale",
+    ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/discovery-indexed-2026-10-22/postgres_lab.py --scale --small",
+    "PYTHONPATH=backend python -m pytest backend/tests/test_attack_resistance.py backend/tests/test_community_safety.py backend/tests/test_gcp_staging.py -q --tb=short -k 'not postgres'",
+    "PYTHONPATH=backend python -m pytest backend/tests/test_community_safety_http.py backend/tests/test_privacy_http.py (run separately; see XML/logs)",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_discovery_windows.gd [-Graphical -RenderingMethod gl_compatibility|mobile] -CommandTimeoutSeconds120",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds120",
+    "wsl -d Ubuntu -- docker run --rm --network none --memory=512m --cpus=1 -e PYTHONPATH=/src --entrypoint python -v '/mnt/c/Codes/Godot/Beat my track/backend:/src:ro' -w /src bmt-full-20261018:86d38519ffb5ac1f -m pytest tests/test_service_worker.py -q --tb=short -p no:cacheprovider"
+  ],
+  "safety": {
+    "live_access": false,
+    "live_account_or_queue_mutation": false,
+    "deployment": false,
+    "phone_test": false,
+    "databases": "Generated schemas in labelled disposable loopback PostgreSQL17 container and temporary SQLite; ownership checked before container removal.",
+    "workspace": "Concurrent telemetry, queue, histogram, Studio, Rivalry and game changes retained."
+  }
+}

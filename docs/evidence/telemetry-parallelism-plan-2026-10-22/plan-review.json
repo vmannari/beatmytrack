@@ -1,0 +1,250 @@
+{
+  "date": "2026-10-22",
+  "scope": "Plan and critical review only. No implementation, migration, activation or deployment.",
+  "requirements": {
+    "TPP01": "Remove global coupling between receipt acceptance and long projection transactions.",
+    "TPP02": "Allow multiple PostgreSQL projection workers without duplicate effects, lost updates or account-erasure regressions.",
+    "TPP03": "Preserve durable acknowledgements, global event-ID conflict detection, current consent/identity boundaries and the configured global client backlog ceiling.",
+    "TPP04": "Define a migration and validation path that preserves existing reporting history and states its capacity limits."
+  },
+  "findings": [
+    {
+      "source": "backend/bmt_backend/telemetry.py:261",
+      "observation": "Client ingestion holds ProductState(1) FOR UPDATE while validating race-statistics references, inserting receipts and preparing acknowledgements."
+    },
+    {
+      "source": "backend/bmt_backend/product_analytics.py:154",
+      "observation": "Projection holds the same row throughout profile/journey/day/publication updates, quality/race/network/Studio projection, counters, and cleanup. Increasing worker count serializes here."
+    },
+    {
+      "source": "backend/bmt_backend/product_analytics.py:286",
+      "observation": "Daily ProductMetric rows are shared by otherwise unrelated players. Removing only ProductState exposes additional shared-row contention."
+    },
+    {
+      "source": "backend/bmt_backend/studio_analysis.py:96",
+      "observation": "Studio AnalysisState is also updated during projection. Leaving it writable per batch would preserve another global hot row."
+    },
+    {
+      "source": "backend/bmt_backend/product_analytics.py:224",
+      "observation": "ProductPublication is keyed by track version, not the event actor. Different player partitions can change the same observed-publication/earliest-external-finish state."
+    },
+    {
+      "source": "backend/bmt_backend/race_statistics.py:194",
+      "observation": "The bounded cell accumulator keeps the first admitted cell identities and discards others at its cap. Arbitrarily summing independently truncated shard maps does not reproduce that state."
+    },
+    {
+      "source": "backend/bmt_backend/privacy.py:272",
+      "observation": "Account erasure relies on the global state row to serialize private telemetry cleanup with projection."
+    },
+    {
+      "source": "backend/bmt_backend/studio_erasure.py:17",
+      "observation": "Studio private-data cleanup uses the same global fence."
+    },
+    {
+      "source": "backend/bmt_backend/studio_simulator_tick.py:95",
+      "observation": "Simulator ingestion updates the shared state too; a route-only change would leave incompatible writers."
+    },
+    {
+      "source": "backend/bmt_backend/telemetry.py:129",
+      "observation": "Authoritative server events insert within the business transaction without taking ProductState. Preserve that transactional outbox behavior and do not add external IO or global admission to racing/publication."
+    },
+    {
+      "source": "backend/bmt_backend/product_worker.py:50",
+      "observation": "The current worker sleeps between backlogged batches and cleanup runs inside projection; both scheduling and transaction boundaries need explicit revision."
+    }
+  ],
+  "initial_proposal_review": {
+    "proposal": "Partition by player, replace ProductState with per-partition state, use SKIP LOCKED and launch more workers.",
+    "verdict": "Insufficient as written. It relocates several hot rows and omits correctness protections provided by current serialization.",
+    "issues_and_refinements": [
+      {
+        "severity": "blocking",
+        "issue": "Putting pending counters and projection on the same partition row still blocks all ingress in that partition for the full batch.",
+        "refinement": "Separate append coordination, projection ownership, client admission and reporting metadata. A projector never holds an ingress guard through analytical work."
+      },
+      {
+        "severity": "blocking",
+        "issue": "Per-player ownership does not protect shared daily totals, publication facts or shared diagnostic contexts.",
+        "refinement": "Use shard-local additive partials for commutative metrics and separately owned keyed reducers for publication and noncommutative bounded state."
+      },
+      {
+        "severity": "blocking",
+        "issue": "Equal backlog quotas strand free capacity and reject a player merely because their partition is full.",
+        "refinement": "Use a shared pool of independently lockable capacity-credit buckets. Their capacities sum to the global ceiling, any player can reserve from any bucket, and existing duplicates need no new credit."
+      },
+      {
+        "severity": "blocking",
+        "issue": "Returning admission capacity after only the player stage permits unbounded downstream backlog.",
+        "refinement": "Retain the client reservation and raw retention protection until every required derived task commits, or terminal privacy cleanup cancels it safely."
+      },
+      {
+        "severity": "blocking",
+        "issue": "A maximum sequence, timestamp, heartbeat or SKIP LOCKED query cannot prove all earlier work completed.",
+        "refinement": "Use committed per-partition append positions and a contiguous all-stages completion frontier. Capture reporting barriers in a consistent snapshot. Missing/quarantined work remains explicitly incomplete."
+      },
+      {
+        "severity": "blocking",
+        "issue": "Erasure could finish before a delayed actor/publication reducer recreates private data.",
+        "refinement": "Use the same player/entity ownership fences in projectors and erasure. Check durable deletion tombstones after acquiring ownership; include pending derived work and owned versions even when no publication fact exists yet."
+      },
+      {
+        "severity": "blocking",
+        "issue": "A complete historical rebuild is impossible once raw telemetry is retired.",
+        "refinement": "Freeze existing prepared aggregates as a baseline; carry existing per-player projection state forward; add only new, versioned tail deltas. Test signed late-event corrections against that baseline."
+      },
+      {
+        "severity": "high",
+        "issue": "Sharding every aggregate can multiply fact rows and make reporting slower.",
+        "refinement": "Shard additive write state, then compact completed contribution generations into prepared summaries in bounded, checkpointed jobs. Reporting must group logical keys before ordering, limits and pagination, and must not scan raw receipts."
+      },
+      {
+        "severity": "high",
+        "issue": "Old workers can double-project or ignore the new counters during rolling deployment or rollback.",
+        "refinement": "Deploy protocol-compatible readers/writers first, use an explicit cutover with old roles drained and fenced, and retain a single-worker mode of the new protocol for rollback after activation."
+      },
+      {
+        "severity": "high",
+        "issue": "Database connection, CPU, WAL and hot-entity limits remain even after removing the global row.",
+        "refinement": "Budget active workers and connections, test skew and concurrent gameplay, and set throughput/lag gates on declared hardware instead of promising linear replica scaling."
+      },
+      {
+        "severity": "high",
+        "issue": "An intermediate design with one physical admission-slot row per pending event adds an allocation and release row update per event, which can produce avoidable WAL/write load.",
+        "refinement": "Replace physical per-unit slots with a bounded credit-bucket pool and per-receipt reservation binding. Group reservations and returns per bucket; test exact conservation and contention before selecting bucket count. This is a second refinement of the reviewed plan."
+      }
+    ]
+  },
+  "refined_design": {
+    "storage": "Use the existing PostgreSQL database and durable receipts/outbox. No new broker, external service or runtime dependency is needed for this change. SQLite remains a serial functional fallback, not concurrency evidence.",
+    "ownership": {
+      "player_state": "Stable versioned hash of player UUID into logical partitions, initially propose 256. Hash identity and logical partition count are fixed by schema generation, not by current worker count. Existing accounts require no enumeration or per-account partition row.",
+      "worker_allocation": "Workers claim available projection-owner rows with FOR UPDATE SKIP LOCKED and hold one owner's transaction-scoped lock for a bounded batch. Worker count and partition ownership are independent; rotate service order to avoid starvation. Database rollback releases ownership after a crash. Do not add distributed leases when transaction-scoped SQL ownership is sufficient.",
+      "additive_state": "Write ProductMetric, quality and network additive contributions to partial rows owned by the source partition. Include negative corrections from late journey/retention restatement. Use BIGINT for accumulated numeric fields; counts are summed, latest times use MAX, beginnings use MIN with explicit null handling, and arrays are combined element by element. Partial keys include writer family, logical partition and contribution generation, so actor and entity reducers cannot accidentally share an ownership key. Widen any baseline accumulator that rollups may grow beyond its existing integer range as part of the expansion schema.",
+      "entity_state": "Emit uniquely identified derived work in the same transaction that commits the player-stage result. Separately keyed reducer partitions own ProductPublication by version and bounded race-statistics maps by day/context. Retain one writer for each semantic key while unrelated keys run concurrently. A popular semantic key can still be a local bottleneck; do not describe this as unlimited parallelism.",
+      "noncommutative_maps": "Keep the existing cell-cap/drop accounting in the keyed reducer with an explicit stable processing order and persisted cursor. Do not independently cap per-player maps and sum them. Seed the reducer from existing cells and counters. Compare against a single-writer reference fed in exactly the same declared order. Changing the selection algorithm would require a separate versioned semantic change.",
+      "summary_rows": "ProductState and AnalysisState become reporting summaries or baseline/configuration metadata; ingestion and projection never update their shared row per event or batch. Summaries combine baseline plus partition state at a declared observation point. Summary refresh must not lock ingestion/projection owners."
+    },
+    "admission_and_receipts": {
+      "limit": "Maintain a fixed small pool of independently lockable capacity-credit buckets, initially propose 64. Bucket capacities sum exactly to the configured global client backlog limit; buckets are not assigned to players or processing partitions. Resize through an explicit grow/drain procedure. A batch can reserve capacity from any bucket, so unused capacity is not stranded behind a player partition.",
+      "acceptance": "Validate and insert immutable receipts with the existing global event-ID uniqueness and payload/owner conflict checks. Reserve one credit per actually inserted client receipt from available credit buckets with FOR UPDATE SKIP LOCKED, using atomic guarded decrements and a bounded short contention retry. Bind each receipt to its credited bucket in the same transaction. An insufficient reservation rolls back receipt/race-receipt insertion and all credit changes before the current backlog response. Preserve rejection tombstones and every acknowledgement/conflict rule. Never treat skipped locked buckets as proof of a globally empty pool; distinguish temporary contention from true exhaustion.",
+      "duplicates": "Existing identical receipts need no new admission credit and are acknowledged even when capacity is exhausted. Conflicting or concurrently inserted IDs are resolved by database uniqueness and stored ownership/payload validation; no trusted client identity or process-local cache is substituted.",
+      "completion": "A client receipt keeps its credit until every required player/derived task commits. The last child marks full completion and returns exactly one credit in the same transaction; batch returns are grouped by bucket and lock buckets in deterministic order. Worker crashes cannot leak or double-return capacity. Privacy cancellation follows the same terminal transition. Avoid a new row update for every individual credit by grouping bucket allocations/returns, and measure write/WAL amplification.",
+      "server_events": "Remain durable inside the existing authority transaction and do not consume the client backlog pool. Assign routing/commit position through bounded per-partition append coordination; keep it at the transaction tail and audit every caller. No waiting for projection and no new external IO in race completion. Monitor and provision server-event backlog separately; never drop authoritative events to protect analytics latency."
+    },
+    "ordering_and_completeness": {
+      "append": "Use a small separate per-partition append state to allocate receipt positions transactionally. All writers for a partition serialize only append-position publication at the transaction tail; committed positions therefore have no unresolved earlier append. Allocation and receipt insertion roll back together. A sequence object or process timestamp alone is not a commit-order proof.",
+      "projection": "Player-stage cursors advance with committed state and derived outbox insertion. The full-completion frontier cannot pass a receipt whose required child work is unfinished. Owner takeover resumes from persisted state; global ordering across unrelated players is not required.",
+      "reporting": "Capture committed input positions for every registered partition in one consistent snapshot, then establish which captured receipts are fully applied. Include derived tasks, pending migration rows, errors and retired/deleted receipts in that accounting. Do not use SKIP LOCKED to establish completeness. Idle partitions with no new committed input can be complete without waiting for a heartbeat.",
+      "contract": "Distinguish processed accepted-input barriers from business occurrence time. Preserve the accepted seven-day late-arrival window and provisional cohort semantics. Do not silently reinterpret processed_through as MAX(last_update). Introduce versioned coverage metadata and matching Studio reads if the legacy field cannot express the new barrier. Publish the last complete generation with its age while newer work is pending. Replace whole-system queue-empty maturity tests with completeness of the captured input barrier; otherwise continuously arriving valid telemetry would keep old cohorts perpetually provisional. Late-arrival/follow-up maturity remains an independent condition."
+    },
+    "privacy": {
+      "player_facts": "Route profile, day/session/person cleanup through the same player ownership guard as projection and check the existing deleted-account tombstone after acquiring it.",
+      "shared_entity_facts": "Publication reducers check creator tombstones under their entity guard. Erasure enumerates owned retained versions in indexed bounded batches and takes those same entity guards, including versions for which no ProductPublication row exists yet; this fences in-flight first creation as well as existing facts. Cancel/redact pending work that carries private references according to the existing policy.",
+      "boundaries": "Do not introduce deletion of already anonymous historical aggregates or refunds to authoritative counters without a separately reviewed policy. Raw-event retirement, server tombstones and account cleanup must remain compatible with existing deduplication and erasure contracts."
+    },
+    "maintenance_and_operations": {
+      "retention": "Move maintenance to independent bounded transactions. Never delete/compact raw evidence needed by pending derived work. Use the same ownership rules and deterministic lock ordering as the relevant projector. Preserve current client retry windows and permanent server deduplication tombstones.",
+      "compaction": "Only fold a contribution generation once, with its merge checkpoint and prepared summary updated atomically. New writes go to a newer tail, so compaction cannot miss or double a concurrent delta. Preserve historical baselines and keep tail size bounded. Do not rebuild from retired raw data.",
+      "scheduling": "Remove unconditional busy-queue sleeps as a throughput cap; use explicit CPU/connection/time budgets and idle backoff. Separate entity reducers and maintenance from player projection scheduling so a hot map or cleanup backlog cannot stop player work.",
+      "observability": "Record ingestion p95/p99, per-partition throughput and oldest pending receipt, all-stage visibility age, free/reserved admission credits and bucket contention, append/owner lock waits, retries/quarantine, derived backlog, query plans, pool waits, RSS, WAL/disk growth and gameplay latency. Backpressure remains explicit."
+    }
+  },
+  "delivery_plan": [
+    {
+      "step": 1,
+      "deliverable": "Reference fixtures, contention reproduction and protocol contracts",
+      "work": "Inventory client ingestion, server-event callers, simulator writers, privacy/Studio erasure and every reporting consumer. Define ownership keys, merge rules, coverage semantics and exact backlog behavior. Freeze representative existing profile/aggregate baselines and an ordered event corpus for a serial reference.",
+      "gate": "Reference includes duplicate/conflicting events, late earlier events, negative corrections, first creation, cross-player publication, capped maps, erasure and BIGINT boundaries. Reproduce ingress waiting behind current projection in disposable PostgreSQL."
+    },
+    {
+      "step": 2,
+      "deliverable": "Expansion migration and short independent ingestion",
+      "work": "Add versioned routing/append metadata, actor/derived progress, admission-credit buckets and required indexes using bounded backfill and large-table-safe index creation. Preserve event IDs and old prepared rows. Initially run the compatible projector in a serial mode while establishing the new durable receipt protocol.",
+      "gate": "Ingestion on unrelated partitions, and on a partition with an analytical batch held open, does not wait for that analytical owner. Preserve the global backlog ceiling and duplicate acceptance at full capacity. No new per-event global metadata lock."
+    },
+    {
+      "step": 3,
+      "deliverable": "Parallel player projection, keyed reducers and prepared reporting",
+      "work": "Implement player ownership, additive partials, transactional derived work, publication/map ownership, full-completion accounting, privacy fences, bounded maintenance and checkpointed rollups. Readers combine frozen historical baseline with the new contributions using complete-generation coverage.",
+      "gate": "All correctness cases match the serial reference at the same input barrier. No shared global row is written on the receipt or projection paths. New report grouping occurs before logical limits and pagination; raw history is not queried by dashboard reads."
+    },
+    {
+      "step": 4,
+      "deliverable": "Measured rollout and recovery runbook",
+      "work": "Deploy protocol-compatible readers/writers to every role before activation. Backfill pending receipts in indexed bounded batches. At cutover drain/fence old projectors and writers, reconcile reserved credits/pending receipts, freeze the aggregate baseline and migrate cursors. Validate in disposable/canary scopes before increasing production workers. If the existing pending client population exceeds the selected capacity, drain under the old protocol or explicitly provision capacity first; do not discard accepted receipts to fit the new accounting.",
+      "gate": "Old and new projectors cannot apply the same event. Preserve every pre-cutover prepared total, including facts whose raw evidence has retired. Post-cutover rollback reduces concurrency using the new protocol; returning to legacy binaries requires an explicit tail-consolidation/reconciliation procedure. Deployment remains separately authorized."
+    }
+  ],
+  "validation_gates": {
+    "correctness": [
+      "Concurrent duplicate requests, mismatched owners/payloads and replay after lost acknowledgements have exactly one durable receipt and one intended effect.",
+      "Force first-row creation races for profiles, sessions, publications and diagnostic contexts. Verify no lost updates, duplicate counts or unique-key races.",
+      "Hold a player projector open while ingesting in its partition and another partition; verify analytical ownership does not block ingress and unrelated projectors progress.",
+      "Kill workers before/after each commit boundary, between player/derived stages and during summary compaction. Restart without double effects or admission-credit leaks.",
+      "Run account erasure during actor projection, publication first creation, child completion and retained-version cleanup. Once cleanup passes its fence, delayed work cannot recreate private state.",
+      "Stall one partition, start uncommitted appends, commit out of order across different partitions, deliver late receipts, and quarantine a failing event. Coverage must not claim more complete data than actually applied.",
+      "Freeze a baseline with no raw history available; continue late restatements and BIGINT counter increments. Baseline plus tail must equal a reference with the same retained state and input order.",
+      "At full capacity, exact retries remain acknowledged and new acceptance is rejected without exceeding the ceiling. Downstream backlog continues holding reservations until all-stage completion.",
+      "Across competing admissions, terminal completions, erasures, retries and aborted transactions, free bucket credits plus nonterminal client reservations always equal the configured ceiling. No bucket exceeds its capacity, and a partial multi-bucket reservation rolls back completely."
+    ],
+    "capacity": {
+      "assumptions": "One million DAU times 100 events/day means about 1157 events/second average. A 10x example peak is about 11574 events/second, not requests/second: test batch sizes 1, 10 and 50 separately. These are illustrative planning assumptions, not measured user demand.",
+      "proposed_targets": [
+        "On declared production-like PostgreSQL resources, sustain 1200 events/second for at least one hour, then a 12000-events/second ten-minute interval with enough capacity/headroom to avoid a growing backlog. Record generator drops and scheduled latency.",
+        "Proposed initial ingress goals: p95 below 250 ms and p99 below 1 second, with acknowledgement only after commit. Proposed all-stage dashboard freshness: p95 below 30 seconds under supported load. These are engineering proposals requiring measurement, not approved service promises.",
+        "For well-distributed work with database headroom, four workers should deliver at least three times one-worker throughput. If that fails, identify the new limit before adding replicas; do not weaken correctness to pass.",
+        "Test at least 90 percent of applicable shared-fact traffic targeting one track/context, uneven player activity within existing rate controls, and concurrent gameplay. Diagnose any per-entity limit explicitly.",
+        "Gameplay latency under telemetry load should remain within an initially proposed 10 percent of the matched telemetry-disabled baseline. Record database CPU/IO, lock waits, pool waits, WAL, memory, storage multiplier and summary-read cost.",
+        "Default 50000 pending-client capacity provide only about 43 seconds of buffer at 1157 events/second and 4.3 seconds at a 10x peak with processors stopped. Select backlog capacity and recovery targets together; no unbounded queue is promised."
+      ],
+      "qualification": "No PostgreSQL concurrency or capacity measurements were executed for this planning task. The documented disposable fixture was unreachable in the prior review."
+    }
+  },
+  "alternatives": [
+    {
+      "option": "Remove the global lock and use SKIP LOCKED on individual event rows",
+      "decision": "Reject as the complete fix: different events can mutate the same player/entity state and shared counters."
+    },
+    {
+      "option": "Keep one projector and only split ingress counters",
+      "decision": "Useful intermediate deployment mode, but insufficient as the final million-player design because projection remains serial."
+    },
+    {
+      "option": "Move directly to a broker/streaming analytics platform",
+      "decision": "Defer: it adds infrastructure, delivery and migration concerns and does not itself solve ownership, deduplication or historical-data preservation. Reconsider only if measured PostgreSQL storage/WAL/throughput becomes the limiting factor."
+    },
+    {
+      "option": "Redistribute players whenever the worker count changes",
+      "decision": "Reject: ownership would move while old work remains. Keep fixed logical partitions and separately assign workers."
+    }
+  ],
+  "final_assessment": "The refined plan removes the global per-batch mutex without relying on unsafe concurrent profile updates, quota oversubscription or a historical rebuild. It is a substantial pipeline refactor with additional partial-state/derived-work storage and more explicit reporting coverage. It is suitable for implementation in gated slices; the requested load remains unproven until PostgreSQL concurrency, skew, end-to-end freshness and gameplay-interference tests pass.",
+  "validation_performed": "Read-only inspection of the listed source paths, existing concurrency/backlog/privacy/reporting tests and official PostgreSQL locking/isolation documentation. No runtime source was changed, no tests were represented as newly passed, no physical-device test, account mutation or deployment was performed.",
+  "references": [
+    "https://www.postgresql.org/docs/17/sql-select.html",
+    "https://www.postgresql.org/docs/17/transaction-iso.html",
+    "https://www.postgresql.org/docs/17/explicit-locking.html"
+  ],
+  "reviewed_source_sha256": {
+    "backend/bmt_backend/network_models.py": "af35eb5a097ac3331e011d4a35d59ae3231353e91a5187315f0b2305daf91366",
+    "backend/bmt_backend/privacy.py": "3cfba88708e1af64554fcd2687b251116c3c7fa08c2b0bfa31656de763ada40c",
+    "backend/bmt_backend/product_analytics.py": "acda4cf96e019ac01057519fca620f3e09618a01fc01c3adef574db00bc26fd7",
+    "backend/bmt_backend/product_worker.py": "5ef1868634984cee75ec79433f9f4890a2088dfd0d42754d390909862f0c0415",
+    "backend/bmt_backend/quality.py": "15ef4601a38cd126ba5493b8ba8ab40dbba70d2c0a061510cb220cd7b00ff4ad",
+    "backend/bmt_backend/quality_models.py": "f11c8b165df00391e1a5afb609eda1a6128e9f26ca9b5c53794d5d290bcf75f1",
+    "backend/bmt_backend/race_statistics.py": "b54a6490b38d2c85825396f9b6585931977d3b18304bdf1d2f40057627350f4f",
+    "backend/bmt_backend/race_statistics_models.py": "07fdf880b34d6cf52933bcc2ff552bcb14b85be6687eb966db2c80dd96443928",
+    "backend/bmt_backend/studio_analysis.py": "10c7ea88dc08c5cb81a185f0c836ea2d10e0ade6e2d9f9b894029134e394ce70",
+    "backend/bmt_backend/studio_erasure.py": "30bc9790cafa47ed04803f6ec77dde9184c302cc17c119e97e6e2f7b66dece07",
+    "backend/bmt_backend/studio_simulator_tick.py": "57b34cde508f1714ae30af02bfafe117f6ca70a71e1456bdde164402c49ab58a",
+    "backend/bmt_backend/telemetry.py": "d7caa156a499f7193e6b6e20aced9b28f073b7cb29d9347bffe82a0aff16dba2",
+    "backend/bmt_backend/telemetry_models.py": "61891d2f087ee38ee2ae05165cf77cca032befd0c725a61c2d72cd65ca9ddb5d",
+    "backend/tests/test_product_analytics.py": "30970022772cfda4a959a0051f901070e491869b0705b21e38fcc39edab03123"
+  },
+  "commands_run": [
+    "Read-only Get-Content and rg inspection of source, migrations, existing tests and project instructions.",
+    "Read-only git status and git diff to distinguish existing workspace changes.",
+    "Official PostgreSQL 17 documentation lookup for row locking, SKIP LOCKED, transaction snapshots and sequence behavior.",
+    "Python JSON validation and SHA256 fingerprinting of reviewed source files."
+  ]
+}

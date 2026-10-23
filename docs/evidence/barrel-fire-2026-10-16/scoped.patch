@@ -1,0 +1,878 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index fd58243..a1b66bc 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ # Project agent instructions
+ 
++## Burning barrel fire and collision override (2026-10-16)
++The owner rejects the burning-barrel flame and requests collision toppling. Replace flat cards with turbulent depth-clipped 3D fire, retaining embers/smoke/warm light; share it with existing burning-car openings. Deterministic supported tipping/rolling/settling and attached effects retain exact replay/rewind/restart, old soft-prop snapshots and the outer recorder shape. One shared drum/128KiB field and existing32-fire/four-light bounds remain; retained editor controllers and prepared-world dictionaries are isolated. Physics0.61/prop version10 fence the change. Focused54headless/71Compatibility/71Mobile, Night128native, Winter595/browser88/prepared162/parser833 and local verifier70 pass. Initial impulse/fixture/import and concurrent spline-staging failures are retained in docs/BURNING_BARREL_REFINEMENT_2026_10_16.md and its evidence report/scoped checkpoint. Concurrent Night terrain and spline rules remain separate. Owner/phone acceptance and matching client/verifier rollout remain; no phone test/attachment check/APK/live backend/deployment or FPS claim.
++
+ ## Challenge Club discovery and rewards override (2026-10-16)
+ The owner requests better challenge presentation, motivation, rewards and discovery without entering codes. Local Challenge Club opens Discover with public/friend browsing, track/driver search, car/type filters, direct Join & race, actual outlines/times and pinned reward goals; Joined/Created and invitation links remain. Public/private creation is explicit, existing invitations stay private, and sharing consent/build/block/account fences remain. Existing50-Coin completion/100-Coin competitive milestones require real verified goals, each once per challenge; empty/tied groups get no competitive bonus. Three new reward challenges per UTC submission day, registered accounts only; ordinary race rewards/scores remain. Migration0041 follows concurrent Studio0040. Native68headless/80Compatibility/80Mobile, original60/165/menu47/source27, parser831, real HTTP49+50, backend92/3 existing skips and final discovery14 pass. See docs/CHALLENGE_CLUB_2026_10_16.md and its report for actual captures/commands/scoped patch. Frozen source captures isolate concurrent class edits; native test teardown warnings are retained. Owner/phone/balancing and matching service/client rollout remain; no phone/APK/deployment/FPS claim.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 0562959..284eeb4 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-16 BBF01-BBF03/G01/R01/Q01: The owner rejects the burning-barrel flame and requests collision toppling. Replace flat cards with turbulent depth-clipped 3D fire, retaining embers/smoke/warm light; share it with existing burning-car openings. Deterministic supported tipping/rolling/settling and attached effects retain exact replay/rewind/restart, old soft-prop snapshots and the outer recorder shape. One shared drum/128KiB field and existing32-fire/four-light bounds remain; retained editor controllers and prepared-world dictionaries are isolated. Physics0.61/prop version10 fence the change. Focused54headless/71Compatibility/71Mobile, Night128native, Winter595/browser88/prepared162/parser833 and local verifier70 pass. Initial impulse/fixture/import and concurrent spline-staging failures are retained in docs/BURNING_BARREL_REFINEMENT_2026_10_16.md and its evidence report/scoped checkpoint. Concurrent Night terrain and spline rules remain separate. Owner/phone acceptance and matching client/verifier rollout remain; no phone test/attachment check/APK/live backend/deployment or FPS claim.
++
+ 2026-10-16 WH01-WH04/G01/R01/Q01: Night Buildings gains an original abandoned drive-through Warehouse with raised shutters, open ends, solid side/end walls, broken industrial cladding/glazing and exposed trusses. Preserve the actual road; the collapsed central roof keeps the original camera/car visible, and buried footings seat at minimum scale.9,790triangles/two lamps share existing bounded Night meshes/lights; prop version9 fences prepared assets. Six scales/five rotations, all-five-car bidirectional driving and wall sweeps, native browser placement/undo/redo and canonical replay/presentation pass264headless/282Compatibility/282Mobile; Night103/props834/prepared85/parser823 pass. Actual views/commands/initial fixture and budget corrections/scoped checkpoint: docs/DRIVE_THROUGH_WAREHOUSE_2026_10_16.md. Open-road practice captures retain route issues and synthetic hitch/FPS diagnostics; no full timed-circuit or performance claim. Owner/phone acceptance remains; no phone test/attachment check/APK/backend/deployment.
+ 
+ 2026-10-16 BRA01-BRA06: reviewed the deployed backend Studio as a player-analysis, quality and monetisation/production tool. All15 primary views and six subroutes measured through90 read-only browser visits plus8 inspector visits; no JS/read/layout failures, current desktop samples120-400ms. Exact deployed-code PostgreSQL10k/50k fixtures retain4-SQL dashboards with no raw scan; temporary resources removed. Four isolated correctness reproductions confirm failure-code drill-down, mixed failure taxonomy, missing schema context and intraday/day-grain mismatch. Major roadmap: metric/population/coverage trust, independent alerts/incidents, cohort and release analysis, provider-backed monetisation/economy, experiments and governance. Existing all-player totals retained; newer local0037/0038/physics0.60 are separate. Detailed dispositions, evidence, risks and acceptance gates: docs/BACKEND_PRODUCT_REVIEW_2026_10_16.md. Review/plan only: no runtime source edit, live data mutation, deployment, phone check/test or APK action.
+diff --git a/backend/deploy/stage_verifier.py b/backend/deploy/stage_verifier.py
+index bbf4bf3..a1f43de 100644
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -49,6 +49,7 @@ SCRIPTS = {
+         "rally_handbrake",
+         "launch_start",
+         "light_props",
++        "burning_barrel",
+         "breakable_props",
+         "loose_tyres",
+         "track_hazards",
+diff --git a/backend/tests/fixtures/verified_oval.json b/backend/tests/fixtures/verified_oval.json
+index e26a697..f7b9bd9 100644
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64413,7 +64413,7 @@
+     "engine_version": "4.7.2.stable.official.ed1daf0bf",
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.60",
++    "physics_version": "arcade-planar-0.61",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+     "rules_key": "standing-5-road-gates-v21",
+diff --git a/backend/tests/test_verifier.py b/backend/tests/test_verifier.py
+index 96f432a..4579cae 100644
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -77,7 +77,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
+     fixtures = ROOT / "game/tests/fixtures"
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.60"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.61"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+ 
+diff --git a/docs/BURNING_BARREL_REFINEMENT_2026_10_16.md b/docs/BURNING_BARREL_REFINEMENT_2026_10_16.md
+new file mode 100644
+index 0000000..349163d
+--- /dev/null
++++ b/docs/BURNING_BARREL_REFINEMENT_2026_10_16.md
+@@ -0,0 +1,26 @@
++# Burning barrel fire and collision refinement - 2026-10-16
++
++The burning barrel now has turbulent 3D fire with a hot core, orange tongues, rising embers, smoke and warm light. This replaces the five flat flame cards per source. The burning car uses the same revised fire at its two existing openings. The native object-browser photograph includes the full flame height.
++
++![Native barrel preview](evidence/barrel-fire-2026-10-16/night-regression/gl_compatibility/burning_barrel.png)
++
++![Barrel resting on its side](evidence/barrel-fire-2026-10-16/mobile/fall-179.png)
++
++BBF01 covers the fire's volume, turbulence, depth occlusion and native presentation. BBF02 covers car impacts, supported tipping, ground motion and settling. BBF03 covers attached effects, replay, rewind, restart, editor ownership and bounded resources.
++
++An impact transfers momentum and tips the drum about its supported centre. Gravity carries a sufficiently strong hit past the balance point, then the drum bounces and rests on its side. Sideways motion rotates the cylinder; gentle nudges can rock back upright. A car on a bridge or in the air cannot hit a ground barrel. The flame, smoke, sparks and light follow the fuel opening while the flame continues rising vertically. Simulation owns the complete motion, so presentation never integrates a separate rigid body or changes a run.
++
++Only burning barrels extend their existing movable-prop row from five to ten values. The outer vehicle snapshot and recorded input schemas remain unchanged. Physics `arcade-planar-0.61` identifies the new behavior; the local canonical verifier stages the new helper. Existing saved tracks and old leaderboards are retained. Matching client/verifier rollout remains a separate action. Concurrent spline-gate rules and Night-ground work are preserved and excluded from this task's patch.
++
++There is one shared immutable drum mesh and one shared 32-cubed RGBA noise field (128 KiB). Fire uses bounded 32-step volume integration with two noise samples per step. One world controller retains the original caps of 32 fire sources, 224 embers, 96 smoke cards, 384 fireflies and four added shadowless lights. Moving source buffers update only when the drum pose changes. Editor individuals suppress their own controllers; the retained editor shares one aggregate controller. Prepared worlds own independent source dictionaries, materials and instance buffers. Prop version `authored-props-10-volume-fire-barrel` fences old prepared assets.
++
++Actual validation with Godot 4.7.2 and isolated local APPDATA:
++
++- Focused barrel suite: 54 headless, 71 Compatibility and 71 Mobile checks pass. All five cars knock the barrel onto its side; JSON input replay and rewind branches reproduce exact snapshots. Three prop scales, gentle nudges, elevated/airborne separation, native fuel/light attachment, cached-world independence, retained-editor caps and real race pause/restart pass.
++- Native views show multiple fire times and angles, the falling sequence, the final supported pose, browser framing and actual gameplay impacts. Paused final shader pixels are exact after render settling; changed fire time changes native pixels.
++- Existing Night suite: 128 Compatibility checks pass, including mixed car/barrel source limits, thumbnails and editor refresh/deletion. Winter construction/breakables: 595 headless; object browser: 88; prepared race resources: 162; full script parser: 833 pass. The preserved original movable-prop implementation produces exact snapshots for all nine previous soft kinds over 180 steps each.
++- Local verifier suite: 70 pass. Its first run overlapped concurrent spline-rule edits: the temporary staged project lacked `SplineGateCorridor` and one assertion changed during the run. The complete rerun passes after that independent staging update.
++
++Initial checks exposed insufficient impulse caps for the smaller cars and large decorative scales, a settling fixture that ended too early for the smallest drum, a legacy three-value input decode, insufficient render settling and the removed circular footprint query. These were corrected; their original logs remain. The first soft volume render was also refined for clearer tongues and less visible integration banding. Initial editor import encountered the shared Windows audio DLL temporary-copy lock; normal native runs and the final whole-project parser pass.
++
++Actual commands, logs, hashes and the isolated task-only checkpoint are recorded in [report.json](evidence/barrel-fire-2026-10-16/report.json). The retained gameplay captures use paused scripted practice views with synthetic telemetry; they are not FPS or hitch measurements. Owner visual/impact tuning and physical-phone performance acceptance remain. No phone test, attachment check, APK, live backend change or deployment was performed.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 10e3cc6..20b3403 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-16 BBF01-BBF03/G01/R01/Q01: The owner rejects the burning-barrel flame and requests collision toppling. Replace flat cards with turbulent depth-clipped 3D fire, retaining embers/smoke/warm light; share it with existing burning-car openings. Deterministic supported tipping/rolling/settling and attached effects retain exact replay/rewind/restart, old soft-prop snapshots and the outer recorder shape. One shared drum/128KiB field and existing32-fire/four-light bounds remain; retained editor controllers and prepared-world dictionaries are isolated. Physics0.61/prop version10 fence the change. Focused54headless/71Compatibility/71Mobile, Night128native, Winter595/browser88/prepared162/parser833 and local verifier70 pass. Initial impulse/fixture/import and concurrent spline-staging failures are retained in docs/BURNING_BARREL_REFINEMENT_2026_10_16.md and its evidence report/scoped checkpoint. Concurrent Night terrain and spline rules remain separate. Owner/phone acceptance and matching client/verifier rollout remain; no phone test/attachment check/APK/live backend/deployment or FPS claim.
++
+ 2026-10-16 WH01-WH04/G01/R01/Q01: Night Buildings gains an original abandoned drive-through Warehouse with raised shutters, open ends, solid side/end walls, broken industrial cladding/glazing and exposed trusses. Preserve the actual road; the collapsed central roof keeps the original camera/car visible, and buried footings seat at minimum scale.9,790triangles/two lamps share existing bounded Night meshes/lights; prop version9 fences prepared assets. Six scales/five rotations, all-five-car bidirectional driving and wall sweeps, native browser placement/undo/redo and canonical replay/presentation pass264headless/282Compatibility/282Mobile; Night103/props834/prepared85/parser823 pass. Actual views/commands/initial fixture and budget corrections/scoped checkpoint: docs/DRIVE_THROUGH_WAREHOUSE_2026_10_16.md. Open-road practice captures retain route issues and synthetic hitch/FPS diagnostics; no full timed-circuit or performance claim. Owner/phone acceptance remains; no phone test/attachment check/APK/backend/deployment.
+ 
+ 2026-10-16 BRA01-BRA06: reviewed the deployed backend Studio as a player-analysis, quality and monetisation/production tool. All15 primary views and six subroutes measured through90 read-only browser visits plus8 inspector visits; no JS/read/layout failures, current desktop samples120-400ms. Exact deployed-code PostgreSQL10k/50k fixtures retain4-SQL dashboards with no raw scan; temporary resources removed. Four isolated correctness reproductions confirm failure-code drill-down, mixed failure taxonomy, missing schema context and intraday/day-grain mismatch. Major roadmap: metric/population/coverage trust, independent alerts/incidents, cohort and release analysis, provider-backed monetisation/economy, experiments and governance. Existing all-player totals retained; newer local0037/0038/physics0.60 are separate. Detailed dispositions, evidence, risks and acceptance gates: docs/BACKEND_PRODUCT_REVIEW_2026_10_16.md. Review/plan only: no runtime source edit, live data mutation, deployment, phone check/test or APK action.
+diff --git a/game/editor/creator_catalog.gd b/game/editor/creator_catalog.gd
+index 3d69b25..7849820 100644
+--- a/game/editor/creator_catalog.gd
++++ b/game/editor/creator_catalog.gd
+@@ -62,7 +62,7 @@ const ASSETS: Array = [
+  ["ice_lantern","Ice lantern","Props",["ice_lantern"]]
+ ]
+ const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet","firefly_bush"]
+-const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale","snowman","snow_lantern","ice_lantern"]
++const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale","snowman","snow_lantern","ice_lantern","burning_barrel"]
+ const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
+ 
+ static func family(kind: String) -> Array:
+@@ -74,6 +74,7 @@ static func label(kind: String) -> String:
+ 	return {"egypt_pyramid":"Pyramid","egypt_obelisk":"Obelisk","egypt_column":"Lotus column","egypt_column_broken":"Broken column","egypt_wall":"Temple wall","oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+ 
+ static func behavior(kind: String) -> String:
++	if kind=="burning_barrel": return "Movable / tips and rolls on impact"
+ 	if kind == "abandoned_warehouse": return "Drive through the open ends / solid side walls"
+ 	if kind == "snowman": return "Breaks into soft snow chunks and powder"
+ 	if kind == "snow_lantern": return "Crumbles into snow; the candle goes out"
+diff --git a/game/editor/object_thumbnail.gd b/game/editor/object_thumbnail.gd
+index 3368a06..b7b807f 100644
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -137,6 +137,7 @@ static func _render_preview(button: Button, kind: String, biome: String, color:
+ 	camera.look_at_from_position(camera.position,Vector3.ZERO)
+ 	var bounds: AABB=_mesh_bounds(kit)
+ 	if kind=="burning_car": bounds=bounds.merge(AABB(Vector3(-0.8,0.9,-0.45),Vector3(2.8,1.5,0.9)))
++	if kind=="burning_barrel": bounds=bounds.merge(AABB(Vector3(-0.54,0.83,-0.54),Vector3(1.08,1.45,1.08)))
+ 	var center: Vector3=bounds.get_center()
+ 	var shadow := MeshInstance3D.new()
+ 	shadow.name = "PreviewContact"
+diff --git a/game/editor/placed_object_batches.gd b/game/editor/placed_object_batches.gd
+index b1c6948..bdad92c 100644
+--- a/game/editor/placed_object_batches.gd
++++ b/game/editor/placed_object_batches.gd
+@@ -46,6 +46,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current:
+ 				node.theme_id = kit.theme_id
+ 				node.colors = kit.colors
+ 				node.editor_preview = true
++				node._suppress_night_fx = true
+ 				var single := NativeTrack.new()
+ 				single.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
+ 				await node._build_placed_objects(single)
+diff --git a/game/tests/fixtures/barrel_fire_before/light_props.gd.txt b/game/tests/fixtures/barrel_fire_before/light_props.gd.txt
+new file mode 100644
+index 0000000..36be582
+--- /dev/null
++++ b/game/tests/fixtures/barrel_fire_before/light_props.gd.txt
+@@ -0,0 +1,36 @@
++class_name LightProps
++extends RefCounted
++## Deterministic, forgiving movable props; previous attempts cannot change a run.
++static func step(state: VehicleState, objects: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	var props: Array = []
++	for object: Dictionary in objects:
++		if object.kind in CreatorCatalog.SOFT: props.append(object)
++	if state.light_props.is_empty():
++		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
++	BreakableProps.prepare(state,props)
++	for index: int in range(props.size()):
++		if props[index].kind in BreakableProps.KINDS:
++			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
++			continue
++		var row: Array = state.light_props[index]
++		var p := Vector2(row[0],row[1])
++		var velocity := Vector2(row[2],row[3])
++		var radius: float = CreatorObjects.size_of(props[index]).x*0.35
++		if not state.track_elevated and state.jump_height<=0:
++			var delta: Vector2 = p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++			if delta.length()<car_radius+radius:
++				var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
++				var approach: float = (state.velocity-velocity).dot(normal)
++				if approach>0:
++					var mass: float = 8.0 if props[index].kind in ["cone","chevron","braking_board"] else 22.0
++					var impulse: float = minf(approach/(1.0/car_mass+1.0/mass),car_mass*0.18)
++					state.velocity -= normal*impulse/car_mass
++					velocity += normal*impulse/mass
++					row[4] = 1.0
++		velocity = velocity.limit_length(16).move_toward(Vector2.ZERO,5.0*dt)
++		var next: Vector2 = p+velocity*dt
++		var collision: Vector3 = contact.call(next,radius,false)
++		if collision.z<=0: p=next
++		else: velocity=Vector2.ZERO
++		row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
++	BreakableProps.step_fragments(state,contact,previous,dt,car_mass,car_radius)
+diff --git a/game/tests/test_burning_barrel.gd b/game/tests/test_burning_barrel.gd
+new file mode 100644
+index 0000000..95877c5
+--- /dev/null
++++ b/game/tests/test_burning_barrel.gd
+@@ -0,0 +1,161 @@
++extends SceneTree
++const OUTPUT: String="res://../docs/evidence/barrel-fire-2026-10-16"
++var checks: int=0
++var failures: int=0
++var config: HandlingConfig=load("res://resources/balanced.tres")
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks+=1
++	if not ok: failures+=1; print("FAIL: ",label)
++func object(kind: String="burning_barrel", scale: float=1.0) -> Dictionary:
++	return {"kind":kind,"position":[0.0,0.0],"rotation":37.0,"scale":scale}
++func clear(_p: Vector2,_radius: float,_layer: bool) -> Vector3: return Vector3.ZERO
++func advance(state: VehicleState, objects: Array) -> void:
++	LightProps.step(state,objects,clear,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++	state.tick+=1
++func hit(state: VehicleState, objects: Array, speed: float=12.0) -> void:
++	state.position=Vector2(-0.2,0); state.velocity=Vector2(speed,0); advance(state,objects)
++func run() -> void:
++	root.size=Vector2i(1280,720); root.content_scale_size=root.size
++	for scale: float in [0.5,1.0,2.5]:
++		var objects: Array=[object("burning_barrel",scale)]; var state:=VehicleState.new()
++		hit(state,objects)
++		check(state.light_props[0].size()==10 and state.light_props[0][4]>0,"impact starts physical tipping at scale "+str(scale))
++		var saved: Dictionary=RewindHistory.properties(state); var snapshot: Array=state.snapshot()
++		state.position=Vector2(100,100)
++		for i: int in range(720): advance(state,objects)
++		print("BARREL_SETTLED: ",scale," ",state.light_props[0])
++		check(is_equal_approx(state.light_props[0][4],PI*0.5),"barrel falls onto its side at scale "+str(scale))
++		check(Vector2(state.light_props[0][2],state.light_props[0][3]).length()==0,"fallen barrel comes to rest")
++		var later: Array=state.snapshot(); RewindHistory.restore(state,saved)
++		check(state.snapshot()==snapshot,"rewind restores exact upright-to-falling state")
++		state.position=Vector2(100,100)
++		for i: int in range(720): advance(state,objects)
++		check(state.snapshot()==later,"restored falling branch is exact")
++	for airborne: bool in [false,true]:
++		var state:=VehicleState.new(); state.track_elevated=not airborne; state.jump_height=1.0 if airborne else 0.0
++		hit(state,[object()])
++		check(state.light_props[0][4]==0 and state.light_props[0][2]==0,"airborne and bridge cars cannot knock over ground barrels")
++	var gentle:=VehicleState.new(); hit(gentle,[object()],0.5); gentle.position=Vector2(100,100)
++	for i: int in range(300): advance(gentle,[object()])
++	check(gentle.light_props[0][4]==0,"gentle nudge rocks back upright")
++	await legacy_exact()
++	driven_replay()
++	await presentation()
++	await game_lifecycle()
++	if DisplayServer.get_name()!="headless": await captures()
++	print("BURNING_BARREL: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++func legacy_exact() -> void:
++	var old:=GDScript.new()
++	old.source_code=FileAccess.get_file_as_string("res://tests/fixtures/barrel_fire_before/light_props.gd.txt").replace("\r\n","\n").replace("class_name LightProps\n","")
++	check(old.reload()==OK,"preserved original movable implementation compiles")
++	for kind: String in CreatorCatalog.SOFT:
++		if kind=="burning_barrel": continue
++		var a:=VehicleState.new(); var b:=VehicleState.new(); var objects: Array=[object(kind)]
++		var exact: bool=true
++		for i: int in range(180):
++			a.position=Vector2(-0.2,0) if i%60==0 else Vector2(100,100); a.velocity=Vector2(12,0) if i%60==0 else Vector2.ZERO
++			b.position=a.position; b.velocity=a.velocity
++			old.step(a,objects,clear,a.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			LightProps.step(b,objects,clear,b.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			exact=exact and a.snapshot()==b.snapshot()
++		check(exact,kind+" original motion and damage stay exact over180 steps")
++func document() -> Dictionary:
++	var doc: Dictionary=TrackDocument.create_default(); doc.theme="night_city"; doc["automatic_scenery"]=false
++	doc.paint=[{"surface":0,"width":40.0,"shape":"square","points":[[0,0]]}]; doc.objects=[object()]
++	return doc
++func driven_replay() -> void:
++	var track: NativeTrack=TrackCompiler.compile(document())
++	check(track!=null and track.cell_at(Vector2.ZERO)==0,"barrel is movable instead of a baked solid wall")
++	for car: String in VehicleCatalog.IDS:
++		var a:=VehicleSimulation.new(VehicleCatalog.config(car)); var b:=VehicleSimulation.new(VehicleCatalog.config(car))
++		a.reset(Vector2(-9,0),PI*0.5); b.reset(Vector2(-9,0),PI*0.5)
++		var inputs: Array=[]
++		for i: int in range(220):
++			var frame:=DriveFrame.new(); frame.throttle=255; inputs.append(frame.packed()); a.step(frame,track)
++		for values: Array in JSON.parse_string(JSON.stringify(inputs)):
++			var frame:=DriveFrame.new(); frame.steer=values[0]; frame.throttle=values[1]; frame.brake=values[2]; frame.handbrake=values[3] if values.size()>3 else 0; b.step(frame,track)
++		check(a.state.snapshot()==b.state.snapshot(),car+" driving collision replays exactly from JSON")
++		print("BARREL_DRIVE: ",car," ",a.state.position," ",a.state.light_props)
++		check(a.state.light_props[0][4]>1.4 and a.state.position.x>1,car+" knocks barrel onto its side and passes")
++func presentation() -> void:
++	var kit:=NativeTrackVisual.new(); kit.theme_id="night_city"; root.add_child(kit); kit._build_placed_objects(TrackCompiler.compile(document()))
++	var fx: NightPropEffects=kit.get_node("NightPropEffects")
++	check(fx.barrel_sources.size()==1 and fx.get_node("Flames").multimesh.mesh is BoxMesh,"barrel-only world owns one actual fire volume")
++	check(NightFireVolume.field.get_width()==32 and NightFireVolume.field.get_depth()==32,"fire noise has one bounded32-cubed field")
++	var state:=VehicleState.new(); hit(state,[object()]); state.position=Vector2(100,100)
++	for i: int in range(50): advance(state,[object()])
++	var before: Array=state.snapshot(); kit.update_light_props(state)
++	var node: Node3D=kit.light_instances[0]; var fuel: Vector3=BurningBarrelVisual.fuel(node)
++	check(state.snapshot()==before,"presentation leaves complete canonical snapshot exact")
++	if DisplayServer.get_name()!="headless":
++		check(fx.get_node("Flames").multimesh.get_instance_transform(0).origin.is_equal_approx(fuel+Vector3.UP*0.725),"fallen fire source follows the actual fuel opening")
++	check(fx.warm_lights[0].position.is_equal_approx(fuel+Vector3.UP*0.29),"warm light follows falling barrel")
++	kit.update_light_props(VehicleState.new())
++	check(node.position.is_equal_approx(Vector3(0,0.564,0)) and node.basis.y.is_equal_approx(Vector3.UP),"restart restores exact upright supported pose")
++	kit.update_light_props(state); var pose: Transform3D=node.transform
++	state.light_props[0][0]+=1; kit.update_light_props(state); state.light_props[0][0]-=1; kit.update_light_props(state)
++	check(node.transform==pose,"in-place replay rows cannot accumulate centre height")
++	var cache=preload("res://track/prepared_world_cache.gd"); cache.remember(["barrel-fire-test"],kit,TrackCompiler.compile(document()))
++	var restored:=NativeTrackVisual.new(); root.add_child(restored); check(cache.restore(["barrel-fire-test"],restored),"prepared world restores falling barrel nodes")
++	var copy: NightPropEffects=restored.get_node("NightPropEffects")
++	check(copy.barrel_sources.size()==1 and copy!=fx and copy.surfaces[0]!=fx.surfaces[0],"prepared fire owns its source descriptors and material")
++	restored.update_light_props(VehicleState.new()); check(restored.light_instances[0].basis.y.is_equal_approx(Vector3.UP),"cached fallen barrel resets upright")
++	var original_fuel: Vector3=fx.barrel_sources[0].fuel
++	check(original_fuel==fuel,"restored world cannot mutate original fuel descriptors")
++	kit.queue_free(); restored.queue_free(); await process_frame
++	var doc: Dictionary=document(); doc.objects=[]
++	for i: int in range(40):
++		var item: Dictionary=object(); item.position=[i*2,0]; doc.objects.append(item)
++	kit=NativeTrackVisual.new(); kit.theme_id="night_city"; kit.colors=TrackTheme.palette("night_city"); kit.editor_preview=true; root.add_child(kit)
++	var batches=preload("res://editor/placed_object_batches.gd").new(); await batches.refresh(kit,TrackCompiler.compile(doc),false,func() -> bool: return true)
++	check(kit.find_children("NightPropEffects","",true,false).size()==1,"retained editor has one shared fire controller")
++	fx=kit.get_node("NightPropEffects"); check(fx.warm_lights.size()==4 and fx.barrel_sources.size()==32,"dense editor retains four-light and32-fire bounds")
++	kit.queue_free(); await process_frame
++func game_lifecycle() -> void:
++	var game: Node=preload("res://core/game.tscn").instantiate(); game.initial_track=TrackCompiler.compile(document()); game.editor_test=true; root.add_child(game)
++	game.set_process(false); game.set_physics_process(false); game.paused=true
++	game.sim.reset(Vector2(-9,0),PI*0.5)
++	var frame:=DriveFrame.new(); frame.throttle=255
++	for i: int in range(220):
++		game.previous_position=game.sim.state.position; game.previous_heading=game.sim.state.heading
++		game.sim.step(frame,game.native_track)
++		game._present_frame(VehicleSimulation.STEP)
++		if DisplayServer.get_name()!="headless" and i in [0,85,110,150,219]:
++			for j: int in range(12): game._present_frame(0.016); await process_frame
++			await frames(); await save("game-impact-"+str(i))
++	check(game.track_ground.light_instances[0].basis.y.dot(Vector3.UP)<0.01,"actual race presents the barrel lying on its side")
++	var before: Array=game.sim.state.snapshot(); var fx: NightPropEffects=game.track_ground.get_node("NightPropEffects"); var t: float=fx.elapsed
++	game._present_frame(0.1); check(game.sim.state.snapshot()==before and fx.elapsed==t,"actual paused race freezes fire and canonical state")
++	game.restart(); game.paused=true; game._present_frame(0.016)
++	check(game.track_ground.light_instances[0].basis.y.is_equal_approx(Vector3.UP),"actual race restart stands the barrel upright")
++	game.queue_free(); await process_frame
++func frames(n: int=4) -> void:
++	for i: int in range(n): await process_frame
++	await RenderingServer.frame_post_draw
++func save(name: String) -> void:
++	var directory: String=ProjectSettings.globalize_path(OUTPUT+"/"+RenderingServer.get_current_rendering_method()); DirAccess.make_dir_recursive_absolute(directory)
++	check(root.get_texture().get_image().save_png(directory+"/"+name+".png")==OK,name+" native capture saved")
++func captures() -> void:
++	root.size=Vector2i(1280,720); root.content_scale_size=root.size
++	var stage:=Node3D.new(); root.add_child(stage)
++	var kit:=NativeTrackVisual.new(); stage.add_child(kit); var track: NativeTrack=TrackCompiler.compile(document()); kit.build(track,BridgePresentation.new(track))
++	var env:=WorldEnvironment.new(); env.environment=Environment.new(); env.environment.background_mode=Environment.BG_COLOR; env.environment.background_color=Color("070c18"); stage.add_child(env)
++	var moon:=DirectionalLight3D.new(); TrackTheme.apply_lighting("night_city",env.environment,moon); stage.add_child(moon)
++	var camera:=Camera3D.new(); stage.add_child(camera); camera.projection=Camera3D.PROJECTION_ORTHOGONAL; camera.size=3.7; camera.current=true
++	camera.look_at_from_position(Vector3(5,3.6,-7),Vector3(0,1.05,0))
++	var fx: NightPropEffects=kit.get_node("NightPropEffects"); fx.elapsed=0.8; fx._publish(); await frames(); await save("upright")
++	await frames(12)
++	var before: PackedByteArray=root.get_texture().get_image().get_data(); fx.advance(0.1,true); await frames()
++	if before!=root.get_texture().get_image().get_data(): await save("pause-diagnostic")
++	check(before==root.get_texture().get_image().get_data(),"paused volume has exact native pixels")
++	fx.elapsed=1.7; fx._publish(); await frames(); check(before!=root.get_texture().get_image().get_data(),"combustion changes actual native pixels"); await save("upright-1.7")
++	camera.look_at_from_position(Vector3(-6,3.0,-4),Vector3(0,1.05,0)); await frames(); await save("side-view")
++	var state:=VehicleState.new(); hit(state,[object()]); state.position=Vector2(100,100)
++	for tick: int in range(180):
++		advance(state,[object()]); kit.update_light_props(state); fx.advance(VehicleSimulation.STEP,false)
++		if tick in [5,14,29,60,179]:
++			var node: Node3D=kit.light_instances[0]; camera.look_at_from_position(node.position+Vector3(5,3.3,-7),node.position+Vector3.UP*0.5); await frames(); await save("fall-"+str(tick))
++	kit.update_light_props(VehicleState.new()); camera.look_at_from_position(Vector3(5,3.6,-7),Vector3(0,1.05,0)); await frames(); await save("restart")
++	stage.queue_free(); await process_frame
+diff --git a/game/tests/test_burning_barrel.gd.uid b/game/tests/test_burning_barrel.gd.uid
+new file mode 100644
+index 0000000..8683de5
+--- /dev/null
++++ b/game/tests/test_burning_barrel.gd.uid
+@@ -0,0 +1 @@
++uid://d4ag1hgeoumyu
+diff --git a/game/tests/test_night_props.gd b/game/tests/test_night_props.gd
+index d4bc5e1..81f924d 100644
+--- a/game/tests/test_night_props.gd
++++ b/game/tests/test_night_props.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Shipping geometry, saved placement, retained edits and independent effect clocks.
+-const OUTPUT: String="res://../docs/evidence/warehouse-2026-10-16/night-regression"
++const OUTPUT: String="res://../docs/evidence/barrel-fire-2026-10-16/night-regression"
+ var checks: int=0
+ var failures: int=0
+ var metrics: Array=[]
+@@ -52,7 +52,7 @@ func run() -> void:
+ 		var track: NativeTrack=TrackCompiler.compile(doc)
+ 		check(track!=null,kind+" compiles")
+ 		if track!=null:
+-			check(track.cell_at(Vector2.ZERO)==(0 if kind in ["firefly_bush","abandoned_warehouse"] else 4),kind+" has its intended ground behavior")
++			check(track.cell_at(Vector2.ZERO)==(0 if kind in ["firefly_bush","burning_barrel","abandoned_warehouse"] else 4),kind+" has its intended ground behavior")
+ 			check(TrackCompiler.compile(JSON.parse_string(JSON.stringify(doc))).content_hash==track.content_hash,kind+" saved JSON keeps compiled identity")
+ 	kit.free()
+ 	check(not CreatorObjects.solid_contains(object("burning_barrel"),Vector2(0.55,0.55)),"round barrel has no invisible square corner collision")
+@@ -72,7 +72,7 @@ func effects_and_cache() -> void:
+ 	var kit:=NativeTrackVisual.new(); kit.theme_id="night_city"; root.add_child(kit); kit._build_placed_objects(track)
+ 	var fx: NightPropEffects=kit.get_node("NightPropEffects")
+ 	check(fx.get_node("Fireflies").multimesh.instance_count==12,"one bush has twelve fireflies")
+-	check(fx.get_node("Flames").multimesh.instance_count==15 and fx.get_node("Embers").multimesh.instance_count==21 and fx.get_node("Smoke").multimesh.instance_count==9,"barrel and two car openings share bounded flame, ember and smoke instances")
++	check(fx.get_node("Flames").multimesh.instance_count==3 and fx.get_node("Embers").multimesh.instance_count==21 and fx.get_node("Smoke").multimesh.instance_count==9,"barrel and two car openings share bounded flame, ember and smoke instances")
+ 	check(fx.warm_lights.size()==3,"burning barrel and lantern illuminate their surroundings")
+ 	fx.advance(0.08,false); var t: float=fx.elapsed
+ 	fx.advance(0.1,true); check(fx.elapsed==t,"pause freezes the actual effect clock")
+@@ -83,7 +83,7 @@ func effects_and_cache() -> void:
+ 	for i: int in range(96): dense.append(object("firefly_bush" if i<48 else "burning_barrel",i*2))
+ 	var busy: NightPropEffects=NightPropEffects.build(kit,dense)
+ 	check(busy.get_node("Fireflies").multimesh.instance_count==384,"dense population caps fireflies at384")
+-	check(busy.get_node("Flames").multimesh.instance_count==160 and busy.get_node("Embers").multimesh.instance_count==224 and busy.get_node("Smoke").multimesh.instance_count==96,"dense population caps fires at32")
++	check(busy.get_node("Flames").multimesh.instance_count==32 and busy.get_node("Embers").multimesh.instance_count==224 and busy.get_node("Smoke").multimesh.instance_count==96,"dense population caps fires at32")
+ 	check(busy.warm_lights.size()==4,"dense population caps extra shadowless lights at four")
+ 	for light: OmniLight3D in busy.warm_lights: check(not light.shadow_enabled and light.light_cull_mask==1,"new warm lights preserve existing scene layers")
+ 	for child: Node in busy.get_children():
+@@ -113,18 +113,18 @@ func burning_car_checks() -> void:
+ 	var car: Dictionary=object("burning_car",12,-7); car.rotation=90; car["scale"]=1.5
+ 	var original: Dictionary=car.duplicate(true)
+ 	var fx: NightPropEffects=NightPropEffects.build(kit,[car])
+-	check(fx.get_node("Flames").multimesh.instance_count==10 and fx.get_node("Embers").multimesh.instance_count==14 and fx.get_node("Smoke").multimesh.instance_count==6,"one burning car has fire and smoke at both openings")
++	check(fx.get_node("Flames").multimesh.instance_count==2 and fx.get_node("Embers").multimesh.instance_count==14 and fx.get_node("Smoke").multimesh.instance_count==6,"one burning car has fire and smoke at both openings")
+ 	check(fx.warm_lights.size()==1,"one car consumes only one warm light")
+ 	check(car==original,"effect construction preserves saved car position/rotation/scale")
+ 	if DisplayServer.get_name()!="headless":
+ 		var mm: MultiMesh=fx.get_node("Flames").multimesh
+ 		var pose:=Transform3D(Basis(Vector3.UP,PI*0.5).scaled(Vector3.ONE*1.5),Vector3(12,0.014,7))
+-		check(mm.get_instance_transform(0).origin.is_equal_approx(pose*Vector3(1.59,1.16,0.04)),"engine flame follows actual moved/rotated/scaled car")
+-		check(mm.get_instance_transform(5).origin.is_equal_approx(pose*Vector3(-0.22,1.25,0)),"cabin flame follows the second actual opening")
++		check(mm.get_instance_transform(0).origin.is_equal_approx(pose*Vector3(1.43,0.94+0.68*1.35,0.04)),"engine flame follows actual moved/rotated/scaled car")
++		check(mm.get_instance_transform(1).origin.is_equal_approx(pose*Vector3(-0.38,1.03+0.68*1.05,0)),"cabin flame follows the second actual opening")
+ 	var dense: Array=[]
+ 	for i: int in range(96): dense.append(object("burning_car" if i%2==0 else "burning_barrel",i*5))
+ 	fx=NightPropEffects.build(kit,dense)
+-	check(fx.get_node("Flames").multimesh.instance_count==160 and fx.get_node("Embers").multimesh.instance_count==224 and fx.get_node("Smoke").multimesh.instance_count==96,"mixed cars/barrels retain the exact existing32-source caps")
++	check(fx.get_node("Flames").multimesh.instance_count==32 and fx.get_node("Embers").multimesh.instance_count==224 and fx.get_node("Smoke").multimesh.instance_count==96,"mixed cars/barrels retain the exact existing32-source caps")
+ 	check(fx.warm_lights.size()==4,"mixed cars/barrels retain four additional lights")
+ 	for child: Node in fx.get_children():
+ 		if child is MultiMeshInstance3D: check(child.multimesh.custom_aabb.size.y>=9.45,"larger car fire motion stays inside its culling envelope")
+diff --git a/game/track/burning_barrel_visual.gd b/game/track/burning_barrel_visual.gd
+new file mode 100644
+index 0000000..fc7d1d6
+--- /dev/null
++++ b/game/track/burning_barrel_visual.gd
+@@ -0,0 +1,28 @@
++class_name BurningBarrelVisual
++extends RefCounted
++## Render the exact run-owned cylinder pose; never integrate scene physics.
++static var drum: ArrayMesh
++static func build(node: Node3D, kit: Node, scale: float) -> void:
++	node.set_meta("burning_barrel_scale",scale)
++	if drum==null:
++		var tool:=SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		CreatorPropVisual.append(tool,kit,"burning_barrel",Vector3.ZERO,1,0)
++		tool.index(); drum=PropGeometry.commit(tool)
++	var body:=MeshInstance3D.new(); body.name="BurningDrum"; body.mesh=drum; body.material_override=PropNight.material()
++	body.scale=Vector3.ONE*scale; body.position.y=-0.55*scale
++	node.add_child(body)
++	var origin: Vector3=node.get_meta("prop_origin",node.position)
++	node.position=origin+Vector3.UP*0.55*scale
++
++static func present(node: Node3D, row: Array, ground: float) -> void:
++	var scale: float=float(node.get_meta("burning_barrel_scale"))
++	var tilt: float=float(row[4]) if row.size()==BurningBarrel.ROW_SIZE else 0.0
++	var direction: float=float(row[5]) if row.size()==BurningBarrel.ROW_SIZE else 0.0
++	var roll: float=float(row[8]) if row.size()==BurningBarrel.ROW_SIZE else 0.0
++	var axis:=Vector3(-sin(direction),0,-cos(direction))
++	var yaw: float=float(node.get_meta("prop_yaw",0.0))+roll
++	var supported: float=(0.55*absf(cos(tilt))+0.515*absf(sin(tilt)))*scale
++	node.transform=Transform3D(Basis(axis,tilt)*Basis(Vector3.UP,yaw),Vector3(float(row[0]),ground+0.014+supported,-float(row[1])))
++
++static func fuel(node: Node3D) -> Vector3:
++	return node.transform*Vector3(0,0.28*float(node.get_meta("burning_barrel_scale")),0)
+diff --git a/game/track/burning_barrel_visual.gd.uid b/game/track/burning_barrel_visual.gd.uid
+new file mode 100644
+index 0000000..5433f3a
+--- /dev/null
++++ b/game/track/burning_barrel_visual.gd.uid
+@@ -0,0 +1 @@
++uid://bm6nowuokfp3p
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+index b59e064..5caf1dd 100644
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,7 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-9-drive-through-warehouse"
++const VERSION: String = "authored-props-10-volume-fire-barrel"
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+ static var pine_meshes: Dictionary = {}
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+index d04b9a0..c3f339c 100644
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -6,6 +6,7 @@ const VERSION: String = "track-kit-206-grass-verge"
+ const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
++var _suppress_night_fx: bool=false
+ var ground_support: RefCounted
+ const STANDARD_FINISH_COLORS: Array[Color] = [Color("d4d5c5"), Color("252f32")]
+ const WINTER_FINISH_COLORS: Array[Color] = [Color("d1dee5"), Color("647987")]
+@@ -1477,6 +1478,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 	var winter_craft_count: int=0
+ 	var night_tool:=SurfaceTool.new(); night_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var night_count: int=0
++	var night_sources: bool=false
+ 	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+@@ -1486,7 +1488,8 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 		if ground_support != null: center.y += ground_support.ground(Vector2(center.x,-center.z))
+ 		if theme_id == "winter" and str(object.kind) in WinterScenery.TYPES: continue
+ 		var object_scale: float = float(object.get("scale",1.0))
+-		if object.kind in PropNight.KINDS:
++		if object.kind in PropNight.KINDS: night_sources=true
++		if object.kind in PropNight.KINDS and object.kind!="burning_barrel":
+ 			CreatorPropVisual.append(night_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)))
+ 			night_count+=1
+ 			continue
+@@ -1520,7 +1523,8 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 			node.rotation.y = deg_to_rad(float(object.rotation))
+ 			node.set_meta("prop_origin",center)
+ 			node.set_meta("prop_yaw",node.rotation.y)
+-			if object.kind in BreakableProps.KINDS:
++			if object.kind=="burning_barrel": BurningBarrelVisual.build(node,self,object_scale)
++			elif object.kind in BreakableProps.KINDS:
+ 				BreakablePropVisual.build(node,self,object.kind,object_scale)
+ 				BreakablePropVisual.ensure_debris(self,object.kind in PropWinterCraft.BREAKABLE)
+ 			else:
+@@ -1566,7 +1570,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
+ 			night_mesh.set_meta("editor_prop_hidden",night_tool.get_meta("prop_hidden_triangles",PackedInt32Array()))
+ 		night_mesh.material_override=PropNight.material()
+ 		add_child(night_mesh)
+-		NightPropEffects.build(self,track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]))
++	if night_sources: NightPropEffects.build(self,track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]))
+ 	if winter_craft_count>0:
+ 		winter_craft_tool.index()
+ 		var winter_mesh:=MeshInstance3D.new(); winter_mesh.name="WinterCraft"
+@@ -1817,10 +1821,14 @@ func update_light_props(state: VehicleState) -> void:
+ 		if previous != null and previous.get("node") == node.get_instance_id() and previous.row == row and previous.integrity == integrity: continue
+ 		# Own a copy: canonical/rewind rows can be edited in place at the same tick.
+ 		_prop_draw_states[index] = {"node":node.get_instance_id(),"row":row.duplicate(),"integrity":integrity}
+-		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else node.position.y-0.014),-float(row[1]))
++		var base_height: float=origin.y if node.has_meta("burning_barrel_scale") else node.position.y
++		var at := Vector3(row[0],0.014+(ground_support.ground(Vector2(row[0],row[1])) if ground_support != null else base_height-0.014),-float(row[1]))
+ 		if node.position != at: node.position = at
+-		if node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
++		if node.has_meta("burning_barrel_scale"): BurningBarrelVisual.present(node,row,at.y-0.014)
++		elif node.has_meta("breakable_kind"): BreakablePropVisual.present(node,row,integrity)
+ 		else: node.rotation.z = float(row[4])*0.9
++	var fire: NightPropEffects=get_node_or_null("NightPropEffects")
++	if fire!=null: fire.sync_barrels(light_instances)
+ 	BreakablePropVisual.update_debris(self,state)
+ 
+ 
+diff --git a/game/track/night_fire_volume.gd b/game/track/night_fire_volume.gd
+new file mode 100644
+index 0000000..5ddf202
+--- /dev/null
++++ b/game/track/night_fire_volume.gd
+@@ -0,0 +1,16 @@
++class_name NightFireVolume
++extends RefCounted
++## One shared32-cubed periodic noise field; no frame textures or live viewports.
++static var field: ImageTexture3D
++static func material() -> ShaderMaterial:
++	if field==null:
++		var rng:=RandomNumberGenerator.new(); rng.seed=928371
++		var layers: Array[Image]=[]
++		for z: int in range(32):
++			var bytes:=PackedByteArray(); bytes.resize(32*32*4)
++			for i: int in range(bytes.size()): bytes[i]=rng.randi()&255
++			layers.append(Image.create_from_data(32,32,false,Image.FORMAT_RGBA8,bytes))
++		field=ImageTexture3D.new(); field.create(Image.FORMAT_RGBA8,32,32,32,false,layers)
++	var result:=ShaderMaterial.new(); result.shader=preload("res://track/night_fire_volume.gdshader")
++	result.resource_local_to_scene=true; result.set_shader_parameter("flow_noise",field)
++	return result
+diff --git a/game/track/night_fire_volume.gd.uid b/game/track/night_fire_volume.gd.uid
+new file mode 100644
+index 0000000..1128d11
+--- /dev/null
++++ b/game/track/night_fire_volume.gd.uid
+@@ -0,0 +1 @@
++uid://mn6fa0o0ytot
+diff --git a/game/track/night_fire_volume.gdshader b/game/track/night_fire_volume.gdshader
+new file mode 100644
+index 0000000..cc2dec9
+--- /dev/null
++++ b/game/track/night_fire_volume.gdshader
+@@ -0,0 +1,64 @@
++shader_type spatial;
++render_mode unshaded, cull_back, depth_draw_never, shadows_disabled, fog_disabled;
++#include "res://track/shadow_depth.gdshaderinc"
++uniform sampler3D flow_noise : repeat_enable, filter_linear;
++uniform sampler2D depth_map : hint_depth_texture, repeat_disable, filter_nearest;
++uniform float elapsed=0.0;
++varying vec3 local_surface;
++varying mat4 world_to_volume;
++varying float source_seed;
++void vertex() {
++	local_surface=VERTEX;
++	world_to_volume=inverse(MODEL_MATRIX);
++	source_seed=INSTANCE_CUSTOM.x;
++}
++vec4 combustion(vec3 p) {
++	float h=p.y+0.5;
++	vec3 flow=p*vec3(0.115,0.145,0.115)+vec3(source_seed*0.73,-elapsed*0.115,source_seed*0.39);
++	vec3 coarse=texture(flow_noise,flow).rgb;
++	float fine=texture(flow_noise,flow*3.17+vec3(0.17,-elapsed*0.057,0.31)).a;
++	vec2 centre=(coarse.gb-0.5)*(0.17+0.25*h);
++	float radius=length((p.xz-centre)*2.0);
++	float envelope=0.84*pow(max(0.0,1.0-h),0.80)+0.025;
++	float turbulence=(coarse.r-0.5)*0.72+(fine-0.5)*0.52;
++	float body=envelope-radius+turbulence;
++	float density=smoothstep(0.025,0.14,body)*(0.65+max(body,0.0))*smoothstep(0.0,0.07,h)*(1.0-smoothstep(0.91,1.0,h));
++	float heat=clamp(body*1.65+(1.0-h)*0.20+fine*0.07,0.0,1.0);
++	vec3 colour=mix(vec3(0.91,0.055,0.002),vec3(1.0,0.46,0.045),smoothstep(0.10,0.60,heat));
++	colour=mix(colour,vec3(1.0,0.94,0.64),smoothstep(0.70,1.0,heat));
++	return vec4(colour,density);
++}
++void fragment() {
++	vec3 forward=(INV_VIEW_MATRIX*vec4(0.0,0.0,-1.0,0.0)).xyz;
++	vec3 ray=normalize((world_to_volume*vec4(forward,0.0)).xyz);
++	if(PROJECTION_MATRIX[3][3]<0.5) {
++		vec3 camera=(world_to_volume*INV_VIEW_MATRIX*vec4(0.0,0.0,0.0,1.0)).xyz;
++		ray=normalize(local_surface-camera);
++	}
++	vec3 origin=clamp(local_surface+ray*0.0005,vec3(-0.4999),vec3(0.4999));
++	vec3 safe_ray=mix(vec3(0.00001),ray,step(vec3(0.00001),abs(ray)));
++	vec3 distances=max((-vec3(0.5)-origin)/safe_ray,(vec3(0.5)-origin)/safe_ray);
++	float length_inside=min(distances.x,min(distances.y,distances.z));
++	float scene_depth=texture(depth_map,SCREEN_UV).r;
++#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
++	bool has_surface=scene_depth<0.999999;
++#else
++	bool has_surface=scene_depth>0.000001;
++#endif
++	if(has_surface) {
++		vec3 opaque=shadow_world_position(depth_map,SCREEN_UV,INV_PROJECTION_MATRIX,INV_VIEW_MATRIX);
++		float until_opaque=dot((world_to_volume*vec4(opaque,1.0)).xyz-origin,ray);
++		length_inside=max(0.0,min(length_inside,until_opaque));
++	}
++	float step_length=length_inside/32.0;
++	vec3 sum=vec3(0.0); float coverage=0.0;
++	for(int i=0;i<32;i++) {
++		vec4 sample_fire=combustion(origin+ray*(float(i)+0.5)*step_length);
++		float amount=1.0-exp(-sample_fire.a*step_length*9.0);
++		sum+=(1.0-coverage)*sample_fire.rgb*amount;
++		coverage+=(1.0-coverage)*amount;
++	}
++	vec3 colour=sum/max(coverage,0.0001);
++	if(!OUTPUT_IS_SRGB) colour=mix(colour/12.92,pow((colour+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),colour));
++	ALBEDO=colour; EMISSION=colour*0.65; ALPHA=coverage;
++}
+diff --git a/game/track/night_fire_volume.gdshader.uid b/game/track/night_fire_volume.gdshader.uid
+new file mode 100644
+index 0000000..71e41ed
+--- /dev/null
++++ b/game/track/night_fire_volume.gdshader.uid
+@@ -0,0 +1 @@
++uid://b5bgfc76pdcgl
+diff --git a/game/track/night_prop_effects.gd b/game/track/night_prop_effects.gd
+index e3d17d4..9589049 100644
+--- a/game/track/night_prop_effects.gd
++++ b/game/track/night_prop_effects.gd
+@@ -6,18 +6,22 @@ const MAX_FIRES: int=32
+ const MAX_LIGHTS: int=4
+ @export var externally_ticked: bool=false
+ @export var elapsed: float=0.0
++@export var barrel_sources: Array[Dictionary]=[]
+ var surfaces: Array[ShaderMaterial]=[]
+ var warm_lights: Array[OmniLight3D]=[]
++var barrel_poses: Dictionary={}
+ 
+ static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+ 	var old: Node=kit.get_node_or_null("NightPropEffects")
+ 	if old!=null: kit.remove_child(old); old.queue_free()
+-	if kit.theme_id!="night_city" or kit._capture_editor_prop_arrays: return null
++	if kit.theme_id!="night_city" or kit._capture_editor_prop_arrays or kit._suppress_night_fx: return null
+ 	var root:=NightPropEffects.new(); root.name="NightPropEffects"; root.add_to_group("night_prop_effects",true)
+ 	root.externally_ticked=not kit.editor_preview
+ 	var rows: Array=[[],[],[],[]]
+ 	var bushes: int=0; var fires: int=0; var lamps: int=0
++	var soft_index: int=-1
+ 	for object: Dictionary in objects:
++		if object.kind in CreatorCatalog.SOFT: soft_index+=1
+ 		if object.kind not in PropNight.KINDS: continue
+ 		var scale: float=float(object.get("scale",1.0)); var turn: float=deg_to_rad(float(object.rotation))
+ 		var point:=Vector2(object.position[0],object.position[1])
+@@ -31,9 +35,8 @@ static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+ 			bushes+=1
+ 		elif object.kind=="burning_barrel":
+ 			if fires<MAX_FIRES:
+-				for i: int in range(5):
+-					var p:=Vector3(cos(i*2.4)*0.15,1.02+(i%2)*0.08,sin(i*2.4)*0.15)
+-					rows[1].append([pose*p,Vector2(0.34,0.68+(i%3)*0.12)*scale,float(i+fires*7)*0.618034,scale])
++				root.barrel_sources.append({"index":soft_index,"flame":rows[1].size(),"ember":rows[2].size(),"smoke":rows[3].size(),"scale":scale,"light":lamps if lamps<MAX_LIGHTS else -1,"fuel":pose*Vector3(0,0.83,0)})
++				rows[1].append([pose*Vector3(0,1.555,0),Vector2(1.08,1.45)*scale,float(fires*7)*0.618034,scale])
+ 				for i: int in range(7): rows[2].append([pose*Vector3(0,0.95,0),Vector2(0.025,0.055)*scale,float(i+fires*11)*0.618034,scale])
+ 				for i: int in range(3): rows[3].append([pose*Vector3(0,1.1,0),Vector2(0.60,0.70)*scale,float(i+fires*5)*0.618034,scale])
+ 				fires+=1
+@@ -45,9 +48,7 @@ static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+ 				if fires>=MAX_FIRES: break
+ 				var origin:=Vector3(1.43,0.94,0.04) if site==0 else Vector3(-0.38,1.03,0)
+ 				var size: float=1.35 if site==0 else 1.05
+-				for i: int in range(5):
+-					var p: Vector3=origin+Vector3(cos(i*2.4)*0.16,0.22+(i%2)*0.08,sin(i*2.4)*0.17)
+-					rows[1].append([pose*p,Vector2(0.38,0.82+(i%3)*0.14)*scale*size,float(i+fires*7)*0.618034,scale*size])
++				rows[1].append([pose*origin+Vector3.UP*0.68*scale*size,Vector2(1.10,1.45)*scale*size,float(fires*7)*0.618034,scale*size])
+ 				for i: int in range(7): rows[2].append([pose*origin,Vector2(0.025,0.055)*scale,float(i+fires*11)*0.618034,scale*size])
+ 				for i: int in range(3): rows[3].append([pose*(origin+Vector3.UP*0.25),Vector2(0.85,0.95)*scale,float(i+fires*5)*0.618034,scale*size])
+ 				fires+=1
+@@ -62,16 +63,22 @@ static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+ 	if bushes+fires+lamps==0: root.free(); return null
+ 	for kind: int in range(4):
+ 		if rows[kind].is_empty(): continue
+-		var mesh:=QuadMesh.new(); mesh.size=Vector2.ONE
+-		var material:=ShaderMaterial.new(); material.shader=preload("res://track/night_prop_effect.gdshader")
+-		material.resource_local_to_scene=true; material.set_shader_parameter("effect_kind",kind)
++		var mesh: Mesh
++		var material: ShaderMaterial
++		if kind==1:
++			var volume:=BoxMesh.new(); volume.size=Vector3.ONE; mesh=volume
++			material=NightFireVolume.material()
++		else:
++			var card:=QuadMesh.new(); card.size=Vector2.ONE; mesh=card
++			material=ShaderMaterial.new(); material.shader=preload("res://track/night_prop_effect.gdshader")
++			material.resource_local_to_scene=true; material.set_shader_parameter("effect_kind",kind)
+ 		var mm:=MultiMesh.new(); mm.transform_format=MultiMesh.TRANSFORM_3D; mm.use_custom_data=true; mm.mesh=mesh
+ 		mm.instance_count=rows[kind].size()
+ 		var bounds:=AABB(rows[kind][0][0],Vector3.ZERO)
+ 		for i: int in range(rows[kind].size()):
+ 			var row: Array=rows[kind][i]
+ 			# Z retains source scale for the shader's world-space excursions.
+-			mm.set_instance_transform(i,Transform3D(Basis.from_scale(Vector3(row[1].x,row[1].y,row[3])),row[0]))
++			mm.set_instance_transform(i,Transform3D(Basis.from_scale(Vector3(row[1].x,row[1].y,row[1].x if kind==1 else row[3])),row[0]))
+ 			mm.set_instance_custom_data(i,Color(fposmod(row[2],1.0),[0.1,0.5,0.45,0.17][kind],row[3],0))
+ 			bounds=bounds.expand(row[0])
+ 		# Shader displacement is invisible to CPU culling. Include the full motion,
+@@ -80,6 +87,7 @@ static func build(kit: NativeTrackVisual, objects: Array) -> NightPropEffects:
+ 		for row: Array in rows[kind]: reach=maxf(reach,float(row[3])*3.5)
+ 		mm.custom_aabb=bounds.grow(reach)
+ 		var node:=MultiMeshInstance3D.new(); node.name=["Fireflies","Flames","Embers","Smoke"][kind]
++		node.set_meta("rest_bounds",mm.custom_aabb)
+ 		node.multimesh=mm; node.material_override=material; node.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		root.add_child(node)
+ 	kit.add_child(root)
+@@ -94,7 +102,8 @@ func _light(p: Vector3, scale: float, energy: float, reach: float) -> void:
+ func _ready() -> void:
+ 	# Prepared worlds share immutable geometry, but each receives its own clock
+ 	# materials. Explicit copies also cover Node.duplicate before scene packing.
+-	surfaces.clear(); warm_lights.clear()
++	surfaces.clear(); warm_lights.clear(); barrel_poses.clear()
++	barrel_sources=barrel_sources.duplicate(true)
+ 	for child: Node in get_children():
+ 		if child is MultiMeshInstance3D:
+ 			child.material_override=child.material_override.duplicate()
+@@ -115,3 +124,32 @@ func _publish() -> void:
+ 	for i: int in range(warm_lights.size()):
+ 		var lamp: OmniLight3D=warm_lights[i]
+ 		lamp.light_energy=float(lamp.get_meta("rest_energy"))*(0.96+0.025*sin(elapsed*7.3+i*2.1)+0.015*sin(elapsed*11.7+i))
++
++func sync_barrels(nodes: Array) -> void:
++	if barrel_sources.is_empty() or not is_visible_in_tree(): return
++	var changed: bool=false
++	for source: Dictionary in barrel_sources:
++		if int(source.index)>=nodes.size(): continue
++		var node: Node3D=nodes[int(source.index)]
++		if not node.has_meta("burning_barrel_scale"): continue
++		var pose: Transform3D=(get_parent() as Node3D).global_transform.affine_inverse()*node.global_transform
++		if barrel_poses.get(source.index)==pose: continue
++		barrel_poses[source.index]=pose; changed=true
++		var scale: float=float(source.scale); var fuel: Vector3=pose*Vector3(0,0.28*scale,0)
++		source.fuel=fuel
++		var flame: MultiMesh=get_node("Flames").multimesh
++		flame.set_instance_transform(int(source.flame),Transform3D(Basis.from_scale(Vector3(1.08,1.45,1.08)*scale),fuel+Vector3.UP*0.725*scale))
++		for effect: String in ["Embers","Smoke"]:
++			var mm: MultiMesh=get_node(effect).multimesh
++			var start: int=int(source.ember if effect=="Embers" else source.smoke)
++			var size:=Vector3(0.025,0.055,1)*scale if effect=="Embers" else Vector3(0.60,0.70,1)*scale
++			var p: Vector3=fuel+Vector3.UP*(0.12 if effect=="Embers" else 0.27)*scale
++			for i: int in range(7 if effect=="Embers" else 3): mm.set_instance_transform(start+i,Transform3D(Basis.from_scale(size),p))
++		if int(source.light)>=0 and int(source.light)<warm_lights.size(): warm_lights[int(source.light)].position=fuel+Vector3.UP*0.29*scale
++	if changed:
++		for effect: String in ["Flames","Embers","Smoke"]:
++			var node: MultiMeshInstance3D=get_node(effect); var bounds: AABB=node.get_meta("rest_bounds")
++			for source: Dictionary in barrel_sources:
++				var reach: float=3.5*float(source.scale)
++				bounds=bounds.merge(AABB(source.fuel-Vector3.ONE*reach,Vector3.ONE*reach*2))
++			node.multimesh.custom_aabb=bounds
+diff --git a/game/vehicle/burning_barrel.gd b/game/vehicle/burning_barrel.gd
+new file mode 100644
+index 0000000..d69e8bf
+--- /dev/null
++++ b/game/vehicle/burning_barrel.gd
+@@ -0,0 +1,53 @@
++class_name BurningBarrel
++extends RefCounted
++## Deterministic cylinder motion. Only burning barrels use the extended row.
++# x,y,vx,vy, tip angle, fall direction, tip velocity, yaw velocity, roll, contact.
++const ROW_SIZE: int=10
++static func initial(object: Dictionary) -> Array:
++	return [object.position[0],object.position[1],0.0,0.0,0.0,0.0,0.0,0.0,0.0,false]
++
++static func step(state: VehicleState, object: Dictionary, row: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	var scale: float=float(object.get("scale",1.0))
++	var p:=Vector2(row[0],row[1]); var velocity:=Vector2(row[2],row[3])
++	var tilt: float=float(row[4]); var direction: float=float(row[5]); var omega: float=float(row[6]); var yaw: float=float(row[7])
++	var radius: float=lerpf(0.52,0.76,sin(tilt))*scale
++	var touching: bool=false
++	if not state.track_elevated and state.jump_height<=0:
++		var delta: Vector2=p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++		touching=delta.length_squared()<pow(car_radius+radius,2)
++		if touching:
++			var relative: Vector2=state.velocity-velocity
++			var normal: Vector2=delta.normalized() if delta.length_squared()>0.000001 else (relative.normalized() if relative.length_squared()>0.000001 else state.forward())
++			var approach: float=relative.dot(normal)
++			if approach>0:
++				var mass: float=35.0*scale*scale*scale
++				var limit: float=maxf(car_mass*0.18,mass*5.5*sqrt(scale))
++				var impulse: float=minf(approach/(1.0/car_mass+1.0/mass),limit)
++				state.velocity-=normal*impulse/car_mass
++				velocity+=normal*impulse/mass
++				if not bool(row[9]):
++					if tilt<0.15: direction=normal.angle()
++					omega+=impulse*0.65*scale/(mass*0.71*scale*scale)
++					omega=clampf(omega,-8.0,8.0)
++					yaw+=clampf(relative.cross(normal)*0.08,-1.8,1.8)
++	# Gravity uses the cylinder's supported centre height and edge inertia.
++	if tilt>0.00001 or omega>0:
++		omega+=9.81*(0.55*sin(tilt)-0.515*cos(tilt))/(0.71*scale)*dt
++		omega*=maxf(0.0,1.0-0.65*dt)
++		tilt+=omega*dt
++		if tilt<=0:
++			tilt=0.0; omega=-omega*0.12 if absf(omega)>0.25 else 0.0
++		elif tilt>=PI*0.5:
++			tilt=PI*0.5; omega=-omega*0.12 if absf(omega)>0.25 else 0.0
++		if absf(omega)<0.12 and tilt>PI*0.5-0.006: tilt=PI*0.5; omega=0.0
++	direction+=yaw*dt; yaw=move_toward(yaw,0.0,2.4*dt)
++	var rolling: bool=tilt>1.35
++	if rolling:
++		var tangent:=Vector2(-sin(direction),cos(direction))
++		row[8]=float(row[8])+velocity.dot(tangent)*dt/(0.515*scale)
++	velocity=velocity.limit_length(16).move_toward(Vector2.ZERO,(2.8 if rolling else 5.0)*dt)
++	var next: Vector2=p+velocity*dt
++	if Vector3(contact.call(next,radius,false)).z<=0: p=next
++	else: velocity=Vector2.ZERO
++	row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
++	row[4]=tilt; row[5]=direction; row[6]=omega; row[7]=yaw; row[9]=touching
+diff --git a/game/vehicle/burning_barrel.gd.uid b/game/vehicle/burning_barrel.gd.uid
+new file mode 100644
+index 0000000..27ab162
+--- /dev/null
++++ b/game/vehicle/burning_barrel.gd.uid
+@@ -0,0 +1 @@
++uid://c1y53gubughk1
+diff --git a/game/vehicle/light_props.gd b/game/vehicle/light_props.gd
+index 36be582..06bc6eb 100644
+--- a/game/vehicle/light_props.gd
++++ b/game/vehicle/light_props.gd
+@@ -6,9 +6,12 @@ static func step(state: VehicleState, objects: Array, contact: Callable, previou
+ 	for object: Dictionary in objects:
+ 		if object.kind in CreatorCatalog.SOFT: props.append(object)
+ 	if state.light_props.is_empty():
+-		for object: Dictionary in props: state.light_props.append([object.position[0],object.position[1],0.0,0.0,0.0])
++		for object: Dictionary in props: state.light_props.append(BurningBarrel.initial(object) if object.kind=="burning_barrel" else [object.position[0],object.position[1],0.0,0.0,0.0])
+ 	BreakableProps.prepare(state,props)
+ 	for index: int in range(props.size()):
++		if props[index].kind=="burning_barrel":
++			BurningBarrel.step(state,props[index],state.light_props[index],contact,previous,dt,car_mass,car_radius)
++			continue
+ 		if props[index].kind in BreakableProps.KINDS:
+ 			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
+ 			continue
+diff --git a/game/vehicle/vehicle_simulation.gd b/game/vehicle/vehicle_simulation.gd
+index 411f52e..d852e45 100644
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -4,7 +4,7 @@ extends RefCounted
+ ## Float replay equivalence is measured on one engine/platform only at this gate.
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.60"
++const PHYSICS_VERSION: String = "arcade-planar-0.61"
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+ const TICK_RATE: int = 120

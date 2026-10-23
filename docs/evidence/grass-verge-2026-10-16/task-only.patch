@@ -1,0 +1,1470 @@
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,8 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-205-night-terrain"
++const VERSION: String = "track-kit-206-grass-verge"
++const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+ const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+ var _suppress_night_fx: bool=false
+@@ -484,7 +485,8 @@
+ 	var winter_sections: int = 0
+ 	var winter_piles: Dictionary = {}
+ 	var shoulders := SurfaceTool.new()
+-	var shoulder_mesh := preload("res://track/shoulder_mesh.gd").new()
++	var grass_verge: bool = theme_id == "pine" and ROAD_HEIGHT.is_asphalt(track)
++	var shoulder_mesh: ShoulderMesh = GRASS_VERGE.new() if grass_verge else ShoulderMesh.new()
+ 	var asphalt := SurfaceTool.new()
+ 	var asphalt_fringe := SurfaceTool.new()
+ 	var fringe_mesh := preload("res://track/road_fringe_mesh.gd").new()
+@@ -612,15 +614,16 @@
+ 						# distance, so its foot cannot float above a tapering bank.
+ 						if minf(_winter_bank_end_fade(along-1.5,bank_cache),_winter_bank_end_fade(along+1.5,bank_cache)) >= 0.999:
+ 							_winter_deposit(winter_bank,(p+q)*0.5,(normal_p+normal_q)*0.5,winter_piles)
+-					_asphalt_fringe_quad(asphalt_fringe,
+-						p+normal_p*(-1.25 if theme_id == "desert" else 0.36),q+normal_q*(-1.25 if theme_id == "desert" else 0.36),
+-						p+normal_p*(0.70 if theme_id == "desert" else 0.56),q+normal_q*(0.70 if theme_id == "desert" else 0.56),points,axis_cache,fringe_mesh if raised > 0.0 else null)
+-					fringe_count += 1
++					if not grass_verge:
++						_asphalt_fringe_quad(asphalt_fringe,
++							p+normal_p*(-1.25 if theme_id == "desert" else 0.36),q+normal_q*(-1.25 if theme_id == "desert" else 0.36),
++							p+normal_p*(0.70 if theme_id == "desert" else 0.56),q+normal_q*(0.70 if theme_id == "desert" else 0.56),points,axis_cache,fringe_mesh if raised > 0.0 else null)
++						fringe_count += 1
+ 					# Continuous sand transition around the road.
+ 					# Only the outer contour varies; road/paint stay fixed.
+ 					var outer_p: Vector2 = p+normal_p*_shoulder_width(p)
+ 					var outer_q: Vector2 = q+normal_q*_shoulder_width(q)
+-					shoulder_mesh.add_quad(p,q,outer_p,outer_q)
++					shoulder_mesh.add_quad(p+normal_p*GRASS_VERGE.ROAD_OFFSET if grass_verge else p,q+normal_q*GRASS_VERGE.ROAD_OFFSET if grass_verge else q,outer_p,outer_q)
+ 					counts[0] += 1
+ 					if theme_id == "desert": sand_banks.add_section(shoulders,p,q,normal_p,normal_q,outlines,track)
+ 					# Low broken desert deposits are decorative; contacts stay canonical.
+@@ -811,9 +814,8 @@
+ 
+ 
+ func _shoulder_width(point: Vector2) -> float:
+-	# Broad erosion lobes instead of a serrated fringe. World position keeps
+-	# neighbouring sections continuous; only the cosmetic outer edge moves.
+-	# Bounded to 1.05-1.65 m, inside the existing 1.8 m grass skirt.
++	# Grass has a 35–60 cm shoulder outside its unchanged asphalt lip.
++	if theme_id == "pine" and ground_support != null and ground_support.lift > 0.0: return GRASS_VERGE.width(point)
+ 	return ROAD_HEIGHT.width(point,theme_id)
+ 
+ 
+@@ -1018,13 +1020,14 @@
+ 
+ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false, prepared_arrays: Array = []) -> void:
+ 	var solid: bool = asphalt_surface and not edge_fringe and ground_support != null and ground_support.lift > 0.0
++	var grass_shoulder: bool = gravel and theme_id == "pine" and ground_support != null and ground_support.lift > 0.0
+ 	# Polygon triangulation and edge strips can have opposite winding. All
+ 	# these surfaces are horizontal: normalize clockwise top faces and use
+ 	# explicit up normals instead of inferring lighting from polygon order.
+ 	if prepared_arrays.is_empty():
+ 		var arrays: Array
+ 		if _capture_road_arrays:
+-			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),(theme_id == "desert" and gravel) or solid)
++			arrays = EDITOR_ROADS.unpack_intermediate(tool.commit_to_arrays(),(theme_id == "desert" and gravel) or solid or grass_shoulder)
+ 		else:
+ 			var source: ArrayMesh = tool.commit()
+ 			arrays = source.surface_get_arrays(0)
+@@ -1046,7 +1049,7 @@
+ 			if (vertices[order[1]]-vertices[order[0]]).cross(vertices[order[2]]-vertices[order[0]]).y > 0.0:
+ 				order = [triangle,triangle+2,triangle+1]
+ 			for index: int in order:
+-				flat.set_normal((normals[index] if not normals.is_empty() else face) if solid and absf(face.y) < 0.99999 else face if asphalt_surface and not edge_fringe and absf(face.y) < 0.5 else normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
++				flat.set_normal(normals[index] if grass_shoulder and not normals.is_empty() else (normals[index] if not normals.is_empty() else face) if solid and absf(face.y) < 0.99999 else face if asphalt_surface and not edge_fringe and absf(face.y) < 0.5 else normals[index] if theme_id == "desert" and gravel and not normals.is_empty() and not uv.is_empty() and uv[index].x < -0.5 else Vector3.UP)
+ 				if not uv.is_empty(): flat.set_uv(uv[index])
+ 				if not uv2.is_empty(): flat.set_uv2(uv2[index])
+ 				if not vertex_colors.is_empty(): flat.set_color(vertex_colors[index])
+@@ -1083,6 +1086,7 @@
+ 	material.set_shader_parameter("icy_road",theme_id == "winter" and color == colors[0] and not gravel and not grass and not kerb)
+ 	material.set_shader_parameter("wet_road",theme_id == "storm" and not gravel and not grass and (asphalt_surface or road_marking or kerb))
+ 	material.set_shader_parameter("gravel",gravel)
++	material.set_shader_parameter("grass_shoulder",grass_shoulder)
+ 	material.set_shader_parameter("packed_sand",theme_id == "desert")
+ 	material.set_shader_parameter("grass",grass)
+ 	material.set_shader_parameter("kerb",kerb)
+diff --git a/game/track/shoulder_mesh.gd b/game/track/shoulder_mesh.gd
+--- a/game/track/shoulder_mesh.gd
++++ b/game/track/shoulder_mesh.gd
+@@ -53,8 +53,7 @@
+ 		var points: PackedVector2Array = result.points
+ 		var uv: PackedVector2Array = result.uv
+ 		for index: int in range(points.size()):
+-			tool.set_uv(uv[index])
+-			tool.add_vertex(VisualGeometry.world(points[index])+Vector3.UP*-0.02)
++			_emit_vertex(tool,points[index],uv[index])
+ 		vertices += points.size()
+ 	return vertices/3
+ 
+@@ -71,10 +70,13 @@
+ 			var indices: PackedInt32Array = Geometry2D.triangulate_polygon(polygon)
+ 			for vertex: int in indices:
+ 				var point: Vector2 = polygon[vertex]
+-				tool.set_uv(Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
+-				tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
++				_emit_vertex(tool,point,Vector2(0,clampf(source.gradient.dot(point)+source.offset,0,1)))
+ 			count += indices.size()/3
+ 	return count
++
++func _emit_vertex(tool: SurfaceTool, point: Vector2, uv: Vector2) -> void:
++	tool.set_uv(uv)
++	tool.add_vertex(VisualGeometry.world(point)+Vector3.UP*-0.02)
+ 
+ func _collect_range(first: int, last: int) -> Dictionary:
+ 	var output := PackedVector2Array()
+diff --git a/game/track/grass_road_verge.gd b/game/track/grass_road_verge.gd
+new file mode 100644
+--- /dev/null
++++ b/game/track/grass_road_verge.gd
+@@ -0,0 +1,92 @@
++extends ShoulderMesh
++## Cosmetic Grass verge; clipping and parallel solving remain in ShoulderMesh.
++## Stones and blades use the same draw, masks, prepared arrays and cache budget.
++const INNER_HEIGHT: float = 0.027
++const OUTER_HEIGHT: float = -0.038
++const ROAD_OFFSET: float = 0.365 # Marking centre to outside of rounded asphalt lip.
++const MAX_DETAILS: int = 2048
++const DETAIL_GRID: float = 0.34
++var detail_count: int = 0
++var _cells_emitted: Dictionary = {}
++var _points := PackedVector2Array()
++var _across := PackedFloat32Array()
++
++static func width(point: Vector2) -> float:
++	return ROAD_OFFSET+0.475+0.085*sin(point.x*0.43+point.y*0.19)+0.04*sin(point.y*0.91-point.x*0.57)
++
++func _emit_vertex(tool: SurfaceTool, point: Vector2, uv: Vector2) -> void:
++	_points.append(point); _across.append(uv.y)
++	if _points.size() < 3: return
++	var u: Vector2 = _points[1]-_points[0]
++	var v: Vector2 = _points[2]-_points[0]
++	# Boolean subtraction leaves repeated vertices or sub-10-micrometre
++	# ribbons at shared borders. Omit these cosmetic slivers before applying
++	# height; the unchanged asphalt solver retains its original triangles.
++	var twice_area: float = absf(float(u.x)*float(v.y)-float(u.y)*float(v.x))
++	var longest: float = maxf(u.length(),maxf(v.length(),(_points[2]-_points[1]).length()))
++	if twice_area <= longest*0.00001:
++		_points.clear(); _across.clear(); return
++	var vertices: Array[Vector3] = []
++	for i: int in range(3): vertices.append(VisualGeometry.world(_points[i])+Vector3.UP*lerpf(INNER_HEIGHT,OUTER_HEIGHT,_across[i]))
++	var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
++	if normal.y < 0.0: normal = -normal
++	for i: int in range(3):
++		tool.set_uv(Vector2(0,_across[i])); tool.set_normal(normal); tool.set_color(Color.WHITE); tool.add_vertex(vertices[i])
++	if detail_count < MAX_DETAILS: _details(tool,normal)
++	_points.clear(); _across.clear()
++
++func _details(tool: SurfaceTool, normal: Vector3) -> void:
++	var bounds := Rect2(_points[0],Vector2.ZERO).expand(_points[1]).expand(_points[2])
++	var u: Vector2 = _points[1]-_points[0]
++	var v: Vector2 = _points[2]-_points[0]
++	var determinant: float = u.cross(v)
++	if absf(determinant) < 0.0000001: return
++	var gradient := Vector2((_across[1]-_across[0])*v.y-(_across[2]-_across[0])*u.y,u.x*(_across[2]-_across[0])-v.x*(_across[1]-_across[0]))/determinant
++	for y: int in range(floori(bounds.position.y/DETAIL_GRID),floori(bounds.end.y/DETAIL_GRID)+1):
++		for x: int in range(floori(bounds.position.x/DETAIL_GRID),floori(bounds.end.x/DETAIL_GRID)+1):
++			if detail_count >= MAX_DETAILS: return
++			var cell := Vector2i(x,y)
++			if _cells_emitted.has(cell): continue
++			var seed_value: int = ((x*73856093) ^ (y*19349663)) & 0x7fffffff
++			var point := Vector2(x+0.15+float(seed_value%701)/1000.0,y+0.15+float((seed_value/701)%701)/1000.0)*DETAIL_GRID
++			var t: float = gradient.dot(point-_points[0])+_across[0]
++			if t < 0.10 or t > 0.97: continue
++			var radius: float = 0.009+float((seed_value/491401)%19)*0.001
++			var clear: bool = true
++			for offset: Vector2 in [Vector2.ZERO,Vector2(radius,0),Vector2(-radius,0),Vector2(0,radius),Vector2(0,-radius)]:
++				if not Geometry2D.is_point_in_polygon(point+offset,_points): clear = false; break
++			if not clear: continue
++			_cells_emitted[cell] = true
++			var center: Vector3 = VisualGeometry.world(point)+Vector3.UP*(lerpf(INNER_HEIGHT,OUTER_HEIGHT,t)-0.001)
++			if t > 0.58 and seed_value%3 != 0: _grass(tool,center,t,seed_value,normal)
++			else: _stone(tool,center,t,seed_value,radius,normal)
++			detail_count += 1
++
++func _stone(tool: SurfaceTool, center: Vector3, t: float, seed_value: int, radius: float, slope: Vector3) -> void:
++	var shade: float = float(seed_value%17)/16.0
++	var tint: Color = Color("69665b").lerp(Color("c9bd99"),shade)
++	var angle: float = float(seed_value%628)*0.01
++	var peak: Vector3 = center+Vector3.UP*radius*0.70
++	for side: int in range(5):
++		var a: Vector3 = center+Vector3(cos(angle+TAU*side/5.0)*radius,0,sin(angle+TAU*side/5.0)*radius*0.72)
++		var b: Vector3 = center+Vector3(cos(angle+TAU*(side+1)/5.0)*radius,0,sin(angle+TAU*(side+1)/5.0)*radius*0.72)
++		# Seat every rim on the same sloping plane as its foot.
++		a.y -= Vector2(slope.x,slope.z).dot(Vector2(a.x-center.x,a.z-center.z))/maxf(slope.y,0.01)
++		b.y -= Vector2(slope.x,slope.z).dot(Vector2(b.x-center.x,b.z-center.z))/maxf(slope.y,0.01)
++		_triangle(tool,[a,peak,b],Vector2(-1,t),tint)
++
++func _grass(tool: SurfaceTool, center: Vector3, t: float, seed_value: int, slope: Vector3) -> void:
++	for blade: int in range(3):
++		var angle: float = float(seed_value%628)*0.01+blade*2.399
++		var axis := Vector3(cos(angle),0,sin(angle))
++		var side := Vector3(-axis.z,0,axis.x)*0.007
++		var base: Vector3 = center+axis*0.008
++		base.y -= Vector2(slope.x,slope.z).dot(Vector2(base.x-center.x,base.z-center.z))/maxf(slope.y,0.01)
++		var tip: Vector3 = base+axis*0.025+Vector3.UP*(0.045+float((seed_value+blade)%5)*0.008)
++		_triangle(tool,[base-side,tip,base+side],Vector2(-2,t),Color("69733d").lerp(Color("9a9956"),float(blade)/3.0))
++
++func _triangle(tool: SurfaceTool, vertices: Array[Vector3], uv: Vector2, tint: Color) -> void:
++	var normal: Vector3 = (vertices[2]-vertices[0]).cross(vertices[1]-vertices[0]).normalized()
++	if normal.y < 0.0: normal = -normal
++	for point: Vector3 in vertices:
++		tool.set_uv(uv); tool.set_color(tint.srgb_to_linear()); tool.set_normal(normal); tool.add_vertex(point)
+diff --git a/game/track/grass_road_verge.gd.uid b/game/track/grass_road_verge.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/track/grass_road_verge.gd.uid
+@@ -0,0 +1 @@
++uid://c1k3ofrlywcfy
+diff --git a/game/track/creator_road.gdshaderinc b/game/track/creator_road.gdshaderinc
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -10,6 +10,7 @@
+ uniform vec4 road_color : source_color;
+ uniform vec4 asphalt_base_color : source_color;
+ uniform bool gravel = false;
++uniform bool grass_shoulder = false;
+ uniform bool grass = false;
+ uniform bool kerb = false;
+ uniform bool asphalt_surface = false;
+@@ -128,6 +129,14 @@
+ 		} else { fringe = (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz))*(1.0-sand); }
+ 		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
+ 		relief_weight = fringe;
++		if (grass_shoulder) {
++			// Real sloped sand replaces the old lower, flat contact strip.
++			vec2 grit_uv = world_position.xz/2.0;
++			vec3 grit = texture(desert_apron,grit_uv).rgb-texture(desert_apron,grit_uv,4.0).rgb;
++			ALBEDO = max(ALBEDO+grit*0.28*(1.0-fringe),vec3(0.0));
++			ALBEDO *= 1.0-0.16*(1.0-smoothstep(0.0,0.16,UV.y));
++			if (UV.x < -0.5) { ALBEDO = desert_join.rgb; relief_weight = 0.0; }
++		}
+ 	}
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
+@@ -150,8 +159,9 @@
+   ROUGHNESS = kerb ? 0.30 : 0.24;
+   SPECULAR = 0.5;
+  }
+-	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,relief_weight);
+-	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0-relief_weight : 0.0);
++	bool verge_detail = grass_shoulder && UV.x < -0.5;
++	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : relief_weight);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : (grass || gravel) ? (1.0-relief_weight)*(grass_shoulder ? 0.25 : 1.0) : 0.0);
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
+ 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
+diff --git a/game/track/surface_shader_variants.gd b/game/track/surface_shader_variants.gd
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Fixed visual-material flags become constants; samples and lighting stay intact.
+ const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground"]
+-const MATERIAL_FLAGS: Array[String] = ["gravel","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
+ const INCLUDES: Dictionary = {
+ 	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
+ 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
+@@ -99,7 +99,8 @@
+ 	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
+ 		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
+ 	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
+-		inactive.append_array(["desert_apron","desert_road_albedo","dune_factors","dune_albedo"])
++		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
++		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
+ 	if not (material.get_shader_parameter("hybrid_grass") == true):
+ 		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
+ 	for sampler: String in inactive:
+diff --git a/game/tests/test_grass_verge.gd b/game/tests/test_grass_verge.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_grass_verge.gd
+@@ -0,0 +1,168 @@
++extends SceneTree
++## Actual road arrays, prepared resources and native reference views.
++const OUT: String = "res://../docs/evidence/grass-verge-2026-10-16/"
++const PREPARATION = preload("res://editor/road_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++var baseline: bool = false
++var report: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func circuit(theme: String) -> NativeTrack:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "grass_verge"; doc.name = "Grass verge"; doc.theme = theme
++	var position := Vector2(-32,-16)
++	var heading: float = 0.0
++	for kind: String in ["straight","bridge","straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading,10)
++		piece.length = 32.0 if kind == "bridge" else 64.0 if doc.pieces.size() == 4 else 16.0 if kind == "straight" else 0.0
++		piece.radius = 16.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position; heading = pose.heading
++	var routed: Dictionary = RoadPieces.route_from_pieces(doc)
++	check(routed.ok,theme+" reference circuit routes")
++	return TrackCompiler.compile(routed.document)
++
++func digest(arrays: Array) -> String:
++	var hash := HashingContext.new(); hash.start(HashingContext.HASH_SHA256)
++	hash.update(var_to_bytes(arrays)); return hash.finish().hex_encode()
++
++func surfaces(world: NativeTrackVisual) -> Array:
++	var values: Array = []
++	for child: Node in world.get_children():
++		if not child is MeshInstance3D or not child.mesh is ArrayMesh: continue
++		var material: ShaderMaterial = child.material_override as ShaderMaterial
++		if material == null: continue
++		var role: String = "gravel" if material.get_shader_parameter("gravel") == true else "fringe" if material.get_shader_parameter("edge_fringe") == true else "asphalt" if material.get_shader_parameter("asphalt_surface") == true else "other"
++		values.append({"role":role,"hash":digest(child.mesh.surface_get_arrays(0))})
++	return values
++
++func run() -> void:
++	baseline = "--before" in OS.get_cmdline_user_args()
++	if not baseline: await test_profile_clipping()
++	if "--profile-only" in OS.get_cmdline_user_args():
++		print("GRASS_VERGE_PROFILE: %d checks, %d failures"%[checks,failures]); quit(1 if failures else 0); return
++	root.size = Vector2i(1440,810)
++	var old: Dictionary = {}
++	if not baseline: old = JSON.parse_string(FileAccess.get_file_as_string(OUT+"baseline-headless.json"))
++	for theme: String in ["pine","storm","night_city","winter","desert"]:
++		var track: NativeTrack = circuit(theme)
++		var canonical: String = digest([track.cells,track.route,track.metadata.duplicate(true)])
++		var world := NativeTrackVisual.new()
++		world.cache_road_meshes = false; world.persist_road_meshes = false; world.cache_race_world = false
++		root.add_child(world)
++		await world.build(track,BridgePresentation.new(track))
++		var data: Array = surfaces(world)
++		report[theme] = {"canonical":canonical,"surfaces":data}
++		check(canonical == digest([track.cells,track.route,track.metadata.duplicate(true)]),theme+" building leaves canonical data intact")
++		if not baseline:
++			check(old[theme].canonical == canonical,theme+" canonical source matches original")
++			if theme != "pine": check(data == old[theme].surfaces,theme+" every road array stays byte exact")
++			else:
++				var asphalt: Array = data.filter(func(row: Dictionary) -> bool: return row.role == "asphalt")
++				check(asphalt == old[theme].surfaces.filter(func(row: Dictionary) -> bool: return row.role == "asphalt"),"Grass asphalt including bridge stays byte exact")
++				inspect_verge(world)
++				var direct := NativeTrackVisual.new()
++				direct.theme_id = theme; direct.colors = TrackTheme.palette(theme)
++				direct.cache_road_meshes = false; direct.persist_road_meshes = false
++				direct.prepare_editor_roads = false
++				await direct._build_creator_roads(track)
++				var packet: Dictionary = PREPARATION.prepare(track,true)
++				var prepared := NativeTrackVisual.new()
++				prepared.theme_id = theme; prepared.colors = direct.colors
++				prepared.cache_road_meshes = false; prepared.persist_road_meshes = false
++				prepared.ground_support = preload("res://track/road_surface_height.gd").new(track)
++				await prepared._install_prepared_roads(track,packet)
++				check(surfaces(direct) == surfaces(prepared),"Grass direct and prepared road arrays match")
++				direct.free(); prepared.free()
++		if theme == "pine" and DisplayServer.get_name() != "headless": await capture(world,track)
++		world.queue_free(); await process_frame
++	var renderer: String = "headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method()
++	var file := FileAccess.open(OUT+("baseline-" if baseline else "final-")+renderer+".json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"themes":report},"\t") if not baseline else JSON.stringify(report,"\t"))
++	print("GRASS_VERGE: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
++
++func inspect_verge(world: NativeTrackVisual) -> void:
++	var bases: int = 0; var stones: int = 0; var blades: int = 0
++	var minimum: float = INF; var maximum: float = -INF
++	var sloped: bool = false
++	for child: Node in world.get_children():
++		if not child is MeshInstance3D or not child.material_override is ShaderMaterial: continue
++		if child.material_override.get_shader_parameter("gravel") != true: continue
++		check(not child.material_override.shader.code.contains("#define desert_apron"),"Grass grit keeps its actual artwork sampler after material specialization")
++		var arrays: Array = child.mesh.surface_get_arrays(0)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
++		for i: int in range(vertices.size()):
++			if uv[i].x < -1.5: blades += 1; continue
++			if uv[i].x < -0.5: stones += 1; continue
++			bases += 1; minimum = minf(minimum,vertices[i].y); maximum = maxf(maximum,vertices[i].y)
++			sloped = sloped or arrays[Mesh.ARRAY_NORMAL][i].y < 0.999
++	check(bases > 0 and absf(minimum+0.038) < 0.00001 and absf(maximum-0.027) < 0.00001,"shoulder slopes from 3.5 cm below asphalt to the grass skirt")
++	check(sloped,"shoulder has real slope normals")
++	check(stones > 0 and blades > 0,"actual pebbles and grass blades share the shoulder mesh")
++	check(stones+blades <= 2048*15,"natural details stay inside their fixed geometry budget")
++	report.pine["detail_vertices"] = stones+blades
++	for point: Vector2 in [Vector2.ZERO,Vector2(12,8),Vector2(-38,16)]:
++		var width: float = world._shoulder_width(point)-0.365
++		check(width >= 0.35-0.00001 and width <= 0.60+0.00001,"visible sandy shoulder stays 35–60 cm")
++
++func test_profile_clipping() -> void:
++	var serial: Array
++	for cooperative: bool in [true,false]:
++		var builder: ShoulderMesh = preload("res://track/grass_road_verge.gd").new()
++		# More than 512 source triangles exercises the actual parallel solver.
++		for i: int in range(300):
++			builder.add_quad(Vector2(i*0.2,0),Vector2((i+1)*0.2,0),Vector2(i*0.2,0.5),Vector2((i+1)*0.2,0.5))
++		# Opposing edges overlap: nearest-road ownership must remain a single face.
++		builder.add_quad(Vector2(60,0.8),Vector2(0,0.8),Vector2(60,0.3),Vector2(0,0.3))
++		var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		await builder.emit(tool,(func() -> bool: return true) if cooperative else Callable())
++		var arrays: Array = tool.commit().surface_get_arrays(0)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
++		var total_area: float = 0.0; var profile_ok: bool = true; var worst_error: float = 0.0; var worst_point := Vector2.ZERO; var worst_triangle: Array = []
++		for i: int in range(0,vertices.size(),3):
++			if uv[i].x < -0.5: continue
++			var polygon := PackedVector2Array()
++			for j: int in range(3):
++				var p := Vector2(vertices[i+j].x,-vertices[i+j].z); polygon.append(p)
++				var t: float = minf(p.y,0.8-p.y)/0.5
++				var error: float = absf(vertices[i+j].y-lerpf(0.027,-0.038,t))
++				if error > worst_error:
++					worst_error = error; worst_point = p; worst_triangle = [vertices[i],vertices[i+1],vertices[i+2]]
++				profile_ok = profile_ok and absf(vertices[i+j].y-lerpf(0.027,-0.038,t)) < 0.00001
++			total_area += absf((polygon[1]-polygon[0]).cross(polygon[2]-polygon[0]))*0.5
++		check(absf(total_area-48.0) < 0.002,"opposing sloped shoulders retain exact union area")
++		check(profile_ok,"overlapping slopes meet at the same nearest-road height")
++		if not profile_ok: print("PROFILE_DIAGNOSTIC worst_error=",worst_error," point=",worst_point," triangle=",worst_triangle)
++		if cooperative: serial = arrays
++		else: check(arrays == serial,"cooperative and parallel shoulder arrays including details are exact")
++
++func capture(world: Node3D, track: NativeTrack) -> void:
++	var sun := DirectionalLight3D.new(); sun.rotation_degrees = Vector3(-48,-32,0); sun.shadow_enabled = true; world.add_child(sun)
++	var env := WorldEnvironment.new(); env.environment = Environment.new()
++	env.environment.background_mode = Environment.BG_COLOR; env.environment.background_color = Color("aab8b8")
++	env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	env.environment.ambient_light_color = Color("d9e4eb"); env.environment.ambient_light_energy = 0.7; world.add_child(env)
++	var car := CarVisual.new(); world.add_child(car)
++	var state := VehicleState.new(); state.position = Vector2(27,-16); state.heading = PI*0.5
++	car.present(state.position,state.heading,state,DriveFrame.new())
++	car.position.y = BridgePresentation.new(track).height_at(state.position,0,0)
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; world.add_child(camera); camera.current = true
++	var folder: String = OUT+("before/" if baseline else "final/")+RenderingServer.get_current_rendering_method()+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	for view: String in ["corner","edge","bridge"]:
++		var target := Vector3(33,0,10) if view == "corner" else Vector3(27,0,21.4) if view == "edge" else Vector3(-16,0,16)
++		camera.size = 30.0 if view == "corner" else 4.5 if view == "edge" else 18.0
++		camera.position = target+Vector3(-3,25,21) if view != "edge" else target+Vector3(-1,1.7,3)
++		camera.look_at(target)
++		for frame: int in range(24): await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(folder+view+".png") == OK,"actual "+view+" reference capture saved")
+diff --git a/game/tests/test_grass_verge.gd.uid b/game/tests/test_grass_verge.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_grass_verge.gd.uid
+@@ -0,0 +1 @@
++uid://m281cgiey5wl
+diff --git a/game/tests/test_grass_road_height.gd b/game/tests/test_grass_road_height.gd
+--- a/game/tests/test_grass_road_height.gd
++++ b/game/tests/test_grass_road_height.gd
+@@ -42,6 +42,9 @@
+ 	return TrackCompiler.compile(result.document)
+ 
+ func run() -> void:
++	if "--visual-only" in OS.get_cmdline_user_args():
++		await run_visual()
++		return
+ 	var previous := GDScript.new()
+ 	previous.source_code = FileAccess.get_file_as_string("res://../docs/evidence/grass-road-height-2026-10-14/before/game/vehicle/vehicle_simulation.gd").replace("\r\n","\n").replace("class_name VehicleSimulation\n","")
+ 	check(previous.reload() == OK,"saved physics 0.56 loads for measured comparison")
+@@ -102,6 +105,9 @@
+ 	partial.step(DriveFrame.new(),edge)
+ 	old_partial.step(DriveFrame.new(),edge)
+ 	check(partial.state.velocity.length() < old_partial.state.velocity.length()-0.03,"first grass wheel sheds more speed immediately before the centre leaves asphalt")
++	await run_visual()
++
++func run_visual() -> void:
+ 	check(is_equal_approx(HEIGHT.RISE,0.05),"asphalt-only rise is exactly five centimetres")
+ 	var native: NativeTrack = field(1)
+ 	for y: int in range(48,52):
+@@ -157,18 +163,28 @@
+ 	var fringe_flat: bool = true
+ 	var sand_vertices: int = 0
+ 	var fringe_vertices: int = 0
++	var sand_min: float = INF
++	var sand_max: float = -INF
+ 	for child: Node in world.get_children():
+ 		if not child is MeshInstance3D or not child.mesh is ArrayMesh or not child.material_override is ShaderMaterial: continue
+ 		var material: ShaderMaterial = child.material_override
+ 		var vertices: PackedVector3Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+ 		if material.get_shader_parameter("gravel") == true and theme in ["pine","storm"]:
+-			for vertex: Vector3 in vertices: sand_flat = sand_flat and is_equal_approx(vertex.y,-0.02)
++			var uv: PackedVector2Array = child.mesh.surface_get_arrays(0)[Mesh.ARRAY_TEX_UV]
++			for i: int in range(vertices.size()):
++				var vertex: Vector3 = vertices[i]
++				if theme == "pine" and uv[i].x < -0.5: continue
++				sand_flat = sand_flat and is_equal_approx(vertex.y,-0.02)
++				sand_min = minf(sand_min,vertex.y); sand_max = maxf(sand_max,vertex.y)
+ 			sand_vertices += vertices.size()
+ 		if material.get_shader_parameter("edge_fringe") == true:
+ 			for vertex: Vector3 in vertices: fringe_flat = fringe_flat and is_equal_approx(vertex.y,0.013)
+ 			fringe_vertices += vertices.size()
+-	if theme in ["pine","storm"]: check(sand_vertices > 0 and sand_flat,theme+" actual sand stays at its original flat height")
+-	if theme != "winter": check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
++	if theme == "pine":
++		check(sand_vertices > 0 and is_equal_approx(sand_min,-0.038) and is_equal_approx(sand_max,0.027),"Grass reference shoulder has the new cosmetic slope")
++		check(fringe_vertices == 0,"Grass contact shading shares the slope without a crossing flat strip")
++	elif theme == "storm": check(sand_vertices > 0 and sand_flat,theme+" actual sand stays at its original flat height")
++	if theme in ["storm","desert"]: check(fringe_vertices > 0 and fringe_flat,theme+" actual blend strips stay flat")
+ 	var bridge: MeshInstance3D = world.get_node("BridgeAsphalt")
+ 	var deck_vertices: PackedVector3Array = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+ 	var deck_colors: PackedColorArray = bridge.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Grass reference verge override (2026-10-16)
++The owner supplies a raised-asphalt/sloping-sand reference for Grass. Grass asphalt now has a35mm exposed side above a real nominal35–60cm sandy shoulder, with original fine grit and native pebbles/grass in the existing draw. Preserve asphalt/bridge/kerb/marking arrays, terrain datum, car/camera and canonical behavior; Dirt and other biomes retain their original roads. Reuse parallel/cooperative ownership, live masks and existing cache bounds; cap2048details and use kit206. Focused34headless/37Compatibility/37Mobile, heights58/shoulders71+18/editor406/disk70/prepared85/sampler63 and parser pass. Initial cosmetic-sliver and sampler-alias corrections, native before/final views, actual commands and task-only checkpoint: docs/GRASS_REFERENCE_VERGE_2026_10_16.md. Owner/physical-phone appearance/performance acceptance remains; no phone attachment check/test, APK/backend/deployment or FPS claim.
+ 
+ ## Industrial Night terrain override (2026-10-16)
+ The owner supplies an industrial-outskirts texture reference and requests improved Night terrain. Use the original generated worn asphalt/broken concrete/dusty gravel/sparse weeds albedo across existing terrain/backdrop/skirts, with continuous12m world coordinates, narrow offset border blends and shared1024-pixel mipmapped artwork. Preserve actual road/height/markings, lights, car/camera, canonical surfaces/state and bounded caches; other biomes compile away the new sampler. Visual kit205 fences prepared assets. Native63headless/72Compatibility/72Mobile, existing sampler63/packing3885/Night15/prepared162 and parser836 pass. Actual views, exact generation prompt/provenance, commands and task-only checkpoint: docs/NIGHT_TERRAIN_2026_10_16.md. Owner/physical-phone appearance/performance acceptance remains; no phone attachment check/test, APK/backend/deployment or FPS claim.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-16 GV01-GV03/G01/R01/Q01: Grass follows the supplied raised-asphalt/sloped-sand reference:35mm exposed asphalt face, nominal35–60cm sloped shoulder, original grit and up to2048native pebble/grass details in the existing draw. Asphalt/bridges/markings/kerbs, canonical data, car/camera, Dirt/other-biome roads and cache bounds remain; kit206 fences presentation artifacts. Focused34headless/37Compatibility/37Mobile, heights58/joins71+18/editor406/disk70/prepared85/sampler63 and parser pass. Actual views/commands/initial corrections/scoped checkpoint: docs/GRASS_REFERENCE_VERGE_2026_10_16.md. Concurrent Night/spline/backend work is retained. Owner/physical-phone appearance/performance acceptance remains; no phone attachment check/test, APK/backend/deployment or FPS claim.
++
+ 2026-10-16 NT01-NT03/G01/R01/Q01: Night terrain now follows the supplied industrial-outskirts reference with original generated broken concrete, worn asphalt, dusty gravel and sparse weeds. Existing terrain/backdrop/skirts share12m world sampling and narrow seam blends; one1024-pixel mipmapped texture, unchanged geometry/lights/road/car/camera/canonical state and cache bounds, visual kit205. Focused63headless/72Compatibility/72Mobile, existing sampler63/packing3885/Night15/prepared162 and parser836 pass. Native before/after, exact prompt/provenance, actual commands and scoped checkpoint: docs/NIGHT_TERRAIN_2026_10_16.md. Owner/device artistic/performance acceptance remains; no phone attachment check/test, APK/backend/deployment or FPS measurement.
+ 
+ 2026-10-16 BBF01-BBF03/G01/R01/Q01: The owner rejects the burning-barrel flame and requests collision toppling. Replace flat cards with turbulent depth-clipped 3D fire, retaining embers/smoke/warm light; share it with existing burning-car openings. Deterministic supported tipping/rolling/settling and attached effects retain exact replay/rewind/restart, old soft-prop snapshots and the outer recorder shape. One shared drum/128KiB field and existing32-fire/four-light bounds remain; retained editor controllers and prepared-world dictionaries are isolated. Physics0.61/prop version10 fence the change. Focused54headless/71Compatibility/71Mobile, Night128native, Winter595/browser88/prepared162/parser833 and local verifier70 pass. Initial impulse/fixture/import and concurrent spline-staging failures are retained in docs/BURNING_BARREL_REFINEMENT_2026_10_16.md and its evidence report/scoped checkpoint. Concurrent Night terrain and spline rules remain separate. Owner/phone acceptance and matching client/verifier rollout remain; no phone test/attachment check/APK/live backend/deployment or FPS claim.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-16 GV01-GV03/G01/R01/Q01: owner-reference Grass verge implemented with35mm exposed asphalt edge, nominal35–60cm real sloped sand, original fine grit and bounded native pebble/grass details in the existing draw. Original road/bridge/marking/kerb arrays, terrain/support/canonical behavior, car/camera, Dirt/other-biome roads and caches remain; kit206. Focused34/37/37, heights58/joins71+18/editor406/disk70/prepared85/sampler63 and parser pass. Native before/final captures, initial corrections, actual commands and scoped checkpoint: docs/GRASS_REFERENCE_VERGE_2026_10_16.md. Owner/physical-phone appearance/performance acceptance remains; no phone/APK/backend/deployment or FPS claim.
++
+ 2026-10-16 NT01-NT03/G01/R01/Q01: owner-reference Night industrial terrain implemented with original generated broken concrete/asphalt/gravel/weed albedo, shared1024-pixel mipmapped artwork, continuous12m world UVs and bounded border blending. Actual road/camera/lights/canonical surfaces remain; kit205 fences prepared worlds. Focused63/72/72, sampler63/packing3885/Night15/prepared162/parser836 pass. Native comparisons, exact generation prompt/provenance, commands and task-only checkpoint: docs/NIGHT_TERRAIN_2026_10_16.md. Owner/physical-phone art/performance acceptance remains; no phone/APK/backend/deployment or FPS claim.
+ 
+ 2026-10-16 BBF01-BBF03/G01/R01/Q01: The owner rejects the burning-barrel flame and requests collision toppling. Replace flat cards with turbulent depth-clipped 3D fire, retaining embers/smoke/warm light; share it with existing burning-car openings. Deterministic supported tipping/rolling/settling and attached effects retain exact replay/rewind/restart, old soft-prop snapshots and the outer recorder shape. One shared drum/128KiB field and existing32-fire/four-light bounds remain; retained editor controllers and prepared-world dictionaries are isolated. Physics0.61/prop version10 fence the change. Focused54headless/71Compatibility/71Mobile, Night128native, Winter595/browser88/prepared162/parser833 and local verifier70 pass. Initial impulse/fixture/import and concurrent spline-staging failures are retained in docs/BURNING_BARREL_REFINEMENT_2026_10_16.md and its evidence report/scoped checkpoint. Concurrent Night terrain and spline rules remain separate. Owner/phone acceptance and matching client/verifier rollout remain; no phone test/attachment check/APK/live backend/deployment or FPS claim.
+diff --git a/docs/GRASS_REFERENCE_VERGE_2026_10_16.md b/docs/GRASS_REFERENCE_VERGE_2026_10_16.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GRASS_REFERENCE_VERGE_2026_10_16.md
+@@ -0,0 +1,51 @@
++# Grass reference verge — 2026-10-16
++
++The owner supplied a raised-asphalt/sandy-shoulder reference and requested it for Grass. GV01: retain the existing road and expose a 3–4 cm side. GV02: slope a nominal 35–60 cm sandy shoulder into grass. GV03: add restrained gravel, small stones and grass patches. G01/R01/Q01: preserve the original car/camera, canonical driving data, bounded preparation/caches and actual native-renderer evidence.
++
++Grass asphalt now uses a real sloped shoulder, from Y=0.027 at the lip to Y=-0.038 at the existing grass skirt. The unchanged authored asphalt top is Y=0.062, leaving a 35 mm visible face; the original terrain at Y=-0.06 remains about 122 mm below the asphalt. The outer edge varies smoothly in world space. Nominal visible width is 0.35–0.60 m outside the rounded lip; corner miters follow the existing contour geometry. Dirt roads and the retired native raster fixtures keep their previous presentation.
++
++The original asphalt top, bevel, side faces, markings, kerbs and bridge meshes are retained. The Grass-only lower flat fringe is replaced by contact shading in the slope's existing material. The existing cleared `desert_apron_v1.png` supplies fine mineral detail; no new bitmap, reference-image pixels or image generation are used. Small native five-facet pebbles and three-blade grass clusters share the shoulder draw and existing paint/privacy-free local preview masks. Deterministic world-cell placements cap at 2,048 details/30,720 vertices per track. The reference circuit emits 12,411 detail vertices. These details have no collision, lights, processing clock or simulation role.
++
++`grass_road_verge.gd` reuses `ShoulderMesh` ownership and its parallel/cooperative clipping. A small virtual emission hook preserves the original flat emitter for other surfaces. Real slope and detail normals survive direct and worker preparation. The Grass material keeps the actual grit sampler during specialization; other roles still compile it away. Visual kit206 invalidates old road/editor/world artifacts. Existing 32 MiB road and 64 MiB prepared-world cache budgets remain. Concurrent Night terrain/barrel, spline and backend changes are retained and excluded from the task checkpoint.
++
++Actual pinned Godot 4.7.2 results:
++
++| Check | Result |
++| --- | --- |
++| Original reference fixture | 10 headless; 13 Compatibility; 13 Mobile; zero failures |
++| Final slope, width, overlap ownership, actual stones/blades, artwork role, canonical data, unchanged other-biome road arrays and direct/prepared equality | 34 headless; 37 Compatibility; 37 Mobile; zero failures |
++| Cooperative/parallel overlap fixture, over 512 source triangles | Included above: five checks; exact arrays and 48 m² union |
++| Existing shoulder ownership/joins/internal contours | Union area30, 71 join checks and18 internal-contour checks; zero failures |
++| Existing road-height/bridge suite, explicit visual-only mode | 58 checks; zero failures |
++| Editor worker preparation, retained GPU/CPU arrays, live masks and memory bounds | Final geometry: 406 checks; zero failures |
++| Disk road cache | 70 checks; zero failures |
++| Prepared race/world cache | 85 checks; zero failures; one retained world within64 MiB |
++| Final declared texture-unit budget | 63 checks; zero failures; maximum8 per material |
++| Project parser | 837 scripts; zero failures |
++
++Native before/final corner, low edge and bridge-mouth views are in `evidence/grass-verge-2026-10-16/{before,final}/{gl_compatibility,mobile}/`. These are actual Godot viewport captures; renderer appearance differs normally. `baseline-headless.json` and final renderer JSONs record actual array/source hashes. This is not an exhaustive all-track or physical-phone visual review, a performance benchmark or an AAA acceptance claim.
++
++Initial issues are retained. The sandbox prevented Godot's Windows log/certificate-store access; native tests then ran with isolated workspace APPDATA outside the sandbox. The first narrow opposing-shoulder fixture exposed Boolean fragments with repeated vertices or widths below10 micrometres, whose unrenderable area carried the competing strip's height. Only these cosmetic slivers are omitted; the asphalt solver and its microscopic road triangles are unchanged. The exact area, height and parallel-equality assertions remain. The first grit refinement was aliased to the RGB factor map by the existing biome sampler optimizer, producing colored grain. Native review caught it; the Grass shoulder now retains its actual apron artwork and has an explicit specialization assertion. Initial views/logs are retained in `initial/`, `aliased-grit/` and `logs/`.
++
++Commands actually run through the required entry point, with workspace-local APPDATA:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_verge.gd -TestArgument '--before'
++# Also ran the preceding baseline with -Graphical -RenderingMethod gl_compatibility
++# and with -Graphical -RenderingMethod mobile -RenderingDriver vulkan.
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_verge.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_verge.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_verge.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_verge.gd -TestArgument '--profile-only'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd -TestArgument '--visual-only'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_shoulders.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_loading_roads.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_cache.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_prepared_race_load.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_terrain_sampler_budget.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++```
++
++The historical grass-road test now identifies the approved sloped Grass shoulder separately from unchanged Storm sand. Its optional visual-only mode leaves the older physics comparison available and runs only the relevant road/support checks. No canonical simulation, compiler/physics contract, track document, backend or deployment changes are made by this task. Owner appearance and physical-phone moving-view/performance acceptance remain. No phone attachment check, phone test, APK export/install or deployment was performed.
++
++Changed source: `game/track/grass_road_verge.gd`, `shoulder_mesh.gd`, `native_track_visual.gd`, `creator_road.gdshaderinc`, `surface_shader_variants.gd`; focused tests `game/tests/test_grass_verge.gd`, `test_grass_road_height.gd`; associated UIDs and project status/instruction files. Saved sources, exact final hashes, actual logs and a source-only task patch are under `docs/evidence/grass-verge-2026-10-16/`.
+diff --git a/docs/evidence/grass-verge-2026-10-16/baseline-headless.json b/docs/evidence/grass-verge-2026-10-16/baseline-headless.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/grass-verge-2026-10-16/baseline-headless.json
+@@ -0,0 +1,863 @@
++{
++	"desert": {
++		"canonical": "f104845d891dddfc809fae5a33c8bf66a65eaf310142053d265ad5d37c7ee0c7",
++		"surfaces": [
++			{
++				"hash": "afe25df422549f4b95381e692180df55938092f135c1815c3c00c1eb0caa81fc",
++				"role": "asphalt"
++			},
++			{
++				"hash": "89e9d0c81426145522cb0ebfc6f88e3f707e5b8a2ee4d5565521a437f9c04a0f",
++				"role": "fringe"
++			},
++			{
++				"hash": "d702f0a3232d43421b44039b762e7875cb5385626e01584a9c25cd7df325a9a0",
++				"role": "other"
++			},
++			{
++				"hash": "684759a70130f3d620b99a8923d1471768e0f8a96fe839c6a68756c677ba179a",
++				"role": "other"
++			},
++			{
++				"hash": "8a714c82a8db1671daa3c49c07b112ca628f2398637d44d20e328baeb8e2ac50",
++				"role": "other"
++			},
++			{
++				"hash": "2ec23cff2258b8ff3287cd0ada4331ea2ffa1e5f20deb3d15d33d6b434496000",
++				"role": "other"
++			},
++			{
++				"hash": "3d5e00b416e26be4c3de3c07fc31280033f7e9d94d462673a8236e8a534fb58c",
++				"role": "other"
++			},
++			{
++				"hash": "5a1523b9ba30b105a72350376bcf854cda429de1914d25b0fb467a139a240b01",
++				"role": "gravel"
++			},
++			{
++				"hash": "ea4d6a56908a5b0c89ac168ce081482670b69147077860e6e4c3dc29d6990fe5",
++				"role": "other"
++			}
++		]
++	},
++	"night_city": {
++		"canonical": "2d4f4fb588a2cca78976dc7fa3c87a9a7ec46ca5fb80e88d4b24c197a48887a8",
++		"surfaces": [
++			{
++				"hash": "7507f8494b84f9b5dd2af1a879990f1cc5ac99cc39f8fe3bbaedb91beb71cff4",
++				"role": "other"
++			},
++			{
++				"hash": "763436a2679edef40450e7d228ef00f05409645bbf28fa10f044b13c6aac43d1",
++				"role": "other"
++			},
++			{
++				"hash": "dae29cbf828939128d9aa71b2b4336b366aa6d5f2f9f8910f9a8fa927b303a46",
++				"role": "other"
++			},
++			{
++				"hash": "712ada0b207d90e50ca84ba940cd6d40cce286a874608ff6a2a915d2ba0a32bf",
++				"role": "other"
++			},
++			{
++				"hash": "d23b41fe99217fb352b8fe4791ba0124c6a767dc83c6ac9531c142776d0c1bbd",
++				"role": "other"
++			},
++			{
++				"hash": "1e0b1f8d4e35229053d48f9923efa73494dc9e0982a0977c1e5a6dc8e98724a3",
++				"role": "other"
++			},
++			{
++				"hash": "6c82377c59867650a55c78c24a43764c4e46d26ce8e3e9f3f60e63f7f4b6cc7f",
++				"role": "other"
++			},
++			{
++				"hash": "1b4de0f5493eb84e22189f888c9a77b091641f1aa90fcfcdceabb358bffb3e61",
++				"role": "other"
++			},
++			{
++				"hash": "243e60d0ab04e0626c2980cd7c980fcdc35be9209b1fdedd66d45bd2a575533a",
++				"role": "other"
++			},
++			{
++				"hash": "358e239232d6d9ce0b3bb74eea0485222ee0d089bf5c104f099cd292c18c8d85",
++				"role": "other"
++			},
++			{
++				"hash": "70bfbb09f32dc388e36164fa894da0f7ec9c9151ddc1d6b389732c9d7d129cce",
++				"role": "other"
++			},
++			{
++				"hash": "0e9aab77c7a662b904ea486f6c7959fb5b7c4c69e77f49d65051fcd55807ac4d",
++				"role": "other"
++			},
++			{
++				"hash": "c298482010fe7ddacfa09c734d85eae9ba870bfacc243c78810bbeec510ca1fc",
++				"role": "other"
++			},
++			{
++				"hash": "06544a46dfd61790cb745e3aab8957a297bbb278271f0d0db38072f32b00a1a8",
++				"role": "other"
++			},
++			{
++				"hash": "d115b6a9623bd23446532cde0d76d39e508d2c4b59cf96c7a7689361c2f7c701",
++				"role": "other"
++			},
++			{
++				"hash": "967a70855bb77e2923fdda85e4fc58f939984dbd3d6478fb1af60b26dfc39b79",
++				"role": "other"
++			},
++			{
++				"hash": "eea2bbf327b5e07b8e6f91fceb3945869af9b94d12ff48f462788d5e4827fd89",
++				"role": "other"
++			},
++			{
++				"hash": "26354b886b1b1ca7c5a660edd639bdb0c803bf788b5ceb19e184e071994bab0a",
++				"role": "other"
++			},
++			{
++				"hash": "d659eb830a1bb6b3ef8a10151e77f1d063581822735f1fc325fcc801ba10638b",
++				"role": "other"
++			},
++			{
++				"hash": "34fe500a1838ab4a2bd22fbcba3111f9ada20d3b2c9b4f6427acb7b624132b38",
++				"role": "other"
++			},
++			{
++				"hash": "18294c0518de09b84b5de76477fc8a33a92ad8957078c8f78214181b5600f7be",
++				"role": "other"
++			},
++			{
++				"hash": "872b3641c78d99a4c0d4421e15c7ef1ed497ade8ce19688a68aa62301949f242",
++				"role": "other"
++			},
++			{
++				"hash": "a9efe33c03caeef9837f7465a1f9cf707cf9d30abec21380e33e338d43b28ec1",
++				"role": "other"
++			},
++			{
++				"hash": "1d2b5cbbcd343466033d6449b0c3fa413261bc59b0c7d2cc13b22dbb05b4c3ca",
++				"role": "other"
++			},
++			{
++				"hash": "99ec684d9450d22835700896cae5c8ef21b6dc2274ba1658dc2b46626153e468",
++				"role": "other"
++			},
++			{
++				"hash": "e9464d7d1975834d64944b24289773e80789227f7f131ea52ed2e74bf81477e1",
++				"role": "other"
++			},
++			{
++				"hash": "bb437fd084785ffb81978a4344635cbd1186df1c2a9c8e18327dd91f1d824642",
++				"role": "other"
++			},
++			{
++				"hash": "cb846680c6ea8f9100941d9496aad867b36af7c0beb8bb1c5f7c5c61b013b5aa",
++				"role": "other"
++			},
++			{
++				"hash": "96b7bbce9c245818f0e87525b787b5e9a44925dcc04b4bc28ad23e4f34621cbd",
++				"role": "other"
++			},
++			{
++				"hash": "ab06f16cfc67af22ceeb14c011e6a4b2864814492e2a3833e5d2c2a0cb67c04d",
++				"role": "other"
++			},
++			{
++				"hash": "1918645e0ed7e0d7d4d4c2db1f6098a9545155a6e2bbc40e43f67b61ca086e50",
++				"role": "other"
++			},
++			{
++				"hash": "a9503750b39208aa51dfa301d7aa2bbf6c79546e787cf41e3c6dc84420365093",
++				"role": "other"
++			},
++			{
++				"hash": "ea0066c4f5717b3c3fc3fc326831f95540ac2b8d5677fe83b5b1ce877011bf5b",
++				"role": "other"
++			},
++			{
++				"hash": "1bd1056bcbd3ae16b8614d12d23297e2e59f224998af16de7d4214f9de9b0cee",
++				"role": "other"
++			},
++			{
++				"hash": "63caa986f25156202419736d5619e2642ec0815d5ee9bad6dfdea9c18bdfd074",
++				"role": "other"
++			},
++			{
++				"hash": "3a2603c249e735043d8e09ea39d938a34a5bba5b4f46c3a61fb579265d8c77c7",
++				"role": "other"
++			},
++			{
++				"hash": "08cf0b4d1390617aeb16952eea60ce2fb57309b526e20fc6e7e294d5f723ccdb",
++				"role": "other"
++			},
++			{
++				"hash": "9ea1d7a973530fe72cd52293d752f56970a350a077fffc04e66fff9d28dfc21c",
++				"role": "other"
++			},
++			{
++				"hash": "18f436fcec6c96f3dd47fd79df2365389d7bd5656ec3a0a467f2cfaeb1dd482a",
++				"role": "other"
++			},
++			{
++				"hash": "54e10af1d45ccf8f7bfd36e0b0c1e4e96dddc9da3ce9a254b2a6dd658563cb88",
++				"role": "other"
++			},
++			{
++				"hash": "6730a97d62d50198944b4e459b77f3d7a6f06a52a85eb7b3fccfec3f5c752b69",
++				"role": "other"
++			},
++			{
++				"hash": "e198ad8c0e69aa2a520ff2306fdc19a9017157faa1c0b5552ddd4894171e0b38",
++				"role": "other"
++			},
++			{
++				"hash": "76309dfe08fd64386ed1e9164214bce475d0bc2766c3af32b9907cd8a02981c2",
++				"role": "other"
++			},
++			{
++				"hash": "fa6272d70126a2dd1a1d04b66303cc8c2d1bc5dab3c02d941f1781ed72fd652f",
++				"role": "other"
++			},
++			{
++				"hash": "ab9ee23e28e4c9f7b58503616f159df3d2c2b4bd50c3d3271b3cc8bc7b788036",
++				"role": "other"
++			},
++			{
++				"hash": "b42a56b13ce8a8c9ee0f6b2e67c488db57235cb84b2a489e5d1dcaaa2d28e9b5",
++				"role": "other"
++			},
++			{
++				"hash": "6ac86e0c9c31b1e0b4840f0fe4a3123487c6457db75c4e14751355d893b4beb3",
++				"role": "gravel"
++			},
++			{
++				"hash": "47c651e3b3aa37f9fa7312c0758262768dfe4d9326b65dbe79b55fd1bc59b32f",
++				"role": "gravel"
++			},
++			{
++				"hash": "67fc8933d06290e27bf1ee20e7935e76345f016ab3d9a61e116f3108d90ae011",
++				"role": "gravel"
++			},
++			{
++				"hash": "b1c71dfdbe86689411c4135fadf43c207feb97b81ef552dfda5e7f884929f737",
++				"role": "gravel"
++			},
++			{
++				"hash": "2cf495a57f1b22defcda0df2a206fe1e65088306704766f1ceb0b124dfb64648",
++				"role": "gravel"
++			},
++			{
++				"hash": "f05e982449903a3b04a81777d4b46f5d48c396fa45d28e6534fa262a22b60c69",
++				"role": "gravel"
++			},
++			{
++				"hash": "4af19142f56ed47ebdc021d1c18d3188614408ff0e780f4985c6ac72c95ae713",
++				"role": "gravel"
++			},
++			{
++				"hash": "579c961904f680c9d66b36fcf1d7f5e0109a8ece55b13dae522ebe7aec30ec93",
++				"role": "gravel"
++			},
++			{
++				"hash": "2e95b3315374f2b3342188632bb4c1ba53d1ca33faf2a2cf4a572b1cf68b0065",
++				"role": "gravel"
++			},
++			{
++				"hash": "59d290f50ad5bdb4e64c2f042d2db869ee9d641b3a844103df12fe388fc2ca1e",
++				"role": "gravel"
++			},
++			{
++				"hash": "c06a15bfab8f7627ed32fe2d9f7ffbfb4c6158649527a58f3539de6d27520c5e",
++				"role": "gravel"
++			},
++			{
++				"hash": "baed812efa9ed17843d783deedd7ca8a54245044074b6ec9c7ae351ed50f5afc",
++				"role": "gravel"
++			},
++			{
++				"hash": "c535dd0f976c1b79909ec6900a2b102c6b2dac04ea98bec387e8737a7a6295f2",
++				"role": "gravel"
++			},
++			{
++				"hash": "955178c4f8330a40dd7b29f573f0aa525cce169e9a86a529688d19d1fc960669",
++				"role": "gravel"
++			},
++			{
++				"hash": "6c55a935726407b34b5bdd654e3ed84fa3cc77c58238a9f4b3c5c71d2061c4f5",
++				"role": "gravel"
++			},
++			{
++				"hash": "d2e59e2680095dc16d223a187c9801ebe6a2782ea33b5bad376c8c7c455e379a",
++				"role": "gravel"
++			},
++			{
++				"hash": "f67408d0359664a2a2a9b5a8dbfa7ccf9781b5892f5859923ca562a2c9e86916",
++				"role": "gravel"
++			},
++			{
++				"hash": "48b3f026d5c37006d8f8ddb4134b00cc4d6b6aacbeaa597df8568497c5dc05fd",
++				"role": "gravel"
++			},
++			{
++				"hash": "8dead67cc6366f33c9986dd5bcc5fd982852fc4b9d308152e6235f3f7a92d0e8",
++				"role": "gravel"
++			},
++			{
++				"hash": "047535fa14d5540b8aff79120944046d519268066befbcbc71681fd3f51e069a",
++				"role": "gravel"
++			},
++			{
++				"hash": "3dad104d1d17f21c66e95bce3a32485c9c7f5a6f464edcbf5d260bf94cf32440",
++				"role": "gravel"
++			},
++			{
++				"hash": "332d0e466b2becdbf1393c74ea45065653fcaa5551fee5284f4b2ebae013e9c5",
++				"role": "gravel"
++			},
++			{
++				"hash": "c6656800db64dd4462964e85cf12812f6d31dfc20cdfc62a5fb4b8b48e4269e7",
++				"role": "gravel"
++			},
++			{
++				"hash": "37582fee94d1533c91eb9aeae84f4d4ab19e51cff941d19f63f58784e0ff0933",
++				"role": "gravel"
++			},
++			{
++				"hash": "c8d5b8daf4396c6ee3b5e17a7e335bcc79c4a3c4509ad82402805ddf71408021",
++				"role": "asphalt"
++			},
++			{
++				"hash": "f483e64042bb247ea3b37c617371d6fa0419a4f4c5f1db619da77c917e2389ad",
++				"role": "asphalt"
++			},
++			{
++				"hash": "8fa78bf9fa36e8f40f11275d4995b9f618ee897c5bd3c9cee67c0a49d6ff10ad",
++				"role": "asphalt"
++			},
++			{
++				"hash": "e1f04429b9cd842bb80fa79952b379c08b185efa59118038e454b00c5c597846",
++				"role": "asphalt"
++			},
++			{
++				"hash": "d6d185e8408dff49ce56db1ba21f7bd32217736e218edf85b5f227f3de4737f6",
++				"role": "asphalt"
++			},
++			{
++				"hash": "9dfb67a591ea9c8b74ddbc88d6501a8fa2a1e30fd741fdbf0321ee0e2df51464",
++				"role": "asphalt"
++			},
++			{
++				"hash": "2d0283e4bac45323ff6b68b874b9c0b666e05951d1c932fe0ac8097033475889",
++				"role": "asphalt"
++			},
++			{
++				"hash": "e49876d3dc056f2caac20a6e7360ca689014698f7e25caaed13493bf5a70b0cb",
++				"role": "asphalt"
++			},
++			{
++				"hash": "59b236fb2b6f8ae5adf8c55b4e130bc228362e478d89654da54aab04f95a9ff7",
++				"role": "asphalt"
++			},
++			{
++				"hash": "fb7aef2ec4cae4f6151964c6e5bee8d8e2e79c6745044dcd3e58a2ef97e37a34",
++				"role": "asphalt"
++			},
++			{
++				"hash": "533d529b95816fb3e470cc436a9bc0d6b7cda4e1c0fcaa9784a9ac46a5fa99eb",
++				"role": "asphalt"
++			},
++			{
++				"hash": "59c0d414db0f7aca3ccc8dc457b8022675be34e67e5b190afede3d6cf636046c",
++				"role": "asphalt"
++			},
++			{
++				"hash": "5a5a8458a3641a5122d1df40d58e74ccc74be5b548f6aa6d97a73f6ecdddd9ba",
++				"role": "asphalt"
++			},
++			{
++				"hash": "1569320818a4cd3f95b0ba0622b5b1cc8e2d0d45d75b771f0d8f2279487b648a",
++				"role": "asphalt"
++			},
++			{
++				"hash": "a7f772c473e0123e0cf5ca488fb1af3f46777e508d79344a8e6b8ba58f2ba9ac",
++				"role": "asphalt"
++			},
++			{
++				"hash": "68090fd8aade2d49750b4f0edb0a38576f66017df8af80ea3dfc3ce18f77ad65",
++				"role": "asphalt"
++			},
++			{
++				"hash": "08cbc1f73305d3934da76f6ea176544a5326f029c9d034fdb2a904970b99f355",
++				"role": "asphalt"
++			},
++			{
++				"hash": "f2c441f278b1c6ec3e70defa42408e8b774a1d08c8f581d931c45102b42a6da8",
++				"role": "asphalt"
++			},
++			{
++				"hash": "61264adc7c9f22916a863395664171359e16e835f7b90a7cf4be77d7ad5666f0",
++				"role": "asphalt"
++			},
++			{
++				"hash": "0fc5ef00c5fbd5cf926ce723851e316871c146adcc8d56cec72fe2d983796fb9",
++				"role": "asphalt"
++			},
++			{
++				"hash": "3bf870c8246d4dab509d178795e0be1a7a37ec8191653a413c493112112c1037",
++				"role": "asphalt"
++			},
++			{
++				"hash": "db84e2bb42f867c464757d2812a47ae1d63027a2876939b15756ceb23cab3fa0",
++				"role": "asphalt"
++			},
++			{
++				"hash": "1be4f8077c33313a4bb71ab0174cd1ce805c66c80cf61787a52146fa7a81f0a1",
++				"role": "asphalt"
++			},
++			{
++				"hash": "47701cf8805023055a0618dd1ce29ed06b0e0cdb109812373c6bd60af2d114c2",
++				"role": "asphalt"
++			},
++			{
++				"hash": "34bb53f01fb6c6fae6dfd26a10cb69dc4d44d7a89c1fc1dd0d796d5b55767269",
++				"role": "fringe"
++			},
++			{
++				"hash": "554788c3ba23dc5b55f313471dd6129962a3eb8e239299393752d6acf8d88961",
++				"role": "fringe"
++			},
++			{
++				"hash": "ae2b8753814083bfd576ce3a25bc213a6b17d1663a3e290c755ec7f1fff4f00c",
++				"role": "fringe"
++			},
++			{
++				"hash": "b15e5826d1a618125eafeefb35cd73df28fb9204481c3c009eb3bad2f9086f39",
++				"role": "fringe"
++			},
++			{
++				"hash": "abf023b562ca23c5da4e8d8e789b32e4c1d4e520e35d0c1ad3da4a87bf91277f",
++				"role": "fringe"
++			},
++			{
++				"hash": "892c44c775ba69c966db61e19e78f426c8e1fda6562df913753c76247557d9ba",
++				"role": "fringe"
++			},
++			{
++				"hash": "51f8e139d581478544ecfb4f74ae772333eca69301388df7b0bc2440fa979b2e",
++				"role": "fringe"
++			},
++			{
++				"hash": "46eca12ec0abc112e8f6a5c0ebfb6af0cf47c35c8380f8f77600541f0701cd72",
++				"role": "fringe"
++			},
++			{
++				"hash": "bc0708ec1b2587c43d0cf3053288145011d11e820651455aad507802f9431dae",
++				"role": "fringe"
++			},
++			{
++				"hash": "c3e3c88d383f8acfe83889eae0a1e90e1bc89187f2da232b8d9cce57f85bab41",
++				"role": "fringe"
++			},
++			{
++				"hash": "07f6d3d0c06d9454c51c454b0f0d39da156e25fbfc2ed557255cf32af8674e48",
++				"role": "fringe"
++			},
++			{
++				"hash": "81e568f8304aa3c304119c6bb7365d5e4175b93626cd61dff62fcc27ea442baa",
++				"role": "fringe"
++			},
++			{
++				"hash": "9ecf07d634e111537c6a1c95ad490733f30f063076489418637a2d129533d210",
++				"role": "fringe"
++			},
++			{
++				"hash": "0591240f655d22cfd492dae982122a85f212a97076d305fda511e7cff885100b",
++				"role": "fringe"
++			},
++			{
++				"hash": "f63e69ae6c0a32f47d3186a42bcf393d7fad3677c8407af624a0b0cf4c9c9a79",
++				"role": "fringe"
++			},
++			{
++				"hash": "64a1ccb99c9e11a4acd7459f2ae914d438d82879c090820a5830b925b08a1e76",
++				"role": "fringe"
++			},
++			{
++				"hash": "9627ff78d1e3a5cca4dd9509656db2479d90e5243415ff797f8327f884f356ae",
++				"role": "fringe"
++			},
++			{
++				"hash": "167cb407388f482db1915d18cb185488c71cd1ab667157808d28d6b369a05cea",
++				"role": "fringe"
++			},
++			{
++				"hash": "9d3d6d17d98fa4f997f614adb4620ecd23962957dcbaf78c4c8254932a2ecd1d",
++				"role": "fringe"
++			},
++			{
++				"hash": "aa28c70b4cfa170a749d0e5b68fc894c21e4c97c30a068a5badc77e48ae57236",
++				"role": "fringe"
++			},
++			{
++				"hash": "b69d906be7cf5cdea6304ed3980fb2241dbfc96fbc2fa323a9f78542c0c5a61e",
++				"role": "fringe"
++			},
++			{
++				"hash": "3030cfa43fbd6bfe6f669b77098f5252daff8fb628c8ea3d17ec82eab6542fc3",
++				"role": "fringe"
++			},
++			{
++				"hash": "1c76c1d2aadc033d9cc809c6a7e40de03e0072e84c6c0966e06ff7d9ed15ece1",
++				"role": "fringe"
++			},
++			{
++				"hash": "dc7118fa1e8aac25a55fec3f1247c8aa34d6d1759ccfc6da72f7dd3e78703cae",
++				"role": "fringe"
++			},
++			{
++				"hash": "18055c79691e646c5265f0cf4aba19e23572667ff97c3c40be0101e90f557b5c",
++				"role": "other"
++			},
++			{
++				"hash": "d72d640ee9af6cd7ae5cba6ca984c024ddae6a7219a97817da59740ef5fd8028",
++				"role": "other"
++			},
++			{
++				"hash": "952159e5b99ce80bd80f43d270f433258a038f71f8c60efdd2403db0db96a937",
++				"role": "other"
++			},
++			{
++				"hash": "29d661d151b527223dc58e6b6aaa4b44abf6d329234e721f4650c87d2e0b2081",
++				"role": "other"
++			},
++			{
++				"hash": "02946ba6d95e14f738d3e9acfe6738e8fa3fdc5133d86b6beda190602dc4e34c",
++				"role": "other"
++			},
++			{
++				"hash": "7cedb00a1c3bd39caf71b79918105bd97db48131c4feda4945d7254c786205da",
++				"role": "other"
++			},
++			{
++				"hash": "4ec5ef9007d564f1bc8fae2ddf4d9a5cfdd0ee721a742b92bf4bc57c42bad4fe",
++				"role": "other"
++			},
++			{
++				"hash": "fb8a2f7e1b3a67bdd207b21d176679c02bdf6d446c2384f5eca6cff09a8039d1",
++				"role": "other"
++			},
++			{
++				"hash": "8cc63908d90c30f3c1f02a874eff8c83966d25af6404a2eb01e3afcbc45de682",
++				"role": "other"
++			},
++			{
++				"hash": "1ea22b2e1bf21a42a5d096258ab58d6786ed6bb593ca4d43f75545a9e1b38da0",
++				"role": "other"
++			},
++			{
++				"hash": "10261583d62c159f2e57bcd95ef94ba7cdffca00cf8eba42cdfaed9adcf740d0",
++				"role": "other"
++			},
++			{
++				"hash": "a47114b48a221ff73d2dae075fd94d47469f96d65c1c129afa223b8d91c065bd",
++				"role": "other"
++			},
++			{
++				"hash": "a94398926dbb466dfb99f5dcb8a7280fdde54152a310e28551c586dd75ca8a4c",
++				"role": "other"
++			},
++			{
++				"hash": "aa22f347a66c21113f827b84be7ae2687bd7baff730d4640ef28ba020ef4c7a8",
++				"role": "other"
++			},
++			{
++				"hash": "027b4fb754dfac23dda93c422b1c6e852ca06b68da53d17c27c20f8366e5bbcb",
++				"role": "other"
++			},
++			{
++				"hash": "747d834ad955577b8eaac736f356f3d584e551a62eb4d03716aa6ea380744c23",
++				"role": "other"
++			},
++			{
++				"hash": "92814b3414ea9d44f6ef90b6a6bef4a538554c11a7a0db6612292f962cf5280a",
++				"role": "other"
++			},
++			{
++				"hash": "b2464da834ab672340a0e56740e9aaa5dcd9e97430c5f9ce5af77343e36ee4a2",
++				"role": "other"
++			},
++			{
++				"hash": "ac2680b5a0a340f9e7c957d7175b18152916feaee288d785b6434854ab73821b",
++				"role": "other"
++			},
++			{
++				"hash": "93eba2be30049a61212ccaccc862fe2e76282fbfae4a072f3b0dbe1923086a43",
++				"role": "other"
++			},
++			{
++				"hash": "1a3fdd7ee97376bbeffcb1d168318baa80d92975403ee8e9849aab4f85ba9507",
++				"role": "other"
++			},
++			{
++				"hash": "f44989a708820029e6052f85068c324aeaabecbba0ea491d482cd8ce0b5354e1",
++				"role": "other"
++			},
++			{
++				"hash": "adfa2fb18a05bda2d4b933dd7111d5533a02a7ea37759b37aa27583e3cd71ea5",
++				"role": "other"
++			},
++			{
++				"hash": "997f1f375914d4009a347815138579f71226a48054b7f6d30e3b66cbf1057471",
++				"role": "other"
++			},
++			{
++				"hash": "e0f1bdacbd0569e95b97aa58f02abc984e92aae289156ef42ae2f2799b7cacb1",
++				"role": "other"
++			},
++			{
++				"hash": "41b93b7a68615550d748abc7a7db2f9ed63ba9a5f6feeb48591701e9b97c1710",
++				"role": "other"
++			},
++			{
++				"hash": "eacc2f66631104c56f1104ac69d2b233e931be03acf1f6b83a1497c5857c0860",
++				"role": "other"
++			},
++			{
++				"hash": "41223cac1308406fb0c90b39bf1fa8f24bbf7b7019d483a22ec3ec1c3234b9f4",
++				"role": "other"
++			},
++			{
++				"hash": "b831c5bf0ba43740832a39d5faf078776d22a9493e9fe9813ac7ebcfe34c1520",
++				"role": "other"
++			},
++			{
++				"hash": "1fccd536d64a4b5d65687db8ef1ece8a8709a9995891f78ebe9a69012a5ee285",
++				"role": "other"
++			},
++			{
++				"hash": "280b43fe5b76fce8fb493f5563b98fba8936f22cbdac89e7bc7112d3c294785e",
++				"role": "other"
++			},
++			{
++				"hash": "5a5d08d5f53e55ba54e10644e312f187bc8df06011a363c6018b33e0a02563a4",
++				"role": "other"
++			},
++			{
++				"hash": "0e79910d53324b5b2ae05d5369e7ea58a990ac36982cd57b1aa2436fd30e30bf",
++				"role": "other"
++			},
++			{
++				"hash": "6fa11b1657a8d1ca02efa1f31939e601aacd38c7880676b9e1b624cc6a9e74a2",
++				"role": "other"
++			},
++			{
++				"hash": "49062e1711e9cbe7c7a2c2737b946ecbc0ac27922c472276528ff06e17256535",
++				"role": "other"
++			},
++			{
++				"hash": "8b6dc420c3781763cf3ceda9f93945f04f867477dc8be0653775abd07e236a52",
++				"role": "other"
++			},
++			{
++				"hash": "20cc3876b63d2fcfc572f445a0f770c2875e5d21b818abedc78fb931ea669e94",
++				"role": "other"
++			},
++			{
++				"hash": "95906a59cd29a1d11b613db93eccb6f76f8c2a59bbc6dde8cd5eaf5225325e40",
++				"role": "other"
++			},
++			{
++				"hash": "3cd77360f6b2d82733101da0cf25e41da0852a0ad593cda8751025aab295843e",
++				"role": "other"
++			},
++			{
++				"hash": "778d89d723f9f3aa33c303e922ea23f99fb2a4f7bc786612cf70252d8fc97c88",
++				"role": "other"
++			},
++			{
++				"hash": "a1655cf57e2f062ccbae3c66cb5b4a66e8042efd72d4f606e461457dc80d2213",
++				"role": "other"
++			},
++			{
++				"hash": "8159ae934e805f61d39befe171c3a5ee9592aa2c0b42e6ee2587a188a5bdbe6a",
++				"role": "other"
++			},
++			{
++				"hash": "0b58cac74b1d5b6dce18f150f958516417dfa139183c9b07b935e910df594168",
++				"role": "other"
++			},
++			{
++				"hash": "3ba5c09bd77b4f597a2fdd3d48ac3038064f59bc9934bfbe0a0b070a515542e7",
++				"role": "other"
++			},
++			{
++				"hash": "380cab28d6f0e5c04eeaeadb3d293691a77aa0f894c3f05a9b43404bc13821de",
++				"role": "other"
++			},
++			{
++				"hash": "cb122aabcf4517ef7f5583aeec7f02c7788c6d20817ebea4431772239009692c",
++				"role": "other"
++			},
++			{
++				"hash": "cd09e5bec732c1385518aa3851d08fcc0ba6c0353b130d5dd95d0c699dd2eb8d",
++				"role": "other"
++			},
++			{
++				"hash": "580a074f5eb764148b483cf7d87406c2b4043017e53eaa663ad7e60969759cdc",
++				"role": "other"
++			},
++			{
++				"hash": "e0c713bf9770daffffd08cf764fbc767a3dae2bdd7438e9fbc1412a00a2aa3b9",
++				"role": "other"
++			},
++			{
++				"hash": "6f7e84e5e4f1de6a7fdc2cb1c73e8b9926fd79c11bc5e41660a3c7de6e668800",
++				"role": "other"
++			},
++			{
++				"hash": "65c97427c968fa4b9ba50ed7fbcd796c8492fc39c2c54a8dbe6b60b3d7215ea3",
++				"role": "other"
++			},
++			{
++				"hash": "e7aeffc86dab509d8b08af29dd99e7b3ef25d63dd2464540e42e6551b2b98c15",
++				"role": "other"
++			},
++			{
++				"hash": "ed4e645d34301c920ac72a036eb28079d72bed88dbfbdbc41b4ec58f71941325",
++				"role": "other"
++			},
++			{
++				"hash": "54579c6a8957fba02471bd0dccfbb10cc8181749f74d5a821e6435207aa5d8b3",
++				"role": "other"
++			},
++			{
++				"hash": "c7caf79f632cb20585a3c4c8d7f2bac7bc4b707d191625c9c51889987c753849",
++				"role": "other"
++			},
++			{
++				"hash": "2b7a9d4d44a1c951e14c34706471d88f8beeb902d0a039ad608c718b01574978",
++				"role": "other"
++			},
++			{
++				"hash": "861966b1c933ab246a4c36a501ed3f5a15cc7bd711dc8d6a73babf0622d7227c",
++				"role": "other"
++			}
++		]
++	},
++	"pine": {
++		"canonical": "ee39bb65dc29145dcead99d4eea168d3479fbee96d2c2ea1a56d32def06213de",
++		"surfaces": [
++			{
++				"hash": "b42a56b13ce8a8c9ee0f6b2e67c488db57235cb84b2a489e5d1dcaaa2d28e9b5",
++				"role": "other"
++			},
++			{
++				"hash": "f97f6566a314610ce3aa12a82fa5187c479a5810508d595ca331909b54edbfc1",
++				"role": "gravel"
++			},
++			{
++				"hash": "90fca15450230a362c83e2f5076fa30df62a19b0e522a936d7a46d8bb16da89a",
++				"role": "asphalt"
++			},
++			{
++				"hash": "42c3629066bdeb7a339de6a98b3b236909cc389ac69192c592361ee9adab31d1",
++				"role": "fringe"
++			},
++			{
++				"hash": "15bded81d75b28e058f96b247d781984f83ab74216380fef41078f8c08043537",
++				"role": "other"
++			},
++			{
++				"hash": "c96314b24a469786e12116f30dcc20c57b3c816498b0975222039052d56a197f",
++				"role": "other"
++			},
++			{
++				"hash": "c7caf79f632cb20585a3c4c8d7f2bac7bc4b707d191625c9c51889987c753849",
++				"role": "other"
++			},
++			{
++				"hash": "2b7a9d4d44a1c951e14c34706471d88f8beeb902d0a039ad608c718b01574978",
++				"role": "other"
++			},
++			{
++				"hash": "861966b1c933ab246a4c36a501ed3f5a15cc7bd711dc8d6a73babf0622d7227c",
++				"role": "other"
++			}
++		]
++	},
++	"storm": {
++		"canonical": "a8dd89803ee6cd60534d9ceddf6617acc91f85eb06e94ee124af3c267526cb2d",
++		"surfaces": [
++			{
++				"hash": "b42a56b13ce8a8c9ee0f6b2e67c488db57235cb84b2a489e5d1dcaaa2d28e9b5",
++				"role": "other"
++			},
++			{
++				"hash": "f97f6566a314610ce3aa12a82fa5187c479a5810508d595ca331909b54edbfc1",
++				"role": "gravel"
++			},
++			{
++				"hash": "90fca15450230a362c83e2f5076fa30df62a19b0e522a936d7a46d8bb16da89a",
++				"role": "asphalt"
++			},
++			{
++				"hash": "42c3629066bdeb7a339de6a98b3b236909cc389ac69192c592361ee9adab31d1",
++				"role": "fringe"
++			},
++			{
++				"hash": "15bded81d75b28e058f96b247d781984f83ab74216380fef41078f8c08043537",
++				"role": "other"
++			},
++			{
++				"hash": "c96314b24a469786e12116f30dcc20c57b3c816498b0975222039052d56a197f",
++				"role": "other"
++			},
++			{
++				"hash": "c7caf79f632cb20585a3c4c8d7f2bac7bc4b707d191625c9c51889987c753849",
++				"role": "other"
++			},
++			{
++				"hash": "2b7a9d4d44a1c951e14c34706471d88f8beeb902d0a039ad608c718b01574978",
++				"role": "other"
++			},
++			{
++				"hash": "861966b1c933ab246a4c36a501ed3f5a15cc7bd711dc8d6a73babf0622d7227c",
++				"role": "other"
++			}
++		]
++	},
++	"winter": {
++		"canonical": "105de0128de27edc459bb2815c6e007aab11f81ef8a4ab8360918478707892b1",
++		"surfaces": [
++			{
++				"hash": "c1f17c3808cef071ee1ea09d23db1603732627cb97281bc72c9f88aa7088940b",
++				"role": "gravel"
++			},
++			{
++				"hash": "ff32f5c986242a96ec39943fc5f04caee1faed640c1d9a0bc61eae94701cde45",
++				"role": "asphalt"
++			},
++			{
++				"hash": "c96314b24a469786e12116f30dcc20c57b3c816498b0975222039052d56a197f",
++				"role": "other"
++			},
++			{
++				"hash": "623a57034372cdb597f18df16b0a9cf969adac895c9d83e74e909c8d6c79cccf",
++				"role": "other"
++			},
++			{
++				"hash": "b895bd64ce1c937acb967bdb7bb5e15887bdca233451b5101c92c748f3e32d63",
++				"role": "other"
++			},
++			{
++				"hash": "ff7fbbc95950b22c0b7a404830af85e13a0d56fc8c02ac39688e14b2f1572655",
++				"role": "other"
++			},
++			{
++				"hash": "7502fd30c2855dd87700c8f5e72e4d4fe8cc5bf1c1b81c51cb3161d08780a1b3",
++				"role": "other"
++			}
++		]
++	}
++}
+\ No newline at end of file

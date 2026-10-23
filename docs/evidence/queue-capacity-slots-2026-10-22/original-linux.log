@@ -1,0 +1,354 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_uncommitted_completion_does_not_block_another_player[postgres-admit-runs] _
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.LockNotAvailable: canceling statement due to lock timeout
+E   CONTEXT:  while locking tuple (0,6) in relation "queue_capacity"
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_queue_capacity_slots.py:82: in test_uncommitted_completion_does_not_block_another_player
+    assert future.result(timeout=2)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:456: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:401: in __get_result
+    raise self._exception
+/usr/local/lib/python3.12/concurrent/futures/thread.py:59: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_queue_capacity_slots.py:72: in unrelated
+    admit(session, domain.players["Carol"], 128)
+/baseline/bmt_backend/queueing.py:19: in admit
+    queue = session.scalar(select(QueueCapacity).where(QueueCapacity.id == 1).with_for_update().execution_options(populate_existing=True))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2421: in scalar
+    return self._execute_internal(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/context.py:306: in orm_execute_statement
+    result = conn.execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   sqlalchemy.exc.OperationalError: (psycopg.errors.LockNotAvailable) canceling statement due to lock timeout
+E   CONTEXT:  while locking tuple (0,6) in relation "queue_capacity"
+E   [SQL: SELECT queue_capacity.id, queue_capacity.pending 
+E   FROM queue_capacity 
+E   WHERE queue_capacity.id = %(id_1)s::INTEGER FOR UPDATE]
+E   [parameters: {'id_1': 1}]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+----------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"8098a7ca-830f-409a-819b-a53a97a89d38","method":"POST","route":"/v1/tracks","status":201,"duration_ms":75.12,"request_wire_bytes":43,"request_decoded_bytes":43,"response_wire_bytes":992,"level":"info"}
+{"event":"http_request","request_id":"fcbdd8eb-61c1-409d-ab79-a0067196a38f","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":124.12,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":581,"level":"info"}
+{"event":"http_request","request_id":"5fc15ed1-8318-4de3-8187-4bc10b2e00ee","method":"POST","route":"/v1/runs","status":202,"duration_ms":58.3,"request_wire_bytes":699,"request_decoded_bytes":699,"response_wire_bytes":333,"level":"info"}
+{"event":"verification_complete","level":"info","run_id":"fcc85098-a9cf-43e8-852b-3dda858c1726","time_ticks":300,"worker_id":"6dec8b72-12c4-4fa1-bbdf-9d920313768b","verification_seconds":0.0654,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"http_request","request_id":"8a142135-ca7c-451e-82e9-1604a7fd006a","method":"GET","route":"/v1/runs/{run_id}","status":200,"duration_ms":12.57,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":376,"level":"info"}
+{"event":"http_request","request_id":"194659ae-8f17-44f2-9cb5-043f2ed3bb34","method":"POST","route":"/v1/track-versions/{version_id}/publish","status":200,"duration_ms":40.48,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":1002,"level":"info"}
+------------------------------ Captured log call -------------------------------
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "8098a7ca-830f-409a-819b-a53a97a89d38", "method": "POST", "route": "/v1/tracks", "status": 201, "duration_ms": 75.12, "request_wire_bytes": 43, "request_decoded_bytes": 43, "response_wire_bytes": 992}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "fcbdd8eb-61c1-409d-ab79-a0067196a38f", "method": "POST", "route": "/v1/run-tickets", "status": 201, "duration_ms": 124.12, "request_wire_bytes": 76, "request_decoded_bytes": 76, "response_wire_bytes": 581}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "5fc15ed1-8318-4de3-8187-4bc10b2e00ee", "method": "POST", "route": "/v1/runs", "status": 202, "duration_ms": 58.3, "request_wire_bytes": 699, "request_decoded_bytes": 699, "response_wire_bytes": 333}
+INFO     bmt.worker:worker.py:342 verification_complete
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "8a142135-ca7c-451e-82e9-1604a7fd006a", "method": "GET", "route": "/v1/runs/{run_id}", "status": 200, "duration_ms": 12.57, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 376}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "194659ae-8f17-44f2-9cb5-043f2ed3bb34", "method": "POST", "route": "/v1/track-versions/{version_id}/publish", "status": 200, "duration_ms": 40.48, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 1002}
+_ test_uncommitted_completion_does_not_block_another_player[postgres-admit-publication_intents] _
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.LockNotAvailable: canceling statement due to lock timeout
+E   CONTEXT:  while locking tuple (0,6) in relation "queue_capacity"
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_queue_capacity_slots.py:82: in test_uncommitted_completion_does_not_block_another_player
+    assert future.result(timeout=2)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:456: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:401: in __get_result
+    raise self._exception
+/usr/local/lib/python3.12/concurrent/futures/thread.py:59: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_queue_capacity_slots.py:72: in unrelated
+    admit(session, domain.players["Carol"], 128)
+/baseline/bmt_backend/queueing.py:19: in admit
+    queue = session.scalar(select(QueueCapacity).where(QueueCapacity.id == 1).with_for_update().execution_options(populate_existing=True))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2421: in scalar
+    return self._execute_internal(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/context.py:306: in orm_execute_statement
+    result = conn.execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   sqlalchemy.exc.OperationalError: (psycopg.errors.LockNotAvailable) canceling statement due to lock timeout
+E   CONTEXT:  while locking tuple (0,6) in relation "queue_capacity"
+E   [SQL: SELECT queue_capacity.id, queue_capacity.pending 
+E   FROM queue_capacity 
+E   WHERE queue_capacity.id = %(id_1)s::INTEGER FOR UPDATE]
+E   [parameters: {'id_1': 1}]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+----------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"7892e31b-42e1-4aad-ae9e-12200bad54bc","method":"POST","route":"/v1/tracks","status":201,"duration_ms":55.2,"request_wire_bytes":43,"request_decoded_bytes":43,"response_wire_bytes":992,"level":"info"}
+{"event":"http_request","request_id":"e56efad0-98cd-41b7-8229-edad864789a7","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":137.68,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":581,"level":"info"}
+{"event":"http_request","request_id":"3c817b9f-ed38-43a0-8170-434ba89f7454","method":"POST","route":"/v1/runs","status":202,"duration_ms":44.74,"request_wire_bytes":699,"request_decoded_bytes":699,"response_wire_bytes":333,"level":"info"}
+{"event":"verification_complete","level":"info","run_id":"28d66aaa-94a2-4eaf-9b9b-5741995dcd91","time_ticks":300,"worker_id":"824565e3-2659-4f6c-b8a9-d11f69c4e5de","verification_seconds":0.056,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"http_request","request_id":"242b3093-50b4-4bc8-a3eb-bdf343a46b06","method":"GET","route":"/v1/runs/{run_id}","status":200,"duration_ms":10.78,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":376,"level":"info"}
+{"event":"http_request","request_id":"0745b5fc-3d14-41fd-b2f6-66b958df3a56","method":"POST","route":"/v1/track-versions/{version_id}/publish","status":200,"duration_ms":37.47,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":1002,"level":"info"}
+------------------------------ Captured log call -------------------------------
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "7892e31b-42e1-4aad-ae9e-12200bad54bc", "method": "POST", "route": "/v1/tracks", "status": 201, "duration_ms": 55.2, "request_wire_bytes": 43, "request_decoded_bytes": 43, "response_wire_bytes": 992}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "e56efad0-98cd-41b7-8229-edad864789a7", "method": "POST", "route": "/v1/run-tickets", "status": 201, "duration_ms": 137.68, "request_wire_bytes": 76, "request_decoded_bytes": 76, "response_wire_bytes": 581}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "3c817b9f-ed38-43a0-8170-434ba89f7454", "method": "POST", "route": "/v1/runs", "status": 202, "duration_ms": 44.74, "request_wire_bytes": 699, "request_decoded_bytes": 699, "response_wire_bytes": 333}
+INFO     bmt.worker:worker.py:342 verification_complete
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "242b3093-50b4-4bc8-a3eb-bdf343a46b06", "method": "GET", "route": "/v1/runs/{run_id}", "status": 200, "duration_ms": 10.78, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 376}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "0745b5fc-3d14-41fd-b2f6-66b958df3a56", "method": "POST", "route": "/v1/track-versions/{version_id}/publish", "status": 200, "duration_ms": 37.47, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 1002}
+_ test_uncommitted_completion_does_not_block_another_player[postgres-complete-runs] _
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.LockNotAvailable: canceling statement due to lock timeout
+E   CONTEXT:  while updating tuple (0,6) in relation "queue_capacity"
+E   SQL statement "UPDATE queue_capacity SET pending=pending+delta WHERE id=1"
+E   PL/pgSQL function bmt_queue_delta() line 9 at SQL statement
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_queue_capacity_slots.py:82: in test_uncommitted_completion_does_not_block_another_player
+    assert future.result(timeout=2)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:456: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:401: in __get_result
+    raise self._exception
+/usr/local/lib/python3.12/concurrent/futures/thread.py:59: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_queue_capacity_slots.py:76: in unrelated
+    session.commit()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2035: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1316: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1290: in _prepare_impl
+    self.session.flush()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4353: in flush
+    self._flush(objects)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4488: in _flush
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py:122: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4449: in _flush
+    flush_context.execute()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:465: in execute
+    rec.execute(self)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:641: in execute
+    util.preloaded.orm_persistence.save_obj(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:86: in save_obj
+    _emit_update_statements(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:913: in _emit_update_statements
+    c = connection.execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   sqlalchemy.exc.OperationalError: (psycopg.errors.LockNotAvailable) canceling statement due to lock timeout
+E   CONTEXT:  while updating tuple (0,6) in relation "queue_capacity"
+E   SQL statement "UPDATE queue_capacity SET pending=pending+delta WHERE id=1"
+E   PL/pgSQL function bmt_queue_delta() line 9 at SQL statement
+E   [SQL: UPDATE runs SET status=%(status)s::VARCHAR WHERE runs.id = %(runs_id)s::VARCHAR]
+E   [parameters: {'status': 'failed', 'runs_id': '44196958-5039-4bde-8abc-b54fe23e0e1f'}]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+----------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"7094e882-1df4-4409-9c19-6eb299fc7064","method":"POST","route":"/v1/tracks","status":201,"duration_ms":53.62,"request_wire_bytes":43,"request_decoded_bytes":43,"response_wire_bytes":992,"level":"info"}
+{"event":"http_request","request_id":"6839748a-c662-4e30-a5b9-5c2fe96f33fa","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":109.15,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":581,"level":"info"}
+{"event":"http_request","request_id":"68fbf2c8-4c79-41fa-80f8-ad7f41a103a7","method":"POST","route":"/v1/runs","status":202,"duration_ms":41.4,"request_wire_bytes":699,"request_decoded_bytes":699,"response_wire_bytes":333,"level":"info"}
+{"event":"verification_complete","level":"info","run_id":"4ff3fdf3-8c58-455a-8255-881de910049f","time_ticks":300,"worker_id":"e87c37f9-2a6d-4541-84e0-23eeecec039e","verification_seconds":0.0486,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"http_request","request_id":"eb8f428e-b683-461b-acda-7a426f231ad8","method":"GET","route":"/v1/runs/{run_id}","status":200,"duration_ms":10.37,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":376,"level":"info"}
+{"event":"http_request","request_id":"732edc90-d186-4ca4-8404-9eab00f95900","method":"POST","route":"/v1/track-versions/{version_id}/publish","status":200,"duration_ms":34.69,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":1002,"level":"info"}
+------------------------------ Captured log call -------------------------------
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "7094e882-1df4-4409-9c19-6eb299fc7064", "method": "POST", "route": "/v1/tracks", "status": 201, "duration_ms": 53.62, "request_wire_bytes": 43, "request_decoded_bytes": 43, "response_wire_bytes": 992}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "6839748a-c662-4e30-a5b9-5c2fe96f33fa", "method": "POST", "route": "/v1/run-tickets", "status": 201, "duration_ms": 109.15, "request_wire_bytes": 76, "request_decoded_bytes": 76, "response_wire_bytes": 581}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "68fbf2c8-4c79-41fa-80f8-ad7f41a103a7", "method": "POST", "route": "/v1/runs", "status": 202, "duration_ms": 41.4, "request_wire_bytes": 699, "request_decoded_bytes": 699, "response_wire_bytes": 333}
+INFO     bmt.worker:worker.py:342 verification_complete
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "eb8f428e-b683-461b-acda-7a426f231ad8", "method": "GET", "route": "/v1/runs/{run_id}", "status": 200, "duration_ms": 10.37, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 376}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "732edc90-d186-4ca4-8404-9eab00f95900", "method": "POST", "route": "/v1/track-versions/{version_id}/publish", "status": 200, "duration_ms": 34.69, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 1002}
+_ test_uncommitted_completion_does_not_block_another_player[postgres-complete-publication_intents] _
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.LockNotAvailable: canceling statement due to lock timeout
+E   CONTEXT:  while updating tuple (0,6) in relation "queue_capacity"
+E   SQL statement "UPDATE queue_capacity SET pending=pending+delta WHERE id=1"
+E   PL/pgSQL function bmt_queue_delta() line 9 at SQL statement
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_queue_capacity_slots.py:82: in test_uncommitted_completion_does_not_block_another_player
+    assert future.result(timeout=2)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:456: in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/concurrent/futures/_base.py:401: in __get_result
+    raise self._exception
+/usr/local/lib/python3.12/concurrent/futures/thread.py:59: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_queue_capacity_slots.py:76: in unrelated
+    session.commit()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:2035: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1316: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:1290: in _prepare_impl
+    self.session.flush()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4353: in flush
+    self._flush(objects)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4488: in _flush
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py:122: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py:4449: in _flush
+    flush_context.execute()
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:465: in execute
+    rec.execute(self)
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/unitofwork.py:641: in execute
+    util.preloaded.orm_persistence.save_obj(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:86: in save_obj
+    _emit_update_statements(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/persistence.py:913: in _emit_update_statements
+    c = connection.execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+/usr/local/lib/python3.12/site-packages/psycopg/cursor.py:117: in execute
+    raise ex.with_traceback(None)
+E   sqlalchemy.exc.OperationalError: (psycopg.errors.LockNotAvailable) canceling statement due to lock timeout
+E   CONTEXT:  while updating tuple (0,6) in relation "queue_capacity"
+E   SQL statement "UPDATE queue_capacity SET pending=pending+delta WHERE id=1"
+E   PL/pgSQL function bmt_queue_delta() line 9 at SQL statement
+E   [SQL: UPDATE runs SET status=%(status)s::VARCHAR WHERE runs.id = %(runs_id)s::VARCHAR]
+E   [parameters: {'status': 'failed', 'runs_id': '053538c3-5d96-41c4-ad90-6b972287544f'}]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+----------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"810fd2b5-7fba-4a22-b00c-c30a7dea5f71","method":"POST","route":"/v1/tracks","status":201,"duration_ms":50.76,"request_wire_bytes":43,"request_decoded_bytes":43,"response_wire_bytes":992,"level":"info"}
+{"event":"http_request","request_id":"a0d868d4-373c-413c-9212-10a1f393e3a0","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":109.05,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":581,"level":"info"}
+{"event":"http_request","request_id":"4978847d-53ab-44c7-9841-ec43c959b13c","method":"POST","route":"/v1/runs","status":202,"duration_ms":41.8,"request_wire_bytes":699,"request_decoded_bytes":699,"response_wire_bytes":333,"level":"info"}
+{"event":"verification_complete","level":"info","run_id":"443be0a0-f188-4bbf-91c9-03ec927c0271","time_ticks":300,"worker_id":"77fb1448-482c-4675-bf07-846e34351f7a","verification_seconds":0.0489,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"http_request","request_id":"ba70085b-794e-4934-b981-800b41a38aeb","method":"GET","route":"/v1/runs/{run_id}","status":200,"duration_ms":11.34,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":376,"level":"info"}
+{"event":"http_request","request_id":"c15001df-6058-427c-a3ab-ee9bb9c462eb","method":"POST","route":"/v1/track-versions/{version_id}/publish","status":200,"duration_ms":33.81,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":1002,"level":"info"}
+------------------------------ Captured log call -------------------------------
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "810fd2b5-7fba-4a22-b00c-c30a7dea5f71", "method": "POST", "route": "/v1/tracks", "status": 201, "duration_ms": 50.76, "request_wire_bytes": 43, "request_decoded_bytes": 43, "response_wire_bytes": 992}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "a0d868d4-373c-413c-9212-10a1f393e3a0", "method": "POST", "route": "/v1/run-tickets", "status": 201, "duration_ms": 109.05, "request_wire_bytes": 76, "request_decoded_bytes": 76, "response_wire_bytes": 581}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "4978847d-53ab-44c7-9841-ec43c959b13c", "method": "POST", "route": "/v1/runs", "status": 202, "duration_ms": 41.8, "request_wire_bytes": 699, "request_decoded_bytes": 699, "response_wire_bytes": 333}
+INFO     bmt.worker:worker.py:342 verification_complete
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "ba70085b-794e-4934-b981-800b41a38aeb", "method": "GET", "route": "/v1/runs/{run_id}", "status": 200, "duration_ms": 11.34, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 376}
+INFO     bmt.requests:middleware.py:472 {"event": "http_request", "request_id": "c15001df-6058-427c-a3ab-ee9bb9c462eb", "method": "POST", "route": "/v1/track-versions/{version_id}/publish", "status": 200, "duration_ms": 33.81, "request_wire_bytes": 0, "request_decoded_bytes": 0, "response_wire_bytes": 1002}
+=============================== warnings summary ===============================
+../usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED backend/tests/test_queue_capacity_slots.py::test_uncommitted_completion_does_not_block_another_player[postgres-admit-runs]
+FAILED backend/tests/test_queue_capacity_slots.py::test_uncommitted_completion_does_not_block_another_player[postgres-admit-publication_intents]
+FAILED backend/tests/test_queue_capacity_slots.py::test_uncommitted_completion_does_not_block_another_player[postgres-complete-runs]
+FAILED backend/tests/test_queue_capacity_slots.py::test_uncommitted_completion_does_not_block_another_player[postgres-complete-publication_intents]
+4 failed, 24 deselected, 1 warning in 12.28s

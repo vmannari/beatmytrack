@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="8" skipped="0" tests="87" time="166.801" timestamp="2026-10-22T21:37:01.706881+03:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_telemetry_parallel" name="test_deferred_work_keeps_credit_until_its_atomic_completion[sqlite]" time="2.150" /><testcase classname="tests.test_telemetry_parallel" name="test_actor_failure_rolls_back_profiles_partial_totals_and_completion[sqlite]" time="1.760" /><testcase classname="tests.test_telemetry_parallel" name="test_rollup_is_bounded_idempotent_and_preserves_historical_baseline[sqlite]" time="1.897" /><testcase classname="tests.test_telemetry_parallel" name="test_reporting_barrier_completes_without_waiting_for_future_receipts[sqlite]" time="1.953" /><testcase classname="tests.test_telemetry_parallel" name="test_erasure_cancels_pending_work_and_returns_capacity_once[sqlite]" time="1.647" /><testcase classname="tests.test_telemetry_parallel" name="test_pending_publication_cannot_recreate_erased_creator_fact[sqlite]" time="1.841"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_telemetry_parallel.py:194: in test_pending_publication_cannot_recreate_erased_creator_fact
+    assert erase_publications(db, creator)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_telemetry_parallel" name="test_expansion_preserves_retired_history_and_routes_pending_receipts" time="0.413"><failure message="sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) CHECK constraint failed: ck_player_claimed_name&#10;[SQL: INSERT INTO players (id, display_name, country_code, needs_username, disabled, analytics_enabled, is_test_driver, vehicle_appearances, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/gkpj)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.IntegrityError: CHECK constraint failed: ck_player_claimed_name
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_telemetry_parallel.py:211: in test_expansion_preserves_retired_history_and_routes_pending_receipts
+    db.execute(Player.__table__.insert().values(id=identity, display_name=identity))
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) CHECK constraint failed: ck_player_claimed_name
+E   [SQL: INSERT INTO players (id, display_name, country_code, needs_username, disabled, analytics_enabled, is_test_driver, vehicle_appearances, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/gkpj)</failure></testcase><testcase classname="tests.test_race_statistics" name="test_published_uuid5_reference_is_ingested_and_projected" time="1.924" /><testcase classname="tests.test_race_statistics" name="test_race_package_exactly_once_device_os_and_route_filters" time="2.285" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change0]" time="2.044" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change1]" time="2.031" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change2]" time="1.673" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change3]" time="1.661" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change4]" time="1.693" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change5]" time="2.108" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change6]" time="2.055" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change7]" time="2.163" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change8]" time="1.966" /><testcase classname="tests.test_race_statistics" name="test_race_package_rejects_unbounded_and_private_payloads[change9]" time="1.934" /><testcase classname="tests.test_race_statistics" name="test_local_draft_spatial_data_rejected_but_generic_local_frame_summary_allowed" time="2.576" /><testcase classname="tests.test_race_statistics" name="test_batched_race_identity_mismatch_has_no_receipt_or_fact" time="1.991" /><testcase classname="tests.test_race_statistics" name="test_race_ticket_must_belong_to_actor_and_published_version" time="2.002" /><testcase classname="tests.test_race_statistics" name="test_wide_device_scope_merge_is_bounded_and_preserves_selected_counts" time="0.017" /><testcase classname="tests.test_race_statistics" name="test_render_context_ingest_dedupe_projection_and_scoped_reports" time="2.492" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes0]" time="1.978" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes1]" time="1.960" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes2]" time="2.027" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes3]" time="2.299" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes4]" time="2.079" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes5]" time="1.916" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes6]" time="1.951" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes7]" time="1.909" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes8]" time="1.890" /><testcase classname="tests.test_race_statistics" name="test_render_context_rejects_invalid_dimensions_and_private_fields[changes9]" time="1.908" /><testcase classname="tests.test_race_statistics" name="test_render_schema_is_explicit_and_legacy_cannot_claim_context" time="1.943" /><testcase classname="tests.test_race_statistics" name="test_render_context_migration_preserves_historical_unknowns" time="1.757" /><testcase classname="tests.test_race_statistics" name="test_operator_queue_counts_explicit_publication_work_and_oldest_age" time="2.389"><failure message="KeyError: 'publications'">backend\tests\test_race_statistics.py:239: in test_operator_queue_counts_explicit_publication_work_and_oldest_age
+    assert overview['publications']=={'pending':2,'failed':1,'failed_count_capped':False}
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'publications'</failure></testcase><testcase classname="tests.test_network_health" name="test_network_gate_commit_dedupe_projection_and_report" time="2.332" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes0]" time="2.043" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes1]" time="2.092" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes2]" time="1.908" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes3]" time="1.875" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes4]" time="1.864" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes5]" time="1.977" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes6]" time="2.535" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes7]" time="1.912" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes8]" time="1.894" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes9]" time="1.938" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes10]" time="1.971" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes11]" time="1.971" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes12]" time="1.952" /><testcase classname="tests.test_network_health" name="test_network_summary_rejects_private_unbounded_or_inconsistent_data[changes13]" time="1.957" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes0]" time="1.981" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes1]" time="1.931" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes2]" time="1.911" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes3]" time="2.064" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes4]" time="1.978" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes5]" time="3.080" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes6]" time="1.960" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes7]" time="1.998" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes8]" time="1.913" /><testcase classname="tests.test_network_health" name="test_network_failure_has_strict_small_correlation_fields[changes9]" time="2.003" /><testcase classname="tests.test_network_health" name="test_selected_failures_without_response_ids_and_bounded_lookup" time="2.088" /><testcase classname="tests.test_network_health" name="test_network_fact_retention_is_paced_and_expired_facts_hidden" time="2.156" /><testcase classname="tests.test_client_quality" name="test_quality_gate_validation_dedupe_projection_and_read_budget" time="2.259" /><testcase classname="tests.test_client_quality" name="test_spatial_and_exit_contracts_are_typed_bounded_not_arbitrary_capture" time="2.171" /><testcase classname="tests.test_client_quality" name="test_quality_requires_telemetry_transport" time="0.001" /><testcase classname="tests.test_privacy" name="test_deletion_preserves_public_route_and_exact_standings" time="1.787"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_privacy.py:79: in test_deletion_preserves_public_route_and_exact_standings
+    drain(auth_app)
+backend\tests\test_privacy.py:62: in drain
+    if not cleanup_one(app):
+           ^^^^^^^^^^^^^^^^
+backend\bmt_backend\privacy.py:235: in cleanup_one
+    if erase_studio_private(session, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\studio_erasure.py:18: in erase_studio_private
+    if erase_publications(db, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_privacy" name="test_deletion_requires_exact_confirmation_and_operation[body0]" time="1.580" /><testcase classname="tests.test_privacy" name="test_deletion_requires_exact_confirmation_and_operation[body1]" time="1.582" /><testcase classname="tests.test_privacy" name="test_deletion_requires_exact_confirmation_and_operation[body2]" time="2.370" /><testcase classname="tests.test_privacy" name="test_deletion_requires_exact_confirmation_and_operation[body3]" time="1.957" /><testcase classname="tests.test_privacy" name="test_repeat_receipt_cannot_cross_accounts_or_requests" time="1.771" /><testcase classname="tests.test_privacy" name="test_preference_stops_client_and_server_analytics" time="1.644" /><testcase classname="tests.test_privacy" name="test_new_account_analytics_is_off_until_explicit_choice" time="1.852" /><testcase classname="tests.test_privacy" name="test_erasure_ledger_reapplies_to_an_offline_backup" time="1.669" /><testcase classname="tests.test_privacy" name="test_write_released_for_external_io_cannot_resurrect_account" time="1.665" /><testcase classname="tests.test_privacy" name="test_web_deletion_never_creates_an_account" time="1.760" /><testcase classname="tests.test_privacy" name="test_public_pages_are_accessible_escaped_and_cookie_free" time="1.610" /><testcase classname="tests.test_privacy" name="test_storage_failure_does_not_complete_erasure" time="1.756"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_privacy.py:222: in test_storage_failure_does_not_complete_erasure
+    cleanup_one(auth_app)
+backend\bmt_backend\privacy.py:235: in cleanup_one
+    if erase_studio_private(session, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\studio_erasure.py:18: in erase_studio_private
+    if erase_publications(db, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_privacy" name="test_later_racing_on_retained_tracks_cannot_recreate_removed_analytics" time="1.742"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_privacy.py:234: in test_later_racing_on_retained_tracks_cannot_recreate_removed_analytics
+    drain(auth_app)
+backend\tests\test_privacy.py:62: in drain
+    if not cleanup_one(app):
+           ^^^^^^^^^^^^^^^^
+backend\bmt_backend\privacy.py:235: in cleanup_one
+    if erase_studio_private(session, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\studio_erasure.py:18: in erase_studio_private
+    if erase_publications(db, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_privacy" name="test_shared_objects_and_active_leases_survive_cleanup" time="1.830"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_privacy.py:256: in test_shared_objects_and_active_leases_survive_cleanup
+    drain(auth_app)
+backend\tests\test_privacy.py:62: in drain
+    if not cleanup_one(app):
+           ^^^^^^^^^^^^^^^^
+backend\bmt_backend\privacy.py:235: in cleanup_one
+    if erase_studio_private(session, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\studio_erasure.py:18: in erase_studio_private
+    if erase_publications(db, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_privacy" name="test_recording_redaction_does_not_allow_future_token_issuance" time="1.716" /><testcase classname="tests.test_privacy" name="test_independent_journal_survives_without_primary_database" time="1.786" /><testcase classname="tests.test_privacy" name="test_journal_failure_never_acknowledges_and_same_request_recovers" time="1.603" /><testcase classname="tests.test_privacy" name="test_old_manifest_is_retained_while_source_is_redacted" time="1.882"><failure message="sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set&#10;[SQL: SELECT track_versions.id &#10;FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id &#10;WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id &#10;FROM product_publications &#10;WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id&#10; LIMIT ? OFFSET ?]&#10;[SQL parameters hidden due to hide_parameters=True]&#10;(Background on this error at: https://sqlalche.me/e/20/e3q8)">.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: 1st ORDER BY term does not match any column in the result set
+
+The above exception was the direct cause of the following exception:
+backend\tests\test_privacy.py:302: in test_old_manifest_is_retained_while_source_is_redacted
+    drain(auth_app)
+backend\tests\test_privacy.py:62: in drain
+    if not cleanup_one(app):
+           ^^^^^^^^^^^^^^^^
+backend\bmt_backend\privacy.py:235: in cleanup_one
+    if erase_studio_private(session, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\studio_erasure.py:18: in erase_studio_private
+    if erase_publications(db, player_id):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+backend\bmt_backend\telemetry_erasure.py:45: in erase_publications
+    ids = session.scalars(versions.order_by("id").limit(limit)).all()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2481: in scalars
+    return self._execute_internal(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\orm\context.py:306: in orm_execute_statement
+    result = conn.execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1421: in execute
+    return meth(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\sql\elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1848: in _execute_context
+    return self._exec_single_context(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+.tools\backend-secure-venv\Lib\site-packages\sqlalchemy\engine\default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) 1st ORDER BY term does not match any column in the result set
+E   [SQL: SELECT track_versions.id 
+E   FROM track_versions JOIN tracks ON tracks.id = track_versions.track_id 
+E   WHERE tracks.owner_id = ? AND track_versions.id &gt; ? UNION SELECT product_publications.version_id 
+E   FROM product_publications 
+E   WHERE product_publications.owner_id = ? AND product_publications.version_id &gt; ? ORDER BY id
+E    LIMIT ? OFFSET ?]
+E   [SQL parameters hidden due to hide_parameters=True]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)</failure></testcase><testcase classname="tests.test_privacy" name="test_snapshot_redaction_keeps_track_titles_and_other_people" time="0.001" /></testsuite></testsuites>

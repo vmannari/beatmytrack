@@ -1,0 +1,664 @@
+--- a/backend/bmt_backend/queueing.py
++++ b/backend/bmt_backend/queueing.py
+@@ -1,27 +1,64 @@
+-"""Short, constant-cost admission and independent owner fairness."""
++"""Transactional capacity slots without a globally serialized counter."""
+ import time
+ 
+ from fastapi import HTTPException
+-from sqlalchemy import select
++from sqlalchemy import func, select
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
+-from .track_models import QueueCapacity, QueuePlayer
++from .track_models import QueueCapacity, QueueLimit, QueuePlayer, QueueReservation
+ 
+ 
+ def check_capacity(session, player_id: str, capacity: int) -> None:
+-    queue = session.get(QueueCapacity, 1)
++    pending = session.scalar(select(QueueCapacity.pending))
+     owner = session.get(QueuePlayer, player_id)
+-    if queue.pending >= capacity or (owner is not None and owner.pending >= 8):
++    if pending >= capacity or (owner is not None and owner.pending >= 8):
+         raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
+ 
+ 
+ def admit(session, player_id: str, capacity: int) -> None:
+-    """Counters are transactional; blob publication must precede this short lock."""
+-    queue = session.scalar(select(QueueCapacity).where(QueueCapacity.id == 1).with_for_update().execution_options(populate_existing=True))
+-    if queue.pending >= capacity:
++    """Serialize only this owner. Job triggers atomically acquire a free slot.
++
++    Limits share a read lock, which does not serialize admissions. An exclusive
++    configuration lock is needed only when changing the configured capacity.
++    A shrink cannot strand an occupied slot outside the new allowed range.
++    """
++    configured = session.scalar(select(QueueLimit.capacity).where(QueueLimit.id == 1))
++    if configured != capacity:
++        limit = session.scalar(select(QueueLimit).where(QueueLimit.id == 1)
++            .with_for_update(skip_locked=True).execution_options(populate_existing=True))
++        if limit is None:
++            raise HTTPException(503, "QUEUE_CAPACITY_CONFIGURATION_BUSY")
++        highest = session.scalar(select(func.max(QueueReservation.slot)))
++        if highest is not None and highest >= capacity:
++            raise HTTPException(503, "QUEUE_CAPACITY_CHANGE_REQUIRES_DRAIN")
++        limit.capacity = capacity
++        session.flush()
++    else:
++        # Recheck after waiting for any in-progress configuration change.
++        configured = session.scalar(select(QueueLimit.capacity).where(QueueLimit.id == 1)
++            .with_for_update(read=True))
++        if configured != capacity:
++            raise HTTPException(503, "QUEUE_CAPACITY_CONFIGURATION_CHANGED")
++    insert = sqlite_insert if session.bind.dialect.name == "sqlite" else pg_insert
++    session.execute(insert(QueuePlayer).values(player_id=player_id, last_claim_at=0, pending=0)
++        .on_conflict_do_nothing(index_elements=[QueuePlayer.player_id]))
++    owner = session.scalar(select(QueuePlayer).where(QueuePlayer.player_id == player_id)
++        .with_for_update().execution_options(populate_existing=True))
++    if session.scalar(select(QueueCapacity.pending)) >= capacity:
+         raise HTTPException(429, "Verification capacity reached; retry this saved attempt later")
+-    owner = session.get(QueuePlayer, player_id)
+-    if owner is not None and owner.pending >= 8:
++    if owner.pending >= 8:
+         raise HTTPException(429, "Verification queue is full for this player; retry after a pending result completes")
++
++
++def capacity_error(error) -> bool:
++    """Recognize only the database's fixed, non-sensitive admission failure."""
++    original = getattr(error, "orig", None)
++    diagnostic = getattr(original, "diag", None)
++    if diagnostic is not None:
++        return (getattr(original, "sqlstate", None) == "P0001"
++                and diagnostic.message_primary == "verification_capacity_reached")
++    return original is not None and str(original) == "verification_capacity_reached"
+ 
+ 
+ def record_claim(session, queue, player_id: str) -> None:
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -218,9 +218,28 @@
+ 
+ 
+ class QueueCapacity(Base):
++    """Read-only aggregate view of live reservations; never a counter lock."""
+     __tablename__ = "queue_capacity"
+     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+     pending: Mapped[int] = mapped_column(Integer, default=0)
++
++
++class QueueLimit(Base):
++    """Shared configuration reads permit concurrent admission transactions."""
++    __tablename__ = "queue_limits"
++    __table_args__ = (CheckConstraint("capacity > 0"),)
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++    capacity: Mapped[int] = mapped_column(Integer)
++
++
++class QueueReservation(Base):
++    """One independently owned capacity slot for each durable pending job."""
++    __tablename__ = "queue_reservations"
++    __table_args__ = (UniqueConstraint("slot"), CheckConstraint("slot >= 0"),)
++    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
++    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
++    slot: Mapped[int] = mapped_column(Integer)
+ 
+ 
+ class BoardTimeCount(Base):
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -162,6 +162,10 @@
+ 
+     @app.exception_handler(SQLAlchemyError)
+     async def unavailable(request: Request, _error):
++        from .queueing import capacity_error
++        if capacity_error(_error):
++            return JSONResponse({"detail": "Verification capacity reached; retry this saved attempt later",
++                                 "request_id": request.state.request_id}, status_code=429)
+         dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "database")
+         app.state.readiness.invalidate()
+         return JSONResponse(
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0047_queue_capacity_slots.py
+@@ -0,0 +1,195 @@
++"""Independent transactional queue slots replace the global counter write lock."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0047_queue_capacity_slots"
++down_revision = ("0045_reward_rank_index", "0045_studio_report_reads")
++branch_labels = None
++depends_on = None
++
++JOBS = (
++    ("runs", "id", "{ref}.player_id", "'queued','verifying'"),
++    ("track_validations", "version_id", "(SELECT t.owner_id FROM track_versions v JOIN tracks t ON t.id=v.track_id WHERE v.id={ref}.version_id)", "'queued','validating'"),
++    ("publication_intents", "id", "{ref}.player_id", "'queued','verifying'"),
++)
++
++
++def sql(value):
++    op.execute(sa.text(value))
++
++
++def drop_triggers(sqlite):
++    for table, *_ in JOBS:
++        if sqlite:
++            prefix = "queue_publications" if table == "publication_intents" else "queue_" + table
++            for event in ("insert", "update", "delete"):
++                sql(f"DROP TRIGGER {prefix}_{event}")
++        else:
++            sql(f"DROP TRIGGER queue_delta ON {table}")
++
++
++def upgrade():
++    sqlite = op.get_bind().dialect.name == "sqlite"
++    # Deploy with writers drained/stopped. The explicit table locks also fence
++    # accidental old writers during PostgreSQL's transactional cutover.
++    if not sqlite:
++        sql("LOCK TABLE runs,track_validations,publication_intents IN ACCESS EXCLUSIVE MODE")
++    drop_triggers(sqlite)
++    op.create_table("queue_limits", sa.Column("id", sa.Integer(), primary_key=True),
++                    sa.Column("capacity", sa.Integer(), nullable=False), sa.CheckConstraint("capacity > 0"))
++    op.create_table("queue_reservations",
++        sa.Column("kind", sa.String(24), primary_key=True),
++        sa.Column("job_id", sa.String(36), primary_key=True),
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id"), nullable=False),
++        sa.Column("slot", sa.Integer(), nullable=False), sa.UniqueConstraint("slot"), sa.CheckConstraint("slot >= 0"))
++    op.create_index("ix_queue_reservations_player_id", "queue_reservations", ["player_id"])
++    sql("""INSERT INTO queue_reservations(kind,job_id,player_id,slot)
++        SELECT kind,job_id,player_id,ROW_NUMBER() OVER(ORDER BY kind,job_id)-1 FROM (
++          SELECT 'runs' AS kind,id AS job_id,player_id FROM runs WHERE status IN('queued','verifying')
++          UNION ALL SELECT 'track_validations',j.version_id,t.owner_id FROM track_validations j
++            JOIN track_versions v ON v.id=j.version_id JOIN tracks t ON t.id=v.track_id WHERE j.status IN('queued','validating')
++          UNION ALL SELECT 'publication_intents',id,player_id FROM publication_intents WHERE status IN('queued','verifying')
++        ) pending""")
++    # Keep arbitrary existing backlogs intact. Matching runtime configuration
++    # can increase this limit, or shrink once occupied slots fit its range.
++    sql("INSERT INTO queue_limits SELECT 1,CASE WHEN COUNT(*)>128 THEN COUNT(*) ELSE 128 END FROM queue_reservations")
++    original = op.get_bind().scalar(sa.text("SELECT pending FROM queue_capacity WHERE id=1"))
++    reconstructed = op.get_bind().scalar(sa.text("SELECT COUNT(*) FROM queue_reservations"))
++    if original != reconstructed:
++        raise RuntimeError("Queue counters disagree with pending jobs; investigate before migrating")
++    # Touch only the bounded active owners, never every registered account.
++    sql("""INSERT INTO queue_players(player_id,last_claim_at,pending)
++        SELECT player_id,0,COUNT(*) FROM queue_reservations GROUP BY player_id
++        ON CONFLICT(player_id) DO UPDATE SET pending=excluded.pending""")
++    op.drop_table("queue_capacity")
++    sql("CREATE VIEW queue_capacity AS SELECT 1 AS id,CAST(COUNT(*) AS INTEGER) AS pending FROM queue_reservations")
++    if sqlite:
++        sqlite_triggers()
++    else:
++        postgres_triggers()
++
++
++def sqlite_triggers():
++    for table, key, owner, statuses in JOBS:
++        prefix = "queue_publications" if table == "publication_intents" else "queue_" + table
++        for event in ("INSERT", "UPDATE", "DELETE"):
++            body = ""
++            for ref, delta in (("OLD", -1), ("NEW", 1)):
++                if event == "INSERT" and ref == "OLD" or event == "DELETE" and ref == "NEW":
++                    continue
++                condition = f"{ref}.status IN ({statuses})"
++                if event == "UPDATE":
++                    other = "NEW" if ref == "OLD" else "OLD"
++                    condition += f" AND {other}.status NOT IN ({statuses})"
++                if delta == 1:
++                    body += f"""INSERT INTO queue_reservations(kind,job_id,player_id,slot)
++                        SELECT '{table}',NEW.{key},{owner.format(ref='NEW')},free.slot FROM (
++                          WITH RECURSIVE slots(slot) AS (SELECT 0 UNION ALL SELECT slot+1 FROM slots
++                            WHERE slot+1<(SELECT capacity FROM queue_limits WHERE id=1))
++                          SELECT slot FROM slots WHERE NOT EXISTS(SELECT 1 FROM queue_reservations r WHERE r.slot=slots.slot)
++                          ORDER BY slot LIMIT 1) free WHERE {condition};
++                        SELECT CASE WHEN {condition} AND changes()=0 THEN RAISE(ABORT,'verification_capacity_reached') END;"""
++                else:
++                    body += f"DELETE FROM queue_reservations WHERE kind='{table}' AND job_id=OLD.{key} AND {condition};"
++                body += f"""INSERT INTO queue_players(player_id,last_claim_at,pending)
++                    SELECT {owner.format(ref=ref)},0,{delta} WHERE {condition}
++                    ON CONFLICT(player_id) DO UPDATE SET pending=pending+{delta};"""
++            sql(f"CREATE TRIGGER {prefix}_{event.lower()} AFTER {event} ON {table} BEGIN {body} END")
++
++
++def postgres_triggers():
++    sql("""CREATE FUNCTION bmt_queue_reserve(kind text,job text,owner text) RETURNS void LANGUAGE plpgsql AS $$
++        DECLARE maximum integer; candidate integer; start_slot bigint; inserted integer; namespace integer;
++        BEGIN
++          -- SHARE locks are mutually compatible; only a rare limit resize takes
++          -- an exclusive configuration lock. No counter is updated here.
++          SELECT capacity INTO STRICT maximum FROM queue_limits WHERE id=1 FOR SHARE;
++          namespace := hashtext(current_schema() || '/bmt-queue-slot');
++          start_slot := (hashtext(kind || '/' || job)::bigint+2147483648) % maximum;
++          FOR candidate IN SELECT ((start_slot+g.i)%maximum)::integer FROM generate_series(0,maximum-1) g(i)
++            WHERE NOT EXISTS(SELECT 1 FROM queue_reservations r WHERE r.slot=((start_slot+g.i)%maximum)::integer)
++          LOOP
++            -- Transaction-scoped, per-slot try-locks avoid waiting behind an
++            -- unrelated uncommitted admission. Unique(slot) is the hard fence.
++            IF pg_try_advisory_xact_lock(namespace,candidate) THEN
++              INSERT INTO queue_reservations(kind,job_id,player_id,slot) VALUES(kind,job,owner,candidate)
++                ON CONFLICT DO NOTHING;
++              GET DIAGNOSTICS inserted=ROW_COUNT;
++              IF inserted=1 THEN RETURN; END IF;
++            END IF;
++          END LOOP;
++          RAISE EXCEPTION 'verification_capacity_reached';
++        END $$""")
++    sql("""CREATE OR REPLACE FUNCTION bmt_queue_delta() RETURNS trigger LANGUAGE plpgsql AS $$
++        DECLARE delta integer:=0; pid text; job text; statuses text[];
++        BEGIN
++          statuses := CASE WHEN TG_TABLE_NAME='track_validations' THEN ARRAY['queued','validating'] ELSE ARRAY['queued','verifying'] END;
++          IF TG_OP<>'INSERT' AND OLD.status=ANY(statuses) THEN delta:=delta-1; END IF;
++          IF TG_OP<>'DELETE' AND NEW.status=ANY(statuses) THEN delta:=delta+1; END IF;
++          IF delta=0 THEN RETURN NULL; END IF;
++          IF TG_TABLE_NAME='track_validations' THEN
++            job:=COALESCE(NEW.version_id,OLD.version_id);
++            SELECT t.owner_id INTO pid FROM track_versions v JOIN tracks t ON t.id=v.track_id WHERE v.id=job;
++          ELSE job:=COALESCE(NEW.id,OLD.id); pid:=COALESCE(NEW.player_id,OLD.player_id); END IF;
++          IF delta=1 THEN PERFORM bmt_queue_reserve(TG_TABLE_NAME,job,pid);
++          ELSE DELETE FROM queue_reservations WHERE kind=TG_TABLE_NAME AND job_id=job; END IF;
++          INSERT INTO queue_players(player_id,last_claim_at,pending) VALUES(pid,0,delta)
++            ON CONFLICT(player_id) DO UPDATE SET pending=queue_players.pending+delta;
++          RETURN NULL;
++        END $$""")
++    for table, *_ in JOBS:
++        sql(f"CREATE TRIGGER queue_delta AFTER INSERT OR UPDATE OR DELETE ON {table} FOR EACH ROW EXECUTE FUNCTION bmt_queue_delta()")
++    sql("DROP FUNCTION bmt_publication_queue_delta()")
++
++
++def downgrade():
++    sqlite = op.get_bind().dialect.name == "sqlite"
++    if not sqlite:
++        sql("LOCK TABLE runs,track_validations,publication_intents IN ACCESS EXCLUSIVE MODE")
++    drop_triggers(sqlite)
++    sql("DROP VIEW queue_capacity")
++    op.create_table("queue_capacity", sa.Column("id", sa.Integer(), primary_key=True),
++                    sa.Column("pending", sa.Integer(), nullable=False))
++    sql("INSERT INTO queue_capacity SELECT 1,COUNT(*) FROM queue_reservations")
++    if sqlite:
++        for table, key, owner, statuses in JOBS:
++            prefix = "queue_publications" if table == "publication_intents" else "queue_" + table
++            for event in ("INSERT", "UPDATE", "DELETE"):
++                body = ""
++                for ref, delta in (("OLD", -1), ("NEW", 1)):
++                    if event == "INSERT" and ref == "OLD" or event == "DELETE" and ref == "NEW":
++                        continue
++                    condition = f"{ref}.status IN ({statuses})"
++                    if event == "UPDATE":
++                        condition += f" AND {'NEW' if ref == 'OLD' else 'OLD'}.status NOT IN ({statuses})"
++                    body += f"""INSERT INTO queue_players(player_id,last_claim_at,pending)
++                        SELECT {owner.format(ref=ref)},0,{delta} WHERE {condition}
++                        ON CONFLICT(player_id) DO UPDATE SET pending=pending+{delta};
++                        UPDATE queue_capacity SET pending=pending+{delta} WHERE {condition};"""
++                sql(f"CREATE TRIGGER {prefix}_{event.lower()} AFTER {event} ON {table} BEGIN {body} END")
++    else:
++        # Restore the historical counter functions without touching PB/board
++        # projections that share migration 0013 with the original queue code.
++        for name, publication in (("bmt_queue_delta", False), ("bmt_publication_queue_delta", True)):
++            owner_sql = "pid:=COALESCE(NEW.player_id,OLD.player_id);" if publication else """
++                IF TG_TABLE_NAME='runs' THEN pid:=COALESCE(NEW.player_id,OLD.player_id);
++                ELSE SELECT t.owner_id INTO pid FROM track_versions v JOIN tracks t ON t.id=v.track_id
++                  WHERE v.id=COALESCE(NEW.version_id,OLD.version_id); END IF;"""
++            status_sql = "ARRAY['queued','verifying']" if publication else "CASE WHEN TG_TABLE_NAME='runs' THEN ARRAY['queued','verifying'] ELSE ARRAY['queued','validating'] END"
++            sql(f"""CREATE OR REPLACE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$
++                DECLARE delta integer:=0;pid text;statuses text[];
++                BEGIN statuses:={status_sql};
++                IF TG_OP<>'INSERT' AND OLD.status=ANY(statuses) THEN delta:=delta-1; END IF;
++                IF TG_OP<>'DELETE' AND NEW.status=ANY(statuses) THEN delta:=delta+1; END IF;
++                IF delta=0 THEN RETURN NULL; END IF;
++                {owner_sql}
++                UPDATE queue_capacity SET pending=pending+delta WHERE id=1;
++                INSERT INTO queue_players(player_id,last_claim_at,pending) VALUES(pid,0,delta)
++                  ON CONFLICT(player_id) DO UPDATE SET pending=queue_players.pending+delta;
++                RETURN NULL; END $$""")
++        for table, *_ in JOBS:
++            function = "bmt_publication_queue_delta" if table == "publication_intents" else "bmt_queue_delta"
++            sql(f"CREATE TRIGGER queue_delta AFTER INSERT OR UPDATE OR DELETE ON {table} FOR EACH ROW EXECUTE FUNCTION {function}()")
++        sql("DROP FUNCTION bmt_queue_reserve(text,text,text)")
++    op.drop_table("queue_reservations")
++    op.drop_table("queue_limits")
+--- /dev/null
++++ b/backend/tests/test_queue_capacity_slots.py
+@@ -0,0 +1,307 @@
++"""Hard capacity and unrelated transactions through the real queue triggers."""
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import replace
++from threading import Barrier
++
++import pytest
++from alembic import command
++from fastapi import HTTPException
++from sqlalchemy import select, text
++from sqlalchemy.exc import DBAPIError
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, ticket
++
++from bmt_backend import queueing
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.queueing import admit
++from bmt_backend.track_models import (
++    QueueCapacity,
++    QueuePlayer,
++    Run,
++    RunTicket,
++    Track,
++    TrackValidation,
++    TrackVersion,
++    new_id,
++    now,
++)
++
++domain = domain_fixture
++
++
++def pending(session, domain, board_id, owner="Alice", kind="runs"):
++    player_id = domain.players[owner]
++    if kind == "runs":
++        ticket = RunTicket(player_id=player_id, board_id=board_id, expires_at=now() + 3600)
++        session.add(ticket)
++        session.flush()
++        row = Run(ticket_id=ticket.id, player_id=player_id, board_id=board_id, replay_hash="a" * 64)
++    elif kind == "publication_intents":
++        row = PublicationIntent(player_id=player_id, operation_key=new_id(), request_hash="b" * 64,
++            authoring_id=new_id(), name="Queue test", content_hash="c" * 64, replay_hash="d" * 64,
++            vehicle_id="compact", contract={})
++    else:
++        track = Track(owner_id=player_id)
++        session.add(track)
++        session.flush()
++        version = TrackVersion(track_id=track.id, number=1, name="Legacy queue test", content_hash="e" * 64,
++                               manifest={}, state="validating")
++        session.add(version)
++        session.flush()
++        row = TrackValidation(version_id=version.id)
++    session.add(row)
++    session.flush()
++    return row
++
++
++@pytest.mark.parametrize("blocked_kind", ["runs", "publication_intents"])
++@pytest.mark.parametrize("operation", ["admit", "complete"])
++def test_uncommitted_completion_does_not_block_another_player(domain, blocked_kind, operation):
++    if not domain.postgres:
++        pytest.skip("Requires PostgreSQL row locks; SQLite has one writer")
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        held = pending(session, domain, board, kind=blocked_kind)
++        other = pending(session, domain, board, owner="Bob")
++        held_id = held.id
++        other_id = other.id
++        session.commit()
++    held_model = Run if blocked_kind == "runs" else PublicationIntent
++    with domain.factory() as blocker:
++        blocker.get(held_model, held_id).status = "failed"
++        blocker.flush()  # Keep the actual terminal-state triggers uncommitted.
++
++        def unrelated():
++            with domain.factory() as session:
++                session.execute(text("SET LOCAL lock_timeout='350ms'"))
++                if operation == "admit":
++                    admit(session, domain.players["Carol"], 128)
++                    pending(session, domain, board, owner="Carol")
++                else:
++                    session.get(Run, other_id).status = "failed"
++                session.commit()
++                return True
++
++        with ThreadPoolExecutor(max_workers=1) as pool:
++            future = pool.submit(unrelated)
++            try:
++                assert future.result(timeout=2)
++            finally:
++                blocker.rollback()
++    with domain.factory() as session:
++        assert session.get(held_model, held_id).status == "queued"
++        assert session.get(QueueCapacity, 1).pending == (3 if operation == "admit" else 1)
++
++
++@pytest.mark.parametrize("kind", ["runs", "publication_intents", "track_validations"])
++def test_slots_follow_pending_lifetime_and_rollback(domain, kind):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 128)
++        row = pending(session, domain, board, kind=kind)
++        identity = row.version_id if kind == "track_validations" else row.id
++        session.commit()
++        assert session.get(QueueCapacity, 1).pending == 1
++        row.status = "verifying" if kind != "track_validations" else "validating"
++        session.flush()
++        row.status = "queued"  # Infrastructure retry keeps its existing place.
++        session.commit()
++        assert session.get(QueueCapacity, 1).pending == 1
++        assert session.get(QueuePlayer, domain.players["Alice"]).pending == 1
++        row.status = "failed"
++        session.flush()
++        assert session.scalar(select(QueueCapacity.pending)) == 0
++        session.rollback()
++        assert session.get(row.__class__, identity).status == "queued"
++        assert session.scalar(select(QueueCapacity.pending)) == 1
++        row.status = "failed"
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 0
++        admit(session, domain.players["Alice"], 128)
++        row.status = "queued"  # Explicit retry acquires capacity again.
++        session.commit()
++        session.delete(row)
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 0
++        assert session.get(QueuePlayer, domain.players["Alice"]).pending == 0
++
++
++def test_owner_limit_survives_unrelated_capacity(domain):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        for _ in range(8):
++            admit(session, domain.players["Alice"], 128)
++            pending(session, domain, board)
++        session.commit()
++        with pytest.raises(HTTPException) as error:
++            admit(session, domain.players["Alice"], 128)
++        assert error.value.status_code == 429
++        session.rollback()
++        admit(session, domain.players["Bob"], 128)
++        pending(session, domain, board, owner="Bob")
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 9
++
++
++def test_database_rejects_over_capacity_and_reuses_released_slot(domain):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 1)
++        row = pending(session, domain, board)
++        session.commit()
++        with pytest.raises(DBAPIError, match="verification_capacity_reached"):
++            # Bypass Python's soft check: the database must still enforce the cap.
++            pending(session, domain, board, owner="Bob")
++        session.rollback()
++        row.status = "failed"
++        session.commit()
++        admit(session, domain.players["Bob"], 1)
++        pending(session, domain, board, owner="Bob")
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 1
++
++
++def test_uncommitted_admission_cannot_oversubscribe_and_http_retry_recovers(domain):
++    if not domain.postgres:
++        pytest.skip("Requires concurrent transactions")
++    version, board = public_course(domain)
++    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=1)
++    issued = ticket(domain, version, "Bob")
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 1)
++        session.commit()  # Finish the one-time configuration change first.
++    with domain.factory() as blocker:
++        admit(blocker, domain.players["Alice"], 1)
++        pending(blocker, domain, board)
++        key = new_id()
++        body = {"ticket_id": issued["ticket_id"],
++                "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
++        response = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++        assert response.status_code == 429, response.text
++        assert "capacity" in response.json()["detail"]
++        blocker.rollback()
++    response = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert response.status_code == 202, response.text
++    repeated = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert repeated.json() == response.json()
++    with domain.factory() as session:
++        assert session.scalar(select(QueueCapacity.pending)) == 1
++        assert session.get(QueuePlayer, domain.players["Alice"]).pending == 0
++
++
++@pytest.mark.parametrize("same_owner", [False, True])
++def test_simultaneous_admissions_keep_exact_shared_and_player_limits(domain, same_owner):
++    if not domain.postgres:
++        pytest.skip("Requires concurrent transactions")
++    _version, board = public_course(domain)
++    maximum, offered = (64, 16) if same_owner else (4, 16)
++    names = ["Alice"] * offered
++    if not same_owner:
++        names = ["Slot driver " + str(i) for i in range(offered)]
++        with domain.factory() as session:
++            for name in names:
++                player = Player(display_name=name)
++                session.add(player)
++                session.flush()
++                domain.players[name] = player.id
++            session.commit()
++    with domain.factory() as session:
++        admit(session, domain.players[names[0]], maximum)
++        session.commit()
++    barrier = Barrier(8)
++
++    def enter(name):
++        barrier.wait(timeout=10)
++        try:
++            with domain.factory() as session:
++                admit(session, domain.players[name], maximum)
++                pending(session, domain, board, owner=name)
++                session.commit()
++            return True
++        except HTTPException as error:
++            assert error.status_code == 429
++        except DBAPIError as error:
++            assert queueing.capacity_error(error), str(type(error))
++        return False
++
++    with ThreadPoolExecutor(max_workers=8) as pool:
++        results = list(pool.map(enter, names))
++    expected = 8 if same_owner else maximum
++    assert sum(results) == expected
++    with domain.factory() as session:
++        assert session.scalar(select(QueueCapacity.pending)) == expected
++        slots = session.execute(text("SELECT slot FROM queue_reservations")).scalars().all()
++        assert len(set(slots)) == expected and all(0 <= slot < maximum for slot in slots)
++
++
++def test_migration_preserves_pending_jobs_and_round_trips(domain):
++    _version, board = public_course(domain)
++    command.downgrade(configuration(domain.app.state.engine), "0045_reward_rank_index")
++    with domain.factory() as session:
++        for owner, kind in (("Alice", "runs"), ("Bob", "publication_intents"), ("Carol", "track_validations")):
++            row = pending(session, domain, board, owner=owner, kind=kind)
++            row.status = "validating" if kind == "track_validations" else "verifying"
++            row.attempts, row.lease_token, row.lease_until = 2, new_id(), now() + 3600
++        session.get(QueuePlayer, domain.players["Alice"]).last_claim_at = 1234567
++        session.commit()
++        before = session.execute(select(Run.id, Run.status, Run.replay_hash).order_by(Run.id)).all()
++        metadata = [session.execute(model.__table__.select()).all()
++                    for model in (Run, PublicationIntent, TrackValidation)]
++        assert session.get(QueueCapacity, 1).pending == 3
++    for _ in range(2):
++        upgrade(domain.app.state.engine)
++        with domain.factory() as session:
++            assert session.execute(select(Run.id, Run.status, Run.replay_hash).order_by(Run.id)).all() == before
++            assert session.get(QueueCapacity, 1).pending == 3
++            assert [session.execute(model.__table__.select()).all()
++                    for model in (Run, PublicationIntent, TrackValidation)] == metadata
++            assert session.get(QueuePlayer, domain.players["Alice"]).last_claim_at == 1234567
++            slots = session.execute(text("SELECT kind,player_id,slot FROM queue_reservations ORDER BY slot")).all()
++            assert {r.kind for r in slots} == {"runs", "publication_intents", "track_validations"}
++            assert [r.slot for r in slots] == [0, 1, 2]
++            for row in slots:
++                assert session.get(QueuePlayer, row.player_id).pending == 1
++        command.downgrade(configuration(domain.app.state.engine), "0045_reward_rank_index")
++    upgrade(domain.app.state.engine)
++
++
++def test_old_terminal_job_cannot_release_another_jobs_reused_slot(domain):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 1)
++        old = pending(session, domain, board)
++        session.commit()
++        old.status = "failed"
++        session.commit()
++        admit(session, domain.players["Bob"], 1)
++        pending(session, domain, board, owner="Bob")
++        session.commit()
++        session.delete(old)
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 1
++        assert session.get(QueuePlayer, domain.players["Bob"]).pending == 1
++
++
++def test_capacity_changes_preserve_occupied_slots_and_hard_limit(domain):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 1)
++        first = pending(session, domain, board)
++        session.commit()
++        admit(session, domain.players["Bob"], 2)
++        second = pending(session, domain, board, owner="Bob")
++        session.commit()
++        with pytest.raises(HTTPException) as error:
++            admit(session, domain.players["Carol"], 1)
++        assert error.value.status_code == 503
++        assert error.value.detail == "QUEUE_CAPACITY_CHANGE_REQUIRES_DRAIN"
++        session.rollback()
++        assert session.scalar(select(QueueCapacity.pending)) == 2
++        first.status = second.status = "failed"
++        session.commit()
++        admit(session, domain.players["Carol"], 1)
++        pending(session, domain, board, owner="Carol")
++        session.commit()
++        assert session.scalar(select(QueueCapacity.pending)) == 1
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 QSL01-QSL04/R01/Q01: Replace the global exclusive verification counter with independent transactional capacity slots for races, publications and legacy validations. Exact total/eight-per-player bounds, fairness, leases, retries and rollback remain; terminal jobs release only their own slot. Migration0047 joins concurrent reward/Studio branches and backfills only active owners. Original PostgreSQL reproduces four lock timeouts; final focused15PostgreSQL/8SQLite, related71PostgreSQL and Ruff pass. Earlier SQLite65pass/2fail includes the corrected migration fixture plus a canonical HTTP503 reproduced by the original counter code; receipts retain all corrections. Actual commands, migration/activation limits and task-only patch: docs/evidence/queue-capacity-slots-2026-10-22/report.json. Matching migration/API/worker rollout and production capacity acceptance remain; no live deployment/account/publication mutation, phone attachment check/device test or APK action.
++
+ 2026-10-22 HCO01-HCO03/R01/Q01: Histogram comparisons now retain sorted exact tick frequencies and cumulative counts, use one binary search per bin boundary, and omit per-driver maps above4096 drivers. Small fields retain frozen personal values; large fields fetch indexed current PBs and mark comparisons approximate, with at most one place of self-correction error beyond existing refresh lag. Public race counters remain incremental; flying-lap/development refresh still groups PBs in SQL. Existing identities, ties, visibility, leases, recovery, bin/range behavior and authoritative results remain. Focused59pass/5skip and comparison10pass; native results44/continuity12 checks pass. A separate unchanged legacy discovery fixture fails before contacting this backend. Actual commands, synthetic400000-driver JSON35.2MB to35.4KB, ten-million weighted packet, source fingerprints, initial concurrent-schema corrections and task-only checkpoint: docs/evidence/histogram-compact-2026-10-22/report.json. Matching API/worker rollout and PostgreSQL capacity/owner acceptance remain; no phone attachment check/device test, APK, live account/race mutation or deployment.
+ 
+ 2026-10-21 RER01/WR03-WR07/TD05/R01/Q01: Read-only cloud and actual PC-cache inspection traces the empty Rivalry finale to an obsolete same-week build membership. Previous-week lookup now selects the latest player join with stable tie-breaks; original exact contracts, results and Continue remain. Original reproduces two identity failures; final Rivalry/week-completion/test-driver/automatic regressions 32 pass, Ruff and whitespace pass. Actual diagnosis, commands, fixture corrections and task-only checkpoint: docs/RIVALRY_EMPTY_RESULTS_2026_10_21.md. Cloud rollout and owner acceptance remain; no phone attachment check/device test, APK, live player/race/queue mutation or deployment.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-22 QSL01-QSL04/R01/Q01: Replace the global exclusive verification counter with independent transactional capacity slots for races, publications and legacy validations. Exact total/eight-per-player bounds, fairness, leases, retries and rollback remain; terminal jobs release only their own slot. Migration0047 joins concurrent reward/Studio branches and backfills only active owners. Original PostgreSQL reproduces four lock timeouts; final focused15PostgreSQL/8SQLite, related71PostgreSQL and Ruff pass. Earlier SQLite65pass/2fail includes the corrected migration fixture plus a canonical HTTP503 reproduced by the original counter code; receipts retain all corrections. Actual commands, migration/activation limits and task-only patch: docs/evidence/queue-capacity-slots-2026-10-22/report.json. Matching migration/API/worker rollout and production capacity acceptance remain; no live deployment/account/publication mutation, phone attachment check/device test or APK action.
++
+ 2026-10-22 HCO01-HCO03/R01/Q01: Histogram comparisons now retain sorted exact tick frequencies and cumulative counts, use one binary search per bin boundary, and omit per-driver maps above4096 drivers. Small fields retain frozen personal values; large fields fetch indexed current PBs and mark comparisons approximate, with at most one place of self-correction error beyond existing refresh lag. Public race counters remain incremental; flying-lap/development refresh still groups PBs in SQL. Existing identities, ties, visibility, leases, recovery, bin/range behavior and authoritative results remain. Focused59pass/5skip and comparison10pass; native results44/continuity12 checks pass. A separate unchanged legacy discovery fixture fails before contacting this backend. Actual commands, synthetic400000-driver JSON35.2MB to35.4KB, ten-million weighted packet, source fingerprints, initial concurrent-schema corrections and task-only checkpoint: docs/evidence/histogram-compact-2026-10-22/report.json. Matching API/worker rollout and PostgreSQL capacity/owner acceptance remain; no phone attachment check/device test, APK, live account/race mutation or deployment.
+ 
+ 2026-10-19 NPT01-NPT03/G01/R01/Q01: Trackside now turns the complete newspaper sheet, including masthead, tabs, article and footer, with an original Turn.js-inspired 0.52s corner fold, shaded paper back and cast shadow. Fixed editorial/photo slots and a stable sheet host prevent content-driven width/height shifts; opaque printed pages prevent overprinting, and the photo shader now honors inherited opacity. Next/Previous and briefs retain exact story/race/share identities, bounded page lifetime, cancellation and account fences. One transient 2D printed-page target is capped at2048x1024 and rendered once, with no runtime CPU image readback or persistent cache. Original reproduces74 frame/layout failures and2 photo-opacity failures. Final focused70headless, native868Compatibility/868desktopMobile, race90, sharing45, import and parser909 pass. Native whole-sheet frames, actual commands, initial layout/anchor corrections and task-only patch: docs/evidence/garage-news-stable-layout-2026-10-19/report.json. Concurrent Garage/sidebar work is preserved. Owner animation/touch and physical-device acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Independent verification capacity slots override (2026-10-22)
++2026-10-22 QSL01-QSL04/R01/Q01: Replace the global exclusive verification counter with independent transactional capacity slots for races, publications and legacy validations. Exact total/eight-per-player bounds, fairness, leases, retries and rollback remain; terminal jobs release only their own slot. Migration0047 joins concurrent reward/Studio branches and backfills only active owners. Original PostgreSQL reproduces four lock timeouts; final focused15PostgreSQL/8SQLite, related71PostgreSQL and Ruff pass. Earlier SQLite65pass/2fail includes the corrected migration fixture plus a canonical HTTP503 reproduced by the original counter code; receipts retain all corrections. Actual commands, migration/activation limits and task-only patch: docs/evidence/queue-capacity-slots-2026-10-22/report.json. Matching migration/API/worker rollout and production capacity acceptance remain; no live deployment/account/publication mutation, phone attachment check/device test or APK action.
+ 
+ ## Compact shared histogram comparison override (2026-10-22)
+ 2026-10-22 HCO01-HCO03/R01/Q01: Histogram comparisons now retain sorted exact tick frequencies and cumulative counts, use one binary search per bin boundary, and omit per-driver maps above4096 drivers. Small fields retain frozen personal values; large fields fetch indexed current PBs and mark comparisons approximate, with at most one place of self-correction error beyond existing refresh lag. Public race counters remain incremental; flying-lap/development refresh still groups PBs in SQL. Existing identities, ties, visibility, leases, recovery, bin/range behavior and authoritative results remain. Focused59pass/5skip and comparison10pass; native results44/continuity12 checks pass. A separate unchanged legacy discovery fixture fails before contacting this backend. Actual commands, synthetic400000-driver JSON35.2MB to35.4KB, ten-million weighted packet, source fingerprints, initial concurrent-schema corrections and task-only checkpoint: docs/evidence/histogram-compact-2026-10-22/report.json. Matching API/worker rollout and PostgreSQL capacity/owner acceptance remain; no phone attachment check/device test, APK, live account/race mutation or deployment.
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -1,4 +1,6 @@
+ # Beat my track backend
++
++Local queue-capacity fix (2026-10-22): migration `0047_queue_capacity_slots` replaces the global pending-counter write with independently owned transactional slots for races, publications and historical validations. The exact configured total limit, eight pending jobs per player, leases and retries remain. `queue_capacity` is now a read-only aggregate view. All writers must use matching API/worker code; quiesce them for migration and coordinate capacity configuration across replicas. Limit reductions can require draining occupied higher slots. [Implementation, actual PostgreSQL reproductions and rollout limits](../docs/evidence/queue-capacity-slots-2026-10-22/report.json). This local change has not been deployed.
+ 
+ Full deployment (2026-10-18): cloud API86/schema42, its worker/all five owned jobs and the PC API/worker use the complete tested physics0.66/rules23 image. Player support now includes inventory and audited grants. [Release, actual validation, backups and data preservation](../docs/FULL_BACKEND_DEPLOY_2026_10_18.md). Older phone builds still need a matching client update.
+ 

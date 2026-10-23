@@ -1,0 +1,324 @@
+{
+  "date": "2026-10-21",
+  "timezone": "Europe/Helsinki",
+  "task": "Review the supplied Beat My Track threat assessment and check game/backend controls, IAM, public APIs, cloud exposure, cost attacks, secrets/deployment and monitoring.",
+  "requirements": [
+    "SEC01-threat-list-coverage",
+    "SEC02-iam",
+    "SEC03-api",
+    "SEC04-cloud-exposure",
+    "SEC05-cost",
+    "SEC06-secrets-deployment",
+    "SEC07-monitoring",
+    "Q01-evidence"
+  ],
+  "verdict": "Partly covered. Good account, data-validation and storage foundations; significant competitive-integrity and production-operational gaps remain. This is a scoped assessment, not a security certification.",
+  "scope": {
+    "local": "Current combined workspace source, existing attack/control suites and three current disposable probes.",
+    "live": "Read-only configuration inventory of project beat-my-track: project IAM, service accounts/keys, Cloud SQL, storage, secrets metadata/IAM, billing budget, logging and Monitoring; owned Cloud Run resources and repository in europe-west1.",
+    "environment": "The only API service observed in europe-west1 is explicitly retained development/staging, not an asserted production deployment.",
+    "mutations": "No game/backend source, live infrastructure, IAM, accounts, queues, billing settings, secret payloads or provider entitlements changed. No live attack, purchase or race submission.",
+    "artifacts": "Raw cloud descriptions remain in ignored build/security-coverage-2026-10-21/private-cloud. They may contain configuration; do not publish that directory."
+  },
+  "game_coverage": [
+    {
+      "area": "Race times, modified physics, competitive results",
+      "status": "PARTIAL; accepted design exposure",
+      "covered": "Pinned track/car/build tickets; authenticated uploads; monotonic bounded trajectory; broad car speed/continuity; ordered gates and five laps; idempotent best-only scoring.",
+      "gap": "Client-supplied positions do not prove the car followed canonical physics. A manufactured plausible trajectory passed the actual checker in a fresh synthetic-geometry probe. No automatic exceptional-record quarantine/independent physics verification was found. Incident-free bonuses also rely on submitted incident fields.",
+      "evidence": [
+        "AGENTS.md:498",
+        "backend/bmt_backend/trajectory_verifier.py:9",
+        "backend/bmt_backend/trajectory_verifier.py:85",
+        "backend/bmt_backend/economy.py:195",
+        "probes.xml"
+      ]
+    },
+    {
+      "area": "Rankings, ratings, popularity and bots",
+      "status": "PARTIAL",
+      "covered": "One best per player/contract; unique verified finishers; one replaceable rating per player; completion required; creators and artificial drivers cannot rate; artificial/public populations separated.",
+      "gap": "These controls do not identify one person using many real Google accounts, collusion or intentional low-skill placement. No account-cluster/opponent-diversity/sandbagging detector was found in reviewed code.",
+      "evidence": [
+        "backend/bmt_backend/tracks.py:313",
+        "backend/bmt_backend/discovery.py:136",
+        "backend/bmt_backend/rivalry.py"
+      ]
+    },
+    {
+      "area": "Coins, paid entitlements, rewards",
+      "status": "PARTIAL; production integration incomplete",
+      "covered": "Server-owned prices/wallets; atomic/idempotent cosmetic unlocks; account/product/state-bound Play verification endpoint and token deduplication; signed AdMob proof helper; idempotent resume receipts.",
+      "gap": "Store remains unavailable; live Play SDK/provider setup, refunds/voided-purchase reconciliation and production rewarded-ad SSV fulfillment are incomplete. AdMob signature helper is not wired into a production reward callback route. Clean-race reporting inherits trajectory trust.",
+      "evidence": [
+        "backend/bmt_backend/commerce.py:39",
+        "backend/bmt_backend/studio_finance.py:60",
+        "backend/bmt_backend/provider_proofs.py:158",
+        "docs/STUDIO_PLATFORM_ACTIVATION.md:68"
+      ]
+    },
+    {
+      "area": "Malicious tracks and payloads",
+      "status": "SUBSTANTIAL implemented coverage; capacity acceptance remains",
+      "covered": "Data-only JSON; no arbitrary scene/script loading; 512KiB track limit; 96 points/pieces/objects with coordinate/paint/object allowlists and bounds; finite/depth/node validation; request/decompression/parser/queue/evidence budgets and worker timeout.",
+      "gap": "This does not prove all worst-case legal geometry is fast on every device or that every engine/native dependency is vulnerability-free.",
+      "evidence": [
+        "game/editor/track_document.gd:3",
+        "game/editor/road_pieces.gd:9",
+        "backend/bmt_backend/verifier.py:25",
+        "backend/bmt_backend/middleware.py:367",
+        "backend/tests/test_attack_resistance.py"
+      ]
+    },
+    {
+      "area": "Social abuse and private data",
+      "status": "SUBSTANTIAL technical controls; human operations remain",
+      "covered": "Versioned sharing consent, private reports/appeals, blocking and challenge interaction fences; owner-only moderation and revocation. Fresh probes deny another account's private run/publication/draft and all 47 current admin GET routes.",
+      "gap": "Report review staffing, response times and evasion/account-cluster detection are operational tasks. This was not an exhaustive authorization proof for every method/endpoint.",
+      "evidence": [
+        "backend/bmt_backend/community.py",
+        "backend/tests/test_community_safety.py",
+        "admin-routes-checked.json",
+        "probes.xml"
+      ]
+    }
+  ],
+  "cloud_coverage": [
+    {
+      "area": "1. IAM and service accounts",
+      "status": "PARTIAL",
+      "confirmed": [
+        "Dedicated runtime, migrator and operator accounts use scoped roles instead of project Owner/Editor.",
+        "No USER_MANAGED keys on any of the four enumerated service accounts.",
+        "Migration/admin DB secret and application DB secret have separate resource bindings."
+      ],
+      "gaps": [
+        "Default Compute service account still has project-wide roles/editor.",
+        "Runtime identity is shared by API/worker and can access the administrator bearer-key secret.",
+        "No successful verification of an enforced key-creation policy or developer-account MFA."
+      ]
+    },
+    {
+      "area": "2. Public APIs",
+      "status": "PARTIAL",
+      "confirmed": [
+        "Google token signatures/audience/nonce checks, refresh reuse revocation, account fences and current ownership/admin-denial tests pass.",
+        "Bounded JSON/gzip/body parsing, authenticated upload admission, per-player/shared budgets and evidence retention exist."
+      ],
+      "gaps": [
+        "Public Cloud Run API has ingress all and allUsers run.invoker; it intentionally runs BMT_ENVIRONMENT=development with development login, artificial drivers and purchase simulation enabled.",
+        "Admin endpoints share that public service; configured access is the legacy bearer-key path, with no named-staff/MFA configuration observed.",
+        "No separate load-balancer/Cloud Armor front door was evidenced; application rate limits are not a complete distributed-DDoS/cost shield."
+      ]
+    },
+    {
+      "area": "3. Cloud configuration",
+      "status": "MOSTLY COVERED for inspected data exposure; recovery hardening incomplete",
+      "confirmed": [
+        "Object bucket enforces Public Access Prevention and uniform bucket-level access; no public IAM binding.",
+        "Cloud SQL has public IPv4 but no authorized-network CIDRs; Cloud Run uses its Cloud SQL connection/connector. A public IP alone is not proof of direct anonymous DB access.",
+        "All five observed jobs have no public invoker binding.",
+        "SQL deletion protection and daily backups are enabled; latest three automated backups succeeded."
+      ],
+      "gaps": [
+        "SQL sslMode permits unencrypted and encrypted direct connections; requireSsl=false. This does not mean the Cloud SQL connector traffic is unencrypted.",
+        "Point-in-time recovery is disabled; seven backups retained.",
+        "No restore exercise or NAS/router/DSM exposure inspection was performed."
+      ]
+    },
+    {
+      "area": "4. Cost attacks",
+      "status": "PARTIAL",
+      "confirmed": [
+        "API service-level min/max are 1/2, overriding the looser revision maximum20 for normal service scaling; concurrency16, timeout60s, CPU1 and memory1024Mi.",
+        "One manually scaled worker, bounded jobs, application body/queue/upload/evidence quotas.",
+        "One EUR10/month project budget with 50/80/100 percent CURRENT_SPEND thresholds; credits excluded."
+      ],
+      "gaps": [
+        "Observed budget has alert thresholds, no service filter/spend-cap enforcement and no Pub/Sub automation.",
+        "No tested emergency cost-response procedure or external abuse shield.",
+        "Two service instances do not bound storage, egress, logs, SQL or other project services; low traffic can still cause service denial or costs.",
+        "Cloud SQL disk is fixed10GB with auto-resize off: that bounds disk growth but needs capacity alerts to avoid exhaustion."
+      ]
+    },
+    {
+      "area": "5. Secrets and deployment security",
+      "status": "PARTIAL",
+      "confirmed": [
+        "Four secrets are held in Secret Manager with per-secret access bindings; live containers use secret references.",
+        "Runtime images pinned by digest, Python/wheels hash-pinned, Godot version/hash checked, nonroot container and local deployment ownership/backup guards.",
+        "Limited current-tree key/token-pattern scan: 9627 nonignored text files checked, zero matches; pip check passed."
+      ],
+      "gaps": [
+        "Artifact Registry explicitly reports SCANNING_DISABLED because Container Scanning API is not enabled.",
+        "No secret rotation schedule observed in metadata; rotation history/payload contents were not read.",
+        "GitHub branch protection, remote CI permissions, developer MFA and compromise recovery are not verified; no Git-history secret scan or fresh dependency CVE scan performed."
+      ]
+    },
+    {
+      "area": "6. Monitoring, security alerts and audit",
+      "status": "INCOMPLETE",
+      "confirmed": [
+        "Cloud Logging and Monitoring APIs enabled; required Admin Activity/System Event sink and default sink present.",
+        "Application structured request correlation and administrator-command audit records exist.",
+        "Default log-bucket retention30days; daily backups succeed."
+      ],
+      "gaps": [
+        "Zero Cloud Monitoring alert policies, zero uptime-check configurations and zero log-based metrics in project.",
+        "Project IAM auditConfigs is empty, with no project parent returned; Data Access audit logging is not explicitly configured here.",
+        "Independent Studio watchdog/log collector/external notifications remain unconfigured in inspected runtime.",
+        "Notification-channel enumeration was not completed because the CLI beta component was unavailable; channel absence is not claimed."
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "SC01",
+      "priority": "HIGH",
+      "type": "live IAM configuration",
+      "title": "Default Compute account has project Editor",
+      "action": "Check all uses/impersonation paths, then remove or replace roles/editor with only required roles; keep dedicated workload accounts."
+    },
+    {
+      "id": "SC02",
+      "priority": "HIGH before public production release",
+      "type": "intentional staging configuration and admin hardening",
+      "title": "Public development backend and legacy administrator bearer access",
+      "action": "Prepare a separate production configuration with developer/test/simulation features off, named administrator access with verified MFA or an identity-aware gateway, then disable legacy keys after replacement access is tested. Preserve owner-authorized staging behavior until an explicit change is requested."
+    },
+    {
+      "id": "SC03",
+      "priority": "HIGH",
+      "type": "live operational gap",
+      "title": "No active operational/security alert policies or uptime checks",
+      "action": "Configure and test independent outage, worker/queue lag, DB/storage capacity, 401/403/429/5xx spikes, IAM/secret changes and budget alerts; enable selected Data Access audit logs with a cost/retention plan."
+    },
+    {
+      "id": "SC04",
+      "priority": "HIGH for competitive integrity; explicit accepted tradeoff",
+      "type": "reproduced offline on synthetic trusted geometry",
+      "title": "Plausible fabricated trajectories can qualify",
+      "action": "Decide the tolerated cheat level. Compatible next measures are suspicious-record hold/review, anomaly rules and optional request-bound Play Integrity signals. Strong physics provenance would require revisiting the explicitly approved trajectory-only policy; do not silently restore full replay."
+    },
+    {
+      "id": "SC05",
+      "priority": "HIGH before monetized release",
+      "type": "source and runtime configuration gap",
+      "title": "Production purchase/refund/rewarded-ad lifecycle incomplete",
+      "action": "Finish real provider/client setup, durable completion/reconciliation, voided-purchase/refund policy and signed idempotent SSV reward delivery; perform sandbox-provider lifecycle acceptance before real money."
+    },
+    {
+      "id": "SC06",
+      "priority": "MEDIUM",
+      "type": "live cost-control gap",
+      "title": "EUR10 budget is an observed alert budget, not an enforced spend ceiling",
+      "action": "Keep the service maximum; assess a Cloud Run-specific spend-cap budget where supported, remembering it pauses service and does not cover SQL/storage/all project costs. Add egress/storage/log limits and a tested operator response. Do not automatically disable billing without an availability decision."
+    },
+    {
+      "id": "SC07",
+      "priority": "MEDIUM",
+      "type": "source review gap",
+      "title": "No dedicated multi-account or coordinated-ranking abuse detection found",
+      "action": "Add measured account/finish/rating/placement anomaly review while retaining unlimited legitimate racing and avoiding blanket shared-IP bans."
+    },
+    {
+      "id": "SC08",
+      "priority": "MEDIUM",
+      "type": "live supply-chain gap",
+      "title": "Container vulnerability scanning disabled",
+      "action": "Choose and enable a reviewed scanning/advisory workflow with patch response and deployment acceptance. Existing hashes protect artifact identity, not absence of vulnerabilities."
+    },
+    {
+      "id": "SC09",
+      "priority": "MEDIUM",
+      "type": "live recovery and transport hardening",
+      "title": "SQL point-in-time recovery off and permissive direct TLS mode",
+      "action": "Review encrypted-only direct connection policy without breaking connector use; choose PITR/retention against cost and recovery objectives and conduct an isolated restore with erasure-journal reapplication."
+    }
+  ],
+  "corrections_to_supplied_assessment": [
+    "There is one initial free publishing slot per account, not a monthly free slot. Monthly replenishment is explicitly unapproved.",
+    "Current race acceptance intentionally uses trajectories; deterministic full replay is an offline diagnostic, not an active competitive anti-cheat boundary.",
+    "Existing report/block/appeal/moderation tools, server-owned Coins and anti-resource-abuse tests already exist; they should not be presented as wholly missing.",
+    "Earlier BA01-BA04 findings from October14 are addressed in current code: authenticate before large upload admission, reject unsupported-method bodies, cap/retire publication evidence and coalesce/budget discovery snapshots. Their current regression tests passed; the old report is not current open-finding status."
+  ],
+  "validation": {
+    "controls_initial": {
+      "passed": 269,
+      "failed": 3,
+      "skipped": 5,
+      "deselected": 141,
+      "seconds": 262.91,
+      "evidence": "controls-initial.xml"
+    },
+    "native_recheck": {
+      "passed": 3,
+      "failed": 0,
+      "seconds": 51.32,
+      "evidence": "native-recheck.xml",
+      "explanation": "Sandboxed Godot logged 'Failed to read the root certificate store'. A writable private APPDATA alone did not fix it. Identical three native tests passed with reviewed Windows-certificate-store access and task-local APPDATA; no assertions or runtime code changed."
+    },
+    "probes": {
+      "passed": 3,
+      "failed": 0,
+      "seconds": 8.16,
+      "evidence": "probes.xml",
+      "admin_get_routes_denied": 47,
+      "manufactured_trajectory_accepted": true,
+      "private_cross_account_access_denied": true
+    },
+    "unique_focused_tests": {
+      "passed": 275,
+      "skipped": 5,
+      "unresolved_failures": 0,
+      "limit": "Focused tests only, not a fresh complete backend suite. The accepted fabricated-trajectory probe passes by documenting exposure."
+    },
+    "skipped": "Five SQLite row-concurrency cases require disposable PostgreSQL. 141 initial selections were excluded by 'not postgres and not canonical_three_rewinds_keep_original_verified_time'; PostgreSQL concurrency and that historical full-replay fixture are not claimed tested.",
+    "other": [
+      "pip check: No broken requirements found.",
+      "Limited high-confidence current-tree secret-pattern scan: 9627 text files, zero matches; no history scan.",
+      "Read-only live inventory: project roles, four account/key inventories, four per-secret policies, one bucket, one SQL instance, one observed regional API, one worker, five jobs, one registry, project budget, sinks, alerts and uptime configurations."
+    ]
+  },
+  "references": [
+    {
+      "topic": "Least-privilege Cloud Run service accounts",
+      "url": "https://docs.cloud.google.com/run/docs/securing/service-identity"
+    },
+    {
+      "topic": "Cloud Run service-level maximum instances",
+      "url": "https://docs.cloud.google.com/run/docs/configuring/max-instances-limits"
+    },
+    {
+      "topic": "Service-specific spend caps and limitations",
+      "url": "https://docs.cloud.google.com/billing/docs/how-to/budgets-spend-caps"
+    },
+    {
+      "topic": "Public Cloud SQL IP and authorized networks",
+      "url": "https://docs.cloud.google.com/sql/docs/postgres/configure-ip"
+    },
+    {
+      "topic": "Play purchase lifecycle",
+      "url": "https://developer.android.com/google/play/billing/integrate"
+    },
+    {
+      "topic": "AdMob signed SSV callbacks",
+      "url": "https://developers.google.com/admob/android/ssv"
+    },
+    {
+      "topic": "Integrity is an additional anti-abuse signal",
+      "url": "https://developer.android.com/google/play/integrity/overview"
+    }
+  ],
+  "limitations": [
+    "No confirmed account takeover, live authorization exploit or server compromise was demonstrated.",
+    "No deployment, live mutation, secret payload read, actual purchase, live cheat, saturation, restore, NAS inspection, phone attachment check, device test or APK action.",
+    "Cloud Run/job/repository inventory is scoped to the known europe-west1 backend, not an exhaustive all-region/all-project assessment.",
+    "Compute firewall, Cloud Build trigger and effective key-creation-policy queries could not complete because the corresponding APIs were disabled; none were enabled.",
+    "First cloud attempt failed local TLS trust; retry used the project's existing Windows-trust CA bundle, with certificate verification left enabled.",
+    "Developer account MFA, remote source-control/CI settings, historic credential leaks, provider console configuration and real incident-notification delivery need separate evidence.",
+    "Current working tree contains substantial pre-existing work. Runtime source was not edited and no mixed-workspace commit was made."
+  ],
+  "evidence_location": "docs/evidence/security-coverage-2026-10-21",
+  "local_work_location": "build/security-coverage-2026-10-21"
+}

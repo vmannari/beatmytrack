@@ -1,0 +1,272 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Publication wait and Load track status override (2026-10-18)
++PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
+ 
+ ## Incremental editor preparation override (2026-10-18)
+ Track-editor road pieces and finished tiles reuse immutable CPU/GPU work with explicit crossing/join/UV/decor dependencies inside the original32MiB road allowance. Selected props warm off-thread; bounded12288-vertex uploads share24576/frame and a cooperative4ms target across roads, large props and Desert deformation. Actual biome materials/environment/view draw before canvas input; unchanged Winter sky stays prepared. Focused270fallback/280Compatibility/280desktopMobile, App141, workflow252, placement205, road-cache70 and parser890 pass. One retained Winter-prop comparison failure reproduces on the saved editor plus concurrent Winter finish; all47 pass with the earlier finish. Actual commands, initial corrections, native views and source-only checkpoint: docs/EDITOR_PREPARATION_2026_10_18.md. Global bookkeeping, driver calls and owner/device acceptance remain; no phone attachment check/test, APK, backend/deployment or FPS claim.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-18 PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
++
+ 2026-10-18 TCL01-TCL02: The track-view creator name is a yellow text link opening the retained list with creator-only search and unrelated filters cleared. Native touch verifies one paged query, results across biomes, title-only exclusions and unchanged favorites/no race. Sharing45headless/45Compatibility/45desktopMobile and list233headless pass. Commands, views and source-only checkpoint: docs/TRACK_CREATOR_LINK_2026_10_18.md. Existing creator-name search semantics remain; owner acceptance remains. No phone attachment check/device test, APK or backend/deployment action.
+ 
+ 2026-10-18 TVB01-TVB02: Track-view Share matches the close button's size/surface; the favorite star sits immediately beside the track title, with bounded long-name clipping. Existing list233headless, sharing39Compatibility/39desktopMobile and changed-script parse pass. The graphical list suite retains the previously documented populated-score fixture failure. Actual commands, corrected initial title measurement, native screenshots and source-only checkpoint: docs/TRACK_VIEW_BUTTONS_2026_10_18.md. Owner appearance acceptance remains; no phone attachment check/device test, APK or backend/deployment action.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-18 PWS01-PWS02/R01/Q01: Snowmen publishes normally under Ville after212s; read-only inspection traces its queued wait to artificial generation omitting publication preemption. Local generation now yields to claimable publications through existing250ms checks; active leases/settled work remain quiet. Load track cards follow saved Publishing/Queued/Checking/Published/Failed state instead of reverting to Draft. Original implementation reproduces3 failures; backend22pass/2skip, focused25headless/27Compatibility/27desktopMobile, slots55/local-publication31/parser894 pass. PostgreSQL localhost:55439 remains unavailable. Actual observations, commands, captures and source-only patch: docs/PUBLICATION_WAIT_STATUS_2026_10_18.md. Live publication is complete; client/backend-worker rollout and owner appearance acceptance remain. No manual publication/queue mutation, deployment, phone attachment check/test or APK action.
++
+ 2026-10-18 EIP01-EIP04/G01/R01/Q01: Track-editor road pieces and finished tiles reuse immutable CPU/GPU work with explicit crossing/join/UV/decor dependencies inside the original32MiB road allowance. Selected props warm off-thread; bounded12288-vertex uploads share24576/frame and a cooperative4ms target across roads, large props and Desert deformation. Actual biome materials/environment/view draw before canvas input; unchanged Winter sky stays prepared. Focused270fallback/280Compatibility/280desktopMobile, App141, workflow252, placement205, road-cache70 and parser890 pass. One retained Winter-prop comparison failure reproduces on the saved editor plus concurrent Winter finish; all47 pass with the earlier finish. Actual commands, initial corrections, native views and source-only checkpoint: docs/EDITOR_PREPARATION_2026_10_18.md. Global bookkeeping, driver calls and owner/device acceptance remain; no phone attachment check/test, APK, backend/deployment or FPS claim.
+ 
+ 2026-10-18 FB18A-FB18D/G01/R01/Q01: Owner-authorized full backend deployment completes on cloud API bmt-stg-e7a444ab-api-00086-vud/schema42, one matching worker, all five existing owned jobs and the PC API/worker. Image303c521ef4469697dc164daa560e661de2c0509c2494b6b83717c1a661517e2e carries actual compiler27/physics0.66/rules23 and player inspection/grants. Backup1792347222167 plus complete private PC SQL/object backup,56 cloud/99 PC original-data fingerprints,28/27 new immutable revisions, original documents/records/links, native/storage smoke and66 desktop/390px read-only Studio checks pass. Initial483 passes/one historical-fixture failure/12 skips, corrected verifier78 passes/two skips and Windows client-adapter pass are reported separately; no assertions or runtime checks weakened. Actual commands, fixture/transport/date-window corrections, captures and task checkpoint: docs/FULL_BACKEND_DEPLOY_2026_10_18.md. Owner acceptance, older-client update and separate calibration/load/restore remain; no live player grant, charge, phone attachment check/test or APK action.
+--- a/backend/bmt_backend/background_work.py
++++ b/backend/bmt_backend/background_work.py
+@@ -1,10 +1,11 @@
+-"""Cooperatively yield development generation when a player submits a race."""
++"""Cooperatively yield development generation for player races and publications."""
+ import time
+ 
+ from sqlalchemy import and_, or_, select
+ 
+ from .identity_models import Player
+ from .job_contracts import pinned_filter
++from .publication_models import PublicationIntent
+ from .track_models import Board, Run, now
+ 
+ 
+@@ -32,6 +33,13 @@
+                        or_(and_(Run.status == "queued", Run.lease_until <= now()),
+                            and_(Run.status == "verifying", Run.lease_until <= now())))
+                 .limit(1))
+-        if pending is not None:
+-            raise BackgroundYielded("Player race is ready for verification")
++            if pending is not None:
++                raise BackgroundYielded("Player race is ready for verification")
++            publication = session.scalar(select(PublicationIntent.id)
++                .join(Player, Player.id == PublicationIntent.player_id)
++                .where(Player.is_test_driver.is_(False),
++                       PublicationIntent.status.in_(("queued", "verifying")),
++                       PublicationIntent.lease_until <= now()).limit(1))
++            if publication is not None:
++                raise BackgroundYielded("Player publication is ready for verification")
+         return False
+--- a/game/backend/track_lifecycle.gd
++++ b/game/backend/track_lifecycle.gd
+@@ -340,7 +340,7 @@
+ 	if fingerprint.length() == 64 and fingerprint.is_valid_hex_number(false):
+ 		job = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
+ 	# Retain only presentation fields, never the full authoring document/proof.
+-	return {"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
++	return {"state":str(job.get("state","")),"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
+ 		"revision_conflict":str(job.get("failure","")).contains("REVISION_CONFLICT"),"needs_slots":_quota_failure(job)}
+ 
+ static func _quota_failure(job: Dictionary) -> bool:
+--- a/game/ui/draft_browser.gd
++++ b/game/ui/draft_browser.gd
+@@ -137,7 +137,7 @@
+ 	tile.name = "Draft_"+str(doc.id)
+ 	tile.draft_mode = true
+ 	tile.entry = {"name":doc.name,"creator":doc.get("creator",""),"theme":doc.theme,"pieces":doc.pieces,"points":[],
+-		"draft_status":_counts(doc),"tested":item.tested}
++		"draft_status":_counts(doc),"tested":item.tested,"publication_state":str(item.get("lifecycle",{}).get("state",""))}
+ 	tile.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	return tile
+ 
+--- a/game/ui/track_tile.gd
++++ b/game/ui/track_tile.gd
+@@ -142,14 +142,18 @@
+ 	draw_texture_rect(MenuIcon.texture(preload("res://ui/biome_badge.gd").icon(theme_id)),Rect2(16,14,15,15),false,biome_color)
+ 	draw_string(MenuStyle.BODY,Vector2(36,26),biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11,biome_color)
+ 	if draft_mode:
+-		var status: String = "TESTED" if entry.get("tested",false) else "DRAFT"
+-		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) else Color("0069a0"),0),Rect2(size.x-77,10,67,23))
+-		draw_string(MenuStyle.DISPLAY,Vector2(size.x-71,27),status,HORIZONTAL_ALIGNMENT_LEFT,60,15,MenuStyle.TEXT)
++		var status: String = draft_badge_text()
++		var status_width: float = maxf(67.0,MenuStyle.DISPLAY.get_string_size(status,HORIZONTAL_ALIGNMENT_LEFT,-1,15).x+12.0)
++		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) or status == "PUBLISHED" else Color("0069a0"),0),Rect2(size.x-status_width-10,10,status_width,23))
++		draw_string(MenuStyle.DISPLAY,Vector2(size.x-status_width-4,27),status,HORIZONTAL_ALIGNMENT_LEFT,status_width-12,15,MenuStyle.TEXT)
+ 	if not draft_mode:
+ 		var rating_origin := Vector2(size.x-rating_width-13,title_baseline-MenuStyle.BODY.get_ascent(12))
+ 		var rated: bool = has_rating()
+ 		draw_texture_rect(MenuIcon.texture("star_filled" if rated else "star"),Rect2(rating_origin+Vector2(0,-1),Vector2(16,16)),false,MenuStyle.ACCENT if rated else MenuStyle.MUTED)
+ 		draw_string(MenuStyle.BODY,Vector2(rating_origin.x+22,title_baseline),rating_text(),HORIZONTAL_ALIGNMENT_LEFT,-1,12,MenuStyle.TEXT if rated else MenuStyle.MUTED)
++
++func draft_badge_text() -> String:
++	return {"publishing":"PUBLISHING","queued":"QUEUED","verifying":"CHECKING","finishing":"PUBLISHED","published":"PUBLISHED","failed":"FAILED"}.get(str(entry.get("publication_state","")),"TESTED" if entry.get("tested",false) else "DRAFT")
+ 
+ func has_rating() -> bool:
+ 	return int(entry.get("rating_count",0)) > 0 if entry.get("source") == "cloud" else personal_rating > 0
+--- /dev/null
++++ b/backend/tests/test_publication_background_priority.py
+@@ -0,0 +1,51 @@
++"""A real explicit publication interrupts artificial generation without resubmission."""
++import pytest
++
++from bmt_backend.background_work import BackgroundControl, BackgroundYielded
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.publications import process_one
++from bmt_backend.track_models import now
++from test_publication_intents import domain, publications, request, status  # noqa: F401
++
++
++def test_publication_interrupts_generation_and_keeps_original_evidence(publications):
++    domain = publications
++    control = BackgroundControl(domain.app)
++    assert not control.is_set()
++    intent = request(domain)
++    with domain.factory() as session:
++        row = session.get(PublicationIntent, intent['publication_id'])
++        evidence = row.content_hash, row.replay_hash, row.operation_key, row.request_hash
++    control.next_check = 0
++    with pytest.raises(BackgroundYielded, match='publication'):
++        control.is_set()
++    with domain.factory() as session:
++        row = session.get(PublicationIntent, intent['publication_id'])
++        assert row.status == 'queued' and row.attempts == 0
++        assert (row.content_hash, row.replay_hash, row.operation_key, row.request_hash) == evidence
++    assert process_one(domain.app)
++    assert status(domain, intent['publication_id'])['state'] == 'published'
++    assert len(domain.proof_calls) == 1
++    control.next_check = 0
++    assert not control.is_set()
++
++
++@pytest.mark.parametrize('state,leased,preempt', [
++    ('queued', False, True), ('verifying', False, True),
++    ('queued', True, False), ('verifying', True, False),
++    ('failed', False, False), ('published', False, False),
++])
++def test_only_claimable_publications_preempt_generation(publications, state, leased, preempt):
++    domain = publications
++    intent = request(domain)
++    with domain.factory() as session:
++        row = session.get(PublicationIntent, intent['publication_id'])
++        row.status = state
++        row.lease_until = now() + 600 if leased else 0
++        session.commit()
++    control = BackgroundControl(domain.app)
++    if preempt:
++        with pytest.raises(BackgroundYielded):
++            control.is_set()
++    else:
++        assert not control.is_set()
+--- /dev/null
++++ b/game/tests/test_publication_badges.gd
+@@ -0,0 +1,49 @@
++extends "res://tests/test_publishing_slots.gd"
++## Saved publication journals drive the actual Load track tiles and details.
++
++func run() -> void:
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/publication-wait-status-2026-10-18/"+RenderingServer.get_current_rendering_method())
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size
++	var client := SlotClient.new(); root.add_child(client)
++	client.configure("http://127.0.0.1:1"); client.player = {"id":"badge-owner"}; client._access_token = "isolated-fixture"; client.slots = 1
++	var cloud := Cloud.new(); cloud.client = client; root.add_child(cloud)
++	var flow := TrackLifecycle.new(); flow.cloud = cloud
++	var folder: String = ProjectSettings.globalize_path("res://../build/publication-badges/"+str(Time.get_ticks_usec()))
++	flow.library = TrackLibrary.new(folder.path_join("tracks")); flow.records = LocalRecords.new(folder.path_join("records.json")); root.add_child(flow)
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json")).document
++	doc.name = "Winter loop"; doc.theme = "winter"; doc.creator = "Driver"
++	check(flow.library.save_document(doc) == OK,"saved draft fixture")
++	var staged: Dictionary = flow.stage(doc,[],"compact",null,"",{"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[120,1,0,0,0,0,0,0]]})
++	check(not staged.is_empty(),"real local journal and recording")
++	var host := MarginContainer.new(); root.add_child(host)
++	host.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	for side: String in ["left","right","top","bottom"]: host.add_theme_constant_override("margin_"+side,24)
++	var browser := preload("res://ui/draft_browser.gd").new(); browser.library = flow.library; browser.lifecycle = flow; host.add_child(browser)
++	await wait_browser(browser)
++	var labels: Dictionary = {"local_ready":"TESTED","publishing":"PUBLISHING","queued":"QUEUED","verifying":"CHECKING","failed":"FAILED","finishing":"PUBLISHED"}
++	for state: String in labels:
++		var job: Dictionary = flow.status_for(doc)
++		job.state = state; job.publish_requested = state != "local_ready"
++		check(flow._save(staged.path,job),"persist "+state+" journal")
++		flow.changed.emit(); await wait_browser(browser)
++		var card: TrackTile = browser.gallery.get_child(0).get_child(0)
++		check(card.draft_badge_text() == labels[state],"actual gallery badge follows "+state+" journal")
++		check(browser.selection.lifecycle.state == state,"scan retains exact "+state+" presentation state")
++		if state == "queued":
++			check(not card.entry.tested and card.draft_badge_text() != "DRAFT","in-progress upload does not become Draft when ready is false")
++			check(browser.find_child("PublishDraft",true,false).disabled,"queued publication cannot submit again")
++			var retained: Node = browser.gallery.get_child(0)
++			flow._retry_deadlines[str(job.upload_key)] = 0
++			await flow.process_jobs(); await settle()
++			check(browser.gallery.get_child(0) == retained and not browser.scanning,"identical queued poll retains existing cards")
++			await capture("queued-1280x720")
++		if state == "verifying": await capture("checking-1280x720")
++	var fallback := TrackTile.new(); fallback.entry = {"tested":false}
++	check(fallback.draft_badge_text() == "DRAFT","untested unpublished track keeps Draft")
++	fallback.entry.tested = true
++	check(fallback.draft_badge_text() == "TESTED","tested unpublished track keeps Tested")
++	fallback.free()
++	host.free(); flow.free(); cloud.free(); client.free()
++	print("PUBLICATION_BADGES: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_publication_badges.gd.uid
+@@ -0,0 +1 @@
++uid://cp5f0q8y2nn3v
+--- /dev/null
++++ b/docs/PUBLICATION_WAIT_STATUS_2026_10_18.md
+@@ -0,0 +1,56 @@
++# Publication wait and Load track status — 2026-10-18
++
++PWS01 gives explicit player publications priority over idle artificial-driver generation. PWS02 displays the saved publication state on Create → Load track cards. R01 retains normal server verification, saved evidence and original request identities; Q01 requires reproduced failures and rendered checks.
++
++## Live observation
++
++The owner's transferred Winter track, Snowmen, uploaded successfully as Ville and remained queued with zero verification attempts. The service was ready, while the competitive worker heartbeat was stale. Read-only worker-pool logs showed a long automatic-driver generation pass occupying the competitive worker. Its existing cooperative cancellation check considered ordinary human races, but omitted publication intents.
++
++The existing worker subsequently claimed the original request and published it normally on its first attempt. The server's creation-to-finish interval was **212 seconds (3 minutes 32 seconds)**. Read-only Studio inspection confirmed the published receipt and verified creator run. The local journal then became published and the saved draft/autosave retired from Load track through the existing finalization path. No manual queue mutation, replacement publication, re-test, force acceptance or extra slot consumption was performed by this task. Private identifiers, track contents and detailed operational receipts stay in ignored `build/snowmen-publication-diagnosis/`.
++
++## Changes
++
++`backend/bmt_backend/background_work.py` now checks claimable ordinary-player publication intents alongside its original human-race check. Both queued work and expired verification leases interrupt artificial generation through the existing `BackgroundYielded` path. Active leases, failed/published requests and artificial backlogs do not interrupt. The existing 250 ms check cadence and generator cleanup remain; this does not promise a 250 ms complete publication time. No new worker, scheduler, polling service or infrastructure setting is introduced.
++
++`game/backend/track_lifecycle.gd` retains the job state in the bounded presentation projection. `game/ui/draft_browser.gd` passes it to the existing tile. `game/ui/track_tile.gd` uses Publishing, Queued, Checking, Published or Failed while keeping Draft/Tested for unpublished local work. Badge width follows its actual text. An identical queued response retains the original gallery nodes and controls. The actual selected detail caption and submit guards remain in force.
++
++## Actual validation
++
++| Check | Result |
++| --- | --- |
++| New priority regression with archived original implementation | 3 failed, 4 passed; all three claimable-publication interruption assertions reproduce |
++| New priority and original publication-intent contracts, SQLite | 21 passed, 2 skipped, 22 PostgreSQL cases deselected |
++| Existing human-race preemption | 1 passed, 8 unrelated cases deselected |
++| Journal-to-Load-track badge regression, headless | 25 checks, zero failures |
++| Badge regression, Compatibility | 27 checks, zero failures |
++| Badge regression, desktop Mobile | 27 checks, zero failures |
++| Publishing slots / retained controls | 55 checks, zero failures |
++| Original local publication / real driven creator lap | 31 checks; 2605 ticks / 436 samples; zero failures |
++| Complete parser | 894 scripts, zero failures |
++| Scoped whitespace check | Passed |
++
++The priority fixture uses the real publication API, database, saved original document/trajectory hashes and normal publication verifier. Interruption itself neither claims nor rewrites the intent. Original evidence is then accepted once through the normal processing path. Lease/state cases verify that settled or currently owned work does not cause artificial generation to spin.
++
++The badge fixture saves actual local journals and scans them through the real DraftBrowser. It checks every displayed state, the queued submit guard, unchanged queued-poll node identities and original Draft/Tested fallbacks. [Compatibility queued card](evidence/publication-wait-status-2026-10-18/gl_compatibility/queued-1280x720.png) and [desktop Mobile checking card](evidence/publication-wait-status-2026-10-18/mobile/checking-1280x720.png) use disposable Winter-loop data rather than the owner's files.
++
++Initial attempts retained in the task record: importing the shared publication fixture initially omitted its dependent `domain` fixture; adding that import exposed the three intended failures. The broad initial invocation additionally encountered seven PostgreSQL setup errors because the historical localhost:55439 fixture is unavailable. Final SQLite results are scoped explicitly, with no PostgreSQL pass claimed. The first network probe met the sandbox's socket restriction; approved read-only host access succeeded. Existing dependency/index-reflection warnings remain.
++
++Commands used the pinned Python environment and Godot 4.7.2:
++
++```powershell
++.tools/backend-venv/Scripts/python.exe build/inspect_snowmen_publication.py
++.tools/backend-venv/Scripts/python.exe build/inspect_snowmen_worker.py
++.tools/backend-venv/Scripts/python.exe build/run_publication_priority_baseline.py
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_publication_background_priority.py backend/tests/test_publication_intents.py -k 'not postgres' -q --tb=short
++.tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_lightweight_verifier.py -k player_run_preempts_background -q --tb=short
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_badges.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 120
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_badges.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 120
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publication_badges.gd -CommandTimeoutSeconds 120
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_publishing_slots.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_local_draft_publication.gd -CommandTimeoutSeconds 180
++scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++```
++
++Godot used disposable workspace APPDATA and process-only PowerShell execution-policy Bypass. Original-source snapshots, backend before/final logs, synthetic renderer captures, command receipts and the source-only task patch are under `docs/evidence/publication-wait-status-2026-10-18/`. Concurrent client, editor, Rivalry and backend work is preserved. No root Git metadata is changed.
++
++The live Snowmen publication is complete. These scheduling and badge changes remain **local source changes**: matching client/backend-worker rollout and owner appearance acceptance remain. No deployment, phone attachment check/test or APK/export/install was performed.

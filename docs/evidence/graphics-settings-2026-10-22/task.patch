@@ -1,0 +1,642 @@
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -3,6 +3,7 @@
+ 
+ const SandDustEffect = preload("res://vehicle/sand_dust.gd")
+ const ImpactCracksEffect = preload("res://camera/impact_cracks.gd")
++const GraphicsPreferences = preload("res://presentation/graphics_preferences.gd")
+ 
+ signal exit_requested
+ signal race_completed
+@@ -146,6 +147,10 @@
+ var _render_viewport: Viewport
+ var _base_msaa: Viewport.MSAA = Viewport.MSAA_DISABLED
+ var _base_render_scale: float = 1.0
++var _graphics: Dictionary = {}
++var _shadow_size_changed: bool = false
++var _base_shadow_size: int = 1024
++var _base_shadow_16_bits: bool = true
+ var _presentation_has_water: bool = false
+ const MOBILE_WORLD_PIXEL_BUDGET: float = 1500000.0
+ 
+@@ -155,13 +160,23 @@
+ 		drift_haptics_enabled = bool(preference_records.settings.get("drift_haptics", true))
+ 	_render_viewport = get_viewport()
+ 	_base_msaa = _render_viewport.msaa_3d
+-	if preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name()):
++	_graphics = GraphicsPreferences.preferences(preference_records.settings if preference_records != null else {})
++	var safe_depth: bool = preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name())
++	var aa: Dictionary = GraphicsPreferences.antialiasing(_graphics.anti_aliasing,_base_msaa,safe_depth)
++	_render_viewport.msaa_3d = aa.msaa
++	if aa.fxaa:
+ 		# Adreno's implicit MSAA depth copy loses opaque surfaces and corrupts
+ 		# soft particles/contact shadows. Preserve AA after the world instead.
+ 		_render_viewport.msaa_3d = Viewport.MSAA_DISABLED
+ 		mobile_world_aa = preload("res://track/mobile_world_aa.gd").new()
+ 		add_child(mobile_world_aa)
+ 	_base_render_scale = _render_viewport.scaling_3d_scale
++	_base_shadow_size = int(ProjectSettings.get_setting_with_override("rendering/lights_and_shadows/directional_shadow/size"))
++	_base_shadow_16_bits = bool(ProjectSettings.get_setting_with_override("rendering/lights_and_shadows/directional_shadow/16_bits"))
++	var shadow_size: int = GraphicsPreferences.shadow_size(_graphics.shadow_quality)
++	if shadow_size > 0:
++		RenderingServer.directional_shadow_atlas_set_size(shadow_size,_base_shadow_16_bits)
++		_shadow_size_changed = true
+ 	_render_viewport.size_changed.connect(_refresh_render_scale)
+ 	if Engine.physics_ticks_per_second != VehicleSimulation.TICK_RATE:
+ 		push_error("Project physics rate must match the canonical 120 Hz step.")
+@@ -896,7 +911,8 @@
+ 	if not is_instance_valid(_render_viewport): return
+ 	var theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+ 	var pixels: Vector2i = _render_viewport.get_window().size
+-	var scale: float = render_scale_for(theme,_base_render_scale,OS.has_feature("mobile"),pixels)
++	var selected_scale: float = GraphicsPreferences.resolution(_graphics.get("render_resolution","auto"),_base_render_scale)
++	var scale: float = render_scale_for(theme,selected_scale,OS.has_feature("mobile"),pixels)
+ 	if not is_equal_approx(_render_viewport.scaling_3d_scale,scale): _render_viewport.scaling_3d_scale = scale
+ 
+ 
+@@ -931,6 +947,9 @@
+ 		if _render_viewport.size_changed.is_connected(_refresh_render_scale): _render_viewport.size_changed.disconnect(_refresh_render_scale)
+ 		_render_viewport.msaa_3d = _base_msaa
+ 		_render_viewport.scaling_3d_scale = _base_render_scale
++	if _shadow_size_changed:
++		RenderingServer.directional_shadow_atlas_set_size(_base_shadow_size,_base_shadow_16_bits)
++		_shadow_size_changed = false
+ 
+ 
+ func cycle_track() -> void:
+@@ -975,6 +994,7 @@
+ 		weather_layer = null
+ 		storm_weather = null
+ 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
++	biome_light.shadow_enabled = _graphics.get("shadow_quality","auto") != "off"
+ 	var weather_theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+ 	if car != null and car_weathering.theme != weather_theme:
+ 		car_weathering.configure(car, weather_theme, handling)
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -168,6 +168,8 @@
+ 			if not VehicleCustomisation.valid_collection(preferences[field]): return {}
+ 		elif field == "camera_mode":
+ 			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
++		elif field in preload("res://presentation/graphics_preferences.gd").DEFAULTS:
++			if not preload("res://presentation/graphics_preferences.gd").valid(field,preferences[field]): return {}
+ 		elif field == "camera_speed_zoom_strength":
+ 			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > CameraProfile.MAX_SPEED_ZOOM_STRENGTH: return {}
+ 		elif field == "ghost_mode":
+diff --git a/game/ui/settings_page.gd b/game/ui/settings_page.gd
+--- a/game/ui/settings_page.gd
++++ b/game/ui/settings_page.gd
+@@ -20,6 +20,7 @@
+ var draft_ghost: String = "lap"
+ var draft_show_ads: bool = false
+ var draft_simple_models: bool = false
++var draft_graphics: Dictionary = {}
+ var draft_analytics: bool = false
+ var draft_audio: Dictionary = {}
+ var development_available: bool = OS.is_debug_build()
+@@ -37,7 +38,7 @@
+ const TITLES: Dictionary = {
+ 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
+ 	"camera": ["Camera", "Choose the view you prefer while driving."],
+-	"graphics": ["Graphics", "Choose car detail while racing."],
++	"graphics": ["Graphics", "Applies from the next race. Menus and HUD stay sharp."],
+ 	"ghosts": ["Ghosts", "Race against your own locally saved best."],
+ 	"audio": ["Audio", "Balance the soundtrack, car sounds and menu feedback."],
+ 	"haptics": ["Haptics", "Adjust steering and drifting vibration."],
+@@ -61,6 +62,7 @@
+ 	draft_ghost = str(records.settings.get("ghost_mode", "lap"))
+ 	draft_show_ads = bool(records.settings.get("development_show_ads", false))
+ 	draft_simple_models = bool(records.settings.get("simple_car_models",false))
++	draft_graphics = preload("res://presentation/graphics_preferences.gd").preferences(records.settings)
+ 	draft_analytics = bool(records.settings.get("optional_analytics",false))
+ 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
+ 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
+@@ -99,7 +101,7 @@
+ 	for item: Array in [
+ 		["controls", "Controls", "Steering and layout", "controller"],
+ 		["camera", "Camera", "View and road ahead", "compass"],
+-		["graphics", "Graphics", "Car detail", "garage"],
++		["graphics", "Graphics", "Image quality", "garage"],
+ 		["ghosts", "Ghosts", "Your personal best", "garage"],
+ 		["audio", "Audio", "Music and sound", "headphones"],
+ 		["haptics", "Haptics", "Feedback and vibration", "phone"],
+@@ -218,6 +220,9 @@
+ 	_keep_category_visible(id)
+ 
+ func _graphics() -> void:
++	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")
++	_graphics_choice("render_resolution","3D resolution","Lower values improve performance. Device limits may cap resolution.")
++	_graphics_choice("anti_aliasing","Anti-aliasing","Smooth jagged edges. Higher quality uses more graphics power.")
+ 	var row: HBoxContainer = _row("CarDetailSettings",18)
+ 	row.add_child(_copy("Simpler car models", "Use lighter car models and shadows from the next race. Garage previews keep full detail."))
+ 	var toggle := CheckButton.new()
+@@ -231,6 +236,29 @@
+ 		toggle.text = "On" if on else "Off"
+ 		_changed())
+ 	row.add_child(toggle)
++
++func _graphics_choice(field: String, title: String, description: String) -> void:
++	const GRAPHICS = preload("res://presentation/graphics_preferences.gd")
++	var row: HBoxContainer = _row("Graphics_"+field,14)
++	row.add_child(_copy(title,description))
++	var choice := OptionButton.new()
++	choice.name = "GraphicsChoice_"+field
++	choice.custom_minimum_size = Vector2(185,52)
++	choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	choice.add_theme_font_size_override("font_size",20)
++	choice.tooltip_text = "Auto uses the existing settings for this device."
++	var safe_depth: bool = preload("res://track/mobile_world_aa.gd").required(OS.has_feature("mobile"),RenderingServer.get_current_rendering_method(),RenderingServer.get_video_adapter_name())
++	for index: int in range(GRAPHICS.OPTIONS[field].size()):
++		var value: String = GRAPHICS.OPTIONS[field][index]
++		if field == "anti_aliasing" and safe_depth and value.begins_with("msaa"): continue
++		choice.add_item(GRAPHICS.LABELS[field][index])
++		choice.set_item_metadata(choice.item_count-1,value)
++		if draft_graphics[field] == value or (field == "anti_aliasing" and safe_depth and value == "fxaa" and str(draft_graphics[field]).begins_with("msaa")):
++			choice.select(choice.item_count-1)
++	choice.item_selected.connect(func(index: int) -> void:
++		draft_graphics[field] = choice.get_item_metadata(index)
++		_changed())
++	row.add_child(choice)
+ 
+ func _keep_category_visible(id: String) -> void:
+ 	await get_tree().process_frame
+@@ -537,6 +565,7 @@
+ func _reset() -> void:
+ 	if section == "graphics":
+ 		draft_simple_models = false
++		draft_graphics = preload("res://presentation/graphics_preferences.gd").DEFAULTS.duplicate()
+ 	elif section == "audio":
+ 		draft_audio = GameSoundtrack.DEFAULTS.duplicate()
+ 	elif section == "development":
+@@ -568,6 +597,7 @@
+ 	records.settings.control_labels = draft_labels
+ 	records.settings.ghost_mode = draft_ghost
+ 	records.settings.simple_car_models = draft_simple_models
++	for field: String in draft_graphics: records.settings[field] = draft_graphics[field]
+ 	records.settings.optional_analytics = draft_analytics
+ 	for key: String in draft_audio: records.settings[key] = draft_audio[key]
+ 	if development_available: records.settings.development_show_ads = draft_show_ads
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,4 +1,7 @@
+ # Project agent instructions
++
++## Race graphics settings override (2026-10-22)
++2026-10-22 GFX01-GFX04/R01/Q01: Settings adds saved race shadow quality, 3D resolution and anti-aliasing beside simpler cars. Auto retains original defaults; staged Apply/reset, strict local saves, Adreno safe depth, mobile pixel/Night limits, native HUD and race teardown remain. Focused146headless/155Compatibility/155desktopMobile, records54, App141, car-model75, render-budget481 and parser930 pass. Fixed native shadow fixtures change2791/6713 pixels for Low/High and restore with zero changed pixels. Actual commands, intermediate input/environment/atlas corrections, native views and task-only checkpoint: docs/GRAPHICS_SETTINGS_2026_10_22.md. Concurrent work is preserved. Owner appearance and physical-device acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+ 
+ ## Snowbank driving sound override (2026-10-22)
+ 2026-10-22 SBA01-SBA03/R01/Q01: Winter gains recorded snow-compression entry and continuous speed/contact-driven ploughing, including bumper-first/reverse/sideways contact. Exact bank geometry and byte-exact driving remain; one lazy loop gives 24 maximum players in Winter, with the original event pool/cache. Focused89headless/89Compatibility, vehicle1469Compatibility, Desert67/grass-kerb76/loops208, parser927 and native capture6 plus analysis6 pass. Original mixer reproduces five missing-snow failures; the separate existing headless pause assertion also reproduces on the original. Actual commands, initial PCM/debounce corrections, native audio, provenance and task-only checkpoint: docs/SNOWBANK_AUDIO_2026_10_22.md. Owner/physical-device listening and client reload remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-22 GFX01-GFX04/R01/Q01: Settings adds saved race shadow quality, 3D resolution and anti-aliasing beside simpler cars. Auto retains original defaults; staged Apply/reset, strict local saves, Adreno safe depth, mobile pixel/Night limits, native HUD and race teardown remain. Focused146headless/155Compatibility/155desktopMobile, records54, App141, car-model75, render-budget481 and parser930 pass. Fixed native shadow fixtures change2791/6713 pixels for Low/High and restore with zero changed pixels. Actual commands, intermediate input/environment/atlas corrections, native views and task-only checkpoint: docs/GRAPHICS_SETTINGS_2026_10_22.md. Concurrent work is preserved. Owner appearance and physical-device acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
++
+ 2026-10-22 KQ01-KQ03/G01/R01/Q01: Clarified kerb feedback concerns timbre. Replace shared falling-note thuds with original dry rubber contacts and short body chatter; remove the earlier Compact volume boosts. Old/new decoded loudness closely matched; original six-contact cadence, wheel/silence/Desert gates, budgets and canonical behavior remain. Native88, vehicle1469, Desert67, native loops208, continuity42 and12-capture review pass; encoding37.32dB SNR, repeat60assets exact, all58 other audio files retained. Concurrent snow/bridge work preserved. Commands, before-after WAV, receipts and scoped checkpoint: docs/KERB_SOUND_QUALITY_2026_10_22.md. Restart and owner/phone sound-quality acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 SBA01-SBA03/R01/Q01: Winter gains recorded snow-compression entry and continuous speed/contact-driven ploughing, including bumper-first/reverse/sideways contact. Exact bank geometry and byte-exact driving remain; one lazy loop gives 24 maximum players in Winter, with the original event pool/cache. Focused89headless/89Compatibility, vehicle1469Compatibility, Desert67/grass-kerb76/loops208, parser927 and native capture6 plus analysis6 pass. Original mixer reproduces five missing-snow failures; the separate existing headless pause assertion also reproduces on the original. Actual commands, initial PCM/debounce corrections, native audio, provenance and task-only checkpoint: docs/SNOWBANK_AUDIO_2026_10_22.md. Owner/physical-device listening and client reload remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-22 GFX01-GFX04/R01/Q01: Settings adds saved race shadow quality, 3D resolution and anti-aliasing beside simpler cars. Auto retains original defaults; staged Apply/reset, strict local saves, Adreno safe depth, mobile pixel/Night limits, native HUD and race teardown remain. Focused146headless/155Compatibility/155desktopMobile, records54, App141, car-model75, render-budget481 and parser930 pass. Fixed native shadow fixtures change2791/6713 pixels for Low/High and restore with zero changed pixels. Actual commands, intermediate input/environment/atlas corrections, native views and task-only checkpoint: docs/GRAPHICS_SETTINGS_2026_10_22.md. Concurrent work is preserved. Owner appearance and physical-device acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
++
+ 2026-10-22 KQ01-KQ03/G01/R01/Q01: Clarified kerb feedback concerns timbre. Replace shared falling-note thuds with original dry rubber contacts and short body chatter; remove the earlier Compact volume boosts. Old/new decoded loudness closely matched; original six-contact cadence, wheel/silence/Desert gates, budgets and canonical behavior remain. Native88, vehicle1469, Desert67, native loops208, continuity42 and12-capture review pass; encoding37.32dB SNR, repeat60assets exact, all58 other audio files retained. Concurrent snow/bridge work preserved. Commands, before-after WAV, receipts and scoped checkpoint: docs/KERB_SOUND_QUALITY_2026_10_22.md. Restart and owner/phone sound-quality acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+ 
+ 2026-10-22 SBA01-SBA03/R01/Q01: Winter gains recorded snow-compression entry and continuous speed/contact-driven ploughing, including bumper-first/reverse/sideways contact. Exact bank geometry and byte-exact driving remain; one lazy loop gives 24 maximum players in Winter, with the original event pool/cache. Focused89headless/89Compatibility, vehicle1469Compatibility, Desert67/grass-kerb76/loops208, parser927 and native capture6 plus analysis6 pass. Original mixer reproduces five missing-snow failures; the separate existing headless pause assertion also reproduces on the original. Actual commands, initial PCM/debounce corrections, native audio, provenance and task-only checkpoint: docs/SNOWBANK_AUDIO_2026_10_22.md. Owner/physical-device listening and client reload remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+diff --git a/game/presentation/graphics_preferences.gd b/game/presentation/graphics_preferences.gd
+new file mode 100644
+--- /dev/null
++++ b/game/presentation/graphics_preferences.gd
+@@ -0,0 +1,41 @@
++extends RefCounted
++## Local race presentation only. Auto retains the existing platform policy.
++
++const DEFAULTS: Dictionary = {
++	"shadow_quality":"auto", "render_resolution":"auto", "anti_aliasing":"auto",
++}
++const OPTIONS: Dictionary = {
++	"shadow_quality":["auto","off","low","medium","high"],
++	"render_resolution":["auto","50","67","75","100"],
++	"anti_aliasing":["auto","off","fxaa","msaa_2x","msaa_4x"],
++}
++const LABELS: Dictionary = {
++	"shadow_quality":["Auto","Off","Low","Medium","High"],
++	"render_resolution":["Auto","50%","67%","75%","100%"],
++	"anti_aliasing":["Auto","Off","FXAA","MSAA 2x","MSAA 4x"],
++}
++
++static func valid(field: String, value: Variant) -> bool:
++	return value is String and value in OPTIONS.get(field,[])
++
++static func preferences(settings: Dictionary) -> Dictionary:
++	var result: Dictionary = DEFAULTS.duplicate()
++	for field: String in DEFAULTS:
++		if valid(field,settings.get(field)): result[field] = settings[field]
++	return result
++
++static func resolution(choice: String, automatic: float) -> float:
++	return automatic if choice == "auto" else float(choice)/100.0
++
++static func antialiasing(choice: String, automatic: Viewport.MSAA, safe_depth: bool) -> Dictionary:
++	if safe_depth:
++		return {"msaa":Viewport.MSAA_DISABLED,"fxaa":choice != "off"}
++	match choice:
++		"off": return {"msaa":Viewport.MSAA_DISABLED,"fxaa":false}
++		"fxaa": return {"msaa":Viewport.MSAA_DISABLED,"fxaa":true}
++		"msaa_2x": return {"msaa":Viewport.MSAA_2X,"fxaa":false}
++		"msaa_4x": return {"msaa":Viewport.MSAA_4X,"fxaa":false}
++	return {"msaa":automatic,"fxaa":false}
++
++static func shadow_size(choice: String) -> int:
++	return int({"low":512,"medium":1024,"high":2048}.get(choice,0))
+diff --git a/game/presentation/graphics_preferences.gd.uid b/game/presentation/graphics_preferences.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/presentation/graphics_preferences.gd.uid
+@@ -0,0 +1 @@
++uid://df1sh57bhgxf2
+diff --git a/game/tests/test_graphics_settings.gd b/game/tests/test_graphics_settings.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_graphics_settings.gd
+@@ -0,0 +1,295 @@
++extends SceneTree
++## Isolated persistence, staged UI, native layouts and actual race lifecycle.
++const GRAPHICS = preload("res://presentation/graphics_preferences.gd")
++const GAME = preload("res://core/game.gd")
++const SCENE = preload("res://core/game.tscn")
++var checks: int = 0
++var failures: int = 0
++var output: String
++var records: LocalRecords
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> Image:
++	await settle()
++	if DisplayServer.get_name() == "headless": return null
++	var picture: Image = root.get_texture().get_image()
++	picture.save_png(output.path_join(label+".png"))
++	return picture
++
++func run() -> void:
++	output = ProjectSettings.globalize_path("res://../docs/evidence/graphics-settings-2026-10-22/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://graphics_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	records = LocalRecords.new(directory.path_join("records.json"))
++	persistence()
++	policies()
++	await settings_ui()
++	await races()
++	for filename: String in DirAccess.get_files_at(directory): DirAccess.remove_absolute(directory.path_join(filename))
++	DirAccess.remove_absolute(directory)
++	print("GRAPHICS_SETTINGS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func persistence() -> void:
++	check(GRAPHICS.preferences({}) == GRAPHICS.DEFAULTS,"existing profiles retain all automatic graphics defaults")
++	records.settings = {"favorites":["starter_circuit"],"simple_car_models":true}
++	check(records.save_records() == OK,"old profile saves without new fields")
++	for field: String in GRAPHICS.DEFAULTS:
++		for value: String in GRAPHICS.OPTIONS[field]:
++			records.settings[field] = value
++			check(records.save_records() == OK,"graphics choice saves: "+field+"="+value)
++			var reopened := LocalRecords.new(records.path)
++			reopened.load_records()
++			check(reopened.settings.get(field) == value and reopened.settings.get("favorites") == ["starter_circuit"],"graphics choice reloads with unrelated settings: "+field+"="+value)
++		for invalid: Variant in [null,true,1,0.5,[],{},"invalid"]:
++			var document: Dictionary = {"schema":LocalRecords.SCHEMA,"records":{},"settings":{field:invalid}}
++			check(LocalRecords._normalize(document).is_empty(),"reject malformed graphics choice: "+field+"="+str(invalid))
++	var committed: Dictionary = records.settings.duplicate(true)
++	records.settings.shadow_quality = "invalid"
++	check(records.save_records() == ERR_INVALID_DATA and records.settings == committed,"failed graphics save restores committed choices")
++
++func policies() -> void:
++	for safe_depth: bool in [false,true]:
++		for mode: String in GRAPHICS.OPTIONS.anti_aliasing:
++			var aa: Dictionary = GRAPHICS.antialiasing(mode,Viewport.MSAA_2X,safe_depth)
++			if safe_depth:
++				check(aa.msaa == Viewport.MSAA_DISABLED and aa.fxaa == (mode != "off"),"Adreno depth protection: "+mode)
++			else:
++				check(aa.fxaa == (mode == "fxaa"),"explicit FXAA policy: "+mode)
++	check(GRAPHICS.antialiasing("auto",Viewport.MSAA_4X,false).msaa == Viewport.MSAA_4X,"Auto retains incoming MSAA")
++	for theme: String in ["pine","desert","winter","storm","night_city"]:
++		for value: String in GRAPHICS.OPTIONS.render_resolution:
++			var base: float = GRAPHICS.resolution(value,0.667)
++			var scale: float = GAME.render_scale_for(theme,base,true,Vector2i(3840,2160))
++			check(scale > 0 and 3840.0*2160.0*scale*scale <= GAME.MOBILE_WORLD_PIXEL_BUDGET+0.01,"mobile world budget survives graphics choice: "+theme+"="+value)
++
++func select(page: SettingsPage, field: String, value: String) -> void:
++	var choice: OptionButton = page.find_child("GraphicsChoice_"+field,true,false)
++	for index: int in range(choice.item_count):
++		if choice.get_item_metadata(index) != value: continue
++		choice.select(index)
++		choice.item_selected.emit(index)
++		return
++	check(false,"missing graphics option "+value)
++
++func settings_ui() -> void:
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = records
++	app.library = TrackLibrary.new(records.path.get_base_dir())
++	app.cloud_root_override = records.path.get_base_dir().path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.call("_show_screen","settings")
++	await settle()
++	var page: SettingsPage = app.root_ui.find_child("SettingsPage",true,false)
++	page._show_section("graphics")
++	await settle()
++	var saved: Dictionary = records.settings.duplicate(true)
++	select(page,"shadow_quality","off")
++	select(page,"render_resolution","50")
++	select(page,"anti_aliasing","fxaa")
++	check(records.settings == saved,"graphics choices stage until Apply")
++	page._show_section("audio")
++	page._show_section("graphics")
++	check(page.draft_graphics == {"shadow_quality":"off","render_resolution":"50","anti_aliasing":"fxaa"},"graphics drafts survive category changes")
++	check(page._apply(),"Apply commits graphics together")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(GRAPHICS.preferences(reopened.settings) == page.draft_graphics,"Apply survives reopening local records")
++	var saved_path: String = records.path
++	records.path = saved_path.path_join("missing/records.json")
++	select(page,"shadow_quality","high")
++	check(not page._apply() and records.settings.shadow_quality == "off" and page.draft_graphics.shadow_quality == "high","failed Apply keeps the committed setting and retryable draft")
++	records.path = saved_path
++	page._reset()
++	check(page.draft_graphics == GRAPHICS.DEFAULTS and not page.draft_simple_models and records.settings.shadow_quality == "off","Reset graphics stages defaults and detailed cars")
++	check(page._apply() and records.settings.favorites == ["starter_circuit"],"Reset graphics preserves favorites")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		var scroll: ScrollContainer = page.find_child("SettingsScroll",true,false)
++		scroll.scroll_vertical = 0
++		await capture("graphics-"+str(dimensions.x))
++		var panel: Control = page.find_child("SettingsContent",true,false)
++		check(root.get_visible_rect().encloses(panel.get_global_rect()),"graphics panel fits "+str(dimensions))
++		for field: String in GRAPHICS.DEFAULTS:
++			var choice: OptionButton = page.find_child("GraphicsChoice_"+field,true,false)
++			scroll.ensure_control_visible(choice)
++			await settle()
++			check(choice.size.y >= 52 and scroll.get_global_rect().encloses(choice.get_global_rect()),"reachable graphics choice "+field+" "+str(dimensions))
++			if field == "shadow_quality" and DisplayServer.get_name() != "headless":
++				root.grab_focus()
++				await settle()
++				var event := InputEventMouseButton.new()
++				event.button_index = MOUSE_BUTTON_LEFT
++				event.position = choice.get_global_rect().get_center()
++				event.pressed = true
++				root.push_input(event,true)
++				event = event.duplicate() as InputEventMouseButton
++				event.pressed = false
++				root.push_input(event,true)
++				await settle()
++				check(choice.get_popup().visible,"mouse opens graphics menu "+str(dimensions))
++				await capture("graphics-popup-"+str(dimensions.x))
++				choice.get_popup().grab_focus()
++				choice.get_popup().set_focused_item(0)
++				await settle()
++				var key := InputEventKey.new()
++				key.keycode = KEY_UP
++				key.physical_keycode = KEY_UP
++				key.pressed = true
++				Input.parse_input_event(key)
++				await process_frame
++				key = key.duplicate() as InputEventKey
++				key.pressed = false
++				Input.parse_input_event(key)
++				await process_frame
++				key = key.duplicate() as InputEventKey
++				key.keycode = KEY_ENTER
++				key.physical_keycode = KEY_ENTER
++				key.pressed = true
++				Input.parse_input_event(key)
++				await process_frame
++				key = key.duplicate() as InputEventKey
++				key.pressed = false
++				Input.parse_input_event(key)
++				await settle()
++				check(page.draft_graphics.shadow_quality == "high" and records.settings.shadow_quality == "auto","keyboard chooses the last shadow option without saving "+str(dimensions))
++				choice.get_popup().hide()
++				select(page,"shadow_quality","auto")
++		var toggle: CheckButton = page.find_child("SimpleCarModels",true,false)
++		scroll.ensure_control_visible(toggle)
++		await capture("graphics-bottom-"+str(dimensions.x))
++		check(toggle.size.y >= 52 and scroll.get_global_rect().encloses(toggle.get_global_rect()),"existing car detail remains reachable "+str(dimensions))
++		var apply: Button = page.find_child("ApplySettings",true,false)
++		check(root.get_visible_rect().encloses(apply.get_global_rect()),"Apply remains visible "+str(dimensions))
++	app.free()
++	await settle()
++
++func races() -> void:
++	root.size = Vector2i(1280,720)
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
++	var shadow_view: SubViewport
++	var original_shadow: Image
++	var low_shadow: Image
++	var high_shadow: Image
++	if DisplayServer.get_name() != "headless":
++		shadow_view = shadow_fixture()
++		await settle()
++		original_shadow = shadow_view.get_texture().get_image()
++		original_shadow.save_png(output.path_join("shadow-original.png"))
++	var prior_scale: float = root.scaling_3d_scale
++	var prior_aa: Viewport.MSAA = root.msaa_3d
++	var snapshots: Array = []
++	var pictures: Array[Image] = []
++	for profile: Dictionary in [GRAPHICS.DEFAULTS,{"shadow_quality":"off","render_resolution":"50","anti_aliasing":"off"},{"shadow_quality":"low","render_resolution":"75","anti_aliasing":"fxaa"},{"shadow_quality":"medium","render_resolution":"67","anti_aliasing":"msaa_2x"},{"shadow_quality":"high","render_resolution":"100","anti_aliasing":"msaa_4x"}]:
++		records.settings.merge(profile,true)
++		var game: Node = SCENE.instantiate()
++		game.initial_track = track
++		game.preference_records = records
++		game.production_mode = true
++		game.attempt_practice = true
++		game.hitch_diagnostics_enabled = false
++		root.add_child(game)
++		game.paused = true
++		game.set_process(false)
++		game.set_physics_process(false)
++		check(game.biome_light.shadow_enabled == (profile.shadow_quality != "off"),"race uses shadow choice "+profile.shadow_quality)
++		check(is_equal_approx(root.scaling_3d_scale,GRAPHICS.resolution(profile.render_resolution,prior_scale)),"race uses chosen 3D resolution "+profile.render_resolution)
++		var aa: Dictionary = GRAPHICS.antialiasing(profile.anti_aliasing,prior_aa,false)
++		check(root.msaa_3d == aa.msaa and is_instance_valid(game.mobile_world_aa) == aa.fxaa,"race uses AA choice "+profile.anti_aliasing)
++		game._update_weather()
++		check(game.biome_light.shadow_enabled == (profile.shadow_quality != "off"),"biome refresh retains shadow preference")
++		var snapshot: Array = game.sim.state.snapshot()
++		snapshots.append(snapshot)
++		game.call("_process",0.0)
++		check(game.sim.state.snapshot() == snapshot and game.track_session.target_laps == RaceRules.LAPS,"graphics keep canonical state and five laps")
++		pictures.append(await capture("race-"+profile.shadow_quality+"-"+profile.anti_aliasing))
++		if shadow_view != null:
++			var image: Image = shadow_view.get_texture().get_image()
++			image.save_png(output.path_join("shadow-"+profile.shadow_quality+".png"))
++			if profile.shadow_quality == "low": low_shadow = image
++			if profile.shadow_quality == "high": high_shadow = image
++		game.free()
++		check(is_equal_approx(root.scaling_3d_scale,prior_scale) and root.msaa_3d == prior_aa,"race exit restores viewport settings")
++		await settle()
++	check(snapshots.all(func(value: Array) -> bool: return value == snapshots[0]),"every graphics profile starts with exact identical canonical state")
++	if DisplayServer.get_name() != "headless":
++		await settle()
++		var restored_shadow: Image = shadow_view.get_texture().get_image()
++		restored_shadow.save_png(output.path_join("shadow-restored.png"))
++		var shadow_changes: int = pixel_changes(low_shadow,high_shadow,1.0/255.0)
++		var restored_changes: int = pixel_changes(original_shadow,restored_shadow,1.0/255.0)
++		check(shadow_changes > 100,"Low and High change the actual shared directional shadow map")
++		check(restored_changes == 0,"leaving High restores original shadow rendering for other viewports")
++		print("SHADOW_PIXELS low_high=",shadow_changes," restored=",restored_changes)
++		shadow_view.free()
++		var differences: int = 0
++		for y: int in range(100,500,2):
++			for x: int in range(150,1100,2):
++				if pictures[0].get_pixel(x,y) != pictures[1].get_pixel(x,y): differences += 1
++		check(differences > 100,"graphics choices alter actual native race pixels")
++
++func pixel_changes(before: Image, after: Image, tolerance: float) -> int:
++	var changed: int = 0
++	for y: int in range(before.get_height()):
++		for x: int in range(before.get_width()):
++			var a: Color = before.get_pixel(x,y)
++			var b: Color = after.get_pixel(x,y)
++			if maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b))) > tolerance: changed += 1
++	return changed
++
++func shadow_fixture() -> SubViewport:
++	var viewport := SubViewport.new()
++	viewport.size = Vector2i(512,512)
++	viewport.own_world_3d = true
++	viewport.positional_shadow_atlas_size = 1024
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	var world_environment := WorldEnvironment.new()
++	world_environment.environment = Environment.new()
++	world_environment.environment.background_mode = Environment.BG_COLOR
++	world_environment.environment.background_color = Color("172229")
++	world_environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	world_environment.environment.ambient_light_color = Color.WHITE
++	world_environment.environment.ambient_light_energy = 0.15
++	world_environment.environment.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
++	viewport.add_child(world_environment)
++	var floor := MeshInstance3D.new()
++	var plane := PlaneMesh.new()
++	plane.size = Vector2(20,20)
++	floor.mesh = plane
++	viewport.add_child(floor)
++	var cube := MeshInstance3D.new()
++	var box := BoxMesh.new()
++	box.size = Vector3(1,4,1)
++	cube.mesh = box
++	cube.position.y = 2.0
++	cube.rotation.y = 0.17
++	viewport.add_child(cube)
++	var sun := DirectionalLight3D.new()
++	sun.rotation_degrees = Vector3(-35,-135,0)
++	sun.shadow_enabled = true
++	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
++	sun.directional_shadow_max_distance = 40.0
++	viewport.add_child(sun)
++	var camera := Camera3D.new()
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 16.0
++	camera.far = 50.0
++	camera.position = Vector3(10,14,10)
++	viewport.add_child(camera)
++	camera.look_at(Vector3.ZERO)
++	return viewport
+diff --git a/game/tests/test_graphics_settings.gd.uid b/game/tests/test_graphics_settings.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_graphics_settings.gd.uid
+@@ -0,0 +1 @@
++uid://bwu4mvfr2k8h0
+diff --git a/scripts/test_graphics_settings.ps1 b/scripts/test_graphics_settings.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/test_graphics_settings.ps1
+@@ -0,0 +1,9 @@
++param([string]$Script='res://tests/test_graphics_settings.gd', [string]$Renderer='')
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++$env:APPDATA = Join-Path $repoRoot ('build/graphics-settings-2026-10-22/'+[System.IO.Path]::GetFileNameWithoutExtension($Script)+'-'+$Renderer+'/appdata')
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++$env:BMT_API_URL = ''
++$options = @{ Action='TestScript'; ScriptPath=$Script; CommandTimeoutSeconds=240 }
++if ($Renderer) { $options.Graphical=$true; $options.RenderingMethod=$Renderer }
++& (Join-Path $PSScriptRoot 'dev.ps1') @options
+diff --git a/docs/GRAPHICS_SETTINGS_2026_10_22.md b/docs/GRAPHICS_SETTINGS_2026_10_22.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GRAPHICS_SETTINGS_2026_10_22.md
+@@ -0,0 +1,56 @@
++# Race graphics settings, 22 October 2026
++
++Settings → Graphics now offers saved race shadow quality, 3D resolution and anti-aliasing alongside the existing simpler-car option. Apply commits the draft; Reset graphics stages automatic defaults and detailed cars. The next race consumes a private snapshot of the choices. Existing profiles retain their previous rendering through Auto.
++
++| Requirement | Delivered behavior |
++| --- | --- |
++| GFX01 | Shadow quality: Auto, Off, Low, Medium, High. Low/Medium/High use 512/1024/2048 directional shadow maps. Off disables the race's directional shadows; inexpensive contact and cloud shading remain. |
++| GFX02 | 3D resolution: Auto, 50%, 67%, 75%, 100%. The existing mobile 1.5-million-pixel limit and 55% Night limit still cap the selected scale. Native Canvas menus, HUD and camera projection remain independent. |
++| GFX03 | Anti-aliasing: Auto, Off, FXAA, MSAA 2x, MSAA 4x. Affected Adreno Compatibility devices offer Auto/Off/FXAA and map previously saved MSAA to safe FXAA, retaining the original depth workaround. |
++| GFX04 | Strict allowlisted local preferences, atomic save/rollback, retained drafts across categories and failed saves, staged section reset, unrelated settings preserved. No schema bump is required for optional settings. |
++| R01 | Original five laps, canonical state, geometry, weather, car detail option, Garage resources and mobile budgets remain. Race teardown restores entry MSAA/render scale and the configured directional atlas before subsequent menu rendering. |
++| Q01 | Native menu layouts/popups at 960×540, 1280×720 and 1600×720, mouse and keyboard selection, actual race profiles, rendered shadow-map changes and exact shadow restoration, plus existing regressions. |
++
++Changed runtime files are `game/presentation/graphics_preferences.gd`, `game/ui/settings_page.gd`, `game/persistence/local_records.gd` and `game/core/game.gd`. The focused regression is `game/tests/test_graphics_settings.gd`; `scripts/test_graphics_settings.ps1` runs it through the pinned `scripts/dev.ps1`, with APPDATA redirected into `build/` and backend configuration disabled. Both new GDScript files retain their generated Godot UIDs. Project/build identity files may be refreshed by the standard runner; the task-only checkpoint excludes those generated changes and unrelated work.
++
++The directional atlas setter is global rather than per viewport, so race setup captures its configured platform size/format and teardown restores them. The original project is the sole production owner of this setting outside the race override. No per-frame tree traversal, extra lighting, renderer switch, runtime image readback, network operation or simulation work was added. See the [Godot RenderingServer API](https://docs.godotengine.org/en/stable/classes/class_renderingserver.html#class-renderingserver-method-directional-shadow-atlas-set-size).
++
++## Actual verification
++
++Engine: `4.7.2.stable.official.ed1daf0bf`. Native renderers ran on Windows/NVIDIA RTX 3090; “Mobile” below means the desktop Vulkan Mobile renderer, not an Android device.
++
++| Executed check | Result |
++| --- | --- |
++| Focused graphics, headless | 146 checks, 0 failures |
++| Focused graphics, native Compatibility | 155 checks, 0 failures |
++| Focused graphics, desktop Mobile | 155 checks, 0 failures |
++| `test_records.gd` | 54 checks, 0 failures |
++| `test_app.gd` | 141 checks, 0 failures |
++| `test_racing_car_models.gd`, headless | 75 checks, 0 failures |
++| `test_tablet_render_budget.gd` | 481 checks, 0 failures |
++| Final `test_script_parse.gd` | 930 scripts, 0 failures |
++| Scoped `git diff --check` | Passed |
++
++The fixed shadow fixture changes 2,791 pixels between Low and High on Compatibility and 6,713 on Mobile (more than one color level). After leaving High, zero pixels differ from the original atlas rendering on either renderer at that tolerance. This fixture uses its own environment, a bounded shadow atlas and a 50m camera far plane. The race checks instantiate all five quality combinations, retain identical initial canonical snapshots and verify five laps, selected scale/AA, biome-refresh shadow preferences and viewport restoration.
++
++Actual commands used the temporary `build/run_graphics_settings.ps1` wrapper initially and the equivalent saved runner for final runs:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_graphics_settings.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_graphics_settings.ps1 -Renderer gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_graphics_settings.ps1 -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_graphics_settings.ps1 -Script res://tests/test_script_parse.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_graphics_settings.ps1 -Script res://tests/test_records.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_graphics_settings.ps1 -Script res://tests/test_app.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_graphics_settings.ps1 -Script res://tests/test_tablet_render_budget.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File build/run_graphics_settings.ps1 -Script res://tests/test_racing_car_models.gd
++git diff --check -- game/core/game.gd game/persistence/local_records.gd game/ui/settings_page.gd game/presentation/graphics_preferences.gd game/tests/test_graphics_settings.gd scripts/test_graphics_settings.ps1
++```
++
++Initial attempts are not counted as final passes. The direct PowerShell invocation encountered the host execution policy; the runner uses the established process-scoped Bypass invocation. The sandboxed engine reported certificate-store access errors; successful engine runs used approved execution outside the sandbox with isolated workspace APPDATA. The initial focused run passed 139 headless checks. Native fixture development then exposed one scaled mouse-coordinate failure, three unsupported End-key/navigation failures, a focus-dependent first popup failure, one environment-coupled shadow-restoration failure, and one fixture without a usable Compatibility shadow atlas. Fixes establish local coordinates, native popup focus and Up/Enter navigation, give the independent fixture an explicit environment/atlas/far plane, and retain both strict shadow assertions. One intermediate fixture enum typo was corrected after a parser error. Assertions and runtime invariants were not removed or relaxed. Final logs are retained under the evidence directory; earlier intermediate build logs may be reused by concurrent runner processes.
++
++## Evidence and acceptance
++
++Evidence: [`evidence/graphics-settings-2026-10-22/`](evidence/graphics-settings-2026-10-22/). `Windows-gl_compatibility/` and `Windows-mobile/` contain inspected native settings, popup and five race-profile views plus original/Low/High/restored shadow fixtures. `before/` preserves source baselines; `task.patch` is the reviewable task-only checkpoint, and `fingerprints.json` records its source inputs. Existing unrelated work was preserved and no Git commit was made in the shared dirty checkout.
++
++Owner appearance/quality preference, physical-phone touch/Adreno execution, memory, thermal and frame-rate acceptance remain. No phone attachment check or physical-device test was performed. No APK/export/install, live account or progression write, backend modification or deployment was performed. No device performance improvement is claimed. Reload the local client to see the added controls.

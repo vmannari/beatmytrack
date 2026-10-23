@@ -1,0 +1,2138 @@
+diff --git a/backend/bmt_backend/news.py b/backend/bmt_backend/news.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/news.py
+@@ -0,0 +1,432 @@
++"""Private news: constant-size finish capture and requested, bounded daily work."""
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Query
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import case, delete, exists, func, literal, or_, select, tuple_, update
++from sqlalchemy.dialects.postgresql import insert as pg_insert
++from sqlalchemy.dialects.sqlite import insert as sqlite_insert
++from sqlalchemy.orm import aliased, load_only
++
++from .community import is_blocked
++from .community_models import PlayerBlock
++from .cursors import decode_cursor, encode_cursor
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .news_models import Friendship, NewsBands, NewsDemand, NewsItem, NewsWatch, TrackRacer, TrackReach
++from .track_models import (
++    Board,
++    BoardTimeCount,
++    LapPersonalBest,
++    PersonalBest,
++    Track,
++    TrackVersion,
++    VersionFinisher,
++    digest,
++    new_id,
++    now,
++)
++from .tracks import DB, Auth
++from .usernames import username_key
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["garage news"])
++BANDS = (1, 5, 10, 20, 30, 40, 50, 75, 100)
++MILESTONES = (100, 1000, 10000)
++BOARD_BATCH = 8
++FRIEND_LIMIT = 100
++RETENTION_DAYS = 90
++FEED_LIMIT = 100
++DEMAND_SECONDS = 600
++
++
++def insert(session, model):
++    return (pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert)(model)
++
++
++def blocked(actor, recipient):
++    return exists(select(PlayerBlock.player_id).where(or_(
++        (PlayerBlock.player_id == actor) & (PlayerBlock.blocked_id == recipient),
++        (PlayerBlock.player_id == recipient) & (PlayerBlock.blocked_id == actor))))
++
++
++def emit(session, player_id, key, kind, version_id, *, board_id=None, actor_id=None, at=None, **details):
++    # Wait for account removal, then recheck its latest row. This key-share lock
++    # fences deletion without taking a recipient's exclusive writer lock.
++    recipient = session.scalar(select(Player.id).where(Player.id == player_id,
++        Player.disabled.is_(False), Player.deleted_at.is_(None)).with_for_update(read=True, key_share=True))
++    if recipient is None:
++        return
++    values = {"id": new_id(), "player_id": player_id, "event_key": digest(key), "kind": kind,
++              "version_id": version_id, "board_id": board_id, "actor_id": actor_id,
++              "created_at": now() if at is None else at, "details": details}
++    columns = NewsItem.__table__.c
++    eligible = exists(select(Player.id).where(Player.id == player_id, Player.disabled.is_(False),
++                                            Player.deleted_at.is_(None)))
++    if actor_id:
++        eligible &= ~blocked(actor_id, player_id)
++    statement = insert(session, NewsItem).from_select(list(values), select(*(
++        literal(value, type_=columns[name].type) for name, value in values.items())).where(eligible))
++    session.execute(statement.on_conflict_do_nothing(index_elements=["player_id", "event_key"]))
++
++
++def capture_verified(session, run, board, version, track, player):
++    """Called in the accepted-result transaction. Never fans out to friends/racers."""
++    if (player.is_test_driver or player.disabled or player.deleted_at is not None
++            or board.manifest.get("test_population") or board.manifest.get("purpose")
++            or version.state != "published" or track.hidden or track.archived):
++        return
++    candidates = session.execute(select(literal("race"), PersonalBest.time_ticks).where(
++        PersonalBest.board_id == board.id, PersonalBest.player_id == player.id, PersonalBest.run_id == run.id)
++        .union_all(select(literal("lap"), LapPersonalBest.time_ticks).where(
++            LapPersonalBest.board_id == board.id, LapPersonalBest.player_id == player.id,
++            LapPersonalBest.run_id == run.id))).all()
++    if not candidates:
++        return
++    # One physical track/player pair, irrespective of revisions or selected car.
++    added = session.scalar(insert(session, TrackRacer).values(track_id=track.id, player_id=player.id)
++        .on_conflict_do_nothing().returning(TrackRacer.track_id))
++    if added:
++        created = session.scalar(insert(session, TrackReach).values(track_id=track.id, racers=0, milestone=0)
++            .on_conflict_do_nothing().returning(TrackReach.track_id))
++        reach = session.scalar(select(TrackReach).where(TrackReach.track_id == track.id).with_for_update())
++        if created:
++            # Fresh publications can already have ordinary creator results.
++            # Seed those once, in SQL, so runtime and migration counts agree.
++            previous = select(literal(track.id), VersionFinisher.player_id).join(
++                TrackVersion, TrackVersion.id == VersionFinisher.version_id).join(
++                Player, Player.id == VersionFinisher.player_id).where(TrackVersion.track_id == track.id,
++                    VersionFinisher.player_id != player.id, Player.is_test_driver.is_(False)).distinct()
++            session.execute(insert(session, TrackRacer).from_select(["track_id", "player_id"], previous)
++                .on_conflict_do_nothing())
++            reach.racers = session.scalar(select(func.count()).select_from(TrackRacer).where(TrackRacer.track_id == track.id)) - 1
++            reach.milestone = max((n for n in MILESTONES if n <= reach.racers), default=0)
++        reach.racers += 1
++        for threshold in MILESTONES:
++            if reach.milestone < threshold <= reach.racers:
++                reach.milestone = threshold
++                emit(session, track.owner_id, ["milestone", track.id, threshold], "milestone", version.id,
++                     at=run.finished_at, count=threshold)
++    for metric, ticks in candidates:
++        model = PersonalBest if metric == "race" else LapPersonalBest
++        # PB triggers already serialize this board. The rank indexes stop at the
++        # first equal/faster eligible opponent; ties do not announce new records.
++        competitor = session.scalar(select(model.player_id).join(Player, Player.id == model.player_id)
++            .where(model.board_id == board.id, model.time_ticks <= ticks, model.player_id != player.id,
++                   Player.disabled.is_(False), Player.is_test_driver.is_(False)).limit(1))
++        if competitor is None:
++            emit(session, track.owner_id, ["record", board.id, metric, run.id], "world_record", version.id,
++                 board_id=board.id, actor_id=player.id, at=run.finished_at, metric=metric, time_ticks=ticks)
++
++
++def locked_player(session, player_id):
++    player = session.scalar(select(Player).where(Player.id == player_id).with_for_update(key_share=True)
++        .execution_options(populate_existing=True))
++    if player is None or player.disabled or player.deleted_at is not None or player.is_test_driver:
++        raise HTTPException(403, "NEWS_UNAVAILABLE")
++    return player
++
++
++@router.post("/news/refresh")
++def request_refresh(session: DB, player: Auth):
++    locked_player(session, player.id)
++    stamp = now()
++    day = stamp // 86400
++    state = session.get(NewsDemand, player.id)
++    if state is None:
++        state = NewsDemand(player_id=player.id)
++        session.add(state)
++        session.flush()
++    if state.completed_day < day:
++        if state.requested_day != day:
++            state.cursor = ""
++        state.requested_day, state.requested_until, state.pending = day, stamp + DEMAND_SECONDS, True
++    session.commit()
++    return {"refreshing": state.pending, "checked_day": state.completed_day}
++
++
++@router.get("/news")
++def feed(session: DB, player: Auth, cursor: str = Query("", max_length=400)):
++    # Pure indexed read. Opening another page never schedules comparisons.
++    actor = aliased(Player)
++    query = (select(NewsItem, TrackVersion.name, Board.vehicle_id,
++                    Board.manifest["tick_rate"].as_integer(), actor.display_name, Track.owner_id)
++        .join(TrackVersion, TrackVersion.id == NewsItem.version_id).join(Track, Track.id == TrackVersion.track_id)
++        .outerjoin(Board, Board.id == NewsItem.board_id).outerjoin(actor, actor.id == NewsItem.actor_id)
++        .where(NewsItem.player_id == player.id, NewsItem.created_at >= now() - RETENTION_DAYS * 86400,
++               Track.hidden.is_(False), Track.archived.is_(False), TrackVersion.state == "published",
++               ~blocked(Track.owner_id, player.id),
++               or_(NewsItem.actor_id.is_(None), ~blocked(NewsItem.actor_id, player.id))))
++    if cursor:
++        position = decode_cursor(cursor)
++        if (set(position) != {"at", "id"} or type(position["at"]) is not int
++                or not isinstance(position["id"], str) or len(position["id"]) != 36):
++            raise HTTPException(422, "INVALID_CURSOR")
++        query = query.where(tuple_(NewsItem.created_at, NewsItem.id) < (position["at"], position["id"]))
++    rows = session.execute(query.order_by(NewsItem.created_at.desc(), NewsItem.id.desc()).limit(31)).all()
++    items = [{"id": row.id, "kind": row.kind, "created_at": row.created_at, "version_id": row.version_id,
++              "board_id": row.board_id, "track_name": title, "vehicle_id": vehicle,
++              "actor_id": row.actor_id, "creator_id": creator_id,
++              "tick_rate": tick_rate or 120,
++              "actor_name": name or "Removed account", **row.details}
++             for row, title, vehicle, tick_rate, name, creator_id in rows[:30]]
++    state = session.get(NewsDemand, player.id)
++    refreshing = bool(state and state.pending and state.requested_until >= now())
++    last = rows[29][0] if len(rows) > 30 else None
++    return {"items": items, "next_cursor": encode_cursor({"at": last.created_at, "id": last.id}) if last else "",
++            "refreshing": refreshing, "checked_day": state.completed_day if state else -1}
++
++
++def friend_ids(session, player_id):
++    other = case((Friendship.low_id == player_id, Friendship.high_id), else_=Friendship.low_id)
++    return session.scalars(select(other).join(Player, Player.id == other).where(
++        or_(Friendship.low_id == player_id, Friendship.high_id == player_id), Friendship.accepted.is_(True),
++        Player.disabled.is_(False), Player.deleted_at.is_(None), Player.is_test_driver.is_(False),
++        ~blocked(other, player_id)).limit(FRIEND_LIMIT)).all()
++
++
++@router.get("/news/friends")
++def friends(session: DB, player: Auth):
++    other = case((Friendship.low_id == player.id, Friendship.high_id), else_=Friendship.low_id)
++    rows = session.execute(select(Friendship, Player).join(Player, Player.id == other).where(
++        or_(Friendship.low_id == player.id, Friendship.high_id == player.id),
++        Player.disabled.is_(False), Player.deleted_at.is_(None), Player.is_test_driver.is_(False),
++        ~blocked(other, player.id)).order_by(Friendship.created_at, other).limit(FRIEND_LIMIT)).all()
++    return {"items": [{"player_id": p.id, "display_name": p.display_name,
++                       "status": "friends" if f.accepted else "sent" if f.requested_by == player.id else "received"}
++                      for f, p in rows]}
++
++
++class FriendRequest(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++    name: str = Field(min_length=1, max_length=40)
++
++
++@router.post("/news/friends")
++def request_friend(body: FriendRequest, session: DB, player: Auth):
++    target = session.scalar(select(Player).where(Player.username_key == username_key(body.name),
++        Player.disabled.is_(False), Player.deleted_at.is_(None), Player.is_test_driver.is_(False)))
++    if target is None or is_blocked(session, player.id, target.id, mutual=True):
++        raise HTTPException(404, "PLAYER_NOT_FOUND")
++    if target.id == player.id:
++        raise HTTPException(422, "CANNOT_FRIEND_SELF")
++    # Deterministic player locking also bounds both players' pending requests.
++    pair = sorted((player.id, target.id))
++    session.commit() # Release the authentication actor fence before pair ordering.
++    for pid in pair:
++        locked_player(session, pid)
++    existing = session.get(Friendship, tuple(pair))
++    if existing is None:
++        for pid in pair:
++            count = session.scalar(select(func.count()).select_from(Friendship).where(
++                or_(Friendship.low_id == pid, Friendship.high_id == pid)))
++            if count >= FRIEND_LIMIT:
++                raise HTTPException(409, "FRIEND_LIMIT_REACHED")
++        existing = Friendship(low_id=pair[0], high_id=pair[1], requested_by=player.id)
++        session.add(existing)
++    session.commit()
++    return {"status": "friends" if existing.accepted else "sent" if existing.requested_by == player.id else "received"}
++
++
++@router.put("/news/friends/{target_id}")
++def accept_friend(target_id: UUID, session: DB, player: Auth):
++    pair = sorted((player.id, str(target_id)))
++    session.commit()
++    for pid in pair:
++        locked_player(session, pid)
++    row = session.get(Friendship, tuple(pair))
++    if row is None or (not row.accepted and row.requested_by == player.id):
++        raise HTTPException(404, "FRIEND_REQUEST_NOT_FOUND")
++    if is_blocked(session, player.id, str(target_id), mutual=True):
++        raise HTTPException(404, "FRIEND_REQUEST_NOT_FOUND")
++    row.accepted = True
++    session.commit()
++    return {"status": "friends"}
++
++
++@router.delete("/news/friends/{target_id}")
++def remove_friend(target_id: UUID, session: DB, player: Auth):
++    pair = sorted((player.id, str(target_id)))
++    session.commit()
++    for pid in pair:
++        locked_player(session, pid)
++    session.execute(delete(Friendship).where(Friendship.low_id == pair[0], Friendship.high_id == pair[1]))
++    session.commit()
++    return {"removed": True}
++
++
++def cutoffs(session, board_id, model):
++    if model is PersonalBest:
++        frequencies = select(BoardTimeCount.time_ticks.label("ticks"), BoardTimeCount.public_count.label("n")).where(
++            BoardTimeCount.board_id == board_id, BoardTimeCount.public_count > 0).subquery()
++    else:
++        frequencies = (select(LapPersonalBest.time_ticks.label("ticks"), func.count().label("n"))
++            .join(Player, Player.id == LapPersonalBest.player_id).where(LapPersonalBest.board_id == board_id,
++                Player.disabled.is_(False), Player.is_test_driver.is_(False))
++            .group_by(LapPersonalBest.time_ticks).subquery())
++    ranked = select(frequencies.c.ticks,
++        (func.sum(frequencies.c.n).over(order_by=frequencies.c.ticks) - frequencies.c.n + 1).label("rank"),
++        func.sum(frequencies.c.n).over().label("total")).subquery()
++    # Only nine scalar cutoffs leave SQL, regardless of leaderboard population.
++    aggregates = [func.max(case(
++        (ranked.c.rank * 100 <= ranked.c.total * threshold, ranked.c.ticks), else_=None))
++        for threshold in BANDS]
++    return list(session.execute(select(*aggregates)).one())
++
++
++def board_bands(session, board, day):
++    revision = board.stats_revision + board.lap_revision
++    cached = session.get(NewsBands, board.id)
++    if cached is not None and (cached.checked_day == day or cached.revision == revision):
++        return cached
++    # Serialize only the presentation cache. Ranking aggregates must never hold
++    # a competitive Board lock or delay another player's verified PB write.
++    session.execute(insert(session, NewsBands).values(board_id=board.id, checked_day=-1,
++        revision=-1, race=[], lap=[]).on_conflict_do_nothing())
++    cached = session.scalar(select(NewsBands).where(NewsBands.board_id == board.id).with_for_update()
++        .execution_options(populate_existing=True))
++    if cached is not None and (cached.checked_day == day or cached.revision == board.stats_revision + board.lap_revision):
++        return cached
++    race_limits, lap_limits = cutoffs(session, board.id, PersonalBest), cutoffs(session, board.id, LapPersonalBest)
++    if cached is None:
++        cached = NewsBands(board_id=board.id)
++        session.add(cached)
++    cached.race, cached.lap = race_limits, lap_limits
++    cached.checked_day, cached.revision = day, board.stats_revision + board.lap_revision
++    return cached
++
++
++def band(ticks, limits):
++    if ticks is None:
++        return None
++    return next((threshold for threshold, limit in zip(BANDS, limits) if limit is not None and ticks <= limit), 100)
++
++
++def compare_board(session, player_id, best, board, version, day, watch, roster, lap_ticks, peers, runs):
++    fields = board_bands(session, board, day)
++    times = (best.time_ticks, lap_ticks)
++    metrics = ("race", "lap")
++    positions = (band(times[0], fields.race), band(times[1], fields.lap))
++    if watch:
++        for index, metric in enumerate(metrics):
++            previous = watch.race_band if index == 0 else watch.lap_band
++            current = positions[index]
++            if previous is not None and current is not None and current > previous:
++                emit(session, player_id, ["percentile", board.id, metric, day], "percentile_drop", version.id,
++                     board_id=board.id, metric=metric, threshold=previous, current_band=current)
++        old_times = (watch.race_ticks, watch.lap_ticks)
++        for pid, current in peers.items():
++            if pid not in watch.friends:
++                continue # A new friendship establishes a baseline, never old defeat spam.
++            previous = watch.friends[pid]
++            for index, metric in enumerate(metrics):
++                if (old_times[index] is not None and times[index] is not None and current[index] is not None
++                        and current[index] < times[index]
++                        and (previous[index] is None or previous[index] >= old_times[index])):
++                    emit(session, player_id, ["friend", board.id, metric, pid, runs[(pid, index)]],
++                         "friend_overtake", version.id, board_id=board.id, actor_id=pid,
++                         metric=metric, time_ticks=current[index], your_ticks=times[index])
++    else:
++        watch = NewsWatch(player_id=player_id, board_id=board.id)
++        session.add(watch)
++    watch.race_ticks, watch.lap_ticks = times
++    watch.race_band, watch.lap_band = positions
++    watch.friends, watch.friend_key, watch.revision = peers, roster, fields.revision
++
++
++def process_requested(app, *, clock=None):
++    """One <=8-board transaction, only within ten minutes of an explicit request."""
++    stamp = now() if clock is None else clock
++    with app.state.session_factory() as session:
++        # Active-range index excludes completed AND expired inactive demands.
++        player = session.scalar(select(Player).join(NewsDemand, NewsDemand.player_id == Player.id).where(
++            NewsDemand.pending.is_(True), NewsDemand.requested_until >= stamp,
++            Player.disabled.is_(False), Player.deleted_at.is_(None), Player.is_test_driver.is_(False))
++            .order_by(NewsDemand.requested_until, Player.id)
++            .with_for_update(skip_locked=True, of=Player, key_share=True).limit(1))
++        if player is None:
++            return False
++        demand = session.scalar(select(NewsDemand).where(NewsDemand.player_id == player.id).with_for_update())
++        if not demand.pending or demand.requested_until < stamp:
++            return False
++        # Do not continue yesterday's queued pass across a UTC boundary.
++        if demand.requested_day != stamp // 86400:
++            demand.pending = False
++            session.commit()
++            return True
++        rows = session.execute(select(PersonalBest, Board, TrackVersion, NewsWatch.revision, NewsWatch.friend_key)
++            .select_from(PersonalBest)
++            .join(Board, Board.id == PersonalBest.board_id).join(TrackVersion, TrackVersion.id == Board.version_id)
++            .join(Track, Track.id == TrackVersion.track_id)
++            .outerjoin(NewsWatch, (NewsWatch.board_id == PersonalBest.board_id) & (NewsWatch.player_id == player.id))
++            .options(load_only(PersonalBest.board_id, PersonalBest.player_id, PersonalBest.time_ticks),
++                     load_only(Board.id, Board.stats_revision, Board.lap_revision), load_only(TrackVersion.id))
++            .where(PersonalBest.player_id == player.id,
++                PersonalBest.board_id > demand.cursor, TrackVersion.state == "published",
++                Track.hidden.is_(False), Track.archived.is_(False),
++                Board.manifest["test_population"].as_boolean().is_not(True),
++                Board.manifest["purpose"].as_string().is_(None))
++            .order_by(PersonalBest.board_id).limit(BOARD_BATCH + 1)).all()
++        ids = friend_ids(session, player.id)
++        roster = digest(sorted(ids))
++        changed = [(best, board, version) for best, board, version, revision, friend_key in rows[:BOARD_BATCH]
++                   if revision is None or revision != board.stats_revision + board.lap_revision or friend_key != roster]
++        changed_ids = [board.id for _, board, _ in changed]
++        # Unchanged boards load neither old friend snapshots nor route/manifest JSON.
++        watches = {watch.board_id: watch for watch in session.scalars(select(NewsWatch).where(
++            NewsWatch.player_id == player.id, NewsWatch.board_id.in_(changed_ids)))} if changed_ids else {}
++        own_laps = {}
++        peers = {bid: {pid: [None, None] for pid in ids} for bid in changed_ids}
++        sources = {bid: {} for bid in changed_ids}
++        if changed_ids:
++            # Two bounded queries for the whole batch, never one query per friend.
++            for bid, pid, ticks, source in session.execute(select(LapPersonalBest.board_id,
++                    LapPersonalBest.player_id, LapPersonalBest.time_ticks, LapPersonalBest.run_id).where(
++                    LapPersonalBest.board_id.in_(changed_ids), LapPersonalBest.player_id.in_([player.id, *ids]))):
++                if pid == player.id:
++                    own_laps[bid] = ticks
++                else:
++                    peers[bid][pid][1], sources[bid][(pid, 1)] = ticks, source
++            if ids:
++                for bid, pid, ticks, source in session.execute(select(PersonalBest.board_id,
++                        PersonalBest.player_id, PersonalBest.time_ticks, PersonalBest.run_id).where(
++                        PersonalBest.board_id.in_(changed_ids), PersonalBest.player_id.in_(ids))):
++                    peers[bid][pid][0], sources[bid][(pid, 0)] = ticks, source
++        for best, board, version in changed:
++            compare_board(session, player.id, best, board, version, demand.requested_day,
++                          watches.get(board.id), roster, own_laps.get(board.id), peers[board.id], sources[board.id])
++        for _, board, _, _, _ in rows[:BOARD_BATCH]:
++            demand.cursor = board.id
++        if len(rows) <= BOARD_BATCH:
++            demand.completed_day, demand.pending = demand.requested_day, False
++        # Retain at most 100 visible items for this returning player.
++        excess = select(NewsItem.id).where(NewsItem.player_id == player.id).order_by(
++            NewsItem.created_at.desc(), NewsItem.id.desc()).offset(FEED_LIMIT).limit(100).subquery()
++        session.execute(delete(NewsItem).where(NewsItem.id.in_(select(excess.c.id))))
++        session.commit()
++    return True
++
++
++def cleanup_expired(session, stamp, limit=100):
++    old = select(NewsItem.id).where(NewsItem.created_at < stamp - RETENTION_DAYS * 86400).order_by(
++        NewsItem.created_at, NewsItem.id).limit(limit).subquery()
++    return session.execute(delete(NewsItem).where(NewsItem.id.in_(select(old.c.id)))).rowcount
++
++
++def erase_private(session, player_id, limit=100):
++    """Extend the existing deletion plan without changing its persistent stages."""
++    remaining = limit
++    for model, criterion in (
++            (NewsItem, NewsItem.player_id == player_id),
++            (NewsWatch, NewsWatch.player_id == player_id),
++            (NewsDemand, NewsDemand.player_id == player_id),
++            (Friendship, or_(Friendship.low_id == player_id, Friendship.high_id == player_id))):
++        columns = list(model.__table__.primary_key.columns)
++        selected = select(*columns).where(criterion).limit(remaining).subquery()
++        key = columns[0] if len(columns) == 1 else tuple_(*columns)
++        removed = session.execute(delete(model).where(key.in_(select(*selected.c))))
++        remaining -= removed.rowcount
++        if remaining <= 0:
++            return False
++    selected = select(NewsItem.id).where(NewsItem.actor_id == player_id).limit(remaining).subquery()
++    changed = session.execute(update(NewsItem).where(NewsItem.id.in_(select(selected.c.id))).values(actor_id=None))
++    return changed.rowcount < remaining
+diff --git a/backend/bmt_backend/news_models.py b/backend/bmt_backend/news_models.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/news_models.py
+@@ -0,0 +1,80 @@
++"""Bounded private news, mutual friends and explicitly requested daily work."""
++from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
++from sqlalchemy.orm import Mapped, mapped_column
++
++from .db import Base
++from .track_models import new_id, now
++
++
++class Friendship(Base):
++    __tablename__ = "news_friends"
++    __table_args__ = (Index("ix_news_friends_high", "high_id", "low_id"),)
++    low_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    high_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    requested_by: Mapped[str] = mapped_column(String(36))
++    accepted: Mapped[bool] = mapped_column(Boolean, default=False)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++
++
++class NewsItem(Base):
++    __tablename__ = "news_items"
++    __table_args__ = (UniqueConstraint("player_id", "event_key"),
++                     Index("ix_news_feed", "player_id", "created_at", "id"),
++                     Index("ix_news_expiry", "created_at", "id"))
++    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
++    # Projection IDs have no implicit player FK lock. The writer explicitly
++    # validates/fences recipients with a shared key lock before publication.
++    player_id: Mapped[str] = mapped_column(String(36))
++    event_key: Mapped[str] = mapped_column(String(64))
++    kind: Mapped[str] = mapped_column(String(24))
++    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"))
++    board_id: Mapped[str | None] = mapped_column(ForeignKey("boards.id"), nullable=True)
++    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
++    created_at: Mapped[int] = mapped_column(Integer, default=now)
++    details: Mapped[dict] = mapped_column(JSON, default=dict)
++
++
++class NewsDemand(Base):
++    __tablename__ = "news_demand"
++    __table_args__ = (Index("ix_news_demand_active", "pending", "requested_until", "player_id"),)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    requested_day: Mapped[int] = mapped_column(Integer, default=-1)
++    completed_day: Mapped[int] = mapped_column(Integer, default=-1)
++    requested_until: Mapped[int] = mapped_column(Integer, default=0)
++    pending: Mapped[bool] = mapped_column(Boolean, default=False)
++    cursor: Mapped[str] = mapped_column(String(64), default="")
++
++
++class NewsWatch(Base):
++    __tablename__ = "news_watches"
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    revision: Mapped[int] = mapped_column(Integer, default=-1)
++    friend_key: Mapped[str] = mapped_column(String(64), default="")
++    race_ticks: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    lap_ticks: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    race_band: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    lap_band: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    friends: Mapped[dict] = mapped_column(JSON, default=dict)
++
++
++class NewsBands(Base):
++    __tablename__ = "news_bands"
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    checked_day: Mapped[int] = mapped_column(Integer)
++    revision: Mapped[int] = mapped_column(Integer)
++    race: Mapped[list] = mapped_column(JSON)
++    lap: Mapped[list] = mapped_column(JSON)
++
++
++class TrackReach(Base):
++    __tablename__ = "news_track_reach"
++    track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"), primary_key=True)
++    racers: Mapped[int] = mapped_column(Integer, default=0)
++    milestone: Mapped[int] = mapped_column(Integer, default=0)
++
++
++class TrackRacer(Base):
++    __tablename__ = "news_track_racers"
++    track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"), primary_key=True)
++    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True, index=True)
+diff --git a/backend/bmt_backend/migrations/versions/0038_garage_news.py b/backend/bmt_backend/migrations/versions/0038_garage_news.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0038_garage_news.py
+@@ -0,0 +1,85 @@
++"""Private Garage news and demand-only daily comparisons; no recurring player sweep."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0038_garage_news"
++down_revision = "0037_earned_coins"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    op.create_table("news_friends",
++        sa.Column("low_id", sa.String(36), sa.ForeignKey("players.id"), primary_key=True),
++        sa.Column("high_id", sa.String(36), sa.ForeignKey("players.id"), primary_key=True),
++        sa.Column("requested_by", sa.String(36), nullable=False),
++        sa.Column("accepted", sa.Boolean(), nullable=False),
++        sa.Column("created_at", sa.Integer(), nullable=False))
++    op.create_index("ix_news_friends_high", "news_friends", ["high_id", "low_id"])
++    op.create_table("news_items",
++        sa.Column("id", sa.String(36), primary_key=True),
++        # Materialized inbox IDs do not lock another player's FK during score writes.
++        sa.Column("player_id", sa.String(36), nullable=False),
++        sa.Column("event_key", sa.String(64), nullable=False),
++        sa.Column("kind", sa.String(24), nullable=False),
++        sa.Column("version_id", sa.String(36), sa.ForeignKey("track_versions.id"), nullable=False),
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), nullable=True),
++        sa.Column("actor_id", sa.String(36), nullable=True),
++        sa.Column("created_at", sa.Integer(), nullable=False),
++        sa.Column("details", sa.JSON(), nullable=False),
++        sa.UniqueConstraint("player_id", "event_key"))
++    op.create_index("ix_news_feed", "news_items", ["player_id", "created_at", "id"])
++    op.create_index("ix_news_expiry", "news_items", ["created_at", "id"])
++    op.create_index("ix_news_items_actor_id", "news_items", ["actor_id"])
++    op.create_table("news_demand",
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id"), primary_key=True),
++        sa.Column("requested_day", sa.Integer(), nullable=False),
++        sa.Column("completed_day", sa.Integer(), nullable=False),
++        sa.Column("requested_until", sa.Integer(), nullable=False),
++        sa.Column("pending", sa.Boolean(), nullable=False),
++        sa.Column("cursor", sa.String(64), nullable=False))
++    op.create_index("ix_news_demand_active", "news_demand", ["pending", "requested_until", "player_id"])
++    op.create_table("news_watches",
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id"), primary_key=True),
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), primary_key=True),
++        sa.Column("revision", sa.Integer(), nullable=False),
++        sa.Column("friend_key", sa.String(64), nullable=False),
++        sa.Column("race_ticks", sa.Integer(), nullable=True),
++        sa.Column("lap_ticks", sa.Integer(), nullable=True),
++        sa.Column("race_band", sa.Integer(), nullable=True),
++        sa.Column("lap_band", sa.Integer(), nullable=True),
++        sa.Column("friends", sa.JSON(), nullable=False))
++    op.create_table("news_bands",
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), primary_key=True),
++        sa.Column("checked_day", sa.Integer(), nullable=False),
++        sa.Column("revision", sa.Integer(), nullable=False),
++        sa.Column("race", sa.JSON(), nullable=False),
++        sa.Column("lap", sa.JSON(), nullable=False))
++    op.create_table("news_track_reach",
++        sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id"), primary_key=True),
++        sa.Column("racers", sa.Integer(), nullable=False),
++        sa.Column("milestone", sa.Integer(), nullable=False))
++    op.create_table("news_track_racers",
++        sa.Column("track_id", sa.String(36), sa.ForeignKey("tracks.id"), primary_key=True),
++        sa.Column("player_id", sa.String(36), sa.ForeignKey("players.id"), primary_key=True))
++    op.create_index("ix_news_track_racers_player_id", "news_track_racers", ["player_id"])
++    op.create_index("ix_news_pb_player_board", "personal_bests", ["player_id", "board_id"])
++    op.create_index("ix_news_lap_rank", "lap_personal_bests", ["board_id", "time_ticks", "player_id"])
++    # One-time distinct, lifetime public participation across immutable revisions.
++    # Existing milestones establish the baseline; deployment never invents old news.
++    op.execute(sa.text("""INSERT INTO news_track_racers(track_id,player_id)
++        SELECT DISTINCT v.track_id,f.player_id FROM version_finishers f
++        JOIN track_versions v ON v.id=f.version_id JOIN players p ON p.id=f.player_id
++        WHERE p.is_test_driver=false"""))
++    op.execute(sa.text("""INSERT INTO news_track_reach(track_id,racers,milestone)
++        SELECT track_id,count(*),CASE WHEN count(*)>=10000 THEN 10000
++        WHEN count(*)>=1000 THEN 1000 WHEN count(*)>=100 THEN 100 ELSE 0 END
++        FROM news_track_racers GROUP BY track_id"""))
++
++
++def downgrade():
++    op.drop_index("ix_news_lap_rank", table_name="lap_personal_bests")
++    op.drop_index("ix_news_pb_player_board", table_name="personal_bests")
++    for name in ("news_track_racers", "news_track_reach", "news_bands", "news_watches",
++                 "news_demand", "news_items", "news_friends"):
++        op.drop_table(name)
+diff --git a/backend/tests/test_news.py b/backend/tests/test_news.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_news.py
+@@ -0,0 +1,471 @@
++"""News correctness, explicit demand, query bounds and privacy on both databases."""
++from concurrent.futures import ThreadPoolExecutor
++from threading import Barrier, Event
++
++import pytest
++from alembic import command
++from sqlalchemy import event, func, select, text
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, race
++
++from bmt_backend import news
++from bmt_backend.community_models import PlayerBlock
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.news_models import (
++    Friendship,
++    NewsBands,
++    NewsDemand,
++    NewsItem,
++    NewsWatch,
++    TrackRacer,
++    TrackReach,
++)
++from bmt_backend.track_models import (
++    Board,
++    LapPersonalBest,
++    PersonalBest,
++    Run,
++    RunTicket,
++    Track,
++    TrackVersion,
++    now,
++)
++
++domain = domain_fixture
++
++
++def get(domain, player="Creator", path="/v1/news"):
++    result = domain.client.get(path, headers=headers(domain, player))
++    assert result.status_code == 200, result.text
++    return result.json()
++
++
++def refresh(domain, player="Alice"):
++    result = domain.client.post("/v1/news/refresh", headers=headers(domain, player))
++    assert result.status_code == 200, result.text
++    return result.json()
++
++
++def befriend(domain):
++    response = domain.client.post("/v1/news/friends", json={"name": "  bOB "}, headers=headers(domain, "Alice"))
++    assert response.status_code == 200, response.text
++    response = domain.client.put("/v1/news/friends/" + domain.players["Alice"], headers=headers(domain, "Bob"))
++    assert response.status_code == 200, response.text
++
++
++def kinds(domain, kind, player="Creator"):
++    return [row for row in get(domain, player)["items"] if row["kind"] == kind]
++
++
++def test_verified_records_are_atomic_best_only_and_ties_silent(domain):
++    version, board = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    assert {r["metric"] for r in kinds(domain, "world_record")} == {"race", "lap"}
++    race(domain, version, "Bob", frames=20)
++    race(domain, version, "Alice", frames=30)
++    assert len(kinds(domain, "world_record")) == 2
++    race(domain, version, "Bob", frames=15)
++    rows = kinds(domain, "world_record")
++    assert len(rows) == 4
++    assert all(r["actor_name"] == "Bob" for r in rows if r["time_ticks"] in (15, 75))
++    with domain.factory() as session:
++        assert session.get(TrackReach, session.get(TrackVersion, version["version_id"]).track_id).racers == 3
++        before = session.scalar(select(func.count()).select_from(NewsItem))
++        news.emit(session, domain.players["Creator"], ["rolled-back"], "world_record", version["version_id"])
++        session.rollback()
++        assert session.scalar(select(func.count()).select_from(NewsItem)) == before
++        assert session.get(PersonalBest, (board, domain.players["Bob"])).time_ticks == 75
++
++
++def test_track_milestone_is_lifetime_distinct_and_never_reannounced(domain):
++    version, board = public_course(domain)
++    with domain.factory() as session:
++        track_id = session.get(TrackVersion, version["version_id"]).track_id
++        session.add(TrackReach(track_id=track_id, racers=99, milestone=0))
++        session.commit()
++    race(domain, version, "Alice", frames=20)
++    assert [r["count"] for r in kinds(domain, "milestone")] == [100]
++    race(domain, version, "Alice", frames=15)
++    with domain.factory() as session:
++        assert session.get(TrackReach, track_id).racers == 100
++        assert session.scalar(select(func.count()).select_from(TrackRacer).where(TrackRacer.track_id == track_id)) == 1
++        ordinary = session.get(Board, board)
++        second = Board(id="f" * 64, version_id=ordinary.version_id, vehicle_id="other",
++                       manifest=ordinary.manifest)
++        session.add(second)
++        session.flush()
++        fact = RunTicket(player_id=domain.players["Alice"], board_id=second.id, expires_at=now() + 3600)
++        session.add(fact); session.flush()
++        run = Run(ticket_id=fact.id, player_id=fact.player_id, board_id=second.id, status="verified",
++                  replay_hash="0" * 64, time_ticks=50, lap_ticks=[10]*5, finished_at=now())
++        session.add(run); session.flush()
++        session.add(PersonalBest(board_id=second.id, player_id=run.player_id, run_id=run.id, time_ticks=50))
++        session.flush()
++        news.capture_verified(session, run, second, session.get(TrackVersion, second.version_id),
++                              session.get(Track, track_id), session.get(Player, run.player_id))
++        session.commit()
++        assert session.get(TrackReach, track_id).racers == 100
++    assert len(kinds(domain, "milestone")) == 1
++
++
++def test_no_demand_no_work_and_feed_reads_do_not_queue(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    get(domain, "Alice")
++    assert not news.process_requested(domain.app)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(NewsDemand)) == 0
++        assert session.scalar(select(func.count()).select_from(NewsWatch)) == 0
++    statements = []
++    def observe(conn, cursor, sql, parameters, context, many):
++        statements.append(sql.lower())
++    event.listen(domain.app.state.engine, "before_cursor_execute", observe)
++    try:
++        assert not news.process_requested(domain.app)
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", observe)
++    assert len(statements) == 1
++    assert "personal_bests" not in statements[0]
++
++
++def test_expired_request_is_not_processed_and_once_daily_is_server_enforced(domain, monkeypatch):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    stamp = now()
++    monkeypatch.setattr(news, "now", lambda: stamp)
++    assert refresh(domain)["refreshing"]
++    assert not news.process_requested(domain.app, clock=stamp + news.DEMAND_SECONDS + 1)
++    assert news.process_requested(domain.app, clock=stamp)
++    assert not refresh(domain)["refreshing"]
++    assert not news.process_requested(domain.app, clock=stamp)
++    stamp += 86400
++    assert not news.process_requested(domain.app, clock=stamp) # No automatic tomorrow job.
++    assert refresh(domain)["refreshing"]
++    assert news.process_requested(domain.app, clock=stamp)
++
++
++def test_friend_overtakes_both_metrics_and_percentile_only_after_baseline(domain, monkeypatch):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    race(domain, version, "Bob", frames=30)
++    befriend(domain)
++    stamp = now()
++    monkeypatch.setattr(news, "now", lambda: stamp)
++    refresh(domain)
++    assert news.process_requested(domain.app, clock=stamp)
++    assert not kinds(domain, "friend_overtake", "Alice")
++    assert not kinds(domain, "percentile_drop", "Alice")
++    race(domain, version, "Bob", frames=15)
++    assert not refresh(domain)["refreshing"]
++    stamp += 86400
++    refresh(domain)
++    assert news.process_requested(domain.app, clock=stamp)
++    overtakes = kinds(domain, "friend_overtake", "Alice")
++    assert {r["metric"] for r in overtakes} == {"race", "lap"}
++    assert all(r["actor_name"] == "Bob" for r in overtakes)
++    drops = kinds(domain, "percentile_drop", "Alice")
++    assert {r["metric"] for r in drops} == {"race", "lap"}
++    assert all(r["threshold"] == 40 for r in drops) # Creator also has a public result.
++    stamp += 86400
++    refresh(domain)
++    assert news.process_requested(domain.app, clock=stamp)
++    assert len(kinds(domain, "friend_overtake", "Alice")) == 2
++    assert len(kinds(domain, "percentile_drop", "Alice")) == 2
++
++
++def test_unchanged_board_reuses_cutoffs_and_skips_friend_queries(domain, monkeypatch):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    befriend(domain)
++    stamp = now()
++    monkeypatch.setattr(news, "now", lambda: stamp)
++    refresh(domain)
++    news.process_requested(domain.app, clock=stamp)
++    stamp += 86400
++    refresh(domain)
++    statements = []
++    def observe(conn, cursor, sql, parameters, context, many):
++        statements.append(sql.lower())
++    event.listen(domain.app.state.engine, "before_cursor_execute", observe)
++    try:
++        assert news.process_requested(domain.app, clock=stamp)
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", observe)
++    assert not any("over (" in sql or "board_time_counts" in sql for sql in statements)
++    assert not any("lap_personal_bests" in sql for sql in statements)
++
++
++def test_mutual_friend_requests_are_private_and_blocked_actors_hidden(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Bob", frames=20)
++    assert len(kinds(domain, "world_record")) == 2
++    response = domain.client.post("/v1/news/friends", json={"name": "Bob"}, headers=headers(domain, "Alice"))
++    assert response.json()["status"] == "sent"
++    assert get(domain, "Bob", "/v1/news/friends")["items"][0]["status"] == "received"
++    assert get(domain, "Carol", "/v1/news/friends")["items"] == []
++    assert domain.client.put("/v1/news/friends/" + domain.players["Bob"], headers=headers(domain, "Alice")).status_code == 404
++    domain.client.put("/v1/news/friends/" + domain.players["Alice"], headers=headers(domain, "Bob"))
++    assert get(domain, "Alice", "/v1/news/friends")["items"][0]["status"] == "friends"
++    with domain.factory() as session:
++        session.add(PlayerBlock(player_id=domain.players["Creator"], blocked_id=domain.players["Bob"]))
++        session.commit()
++    assert kinds(domain, "world_record") == []
++    response = domain.client.put("/v1/community/blocks/" + domain.players["Alice"], headers=headers(domain,"Bob"))
++    assert response.status_code == 200
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(Friendship)) == 0
++    assert get(domain, "Alice", "/v1/news/friends")["items"] == []
++    assert domain.client.post("/v1/news/friends", json={"name": "Bob"}, headers=headers(domain, "Alice")).status_code == 404
++
++
++def test_feed_keyset_pagination_private_scope_and_expiry(domain):
++    version, _ = public_course(domain)
++    stamp = now()
++    with domain.factory() as session:
++        for index in range(35):
++            news.emit(session, domain.players["Alice"], [index], "milestone", version["version_id"], at=stamp, count=index)
++        news.emit(session, domain.players["Alice"], ["expired"], "milestone", version["version_id"],
++                  at=stamp - 91 * 86400, count=100)
++        session.commit()
++    page = get(domain, "Alice")
++    assert len(page["items"]) == 30 and page["next_cursor"]
++    rest = get(domain, "Alice", "/v1/news?cursor=" + page["next_cursor"])
++    assert len(rest["items"]) == 5 and not rest["next_cursor"]
++    assert len({r["id"] for r in page["items"] + rest["items"]}) == 35
++    assert get(domain, "Bob")["items"] == []
++    assert domain.client.get("/v1/news?cursor=bad", headers=headers(domain, "Alice")).status_code == 422
++    with domain.factory() as session:
++        assert news.cleanup_expired(session, stamp) == 1
++        session.commit()
++
++
++def test_tied_percentile_cutoffs_use_shared_rank_and_no_population_rounding(domain):
++    version, board = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    race(domain, version, "Bob", frames=20)
++    with domain.factory() as session:
++        limits = news.cutoffs(session, board, PersonalBest)
++        assert news.band(100, limits) == 40 # Shared first rank / 3 players (including creator).
++        assert limits[0] is None # No top 1% claim in a two-player field.
++        assert news.cutoffs(session, board, LapPersonalBest)[-1] == 60
++
++
++def test_only_eight_boards_per_batch_and_resume_after_expiry(domain, monkeypatch):
++    _version, source_board = public_course(domain)
++    with domain.factory() as session:
++        source = session.get(Board, source_board)
++        for index in range(10):
++            board = Board(id=f"{index:064x}", version_id=source.version_id, vehicle_id="compact", manifest=source.manifest)
++            session.add(board); session.flush()
++            ticket = RunTicket(player_id=domain.players["Alice"], board_id=board.id, expires_at=now() + 3600)
++            session.add(ticket); session.flush()
++            run = Run(ticket_id=ticket.id, board_id=board.id, player_id=ticket.player_id, status="verified",
++                      replay_hash="0"*64, time_ticks=100, lap_ticks=[20]*5, finished_at=now())
++            session.add(run); session.flush()
++            session.add(PersonalBest(board_id=board.id, player_id=run.player_id, run_id=run.id, time_ticks=100))
++        session.commit()
++    stamp = now()
++    monkeypatch.setattr(news, "now", lambda: stamp)
++    refresh(domain)
++    assert news.process_requested(domain.app, clock=stamp)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(NewsWatch)) == news.BOARD_BATCH
++        assert session.get(NewsDemand, domain.players["Alice"]).pending
++    assert not news.process_requested(domain.app, clock=stamp + 601)
++    stamp += 602
++    refresh(domain)
++    assert news.process_requested(domain.app, clock=stamp)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(NewsWatch)) == 10
++        assert not session.get(NewsDemand, domain.players["Alice"]).pending
++
++
++def test_no_inactive_account_worker_scan_even_with_expired_demands(domain):
++    with domain.factory() as session:
++        for pid in domain.players.values():
++            session.add(NewsDemand(player_id=pid, pending=True, requested_day=1, requested_until=100))
++        session.commit()
++    assert not news.process_requested(domain.app, clock=now())
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(NewsWatch)) == 0
++        assert session.scalar(select(func.count()).select_from(NewsBands)) == 0
++
++
++def test_deleted_public_record_still_prevents_false_world_records(domain):
++    version, board = public_course(domain)
++    race(domain, version, "Bob", frames=15)
++    before = len(kinds(domain, "world_record"))
++    with domain.factory() as session:
++        session.get(Player, domain.players["Bob"]).deleted_at = now()
++        session.commit()
++    race(domain, version, "Alice", frames=20)
++    assert len(kinds(domain, "world_record")) == before
++    with domain.factory() as session:
++        assert news.band(20, news.cutoffs(session, board, LapPersonalBest)) == 75
++
++
++def test_shared_board_cutoffs_rebuilt_only_on_demand_once_daily(domain, monkeypatch):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    race(domain, version, "Bob", frames=30)
++    stamp = now()
++    monkeypatch.setattr(news, "now", lambda: stamp)
++    original = news.cutoffs
++    calls = []
++    def counted(*args):
++        calls.append(args[2])
++        return original(*args)
++    monkeypatch.setattr(news, "cutoffs", counted)
++    refresh(domain, "Alice")
++    assert news.process_requested(domain.app, clock=stamp)
++    race(domain, version, "Bob", frames=15)
++    refresh(domain, "Bob")
++    assert news.process_requested(domain.app, clock=stamp)
++    assert len(calls) == 2 # One race + one lap aggregate, shared by both players.
++    stamp += 86400
++    assert not news.process_requested(domain.app, clock=stamp)
++    assert len(calls) == 2
++    refresh(domain, "Alice")
++    assert news.process_requested(domain.app, clock=stamp)
++    assert len(calls) == 4
++
++
++def test_friend_limit_and_idempotent_requests(domain):
++    with domain.factory() as session:
++        for index in range(news.FRIEND_LIMIT):
++            p = Player(display_name=f"Friend {index}")
++            session.add(p); session.flush()
++            low, high = sorted((domain.players["Alice"], p.id))
++            session.add(Friendship(low_id=low, high_id=high, requested_by=p.id))
++        session.commit()
++    result = domain.client.post("/v1/news/friends", json={"name":"Bob"}, headers=headers(domain,"Alice"))
++    assert result.status_code == 409 and result.json()["detail"] == "FRIEND_LIMIT_REACHED"
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(Friendship)) == news.FRIEND_LIMIT
++
++
++def test_private_erasure_is_bounded_and_never_recreates_news(domain):
++    version, _ = public_course(domain)
++    alice = domain.players["Alice"]
++    with domain.factory() as session:
++        for index in range(205):
++            news.emit(session, alice, ["private",index], "milestone", version["version_id"], count=100)
++        news.emit(session, domain.players["Creator"], ["actor-private"], "world_record", version["version_id"], actor_id=alice)
++        session.add(NewsDemand(player_id=alice))
++        session.commit()
++        for expected in (False, False, True):
++            before = session.scalar(select(func.count()).select_from(NewsItem))
++            assert news.erase_private(session, alice) is expected
++            after = session.scalar(select(func.count()).select_from(NewsItem))
++            assert before - after <= 100
++            session.commit()
++        assert session.get(NewsDemand, alice) is None
++        assert session.scalar(select(NewsItem.actor_id).where(NewsItem.player_id == domain.players["Creator"])) is None
++        session.get(Player, alice).deleted_at = now()
++        session.commit()
++        news.emit(session, alice, ["after-delete"], "milestone", version["version_id"], count=100)
++        session.commit()
++        assert session.scalar(select(func.count()).select_from(NewsItem).where(NewsItem.player_id == alice)) == 0
++
++
++def test_migration_seeds_existing_racers_without_old_news(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    before = get(domain)["items"]
++    assert before
++    command.downgrade(configuration(domain.app.state.engine), "0037_earned_coins")
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        track = session.get(TrackVersion, version["version_id"]).track_id
++        assert session.get(TrackReach, track).racers == 2 # Existing creator and Alice.
++        assert session.scalar(select(func.count()).select_from(TrackRacer)) == 2
++        assert session.scalar(select(func.count()).select_from(NewsItem)) == 0
++
++
++def test_crossed_recipient_writes_do_not_deadlock(domain):
++    if not domain.postgres:
++        pytest.skip("PostgreSQL row-lock protocol")
++    version, _ = public_course(domain)
++    barrier = Barrier(2)
++    def write(actor, recipient):
++        with domain.factory() as session:
++            session.scalar(select(Player).where(Player.id == actor).with_for_update(key_share=True))
++            barrier.wait(timeout=10)
++            news.emit(session, recipient, [actor, recipient], "world_record", version["version_id"], actor_id=actor)
++            session.commit()
++    with ThreadPoolExecutor(max_workers=2) as executor:
++        first = executor.submit(write, domain.players["Alice"], domain.players["Bob"])
++        second = executor.submit(write, domain.players["Bob"], domain.players["Alice"])
++        first.result(timeout=20)
++        second.result(timeout=20)
++    assert len(get(domain,"Alice")["items"]) == len(get(domain,"Bob")["items"]) == 1
++
++
++def test_recipient_deletion_wins_against_waiting_projection(domain):
++    if not domain.postgres:
++        pytest.skip("PostgreSQL row-lock protocol")
++    version, _ = public_course(domain)
++    started = Event()
++    alice = domain.players["Alice"]
++    def write():
++        with domain.factory() as session:
++            started.set()
++            news.emit(session, alice, ["late"], "world_record", version["version_id"])
++            session.commit()
++    with ThreadPoolExecutor(max_workers=1) as executor:
++        with domain.factory() as session:
++            row = session.scalar(select(Player).where(Player.id == alice).with_for_update())
++            row.deleted_at = now()
++            session.flush()
++            pending = executor.submit(write)
++            assert started.wait(timeout=10)
++            session.commit()
++        pending.result(timeout=20)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(NewsItem).where(NewsItem.player_id == alice)) == 0
++
++
++def test_real_bearer_auth_and_account_erasure(auth_app, auth_client, sign_in):
++    from test_privacy import auth, deletion_body, drain, seed
++
++    assert auth_client.get("/v1/news").status_code == 401
++    alice, bob = sign_in("News Alice"), sign_in("News Bob")
++    version, board, *_ = seed(auth_app, alice)
++    assert auth_client.post("/v1/news/friends", json={"name":"News Bob"}, headers=auth(alice)).status_code == 200
++    assert auth_client.put("/v1/news/friends/" + alice["player"]["id"], headers=auth(bob)).status_code == 200
++    assert auth_client.post("/v1/news/refresh", headers=auth(alice)).status_code == 200
++    assert news.process_requested(auth_app)
++    with auth_app.state.session_factory() as session:
++        news.emit(session, alice["player"]["id"], ["private"], "milestone", version, count=100)
++        news.emit(session, bob["player"]["id"], ["public-actor"], "world_record", version, actor_id=alice["player"]["id"])
++        session.commit()
++    assert auth_client.post("/v1/privacy/account-deletion", json=deletion_body(), headers=auth(alice)).status_code == 202
++    drain(auth_app)
++    assert auth_client.get("/v1/news", headers=auth(alice)).status_code == 401
++    assert auth_client.get("/v1/news/friends", headers=auth(bob)).json()["items"] == []
++    with auth_app.state.session_factory() as session:
++        aid = alice["player"]["id"]
++        assert session.get(NewsDemand, aid) is None
++        assert session.get(NewsWatch, (aid,board)) is None
++        assert session.scalar(select(func.count()).select_from(NewsItem).where(NewsItem.player_id == aid)) == 0
++        assert session.scalar(select(NewsItem.actor_id).where(NewsItem.player_id == bob["player"]["id"])) is None
++        assert session.get(PersonalBest, (board,aid)) is not None # Public historical score retained.
++
++
++def test_feed_and_active_demand_have_indexed_access_paths(domain, record_property):
++    queries = {
++        "ix_news_feed": "SELECT id FROM news_items WHERE player_id=:pid AND created_at>=:stamp ORDER BY created_at DESC,id DESC LIMIT 31",
++        "ix_news_demand_active": "SELECT player_id FROM news_demand WHERE pending=true AND requested_until>=:stamp ORDER BY requested_until,player_id LIMIT 1",
++        "ix_news_pb_player_board": "SELECT board_id FROM personal_bests WHERE player_id=:pid AND board_id>:board ORDER BY board_id LIMIT 9",
++        "ix_news_lap_rank": "SELECT time_ticks FROM lap_personal_bests WHERE board_id=:board ORDER BY time_ticks,player_id LIMIT 1",
++    }
++    with domain.factory() as session:
++        if domain.postgres:
++            session.execute(text("SET LOCAL enable_seqscan=off")) # Capability check on intentionally sparse fixtures.
++        prefix = "EXPLAIN (FORMAT JSON) " if domain.postgres else "EXPLAIN QUERY PLAN "
++        for name, query in queries.items():
++            plan = str([tuple(row) for row in session.execute(text(prefix + query),
++                {"pid":domain.players["Alice"], "stamp":now(), "board":""})])
++            assert name in plan, plan
++            record_property(name, plan)
+diff --git a/backend/tests/test_news_http.py b/backend/tests/test_news_http.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_news_http.py
+@@ -0,0 +1,67 @@
++"""Native News adapter against an isolated loopback API and real Bearer sessions."""
++import os
++import socket
++import subprocess
++import threading
++from pathlib import Path
++
++import pytest
++import uvicorn
++from fastapi.testclient import TestClient
++from test_community_safety import seed
++from test_domains import FakeVerifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.migrate import upgrade
++from bmt_backend.news import emit, process_requested
++
++
++@pytest.mark.godot
++def test_native_news_wire(tmp_path):
++    root = Path(__file__).resolve().parents[2]
++    binary = os.environ.get("GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
++    if not Path(binary).is_file():
++        pytest.skip("Pinned Godot unavailable")
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    address = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    key = "news-disposable-fixture-" * 3
++    app = create_app(Settings(environment="development", dev_auth_enabled=True, dev_auth_key=key,
++        database_url="sqlite:///" + (tmp_path / "news.sqlite").as_posix(),
++        object_dir=str(tmp_path / "objects"), public_base_url=address, write_limit_per_minute=1000),
++        verifier=FakeVerifier())
++    upgrade(app.state.engine)
++    with TestClient(app) as client:
++        signed = []
++        for name in ("Alice", "Bob"):
++            response = client.post("/v1/auth/development", json={"subject":"news-wire-"+name,
++                "display_name":"News wire "+name}, headers={"X-Dev-Auth-Key":key})
++            assert response.status_code == 200, response.text
++            signed.append(response.json())
++        alice, bob = signed
++        client.post("/v1/news/friends", json={"name":"News wire Alice"},
++                    headers={"Authorization":"Bearer " + bob["access_token"]})
++    _, version = seed(app, alice["player"]["id"])
++    with app.state.session_factory() as session:
++        emit(session, alice["player"]["id"], ["native-fixture"], "milestone", version, count=1000)
++        session.commit()
++    server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
++    thread = threading.Thread(target=server.run, kwargs={"sockets":[listener]}, daemon=True)
++    thread.start()
++    try:
++        result = subprocess.run([binary, "--headless", "--path", str(root / "game"), "--script",
++            "res://tests/test_garage_news_http.gd", "--log-file", str(tmp_path / "native.log")],
++            env={**os.environ, "BMT_API_URL":address, "BMT_DEV_AUTH_KEY":key, "BMT_NEWS_BOB":bob["player"]["id"]},
++            capture_output=True, text=True, timeout=60, check=False)
++        assert result.returncode == 0, result.stdout + result.stderr
++        assert "NEWS_HTTP: 10 checks, 0 failures" in result.stdout, result.stdout + result.stderr
++        assert "SCRIPT ERROR" not in result.stderr, result.stdout + result.stderr
++        assert process_requested(app) # Only the explicit native entry scheduled work.
++        assert not process_requested(app)
++        print(result.stdout)
++    finally:
++        server.should_exit = True
++        thread.join(timeout=10)
++        listener.close()
++        app.state.engine.dispose()
+diff --git a/game/backend/news_client.gd b/game/backend/news_client.gd
+new file mode 100644
+--- /dev/null
++++ b/game/backend/news_client.gd
+@@ -0,0 +1,146 @@
++extends Node
++## Account-scoped, bounded News reads. No timers or background activation here.
++signal changed
++var client: Node
++var items: Array = []
++var friends: Array = []
++var next_cursor: String = ""
++var refreshing: bool = false
++var busy: bool = false
++var error: String = ""
++var checked_day: int = -1
++var _scope: String = ""
++var _epoch: int = 0
++var _fetched_at: int = -60001
++var _friends_at: int = -60001
++
++func scope() -> String:
++	return client.base_url()+"/"+str(client.player.get("id",""))
++
++func identity_changed() -> void:
++	if _scope == scope(): return
++	_scope = scope()
++	_epoch += 1
++	items.clear()
++	friends.clear()
++	next_cursor = ""
++	refreshing = false
++	busy = false
++	error = ""
++	checked_day = -1
++	_fetched_at = -60001
++	_friends_at = -60001
++	changed.emit()
++
++func available() -> bool:
++	return client.signed_in() and not str(client.player.get("id","")).is_empty() and int(client._capabilities.get("garage_news_version",0)) == 1
++
++func _filter_blocks() -> void:
++	var safety: Node = client.get("safety")
++	if safety == null: return
++	items = items.filter(func(item: Variant) -> bool:
++		return item is Dictionary and not safety.is_blocked(str(item.get("actor_id",""))) and not safety.is_blocked(str(item.get("creator_id",""))))
++	friends = friends.filter(func(item: Variant) -> bool:
++		return item is Dictionary and not safety.is_blocked(str(item.get("player_id",""))))
++
++func blocks_changed() -> void:
++	_filter_blocks()
++	_fetched_at = -60001
++	_friends_at = -60001
++	changed.emit()
++
++func refresh(poll: bool = false) -> void:
++	identity_changed()
++	if busy or not available(): return
++	if not poll and Time.get_ticks_msec()-_fetched_at < 60000: return
++	busy = true
++	error = ""
++	changed.emit()
++	var epoch: int = _epoch
++	var day: int = client.server_now()/86400
++	if not poll and checked_day < day:
++		var demand: Dictionary = await client.request_api("/news/refresh",HTTPClient.METHOD_POST,{},"",true)
++		if epoch != _epoch or scope() != _scope: return
++		if not demand.get("ok",false):
++			error = _message(str(demand.get("error","")))
++			busy = false
++			changed.emit()
++			return
++	var response: Dictionary = await client.request_api("/news",HTTPClient.METHOD_GET,{},"",true)
++	if epoch != _epoch or scope() != _scope: return
++	busy = false
++	if response.get("ok",false):
++		var data: Dictionary = response.get("data",{})
++		items = data.get("items",[]) if data.get("items") is Array else []
++		next_cursor = str(data.get("next_cursor",""))
++		refreshing = bool(data.get("refreshing",false))
++		checked_day = int(data.get("checked_day",-1))
++		_fetched_at = Time.get_ticks_msec()
++	else:
++		error = _message(str(response.get("error","")))
++	_filter_blocks()
++	changed.emit()
++
++func more() -> void:
++	if busy or next_cursor.is_empty() or not available() or items.size() >= 100: return
++	busy = true
++	changed.emit()
++	var epoch: int = _epoch
++	var response: Dictionary = await client.request_api("/news?cursor="+next_cursor.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
++	if epoch != _epoch or scope() != _scope: return
++	busy = false
++	if response.get("ok",false):
++		var data: Dictionary = response.get("data",{})
++		if data.get("items") is Array:
++			var known: Dictionary = {}
++			for item: Dictionary in items: known[str(item.get("id",""))] = true
++			for item: Variant in data.items:
++				if item is Dictionary and not known.has(str(item.get("id",""))) and items.size() < 100:
++					items.append(item)
++					known[str(item.get("id",""))] = true
++		next_cursor = str(data.get("next_cursor","")) if items.size() < 100 else ""
++	else: error = _message(str(response.get("error","")))
++	_filter_blocks()
++	changed.emit()
++
++func load_friends() -> void:
++	identity_changed()
++	if busy or not available() or Time.get_ticks_msec()-_friends_at < 60000: return
++	busy = true
++	changed.emit()
++	var epoch: int = _epoch
++	var response: Dictionary = await client.request_api("/news/friends",HTTPClient.METHOD_GET,{},"",true)
++	if epoch != _epoch or scope() != _scope: return
++	busy = false
++	if response.get("ok",false):
++		friends = response.data.get("items",[]) if response.data.get("items") is Array else []
++		_friends_at = Time.get_ticks_msec()
++	else: error = _message(str(response.get("error","")))
++	_filter_blocks()
++	changed.emit()
++
++func friend_action(action: String, target: String) -> void:
++	if busy or not available(): return
++	busy = true
++	error = ""
++	changed.emit()
++	var epoch: int = _epoch
++	var path: String = "/news/friends" if action == "send" else "/news/friends/"+target.uri_encode()
++	var method: HTTPClient.Method = HTTPClient.METHOD_POST if action == "send" else HTTPClient.METHOD_PUT if action == "accept" else HTTPClient.METHOD_DELETE
++	var response: Dictionary = await client.request_api(path,method,{"name":target} if action == "send" else {},"",true)
++	if epoch != _epoch or scope() != _scope: return
++	busy = false
++	if not response.get("ok",false):
++		error = _message(str(response.get("error","")))
++		changed.emit()
++		return
++	_friends_at = -60001
++	await load_friends()
++
++static func _message(value: String) -> String:
++	match value:
++		"PLAYER_NOT_FOUND": return "Player not found. Check the exact racing name."
++		"CANNOT_FRIEND_SELF": return "Choose another player."
++		"FRIEND_LIMIT_REACHED": return "The friend list is full. Remove a friend or pending request."
++		"FRIEND_REQUEST_NOT_FOUND": return "This friend request is no longer available."
++	return "News could not be updated. Try again."
+diff --git a/game/backend/news_client.gd.uid b/game/backend/news_client.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/backend/news_client.gd.uid
+@@ -0,0 +1 @@
++uid://d23s4i27raya3
+diff --git a/game/ui/garage_news_menu.gd b/game/ui/garage_news_menu.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_news_menu.gd
+@@ -0,0 +1,209 @@
++extends VBoxContainer
++## Native workbench; only the receiving, visible News pane may request data.
++var page: Control
++var service: Node
++var _tab: String = "news"
++var _list: VBoxContainer
++var _tabs: Dictionary = {}
++var _entry: LineEdit
++var _add_row: HBoxContainer
++var _poll: Timer
++var _poll_count: int = 0
++var _refresh_button: Button
++var _waiting: bool = false
++
++func _ready() -> void:
++	name = "GarageNewsMenu"
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",10)
++	var header := HBoxContainer.new()
++	add_child(header)
++	var title := MenuStyle.label("NEWS",26)
++	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	header.add_child(title)
++	_refresh_button = MenuStyle.button("",_open)
++	_refresh_button.name = "RefreshNews"
++	_refresh_button.icon = MenuIcon.texture("restart")
++	_refresh_button.tooltip_text = "Refresh news"
++	_refresh_button.custom_minimum_size = Vector2(52,52)
++	header.add_child(_refresh_button)
++	var tabs := HBoxContainer.new()
++	add_child(tabs)
++	for id: String in ["news","friends"]:
++		var button := MenuStyle.button(id.capitalize(),_select_tab.bind(id))
++		button.custom_minimum_size.y = 52
++		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		tabs.add_child(button)
++		_tabs[id] = button
++	_add_row = HBoxContainer.new()
++	add_child(_add_row)
++	_entry = LineEdit.new()
++	_entry.name = "FriendName"
++	_entry.placeholder_text = "Exact racing name"
++	_entry.max_length = 40
++	_entry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_entry.custom_minimum_size.y = 52
++	_entry.text_submitted.connect(func(_value: String) -> void: _send_friend())
++	_add_row.add_child(_entry)
++	var add := MenuStyle.button("Add",_send_friend,true)
++	add.custom_minimum_size = Vector2(60,52)
++	_add_row.add_child(add)
++	var scroll := ScrollContainer.new()
++	scroll.name = "NewsScroll"
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.follow_focus = true
++	add_child(scroll)
++	_list = VBoxContainer.new()
++	_list.name = "NewsItems"
++	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_list.add_theme_constant_override("separation",10)
++	scroll.add_child(_list)
++	_poll = Timer.new()
++	_poll.one_shot = true
++	_poll.timeout.connect(_poll_once)
++	add_child(_poll)
++	visibility_changed.connect(_visibility_changed)
++	if service != null: service.changed.connect(_changed)
++	_render()
++	_open.call_deferred()
++
++func _active() -> bool:
++	return is_visible_in_tree() and is_instance_valid(page) and page.section == "news" and page.tools.is_ancestor_of(self)
++
++func _visibility_changed() -> void:
++	if not _active():
++		if is_instance_valid(_poll): _poll.stop()
++	else: _open.call_deferred()
++
++func _select_tab(id: String) -> void:
++	_tab = id
++	_poll.stop()
++	_render()
++	_open()
++
++func _open() -> void:
++	if not _active() or service == null: return
++	if service.busy:
++		_waiting = true
++		return
++	_poll_count = 0
++	if _tab == "friends": await service.load_friends()
++	else: await service.refresh()
++	if _active(): _changed()
++
++func _changed() -> void:
++	if not _active(): return
++	_render()
++	if _waiting and service != null and not service.busy:
++		_waiting = false
++		_open.call_deferred()
++		return
++	if _tab == "news" and service != null and service.refreshing and _poll.is_stopped() and _poll_count < 4:
++		_poll.start(pow(2.0,_poll_count+1))
++
++func _poll_once() -> void:
++	if not _active() or _tab != "news" or service == null: return
++	_poll_count += 1
++	await service.refresh(true)
++
++func _send_friend() -> void:
++	if not _active() or service == null or _entry.text.strip_edges().is_empty(): return
++	await service.friend_action("send",_entry.text.strip_edges())
++	if is_instance_valid(_entry) and service.error.is_empty(): _entry.clear()
++
++func _friend_action(action: String, id: String) -> void:
++	if _active() and service != null: await service.friend_action(action,id)
++
++func _text(parent: Node, value: String, pixels: int = 16, muted: bool = false) -> Label:
++	var label := MenuStyle.label(value,pixels,muted)
++	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	parent.add_child(label)
++	return label
++
++func _render() -> void:
++	if not is_instance_valid(_list): return
++	for child: Node in _list.get_children():
++		_list.remove_child(child)
++		child.queue_free()
++	for id: String in _tabs:
++		var button: Button = _tabs[id]
++		button.add_theme_color_override("font_color",MenuStyle.ACCENT if id == _tab else MenuStyle.MUTED)
++	_add_row.visible = _tab == "friends" and service != null and service.available()
++	_refresh_button.disabled = service != null and service.busy
++	if service == null or not service.client.signed_in():
++		_text(_list,"Sign in to see your news.",18,true)
++		_list.add_child(MenuStyle.button("Sign in",func() -> void: page.account_requested.emit(),true))
++		return
++	if not service.available():
++		_text(_list,"News is unavailable on this server.",18,true)
++		return
++	if not service.error.is_empty(): _text(_list,service.error,16,true)
++	if _tab == "friends":
++		if service.friends.is_empty(): _text(_list,"Add friends using their racing names.",18,true)
++		for item: Dictionary in service.friends: _friend_card(item)
++		return
++	if service.items.is_empty():
++		_text(_list,"Checking news…" if service.busy or service.refreshing else "No news yet",20,true)
++		if not service.busy and not service.refreshing: _text(_list,"Race, publish tracks and add friends.",16,true)
++	for item: Dictionary in service.items: _news_card(item)
++	if not service.next_cursor.is_empty():
++		var more := MenuStyle.button("More",func() -> void:
++			if _active(): await service.more())
++		more.disabled = service.busy
++		_list.add_child(more)
++
++func _card() -> VBoxContainer:
++	var panel := PanelContainer.new()
++	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("182c39"),12))
++	_list.add_child(panel)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",5)
++	panel.add_child(column)
++	return column
++
++func _news_card(item: Dictionary) -> void:
++	var column := _card()
++	var metric: String = "lap" if item.get("metric","") == "lap" else "track"
++	var title: String = ""
++	match str(item.get("kind","")):
++		"milestone": title = "%s racers" % _count(int(item.get("count",0)))
++		"world_record": title = "New %s world record" % metric
++		"friend_overtake": title = "%s beat your %s time" % [str(item.get("actor_name","A friend")),metric]
++		"percentile_drop": title = "Outside the top %d%%" % int(item.get("threshold",0))
++	_text(column,title,20)
++	_text(column,str(item.get("track_name","")),18)
++	var detail: String = "Have raced your track" if item.get("kind","") == "milestone" else ""
++	if item.get("kind","") == "world_record": detail = str(item.get("actor_name",""))
++	if item.get("kind","") == "percentile_drop": detail = "Your %s time" % metric
++	var vehicle: String = str(item.get("vehicle_id",""))
++	if not vehicle.is_empty(): detail += (" · " if not detail.is_empty() else "")+VehicleCatalog.title(vehicle)
++	if item.has("time_ticks"):
++		var seconds: float = float(item.time_ticks)/maxf(1.0,float(item.get("tick_rate",120)))
++		detail += (" · " if not detail.is_empty() else "")+"%d:%06.3f" % [int(seconds/60.0),fmod(seconds,60.0)]
++	if not detail.is_empty(): _text(column,detail,15,true)
++	_text(column,Time.get_date_string_from_unix_time(int(item.get("created_at",0))),14,true)
++
++func _friend_card(item: Dictionary) -> void:
++	var column := _card()
++	_text(column,str(item.get("display_name","")),18)
++	var status: String = str(item.get("status",""))
++	if status == "sent": _text(column,"Request sent",15,true)
++	var actions := HBoxContainer.new()
++	column.add_child(actions)
++	if status == "received":
++		var accept := MenuStyle.button("Accept",_friend_action.bind("accept",str(item.player_id)),true)
++		accept.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		accept.disabled = service.busy
++		actions.add_child(accept)
++	var remove := MenuStyle.button("Decline" if status == "received" else "Cancel" if status == "sent" else "Remove",_friend_action.bind("remove",str(item.player_id)))
++	remove.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	remove.disabled = service.busy
++	actions.add_child(remove)
++
++static func _count(value: int) -> String:
++	return "10,000" if value == 10000 else "1,000" if value == 1000 else str(value)
++
++func _exit_tree() -> void:
++	if service != null and service.changed.is_connected(_changed): service.changed.disconnect(_changed)
+diff --git a/game/ui/garage_news_menu.gd.uid b/game/ui/garage_news_menu.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_news_menu.gd.uid
+@@ -0,0 +1 @@
++uid://bfgfa3iulquv8
+diff --git a/game/tests/test_garage_news.gd b/game/tests/test_garage_news.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_news.gd
+@@ -0,0 +1,142 @@
++extends SceneTree
++const News = preload("res://backend/news_client.gd")
++const Menu = preload("res://ui/garage_news_menu.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Backend extends Node:
++	var safety: Node
++	var player: Dictionary = {"id":"alice"}
++	var _capabilities: Dictionary = {"garage_news_version":1}
++	var calls: Array[String] = []
++	var origin: String = "https://fixture.invalid"
++	var signed: bool = true
++	var delay_reply: bool = false
++	var remote_items: Array = []
++	var remote_friends: Array = [{"player_id":"bob","display_name":"Bob","status":"received"}]
++	func signed_in() -> bool: return signed
++	func base_url() -> String: return origin
++	func server_now() -> int: return 1792152000
++	func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		calls.append(str(method)+" "+path)
++		while delay_reply: await get_tree().process_frame
++		await get_tree().process_frame
++		var data: Dictionary = {"items":remote_items.duplicate(true),"next_cursor":"","refreshing":false,"checked_day":server_now()/86400}
++		if path == "/news/refresh": data = {"refreshing":false,"checked_day":server_now()/86400}
++		elif path == "/news/friends": data = {"items":remote_friends.duplicate(true)}
++		elif path.begins_with("/news/friends/"):
++			remote_friends = [] if method == HTTPClient.METHOD_DELETE else [{"player_id":"bob","display_name":"Bob","status":"friends"}]
++			data = {"status":"friends"}
++		return {"ok":true,"status":200,"error":"","data":data}
++
++class Blocks extends Node:
++	var blocked: Dictionary = {}
++	func is_blocked(id: String) -> bool: return blocked.has(id)
++
++class Pane extends Control:
++	signal account_requested
++	var section: String = "news"
++	var tools: VBoxContainer
++	func _ready() -> void:
++		tools = VBoxContainer.new()
++		add_child(tools)
++		MenuStyle.fill(tools)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func frames(count: int = 3) -> void:
++	for tick: int in range(count): await process_frame
++
++func run() -> void:
++	var backend := Backend.new()
++	root.add_child(backend)
++	backend.remote_items = [
++		{"id":"one","kind":"milestone","count":1000,"track_name":"Underpass","created_at":1792152000},
++		{"id":"two","kind":"world_record","metric":"lap","actor_name":"Bob","time_ticks":15223,"tick_rate":120,"vehicle_id":"compact","track_name":"Underpass","created_at":1792152000},
++		{"id":"three","kind":"friend_overtake","metric":"race","actor_name":"Bob","time_ticks":75223,"tick_rate":120,"vehicle_id":"compact","track_name":"Dust cloud","created_at":1792152000},
++		{"id":"four","kind":"percentile_drop","metric":"lap","threshold":5,"current_band":10,"vehicle_id":"compact","track_name":"Blind spot","created_at":1792152000}]
++	var news := News.new()
++	news.client = backend
++	root.add_child(news)
++	news.identity_changed()
++	await frames()
++	check(backend.calls.is_empty(),"idle client makes no reads")
++	await news.refresh()
++	check(backend.calls.size() == 2 and news.items.size() == 4,"explicit entry requests work and reads page")
++	await news.refresh()
++	check(backend.calls.size() == 2,"repeat entry shares scoped sixty-second cache")
++	await news.load_friends()
++	check(news.friends.size() == 1,"friends fetched only on explicit request")
++	await news.friend_action("accept","bob")
++	check(news.friends[0].status == "friends","accept refreshes actual friend list")
++	var pane := Pane.new()
++	pane.theme = MenuStyle.theme()
++	pane.position = Vector2(20,20)
++	pane.size = Vector2(344,640)
++	root.add_child(pane)
++	var menu := Menu.new()
++	menu.page = pane
++	menu.service = news
++	pane.tools.add_child(menu)
++	await frames(8)
++	check(menu._list.get_child_count() == 4,"all four news kinds render")
++	check(menu.get_combined_minimum_size().x <= 344,"news wraps within the Garage workbench")
++	menu._select_tab("friends")
++	await frames(5)
++	check(menu._add_row.visible and menu._list.get_child_count() == 1,"friends pane and exact-name entry render")
++	backend.origin = "https://second-fixture.invalid"
++	news.identity_changed()
++	backend.delay_reply = true
++	menu._select_tab("news")
++	await frames()
++	menu._select_tab("friends")
++	check(menu._waiting,"tab switch queues one read behind the current request")
++	backend.delay_reply = false
++	await frames(12)
++	check(news.friends.size() == 1 and not menu._waiting,"queued Friends read finishes after News")
++	var count: int = backend.calls.size()
++	pane.section = "care"
++	await menu._open()
++	await menu._poll_once()
++	check(backend.calls.size() == count,"departing pane cannot read or poll")
++	pane.section = "news"
++	pane.hide()
++	await menu._open()
++	check(backend.calls.size() == count,"hidden pane cannot read")
++	backend.delay_reply = true
++	news._fetched_at = -60001
++	news.refresh()
++	await frames()
++	backend.player = {"id":"carol"}
++	news.identity_changed()
++	backend.delay_reply = false
++	await frames(5)
++	check(news.items.is_empty() and news.friends.is_empty(),"account change discards cached and in-flight data")
++	backend._capabilities.clear()
++	count = backend.calls.size()
++	await news.refresh()
++	check(backend.calls.size() == count,"older server uses no unsupported endpoints")
++	backend._capabilities = {"garage_news_version":1}
++	backend.signed = false
++	await news.refresh()
++	check(backend.calls.size() == count,"guest News makes no requests")
++	backend.safety = Blocks.new()
++	root.add_child(backend.safety)
++	backend.safety.blocked = {"bob":true,"author":true}
++	news.items = [{"actor_id":"bob"},{"creator_id":"author"}]
++	news.friends = [{"player_id":"bob"}]
++	news.blocks_changed()
++	check(news.items.is_empty() and news.friends.is_empty(),"cached blocked actors and creators disappear immediately")
++	check(backend.calls.size() == count,"block filtering makes no background reads")
++	backend.safety.queue_free()
++	pane.queue_free()
++	news.queue_free()
++	backend.queue_free()
++	await frames()
++	print("GARAGE NEWS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_news_native.gd b/game/tests/test_garage_news_native.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_news_native.gd
+@@ -0,0 +1,89 @@
++extends SceneTree
++const Fixture = preload("res://tests/test_garage_news.gd")
++const News = preload("res://backend/news_client.gd")
++var checks: int = 0
++var failures: int = 0
++var page: GaragePage
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	for tick: int in range(8): await frame()
++	while page._menu_motion != null: await frame()
++	for tick: int in range(5): await frame()
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-news-2026-10-16/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = ProjectSettings.globalize_path("res://../build/news-native/"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	GameSoundtrack.instance().music_enabled = false
++	app._show_screen("garage")
++	page = app.root_ui.find_child("GaragePage",true,false)
++	await settle()
++	var backend := Fixture.Backend.new()
++	root.add_child(backend)
++	var service := News.new()
++	service.client = backend
++	root.add_child(service)
++	page.news_client = service
++	service.identity_changed()
++	service.checked_day = backend.server_now()/86400
++	service._fetched_at = Time.get_ticks_msec()
++	service.items = [
++		{"id":"one","kind":"milestone","count":1000,"track_name":"Underpass","created_at":1792152000},
++		{"id":"two","kind":"world_record","metric":"lap","actor_name":"Bob","time_ticks":15223,"tick_rate":120,"vehicle_id":"compact","track_name":"Underpass","created_at":1792152000},
++		{"id":"three","kind":"friend_overtake","metric":"race","actor_name":"Bob","time_ticks":75223,"tick_rate":120,"vehicle_id":"compact","track_name":"Dust cloud","created_at":1792152000},
++		{"id":"four","kind":"percentile_drop","metric":"lap","threshold":5,"vehicle_id":"compact","track_name":"Blind spot","created_at":1792152000}]
++	var car: CarVisual = page.showroom.car
++	var viewport: SubViewport = page.showroom.showroom_viewport
++	var camera_pose: Transform3D = page.showroom.camera.transform
++	var condition: Dictionary = page.showroom.weathering.snapshot()
++	var livery: Dictionary = page.draft.duplicate(true)
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
++		root.size = dimensions
++		page._show_section("news")
++		await settle()
++		check(page.showroom.car == car and page.showroom.showroom_viewport == viewport,"News retains car and viewport")
++		check(page.showroom.camera.transform == camera_pose,"News retains car camera")
++		check(page.showroom.weathering.snapshot() == condition and page.draft == livery,"News retains condition and livery")
++		check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"News panel fits "+str(dimensions))
++		check(page.tools.find_child("NewsItems",true,false).get_child_count() == 4,"four real news layouts")
++		check(backend.calls.is_empty(),"cached News entry makes no request")
++		await capture("news-"+str(dimensions.x))
++		var menu: Node = page.tools.find_child("GarageNewsMenu",true,false)
++		menu._select_tab("friends")
++		await settle()
++		check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"Friends panel fits "+str(dimensions))
++		await capture("friends-"+str(dimensions.x))
++		backend.calls.clear()
++		page._show_section("cars")
++		await settle()
++		check(page.showroom.car == car and page.showroom.camera.transform == camera_pose,"return preserves original showroom")
++	app.queue_free()
++	service.queue_free()
++	backend.queue_free()
++	for tick: int in range(20): await frame()
++	print("GARAGE NEWS NATIVE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_news_http.gd b/game/tests/test_garage_news_http.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_news_http.gd
+@@ -0,0 +1,39 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	create_timer(45).timeout.connect(func() -> void: print("FAIL: News HTTP deadline"); quit(1))
++	var client := Client.new()
++	root.add_child(client)
++	client.resume_recovery.set_process(false)
++	client.configure(OS.get_environment("BMT_API_URL"))
++	check((await client.request_api("/bootstrap")).ok,"real bootstrap")
++	check(int(client._capabilities.get("garage_news_version",0)) == 1,"News capability negotiated")
++	check((await client.development_login("news-wire-Alice","News wire Alice",OS.get_environment("BMT_DEV_AUTH_KEY"))).ok,"real session")
++	await client.news.refresh()
++	check(client.news.error.is_empty() and client.news.items.size() == 1,"private News crosses actual wire")
++	if client.news.items.is_empty(): quit(1); return
++	check(int(client.news.items[0].count) == 1000,"milestone value survives native JSON parsing")
++	await client.news.load_friends()
++	check(client.news.friends.size() == 1 and client.news.friends[0].status == "received","incoming friend request crosses wire")
++	await client.news.friend_action("accept",OS.get_environment("BMT_NEWS_BOB"))
++	check(client.news.error.is_empty() and client.news.friends[0].status == "friends","native friend acceptance persists")
++	await client.news.friend_action("remove",OS.get_environment("BMT_NEWS_BOB"))
++	check(client.news.error.is_empty() and client.news.friends.is_empty(),"native friend removal persists")
++	client.player = {}
++	client._access_token = ""
++	client.identity_changed.emit()
++	check(client.news.items.is_empty() and client.news.friends.is_empty(),"identity switch clears private feed")
++	check(not client.news.available(),"guest cannot request news")
++	client.queue_free()
++	await process_frame
++	print("NEWS_HTTP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -31,6 +31,7 @@
+         discovery,
+         economy,
+         network_health,
++        news,
+         privacy,
+         privacy_pages,
+         product_analytics,
+@@ -110,6 +111,7 @@
+     app.include_router(product_analytics.router)
+     app.include_router(quality.router)
+     app.include_router(network_health.router)
++    app.include_router(news.router, prefix="/v1")
+     app.include_router(race_statistics.router)
+     app.include_router(auth.router, prefix="/v1")
+     app.include_router(browser_auth.router, prefix="/v1")
+@@ -168,6 +170,7 @@
+         return {
+             "service": "beat-my-track",
+             "api_version": "v1",
++            "garage_news_version": 1,
+             "auth": "google",
+             "privacy": {"schema_version": 1, "policy_url": settings.public_base_url.rstrip("/") + "/privacy",
+                 "deletion_url": settings.public_base_url.rstrip("/") + "/account-deletion",
+diff --git a/backend/bmt_backend/migrations/env.py b/backend/bmt_backend/migrations/env.py
+--- a/backend/bmt_backend/migrations/env.py
++++ b/backend/bmt_backend/migrations/env.py
+@@ -10,6 +10,7 @@
+     economy_models,
+     identity_models,
+     network_models,
++    news_models,
+     object_models,
+     publication_models,
+     privacy_models,
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -98,6 +98,9 @@
+             if validate_one(app):
+                 return True
+             if refresh_histograms:
++                from .news import process_requested
++                if process_requested(app):
++                    return True
+                 from .lap_bests import backfill_one
+                 if backfill_one(app.state.session_factory)["worked"]:
+                     return True
+@@ -246,7 +249,7 @@
+         # Run ownership is immutable. Discover it without a row lock, then use
+         # the same Player -> Run order as retry/admission/account writers.
+         player_id = session.scalar(select(Run.player_id).where(Run.id == run_id))
+-        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
++        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update(key_share=True)
+             .execution_options(populate_existing=True)) if player_id is not None else None
+         run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+         if run is None or run.status != "verifying" or run.lease_token != token or run.lease_until <= now():
+@@ -309,6 +312,9 @@
+         board = session.get(Board, run.board_id)
+         version = session.get(TrackVersion, board.version_id)
+         track = session.get(Track, version.track_id)
++        if not creator_test:
++            from .news import capture_verified
++            capture_verified(session, run, board, version, track, player)
+         if track.owner_id == run.player_id:
+             session.execute(
+                 update(TrackVersion)
+diff --git a/backend/bmt_backend/privacy.py b/backend/bmt_backend/privacy.py
+--- a/backend/bmt_backend/privacy.py
++++ b/backend/bmt_backend/privacy.py
+@@ -353,9 +353,13 @@
+     from .admin_models import AdminAudit
+     from .commerce_models import Purchase
+     from .community_models import CommunityAcceptance, PlayerBlock
++    from .news import erase_private as erase_news
+     from .object_models import ObjectPin
+     from .publication_models import PublicationIntent, PublicationUpload
+     from .studio_case_models import StudioCase, StudioCaseEvent
++    if not erase_news(session, job.player_id):
++        session.commit()
++        return True
+     session.execute(delete(CommunityAcceptance).where(CommunityAcceptance.player_id == job.player_id))
+     session.execute(delete(PlayerBlock).where(or_(PlayerBlock.player_id == job.player_id, PlayerBlock.blocked_id == job.player_id)))
+     session.execute(update(StudioCase).where(StudioCase.reported_player_id == job.player_id).values(reported_player_id=None))
+@@ -397,6 +401,11 @@
+ 
+ def expire_records(app, session):
+     from .commerce_models import Purchase
++    from .news import cleanup_expired
++    pruned_news = 0
++    if getattr(app.state, "news_prune_at", 0) <= now():
++        pruned_news = cleanup_expired(session, now())
++        app.state.news_prune_at = now() + 60
+     rows = session.scalars(select(Purchase).join(Player).where(Player.deleted_at.is_not(None),
+         Purchase.created_at < now() - app.state.settings.privacy_purchase_days * 86400).limit(BATCH)).all()
+     for row in rows:
+@@ -406,7 +415,7 @@
+     for row in receipts:
+         row.credential_hash, row.operation_hash = "", ""
+     session.commit()
+-    return bool(rows or receipts)
++    return bool(rows or receipts or pruned_news)
+ 
+ 
+ def redact_snapshot(value, player_id):
+diff --git a/backend/bmt_backend/community.py b/backend/bmt_backend/community.py
+--- a/backend/bmt_backend/community.py
++++ b/backend/bmt_backend/community.py
+@@ -92,6 +92,9 @@
+         if session.scalar(select(func.count()).select_from(PlayerBlock).where(PlayerBlock.player_id == player.id)) >= 1000:
+             raise HTTPException(409, "BLOCK_LIMIT_REACHED")
+         session.add(PlayerBlock(player_id=player.id, blocked_id=target_id))
++    from .news_models import Friendship
++    low, high = sorted((player.id, target_id))
++    session.execute(delete(Friendship).where(Friendship.low_id == low, Friendship.high_id == high))
+     session.commit()
+     return {"player_id": target_id, "blocked": True}
+ 
+diff --git a/game/backend/backend_client.gd b/game/backend/backend_client.gd
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -37,6 +37,7 @@
+ var _delete_access_token: String = ""
+ var _pending_network_context: Dictionary = {}
+ var safety: Node
++var news: Node
+ 
+ func _vault_context() -> String:
+ 	return "bmt-session-v1/"+_base_url+"/"+ProjectSettings.globalize_path(session_path)
+@@ -95,11 +96,17 @@
+ 	print("RACE_LOAD_REQUEST ",JSON.stringify({"kind":kind,"phase":phase,"ms":(Time.get_ticks_usec()-start)/1000.0}))
+ 
+ func _ready() -> void:
++	news = preload("res://backend/news_client.gd").new()
++	news.client = self
++	add_child(news)
++	identity_changed.connect(news.identity_changed)
++	news.identity_changed()
+ 	safety = preload("res://backend/community_safety.gd").new()
+ 	safety.client = self
+ 	add_child(safety)
+ 	identity_changed.connect(safety.identity_changed)
+ 	safety.identity_changed()
++	safety.changed.connect(news.blocks_changed)
+ 	resume_recovery = preload("res://backend/resume_recovery.gd").new()
+ 	resume_recovery.client = self
+ 	add_child(resume_recovery)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1851,6 +1851,8 @@
+ 		return
+ 	var page := GaragePage.new()
+ 	_retained_garage = page
++	page.news_client = online.client.news
++	page.account_requested.connect(_open_account)
+ 	page.records = records
+ 	page.economy = cosmetic_economy
+ 	page.circuit_title = track_title(selected_track).to_upper()
+diff --git a/game/ui/garage_mode_icons.gd b/game/ui/garage_mode_icons.gd
+--- a/game/ui/garage_mode_icons.gd
++++ b/game/ui/garage_mode_icons.gd
+@@ -6,6 +6,8 @@
+ 	if cache.has(mode): return cache[mode]
+ 	var art: String = ""
+ 	match mode:
++		"news":
++			art = "<path fill-rule='evenodd' d='M9 10h39v8h7v35H9Zm7 7v29h32V25h-7v-8Zm5 5h14v10H21Zm0 15h22v4H21Z'/>"
+ 		"cars":
+ 			art = "<path fill-rule='evenodd' d='M19 12h26l6 16h3v24h-7v5h-8v-5H25v5h-8v-5h-7V28h3Zm4 6-4 12h26l-4-12ZM16 36v6h10v-6Zm22 0v6h10v-6ZM27 45v3h10v-3Z'/>"
+ 		"customise":
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -5,6 +5,7 @@
+ signal race_requested
+ signal circuit_requested
+ signal save_failed
++signal account_requested
+ 
+ const Carousel = preload("res://ui/track_carousel.gd")
+ const RailIcons = preload("res://ui/garage_mode_icons.gd")
+@@ -28,6 +29,7 @@
+ var _layout_presented: bool = false
+ 
+ var records: LocalRecords
++var news_client: Node
+ var economy: Node
+ var _coin_balance: Label
+ var _coin_status: Label
+@@ -366,6 +368,8 @@
+ 		rail.remove_child(child)
+ 		child.queue_free()
+ 	var destinations: Array = [["cars", "Select car"], ["records", "Record player"], ["trophies", "Trophy wall"]] if not _car_menu_open else [["customise", "Customise"], ["care", "Care"], ["tuning", "Tuning"], ["records", "Record player"], ["trophies", "Trophy wall"]]
++	destinations.append(["news","News"])
++	if destinations.size() > 5: rail.add_theme_constant_override("separation",8)
+ 	for entry: Array in destinations:
+ 		var destination: String = entry[0]
+ 		var active: bool = destination == section
+@@ -383,7 +387,7 @@
+ 		style.border_color = Color("ffe792") if active else Color("2a4655")
+ 		style.set_border_width_all(1)
+ 		button.add_theme_stylebox_override("normal", style)
+-		button.custom_minimum_size = Vector2(60, 60)
++		button.custom_minimum_size = Vector2(60,52 if destinations.size() > 5 else 60)
+ 		button.tooltip_text = entry[1]
+ 		rail.add_child(button)
+ 
+@@ -594,17 +598,17 @@
+ 
+ func _show_section(next: String) -> void:
+ 	if next == "car": next = "customise"
+-	if next not in ["cars", "customise", "care", "tuning", "trophies", "records"]: return
++	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news"]: return
+ 	_finish_tools()
+ 	_customisation_locked = next in ["customise","tuning"] and not _clean_for_customisation()
+ 	if not _customisation_locked and next=="customise" and section=="customise" and is_instance_valid(livery_menu) and _retained_livery_vehicle==vehicle_id:
+ 		livery_menu.show_tab(_customise_tab)
+ 		return
+ 	_prepare_menu_move()
+-	_set_customise_layout(next in ["customise","tuning","records"])
++	_set_customise_layout(next in ["customise","tuning","records","news"])
+ 	section = next
+ 	if next == "cars": _car_menu_open = false
+-	elif next not in ["trophies","records"]: _car_menu_open = true
++	elif next not in ["trophies","records","news"]: _car_menu_open = true
+ 	showroom.set_trophy_view(next == "trophies")
+ 	showroom.set_record_view(next == "records")
+ 	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
+@@ -638,7 +642,7 @@
+ 		actions.add_child(select_button)
+ 		_start_menu_move()
+ 		return
+-	if section not in ["customise","tuning","records"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
++	if section not in ["customise","tuning","records","news"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
+ 	var back := MenuStyle.button("Back to cars", _show_section.bind("cars"))
+ 	back.name = "GarageBack"
+ 	back.custom_minimum_size = Vector2(240, 60)
+@@ -663,6 +667,11 @@
+ 		actions.add_child(empty)
+ 	elif section == "tuning":
+ 		_build_tuning()
++	elif section == "news":
++		var news_menu := preload("res://ui/garage_news_menu.gd").new()
++		news_menu.page = self
++		news_menu.service = news_client
++		tools.add_child(news_menu)
+ 	elif section == "records":
+ 		records_menu = preload("res://ui/garage_records_menu.gd").new()
+ 		records_menu.records = records
+diff --git a/backend/README.md b/backend/README.md
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -227,3 +227,59 @@
+ Migration0034 adds irreversible account removal with retained public tracks/standings, optional analytics off by default, public `/privacy` and `/account-deletion` resources, and an independent erasure journal. Configure `BMT_PRIVACY_DEVELOPER_NAME`, `BMT_PRIVACY_CONTACT_EMAIL`, `BMT_PRIVACY_BACKUP_DAYS` (30) and `BMT_PRIVACY_PURCHASE_DAYS` (365). Preserve the sibling local object directory or the separate cloud journal prefix through backups/restores; do not restore that journal to an older snapshot. See [account privacy implementation and offline restore runbook](../docs/ACCOUNT_PRIVACY_2026_10_14.md).
+ 
+ The [final combined backend review](../docs/evidence/backend-final-review-2026-10-14/review.json) checks the attack fixes together with account erasure, database migrations and process recovery. Discovery responses now report the actual remaining snapshot lifetime. Host reboot/power-loss and production rollout remain separate acceptance checks.
++
++## Garage News
++
++Migration `0038_garage_news` follows the concurrent `0037_earned_coins` migration.
++Deploy matching API/worker/client artifacts together; bootstrap advertises
++`garage_news_version: 1`. This implementation has not migrated or deployed any
++retained backend. The native Garage adds News and a private mutual-friends list.
++
++Verified public results capture distinct physical-track milestones at 100, 1,000
++and 10,000 racers and new track/lap world records. Participation deduplicates a
++player across cars and immutable revisions. Migration seeds existing participation
++without historical alerts; a fresh track seeds any existing creator participation
++once on first use. Ties and slower results never announce records. Competitive
++comparisons retain the exact pinned track revision, car and rules. Removed
++accounts' historical times remain in the competitive population.
++
++`GET /v1/news` is a private keyset-paginated read (30 items plus one lookahead),
++with no counts, history scans or scheduled work. `POST /v1/news/refresh` requests
++one comparison pass per UTC day. The request expires after ten minutes; an expired
++or completed player has no runnable job, and tomorrow never queues automatically.
++Only opening News renews demand. An interrupted pass resumes its cursor that day.
++The existing idle worker handles at most eight raced boards per transaction;
++accepted races and publication work retain priority. All raced public boards can
++be visited through successive batches, without truncating a player's history.
++
++Unchanged board revisions and friend rosters skip comparisons and their JSON
++snapshots. Changed batches fetch race/lap friend PBs in two bounded queries,
++with at most 100 mutual friends. SQL returns nine compact percentile cutoffs
++per metric, shared by all demanding players. A board's changed cutoffs rebuild
++at most once per UTC day, only on demand; unchanged cutoffs remain reusable.
++Ranking calculations lock only the presentation cache, not the competitive board.
++The initial pass establishes a baseline. Later daily passes report observed
++percentile drops and friend overtakes, including after an inactive player returns.
++Brief crossings that reverse between checks are not an event archive. New
++friendships establish a baseline rather than generating old defeat alerts.
++
++Friend APIs are private: GET/POST `/v1/news/friends`, PUT to accept an incoming
++request and DELETE to remove/decline/cancel `/v1/news/friends/{player_id}`. Requests
++use the exact racing name and count toward both players' 100-relationship limit.
++Blocks apply in both directions; hidden tracks and blocked creators/actors are
++excluded from feeds. Cached native items disappear immediately on a local block.
++Account erasure removes private news, watches, demand and friendships in bounded
++chunks and redacts retained actor references. Shared recipient key locks fence
++deletion; finalizers retain exclusive non-key actor locks to avoid crossed-inbox
++deadlocks while preserving account restriction serialization.
++
++The client keeps at most 100 news rows in memory, shares account/origin-scoped
++60-second reads, and never polls while hidden/prepared/outgoing. A requested daily
++pass has at most four visible follow-up reads with backoff. Feed pages exclude
++items older than 90 days; indexed idle maintenance prunes at most 100 expired
++items per minute, while active passes prune up to 100 excess inbox rows toward
++the newest 100. No push service or additional always-on worker is introduced.
++
++Actual tests, native fixture views, initial failures, source hashes and limits:
++[Garage News evidence](../docs/evidence/garage-news-2026-10-16/report.json).
++Phone touch/performance and production capacity remain unmeasured.

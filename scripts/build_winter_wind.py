@@ -7,6 +7,7 @@ import subprocess
 
 import numpy as np
 from audio_loop_mastering import crossfade
+from audio_license_records import source_license
 from build_desert_ambience import level_wind, write
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,13 +51,13 @@ def main():
                     levelling=dict(rms_window_seconds=0.75, gain_smoothing_seconds=0.5, minimum_gain=0.45, maximum_gain=4.0,
                                    gain_profile_sha256=hashlib.sha256(profile).hexdigest()))
         clips.append(item)
-    manifest = dict(author="Filename attribution: Dragon Studio; owner-supplied recording",
+    manifest = dict(author="DRAGON-STUDIO via Pixabay; owner-supplied recording",
                     origin="Owner-requested local edit; original pitch/tone with no EQ, added wind or synthetic layers",
                     owner_source=dict(filename="dragon-studio-blizzard-wind-463217.mp3", sha256=SOURCE_HASH,
-                                      decoded_sha256=decode["sha256"], seconds=decode["source_seconds"],
-                                      license="Original licence metadata not supplied; no CC0 licence inferred"),
+                                      decoded_sha256=decode["sha256"], seconds=decode["source_seconds"]),
                     design="Two overlapping recorded regions; mono44.1kHz16-bit PCM; gentle circular RMS levelling/DC/level matching/-5dBFS peak cap/1.5s power-preserving joins/zero-step energy-matched seams. Runtime phase/gain/gust variation retained.",
                     clips=clips, total_bytes=sum(item["bytes"] for item in clips))
+    manifest["owner_source"].update(source_license("winter-wind", SOURCE_HASH))
     (BANK / "winter_wind_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(manifest, indent=2))
 

@@ -1,29 +1,47 @@
-"""Soft rubber/body thuds, synthesized offline without a field recording."""
+"""Dry tyre contacts and damped suspension chatter, authored offline."""
 import numpy as np
+
+REVISION = "tyre-body-6"
+GENERATOR = "kerb-tyre-body-6"
+SEED = 2026102261
+PULSE_HZ = 6.0
+
+
+def unit_rms(values):
+    return values / max(float(np.sqrt(np.mean(values ** 2))), 1e-9)
 
 
 def render(read, steady, filter_audio, write, rate):
     count = 8*rate
-    rng = np.random.default_rng(2026101153)
-    # A quiet low bed joins the tails without masking the separate thuds.
-    bed = filter_audio(rng.normal(size=count),low=90,high=520)
-    bed /= max(float(np.sqrt(np.mean(bed**2))),1e-9)
-    rolling = bed*.035
-    time = np.arange(round(.13*rate),dtype=np.float64)/rate
-    for index in range(48): # Six rounded thuds/s at native pitch.
-        # Quickly falling rubber/body resonance, with soft attack and a short
-        # damped tail. The noise transient is low-passed, never a bright click.
-        pitch = rng.uniform(.96,1.04)
-        phase = 2*np.pi*pitch*(105*time+45*.015*(1-np.exp(-time/.015)))
-        body = np.sin(phase)+.20*np.sin(1.85*phase+.35)
-        contact = filter_audio(rng.normal(size=len(time)),low=130,high=850)
-        contact /= max(float(np.sqrt(np.mean(contact**2))),1e-9)
-        attack = 1-np.exp(-time/.0025)
-        thud = attack*(body*np.exp(-time/.027)+.16*contact*np.exp(-time/.012))
-        thud[-round(.01*rate):] *= np.linspace(1,0,round(.01*rate))
-        offset = round(index*rate/6)
-        positions = (offset+np.arange(len(thud)))%count
-        rolling[positions] += thud*rng.uniform(.93,1.0)
-    # Preserve the thud envelope: shared mastering must not level individual
-    # attacks into the rejected continuous flutter/noise texture.
-    write("kerb_roll",filter_audio(rolling,low=65,high=1100),[],rms=.15)
+    rng = np.random.default_rng(SEED)
+    # A restrained rubber bed connects the contacts without adding gravel hiss.
+    rolling = unit_rms(filter_audio(rng.normal(size=count),low=85,high=700))*.028
+    time = np.arange(round(.14*rate),dtype=np.float64)/rate
+    attack = 1-np.exp(-time/.0009)
+    for index in range(round(8*PULSE_HZ)):
+        # Several short, fixed body modes replace the old falling sine note.
+        # Broad rubber excitation carries most of the material character;
+        # no long metallic resonance or audible pitched sweep is introduced.
+        body = np.zeros_like(time)
+        for hz, weight, decay in [(105,.45,.024),(185,.32,.019),(325,.24,.014),
+                                  (570,.15,.009),(940,.08,.005)]:
+            body += weight*np.sin(2*np.pi*hz*rng.uniform(.96,1.04)*time)*np.exp(-time/decay)
+        rubber = unit_rms(filter_audio(rng.normal(size=len(time)),low=100,high=1700))
+        contact = unit_rms(filter_audio(rng.normal(size=len(time)),low=380,high=3800))
+        pulse = attack*(body*.85 + rubber*.42*np.exp(-time/.023)
+                        + contact*.26*np.exp(-time/.006))
+        # A small irregular secondary compression makes each strike less like
+        # one identical drum hit, while retaining the established six-beat pace.
+        delay = round(rng.uniform(.010,.017)*rate)
+        echo = attack*rubber*np.exp(-time/.010)*.10
+        pulse[delay:] += echo[:-delay]
+        pulse[-round(.012*rate):] *= np.linspace(1,0,round(.012*rate))
+        offset = round((index/PULSE_HZ+rng.uniform(-.0018,.0018))*rate)
+        pressure = (.94+.09*np.sin(index*.47))*rng.uniform(.94,1.06)
+        positions = (offset+np.arange(len(pulse)))%count
+        rolling[positions] += pulse*pressure
+    # Soft offline compression controls isolated noise spikes without the
+    # texture levelling that would erase each contact's attack and decay.
+    rolling = np.tanh(rolling*1.5)
+    # Calibrated to the prior cue's -18.5 LUFS, rather than a louder audition.
+    write("kerb_roll",filter_audio(rolling,low=65,high=3600),[],rms=.128)

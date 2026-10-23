@@ -4,6 +4,7 @@ import hashlib
 import json
 import wave
 import numpy as np
+from audio_license_records import source_license
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'game/assets/audio/storm_thunder.wav'
@@ -48,12 +49,13 @@ def main():
         handle.setframerate(rate)
         handle.writeframes(pcm.tobytes())
     manifest = dict(file=target.name, source=SOURCE.name, source_sha256=digest,
-                    provenance='Derivative of existing owner-supplied freesound_community-thunder-big-wav-29190.mp3; original licence metadata not provided',
+                    provenance='Derivative of the reviewed s-light thunder recording via Pixabay; see source_licenses.json',
                     edits='1.2-4.8s rolling tail only; eight periodic 4s Hann overlaps; pace0.82-0.96;30Hz cleanup/420Hz lowpass; mono16-bit PCM; no clap or added synthesis',
                     rate=rate, seconds=len(pcm) / rate, bytes=target.stat().st_size,
                     sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
                     rms=float(np.sqrt(np.mean(bed ** 2))), peak=float(np.max(np.abs(bed))),
                     seam_step=float(abs(int(pcm[0]) - int(pcm[-1])) / 32768))
+    manifest.update(source_license('thunder', '12b96eaaae5e4528237bb67b7dcc9eeb4a00e3dcc11d424b29146cd71007c0ca'))
     target.with_name('storm_rumble_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(manifest, indent=2))
 

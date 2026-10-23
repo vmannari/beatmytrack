@@ -4,6 +4,7 @@ import hashlib
 import json
 import wave
 import numpy as np
+from audio_license_records import source_license
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'build/storm_thunder_sources'
@@ -56,11 +57,11 @@ def main():
     settings=target.with_suffix('.wav.import')
     settings.write_text(settings.read_text().replace('compress/mode=2','compress/mode=0'),encoding='utf-8')
     manifest=dict(file=target.name,source='Owner-supplied local MP3,2026-10-10',source_filename=SOURCE_NAME,
-        author='freesound_community (filename attribution)',license='Owner-supplied; original licence metadata not provided',
         source_sha256=digest,sha256=hashlib.sha256(target.read_bytes()).hexdigest(),source_start_seconds=start/rate,decoded_sha256=meta['sha256'],source_seconds=meta['source_seconds'],bass_shelf_db=6.0,bass_shelf_hz=180,
         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
         edits='main-clap onset6s excerpt; mono44.1kHz; +6dB low shelf below180Hz/25Hz cleanup; soft peak control; rumble lift after650ms;15ms attack/1.2s cosine release; RMS .30/peak cap .84; no added layers',
         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+    manifest.update(source_license('thunder', SOURCE_SHA256))
     (target.parent/'storm_thunder_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(manifest,indent=2))
 

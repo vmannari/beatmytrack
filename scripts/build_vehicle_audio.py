@@ -179,10 +179,11 @@ def write(name, values, used, looping=True, rms=.14, engine_order=None, loop_rea
     if engine_order is not None: outputs[-1]["engine_order_hz"] = engine_order
     if name in TEXTURES or name=="scrape": outputs[-1]["continuous_texture"] = True
     if name=="kerb_roll":
-        outputs[-1]["design"] = "Original offline rubber/body thuds; no recorded source"
-        outputs[-1]["generator"] = "kerb-thuds-5"
-        outputs[-1]["generator_seed"] = 2026101153
-        outputs[-1]["pulse_hz_at_native_pitch"] = 6.0
+        from kerb_audio_mastering import GENERATOR, SEED, PULSE_HZ
+        outputs[-1]["design"] = "Original dry tyre contacts, broad rubber excitation and damped body chatter; no recorded source"
+        outputs[-1]["generator"] = GENERATOR
+        outputs[-1]["generator_seed"] = SEED
+        outputs[-1]["pulse_hz_at_native_pitch"] = PULSE_HZ
     if name=="grass":
         outputs[-1]["design"] = "Continuous overlapping excerpts of the owner's two grass rustles"
         outputs[-1]["generator"] = "owner-grass-rustle-1"
@@ -221,7 +222,8 @@ if args.kerbs_only:
     render_kerbs(read,steady,filter_audio,write,RATE)
     manifest = json.loads((OUT / "manifest.json").read_text(encoding="utf-8"))
     manifest["outputs"] = [item for item in manifest["outputs"] if item["file"]!="kerb_roll.wav"]+outputs
-    manifest["kerb_revision"] = "thuds-5"
+    from kerb_audio_mastering import REVISION
+    manifest["kerb_revision"] = REVISION
     manifest["sources"] = sources
     (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
     print(json.dumps({"kerb_clips":len(outputs),"bytes":sum((OUT / item["file"]).stat().st_size for item in outputs)},indent=2))
@@ -319,6 +321,7 @@ outputs.clear()
 render(read, steady, filter_audio, transpose, write, RATE)
 replaced = {item["file"] for item in outputs}
 outputs[:] = [item for item in previous_outputs if item["file"] not in replaced] + outputs
-manifest = {"schema":"vehicle-audio-bank-v1","revision":"all-loops-8","compact_revision":"engine-4-stable-idle","collision_revision":"owner-crash-3","scrape_revision":"pol-rail-5","kerb_revision":"thuds-5","offroad_revision":"recorded-2","grass_revision":"owner-rustle-1","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
+from kerb_audio_mastering import REVISION as KERB_REVISION
+manifest = {"schema":"vehicle-audio-bank-v1","revision":"all-loops-8","compact_revision":"engine-4-stable-idle","collision_revision":"owner-crash-3","scrape_revision":"pol-rail-5","kerb_revision":KERB_REVISION,"offroad_revision":"recorded-2","grass_revision":"owner-rustle-1","rate":RATE,"channels":1,"bits":16,"sources":sources,"outputs":outputs}
 (OUT / "manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
 print(json.dumps({"clips":len(outputs),"bytes":sum(p.stat().st_size for p in OUT.glob('*.wav')),"maximum_peak_dbfs":max(x['peak_dbfs'] for x in outputs),"maximum_seam_step":max(x['seam_step'] or 0 for x in outputs)},indent=2))

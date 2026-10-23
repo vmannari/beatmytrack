@@ -5,6 +5,7 @@ import json
 import wave
 import numpy as np
 from audio_loop_mastering import crossfade
+from audio_license_records import source_license
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "build/storm_rain_sources"
@@ -49,12 +50,12 @@ def main():
     settings = target.with_suffix('.wav.import')
     if not settings.exists(): settings.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n',encoding='utf-8')
     manifest = dict(file=target.name,source='Owner-supplied local MP3,2026-10-10',source_filename=SOURCE_NAME,
-        author='Dragon Studio (filename attribution)',license='Owner-supplied; original licence metadata not provided',
         source_sha256=hashlib.sha256(data).hexdigest(),decoded_sha256=meta['sha256'],quality='owner MP3 decoded by pinned Godot4.7.2',sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
         source_seconds=meta['source_seconds'],source_start_seconds=20,source_excerpt_seconds=21,
         rate=RATE,channels=1,bits=16,seconds=len(pcm)/RATE,bytes=target.stat().st_size,
         edits='20-41s excerpt; mono44.1kHz PCM; DC removal; gentle peak control;1s correlation-aware power-preserving cyclic crossfade; RMS .055, peak cap .30; no EQ or added layers',
         rms_dbfs=float(20*np.log10(np.sqrt(np.mean(values**2)))),peak_dbfs=float(20*np.log10(np.max(np.abs(values)))))
+    manifest.update(source_license('rain', SOURCE_SHA256))
     (OUT/'storm_rain_manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(manifest,indent=2))
 

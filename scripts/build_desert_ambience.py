@@ -8,6 +8,7 @@ import wave
 
 import numpy as np
 from audio_loop_mastering import crossfade
+from audio_license_records import source_license
 
 ROOT = Path(__file__).resolve().parents[1]
 BANK = ROOT / "game/assets/audio/ambience"
@@ -153,13 +154,14 @@ def main():
                                    gain_profile_sha256=hashlib.sha256(profile).hexdigest()))
         entries.append(item)
     entries.append(write("desert_dune_sand.wav", sand(np.random.default_rng(SEED + 1), 29), 29, -26))
-    manifest = dict(author="Owner wind filename attribution: TanwerAman; dune sand: Beat my track original offline sound design",
+    manifest = dict(author="Wind: TanwerAman via Pixabay; dune sand: Beat my track original offline sound design",
                     origin="Wind derives from explicitly supplied recording; original dune-sand asset retained",
                     owner_source=dict(filename=SOURCE_FILENAME, sha256=SOURCE_HASH, decoded_sha256=decoded["sha256"],
-                                      seconds=decoded["source_seconds"], license="Original licence metadata not supplied; no CC0 licence inferred"),
+                                      seconds=decoded["source_seconds"]),
                     seed=SEED, build_tool="scripts/build_desert_ambience.py; NumPy offline only",
                     design="Three overlapping recorded wind regions, original pitch/tone, mono44.1kHz16-bit PCM; 0.75s circular RMS levelling with 0.5s gain smoothing lifts lulls; DC removal/level matching/-5dBFS peak cap/2s power joins/quiet seam rotation. No EQ, synthetic wind or runtime generation. Existing 29s original dune sand unchanged.",
                     clips=entries, total_bytes=sum(item["bytes"] for item in entries))
+    manifest["owner_source"].update(source_license("desert-wind", SOURCE_HASH))
     (BANK / "desert_ambience_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(manifest, indent=2))
 

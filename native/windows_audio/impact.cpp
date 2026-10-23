@@ -26,7 +26,7 @@ class BmtWindowsImpact : public RefCounted {
  GDCLASS(BmtWindowsImpact,RefCounted)
  struct Clip {std::vector<float> pcm; int rate=44100;};
  struct Voice {int clip=-1; double frame=0,step=1; float gain=0;};
- std::array<Clip,4> clips;
+ std::array<Clip,5> clips;
  std::array<Voice,4> voices;
  std::thread worker;
  std::mutex guard;
@@ -67,7 +67,7 @@ class BmtWindowsImpact : public RefCounted {
     if(index>=clip.pcm.size()) {voice.clip=-1;continue;}
     float a=clip.pcm[index],b=index+1<clip.pcm.size()?clip.pcm[index+1]:0;
     float value=(a+(b-a)*float(voice.frame-index))*voice.gain;
-    if(voice.clip==3) chassis+=value;else impact+=value;
+    if(voice.clip>=3) chassis+=value;else impact+=value;
     voice.frame+=voice.step*clip.rate/rate;
    }
    float value=(muted?0:std::clamp(impact,-impact_ceiling,impact_ceiling)*impact_gain)+

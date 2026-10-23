@@ -59,3 +59,19 @@ class RivalryArchivedBest(Base):
     slot: Mapped[int] = mapped_column(Integer, primary_key=True)
     time_ticks: Mapped[int] = mapped_column(Integer)
     achieved_at: Mapped[int] = mapped_column(Integer)
+
+
+class RivalryWeekPlan(Base):
+    __tablename__ = "rivalry_week_plans"
+    __table_args__ = (UniqueConstraint("week_start", "contract_key"),
+                     Index("ix_rivalry_plan_vehicle_week", "vehicle_id", "week_start"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    week_start: Mapped[int] = mapped_column(Integer)
+    contract_key: Mapped[str] = mapped_column(String(64))
+    vehicle_id: Mapped[str] = mapped_column(String(80))
+    tracks: Mapped[list] = mapped_column(JSON)
+    seed: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="automatic")
+    created_at: Mapped[int] = mapped_column(Integer, default=now)
+    updated_at: Mapped[int] = mapped_column(Integer, default=now)

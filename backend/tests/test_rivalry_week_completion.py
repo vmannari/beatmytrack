@@ -1,4 +1,5 @@
 """One finale action advances across missed weeks without changing race results."""
+import pytest
 from sqlalchemy import select
 from test_domains import domain as _domain_fixture
 from test_domains import headers, submit
@@ -6,6 +7,7 @@ from test_rivalry import join, rivalry_ticket, seed
 
 from bmt_backend.rivalry import week_window
 from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
+from bmt_backend.track_models import now
 from bmt_backend.worker import process_one
 
 rivalry_domain = _domain_fixture
@@ -15,6 +17,62 @@ def current(domain, player="Alice"):
     response = domain.client.get("/v1/rivalry/current?vehicle_id=compact", headers=headers(domain, player))
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize("older_group_created_later", [False, True])
+def test_finale_uses_latest_membership_when_builds_changed_in_the_same_week(
+        rivalry_domain, monkeypatch, older_group_created_later):
+    seed(rivalry_domain)
+    timestamp = now()
+    monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
+    latest = join(rivalry_domain)
+    empty = {"group_id": "00000000-0000-4000-8000-000000000001"}
+    alice = rivalry_domain.players["Alice"]
+    # Preserve an earlier build's empty membership. Its contract sorts
+    # first in the week index, reproducing the cloud's obsolete finale choice.
+    with rivalry_domain.factory() as session:
+        source = session.get(RivalryGroup, latest["group_id"])
+        group = RivalryGroup(id=empty["group_id"], week_start=source.week_start,
+            ends_at=source.ends_at, vehicle_id=source.vehicle_id, contract_key="f" * 64,
+            skill_band=source.skill_band, tracks=source.tracks, member_count=1,
+            created_at=timestamp + (200 if older_group_created_later else 0))
+        session.add(group)
+        session.flush()
+        session.add(RivalryMember(group_id=group.id, player_id=alice,
+            week_start=group.week_start, contract_key=group.contract_key, joined_at=timestamp))
+        source.created_at = timestamp + 100
+        session.get(RivalryMember, (source.id, alice)).joined_at = timestamp + 100
+        session.commit()
+    timestamp += 100
+    assert latest["group_id"] != empty["group_id"]
+    join(rivalry_domain, "Bob")
+    issued = rivalry_ticket(rivalry_domain, latest["group_id"], "Bob")
+    submit(rivalry_domain, issued, "Bob", frames=20)
+    assert process_one(rivalry_domain.app)
+    verified = current(rivalry_domain)
+    assert verified["group_id"] == latest["group_id"]
+    assert next(row for row in verified["standings"] if row["name"] == "Bob")["points"] == 30
+
+    timestamp = latest["ends_at"]
+    finale = current(rivalry_domain)
+    assert finale["group_id"] == latest["group_id"]
+    assert finale["state"] == "complete"
+    assert finale["standings"] == verified["standings"]
+    assert finale["tracks"] == verified["tracks"]
+    # Direct history reads retain their exact separate championship identities.
+    historical = rivalry_domain.client.get(f"/v1/rivalry/{empty['group_id']}",
+        headers=headers(rivalry_domain, "Alice")).json()
+    assert all(row["points"] == 0 for row in historical["standings"])
+    assert all(row["ticks"] is None for track in historical["tracks"] for row in track["entries"])
+    assert rivalry_domain.client.get(f"/v1/rivalry/{latest['group_id']}",
+        headers=headers(rivalry_domain, "Alice")).json() == finale
+    response = rivalry_domain.client.post(f"/v1/rivalry/{latest['group_id']}/continue",
+        json={}, headers=headers(rivalry_domain, "Alice"))
+    assert response.status_code == 200
+    assert current(rivalry_domain)["state"] == "not_joined"
+    with rivalry_domain.factory() as session:
+        assert all(session.get(RivalryMember, (item["group_id"], alice)).acknowledged
+                   for item in (empty, latest))
 
 
 def test_continue_skips_all_older_finales_with_scoped_idempotency(rivalry_domain, monkeypatch):

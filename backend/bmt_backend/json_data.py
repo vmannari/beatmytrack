@@ -26,22 +26,24 @@ def parse_json(body, *, maximum_nodes=1200000):
     scheduled = 1
     while pending:
         values, depth = pending[-1]
-        try:
-            value = next(values)
-        except StopIteration:
+        # Let the iterator consume sibling scalars directly. Re-enter the outer
+        # loop only for a child container; this avoids Python next/exception and
+        # stack bookkeeping for every coordinate in a trajectory recording.
+        for value in values:
+            if depth > 32:
+                raise ValueError("JSON nesting limit")
+            if isinstance(value, (dict, list)):
+                scheduled += len(value)
+                if scheduled > maximum_nodes:
+                    raise ValueError("JSON node limit")
+                children = value.values() if isinstance(value, dict) else value
+                pending.append((iter(children), depth + 1))
+                break
+            if isinstance(value, float) and not math.isfinite(value):
+                # parse_constant does not catch exponent overflow (1e400).
+                raise ValueError("Nonfinite JSON number")
+            if isinstance(value, str):
+                value.encode("utf-8")
+        else:
             pending.pop()
-            continue
-        if depth > 32:
-            raise ValueError("JSON nesting limit")
-        if isinstance(value, (dict, list)):
-            scheduled += len(value)
-            if scheduled > maximum_nodes:
-                raise ValueError("JSON node limit")
-            children = value.values() if isinstance(value, dict) else value
-            pending.append((iter(children), depth + 1))
-        elif isinstance(value, float) and not math.isfinite(value):
-            # parse_constant alone does not catch exponent overflow (1e400).
-            raise ValueError("Nonfinite JSON number")
-        elif isinstance(value, str):
-            value.encode("utf-8")
     return parsed

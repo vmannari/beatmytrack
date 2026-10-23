@@ -1,10 +1,10 @@
 """Bounded, reset-fenced backfill of accepted flying-lap personal bests."""
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .identity_models import Player
-from .track_models import Board, LapBestState, LapPersonalBest, OperationState, PersonalBest, Run
+from .track_models import Board, LapBestState, LapPersonalBest, Run
 
 
 def accepted_lap(run, manifest):
@@ -19,7 +19,7 @@ def accepted_lap(run, manifest):
             "source_created_at":run.created_at}
 
 
-def backfill_one(factory, *, limit=200, after_read=None):
+def backfill_one(factory, *, limit=200, after_read=None, board_ids=None):
     """One board, at most 200 attempts. Cursor and PB inserts commit together.
 
     A reset can proceed during the read. Its epoch/cursor is rechecked while
@@ -28,9 +28,13 @@ def backfill_one(factory, *, limit=200, after_read=None):
     """
     if not 1 <= limit <= 200:
         raise ValueError("Lap backfill batch must contain 1..200 attempts")
+    if board_ids is not None and not 1 <= len(board_ids) <= 2:
+        raise ValueError("Requested backfill must contain one or two board identities")
     with factory() as session:
-        state = session.scalar(select(LapBestState).where(LapBestState.complete.is_(False))
-                               .order_by(LapBestState.board_id).limit(1))
+        pending = select(LapBestState).where(LapBestState.complete.is_(False))
+        if board_ids is not None:
+            pending = pending.where(LapBestState.board_id.in_(board_ids))
+        state = session.scalar(pending.order_by(LapBestState.board_id).limit(1))
         if state is None:
             return {"worked":False, "complete":True, "inspected":0, "invalid_records":0}
         board_id, epoch, cursor, cutoff = state.board_id, state.epoch, state.cursor, state.cutoff
@@ -88,32 +92,3 @@ def backfill_all_for_diagnostics(factory):
     while backfill_one(factory)["worked"]:
         batches += 1
     return batches
-
-
-def legacy_best_lap_times(board_id, session, *, test_population=False):
-    """Offline parity oracle only; never called by requests or the worker."""
-    laps = [Run.lap_ticks[index].as_integer() for index in range(1, 5)]
-    shortest = func.least(*laps) if session.bind.dialect.name == "postgresql" else func.min(*laps)
-    statement = select(Run.player_id, func.min(shortest).label("time_ticks")).join(
-        Player, Player.id == Run.player_id).join(PersonalBest,
-        (PersonalBest.board_id == Run.board_id) & (PersonalBest.player_id == Run.player_id)).where(
-        Run.board_id == board_id, Run.status == "verified", Player.disabled.is_(False),
-        *(lap > 0 for lap in laps))
-    if not test_population:
-        statement = statement.where(Player.is_test_driver.is_(False))
-    else:
-        # Retained audit runs from an owner-requested test-record reset must not
-        # restore retired lap records. Real players are never part of that reset.
-        board = session.get(Board, board_id)
-        if board:
-            resets = session.scalars(select(OperationState).where(
-                OperationState.id.startswith("test-pop-batch:"),
-                OperationState.details["vehicle_id"].as_string() == board.vehicle_id)).all()
-            cutoff = max((row.details.get("created_at", 0) for row in resets
-                          if row.details.get("request", {}).get("clear_test_records")
-                          and any(entry.get("version_id") == board.version_id
-                                  for entry in row.details.get("tracks", []))), default=0)
-            if cutoff:
-                statement = statement.where(or_(Player.is_test_driver.is_(False), Run.created_at >= cutoff))
-    return statement.group_by(Run.player_id).subquery()
-

@@ -1,9 +1,28 @@
 """A single pass over movement and ordered gate crossings; no game simulation."""
 from __future__ import annotations
 
+import json
+
 from .verifier import MAX_FRAMES, VerificationError
 
 SCHEMA = "bmt-trajectory-v1"
+GEOMETRY_CACHE_ENTRIES = 64
+GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024
+
+
+def clean_race_report(proof, ticks):
+    """Recorded incidents gate a fixed cosmetic bonus after acceptance.
+
+    This follows the lightweight evidence policy, not independent collision
+    re-simulation. Missing/malformed reports earn no bonus and cannot invalidate
+    a valid trajectory or choose a coin amount.
+    """
+    report = proof.get("incidents") if type(proof) is dict else None
+    return (type(report) is dict and set(report) == {"schema", "ticks", "collision_count", "off_track"}
+            and report.get("schema") == "bmt-race-incidents-v1"
+            and type(report.get("ticks")) is int and report["ticks"] == ticks and 0 < ticks <= MAX_FRAMES
+            and type(report.get("collision_count")) is int and report["collision_count"] == 0
+            and type(report.get("off_track")) is bool and not report["off_track"])
 
 
 def input_count(replay):
@@ -14,22 +33,44 @@ def duration(replay):
     return input_count(replay) - sum(event["from_tick"]-event["to_tick"] for event in replay.get("rewinds", []))
 
 
-def prepared_geometry(app, document_hash, document):
-    """Static preparation is cached durably, independent of any submitted race."""
-    from .contracts import BUILD_FIELDS
-    from .track_models import OperationState, now
+def prepared_geometry(app, document_hash, document=None):
+    """Bounded immutable descriptors, keyed by content and exact verifier build.
+
+    Warm workers need neither the track object nor another SQL descriptor read.
+    Keep bytes in the cache so callers own their decoded geometry and cannot
+    mutate another race's gates. Cold preparation retains the durable SQL cache.
+    """
+    from .board_cache import cached as remember
+    from .contracts import BUILD_FIELDS, build_contract
+    from .storage import canonical_json
+    from .track_models import OperationState, digest, now
+
+    active = app.state.verifier.manifest()
+    identity = (document_hash, digest(build_contract(active)))
     key = "geom:"+document_hash
-    with app.state.session_factory() as session:
-        cached = session.get(OperationState,key)
-        active = app.state.verifier.manifest()
-        if (cached is not None and all(cached.details.get("manifest",{}).get(field) == active[field] for field in BUILD_FIELDS)
-                and cached.details.get("manifest",{}).get("vehicles") == active.get("vehicles")):
-            return cached.details
-    geometry = app.state.verifier.race_geometry(document)
-    with app.state.session_factory() as session:
+
+    def matches(geometry):
+        return all(geometry.get("manifest", {}).get(field) == active[field] for field in BUILD_FIELDS)
+
+    def load(session):
+        stored = session.get(OperationState,key)
+        if stored is not None and matches(stored.details):
+            return canonical_json(stored.details)
+        # Release the descriptor read before storage pins, IO or native work.
+        session.rollback()
+        source = document if document is not None else app.state.blobs.get_json(document_hash)
+        geometry = app.state.verifier.race_geometry(source)
+        if not matches(geometry):
+            from .verifier import VerifierUnavailable
+            raise VerifierUnavailable("Prepared geometry differs from verifier build")
         session.merge(OperationState(id=key,updated_at=now(),details=geometry))
         session.commit()
-    return geometry
+        return canonical_json(geometry)
+
+    with app.state.session_factory() as session:
+        encoded = remember(session,identity,lambda: load(session),namespace="verification-geometry",
+            max_entries=GEOMETRY_CACHE_ENTRIES,max_weight=GEOMETRY_CACHE_BYTES,weight=len)
+    return json.loads(encoded)
 
 
 def validate_envelope(replay):
@@ -61,13 +102,17 @@ def validate_envelope(replay):
 
 def check(geometry, proof, ticks, vehicle, *, creator_test=False):
     """Check samples once. Geometry is prepared from the pinned server track."""
-    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
+    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
             or proof.get("schema") not in ("bmt-race-proof-v1", "bmt-race-path-v1") or type(proof["samples"]) is not list
             or not 2 <= len(proof["samples"]) <= MAX_FRAMES//6+12):
         raise VerificationError("Race trajectory is required")
     samples = proof["samples"]
     width, layer_index = (4,3) if proof["schema"] == "bmt-race-path-v1" else (8,6)
     gates = geometry["gates"]
+    # Rules23 supplies the complete recovery span. An extra 15 cm can bridge
+    # the deliberately separated inside edges of a folded hairpin. Retain
+    # historical tolerance for older geometry; allow only numeric roundoff now.
+    gate_slack = 0.0001 if geometry["manifest"].get("rules_key") == "standing-5-road-gates-v23" else 0.15
     start = geometry["creator_start"] if creator_test else geometry["start"]
     limit = geometry["maximum_speed"][vehicle] * 1.1 / 120.0
     extent_x, extent_y = geometry["extent"]
@@ -100,7 +145,7 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
             while laps < target_laps and gate_before <= 0.0 and after > 0.0:
                 fraction = -gate_before/(after-gate_before)
                 side = sx*(px+dx*fraction)+sy*(py+dy*fraction)+side_origin
-                if (fraction < consumed-0.000001 or not low-0.15 <= side <= high+0.15
+                if (fraction < consumed-0.000001 or not low-gate_slack <= side <= high+gate_slack
                         or expected_layer not in (previous_layer, layer)):
                     break
                 consumed = fraction
@@ -117,4 +162,5 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
     if laps != target_laps or previous_tick != ticks or sum(lap_ticks) != ticks:
         raise VerificationError("Trajectory does not complete the required laps and ordered road gates")
     return {"time_ticks": ticks, "time_ms": round(ticks*1000/120), "lap_ticks": lap_ticks,
-            "manifest": geometry["manifest"], "verification_method": "trajectory-v1"}
+            "manifest": geometry["manifest"], "verification_method": "trajectory-v1",
+            "incident_free": clean_race_report(proof,ticks)}

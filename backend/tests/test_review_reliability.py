@@ -26,10 +26,10 @@ def test_broad_json_tree_is_rejected_without_accepting_nonfinite_values():
 
 @pytest.mark.parametrize("physics", ["arcade-planar-0.39", "arcade-planar-0.48"])
 @pytest.mark.parametrize("purpose", ["race", "creator_test"])
-@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16", "standing-5-road-gates-v18", "standing-5-road-gates-v19"])
+@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16", "standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22"])
 def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
     base = domain.app.state.verifier.manifest()
-    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.53", "rules_key": "standing-5-road-gates-v20"}
+    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.53", "rules_key": "standing-5-road-gates-v23"}
     version = upload(domain)
     with domain.factory() as session:
         row = session.get(TrackVersion, version["version_id"])
@@ -39,7 +39,7 @@ def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
     metadata = domain.client.get("/v1/me/tracks", headers=headers(domain))
     assert metadata.status_code == 200
     visible = next(item for item in metadata.json()["items"] if item["version_id"] == version["version_id"])
-    assert visible["manifest"]["rules_key"] == "standing-5-road-gates-v20"
+    assert visible["manifest"]["rules_key"] == "standing-5-road-gates-v23"
     response = domain.client.post("/v1/run-tickets", json={"version_id": version["version_id"], "vehicle_id": "compact", "purpose": purpose}, headers=headers(domain))
     assert response.status_code == 201, response.text
     run = submit(domain, response.json())
@@ -48,7 +48,7 @@ def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
         assert session.get(Run, run["run_id"]).status == "verified"
         assert session.get(TrackVersion, version["version_id"]).manifest == original
     assert current_manifest(original)["physics_version"] == "arcade-planar-0.53"
-    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v20"
+    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v23"
 
 
 def test_global_admission_and_fair_claims(domain):
@@ -106,7 +106,7 @@ def test_track_validations_share_admission_with_races(domain):
 
 
 def test_private_validation_claims_are_fair_between_owners(domain):
-    from bmt_backend.track_validation import process_one as validate_one
+    from legacy_validation_fixture import process_one as validate_one
     versions = []
     for owner, source in [("Alice","first"), ("Alice","second"), ("Bob","third")]:
         body = {"name":source, "document":{"schema":"creator-track-v5", "id":source, "points":[]},

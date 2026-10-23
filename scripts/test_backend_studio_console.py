@@ -168,10 +168,11 @@ def main():
                     auth = {"Authorization": "Bearer " + config["owner"]}
                     overview = http.get("/v1/admin/overview", headers=auth).json()
                     players = http.get("/v1/admin/entities/players", headers=auth).json()
-                    assert overview["players"] == players["total"] == 2
+                    assert len(players["items"]) == players["total"] == 2
+                    assert overview["pulse_until"] - overview["pulse_since"] == 300
                     flags = {item["id"]: item["is_test_driver"] for item in players["items"]}
                     assert flags == {fixture["player_id"]: False, fixture["artificial_player_id"]: True}
-                    checks.append("All player totals include both classes; development sign-in does not imply artificial")
+                    checks.append("Player directory includes both classes; development sign-in does not imply artificial")
                     navigate("players")
                     expect(page.locator("#filters")).to_be_visible()
                     expect(page.locator("#main")).to_contain_text("Real")

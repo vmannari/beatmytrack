@@ -90,7 +90,7 @@ def compatible_fields(column, active):
     conditions = []
     for field in PINNED_FIELDS:
         values = [active[field]]
-        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20"):
+        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22", "standing-5-road-gates-v23"):
             upper = int(active[field].rsplit("v", 1)[1])
             values += [f"standing-5-road-gates-v{n}" for n in range(12, upper)]
         if field == "physics_version" and active[field] in ("arcade-planar-0.50", "arcade-planar-0.51", "arcade-planar-0.52", "arcade-planar-0.53"):
@@ -125,15 +125,10 @@ def eligible_versions(session, active, vehicle):
 
 
 def selected_slots(session, request, active, vehicle, test_population):
-    # Sample only IDs in the candidate window; decode metadata for five choices.
-    anchor = new_id()
-    statement = eligible_query(active, vehicle).with_only_columns(TrackVersion.id)
-    ids = session.scalars(statement.where(TrackVersion.id >= anchor).order_by(TrackVersion.id).limit(1000)).all()
-    if len(ids) < 1000:
-        ids += session.scalars(statement.where(TrackVersion.id < anchor).order_by(TrackVersion.id).limit(1000-len(ids))).all()
-    if len(ids) < TRACK_COUNT:
+    from .rivalry_planning import planned_versions
+    chosen = planned_versions(session, active, vehicle, now())
+    if len(chosen) < TRACK_COUNT:
         return []
-    chosen = random.sample(ids, TRACK_COUNT)
     metadata = {version.id: (version, track, name) for version,track,name in session.execute(
         select(TrackVersion,Track,Player.display_name).select_from(TrackVersion).join(Track).join(Player,Player.id==Track.owner_id)
         .where(TrackVersion.id.in_(chosen)))}
@@ -235,12 +230,18 @@ def standings_data(session, group):
 def snapshot(session, group, player_id, timestamp=None):
     timestamp = now() if timestamp is None else timestamp
     tracks, overall = standings_data(session, group)
+    from .community import blocked_ids
+    blocked = set(session.scalars(blocked_ids(session, player_id)))
     appearances = dict(session.execute(select(Player.id, Player.vehicle_appearances)
         .where(Player.id.in_([row["id"] for row in overall]), Player.deleted_at.is_(None))).all())
     for row in overall:
         appearance = appearances.get(row["id"], {}).get(group.vehicle_id)
         if appearance is not None:
             row["appearance"] = appearance
+    for row in overall + [row for board_rows in tracks for row in board_rows]:
+        if row["id"] in blocked:
+            row["name"], row["country_code"] = "Blocked player", ""
+            row.pop("appearance", None)
     pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
         .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
     state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
@@ -266,11 +267,16 @@ def snapshot(session, group, player_id, timestamp=None):
         version = session.get(TrackVersion, pinned["version_id"])
         if version is not None:
             owner = session.get(Player, session.get(Track, version.track_id).owner_id)
+            if owner.id in blocked:
+                availability[version.id] = False
             if owner.deleted_at is not None:
                 # Refresh redacted source hashes as well as names for retained
                 # cohort snapshots; their board/score pins remain unchanged.
                 entry = {**entry, "creator": "Removed account", "content_hash": version.content_hash,
                     "redacted_track_hash": version.redacted_track_hash, "canonical_track_hash": version.manifest.get("track_content_hash")}
+        if not availability.get(pinned["version_id"], False):
+            # Keep score/board pins while withdrawing objectionable public art/text.
+            entry = {**entry, "name": "Unavailable track", "creator": "Unavailable creator", "points": []}
         result["tracks"].append({"slot": slot, "entry": entry, "board_id": pinned["board_id"],
                                  "available": not group.archived and availability.get(pinned["version_id"], False),
                                  "entries": tracks[slot]})
@@ -326,7 +332,10 @@ def current(request: Request, session: BoardDB, player: Auth, vehicle_id: str = 
         .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
                RivalryGroup.test_population.is_(test_population),
                RivalryMember.week_start < start, RivalryMember.acknowledged.is_(False))
-        .order_by(RivalryMember.week_start.desc()).limit(1))
+        # A build update can create several memberships in the same week.
+        # Resume the player's latest field instead of an arbitrary old build.
+        .order_by(RivalryMember.week_start.desc(), RivalryMember.joined_at.desc(),
+                  RivalryGroup.created_at.desc(), RivalryGroup.id).limit(1))
     if previous:
         return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, previous.group_id), player.id))
     return {"state": "not_joined", "test_population": test_population, "week": week, "year": year, "ends_at": end, "server_now": now(),
@@ -434,6 +443,8 @@ def ticket(group_id: str, payload: Race, request: Request, session: DB, player: 
     pinned = group.tracks[payload.slot]
     version = session.get(TrackVersion, pinned["version_id"])
     track = session.get(Track, version.track_id)
+    from .community import check_creator
+    check_creator(session, player.id, track.owner_id)
     if version.state != "published" or track.hidden or session.get(Player, track.owner_id).disabled:
         raise HTTPException(404, "Rivalry track unavailable")
     board = session.get(Board, pinned["board_id"])
@@ -445,9 +456,9 @@ def ticket(group_id: str, payload: Race, request: Request, session: DB, player: 
                            {**_ticket_payload(race_ticket, board), "rivalry_group": group.id, "rivalry_slot": payload.slot})
 
 
-def accept_verified(session, run):
+def accept_verified(session, run, *, acceptance=None):
     """Called within fenced worker finalization; retries/slower runs mint no points."""
-    binding = session.get(RivalryTicket, run.ticket_id)
+    binding = acceptance.rivalry if acceptance else session.get(RivalryTicket, run.ticket_id)
     if binding is None or binding.outcome is not None:
         return
     group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == binding.group_id).with_for_update())
@@ -455,8 +466,11 @@ def accept_verified(session, run):
         return
     before_tracks, before_overall = standings_data(session, group)
     prior = next(row for row in before_tracks[binding.slot] if row["id"] == run.player_id)
-    personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
-    new_personal_best = personal_best is None or run.time_ticks < personal_best.time_ticks
+    previous = acceptance.previous[0] if acceptance else None
+    if previous is None:
+        personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
+        previous = personal_best.time_ticks if personal_best else 0
+    new_personal_best = not previous or run.time_ticks < previous
     best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
     improved = best is None or run.time_ticks < best.time_ticks
     if improved:
@@ -519,6 +533,8 @@ def acknowledge(group_id: str, request: Request, session: DB, player: Auth, key:
 
 @router.get("/rivalry/{group_id}/tracks/{slot}/ghosts/{driver_id}")
 def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: BoardDB, player: Auth):
+    from .community import check_creator
+    check_creator(session, player.id, driver_id)
     group, _ = require_member(session, group_id, player.id, request)
     if group.archived:
         raise HTTPException(410, "RIVALRY_GHOST_ARCHIVED")

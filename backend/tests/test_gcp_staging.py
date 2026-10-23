@@ -23,6 +23,20 @@ def config():
         "godot_sha256": staging.PIN, "gcloud": ["fixture-gcloud"], "docker": ["fixture-docker"]}
 
 
+def test_pool_budget_includes_every_supervised_process():
+    c = config()
+    staging.validate(c)
+    c["worker_instances"] = 2
+    with pytest.raises(ValueError, match="40-connection"):
+        staging.validate(c)
+    c.update(worker_instances=1, telemetry_enabled=True)
+    with pytest.raises(ValueError, match="40-connection"):
+        staging.validate(c)
+    c["api_max"] = 1
+    staging.validate(c)
+    assert staging.environment(c,"worker")["BMT_TELEMETRY_ENABLED"] == "true"
+
+
 def test_retained_test_population_has_separate_runtime_secret(tmp_path):
     c = config()
     c.update(retain_data=True, test_drivers_enabled=True, test_drivers_secret="fixture-test-key")

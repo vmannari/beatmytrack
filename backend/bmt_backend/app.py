@@ -20,15 +20,21 @@ from .storage import make_blob_store
 
 def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
     from . import (
+        achievements,
         admin,
         admin_commerce,
+        admin_player_grants,
         admin_purchase_controls,
         admin_support,
         browser_auth,
         challenges,
         commerce,
+        community,
         discovery,
+        discovery_v3,
+        economy,
         network_health,
+        news,
         privacy,
         privacy_pages,
         product_analytics,
@@ -39,12 +45,22 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         rivalry,
         runs,
         studio,
+        studio_alarms,
+        studio_analysis,
         studio_cases,
         studio_catalogue,
         studio_competitions,
+        studio_experiments,
+        studio_finance,
+        studio_governance,
+        studio_incidents,
+        studio_jobs,
+        studio_metrics,
+        studio_rivalry,
         telemetry,
         test_drivers,
         test_population_batch,
+        track_links,
         tracks,
     )
     from .verifier import GodotVerifier
@@ -54,6 +70,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     @asynccontextmanager
     async def lifespan(application):
         application.state.readiness.open()
+        application.state.run_signals.open()
         # Warm the pinned, immutable contract before accepting concurrent races.
         # Auth-only isolated tests may omit an engine; deployed APIs configure it.
         adapter = application.state.verifier
@@ -62,6 +79,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
                 await run_in_threadpool(adapter.manifest)
             yield
         finally:
+            await run_in_threadpool(application.state.run_signals.close)
             try:
                 await application.state.readiness.close()
             finally:
@@ -80,12 +98,16 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.settings = settings
     app.state.engine = engine if engine is not None else make_engine(settings.database_url, settings)
     app.state.session_factory = make_session_factory(app.state.engine)
+    from .run_signals import RunSignals
+    app.state.run_signals = RunSignals(app.state.engine, capacity=settings.run_wait_capacity)
+    app.state.engine._bmt_run_signals = app.state.run_signals
     app.state.identity_budgets = IdentityBudgets(app.state.session_factory)
     app.state.blobs = make_blob_store(settings, app.state.session_factory)
     from .erasure_journal import make_journal
     app.state.erasure_journal = make_journal(settings)
     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
+    app.state.staff_identity_verifier = GoogleIdentityVerifier(settings.studio_staff_audiences)
     app.state.readiness = ReadinessProbe(app)
     app.state.worker_heartbeat_memory = __import__("collections").OrderedDict()
     app.state.worker_heartbeat_lock = __import__("threading").RLock()
@@ -94,31 +116,47 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.include_router(admin.router)
     app.include_router(admin_commerce.router)
     app.include_router(admin_purchase_controls.router)
+    app.include_router(admin_player_grants.router)
     app.include_router(admin_support.router)
     app.include_router(studio.router)
+    app.include_router(studio_analysis.router)
+    app.include_router(studio_metrics.router)
+    app.include_router(studio_jobs.router)
+    app.include_router(studio_incidents.router)
+    app.include_router(studio_finance.router)
+    app.include_router(studio_experiments.router)
+    app.include_router(studio_governance.router)
+    app.include_router(studio_alarms.router)
     app.include_router(studio_cases.router)
     app.include_router(studio_competitions.router)
+    app.include_router(studio_rivalry.router)
     app.include_router(studio_catalogue.router)
     app.include_router(telemetry.router)
+    app.include_router(community.router)
     app.include_router(privacy.router)
     app.include_router(privacy_pages.router)
     app.include_router(product_analytics.router)
     app.include_router(quality.router)
     app.include_router(network_health.router)
+    app.include_router(news.router, prefix="/v1")
     app.include_router(race_statistics.router)
     app.include_router(auth.router, prefix="/v1")
     app.include_router(browser_auth.router, prefix="/v1")
     app.include_router(tracks.router, prefix="/v1")
     app.include_router(discovery.router, prefix="/v1")
+    app.include_router(discovery_v3.router)
     app.state.discovery_memory = __import__("collections").OrderedDict()
     app.state.discovery_lock = __import__("threading").RLock()
     app.include_router(runs.router, prefix="/v1")
+    app.include_router(economy.router, prefix="/v1")
+    app.include_router(achievements.router, prefix="/v1")
     app.include_router(resumes.router, prefix="/v1")
     app.include_router(commerce.router, prefix="/v1")
     app.include_router(publications.router, prefix="/v1")
     app.include_router(rivalry.router, prefix="/v1")
     app.include_router(challenges.router, prefix="/v1")
     app.include_router(challenges.preview_router)
+    app.include_router(track_links.router)
     app.include_router(test_drivers.router, prefix="/v1")
     app.include_router(test_population_batch.router, prefix="/v1")
 
@@ -131,6 +169,10 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
 
     @app.exception_handler(SQLAlchemyError)
     async def unavailable(request: Request, _error):
+        from .queueing import capacity_error
+        if capacity_error(_error):
+            return JSONResponse({"detail": "Verification capacity reached; retry this saved attempt later",
+                                 "request_id": request.state.request_id}, status_code=429)
         dependency_failure(logging.getLogger("bmt.api"), _error, request.state.request_id, "database")
         app.state.readiness.invalidate()
         return JSONResponse(
@@ -162,10 +204,14 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         return {
             "service": "beat-my-track",
             "api_version": "v1",
+            "garage_news_version": 1,
             "auth": "google",
             "privacy": {"schema_version": 1, "policy_url": settings.public_base_url.rstrip("/") + "/privacy",
                 "deletion_url": settings.public_base_url.rstrip("/") + "/account-deletion",
                 "policy_version": "bmt-privacy-v1", "tracks_retained": True, "standings_retained": True},
+            "community_safety_version": 1,
+            "community_terms_version": community.TERMS_VERSION,
+            "community_rules_url": settings.public_base_url.rstrip("/") + "/community-rules",
             "google_configured": bool(settings.google_client_ids),
             "google_browser_configured": bool(settings.google_web_client_id),
             "development_auth": settings.dev_auth_enabled,
@@ -197,13 +243,16 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "rewind_policy": "rewind-1",
             "verification": "trajectory-v1",
             "trajectory_verification": True,
+            "race_incident_rewards_version": 1,
+            "challenge_discovery_version": 1,
             "lightweight_race_proofs": True,
             "track_lifecycle_version": 1,
-            "discovery_paging_version": 2,
+            "discovery_paging_version": 3,
             "max_request_bytes": settings.max_body_bytes,
             "upload_encodings": ["identity", "gzip"] if settings.transport_profile == "compact" else ["identity"],
             "replay_wire_schema": "bmt-packed-input-v1" if settings.transport_profile == "compact" else None,
             "batch_run_status": True,
+            "run_wait_ms": 2000,
             "refresh_recovery_seconds": settings.refresh_recovery_seconds if settings.transport_profile == "compact" else 0,
             "resume_recovery": settings.transport_profile == "compact",
             "server_now": __import__("time").time_ns() // 1_000_000_000,

@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import load_only
 
 from .admin_models import AdminAudit
 from .admin_ranges import calendar_range, during, time_range
@@ -20,7 +21,8 @@ from .middleware import ParsedJSONRoute
 from .migrate import SCHEMA_HEAD
 from .operations import competition_health
 from .resume_models import ResumeGrant, ResumeWallet
-from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
+from .studio_paging import identifier, page
+from .track_models import Board, PersonalBest, QueueCapacity, Run, Track, TrackVersion, digest, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
 UI = Path(__file__).with_name("admin_ui")
@@ -30,9 +32,10 @@ def access(request: Request):
     settings = request.app.state.settings
     supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
     for role, key in (("owner", settings.admin_owner_key), ("analyst", settings.admin_analyst_key)):
-        if key and hmac.compare_digest(supplied.encode(), key.encode()):
+        if settings.studio_legacy_keys_enabled and key and hmac.compare_digest(supplied.encode(), key.encode()):
             return role
-    raise HTTPException(401, "ADMIN_AUTH_REQUIRED")
+    from .studio_access import named_access
+    return named_access(request, supplied)
 
 
 Access = Annotated[str, Depends(access)]
@@ -58,7 +61,7 @@ def console():
 
 @router.get("/admin/assets/{name}", include_in_schema=False)
 def asset(name: str):
-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css"):
+    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
@@ -86,44 +89,20 @@ def record(kind, row):
 
 @router.get("/v1/admin/overview")
 def overview(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
-    from .publication_models import PublicationIntent
+    """Current operating pulse; lifetime catalogue totals are retired."""
     window = window or calendar_range(days)
+    stamp = now()
     with request.app.state.session_factory() as db:
-        count = lambda model, *where: db.scalar(select(func.count()).select_from(model).where(*where))
-        states = dict(
-            db.execute(
-                select(Run.status, func.count()).where(*during(Run.created_at, window)).group_by(Run.status)
-            ).all()
-        )
-        utc_day = func.floor(Run.created_at / 86400)
-        daily = db.execute(
-            select(utc_day, func.count()).where(*during(Run.created_at, window)).group_by(utc_day)
-        ).all()
-        publication_failed = db.scalar(select(func.count()).select_from(select(PublicationIntent.id)
-            .where(PublicationIntent.status == "failed").limit(5001).subquery()))
-        return {
-            "role": role,
-            "environment": request.app.state.settings.environment,
-            "as_of": now(),
-            "days": days,
-            "since": window[0],
-            "until": window[1],
-            "players": count(Player),
-            "tracks": count(Track, select(TrackVersion.id).where(TrackVersion.track_id == Track.id,
-                TrackVersion.state == "published").exists()) if request.app.state.settings.local_drafts_only else count(Track),
-            "versions": count(TrackVersion, TrackVersion.state == "published") if request.app.state.settings.local_drafts_only else count(TrackVersion),
-            "racers": db.scalar(
-                select(func.count(func.distinct(Run.player_id))).where(*during(Run.created_at, window))
-            ),
-            "states": states,
-            "daily": [{"day": int(day), "count": n} for day, n in daily],
-            "pending": count(Run, Run.status.in_(["queued", "verifying"])),
-            "publications": {"pending": count(PublicationIntent, PublicationIntent.status.in_(("queued", "verifying"))),
-                "failed": min(publication_failed, 5000), "failed_count_capped": publication_failed > 5000},
-            "disabled": count(Player, Player.disabled.is_(True)),
-            "database": "reachable",
-            "schema": SCHEMA_HEAD,
-        }
+        states = dict(db.execute(select(Run.status, func.count()).where(
+            Run.status.in_(("verified", "failed", "rejected")),
+            Run.finished_at >= stamp - 300, Run.finished_at <= stamp).group_by(Run.status)).all())
+        queue = db.get(QueueCapacity, 1)
+        return {"role": role, "environment": request.app.state.settings.environment,
+            "as_of": stamp, "days": days, "since": window[0], "until": window[1],
+            "pending": queue.pending if queue else 0, "states": states,
+            "pulse_since": stamp - 300, "pulse_until": stamp,
+            "database": "reachable", "schema": SCHEMA_HEAD,
+            "coverage": "Current shared verification queue and terminal results in the last five minutes; all player types. Lifetime account/content totals and raw submission-history charts are retired."}
 
 
 @router.get("/v1/admin/entities/{kind}")
@@ -134,8 +113,10 @@ def entities(
     window: Window,
     q: str = Query("", max_length=100),
     state: str = Query("", max_length=32),
+    failure_code: str = Query("", max_length=64),
     offset: int = Query(0, ge=0, le=1000000),
     limit: int = Query(25, ge=1, le=100),
+    cursor: str = Query("", max_length=2048),
 ):
     if kind not in FIELDS:
         raise HTTPException(404)
@@ -147,9 +128,15 @@ def entities(
         search_fields = [
             getattr(model, key)
             for key in fields.split()
-            if key in ("id", "display_name", "name", "player_id", "entity_id", "command_id", "request_id")
+            if key in ("id", "display_name", "name", "player_id", "entity_id", "command_id", "request_id", "failure_code")
         ]
-        conditions.append(or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
+        key = identifier(q)
+        conditions.append(or_(*(field == key for field in search_fields)) if key else
+                          or_(*(field.icontains(q, autoescape=True) for field in search_fields)))
+    if failure_code:
+        if kind not in ("races", "jobs"):
+            raise HTTPException(422, "FAILURE_FILTER_REQUIRES_RACES")
+        conditions.append(Run.failure_code == failure_code)
     if state:
         if kind == "players":
             if state not in ("active", "disabled", "removed"):
@@ -159,14 +146,12 @@ def entities(
         elif kind in ("races", "jobs", "tracks"):
             conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
     with request.app.state.session_factory() as db:
-        total = db.scalar(select(func.count()).select_from(model).where(*conditions))
-        rows = db.scalars(
-            select(model)
-            .where(*conditions)
-            .order_by(model.created_at.desc(), model.id)
-            .offset(offset)
-            .limit(limit)
-        ).all()
+        selected, paging = page(db, select(model).where(*conditions).options(
+            load_only(*(getattr(model, field) for field in fields.split()))), model.created_at, model.id,
+            scope=digest({"kind": kind, "window": window, "q": q, "state": state,
+                          "failure": failure_code, "published": request.app.state.settings.local_drafts_only}),
+            cursor=cursor, offset=offset, limit=limit, descending=True, numeric=True)
+        rows = [row[0] for row in selected]
         items = [record(kind, row) for row in rows]
         if kind == "tracks":
             tracks = {
@@ -175,7 +160,7 @@ def entities(
             for item in items:
                 parent = tracks[item["track_id"]]
                 item.update(hidden=parent.hidden, owner_id=parent.owner_id)
-        return {"items": items, "total": total, "offset": offset, "limit": limit}
+        return {"items": items, **paging}
 
 
 @router.get("/v1/admin/entities/{kind}/{entity_id}")

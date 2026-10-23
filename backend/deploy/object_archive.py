@@ -11,6 +11,7 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
+from bmt_backend.local_object_listing import SCAN_DIRECTORY
 from bmt_backend.storage import MAX_STORED_BLOB_BYTES, decode_blob_json, sync_directory
 
 
@@ -48,6 +49,12 @@ def archive(root: Path) -> None:
     # Serialize both as regular data; restoring archive link entries is forbidden.
     with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", dereference=True) as output:
         for directory, folders, files in os.walk(root, followlinks=False):
+            if Path(directory) == root and SCAN_DIRECTORY in folders:
+                # Rebuildable maintenance cursors are not content. Prune before
+                # descent so manifests never enter a portable object archive.
+                if (root / SCAN_DIRECTORY).is_symlink():
+                    raise ValueError("Object scan directory must not be a symbolic link")
+                folders.remove(SCAN_DIRECTORY)
             # Only one hash shard's names are resident, regardless of total size.
             for name in sorted(folders + files):
                 if name.startswith(".pending-"):

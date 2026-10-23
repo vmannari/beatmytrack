@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from fastapi import Request
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from test_domains import FakeVerifier, public_course, submit, ticket
+from test_domains import FakeVerifier, headers, public_course, submit, ticket
 
 from bmt_backend.app import create_app
 from bmt_backend.config import Settings
@@ -55,6 +55,8 @@ def probe(folder, mode):
         database_url=f"sqlite:///{(folder / 'db.sqlite').as_posix()}", object_dir=str(folder / "objects"),
         worker_shutdown_grace_seconds=1, rate_limit_per_minute=10000, write_limit_per_minute=10000),
         verifier=verifier)
+    from legacy_authoring_fixture import install
+    install(app)
     upgrade(app.state.engine)
     if mode == "recover":
         with app.state.session_factory() as session:
@@ -81,6 +83,10 @@ def probe(folder, mode):
         app.dependency_overrides[current_player] = player
         with TestClient(app) as client:
             domain = SimpleNamespace(app=app, client=client, factory=app.state.session_factory, players=players)
+            from bmt_backend.community import TERMS_VERSION
+            accepted = client.post("/v1/community/terms", headers=headers(domain),
+                json={"version": TERMS_VERSION, "accepted": True})
+            assert accepted.status_code == 200, accepted.text
             version, _ = public_course(domain)
             first = submit(domain, ticket(domain, version, "Alice"), "Alice")
             second = submit(domain, ticket(domain, version, "Bob"), "Bob")

@@ -2,11 +2,12 @@
 from collections import Counter
 
 from fastapi import APIRouter, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .admin import Access, Window
 from .admin_ranges import calendar_range
 from .quality_models import QualityFact
+from .studio_queries import read_snapshot
 from .track_models import Track, TrackVersion, digest
 
 router = APIRouter(tags=["client quality"])
@@ -73,12 +74,18 @@ def report(request: Request, role: Access, window: Window, kind: str = "quality_
         raise HTTPException(422, "INVALID_DIAGNOSTIC_KIND")
     first, until = window or calendar_range(7)
     with request.app.state.session_factory() as session:
+        read_snapshot(session)
         rows = session.scalars(select(QualityFact).where(QualityFact.kind == kind,
             QualityFact.day >= first // 86400, QualityFact.day <= (until - 1) // 86400)
             .order_by(QualityFact.day.desc(), QualityFact.dimension).limit(limit + 1)).all()
+        totals = dict(session.execute(select(*[func.coalesce(func.sum(getattr(QualityFact, field)), 0).label(field)
+            for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))])
+            .where(QualityFact.kind == kind, QualityFact.day >= first // 86400,
+                QualityFact.day <= (until - 1) // 86400)).mappings().one())
         return {"items": [{"day": row.day, "context": row.context, **{field: getattr(row, field)
             for field in ("reports", "samples", "slow", *("b" + str(i) for i in range(8)))}}
-            for row in rows[:limit]], "truncated": len(rows) > limit, "role": role,
+            for row in rows[:limit]], "totals": totals, "totals_scope": "Full selected scope; independent of detail limit",
+            "truncated": len(rows) > limit, "role": role,
             "bucket_upper_ms": BUCKET_UPPER_MS,
             "resolution": "UTC calendar day; partial-day requests include their entire day buckets",
             "coverage": {"enabled": request.app.state.settings.client_quality_enabled,
@@ -92,6 +99,7 @@ def report(request: Request, role: Access, window: Window, kind: str = "quality_
 @router.get("/v1/admin/creator-health")
 def creator_health(request: Request, role: Access, limit: int = Query(100, ge=1, le=100)):
     with request.app.state.session_factory() as session:
+        read_snapshot(session)
         rows = session.execute(select(TrackVersion, Track).join(Track)
             .where(TrackVersion.state == "published")
             .order_by(TrackVersion.created_at.desc(), TrackVersion.id).limit(limit + 1)).all()

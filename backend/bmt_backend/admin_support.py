@@ -10,6 +10,7 @@ from sqlalchemy import String, cast, func, literal, or_, select, union_all
 from .admin import Access, record
 from .admin_commerce import purchase_record
 from .admin_models import AdminAudit
+from .admin_player_grants import grant_context
 from .admin_ranges import during, time_range
 from .commerce import access_values, catalog_products, entitlement_payload, simulator_allowed
 from .commerce_models import Entitlements, PublicationSlot, Purchase
@@ -60,6 +61,7 @@ def support(player_id: UUID, request: Request, role: Access):
                 "daily_free_available": player.deleted_at is None and (not wallet or wallet.free_day < now() // 86400)},
             "consumed_publication_slots": publications, "pending_purchases": pending,
             "products": catalog_products(session), "as_of": now(),
+            "grants": grant_context(session, player, role),
             "development_controls": {"editable": role == "owner" and eligible,
                 "configured": settings.purchase_simulation_enabled and settings.environment == "development"
                     and settings.dev_auth_enabled,

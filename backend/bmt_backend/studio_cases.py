@@ -11,7 +11,7 @@ from .admin_models import AdminAudit
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
 from .studio_case_models import StudioCase, StudioCaseEvent, StudioQuarantine
-from .track_models import Track, digest, now
+from .track_models import Track, TrackVersion, digest, now
 from .tracks import Auth
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["studio cases"])
@@ -20,7 +20,7 @@ TRANSITIONS = {"open": {"investigating", "resolved"}, "investigating": {"resolve
 
 
 def value(case):
-    return {key: getattr(case, key) for key in ("id", "player_id", "track_id", "title", "status", "revision", "created_at", "updated_at")}
+    return {key: getattr(case, key) for key in ("id", "player_id", "reported_player_id", "track_id", "title", "status", "revision", "created_at", "updated_at")}
 
 
 def safe_text(value, limit):
@@ -191,9 +191,11 @@ def append_event(case_id: UUID, payload: Action, request: Request, role: Access)
 class Report(BaseModel):
     model_config = ConfigDict(extra="forbid")
     command_id: UUID
-    reason: str = Field(pattern="^(track_issue|abuse|billing_issue|technical_issue)$")
+    reason: str = Field(pattern="^(track_issue|abuse|billing_issue|technical_issue|sexual_content|child_safety|hate|harassment|violence|privacy|spam|illegal_content)$")
     text: str = Field(min_length=1, max_length=2000)
     track_id: UUID | None = None
+    reported_player_id: UUID | None = None
+    version_id: UUID | None = None
 
 
 @router.post("/v1/reports")
@@ -205,13 +207,25 @@ def player_report(payload: Report, request: Request, player: Auth):
         result = replay(session, identity, request_hash)
         if result:
             return {"id": result["id"], "status": result["status"]}
-        if payload.track_id and session.get(Track, str(payload.track_id)) is None:
+        track = session.get(Track, str(payload.track_id)) if payload.track_id else None
+        if payload.version_id:
+            version = session.get(TrackVersion, str(payload.version_id))
+            if version is None or track and version.track_id != track.id:
+                raise HTTPException(404, "TRACK_NOT_FOUND")
+            track = session.get(Track, version.track_id)
+        if payload.track_id and track is None:
             raise HTTPException(404, "TRACK_NOT_FOUND")
-        case = StudioCase(player_id=player.id, track_id=str(payload.track_id) if payload.track_id else None,
+        target = str(payload.reported_player_id) if payload.reported_player_id else track.owner_id if track else None
+        if target and (session.get(Player, target) is None or track and track.owner_id != target):
+            raise HTTPException(404, "PLAYER_NOT_FOUND")
+        if target == player.id and track is None:
+            raise HTTPException(422, "CANNOT_REPORT_SELF")
+        case = StudioCase(player_id=player.id, track_id=track.id if track else None, reported_player_id=target,
             title=payload.reason.replace("_", " ").capitalize())
         session.add(case); session.flush()
         session.add(StudioCaseEvent(id=identity, case_id=case.id, actor="player", kind="reported",
-            detail={"reason": payload.reason, "text": safe_text(payload.text, 2000)}, request_hash=request_hash))
+            detail={"reason": payload.reason, "text": safe_text(payload.text, 2000),
+                "reported_player_id": target, "version_id": str(payload.version_id) if payload.version_id else None}, request_hash=request_hash))
         session.commit()
         return {"id": case.id, "status": case.status}
 

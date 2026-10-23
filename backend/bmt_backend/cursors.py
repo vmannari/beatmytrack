@@ -9,9 +9,9 @@ def encode_cursor(value: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
 
 
-def decode_cursor(value: str) -> dict:
+def decode_cursor(value: str, *, max_length: int = 400) -> dict:
     try:
-        if len(value) > 400:
+        if len(value) > max_length:
             raise ValueError
         result = json.loads(base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True))
         if not isinstance(result, dict):

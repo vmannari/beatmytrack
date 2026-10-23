@@ -196,9 +196,13 @@ def test_service_worker_verifies_player_before_idle_histogram(domain):
     from bmt_backend.worker import process_worker_job
     version, _ = public_course(domain)
     queued = submit(domain, ticket(domain, version, "Alice"), "Alice", frames=20)
+    assert domain.client.get(route(version), headers=headers(domain)).status_code == 503
     assert process_worker_job(domain.app)
     with domain.factory() as session:
         assert session.get(Run, queued["run_id"]).status == "verified"
     assert snapshot(domain, version).generation == ""
-    assert process_worker_job(domain.app)
+    for _ in range(16):
+        if snapshot(domain, version).generation:
+            break
+        assert process_worker_job(domain.app)
     assert snapshot(domain, version).generation != ""

@@ -45,7 +45,11 @@ def child(folder, role, mode):
 def supervisor(folder, mode):
     worker_mode = "fail" if mode == "worker_fail" else "stubborn" if mode == "timeout" else "orphan" if mode == "orphan" else "normal"
     product_mode = "fail" if mode == "product_fail" else "exit_zero" if mode == "product_exit_zero" else "normal"
+    publication_mode = "fail" if mode == "publication_fail" else "exit_zero" if mode == "publication_exit_zero" else "normal"
+    discovery_mode = "fail" if mode == "discovery_fail" else "exit_zero" if mode == "discovery_exit_zero" else "normal"
     commands = {"worker": (sys.executable, __file__, "child", str(folder), "worker", worker_mode),
+        "publication": (sys.executable, __file__, "child", str(folder), "publication", publication_mode),
+        "discovery": (sys.executable, __file__, "child", str(folder), "discovery", discovery_mode),
         "product": (sys.executable, __file__, "child", str(folder), "product", product_mode)}
 
     def factory(role, command):

@@ -3,11 +3,12 @@ from collections import Counter
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import BigInteger, cast, delete, func, select, tuple_
 
 from .admin import Access, Window
 from .admin_ranges import calendar_range
 from .network_models import NetworkHealthDay
+from .studio_queries import read_snapshot
 from .telemetry_models import ProductEvent, ProductState
 from .track_models import digest, now
 
@@ -141,6 +142,7 @@ def report(request: Request, role: Access, window: Window, platform: str = Query
         raise HTTPException(422, "INVALID_NETWORK_FILTER")
     first, until = window or calendar_range(7)
     with request.app.state.session_factory() as session:
+        read_snapshot(session)
         state = session.get(ProductState, 1)
         retained_day = now() // 86400 - (state.fact_days if state else 180)
         conditions = [NetworkHealthDay.day >= max(first // 86400, retained_day), NetworkHealthDay.day <= (until - 1) // 86400]
@@ -160,10 +162,13 @@ def report(request: Request, role: Access, window: Window, platform: str = Query
             and (not category or event.properties["category"] == category)
             and (not device_model or event.properties["device_model"] == device_model)
             and (not os_version or event.properties["os_version"] == os_version)]
-        totals, buckets = Counter(), {field: [0] * size for field, size in ARRAYS.items()}
-        for row in rows[:limit]:
-            totals.update(row.counters)
-            for field in ARRAYS: buckets[field] = [a + b for a, b in zip(buckets[field], row.buckets[field], strict=True)]
+        values=dict(session.execute(select(*[func.coalesce(func.sum(cast(NetworkHealthDay.counters[field].as_string(),BigInteger)),0).label(field)
+            for field in COUNTERS],*[func.coalesce(func.sum(cast(NetworkHealthDay.buckets[field][i].as_string(),BigInteger)),0).label(field+"_"+str(i))
+                for field,size in ARRAYS.items() for i in range(size)],func.max(NetworkHealthDay.latest_received_at).label("latest"))
+            .where(*conditions)).mappings().one())
+        latest=values.pop("latest")
+        buckets={field:[values.pop(field+"_"+str(i)) for i in range(size)] for field,size in ARRAYS.items()}
+        totals=values if values.get("attempts") else {}
         return {"schema": "bmt-network-health-v1", "role": role, "filters": {"platform": platform, "build_id": build_id,
             "category": category, "device_model": device_model, "os_version": os_version}, "totals": dict(totals), "buckets": buckets,
             "items": [{"day": row.day, "platform": row.platform, "build_id": row.build_id, "category": row.category,
@@ -173,6 +178,6 @@ def report(request: Request, role: Access, window: Window, platform: str = Query
             "latency_bucket_upper_ms": LIMITS, "categories": CATEGORIES,
             "upload_age_bucket_upper_seconds": AGE_LIMITS, "error_types": ERRORS, "methods": METHODS,
             "collection": {"enabled": request.app.state.settings.telemetry_enabled and request.app.state.settings.client_quality_enabled,
-                "guest_available": False, "latest_summary_at": max((row.latest_received_at for row in rows[:limit]), default=None),
+                "guest_available": False, "latest_summary_at": latest,
                 "processor_observed_at": state.observed_at if state else None},
             "coverage": "Signed-in client-observed transmissions, not logical actions or service uptime. Total includes measured client queue/preparation, HTTP completion interval and decode; HTTP time includes callback scheduling, not server CPU. Request bytes are encoded body bytes; response bytes are returned decoded body bytes, excluding headers/TLS. Upload age requires a stored server-time anchor; legacy/unanchored uploads are unavailable. Selected request IDs are unverified client correlation hints; confirm them in server logs. Summaries use UTC day buckets; selected failures use exact event time."}

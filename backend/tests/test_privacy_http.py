@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 import uvicorn
 from sqlalchemy import func, select
 
@@ -17,6 +18,7 @@ from bmt_backend.migrate import upgrade
 from bmt_backend.privacy_models import AccountDeletion
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Native privacy probe uses the pinned Windows PowerShell launcher")
 def test_native_deletion_and_new_identity_over_http(tmp_path):
     root = Path(__file__).resolve().parents[2]
     listener = socket.socket(); listener.bind(("127.0.0.1", 0)); listener.listen()

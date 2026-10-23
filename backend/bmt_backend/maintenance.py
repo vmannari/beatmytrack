@@ -36,10 +36,13 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
     if days < 1 or (apply and not offline and not (online and isinstance(blobs, PinnedBlobStore))):
         raise ValueError("Applying retention requires pinned --online or stopped writers with --offline")
     local = isinstance(getattr(blobs,"store",blobs),LocalBlobStore)
-    cursor = object_cursor or ({"shard":0,"offset":0} if local else None)
-    if (not 1 <= scan_limit <= 1000 or (local and (set(cursor)!={"shard","offset"}
-            or any(type(v) is not int or v<0 for v in cursor.values()) or cursor["shard"]>256))):
+    cursor = object_cursor
+    if type(scan_limit) is not int or not 1 <= scan_limit <= 1000:
         raise ValueError("Invalid retention cursor or scan limit")
+    if local:
+        blobs.validate_object_cursor(cursor)
+        # Stream the manifest before taking any DB connections or row locks.
+        cursor = blobs.prepare_object_scan(cursor)
     cutoff = now() - days * 86400
     from .resumes import expire_unsettled
     expire_unsettled(factory, cutoff, apply=apply)
@@ -78,13 +81,12 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             ResumeRace.ticket_id.is_(None)).order_by(ResumeRace.expires_at, ResumeRace.id).limit(1000)))
         receipts = set(session.scalars(select(ResumeReceipt.id).where(ResumeReceipt.race_id.in_(races))))
         rows, next_cursor = blobs.list_objects(cursor, scan_limit, True) if local else blobs.list_objects(cursor, scan_limit)
-        temporary_files, temporary_bytes, temporary_removed = 0, 0, []
+        temporary_files, temporary_bytes = 0, 0
         for row in rows:
             if "temporary" in row:
                 names, size = blobs.cleanup_temporary(row, now()-86400, apply=apply, offline=offline)
                 temporary_files += len(names)
                 temporary_bytes += size
-                temporary_removed.extend((row["shard"], name) for name in names)
         objects_inspected = len(rows)
         rows = [row for row in rows if "temporary" not in row]
         eligible = [row for row in rows if row["modified"] < now()-86400]
@@ -130,10 +132,6 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 blobs.delete(key)
                 safe.append(row)
             orphaned = safe
-        if apply and next_cursor is not None and "shard" in next_cursor:
-            removed = sum(row["digest"].startswith(f"{next_cursor['shard']:02x}") for row in orphaned)
-            removed += sum(shard == f"{next_cursor['shard']:02x}" for shard, _name in temporary_removed)
-            next_cursor["offset"] = max(0, next_cursor["offset"]-removed)
         result = {"runs": len(run_ids), "tickets": len(tickets), "resume_races": len(races),
                   "retired_publications": len(retired_intents), "retired_publication_uploads": len(retired_uploads),
                   "orphaned_objects": len(orphaned), "orphaned_bytes": sum(row["bytes"] for row in orphaned), "applied": apply,

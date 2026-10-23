@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, or_, select, text
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, load_only
 
 from .admin import Access, Window, record
 from .admin_ranges import calendar_range
@@ -24,8 +24,9 @@ from .quality_models import QualityFact
 from .resume_models import ResumeWallet
 from .studio import MANIFEST_FIELDS
 from .studio_case_models import StudioCase, StudioCaseEvent
+from .studio_paging import identifier, page
 from .telemetry_models import ProductPlayerDay, ProductProfile, ProductState
-from .track_models import Board, PersonalBest, Run, Track, TrackVersion, now
+from .track_models import Board, PersonalBest, Run, Track, TrackVersion, digest, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["Studio catalogue"])
 
@@ -101,7 +102,8 @@ def tracks(request: Request, role: Access, window: Window,
     versions: Literal["latest", "all"] = "latest",
     sort: Literal["published", "name", "creator", "rating", "finishers"] = "published",
     direction: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0, le=10000),
-    limit: int = Query(25, ge=1, le=100), anchor: int | None = Query(None, ge=0)):
+    limit: int = Query(25, ge=1, le=100), anchor: int | None = Query(None, ge=0),
+    cursor: str = Query("", max_length=2048)):
     anchor = now() if anchor is None else anchor
     if anchor > now():
         raise HTTPException(422, "INVALID_CATALOGUE_ANCHOR")
@@ -114,7 +116,8 @@ def tracks(request: Request, role: Access, window: Window,
                 newer.state == "published", newer.created_at <= anchor,
                 newer.number > TrackVersion.number).exists())
         if q:
-            conditions.append(or_(*(field.icontains(q, autoescape=True) for field in
+            key = identifier(q)
+            conditions.append(or_(TrackVersion.id == key, Track.id == key) if key else or_(*(field.icontains(q, autoescape=True) for field in
                 (TrackVersion.name, TrackVersion.id, Track.id, Player.display_name,
                  TrackVersion.discovery["theme"].as_string()))))
         if theme:
@@ -135,16 +138,21 @@ def tracks(request: Request, role: Access, window: Window,
         if min_finishers:
             conditions.append(TrackVersion.verified_finishers >= min_finishers)
         query = select(TrackVersion, Track, Player).join(Track, Track.id == TrackVersion.track_id).join(
-            Player, Player.id == Track.owner_id).where(*conditions)
-        count_query = select(func.count()).select_from(query.subquery())
+            Player, Player.id == Track.owner_id).where(*conditions).options(
+                load_only(TrackVersion.id, TrackVersion.track_id, TrackVersion.number, TrackVersion.name,
+                    TrackVersion.created_at, TrackVersion.published_at, TrackVersion.discovery,
+                    TrackVersion.rating_count, TrackVersion.rating_sum, TrackVersion.verified_finishers),
+                load_only(Track.id, Track.owner_id, Track.official, Track.hidden, Track.archived),
+                load_only(Player.id, Player.display_name, Player.is_test_driver))
         order = {"published": TrackVersion.published_at, "name": func.lower(TrackVersion.name),
             "creator": func.lower(Player.display_name), "rating": rating,
             "finishers": TrackVersion.verified_finishers}[sort]
-        ordering = order.asc() if direction == "asc" else order.desc()
-        if sort in ("rating", "published"):
-            ordering = ordering.nulls_last()
-        rows = session.execute(query.order_by(ordering,
-            TrackVersion.id.asc() if direction == "asc" else TrackVersion.id.desc()).offset(offset).limit(limit)).all()
+        scope = digest({"kind": "studio_tracks", "anchor": anchor, "q": q, "theme": theme,
+            "visibility": visibility, "origin": origin, "creator": str(creator_id), "rating": min_rating,
+            "finishers": min_finishers, "versions": versions, "sort": sort, "direction": direction, "window": window})
+        rows, paging = page(session, query, order, TrackVersion.id, scope=scope, cursor=cursor,
+            offset=offset, limit=limit, descending=direction == "desc", numeric=sort in ("published", "rating", "finishers"),
+            nullable=sort in ("published", "rating"))
         facts, coverage = observations(session, [version.id for version, _track, _player in rows],
             window or calendar_range(7))
         items = []
@@ -152,12 +160,37 @@ def tracks(request: Request, role: Access, window: Window,
             item = track_record(version, track, player)
             item["discovery"] = facts.get(version.id)
             items.append(item)
-        total = session.scalar(count_query)
-        return response({"role": role, "items": items, "total": total, "offset": offset, "limit": limit,
-            "summary": {"published_versions": total, "scope": "Matching published immutable versions"},
+        return response({"role": role, "items": items, **paging,
+            "summary": {"published_versions": len(items), "scope": "This page of published immutable versions"},
             "coverage": coverage, "as_of": now(), "anchor": anchor, "read_only": True,
             "paging": "Creation-time anchor excludes later inserts; rating, visibility and publication changes are current and can reorder pages.",
             "catalogue_policy": "Published content only. Local drafts are not a server monitoring source."})
+
+
+@router.get("/v1/admin/catalogue/track-options")
+def track_options(request: Request, role: Access, q: str = Query("", max_length=100),
+                  limit: int = Query(100, ge=1, le=200), cursor: str = Query("", max_length=2048)):
+    """Small selector projection: no routes, ownership, manifests or observations."""
+    from .cursors import decode_cursor, encode_cursor
+    conditions = [TrackVersion.state == "published"]
+    newer = aliased(TrackVersion)
+    conditions.append(~select(newer.id).where(newer.track_id == TrackVersion.track_id,
+        newer.state == "published", newer.number > TrackVersion.number).exists())
+    if q:
+        conditions.append(or_(TrackVersion.id == q, TrackVersion.name.icontains(q, autoescape=True)))
+    if cursor:
+        position = decode_cursor(cursor)
+        if position.get("q") != q or not isinstance(position.get("name"), str) or not isinstance(position.get("id"), str):
+            raise HTTPException(422, "INVALID_CURSOR")
+        conditions.append(or_(func.lower(TrackVersion.name) > position["name"],
+            (func.lower(TrackVersion.name) == position["name"]) & (TrackVersion.id > position["id"])))
+    with request.app.state.session_factory() as session:
+        rows = session.execute(select(TrackVersion.id, TrackVersion.name, TrackVersion.number)
+            .where(*conditions).order_by(func.lower(TrackVersion.name), TrackVersion.id).limit(limit + 1)).all()
+        items = [{"id": identity, "name": name, "number": number} for identity, name, number in rows[:limit]]
+        more = len(rows) > limit
+        return {"items": items, "truncated": more, "next_cursor": encode_cursor({"q": q,
+            "name": items[-1]["name"].lower(), "id": items[-1]["id"]}) if more else None, "role": role}
 
 
 def accepted_seconds(run, board):
@@ -216,8 +249,13 @@ def player_counts(session, ids):
     publications = dict(session.execute(select(Track.owner_id, func.count()).join(
         TrackVersion, TrackVersion.track_id == Track.id).where(Track.owner_id.in_(ids),
             TrackVersion.state == "published").group_by(Track.owner_id)).all())
-    cases = dict(session.execute(select(StudioCase.player_id, func.count()).where(
-        StudioCase.player_id.in_(ids), StudioCase.status != "resolved").group_by(StudioCase.player_id)).all())
+    # One case can concern a reporter and a different reported player. UNION
+    # deduplicates a self-linked historical case before counting per account.
+    case_links = select(StudioCase.id, StudioCase.player_id.label("player_id")).where(
+        StudioCase.player_id.in_(ids), StudioCase.status != "resolved").union(
+        select(StudioCase.id, StudioCase.reported_player_id.label("player_id")).where(
+            StudioCase.reported_player_id.in_(ids), StudioCase.status != "resolved")).subquery()
+    cases = dict(session.execute(select(case_links.c.player_id, func.count()).group_by(case_links.c.player_id)).all())
     active = dict(session.execute(select(ProductPlayerDay.player_id, func.max(ProductPlayerDay.day)).where(
         ProductPlayerDay.player_id.in_(ids)).group_by(ProductPlayerDay.player_id)).all())
     return race, bests, publications, cases, active
@@ -229,7 +267,7 @@ def players(request: Request, role: Access, q: str = Query("", max_length=100),
     population: Literal["all", "real", "artificial"] = "all", provider: str = Query("", max_length=32),
     sort: Literal["created", "name"] = "created", direction: Literal["asc", "desc"] = "desc",
     offset: int = Query(0, ge=0, le=10000), limit: int = Query(25, ge=1, le=100),
-    anchor: int | None = Query(None, ge=0)):
+    anchor: int | None = Query(None, ge=0), cursor: str = Query("", max_length=2048)):
     anchor = now() if anchor is None else anchor
     if anchor > now():
         raise HTTPException(422, "INVALID_CATALOGUE_ANCHOR")
@@ -237,7 +275,8 @@ def players(request: Request, role: Access, q: str = Query("", max_length=100),
         snapshot(session)
         conditions = [Player.created_at <= anchor]
         if q:
-            conditions.append(or_(Player.id.icontains(q, autoescape=True), Player.display_name.icontains(q, autoescape=True)))
+            key = identifier(q)
+            conditions.append(Player.id == key if key else or_(Player.id.icontains(q, autoescape=True), Player.display_name.icontains(q, autoescape=True)))
         if state in ("active", "disabled"):
             conditions.append(Player.disabled == (state == "disabled"))
         elif state == "username_pending":
@@ -247,28 +286,28 @@ def players(request: Request, role: Access, q: str = Query("", max_length=100),
         if provider:
             conditions.append(select(Identity.id).where(Identity.player_id == Player.id,
                 Identity.provider == provider).exists())
-        query = select(Player).where(*conditions)
+        query = select(Player).where(*conditions).options(load_only(Player.id, Player.display_name, Player.created_at,
+            Player.country_code, Player.disabled, Player.is_test_driver, Player.needs_username))
         order = Player.created_at if sort == "created" else func.lower(Player.display_name)
-        rows = session.scalars(query.order_by(order.asc() if direction == "asc" else order.desc(),
-            Player.id.asc() if direction == "asc" else Player.id.desc()).offset(offset).limit(limit)).all()
+        scope = digest({"kind": "studio_players", "anchor": anchor, "q": q, "state": state,
+            "population": population, "provider": provider, "sort": sort, "direction": direction})
+        selected, paging = page(session, query, order, Player.id, scope=scope, cursor=cursor, offset=offset,
+            limit=limit, descending=direction == "desc", numeric=sort == "created")
+        rows = [row[0] for row in selected]
         ids = [player.id for player in rows]
-        race, bests, publications, cases, active = player_counts(session, ids)
         providers = {}
         for identity, login in session.execute(select(Identity.player_id, Identity.provider).where(Identity.player_id.in_(ids))):
             providers.setdefault(identity, set()).add(login)
         items = [{"id": player.id, "display_name": player.display_name, "is_test_driver": player.is_test_driver,
             "disabled": player.disabled, "needs_username": player.needs_username, "created_at": player.created_at,
             "country_code": player.country_code or None, "providers": sorted(providers.get(player.id, [])),
-            "races": race.get(player.id, {"submissions": 0, "verified_submissions": 0, "last_submission_at": None}),
-            "personal_bests": bests.get(player.id, 0), "published_versions": publications.get(player.id, 0),
-            "open_cases": cases.get(player.id, 0), "last_observed_activity_day": active.get(player.id)} for player in rows]
-        summary = session.execute(select(func.count(), func.count().filter(Player.is_test_driver.is_(True)),
-            func.count().filter(Player.disabled.is_(True))).where(*conditions)).one()
-        return response({"role": role, "items": items, "total": summary[0], "offset": offset, "limit": limit,
-            "summary": {"accounts": summary[0], "artificial": summary[1], "restricted": summary[2]},
+            } for player in rows]
+        return response({"role": role, "items": items, **paging,
+            "summary": {"accounts": len(rows), "artificial": sum(p.is_test_driver for p in rows),
+                "restricted": sum(p.disabled for p in rows)}, "summary_scope": "page",
             "as_of": now(), "anchor": anchor,
             "paging": "Creation-time anchor excludes later inserts; account names and restrictions are current and can reorder pages.",
-            "coverage": "Server race counts include artificial drivers. Last observed activity is a retained signed-in UTC day, not precise last-online time. Guest, email, recovery proof, revenue and device identity are unavailable."})
+            "coverage": "All account types are included unless filtered. Open a player for race, creator, case and observed-activity evidence. Guest, email, recovery proof, revenue and device identity are unavailable."})
 
 
 @router.get("/v1/admin/catalogue/players/{player_id}")
@@ -281,10 +320,11 @@ def player(player_id: UUID, request: Request, role: Access):
             raise HTTPException(404, "PLAYER_NOT_FOUND")
         access = support_context(session, account, request.app.state.settings, role)
         race, bests, publications, cases, active = player_counts(session, [identity])
-        rows = session.scalars(select(StudioCase).where(StudioCase.player_id == identity)
+        case_scope = or_(StudioCase.player_id == identity, StudioCase.reported_player_id == identity)
+        rows = session.scalars(select(StudioCase).where(case_scope)
             .order_by(StudioCase.updated_at.desc(), StudioCase.id).limit(11)).all()
         events = session.execute(select(StudioCaseEvent, StudioCase).join(StudioCase,
-            StudioCase.id == StudioCaseEvent.case_id).where(StudioCase.player_id == identity)
+            StudioCase.id == StudioCaseEvent.case_id).where(case_scope)
             .order_by(StudioCaseEvent.created_at.desc(), StudioCaseEvent.id).limit(21)).all()
         profile = session.get(ProductProfile, identity)
         return response({"role": role, "support": access,
@@ -306,6 +346,7 @@ def player(player_id: UUID, request: Request, role: Access):
 
 def support_context(session, player, settings, role):
     """Reuse existing domain policies inside the same read-only snapshot."""
+    from .admin_player_grants import grant_context
     owned = session.get(Entitlements, player.id)
     wallet = session.get(ResumeWallet, player.id)
     values = access_values(owned)
@@ -322,6 +363,7 @@ def support_context(session, player, settings, role):
         "pending_purchases": session.scalar(select(func.count()).select_from(Purchase)
             .where(Purchase.player_id == player.id, Purchase.state == "pending")),
         "products": catalog_products(session), "as_of": now(),
+        "grants": grant_context(session, player, role),
         "development_controls": {"editable": role == "owner" and eligible,
             "configured": settings.purchase_simulation_enabled and settings.environment == "development"
                 and settings.dev_auth_enabled, "eligible": bool(eligible), "role": role}}

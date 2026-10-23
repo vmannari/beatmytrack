@@ -23,15 +23,69 @@ real_verifier = real_verifier_source
 
 @pytest.fixture(scope="module")
 def proof(real_verifier, tmp_path_factory):
+    import shutil
     folder = tmp_path_factory.mktemp("lightweight-proof")
     output = folder / "proof.json"
     root = Path(__file__).resolve().parents[2]
-    command = [real_verifier.binary, "--headless", "--path", str(root / "game"), "--script",
+    project = folder / "game"
+    shutil.copytree(real_verifier.project, project)
+    for path in (project, *project.rglob("*")):
+        path.chmod(path.stat().st_mode | 0o200)
+    (project / "tests").mkdir(exist_ok=True)
+    shutil.copyfile(root / "game/tests/test_lightweight_verifier.gd", project / "tests/test_lightweight_verifier.gd")
+    command = [real_verifier.binary, "--headless", "--path", str(project), "--script",
         "res://tests/test_lightweight_verifier.gd", "--", f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
         f"--proof-output={output}"]
     result = subprocess.run(command, capture_output=True, timeout=90, check=False)
     assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
     return json.loads(output.read_text())
+
+
+@pytest.fixture(scope="module")
+def creator_proof(real_verifier, tmp_path_factory):
+    import shutil
+    folder = tmp_path_factory.mktemp("creator-proof")
+    project = folder / "game"
+    shutil.copytree(real_verifier.project, project)
+    for path in (project, *project.rglob("*")):
+        path.chmod(path.stat().st_mode | 0o200)
+    script = project / "backend/record_creator_fixture.gd"
+    script.write_text('''extends "res://backend/runner.gd"
+func run() -> void:
+ var fixture_path: String = ""
+ for arg: String in OS.get_cmdline_user_args():
+  if arg.begins_with("--fixture="): fixture_path = arg.trim_prefix("--fixture=")
+  if arg.begins_with("--output="): output_path = arg.trim_prefix("--output=")
+ var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(fixture_path))
+ var track: NativeTrack = TrackCompiler.compile(fixture.document)
+ track.spawn = Vector2(fixture.document.start_line.position[0],fixture.document.start_line.position[1])
+ track.spawn_heading = PI*0.5-deg_to_rad(float(fixture.document.start_line.heading))
+ var sim := VehicleSimulation.new(VehicleCatalog.config("compact"))
+ sim.reset(track.spawn,track.spawn_heading)
+ var session := TrackSession.new(120,1)
+ var trace = preload("res://backend/race_proof.gd").new()
+ trace.capture(sim.state,session,true)
+ var driver := RouteDriver.new()
+ for tick: int in range(24000):
+  var frame: DriveFrame = driver.sample(sim.state,track,sim.config)
+  var before: Vector2 = sim.state.position
+  var layer: int = int(sim.state.track_elevated)
+  sim.step(frame,track)
+  session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,layer)
+  trace.capture(sim.state,session)
+  if session.finished: break
+ if not session.finished: respond({},"Creator fixture did not finish"); return
+ respond({"schema":"bmt-trajectory-v1","input_count":session.elapsed_ticks,"race_proof":trace.recording(session)})
+''')
+    output = folder / "creator.json"
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--script",
+        "res://backend/record_creator_fixture.gd", "--", f"--fixture={root / 'backend/tests/fixtures/verified_oval.json'}",
+        f"--output={output}"], capture_output=True, timeout=90, check=False)
+    assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+    response = json.loads(output.read_text())
+    assert response["ok"], response
+    return response["result"]
 
 
 @pytest.mark.godot
@@ -44,7 +98,8 @@ def test_trajectory_acceptance_rejects_bad_movement_without_simulation(real_veri
         assert baseline["verification_method"] == "trajectory-v1"
         assert baseline["time_ticks"] == race_fixture["time_ticks"]
         assert baseline["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]
-        assert baseline["manifest"] == race_fixture["expected_manifest"]
+        from bmt_backend.contracts import current_manifest
+        assert baseline["manifest"] == current_manifest(race_fixture["expected_manifest"])
         def forbidden_engine(*_args, **_kwargs):
             raise AssertionError("Race acceptance must not execute the engine")
         verifier._invoke = forbidden_engine
@@ -103,10 +158,8 @@ def test_packed_transport_preserves_evidence_and_pending_poll_budget():
 
 
 @pytest.mark.godot
-def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app, auth_client, sign_in, real_verifier, race_fixture, proof):
+def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app, auth_client, sign_in, real_verifier, race_fixture, proof, creator_proof):
     import uuid
-    from dataclasses import replace
-    auth_app.state.settings = replace(auth_app.state.settings, environment="test", allow_sync_track_validation=True)
     verifier = GodotVerifier(SimpleNamespace(godot_bin=real_verifier.binary,
         game_project=real_verifier.project, verifier_timeout_seconds=90, persistent_verifier=True))
     auth_app.state.verifier = verifier
@@ -123,9 +176,20 @@ def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app
         def write(path, body, key=None):
             return auth_client.post("/v1" + path, json=body,
                 headers={**headers, "Idempotency-Key": key or str(uuid.uuid4())})
-        track = write("/tracks", {"name": "Light proof oval", "document": race_fixture["document"]})
-        assert track.status_code == 201, track.text
-        ticket = write("/run-tickets", {"version_id": track.json()["version_id"], "vehicle_id": "compact"})
+        from bmt_backend.community import TERMS_VERSION
+        from bmt_backend.publications import CONTRACT_FIELDS
+        assert write("/community/terms", {"version": TERMS_VERSION, "accepted": True}).status_code == 200
+        document = {**race_fixture["document"], "name": "Light proof oval", "creator": login["player"]["display_name"]}
+        manifest = verifier.validate_track(document)
+        contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
+        contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
+        track = write("/publications", {"name": document["name"], "document": document,
+            "vehicle_id": "compact", "contract": contract, "replay": creator_proof})
+        assert track.status_code == 202, track.text
+        assert process_one(auth_app)
+        publication = auth_client.get("/v1/me/publications/" + track.json()["publication_id"], headers=headers).json()
+        assert publication["state"] == "published", publication
+        ticket = write("/run-tickets", {"version_id": publication["receipt"]["version_id"], "vehicle_id": "compact"})
         assert ticket.status_code == 201, ticket.text
         ghost = verifier.verify_canonical_diagnostic(race_fixture["document"],race_fixture["replay"],"compact")["ghost"]
         wire = {"schema":"bmt-trajectory-v1","input_count":race_fixture["time_ticks"],"race_proof":proof,"ghost":ghost}
@@ -136,7 +200,7 @@ def test_real_http_worker_accepts_light_proof_and_retries_same_evidence(auth_app
         run_id = submitted.json()["run_id"]
         assert write("/runs", body, key).json()["run_id"] == run_id
         assert process_one(auth_app)
-        assert methods == ["trajectory-v1"]
+        assert methods == ["trajectory-v1", "trajectory-v1"]
         result = auth_client.get("/v1/runs/" + run_id, headers=headers).json()
         assert result["status"] == "verified" and result["time_ticks"] == 12757
         assert result["lap_ticks"] == [2634, 2532, 2531, 2530, 2530]

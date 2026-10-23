@@ -2,7 +2,6 @@
 import asyncio
 import os
 from dataclasses import replace
-from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -13,8 +12,10 @@ from test_domains import headers
 from test_publication_intents import body
 from test_publication_intents import publications as publications_fixture
 
-from bmt_backend import discovery
+from bmt_backend import discovery_v3 as discovery
 from bmt_backend.discovery import DiscoveryBudget, DiscoverySnapshot
+from bmt_backend.discovery_models import DiscoveryEntry, DiscoverySession
+from bmt_backend.discovery_projection import settle_for_diagnostics
 from bmt_backend.maintenance import retain
 from bmt_backend.publication_models import PublicationIntent, PublicationUpload
 from bmt_backend.publication_storage import reserve_upload
@@ -227,14 +228,43 @@ def test_replaced_upload_lease_fences_old_writer_and_preserves_new_charge(public
     assert post(domain, content, key).status_code == 202
 
 
-def test_resource_migration_preserves_and_charges_legacy_rows(domain):
+def test_resource_migration_preserves_and_charges_legacy_rows(domain, tmp_path):
     from alembic import command
+    from sqlalchemy import MetaData, Table, create_engine
 
+    from bmt_backend.db import make_engine, make_session_factory
+    from bmt_backend.identity_models import Player
     from bmt_backend.migrate import configuration, upgrade
-    engine = domain.app.state.engine
-    command.downgrade(configuration(engine), "0032_network_health")
+    # Verify a real forward upgrade from the legacy schema. New projection
+    # migrations deliberately require a reconciled backup for binary rollback.
+    original = domain.app.state.engine
+    schema = "test_resource_" + uuid4().hex if original.dialect.name == "postgresql" else ""
+    if schema:
+        with original.begin() as connection:
+            connection.exec_driver_sql("CREATE SCHEMA " + schema)
+        engine = create_engine(original.url, connect_args={"options":"-c search_path="+schema})
+    else:
+        engine = make_engine("sqlite:///" + str(tmp_path / "legacy-migration.sqlite"))
+    try:
+        _assert_legacy_resource_upgrade(domain, engine, command, configuration, upgrade,
+            MetaData, Table, Player, make_session_factory)
+    finally:
+        engine.dispose()
+        if schema:
+            with original.begin() as connection:
+                connection.exec_driver_sql("DROP SCHEMA " + schema + " CASCADE")
+
+
+def _assert_legacy_resource_upgrade(domain, engine, command, configuration, upgrade,
+        metadata, table, player_model, make_factory):
+    command.upgrade(configuration(engine), "0032_network_health")
+    legacy_players = table("players", metadata(), autoload_with=engine)
+    with domain.factory() as session:
+        source = session.execute(select(player_model.__table__).where(
+            player_model.id == domain.players["Creator"])).mappings().one()
     identity = str(uuid4())
     with engine.begin() as connection:
+        connection.execute(legacy_players.insert().values(**{c.name:source[c.name] for c in legacy_players.columns}))
         connection.execute(text("INSERT INTO publication_intents "
             "(id,player_id,operation_key,request_hash,authoring_id,name,content_hash,replay_hash,vehicle_id,contract,"
             "status,attempts,lease_until,created_at,finished_at,failure_code) VALUES "
@@ -244,7 +274,7 @@ def test_resource_migration_preserves_and_charges_legacy_rows(domain):
             "VALUES (:id,:hash,:expires,:ids)"), {"id": str(uuid4()), "hash": "b"*64,
             "expires": now()+1800, "ids": '["one","two"]'})
     upgrade(engine)
-    with domain.factory() as session:
+    with make_factory(engine)() as session:
         row = session.get(PublicationIntent, identity)
         assert row.operation_key and row.status == "failed" and row.contract == {}
         assert row.evidence_bytes == 2621440 and not row.evidence_retired
@@ -275,45 +305,45 @@ def catalogue(domain):
             session.add(TrackVersion(track_id=track.id, number=1, name="Route " + str(index), content_hash="f"*64,
                 manifest={"laps": 5}, state="published", published_at=now()-1, discovery={"theme": "pine"}))
         session.commit()
+    settle_for_diagnostics(domain.factory)
     return domain
 
 
 def query(domain, **values):
-    return domain.client.post("/v1/discovery/tracks", json=values)
+    cursor = values.pop("cursor", "")
+    payload = {"cursor":cursor} if cursor else {"query":values}
+    return domain.client.post("/v1/discovery/v3/tracks", json=payload)
 
 
 def test_fresh_queries_coalesce_across_cache_restart(catalogue):
     domain = catalogue
-    snapshots = []
+    pages = []
     for _ in range(3):
         response = query(domain, fresh=True)
-        assert response.status_code == 200 and response.json()["total"] == 12
-        snapshots.append(response.json()["snapshot"])
+        assert response.status_code == 200 and len(response.json()["items"]) == 12
+        assert response.json()["total"] is None
+        pages.append(response.json()["page_cursor"])
         domain.app.state.discovery_memory.clear()
-    assert len(set(snapshots)) == 1
+    assert len(set(pages)) == 1
     with domain.factory() as session:
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot)) == 1
-        budget = session.get(DiscoveryBudget, 1)
-        assert budget.entries == 12 and budget.snapshots == 1
+        assert session.scalar(select(func.count()).select_from(DiscoverySession)) == 1
+        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot)) == 0
+        assert session.scalar(select(func.count()).select_from(DiscoveryEntry)) == 12
+
 
 
 def test_unchanged_fresh_order_is_not_duplicated_each_refresh_window(catalogue, monkeypatch):
     domain = catalogue
     epoch = now()
-    epoch -= epoch % 1800
-    epoch += 300
+    for offset in (0,21,42):
+        monkeypatch.setattr(discovery,"now",lambda offset=offset:epoch+offset)
+        response=query(domain,fresh=True)
+        assert response.status_code==200
+        assert len(response.json()["items"])==12
     with domain.factory() as session:
-        session.execute(update(TrackVersion).values(published_at=epoch-1))
-        session.commit()
-    snapshots = []
-    for offset in (0, 21, 42):
-        monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda offset=offset: epoch+offset))
-        response = query(domain, fresh=True)
-        assert response.status_code == 200
-        snapshots.append(response.json()["snapshot"])
-    assert len(set(snapshots)) == 1
-    with domain.factory() as session:
-        assert session.get(DiscoveryBudget, 1).snapshots == 1
+        assert session.scalar(select(func.count()).select_from(DiscoveryEntry))==12
+        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
+
 
 
 def test_creation_budget_does_not_charge_cached_pages(catalogue):
@@ -326,32 +356,30 @@ def test_creation_budget_does_not_charge_cached_pages(catalogue):
     assert limited.status_code == 429 and limited.json()["detail"] == "DISCOVERY_CREATION_LIMIT"
 
 
-@pytest.mark.parametrize("setting,value,code", [("discovery_catalogue_limit", 6, "DISCOVERY_CATALOGUE_LIMIT"),
-    ("discovery_snapshot_ids", 6, "DISCOVERY_SNAPSHOT_LIMIT")])
-def test_discovery_bounds_do_not_silently_truncate_catalogue(catalogue, setting, value, code):
-    domain = catalogue
-    domain.app.state.settings = replace(domain.app.state.settings, **{setting: value})
-    response = query(domain, fresh=True)
-    assert response.status_code == 503 and response.json()["detail"] == code
+@pytest.mark.parametrize("setting,value", [("discovery_catalogue_limit",6),("discovery_snapshot_ids",6)])
+def test_old_catalogue_caps_no_longer_truncate_indexed_pages(catalogue,setting,value):
+    domain=catalogue
+    domain.app.state.settings=replace(domain.app.state.settings,**{setting:value})
+    response=query(domain,fresh=True)
+    assert response.status_code==200 and len(response.json()["items"])==12
+    assert response.json()["has_more"] is False and response.json()["total"] is None
     with domain.factory() as session:
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot)) == 0
-        assert session.get(DiscoveryBudget, 1).entries == 0
+        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
+        assert session.get(DiscoveryBudget,1).entries==0
 
 
-def test_snapshot_count_recovers_after_expiry_and_cached_pages_keep_working(catalogue, monkeypatch):
-    domain = catalogue
-    domain.app.state.settings = replace(domain.app.state.settings, discovery_snapshot_count=1)
-    first = query(domain, fresh=True)
-    assert first.status_code == 200
-    assert query(domain, fresh=True, sort="name").status_code == 503
-    assert query(domain, fresh=True, cursor=first.json()["page_cursor"]).status_code == 200
-    epoch = now()+1801
-    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch))
-    assert query(domain, fresh=True, sort="name").status_code == 200
-    assert query(domain, fresh=True, cursor=first.json()["page_cursor"]).status_code == 410
+
+def test_snapshot_count_recovers_after_expiry_and_cached_pages_keep_working(catalogue):
+    domain=catalogue
+    first=query(domain,fresh=True)
+    assert first.status_code==200
+    assert query(domain,cursor=first.json()["page_cursor"]).status_code==200
     with domain.factory() as session:
-        budget = session.get(DiscoveryBudget, 1)
-        assert budget.entries == 12 and budget.snapshots == 1
+        session.execute(update(DiscoverySession).values(expires_at=now()-1))
+        session.commit()
+    assert query(domain,cursor=first.json()["page_cursor"]).status_code==410
+    assert query(domain,fresh=True).status_code==200
+
 
 
 def test_postgres_concurrent_new_publication_keys_cannot_exceed_quota(publications):
@@ -368,29 +396,29 @@ def test_postgres_concurrent_new_publication_keys_cannot_exceed_quota(publicatio
 
 
 @pytest.mark.parametrize("same_query", [False, True])
-def test_postgres_discovery_budget_is_shared_across_replicas(catalogue, monkeypatch, same_query):
+def test_postgres_discovery_state_is_shared_without_global_budget_lock(catalogue, monkeypatch, same_query):
     from concurrent.futures import ThreadPoolExecutor
 
     from fastapi.testclient import TestClient
 
     from bmt_backend.app import create_app
-    domain = catalogue
+    domain=catalogue
     if not domain.postgres:
-        pytest.skip("Snapshot races require independent PostgreSQL transactions")
-    domain.app.state.settings = replace(domain.app.state.settings, discovery_snapshot_count=1)
-    epoch = now()
-    monkeypatch.setattr(discovery, "time", SimpleNamespace(time=lambda: epoch))
-    peer = create_app(domain.app.state.settings, engine=domain.app.state.engine, verifier=domain.app.state.verifier)
+        pytest.skip("Requires independent PostgreSQL transactions")
+    epoch=now()
+    monkeypatch.setattr(discovery,"now",lambda:epoch)
+    peer=create_app(domain.app.state.settings,engine=domain.app.state.engine,verifier=domain.app.state.verifier)
     peer.dependency_overrides.update(domain.app.dependency_overrides)
     with TestClient(peer) as peer_client:
-        clients = domain.client, peer_client
+        clients=(domain.client,peer_client)
         with ThreadPoolExecutor(max_workers=2) as executor:
-            responses = list(executor.map(lambda index: clients[index].post("/v1/discovery/tracks",
-                json={"fresh": True, "sort": "name" if index == 1 and not same_query else "recommended"}), range(2)))
-    assert sorted(response.status_code for response in responses) == ([200, 200] if same_query else [200, 503])
+            responses=list(executor.map(lambda i:clients[i].post("/v1/discovery/v3/tracks",
+                json={"query":{"sort":"name" if i==1 and not same_query else "recommended"}}),range(2)))
+    assert [r.status_code for r in responses]==[200,200]
     if same_query:
-        assert responses[0].json()["snapshot"] == responses[1].json()["snapshot"]
+        assert responses[0].json()["page_cursor"]==responses[1].json()["page_cursor"]
     with domain.factory() as session:
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot)) == 1
-        budget = session.get(DiscoveryBudget, 1)
-        assert budget.entries == 12 and budget.snapshots == 1
+        assert session.scalar(select(func.count()).select_from(DiscoverySession))==(1 if same_query else 2)
+        assert session.scalar(select(func.count()).select_from(DiscoveryEntry))==12
+        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
+

@@ -18,8 +18,8 @@ import requests
 
 from .config import Settings
 from .contracts import build_contract
-from .test_driver_generator import DriverDidNotFinish, generate
-from .track_models import digest
+from .test_driver_generator import DriverDidNotFinish, GenerationTimedOut, generate
+from .track_models import digest, now
 
 SCHEMA = "test-population-plan-v1"
 
@@ -56,7 +56,7 @@ def atomic_save(path, value):
 
 
 class API:
-    def __init__(self, url, key, *, internal=False):
+    def __init__(self, url, key, *, internal=False, stop_event=None):
         parsed = urlparse(url)
         if (
             parsed.username
@@ -73,6 +73,7 @@ class API:
         if not key:
             raise ValueError("Set BMT_DEV_AUTH_KEY in the process environment")
         self.url, self.key, self.tokens = url.rstrip("/"), key, {}
+        self.stop_event = stop_event
         self.http = requests.Session()
         bootstrap = self.call("GET", "/bootstrap")
         if bootstrap.get("test_drivers") is not True or bootstrap.get("development_auth") is not True:
@@ -80,6 +81,8 @@ class API:
         self.upload_recovery = bootstrap.get("test_driver_upload_recovery") is True
 
     def call(self, method, path, body=None, subject=None, idempotency=None, operator=False):
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise RuntimeError("Test driver worker is stopping")
         headers = {}
         if operator:
             headers["X-Dev-Auth-Key"] = self.key
@@ -92,6 +95,8 @@ class API:
             headers["Authorization"] = "Bearer " + self.tokens[subject][0]
         if idempotency:
             headers["Idempotency-Key"] = idempotency
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise RuntimeError("Test driver worker is stopping")
         response = self.http.request(method, self.url + "/v1" + path, json=body, headers=headers, timeout=120, allow_redirects=False)
         if not response.ok:
             # Do not print the response request: it contains credentials.
@@ -439,6 +444,15 @@ def tick(api, plan, settings, path, maximum=4, *, generator=None):
                 continue
         try:
             data = recording(api, plan, job, profile, settings, path, **({"generator": generator} if generator else {}))
+        except GenerationTimedOut:
+            failures = job.get("timeout_failures", 0) + 1
+            job.update(timeout_failures=failures,
+                       status="uncompleted" if failures >= 3 else "waiting",
+                       due=max(timestamp, now()) + 30 * failures,
+                       failure_code="Test controller exceeded its bounded generation time")
+            atomic_save(path, plan)
+            started += 1
+            continue
         except DriverDidNotFinish as error:
             # A failed drive records an honest noncompletion, never a made-up PB.
             job["status"], job["failure_code"] = "uncompleted", str(error)

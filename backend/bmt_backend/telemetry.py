@@ -14,7 +14,7 @@ from . import network_health, quality, race_statistics
 from .db import get_session
 from .middleware import ParsedJSONRoute
 from .security import current_player
-from .telemetry_models import ProductEvent, ProductState
+from .telemetry_models import ProductEvent
 from .track_models import TrackVersion, digest, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["product telemetry"])
@@ -134,6 +134,8 @@ def append_server_event(session, name, event_id, player_id, dimensions, *, occur
     owner = session.get(Player, player_id)
     if owner is not None and (owner.deleted_at is not None or not owner.analytics_enabled):
         return None
+    from .telemetry_queue import activate
+    activate(session)
     event_key = str(uuid5(NAMESPACE_URL, "bmt-product-server-v1/" + name + "/" + str(event_id)))
     projected = {}
     for key in ("track_version", "track_version_id", "run_id", "ticket_id", "owner_id", "published_at", "car_id", "biome", "lap_count"):
@@ -158,7 +160,11 @@ def append_server_event(session, name, event_id, player_id, dimensions, *, occur
         "source": "server", "name": name, "occurred_at": occurred, "received_at": now(),
         "properties": projected, "build_id": "", "platform": "", "clock_quality": "server", "payload_hash": ""}
     value["payload_hash"] = digest({key: value[key] for key in ("player_id", "name", "occurred_at", "properties")})
-    session.execute(insert_for(session, ProductEvent).values(value).on_conflict_do_nothing(index_elements=["id"]))
+    inserted = session.scalar(insert_for(session, ProductEvent).values(value)
+        .on_conflict_do_nothing(index_elements=["id"]).returning(ProductEvent.id))
+    if inserted:
+        from .telemetry_queue import register_ids
+        register_ids(session, [inserted])
     return event_key
 
 
@@ -258,19 +264,17 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
     if parsed:
         if session.bind.dialect.name == "sqlite" and not session.in_transaction():
             session.execute(text("BEGIN IMMEDIATE"))
-        state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
+        from .telemetry_queue import activate
+        if not activate(session).ready:
+            raise HTTPException(503, "TELEMETRY_PREPARING", headers={"Retry-After": "1"})
         race_statistics.admit(session, parsed, acknowledgements, insert_for)
         if not parsed:
             session.commit()
             return {"schema": "bmt-product-acks-v1", "events": acknowledgements}
-        existing = set(session.scalars(select(ProductEvent.id).where(ProductEvent.id.in_(parsed))))
-        if state.pending_clients + len(set(parsed) - existing) > request.app.state.settings.telemetry_client_backlog:
-            raise HTTPException(503, "TELEMETRY_BACKLOG_FULL")
         inserted = set(session.scalars(insert_for(session, ProductEvent).values(list(parsed.values()))
             .on_conflict_do_nothing(index_elements=["id"]).returning(ProductEvent.id)))
-        state.pending_clients += len(inserted)
-        state.pending_events += len(inserted)
-        state.latest_receipt_at = max(state.latest_receipt_at or at, at)
+        from .telemetry_queue import register_ids
+        register_ids(session, inserted, capacity=request.app.state.settings.telemetry_client_backlog)
         stored = {row.id: row for row in session.scalars(select(ProductEvent).where(ProductEvent.id.in_(parsed)))}
         seen = set()
         for acknowledgement in acknowledgements:

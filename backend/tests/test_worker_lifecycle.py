@@ -126,7 +126,7 @@ def test_concurrent_first_heartbeats_preserve_build_and_drain(auth_app):
 
 
 def test_stopped_control_prevents_race_and_validation_claims(domain):
-    from bmt_backend.track_validation import process_one as validate_one
+    from legacy_validation_fixture import process_one as validate_one
     version, _ = public_course(domain)
     run = submit(domain, ticket(domain, version, "Alice"), "Alice")
     control = domain.app.state.worker_control = WorkerControl()
@@ -187,10 +187,10 @@ def test_health_reports_actual_processing_and_end_to_end_latency(domain):
 
 
 def test_interrupted_validation_keeps_draft_and_recovers(domain, monkeypatch):
+    from legacy_validation_fixture import process_one as validate_one
     from test_track_lifecycle import save
 
     from bmt_backend.track_models import TrackValidation, TrackVersion
-    from bmt_backend.track_validation import process_one as validate_one
     version, _ = save(domain)
     original = domain.app.state.verifier.validate_track
     def cancelled(document):
@@ -305,7 +305,7 @@ def test_real_signals_and_kill_recovery(tmp_path, mode, stop_signal):
         deadline = time.monotonic() + 15
         while not (tmp_path / name).exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert (tmp_path / name).exists(), f"Probe failed to reach {name}"
+        assert (tmp_path / name).exists(), f"Probe failed to reach {name}: " + (tmp_path / "probe.log").read_text(errors="replace")
     with (tmp_path / "probe.log").open("wb") as log:
         process = subprocess.Popen([sys.executable, str(harness), str(tmp_path), mode], stdout=log, stderr=log)
         try:

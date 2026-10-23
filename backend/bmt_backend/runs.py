@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+import time
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Integer, case, cast, func, select, text, tuple_
+from sqlalchemy import Integer, case, cast, func, literal, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from .board_cache import cached
 from .contracts import current_manifest
 from .cursors import decode_cursor, encode_cursor
 from .db import get_session
-from .histogram_population import HistogramPopulation
+from .histogram_population import SNAPSHOT_OWN_LIMIT, HistogramPopulation
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
 from .queueing import admit, check_capacity
 from .security import bearer, current_player
+from .security import digest as token_digest
 from .test_population import check_scope
 from .track_models import (
     Board,
@@ -49,7 +53,7 @@ PINNED_FIELDS = (
     "laps",
 )
 MAX_FRAMES = 216000
-CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v18")
+CHECKPOINT_RULES_TRANSITION = ("standing-5-road-gates-v12", "standing-5-road-gates-v23")
 
 
 def leaderboard_session(request: Request, credentials=Depends(bearer), session=Depends(get_session)):
@@ -149,7 +153,9 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
     track = session.get(Track, version.track_id) if version else None
     if version is None or (version.state != "published" and track.owner_id != player.id):
         raise HTTPException(404, "Track version not found")
-    if session.get(Player, track.owner_id).disabled:
+    from .community import check_creator
+    check_creator(session, player.id, track.owner_id)
+    if track.hidden or session.get(Player, track.owner_id).disabled:
         raise HTTPException(404, "Track version not found")
     if request.app.state.settings.local_drafts_only and (payload.purpose == "creator_test" or version.state != "published"):
         raise HTTPException(410, "LOCAL_DRAFTS_ONLY: creator laps remain local until an explicit publication request")
@@ -297,6 +303,65 @@ def get_run(run_id: str, session: DB, player: Auth) -> dict:
     from .rivalry_models import RivalryTicket
     binding = session.get(RivalryTicket, run.ticket_id)
     return {**run_payload(run), "outcome": binding.outcome if binding else None, "slot": binding.slot if binding else None}
+
+
+def waiting_run_snapshot(request, run_id, player_id, credentials):
+    """One short, fresh read; no connection/transaction survives the return."""
+    from .identity_models import SessionFamily, SessionToken
+    from .rivalry_models import RivalryTicket
+    with request.app.state.session_factory() as session:
+        family_id = getattr(request.state, "session_family_id", None)
+        if family_id is not None:
+            stamp = now()
+            live = session.scalar(select(SessionToken.id).join(SessionFamily, SessionFamily.id == SessionToken.family_id)
+                .where(SessionToken.access_hash == token_digest(credentials.credentials), SessionFamily.id == family_id,
+                    SessionFamily.player_id == player_id, SessionFamily.revoked.is_(False),
+                    SessionFamily.expires_at > stamp, SessionToken.access_expires_at > stamp,
+                    SessionToken.consumed.is_(False))) if credentials is not None else None
+            if live is None:
+                raise HTTPException(401, "INVALID_SESSION")
+        row = session.execute(select(Run, Player, RivalryTicket.outcome, RivalryTicket.slot)
+            .join(Player, Player.id == Run.player_id)
+            .outerjoin(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
+            .where(Run.id == run_id, Run.player_id == player_id)).first()
+        if row is None:
+            raise HTTPException(404, "Run not found")
+        run, owner, outcome, slot = row
+        from .security import development_session_disabled
+        if owner.disabled or owner.deleted_at is not None or development_session_disabled(request, session, owner):
+            raise HTTPException(401, "INVALID_SESSION")
+        return {**run_payload(run), "outcome": outcome, "slot": slot}
+
+
+@router.get("/runs/{run_id}/wait")
+async def wait_run(run_id: str, request: Request, session: DB, player: Auth,
+                   credentials=Depends(bearer), timeout_ms: int = Query(2000, ge=0, le=2000)):
+    """Bounded foreground completion; ordinary status polling remains available."""
+    from .run_signals import TERMINAL
+    if len(run_id) != 36:
+        raise HTTPException(404, "Run not found")
+    player_id = player.id
+    await run_in_threadpool(session.rollback)
+    signals = request.app.state.run_signals
+    watch = signals.subscribe(run_id, player_id) if timeout_ms else None
+    deadline = time.monotonic() + timeout_ms / 1000
+    try:
+        while True:
+            if watch:
+                watch.event.clear()  # Register before reading so commit cannot be lost.
+            value = await run_in_threadpool(waiting_run_snapshot, request, run_id, player_id, credentials)
+            remaining = deadline - time.monotonic()
+            if not watch or value["status"] in TERMINAL or remaining <= 0 or signals.stopped:
+                return value
+            if await request.is_disconnected():
+                return Response(status_code=499)
+            try:
+                await asyncio.wait_for(watch.event.wait(), timeout=min(1.0, remaining))
+            except asyncio.TimeoutError:
+                pass  # Lost hints/reconnects fall back to the durable receipt.
+    finally:
+        if watch:
+            signals.unsubscribe(watch)
 
 
 @router.post("/runs/{run_id}/retry")
@@ -458,18 +523,25 @@ def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query
 
 
 @router.get("/boards/{board_id}/histogram")
-def histogram(board_id: str, session: BoardDB, bins: int = Query(10, ge=1, le=100),
-              metric: Literal["race", "best_lap"] = "race") -> dict:
+def histogram(board_id: str, request: Request, background: BackgroundTasks, session: BoardDB,
+              bins: int = Query(10, ge=1, le=100), metric: Literal["race", "best_lap"] = "race"):
     board = public_board(session, board_id)
     from .histogram_snapshots import load_snapshot
     snapshot = load_snapshot(session, board.version_id, board.vehicle_id, False)
+    from .histogram_http import preparing, reply, schedule_demand
+    schedule_demand(request, background, board.version_id, board.vehicle_id, False, unavailable=snapshot is None)
     if snapshot is None:
-        raise HTTPException(503, "Comparison snapshot is being prepared")
+        session.commit()
+        return preparing(background)
     generation, _, populations = snapshot
-    result = population_comparison(session, ("public-histogram", board_id, generation),
-        populations[0 if metric == "race" else 1], board_id, metric, bins, "", None, None, None)
-    return {**{name: result[name] for name in ("population", "minimum_ticks", "maximum_ticks", "bins", "metric")},
-            "board_id": board_id}
+    def build():
+        result = population_comparison(session, ("public-histogram", board_id, generation),
+            populations[0 if metric == "race" else 1], board_id, metric, bins, "", None, None, None)
+        return {**{name: result[name] for name in ("population", "minimum_ticks", "maximum_ticks", "bins", "metric")},
+                "board_id": board_id}
+    response = reply(request, background, [board_id, generation, bins, metric], build)
+    session.commit()
+    return response
 
 
 def histogram_query(board_id, session, bins, *, test_population=False, metric="race"):
@@ -533,7 +605,7 @@ def best_lap_frequencies(board_id, session, *, test_population=False):
     return select(bests.c.time_ticks, func.count().label("count")).group_by(bests.c.time_ticks).subquery()
 
 
-def best_lap_times(board_id, session, *, test_population=False):
+def best_lap_times(board_id, session, *, test_population=False, player_id=None):
     """Read one durable flying PB per eligible driver; never scan attempts."""
     from .track_models import LapBestState, LapPersonalBest
     state = session.get(LapBestState, board_id)
@@ -548,6 +620,8 @@ def best_lap_times(board_id, session, *, test_population=False):
     elif state is not None:
         from sqlalchemy import or_
         statement = statement.where(or_(Player.is_test_driver.is_(False), LapPersonalBest.source_created_at >= state.cutoff))
+    if player_id is not None:
+        statement = statement.where(LapPersonalBest.player_id == player_id)
     return statement.subquery()
 
 
@@ -571,7 +645,7 @@ def comparison_position(entries, session, ticks, own_ticks):
 
 
 @router.get("/track-versions/{version_id}/results-comparison")
-def results_comparison(version_id: str, vehicle_id: str, request: Request, session: BoardDB, player: Auth,
+def results_comparison(version_id: str, vehicle_id: str, request: Request, background: BackgroundTasks, session: BoardDB, player: Auth,
                        bins: int = Query(16, ge=1, le=100),
                        race_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
                        lap_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
@@ -590,38 +664,104 @@ def results_comparison(version_id: str, vehicle_id: str, request: Request, sessi
     test_id = digest({"version_id": version.id, **pinned, "test_population": True})
     from .histogram_snapshots import load_snapshot
     snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial)
+    from .histogram_http import preparing, reply, schedule_demand
+    schedule_demand(request, background, version.id, vehicle_id, include_artificial, unavailable=snapshot is None)
     if snapshot is None:
-        raise HTTPException(503, "Comparison snapshot is being prepared")
+        session.commit()
+        return preparing(background)
     generation, revision, (races, laps) = snapshot
+    own_times = comparison_own_times(session, board_ids=[public_id, test_id] if include_artificial else [public_id],
+        public_id=public_id, test_id=test_id, include_artificial=include_artificial, player_id=player.id,
+        metrics=[metric for metric, field in (("race", races), ("best_lap", laps)) if field.own is None])
     population_key = ("comparison-population", public_id, test_id if include_artificial else None, generation)
     board_id = digest({"version_id": version.id, **pinned, "comparison_population":"all"})
-    race = population_comparison(session, population_key, races, board_id, "race", bins, player.id,
-                                 race_ticks, race_from_ticks, race_to_ticks)
-    lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
-                                lap_ticks, lap_from_ticks, lap_to_ticks)
-    return {"board_id": board_id, "population_scope": "all",
-            "stats_revision": revision, "race": race, "best_lap": lap}
+    def build():
+        race = population_comparison(session, population_key, races, board_id, "race", bins, player.id,
+                                     race_ticks, race_from_ticks, race_to_ticks, current_own=own_times.get("race"))
+        lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
+                                    lap_ticks, lap_from_ticks, lap_to_ticks, current_own=own_times.get("best_lap"))
+        return {"board_id": board_id, "population_scope": "all",
+                "stats_revision": revision, "race": race, "best_lap": lap}
+    response = reply(request, background, [board_id, include_artificial, generation, player.id, own_times, bins,
+        race_ticks, lap_ticks, race_from_ticks, race_to_ticks, lap_from_ticks, lap_to_ticks], build)
+    session.commit()
+    return response
 
 
-def comparison_populations(session, board_ids, public_id, test_id, include_artificial):
-    """Reconstruct the deduplicated field only on a database revision change."""
+def comparison_statements(session, board_ids, public_id, test_id, include_artificial, player_id=None):
+    """Identical eligibility/deduplication for distributions and personal markers."""
     race_statement = select(PersonalBest.player_id, func.min(PersonalBest.time_ticks).label("time_ticks")).join(
         Player, Player.id == PersonalBest.player_id).where(PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
     if not include_artificial:
         race_statement = race_statement.where(Player.is_test_driver.is_(False))
+    if player_id is not None:
+        race_statement = race_statement.where(PersonalBest.player_id == player_id)
     races = race_statement.group_by(PersonalBest.player_id).subquery()
-    public_laps = best_lap_times(public_id, session)
+    public_laps = best_lap_times(public_id, session, player_id=player_id)
     laps = public_laps
     if include_artificial:
-        test_laps = best_lap_times(test_id, session, test_population=True)
+        test_laps = best_lap_times(test_id, session, test_population=True, player_id=player_id)
         combined = select(public_laps.c.player_id, public_laps.c.time_ticks).union_all(
             select(test_laps.c.player_id, test_laps.c.time_ticks)).subquery()
         laps = select(combined.c.player_id, func.min(combined.c.time_ticks).label("time_ticks")).group_by(combined.c.player_id).subquery()
-    return (HistogramPopulation.from_rows(session.execute(select(races)).all()),
-            HistogramPopulation.from_rows(session.execute(select(laps)).all()))
+    return races, laps
 
 
-def population_comparison(session, key, population, board_id, metric, bins, player_id, candidate, start, end):
+def comparison_own_times(session, *, board_ids, public_id, test_id, include_artificial, player_id, metrics):
+    if not metrics:
+        return {}
+    from .track_models import LapBestState, LapPersonalBest
+    queries = []
+    if "race" in metrics:
+        query = select(literal("race"), func.min(PersonalBest.time_ticks)).join(
+            Player, Player.id == PersonalBest.player_id).where(PersonalBest.player_id == player_id,
+                PersonalBest.board_id.in_(board_ids), Player.disabled.is_(False))
+        if not include_artificial:
+            query = query.where(Player.is_test_driver.is_(False))
+        queries.append(query)
+    if "best_lap" in metrics:
+        query = select(literal("best_lap"), func.min(LapPersonalBest.time_ticks)).select_from(LapPersonalBest).join(
+            Player, Player.id == LapPersonalBest.player_id).join(PersonalBest,
+                (PersonalBest.board_id == LapPersonalBest.board_id) & (PersonalBest.player_id == LapPersonalBest.player_id))
+        query = query.outerjoin(LapBestState, LapBestState.board_id == LapPersonalBest.board_id).where(
+            LapPersonalBest.player_id == player_id, Player.disabled.is_(False))
+        public = (LapPersonalBest.board_id == public_id) & Player.is_test_driver.is_(False)
+        if include_artificial:
+            private = (LapPersonalBest.board_id == test_id) & or_(Player.is_test_driver.is_(False),
+                LapPersonalBest.source_created_at >= func.coalesce(LapBestState.cutoff, 0))
+            query = query.where(or_(public, private))
+        else:
+            query = query.where(public)
+        queries.append(query)
+    statement = queries[0].union_all(*queries[1:]) if len(queries) > 1 else queries[0]
+    return dict(session.execute(statement).all())
+
+
+def comparison_populations(session, board_ids, public_id, test_id, include_artificial):
+    """SQL aggregates return distinct ticks, never the unbounded driver mapping."""
+    races, laps = comparison_statements(session, board_ids, public_id, test_id, include_artificial)
+    fields = []
+    for metric, source in (("race", races), ("best_lap", laps)):
+        if metric == "race" and not include_artificial and board_ids == [public_id]:
+            # Existing transactional PB triggers already maintain these counts.
+            frequencies = session.execute(select(BoardTimeCount.time_ticks, BoardTimeCount.public_count)
+                .where(BoardTimeCount.board_id == public_id, BoardTimeCount.public_count > 0)
+                .order_by(BoardTimeCount.time_ticks)).all()
+        else:
+            frequencies = session.execute(select(source.c.time_ticks, func.count())
+                .group_by(source.c.time_ticks).order_by(source.c.time_ticks)).all()
+        population = sum(count for _ticks, count in frequencies)
+        own = None
+        if population <= SNAPSHOT_OWN_LIMIT and (not fields or fields[0].own is not None):
+            rows = session.execute(select(source).limit(SNAPSHOT_OWN_LIMIT + 1)).all()
+            if len(rows) <= SNAPSHOT_OWN_LIMIT:
+                own = dict(rows)
+        fields.append(HistogramPopulation.from_frequencies(frequencies, own))
+    return tuple(fields)
+
+
+def population_comparison(session, key, population, board_id, metric, bins, player_id, candidate, start, end,
+                          *, current_own=None):
     start, end = population.frame(candidate, start, end)
     stored = population.stored_grid
     stored_bins = stored["bins"] if stored else []
@@ -632,10 +772,12 @@ def population_comparison(session, key, population, board_id, metric, bins, play
         lambda: population.histogram(board_id, metric, bins, start, end))
     # Never put a player's markers/placement in the shared cached grid.
     result = {**grid, "bins": [dict(item) for item in grid["bins"]]}
-    own = population.own.get(player_id)
+    own = population.own.get(player_id) if population.own is not None else current_own
     result["own_best_ticks"] = own
     result["opponent_count"] = result["population"] - int(own is not None)
     result["comparison"] = population.position(candidate or own, own)
+    if population.own is None and player_id:
+        result["comparison_approximate"] = True
     return result
 
 

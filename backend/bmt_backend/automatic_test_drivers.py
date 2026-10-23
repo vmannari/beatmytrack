@@ -96,7 +96,7 @@ def plan_for(app, group_id, api):
         return plan
 
 
-def drive_idle(app):
+def drive_idle(app, *, generation_control=None):
     """One bounded attempt when no normal verification or track work is waiting."""
     settings = app.state.settings
     if not (settings.environment == "development" and settings.test_drivers_enabled
@@ -119,7 +119,9 @@ def drive_idle(app):
     api = getattr(app.state, "automatic_driver_api", None)
     if api is None:
         api = app.state.automatic_driver_api = API(
-            settings.test_driver_api_url or settings.public_base_url, settings.dev_auth_key, internal=True)
+            settings.test_driver_api_url or settings.public_base_url, settings.dev_auth_key, internal=True,
+            stop_event=generation_control)
+    api.stop_event = generation_control
     folder = Path(settings.object_dir).parent / "automatic-test-drivers"
     cursor = getattr(app.state, "automatic_driver_cursor", 0) % len(groups)
     app.state.automatic_driver_cursor = cursor + 1
@@ -139,7 +141,7 @@ def drive_idle(app):
             def generator(*args, **kwargs):
                 if stopping(app):
                     raise RuntimeError("Test driver worker is draining")
-                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+                return generate(*args, **kwargs, stop_event=generation_control or BackgroundControl(app))
 
             before = sum(job["status"] == "waiting" for job in plan["jobs"])
             tick(api, plan, settings, path, maximum=1, generator=generator)

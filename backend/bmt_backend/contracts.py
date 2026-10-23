@@ -22,8 +22,11 @@ def current_manifest(manifest: dict) -> dict:
         "standing-5-road-gates-v17",
         "standing-5-road-gates-v18",
         "standing-5-road-gates-v19",
+        "standing-5-road-gates-v20",
+        "standing-5-road-gates-v21",
+        "standing-5-road-gates-v22",
     ):
-        result["rules_key"] = "standing-5-road-gates-v20"
+        result["rules_key"] = "standing-5-road-gates-v23"
     if result.get("physics_version") in {f"arcade-planar-0.{n}" for n in range(39, 53)}:
         result["physics_version"] = "arcade-planar-0.53"
     return result

@@ -75,6 +75,8 @@ def test_postgres_real_publication_upload_is_fenced_by_account_deletion(postgres
     signed_response = client.post("/v1/auth/google", json=google_request(app, client, "final-upload-removal"))
     assert signed_response.status_code == 200
     signed = signed_response.json()
+    terms=client.get("/v1/community/terms",headers=auth(signed)).json()
+    assert client.post("/v1/community/terms",headers=auth(signed),json={"version":terms["version"],"accepted":True}).status_code==200
     reached, resume = threading.Event(), threading.Event()
     original = app.state.blobs.put_json
     calls = []

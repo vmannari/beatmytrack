@@ -7,6 +7,18 @@ from pathlib import Path
 class Settings:
     admin_owner_key: str = ""
     admin_analyst_key: str = ""
+    studio_legacy_keys_enabled: bool = True
+    studio_staff_audiences: tuple[str, ...] = field(default_factory=tuple)
+    studio_staff_subjects: str = ""
+    studio_staff_require_mfa: bool = True
+    studio_business_cohorts: bool = False
+    studio_monitor_source_tokens: str = ""
+    studio_monitor_external_notifiers: tuple[str, ...] = ()
+    studio_monitor_webhook_url: str = ""
+    studio_monitor_webhook_key: str = ""
+    studio_monitor_poll_seconds: int = 30
+    studio_play_package: str = ""
+    studio_admob_account: str = ""
     environment: str = "production"
     dev_auth_enabled: bool = False
     test_drivers_enabled: bool = False
@@ -45,6 +57,7 @@ class Settings:
     auth_limit_per_minute: int = 30
     write_limit_per_minute: int = 90
     max_queued_runs: int = 128
+    run_wait_capacity: int = 4
     publication_evidence_bytes: int = 64 * 1024 * 1024
     publication_evidence_count: int = 128
     discovery_catalogue_limit: int = 100000
@@ -83,6 +96,8 @@ class Settings:
     s3_prefix: str = "bmt/v1"
 
     def __post_init__(self):
+        from .studio_settings import validate_studio_settings
+        validate_studio_settings(self)
         from .client_address import proxy_networks
         proxy_networks(self.trusted_proxy_networks)
         if not self.local_drafts_only and self.environment != "test":
@@ -116,6 +131,7 @@ class Settings:
             "auth_limit_per_minute",
             "write_limit_per_minute",
             "max_queued_runs",
+            "run_wait_capacity",
             "publication_evidence_bytes", "publication_evidence_count", "discovery_catalogue_limit",
             "discovery_snapshot_ids", "discovery_snapshot_count",
             "discovery_create_per_minute",
@@ -132,6 +148,8 @@ class Settings:
                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
         if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
             raise ValueError("Invalid pool overflow or upload concurrency")
+        if self.run_wait_capacity > 64:
+            raise ValueError("Run wait capacity must leave room for ordinary HTTP requests")
         if self.refresh_recovery_seconds > 300 or self.transport_profile not in ("legacy", "compact"):
             raise ValueError("Invalid recovery window or transport profile")
         if self.readiness_cache_seconds > 5 or self.readiness_storage_cache_seconds > 60 or self.readiness_timeout_seconds > 5:
@@ -179,7 +197,7 @@ class Settings:
             if raw is None:
                 continue
             default = getattr(defaults, name)
-            if name in ("google_client_ids", "android_app_link_certificates", "trusted_proxy_networks"):
+            if name in ("google_client_ids", "android_app_link_certificates", "trusted_proxy_networks", "studio_staff_audiences", "studio_monitor_external_notifiers"):
                 values[name] = tuple(x.strip() for x in raw.split(",") if x.strip())
             elif isinstance(default, bool):
                 if raw.lower() not in ("true", "false"):

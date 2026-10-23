@@ -12,6 +12,7 @@ class StudioCase(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     player_id: Mapped[str | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     track_id: Mapped[str | None] = mapped_column(ForeignKey("tracks.id"), nullable=True)
+    reported_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     title: Mapped[str] = mapped_column(String(160))
     status: Mapped[str] = mapped_column(String(24), default="open")
     revision: Mapped[int] = mapped_column(Integer, default=0)

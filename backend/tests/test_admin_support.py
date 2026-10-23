@@ -51,7 +51,9 @@ def test_support_reads_do_not_initialize_or_exclude_artificial_players(store):
     assert data["effective"]["publishing_slots"] == 1 and not data["initialized"]
     assert data["development_controls"]["eligible"] and not data["development_controls"]["editable"]
     assert data["player"]["is_test_driver"] is True
-    assert store.client.get("/v1/admin/overview", headers=OWNER).json()["players"] == 4
+    listed = store.client.get("/v1/admin/catalogue/players", headers=OWNER).json()["items"]
+    assert {row["id"] for row in listed} == set(store.players.values())
+    assert next(row for row in listed if row["id"] == store.players["Creator"])["is_test_driver"] is data["player"]["is_test_driver"]
     with store.factory() as session:
         assert session.get(Entitlements, store.players["Creator"]) is None
         assert session.scalar(select(func.count()).select_from(AdminAudit)) == 0
@@ -65,7 +67,9 @@ def test_development_player_remains_real_without_artificial_flag(store):
     assert data["player"]["providers"] == ["development"]
     assert data["player"]["is_test_driver"] is False
     assert data["development_controls"]["eligible"] is True
-    assert store.client.get("/v1/admin/overview", headers=OWNER).json()["players"] == 4
+    listed = store.client.get("/v1/admin/catalogue/players", headers=OWNER).json()["items"]
+    assert {row["id"] for row in listed} == set(store.players.values())
+    assert next(row for row in listed if row["id"] == store.players["Creator"])["is_test_driver"] is data["player"]["is_test_driver"]
     with store.factory() as session:
         assert session.get(Entitlements, store.players["Creator"]) is None
 

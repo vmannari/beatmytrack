@@ -102,7 +102,8 @@ def test_tracks_search_sort_filters_versions_and_paging_anchor(catalogue):
             manifest={}, state="published", created_at=2000000001, published_at=2000000001))
         db.commit()
     second = get("versions=all&sort=name&direction=asc&limit=1&offset=1&anchor=" + str(first["anchor"]))
-    assert second["total"] == first["total"] == 3
+    assert second["total"] is first["total"] is None
+    assert first["has_more"] and first["next_cursor"] and second["previous_cursor"]
     assert second["items"][0]["id"] != first["items"][0]["id"]
     for query in ("sort=raw-sql", "limit=101", "offset=10001", "min_rating=nan", "anchor=2000000001",
                   "creator_id=nope", "visibility=draft", "versions=drafts"):
@@ -153,16 +154,18 @@ def test_players_include_all_types_and_richer_authoritative_context(catalogue):
     data = client.get("/v1/admin/catalogue/players", headers=headers()).json()
     assert data["total"] == 2 and data["summary"]["artificial"] == 1
     row = next(p for p in data["items"] if p["id"] == ids["player"])
-    assert row["races"] == {"submissions": 1, "verified_submissions": 1, "last_submission_at": 200}
-    assert row["providers"] == ["google"] and row["published_versions"] == 2
-    assert row["open_cases"] == 1 and row["personal_bests"] == 1 and row["last_observed_activity_day"] == 50
+    assert row["providers"] == ["google"] and "races" not in row
+    assert data["summary_scope"] == "page"
     assert client.get("/v1/admin/catalogue/players?population=real", headers=headers()).json()["total"] == 1
     assert client.get("/v1/admin/catalogue/players?population=artificial", headers=headers()).json()["total"] == 1
     assert client.get("/v1/admin/catalogue/players?provider=google", headers=headers()).json()["total"] == 1
     detail = client.get("/v1/admin/catalogue/players/" + ids["player"], headers=headers())
     record = detail.json()
     assert record["support"]["effective"]["publishing_slots"] == 1
-    assert record["activity"]["open_cases"] == 1
+    activity = record["activity"]
+    assert activity["submissions"] == activity["verified_submissions"] == 1 and activity["last_submission_at"] == 200
+    assert activity["published_versions"] == 2 and activity["personal_bests"] == 1
+    assert activity["open_cases"] == 1 and activity["last_observed_activity_day"] == 50
     assert record["case_activity"][0]["kind"] == "note"
     assert record["observed_journey"]["milestones"] == [{"name": "menu_ready", "at": 400}]
     assert record["coverage"]["verified_recovery"] == record["coverage"]["financial_revenue"] == "unavailable"

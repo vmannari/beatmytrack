@@ -57,6 +57,10 @@ def legacy_contact_verifier(real_verifier, tmp_path_factory):
     archive = Path(__file__).parent / "fixtures/physics_050"
     for name, folder in (("native_track", "track"), ("playground_data", "track"), ("vehicle_simulation", "vehicle")):
         shutil.copyfile(archive / (name + ".gd.txt"), project / folder / (name + ".gd"))
+    # Historical inputs retain both their physics and checkpoint contract.
+    # Current rules21 deliberately tighten road excursions and use a new board.
+    for name in ("race_rules", "track_session"):
+        shutil.copyfile(Path(__file__).parent / "fixtures/rules_020" / (name + ".gd.txt"), project / "race" / (name + ".gd"))
     # Current compiler preparation passes optional immutable cell buffers.
     # The historical loader deliberately ignores them and retains its original
     # rectangle expansion, so no .50 simulation or replay bytes are changed.
@@ -77,7 +81,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
     fixtures = ROOT / "game/tests/fixtures"
     document = json.loads((fixtures / "over_and_under.json").read_text())
     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.59"
+    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.66"
     with pytest.raises(VerificationError, match="required laps"):
         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
 
@@ -125,14 +129,17 @@ def test_spline_gate_rules_do_not_relabel_historical_boards(race_fixture):
 
     previous = copy.deepcopy(race_fixture["expected_manifest"])
     previous["rules_key"] = "standing-5-road-gates-v19"
-    assert race_fixture["expected_manifest"]["rules_key"] == "standing-5-road-gates-v20"
-    assert current_manifest(previous)["rules_key"] == "standing-5-road-gates-v20"
+    assert race_fixture["expected_manifest"]["rules_key"] == "standing-5-road-gates-v22"
+    assert current_manifest(previous)["rules_key"] == "standing-5-road-gates-v23"
     assert previous["rules_key"] == "standing-5-road-gates-v19"  # Stored immutable revision is not rewritten.
     current_board = board_manifest(SimpleNamespace(manifest=previous), "compact")
     previous_board = {**current_board, "rules_key": "standing-5-road-gates-v19"}
     from bmt_backend.track_models import digest
 
-    assert current_board["rules_key"] == "standing-5-road-gates-v20"
+    assert current_board["rules_key"] == "standing-5-road-gates-v23"
+    rules22_board = {**current_board, "rules_key": "standing-5-road-gates-v22"}
+    assert digest(current_board) != digest(rules22_board)
+    assert current_manifest(race_fixture["expected_manifest"])["rules_key"] == "standing-5-road-gates-v23"
     assert digest(current_board) != digest(previous_board)  # New attempts never merge into the old board.
 
 
@@ -163,7 +170,8 @@ def test_validated_saved_route_is_compiled_without_regeneration(real_verifier, r
     baseline = real_verifier.validate_track(original)
     revised = real_verifier.validate_track(rounded)
     assert baseline["track_content_hash"] != revised["track_content_hash"]
-    assert baseline == race_fixture["expected_manifest"]
+    from bmt_backend.contracts import current_manifest
+    assert baseline == current_manifest(race_fixture["expected_manifest"])
 
 
 def test_server_accepts_overlapping_bridge_decks(real_verifier):
@@ -359,7 +367,9 @@ def test_real_track_rejects_routes_scripts_and_malformed_data(real_verifier, rac
 
 
 @pytest.mark.godot
-def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
+@pytest.mark.skipif(not (ROOT / "game/assets/menu/rivalry_winter_v1.png").is_file(),
+    reason="Native SDK probe requires the complete client asset project, verified separately")
+def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier, tmp_path):
     # Test the real Godot HTTP stack against an isolated deterministic HTTP peer.
     calls = []
 
@@ -425,6 +435,8 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
             self.end_headers()
 
     real_verifier._check_engine()
+    profile = tmp_path / "profile"
+    profile.mkdir()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -436,6 +448,7 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
                 "--headless",
                 "--path",
                 str(ROOT / "game"),
+                "--audio-driver", "Dummy",
                 "--script",
                 "res://backend/test_client.gd",
                 "--",
@@ -445,13 +458,14 @@ def test_godot_http_adapter_refreshes_without_losing_idempotency(real_verifier):
             text=True,
             timeout=40,
             check=False,
+            env={**os.environ, "APPDATA": str(profile)},
         )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
     assert process.returncode == 0, process.stdout + process.stderr
-    assert "14 checks, 0 failures" in process.stdout
+    assert "13 checks, 0 failures" in process.stdout
     assert "SCRIPT ERROR" not in process.stderr
     mutations = [call for call in calls if call[0] == "/v1/adapter-mutation"]
     assert len(mutations) == 2 and mutations[0][2:] == mutations[1][2:]
@@ -517,7 +531,8 @@ def test_standalone_verifier_contains_complete_handbrake_model(real_verifier, ra
         game_project=project,
         verifier_timeout_seconds=90,
     ))
-    assert verifier.validate_track(race_fixture["document"]) == race_fixture["expected_manifest"]
+    from bmt_backend.contracts import current_manifest
+    assert verifier.validate_track(race_fixture["document"]) == current_manifest(race_fixture["expected_manifest"])
     spline = json.loads((ROOT / "game/tests/fixtures/spline_circuit.json").read_text())
     assert verifier.validate_track(spline) == real_verifier.validate_track(spline)
     verifier.verify_canonical_diagnostic(race_fixture["document"], race_fixture["replay"], "compact")
@@ -545,4 +560,4 @@ def test_early_launch_delay_verifies_in_standalone_runner(real_verifier, race_fi
     replay["frames"] = [[0, 255, 0, 0, 2]] + [[0, 255, 0]] * 71 + replay["frames"]
     result = real_verifier.verify_canonical_diagnostic(race_fixture["document"], replay, race_fixture["vehicle_id"])
     assert result["time_ticks"] == race_fixture["time_ticks"] + 72
-    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v20"
+    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v23"

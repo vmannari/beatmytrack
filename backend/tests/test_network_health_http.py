@@ -23,6 +23,7 @@ from bmt_backend.track_models import Run
 
 
 @pytest.mark.godot
+@pytest.mark.skipif(os.name != "nt", reason="Native transport probe uses the pinned Windows PowerShell launcher")
 def test_real_native_network_packet_and_server_request_id_correlation(tmp_path):
     root = Path(__file__).resolve().parents[2]
     key, analyst = secrets.token_urlsafe(32), secrets.token_urlsafe(32)

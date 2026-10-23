@@ -36,7 +36,7 @@ from .track_models import (
     now,
     replay_response,
 )
-from .tracks import UploadTrack, discovery_projection, track_payload
+from .tracks import TrackContent, discovery_projection, track_payload
 from .trajectory_verifier import validate_envelope
 from .verifier import VerificationError, VerifierStopping
 from .worker_lifecycle import aborting, stopping
@@ -61,14 +61,15 @@ class PublishDocument(BaseModel):
     @field_validator("name")
     @classmethod
     def clean_name(cls, value):
-        return UploadTrack.clean_name(value)
+        return TrackContent.clean_name(value)
 
 
 def payload(intent):
     return {"publication_id": intent.id, "state": intent.status,
             "failure_code": intent.failure_code, "detail": intent.detail,
             "retryable": intent.failure_code in RETRYABLE, "receipt": intent.receipt,
-            "poll_after_ms": 2500 if intent.status in ("queued", "verifying") else 0}
+            "poll_after_ms": (1000 if now() - intent.created_at < 10 else 2500)
+                if intent.status in ("queued", "verifying") else 0}
 
 
 def owned(session, player_id, publication_id, *, lock=False):
@@ -102,6 +103,8 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
         if existing.request_hash != request_hash:
             raise HTTPException(409, "Idempotency-Key already used for different content")
         return payload(existing)
+    from .community import require_terms
+    require_terms(session, player.id)
     # Fresh operations retain the standard versioned format/expiry contract.
     replay_response(session, player.id, "publication", key, original)
     source_id = body.document.get("id")
@@ -109,7 +112,7 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", source_id)):
         raise HTTPException(422, "INVALID_PUBLICATION_ENVELOPE")
     # Naming and creator ownership use exactly the existing immutable contract.
-    clean = UploadTrack(name=body.name, document={**body.document, "creator": player.display_name})
+    clean = TrackContent(name=body.name, document={**body.document, "creator": player.display_name})
     if (set(body.contract) != set(CONTRACT_FIELDS)
             or type(body.contract.get("tick_rate")) is not int or not 1 <= body.contract["tick_rate"] <= 1000
             or any(type(body.contract.get(field)) is not str or not 1 <= len(body.contract[field]) <= 160
@@ -382,6 +385,8 @@ def _commit_publication(app, session, intent, manifest, result, document):
     session.add(run)
     session.flush()
     version.creator_test_run_id = run.id
+    from .news import capture_publication
+    capture_publication(session, version, track, owner)
     if getattr(app.state.settings, "telemetry_enabled", False):
         from .telemetry import append_server_event
         dimensions = {"track_version": version.id, "biome": (version.discovery or {}).get("theme", "pine")}

@@ -61,8 +61,12 @@ def validate(config, *, apply=False, now=None):
         raise ValueError("Staging permits zero or one warm API instance within the replica cap")
     if type(config.get("worker_instances")) is not int or not 1 <= config["worker_instances"] <= 2:
         raise ValueError("Initial staging allows one or two workers")
-    # Zero overflow, full revision overlap plus operations and spare DB connections.
-    budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * 2) + 6 + 10
+    if type(config.get("telemetry_enabled", False)) is not bool:
+        raise ValueError("telemetry_enabled must be a boolean")
+    # Main worker pool (2), publication (1), discovery (1), optional product (1).
+    # Reserve full revision overlap, operations and spare DB connections.
+    worker_connections = 4 + int(config.get("telemetry_enabled", False))
+    budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * worker_connections) + 6 + 10
     if budget > 40:
         raise ValueError("Replica/rollout pools exceed the 40-connection staging budget")
     clients = config.get("google_client_ids", [])
@@ -115,6 +119,7 @@ def environment(config, role, public_url="https://staging.invalid"):
         "BMT_PUBLIC_BASE_URL": public_url, "BMT_GOOGLE_CLIENT_IDS": ",".join(config.get("google_client_ids", [])),
         "BMT_GOOGLE_WEB_CLIENT_ID": config.get("google_web_client_id", ""), "BMT_DATABASE_POOL_SIZE": "4" if role == "api" else "2",
         "BMT_DATABASE_POOL_OVERFLOW": "0", "BMT_DATABASE_POOL_TIMEOUT_SECONDS": "3",
+        "BMT_TELEMETRY_ENABLED": str(config.get("telemetry_enabled", False)).lower(),
         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
@@ -167,7 +172,7 @@ def deployment_commands(config, image, directory):
             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
             "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
         "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "runtime", "app_secret"),
-            "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.worker"),
+            "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.service_worker"),
         "smoke": command(config, "run", "jobs", "deploy", n["smoke"], *common("smoke", "operator", "app_secret"),
             *job, "--args=-m,bmt_backend.cloud_smoke"),
         "smoke_execute": command(config, "run", "jobs", "execute", n["smoke"], "--region=" + region, "--wait"),

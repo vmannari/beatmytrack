@@ -174,7 +174,7 @@ def test_failed_refresh_keeps_previous_snapshot_and_retries(domain,monkeypatch,f
 
 def test_real_reset_fences_a_verification_already_computing(domain,monkeypatch):
     _,public=public_course(domain)
-    domain.app.state.settings=replace(domain.app.state.settings,environment="development",dev_auth_enabled=True,
+    domain.app.state.settings=replace(domain.app.state.settings,environment="development",local_drafts_only=True,dev_auth_enabled=True,
         dev_auth_key=DEV_KEY,test_drivers_enabled=True)
     with domain.factory() as session:
         session.get(Player,domain.players["Alice"]).is_test_driver=True
@@ -221,7 +221,7 @@ def wait_for_lock(factory,pid):
 def test_reset_waiting_for_finalization_preserves_inventory_without_deadlock(domain):
     if not domain.postgres:pytest.skip("Real PostgreSQL writer locks required")
     _,public=public_course(domain)
-    domain.app.state.settings=replace(domain.app.state.settings,environment="development",dev_auth_enabled=True,
+    domain.app.state.settings=replace(domain.app.state.settings,environment="development",local_drafts_only=True,dev_auth_enabled=True,
         dev_auth_key=DEV_KEY,test_drivers_enabled=True)
     with domain.factory() as session:
         session.get(Player,domain.players["Alice"]).is_test_driver=True

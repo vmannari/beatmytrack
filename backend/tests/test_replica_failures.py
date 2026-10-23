@@ -149,6 +149,10 @@ def worker(replicas, **options):
 
 def published(replicas):
     creator = sign_in(replicas, "Creator")
+    from bmt_backend.community import TERMS_VERSION
+    accepted = replicas.a.client.post("/v1/community/terms", headers=auth(creator),
+        json={"version": TERMS_VERSION, "accepted": True})
+    assert accepted.status_code == 200, accepted.text
     document = {"schema": "creator-track-v5", "id": "replica_fixture", "shape": "oval",
                 "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
     from bmt_backend.publications import CONTRACT_FIELDS

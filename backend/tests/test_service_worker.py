@@ -30,7 +30,7 @@ def launch(folder, mode):
 
 
 def assert_reaped(folder):
-    for name in ("worker.ready", "product.ready", "descendant.ready"):
+    for name in ("worker.ready", "publication.ready", "discovery.ready", "product.ready", "descendant.ready"):
         if (folder / name).exists():
             pid = json.loads((folder / name).read_text(encoding="utf8"))["pid"]
             with pytest.raises(ProcessLookupError):
@@ -49,17 +49,22 @@ def cleanup(process, output):
 
 
 @pytest.mark.parametrize("stop_signal", [signal.SIGTERM, signal.SIGINT])
-def test_signals_reach_both_children_preserving_grace_and_priority(tmp_path, stop_signal):
+def test_signals_reach_all_children_preserving_grace_and_priority(tmp_path, stop_signal):
     process, output = launch(tmp_path, "on")
     try:
         worker = wait_file(process, tmp_path, "worker.ready")
+        publication = wait_file(process, tmp_path, "publication.ready")
+        discovery = wait_file(process, tmp_path, "discovery.ready")
         product = wait_file(process, tmp_path, "product.ready")
         assert product["nice"] == 19 and worker["nice"] < product["nice"]
+        assert publication["nice"] == worker["nice"]
+        assert discovery["nice"] == worker["nice"]
+        assert publication["group"] == publication["pid"]
         assert worker["group"] == worker["pid"] and product["group"] == product["pid"]
         requested = time.monotonic()
         process.send_signal(stop_signal)
         assert process.wait(timeout=3) == 0
-        for role in ("worker", "product"):
+        for role in ("worker", "publication", "discovery", "product"):
             delivered = json.loads((tmp_path / (role + ".signal")).read_text())
             assert delivered["signal"] == stop_signal
         assert time.monotonic() - requested >= 0.25
@@ -69,10 +74,12 @@ def test_signals_reach_both_children_preserving_grace_and_priority(tmp_path, sto
         cleanup(process, output)
 
 
-def test_disabled_default_launches_only_competitive_worker(tmp_path):
+def test_disabled_telemetry_still_launches_publication_worker(tmp_path):
     process, output = launch(tmp_path, "off")
     try:
         wait_file(process, tmp_path, "worker.ready")
+        wait_file(process, tmp_path, "publication.ready")
+        wait_file(process, tmp_path, "discovery.ready")
         time.sleep(0.1)
         assert not (tmp_path / "product.ready").exists()
         process.send_signal(signal.SIGTERM)
@@ -82,7 +89,7 @@ def test_disabled_default_launches_only_competitive_worker(tmp_path):
         cleanup(process, output)
 
 
-@pytest.mark.parametrize("mode", ["product_fail", "worker_fail", "product_exit_zero", "launch_failure", "priority_failure"])
+@pytest.mark.parametrize("mode", ["product_fail", "worker_fail", "publication_fail", "publication_exit_zero", "discovery_fail", "discovery_exit_zero", "product_exit_zero", "launch_failure", "priority_failure"])
 def test_child_exit_or_launch_failure_cannot_leave_service_healthy(tmp_path, mode):
     process, output = launch(tmp_path, mode)
     try:

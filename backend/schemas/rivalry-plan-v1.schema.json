@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-rivalry-plan-v1",
+  "title": "Studio future weekly Rivalry line-up command",
+  "description": "Owner-only POST /v1/admin/rivalry-plans/{plan_id}/preview accepts the edit fields without preview_at/preview_hash. POST /commands accepts the complete command. Exactly five distinct eligible latest immutable track versions are required. The server checks the active vehicle/build, expected revision, five-minute preview and UTC start deadline. A committed command_id is a permanent replay identity. GET /v1/admin/rivalry-plans returns the current locked week plus four future UTC weeks for the requested vehicle; it never creates plans. POST /prepare fills missing weeks and records an audit. The existing worker performs automatic planning at most once a minute across workers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["command_id", "expected_revision", "version_ids", "reason", "preview_at", "preview_hash"],
+  "properties": {
+    "command_id": {"type": "string", "format": "uuid"},
+    "expected_revision": {"type": "integer", "minimum": 0},
+    "version_ids": {
+      "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true,
+      "items": {"type": "string", "format": "uuid"}
+    },
+    "reason": {"type": "string", "minLength": 3, "maxLength": 500, "description": "At least three characters after trimming."},
+    "preview_at": {"type": "integer", "minimum": 0},
+    "preview_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

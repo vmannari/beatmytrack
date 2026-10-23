@@ -1,12 +1,12 @@
 'use strict';
 const $=s=>document.querySelector(s), esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
-let dialogGeneration=0, dialogOpener=null;
-const sections=[['overview','Studio pulse','◫','LEARN'],['product','Product analytics','↗',''],['analytics','Submission explorer','⌁',''],['tracks','Tracks & creators','▱',''],['players','Players','♙','OPERATE'],['races','Race evidence','⚑',''],['economy','Monetisation','▣',''],['system','Reliability & access','▤','CONTROL'],['live','Configuration','☷',''],['studio','Data coverage','◇','']];
-sections.splice(4,0,['competitions','Competition inspector','⚑',''],['cases','Support cases','♙','OPERATE']);
-sections.splice(2,0,['quality','Client quality & heatmaps','↗','']);
-sections.find(s=>s[0]==='players')[3]='';
-const titles=Object.fromEntries(sections.map(x=>[x[0],x[1]]));
+let dialogGeneration=0, dialogOpener=null, lastRenderedRoute='';
+const sections=[['overview','Overview','\u25eb','START HERE'],['alarms','Operations & alarms','!',''],
+ ['product','Player behaviour','\u2197','UNDERSTAND'],['quality','Game quality','\u2301',''],['economy','Monetisation','\u25a3',''],
+ ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['cases','Player support','\u25c7',''],
+ ['studio','Administration','\u25a4','MANAGE']];
+const titles={...Object.fromEntries(sections.map(x=>[x[0],x[1]])),players:'Players',races:'Race evidence',publications:'Publications',competitions:'Competitions',system:'Service health'};
 const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
 const status=v=>`<span class="console-state ${['failed','rejected','queued','disabled','hidden'].includes(String(v))?'warn':''}">${esc(v)}</span>`;
 function intro(title,sub,section='OPERATE'){return `<header class="console-intro"><small>${esc(section)}</small><h1>${esc(title)}</h1><p>${esc(sub)}</p></header>`;}
@@ -31,16 +31,11 @@ async function api(path,body,options={}){
 function login(message=''){
  generation++;readController?.abort();
  $('#main').removeAttribute('aria-busy');
- $('#main').innerHTML=`<div class="console-login">${intro('BMT Studio','Sign in with a dedicated administrator credential.')}<form id="login" class="card console-padding"><label for="key">Owner or analyst key</label><input id="key" type="password" autocomplete="off" required minlength="32"><p class="console-note">Credentials remain in this tab’s memory. Lock or reload to clear access. Game sign-in credentials do not grant console access.</p><div class="console-actions"><button class="btn btn-primary">Connect</button></div><p id="login-error" class="console-error" ${message?'':'hidden'}>${esc(message)}</p></form></div>`;
+ $('#main').innerHTML=`<div class="console-login">${intro('BMT Studio','Sign in with a dedicated administrator credential.')}<form id="login" class="card console-padding"><label for="key">Staff identity token or legacy key</label><input id="key" type="password" autocomplete="off" required minlength="32"><p class="console-note">Credentials remain in this tab’s memory. Lock or reload to clear access. Game sign-in credentials do not grant console access.</p><div class="console-actions"><button class="btn btn-primary">Connect</button></div><p id="login-error" class="console-error" ${message?'':'hidden'}>${esc(message)}</p></form></div>`;
  $('#login').onsubmit=async e=>{e.preventDefault();authGeneration++;key=$('#key').value;await render();};
 }
 function tabs(items,current){return `<div class="tabs">${items.map(([id,label])=>`<a class="tab ${id===current?'active':''}" href="#${id}">${esc(label)}</a>`).join('')}</div>`;}
 function metric(name,value,target,note){return `<a href="#${target}" class="metric"><div class="metric-label">${esc(name)} →</div><div class="metric-value">${esc(value)}</div><div class="metric-meta">${esc(note)}</div></a>`;}
-function chart(d){
- const first=Math.floor(d.since/86400),last=Math.floor((d.until-1)/86400),days=Array.from({length:last-first+1},(_,i)=>first+i),values=new Map(d.daily.map(x=>[x.day,x.count])),max=Math.max(1,...days.map(day=>values.get(day)||0));
- const dayLink=day=>'#races?since='+Math.max(d.since,day*86400)+'&until='+Math.min(d.until,(day+1)*86400);
- return `<div class="console-chart-wrap"><div class="console-chart" style="min-width:${Math.max(420,days.length*44)}px">${days.map(day=>`<a class="console-bar" aria-label="${new Date(day*86400000).toISOString().slice(0,10)}: ${values.get(day)||0} submissions" href="${dayLink(day)}" style="height:${Math.max(2,(values.get(day)||0)/max*90)}%"><b>${values.get(day)||0}</b><span>${new Date(day*86400000).toISOString().slice(5,10)}</span></a>`).join('')}</div></div><p class="console-note">${days.length} UTC calendar days · Submitted attempts, including unverified attempts.</p><details class="studio-chart-data"><summary>View daily evidence table</summary><div class="console-table"><table><thead><tr><th scope="col">UTC day</th><th scope="col">Submitted attempts</th></tr></thead><tbody>${days.map(day=>`<tr><th scope="row"><a href="${dayLink(day)}">${new Date(day*86400000).toISOString().slice(0,10)}</a></th><td>${values.get(day)||0}</td></tr>`).join('')}</tbody></table></div></details>`;
-}
 function periodTarget(target,d){return target+(target.includes('?')?'&':'?')+'since='+d.since+'&until='+d.until;}
 function rangeParams(params){const result=new URLSearchParams(params);if(result.has('all')){result.delete('since');result.delete('until');}else if(!result.has('since')&&reporting){result.set('since',reporting.since);result.set('until',reporting.until);}return result;}
 function reportingDates(){
@@ -50,11 +45,15 @@ function reportingDates(){
  $('#reporting-dates').onsubmit=event=>{event.preventDefault();const since=Date.parse($('#report-from').value+'T00:00:00Z')/1000,until=Date.parse($('#report-through').value+'T00:00:00Z')/1000+86400;if(!Number.isFinite(since)||!Number.isFinite(until)||since<0||until<=since||until-since>90*86400){$('#dates-error').hidden=false;$('#dates-error').textContent='Choose a range of 1–90 calendar days.';return;}const [path,qs]=location.hash.slice(1).split('?'),params=new URLSearchParams(qs);for(const name of ['all','offset','cursor'])params.delete(name);params.set('since',since);params.set('until',until);$('#days').value='custom';$('#dialog').close();location.hash=path+'?'+params;};
 }
 
-async function overview(d){return intro('The game, at a glance.','A clear view of accounts, immutable tracks and verification workload.')+`<div class="health-strip"><b>Service pulse</b><span class="console-success">● API responding</span><span class="console-success">● Database reachable</span><span>Verification: ${d.pending} pending</span><a href="#system">Inspect health →</a></div><div class="metrics">${metric('Registered players',d.players,'players?all=1','All accounts · lifetime')}${metric('Submitting racers',d.racers,periodTarget('races',d),`Unique players · selected dates`)}${metric('Track identities',d.tracks,'tracks?all=1','All publication states · lifetime')}${metric('Track versions',d.versions,'tracks?all=1','Immutable documents · lifetime')}${metric('Verified submissions',d.states.verified||0,periodTarget('races?state=verified',d),`Selected dates`)}${metric('Awaiting verification',d.pending,'system/jobs?all=1','Current queue · all time')}</div><div class="console-grid">${card('Race submissions',chart(d))}${card('Needs attention',`<div class="console-kv"><dt>Queued / verifying</dt><dd>${link('system','jobs',`${d.pending} pending submissions`)}</dd></div><div class="console-kv"><dt>Rejected / failed</dt><dd><a href="#${periodTarget('races?state=rejected',d)}">${d.states.rejected||0} rejected</a> · <a href="#${periodTarget('races?state=failed',d)}">${d.states.failed||0} failed</a> in selected window</dd></div><div class="console-kv"><dt>Restricted accounts</dt><dd><a href="#players?state=disabled">${d.disabled} accounts</a></dd></div><p class="console-note">Verification outcomes are evidence, not allegations. Worker freshness, queue age and storage capacity are available under System. Purchase records and catalog controls are available under Economy; crash telemetry has no configured data source.</p>`)}</div><div class="console-grid">${card('Investigate a record','<p class="console-note">Follow stable player, track-version and race identities into their evidence. Published geometry and competition manifests remain immutable.</p><div class="console-actions"><a class="btn" href="#players">Players →</a><a class="btn" href="#tracks">Track library →</a><a class="btn" href="#races">Race submissions →</a></div>')}${card('Reporting coverage','<p class="console-note">These counts come from operational database records. Signed-in observed activity and exact-day return cohorts are available in Product analytics. Session duration, revenue and device performance have no configured data source.</p>')}</div>`;}
 function playerType(value){return value===true?'Artificial':value===false?'Real':'Unavailable';}
 const columns={players:['display_name','id','is_test_driver','disabled','created_at'],tracks:['name','state','hidden','number','rating_count','owner_id'],races:['id','player_id','status','time_ticks','attempts','created_at'],jobs:['id','status','attempts','failure_code','created_at'],audit:['action','entity_id','actor','reason','created_at'],grants:['id','player_id','source','quantity','created_at']};
 function cell(kind,k,v,row){if(k==='is_test_driver')return esc(playerType(v));if(k==='created_at')return esc(date(v));if(k==='id'||k==='name'||k==='display_name')return link(kind,row.id,v);if(k==='player_id'||k==='owner_id')return link('players',v);if(k==='status'||k==='state')return status(v);if(k==='disabled')return status(row.deleted_at?'removed':v?'disabled':'active');if(k==='hidden')return status(v?'hidden':'visible');return esc(v);}
-async function listing(kind,params){const query=new URLSearchParams({q:params.get('q')||'',state:params.get('state')||'',offset:params.get('offset')||'0'});for(const name of ['since','until'])if(params.has(name))query.set(name,params.get(name));const d=await api('entities/'+kind+'?'+query),cols=columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];return `<section class="card"><p class="console-padding console-note">${params.has('since')?esc(date(Number(params.get('since'))))+' to '+esc(date(Number(params.get('until'))))+' (end excluded)':'All time'}</p><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.total?d.offset+1:0}–${d.offset+d.items.length} of ${d.total}</span><button class="btn" data-offset="${Math.max(0,d.offset-d.limit)}" ${d.offset===0?'disabled':''}>Previous</button><button class="btn" data-offset="${d.offset+d.limit}" ${d.offset+d.limit>=d.total?'disabled':''}>Next</button></div></section>`;}
+async function listing(kind,params){
+ const query=new URLSearchParams({q:params.get('q')||'',state:params.get('state')||''});
+ for(const name of ['since','until','failure_code','cursor','offset'])if(params.has(name))query.set(name,params.get(name));
+ const d=await api('entities/'+kind+'?'+query),cols=columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];
+ return `<section class="card"><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.items.length?d.offset+1:0}–${d.offset+d.items.length} · ${d.items.length} records shown</span><button class="btn" data-page-cursor="${esc(d.previous_cursor||'')}" ${d.previous_cursor?'':'disabled'}>Previous</button><button class="btn" data-page-cursor="${esc(d.next_cursor||'')}" ${d.next_cursor?'':'disabled'}>Next</button></div></section>`;
+}
 function routeMap(preview){
  const points=(preview.points||[]).filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1]));
  if(points.length<2)return '<p class="console-note">Route preview unavailable.</p>';
@@ -79,34 +78,37 @@ async function render(){
  $('#main').innerHTML='<p class="console-empty" role="status">Loading current records…</p>';
  $('#freshness').textContent='Loading evidence…';
  document.querySelectorAll('.console-nav').forEach(a=>{
-  const active=a.dataset.route===section;a.classList.toggle('active',active);
+  const group={system:'alarms',analytics:'alarms',publications:'tracks',competitions:'tracks',players:'cases',races:'cases',live:'studio'};const active=a.dataset.route===(group[section]||section);a.classList.toggle('active',active);
   if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');
  });
  try{
   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
-  const d=await api((['quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live'].includes(section)?'studio/context?':section==='product'?'product-analytics?':'overview?')+overviewQuery);if(ticket!==generation)return;
+  const d=await api((['alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
   role=d.role;reporting=d;params=rangeParams(params);
   let html='';
-  if(section==='quality')html=await monitorQualityView(params);
+  if(section==='alarms')html=await platformIncidents(id,params);
+  else if(section==='quality')html=await platformQuality(params);
   else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
-  else if(['competitions','cases','publications'].includes(section))html=await operationsView(section,id,params);
-  else if(section==='product')html=productAnalyticsView(d);
-  else if(section==='overview')html=await monitorPulse(d,params);
-  else if(section==='studio')html=await studioCoverage();
+  else if(section==='competitions'&&!id)html=await platformCompetitions(params);
+  else if(['competitions','cases','publications'].includes(section)){html=await operationsView(section,id,params);if(section==='cases'&&id)html+=await platformCaseTriage(id);}
+  else if(section==='product')html=await platformBehaviour(params);
+  else if(section==='overview')html=await platformOverview(d,params);
+  else if(section==='studio')html=params.get('tab')==='legacy'?await studioCoverage():await platformAdmin(params);
   else if(['players','tracks','races','audit','jobs','grants'].includes(section)){
    html=id?await inspect(section,id,params):intro(titles[section]||section,'Server records · search, filter and inspect stable identities')+await listing(section,params);
   }else if(section==='system'){
    html=intro('System & access','Operational visibility and accountable changes.','CONTROL')+tabs([['system','Health'],['system/jobs','Background jobs'],['system/audit','Audit history'],['system/access','Access']],path);
-   if(id==='jobs'||id==='audit')html+=await listing(id,params);
-   else if(id==='access')html+=card('Administrative access',kv({current_role:role,owner:'Read records and purchases; restrict / restore accounts; hide / show tracks; configure test products and audited development purchases',analyst:'Read-only inspection',authentication:'Separate configured credentials; held in tab memory',audit_actor:'Credential role. Individual administrator SSO / MFA not configured.'}));
-   else html=monitorReliability(d,await api('competition-health'));
-  }else if(section==='economy')html=await commercePage(params);
-  else if(section==='live')html=intro('Live operations','Compatibility is pinned per race contract.','CONTROL')+card('Configuration boundaries',kv({track_schema:'creator-track-v5',replay_schemas:'bmt-replay-v1 / bmt-replay-v2',resume_policy:'rewind-1',race_configuration:'Inspect a race for its exact immutable manifest'}))+unavailable('Remote configuration','There is no mutable configuration registry, activation service or retained rollback snapshots.');
-  else if(section==='analytics')html=intro('Driving analytics','Operational submission counts; no client-session inference.','LEARN')+card('Submitted attempts by UTC day',chart(d))+card('Verification outcomes in the selected window',kv(d.states))+card('Observed product activity','<p class="console-note">Submitted attempts and observed product activity answer different questions. <a href="'+scopedHref('product',params)+'">Open Product analytics</a> for signed-in activity, ordered journeys and exact-day return cohorts. Client quality provides bounded race frame summaries, device/OS comparisons and observed process exits.</p>');
+   if(id==='jobs')html=await platformJobs(params);else if(id==='audit')html+=await listing(id,params);
+   else if(id==='access'){const q=new URLSearchParams(params);q.set('tab','access');html=await platformAdmin(q);}
+   else html=platformOpsTabs('system',params)+monitorReliability(d,await api('competition-health'));
+  }else if(section==='economy')html=await platformMoney(params);
+  else if(section==='live'){const q=new URLSearchParams(params);q.set('tab','experiments');html=await platformAdmin(q);}
+  else if(section==='analytics')html=intro('Race evidence','Inspect submitted results and their verification outcomes.','INVESTIGATE')+await listing('races',params);
   else html=intro('Page not found','Use the navigation to choose a workspace.');
   if(ticket!==generation)return;
-  $('#main').innerHTML=html;
+  if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+(section==='product'?'<button class="btn" id="platform-export">Export activity in scope</button>':'')+'</div>'+html;$('#main').innerHTML=html;
+  if(lastRenderedRoute!==raw){window.scrollTo({top:0,behavior:'instant'});lastRenderedRoute=raw;}
   $('#role').textContent=role+' access';$('#environment').textContent=d.environment;
   $('#connection').textContent=location.host;$('#connection').title=location.origin;
   $('#freshness').textContent='Queried '+date(d.as_of);
@@ -122,7 +124,7 @@ async function render(){
   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
 }
-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();}
+function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();wirePlatform(params);}
 function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
 function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
 function modal(html){

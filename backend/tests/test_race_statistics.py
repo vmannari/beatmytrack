@@ -1,7 +1,7 @@
 """One package per attempt; published-only spatial data; bounded prepared reads."""
 # ruff: noqa: F811
 from dataclasses import replace
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from sqlalchemy import func, select
@@ -35,6 +35,22 @@ def seed(product):
 
 def event(value):
     return observed('race_statistics',properties=value,id=value['race_id'])
+
+
+def test_published_uuid5_reference_is_ingested_and_projected(product):
+    app,client,_auth,_player=product
+    version,_draft=seed(product)
+    legacy=str(uuid5(NAMESPACE_URL,'retained-official-track-version'))
+    with app.state.session_factory() as session:
+        row=session.get(TrackVersion,version)
+        row.id=legacy
+        session.commit()
+    value=package(legacy)
+    assert send(product,[event(value)]).json()['events'][0]['status']=='accepted'
+    project_pending(app.state.session_factory,at=AT)
+    report=client.get(f'/v1/admin/race-statistics?since={AT-3600}&until={AT+1}&track_version_id={legacy}',
+        headers={'Authorization':'Bearer '+'a'*40})
+    assert report.status_code==200 and report.json()['totals']['races']==1
 
 
 def test_race_package_exactly_once_device_os_and_route_filters(product):

@@ -9,13 +9,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from test_lightweight_verifier import creator_proof as creator_proof_fixture
+from test_lightweight_verifier import proof as proof_fixture
+from test_verifier import real_verifier as real_verifier_fixture
 
 from bmt_backend.app import create_app
 from bmt_backend.config import Settings
 from bmt_backend.migrate import upgrade
-from bmt_backend.worker import process_one
+from bmt_backend.worker import process_one, process_worker_job
 
 REPO = Path(__file__).resolve().parents[2]
+proof = proof_fixture
+real_verifier = real_verifier_fixture
+creator_proof = creator_proof_fixture
 
 
 @pytest.fixture(params=["sqlite", "postgres"])
@@ -51,7 +57,7 @@ def integration_database(request):
 
 
 @pytest.mark.godot
-def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_database):
+def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_database, proof, creator_proof, real_verifier):
     binary = os.environ.get("BMT_GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
     if not Path(binary).is_file():
         pytest.skip("Exact Godot binary not configured")
@@ -63,7 +69,7 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
             database_url=f"sqlite:///{(tmp_path / 'integration.sqlite').as_posix()}",
             object_dir=str(tmp_path / "objects"),
             godot_bin=binary,
-            game_project=str(REPO / "game"),
+            game_project=str(real_verifier.project),
         ),
         engine=integration_database,
     )
@@ -91,11 +97,24 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
             )
 
         creator, racer = login("creator"), login("racer")
-        uploaded = write("/v1/tracks", {"name": "Verified oval", "document": fixture["document"]}, creator)
-        assert uploaded.status_code == 201, uploaded.text
-        version = uploaded.json()["version_id"]
-        assert client.get(f"/v1/track-versions/{version}").status_code == 404
-        assert write(f"/v1/track-versions/{version}/publish", {}, creator).status_code == 409
+        from bmt_backend.community import TERMS_VERSION
+        assert write("/v1/community/terms", {"version": TERMS_VERSION, "accepted": True}, creator).status_code == 200
+        assert write("/v1/tracks", {"name": "Verified oval", "document": fixture["document"]}, creator).status_code == 410
+        document = {**fixture["document"], "name": "Verified oval", "creator": creator["player"]["display_name"]}
+        manifest = app.state.verifier.validate_track(document)
+        contract = {key: manifest[key] for key in ("engine_version", "verifier_version", "physics_version", "rules_key",
+            "compiler_version", "track_schema", "replay_schema", "tick_rate", "track_content_hash")}
+        contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
+        uploaded = write("/v1/publications", {"name": document["name"], "document": document, "vehicle_id": "compact",
+            "contract": contract, "replay": creator_proof}, creator)
+        assert uploaded.status_code == 202, uploaded.text
+        assert client.get("/v1/tracks").json()["items"] == []
+        assert process_one(app)
+        publication = client.get("/v1/me/publications/" + uploaded.json()["publication_id"],
+            headers={"Authorization": "Bearer " + creator["access_token"]}).json()
+        assert publication["state"] == "published", publication
+        version = publication["receipt"]["version_id"]
+        trajectory = {"schema": "bmt-trajectory-v1", "input_count": fixture["time_ticks"], "race_proof": proof}
 
         def race(player, replay):
             ticket = write("/v1/run-tickets", {"version_id": version, "vehicle_id": "compact"}, player)
@@ -112,15 +131,11 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
             )
             return result.json(), ticket.json()["board_id"]
 
-        creator_run, board = race(creator, fixture["replay"])
+        creator_run, board = race(creator, trajectory)
         assert creator_run["status"] == "verified", creator_run
-        assert write(f"/v1/track-versions/{version}/publish", {}, creator).status_code == 200
-        assert client.get(f"/v1/track-versions/{version}/document").json() == {
-            **fixture["document"],
-            "creator": creator["player"]["display_name"],
-        }
+        assert client.get(f"/v1/track-versions/{version}/document").json() == document
         assert client.get("/v1/tracks", params={"q": "oval"}).json()["items"][0]["version_id"] == version
-        racer_run, same_board = race(racer, fixture["replay"])
+        racer_run, same_board = race(racer, trajectory)
         assert racer_run["status"] == "verified" and same_board == board
         assert racer_run["time_ticks"] == creator_run["time_ticks"] == 12757
         rating = client.put(
@@ -134,13 +149,20 @@ def test_two_player_publish_share_race_rate_leaderboard(tmp_path, integration_da
         assert rating.status_code == 200, rating.text
         top = client.get(f"/v1/boards/{board}").json()
         assert top["population"] == 2 and [row["rank"] for row in top["items"]] == [1, 1]
-        histogram = client.get(f"/v1/boards/{board}/histogram").json()
+        for _ in range(16):
+            histogram_response = client.get(f"/v1/boards/{board}/histogram")
+            if histogram_response.status_code == 200:
+                break
+            assert histogram_response.status_code == 503, histogram_response.text
+            assert process_worker_job(app)
+        assert histogram_response.status_code == 200, histogram_response.text
+        histogram = histogram_response.json()
         assert sum(row["count"] for row in histogram["bins"]) == histogram["population"] == 2
         ghost = client.get(
             f"/v1/boards/{board}/ghosts/{racer['player']['id']}",
             headers={"Authorization": "Bearer " + racer["access_token"]},
         )
-        assert ghost.json()["replay"] == fixture["replay"]
+        assert ghost.json()["replay"] == trajectory
         rejected, _ = race(racer, {"schema": "bmt-replay-v1", "frames": [[0, 0, 0]]})
         assert rejected["status"] == "rejected"
         assert client.get(f"/v1/boards/{board}").json()["population"] == 2

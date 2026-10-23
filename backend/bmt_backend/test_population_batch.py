@@ -211,12 +211,12 @@ def get_batch(batch_id: str, session: DB, _operator: Operator):
     return batch_view(session, batch_id)
 
 
-def drive_idle(app):
+def drive_idle(app, *, generation_control=None):
     """One genuine drive from a durable batch; ordinary proofs remain first."""
     settings = app.state.settings
     if not (settings.environment == "development" and settings.test_drivers_enabled and settings.dev_auth_enabled):
         return False
-    from .test_driver_generator import DriverDidNotFinish, generate
+    from .test_driver_generator import DriverDidNotFinish, GenerationTimedOut, generate
     from .test_population_tool import API, recording
     from .worker_lifecycle import stopping
     if not settings.godot_bin or stopping(app):
@@ -266,7 +266,8 @@ def drive_idle(app):
     api = getattr(app.state, "batch_driver_api", None)
     if api is None:
         api = app.state.batch_driver_api = API(settings.test_driver_api_url or settings.public_base_url,
-                                             settings.dev_auth_key, internal=True)
+                                             settings.dev_auth_key, internal=True, stop_event=generation_control)
+    api.stop_event = generation_control
     folder = Path(settings.object_dir).parent / "test-population-batches" / data["batch_id"]
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "plan.json"
@@ -279,7 +280,7 @@ def drive_idle(app):
             result = recovered["run"]
         else:
             def generator(*args, **kwargs):
-                return generate(*args, **kwargs, stop_event=BackgroundControl(app))
+                return generate(*args, **kwargs, stop_event=generation_control or BackgroundControl(app))
             replay = recording(api, plan, job, {"traits": traits}, settings, path, generator=generator)
             ticket = api.call("POST", "/run-tickets", {"version_id": job["version_id"],
                 "vehicle_id": data["vehicle_id"], "test_population": True}, job["subject"], job["id"]+"-ticket")
@@ -288,7 +289,7 @@ def drive_idle(app):
         outcome = {"status": "submitted", "run_id": result["run_id"], "lease_until": 0}
     except BackgroundYielded:
         outcome = {"status": "waiting", "due": now()+3, "lease_until": 0}
-    except DriverDidNotFinish as error:
+    except (DriverDidNotFinish, GenerationTimedOut) as error:
         outcome = {"status": "waiting" if job["attempt"] < 4 else "uncompleted",
                    "attempt": job["attempt"]+1, "due": now()+10, "lease_until": 0,
                    "failure_code": str(error)[:500]}

@@ -98,6 +98,8 @@ def domain(tmp_path, request):
         write_limit_per_minute=10000,
     )
     app = create_app(settings, verifier=FakeVerifier(), engine=engine)
+    from legacy_authoring_fixture import install
+    install(app)
     upgrade(app.state.engine)
     factory = app.state.session_factory
     players = {}
@@ -107,6 +109,9 @@ def domain(tmp_path, request):
             session.add(player)
             session.flush()
             players[name] = player.id
+            from bmt_backend.community import TERMS_VERSION
+            from bmt_backend.community_models import CommunityAcceptance
+            session.add(CommunityAcceptance(player_id=player.id, version=TERMS_VERSION))
         session.commit()
 
     def fake_player(request: Request):
@@ -272,6 +277,7 @@ def test_hide_preserves_records_and_share_links(domain):
         == 200
     )
     assert domain.client.get("/v1/tracks").json()["items"] == []
+    assert domain.client.get(f"/v1/track-versions/{version['version_id']}").status_code == 200
     assert domain.client.get(f"/v1/track-versions/{version['version_id']}/document").status_code == 200
     assert domain.client.get(f"/v1/boards/{board}").json()["population"] == 1
 

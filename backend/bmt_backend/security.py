@@ -101,7 +101,7 @@ def current_player(
     # Saturated replicas must never require a nested second connection.
     session.commit()
     if not getattr(request.state, "player_budget_checked", False):
-        read = request.method in ("GET", "HEAD") or request.url.path in ("/v1/discovery/tracks", "/v1/discovery/random")
+        read = request.method in ("GET", "HEAD") or request.url.path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
         limit = request.app.state.settings.rate_limit_per_minute if read else request.app.state.settings.write_limit_per_minute
         cost = 4 if request.url.path == "/v1/runs" else 2 if request.url.path == "/v1/tracks" else 1
         if not request.app.state.identity_budgets.allow(player.id, "player_read" if read else "player_write", limit, 1 if read else cost, session=session):

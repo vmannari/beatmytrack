@@ -95,7 +95,8 @@ def test_queries_are_bounded_and_redacted(console):
     assert client.get("/v1/admin/entities/players?q=%25", headers=headers()).json()["total"] == 0
     assert client.get("/v1/admin/entities/players/" + str(uuid4()), headers=headers()).status_code == 404
     assert client.get("/v1/admin/overview?days=0", headers=headers()).status_code == 422
-    assert client.get("/v1/admin/overview", headers=headers()).json()["players"] == 1
+    pulse = client.get("/v1/admin/overview", headers=headers()).json()
+    assert "players" not in pulse and pulse["pulse_until"] - pulse["pulse_since"] == 300
 
 
 @pytest.mark.parametrize("artificial,provider", [(False, "development"), (True, "google")])
@@ -111,7 +112,7 @@ def test_admin_player_type_uses_server_flag_and_keeps_all_players(console, artif
     support = client.get("/v1/admin/players/" + ids[0] + "/support", headers=headers("analyst")).json()
     assert detail["is_test_driver"] is support["player"]["is_test_driver"] is artificial
     assert detail["providers"] == [provider]
-    assert client.get("/v1/admin/overview", headers=headers("analyst")).json()["players"] == 1
+    assert "all player types" in client.get("/v1/admin/overview", headers=headers("analyst")).json()["coverage"]
     assert "private-provider-subject" not in str(detail) + str(support)
 
 

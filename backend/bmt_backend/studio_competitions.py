@@ -11,7 +11,7 @@ from .middleware import ParsedJSONRoute
 from .rivalry import POINTS, rankings
 from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
 from .studio import pinned_manifest
-from .track_models import Board, Run, RunTicket, now
+from .track_models import Board, Run, RunTicket, TrackVersion, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["studio competitions"])
 
@@ -28,14 +28,30 @@ def record(row, fields):
 
 
 @router.get("/v1/admin/competitions")
-def list_competitions(request: Request, role: Access, kind: str = "rivalry", limit: int = Query(50, ge=1, le=100)):
+def list_competitions(request: Request, role: Access, kind: str = "rivalry", limit: int = Query(50, ge=1, le=100),
+                      offset: int = Query(0, ge=0, le=10000), state: str = "all", q: str = Query("", max_length=100)):
     if kind not in ("rivalry", "challenge"):
         raise HTTPException(422, "INVALID_COMPETITION_KIND")
     model, fields = ((RivalryGroup, ("id", "week_start", "ends_at", "vehicle_id", "member_count", "archived"))
-        if kind == "rivalry" else (Challenge, ("id", "mode", "created_at", "ends_at", "member_count", "cancelled")))
+        if kind == "rivalry" else (Challenge, ("id", "mode", "created_at", "ends_at", "member_count", "cancelled", "board_id", "creator_id")))
     with request.app.state.session_factory() as session:
-        rows = session.scalars(select(model).order_by(model.created_at.desc(), model.id).limit(limit + 1)).all()
-        return {"kind": kind, "items": [record(row, fields) for row in rows[:limit]], "has_more": len(rows) > limit, "role": role}
+        if state not in ("all", "active", "ended"):
+            raise HTTPException(422, "INVALID_COMPETITION_STATE")
+        query = select(model)
+        if state != "all":
+            query = query.where(model.ends_at > now() if state == "active" else model.ends_at <= now())
+        if q:
+            query = query.where(model.id.icontains(q, autoescape=True))
+        rows = session.scalars(query.order_by(model.created_at.desc(), model.id).offset(offset).limit(limit + 1)).all()
+        items=[record(row, fields) for row in rows[:limit]]
+        if kind=="challenge":
+            names=dict(session.execute(select(Board.id,TrackVersion.name).join(TrackVersion,TrackVersion.id==Board.version_id)
+                .where(Board.id.in_([r.board_id for r in rows[:limit]]))).all())
+            creators=dict(session.execute(select(Player.id,Player.display_name).where(Player.id.in_([r.creator_id for r in rows[:limit]]))).all())
+            for item in items:
+                item.update(name=names.get(item["board_id"],"Track unavailable"),creator_name=creators.get(item["creator_id"],"Removed driver"))
+        return {"kind": kind, "items": items, "has_more": len(rows) > limit,
+            "role": role, "offset": offset, "limit": limit, "next_offset": offset + limit if len(rows) > limit else None}
 
 
 def proof(run, player_id, board, ticket):

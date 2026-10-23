@@ -72,7 +72,7 @@ class TrackVersion(Base):
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     published_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     creator_test_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    rating_sum: Mapped[int] = mapped_column(Integer, default=0)
+    rating_sum: Mapped[int] = mapped_column(BigInteger, default=0)
     rating_count: Mapped[int] = mapped_column(Integer, default=0)
     verified_finishers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
@@ -122,6 +122,18 @@ class HistogramSnapshot(Base):
     invalidated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     dirty: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class HistogramDemand(Base):
+    """Coalesced track interest; no player identities or per-race writes."""
+    __tablename__ = "histogram_demand"
+    __table_args__ = (Index("ix_histogram_demand_due", "due_at", "version_id", "vehicle_id", "include_artificial"),
+                      Index("ix_histogram_demand_expiry", "requested_until"))
+    version_id: Mapped[str] = mapped_column(ForeignKey("track_versions.id"), primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    include_artificial: Mapped[bool] = mapped_column(Boolean, primary_key=True)
+    due_at: Mapped[int] = mapped_column(Integer, default=0)
+    requested_until: Mapped[int] = mapped_column(Integer)
 
 
 class RunTicket(Base):
@@ -218,9 +230,28 @@ class QueuePlayer(Base):
 
 
 class QueueCapacity(Base):
+    """Read-only aggregate view of live reservations; never a counter lock."""
     __tablename__ = "queue_capacity"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pending: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class QueueLimit(Base):
+    """Shared configuration reads permit concurrent admission transactions."""
+    __tablename__ = "queue_limits"
+    __table_args__ = (CheckConstraint("capacity > 0"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    capacity: Mapped[int] = mapped_column(Integer)
+
+
+class QueueReservation(Base):
+    """One independently owned capacity slot for each durable pending job."""
+    __tablename__ = "queue_reservations"
+    __table_args__ = (UniqueConstraint("slot"), CheckConstraint("slot >= 0"),)
+    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)
+    slot: Mapped[int] = mapped_column(Integer)
 
 
 class BoardTimeCount(Base):

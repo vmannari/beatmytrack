@@ -2,10 +2,10 @@
 
 from sqlalchemy import func, select
 
-from .queueing import record_claim
-from .track_models import QueuePlayer, Track, TrackValidation, TrackVersion, new_id, now
-from .verifier import VerificationError, VerifierStopping
-from .worker_lifecycle import aborting, stopping
+from bmt_backend.queueing import record_claim
+from bmt_backend.track_models import QueuePlayer, Track, TrackValidation, TrackVersion, new_id, now
+from bmt_backend.verifier import VerificationError, VerifierStopping
+from bmt_backend.worker_lifecycle import aborting, stopping
 
 
 def process_one(app) -> bool:
@@ -45,9 +45,9 @@ def process_one(app) -> bool:
         manifest = app.state.verifier.validate_track(app.state.blobs.get_json(content_hash))
         if manifest.get("laps") != 5 or manifest.get("tick_rate") != 120 or not manifest.get("track_content_hash"):
             raise RuntimeError("Unsupported canonical validation manifest")
-        from .verifier import GodotVerifier
+        from bmt_backend.verifier import GodotVerifier
         if isinstance(app.state.verifier,GodotVerifier):
-            from .trajectory_verifier import prepared_geometry
+            from bmt_backend.trajectory_verifier import prepared_geometry
             prepared_geometry(app,content_hash,app.state.blobs.get_json(content_hash))
     except VerifierStopping:
         return True

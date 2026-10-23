@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ from .verifier import MAX_REQUEST_BYTES, GodotVerifier
 CONTROLLER_VERSION = "profiled-trajectory-6"
 MAX_TRAJECTORY_CACHE_FILES = 128
 PLANNING_TIMEOUT_SECONDS = 480
+logger = logging.getLogger("bmt.test_driver_generator")
 
 
 def _reject_nonfinite_cache(token):
@@ -34,6 +36,10 @@ def _trim_trajectory_cache(directory):
 
 class DriverDidNotFinish(RuntimeError):
     pass
+
+
+class GenerationTimedOut(RuntimeError):
+    """Defer a bounded generation failure rather than retrying it indefinitely."""
 
 
 def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False, stop_event=None):
@@ -76,6 +82,8 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
             encoding="utf-8",
         )
         with (directory / "engine.log").open("wb") as log:
+            concurrent = bool(getattr(stop_event, "concurrent", False))
+            options = {"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS} if concurrent and os.name == "nt" else {}
             process = subprocess.Popen(
                 [
                     verifier.binary,
@@ -91,7 +99,22 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                **options,
             )
+            if concurrent and hasattr(os, "setpriority"):
+                try:
+                    os.setpriority(os.PRIO_PROCESS, process.pid, 19)
+                except ProcessLookupError:
+                    pass  # A prompt controller failure is checked below.
+                except OSError:
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError("Cannot lower background controller priority") from None
+            generation_started = time.monotonic()
+            generation_id = hashlib.sha256(json.dumps(
+                [CONTROLLER_VERSION, document, vehicle_id, traits, attempt, pace_scale, obstacle_detours],
+                sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()[:24]
+            logger.info("driver_generation_started", extra={"generation_id": generation_id})
             generation_timeout = max(verifier.timeout, PLANNING_TIMEOUT_SECONDS)
             deadline = time.monotonic() + generation_timeout
             observed_bytes = 0
@@ -108,7 +131,7 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                     if stop_event is not None and stop_event.is_set():
                         raise RuntimeError("Test controller stopped by worker shutdown")
                     if time.monotonic() >= deadline:
-                        raise subprocess.TimeoutExpired(process.args, generation_timeout)
+                        raise GenerationTimedOut("Test controller exceeded its bounded generation time")
                     time.sleep(0.05)
             finally:
                 if process.poll() is None:
@@ -120,6 +143,10 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                     if process.poll() is None:
                         process.kill()
                 process.wait()
+                logger.info("driver_generation_stopped", extra={"generation_id": generation_id,
+                    "generation_seconds": round(time.monotonic() - generation_started, 3)})
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("Test controller stopped by worker shutdown")
         log_path = directory / "engine.log"
         if log_path.stat().st_size > 65536 or re.search(
             r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:",

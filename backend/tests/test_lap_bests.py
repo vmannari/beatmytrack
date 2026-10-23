@@ -3,13 +3,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from alembic import command
+from lap_bests_oracle import legacy_best_lap_times
 from sqlalchemy import delete, event, select
 from test_domains import domain as domain_fixture
 from test_domains import public_course, race, submit, ticket
 
 from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics, refresh_one
 from bmt_backend.identity_models import Player
-from bmt_backend.lap_bests import backfill_all_for_diagnostics, backfill_one, legacy_best_lap_times
+from bmt_backend.lap_bests import backfill_all_for_diagnostics, backfill_one
 from bmt_backend.maintenance import retain
 from bmt_backend.migrate import configuration, upgrade
 from bmt_backend.runs import best_lap_times, comparison_populations
@@ -139,7 +140,7 @@ def test_migration_bounded_backfill_matches_legacy_and_survives_restart(domain):
     with domain.factory() as session:
         fact(session,board,domain.players["Alice"],laps=[1,19,30,30,45],total=125)
         session.commit()
-        expected = session.execute(select(legacy_best_lap_times(board,session))).all()
+        expected = sorted(session.execute(select(legacy_best_lap_times(board,session))).all())
         provenance = session.execute(select(Run.id,Run.status,Run.lap_ticks)).all()
     command.downgrade(configuration(domain.app.state.engine),"0023_operational_read_indexes")
     upgrade(domain.app.state.engine)
@@ -151,7 +152,7 @@ def test_migration_bounded_backfill_matches_legacy_and_survives_restart(domain):
     while backfill_one(domain.factory,limit=1)["worked"]: batches+=1
     assert batches>=3
     with domain.factory() as session:
-        assert session.execute(select(best_lap_times(board,session))).all()==expected
+        assert sorted(session.execute(select(best_lap_times(board,session))).all())==expected
         assert session.get(LapBestState,board).complete
     assert backfill_one(domain.factory)["complete"]
 
@@ -281,7 +282,11 @@ def test_player_verification_precedes_backfill_between_batches(domain):
         assert session.get(Run,queued["run_id"]).status=="verified"
         assert not session.get(LapBestState,board).complete
         assert session.get(LapBestState,board).cursor==""
-    assert process_worker_job(domain.app)
+    for _ in range(16):
+        with domain.factory() as session:
+            if session.get(LapBestState,board).complete:
+                break
+        assert process_worker_job(domain.app)
     with domain.factory() as session:
         assert session.get(LapBestState,board).complete
 

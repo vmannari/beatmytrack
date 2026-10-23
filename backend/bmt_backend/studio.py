@@ -48,11 +48,25 @@ def capabilities(request: Request, role: Access):
             if source["key"] == "client_quality":
                 source.update(status="partial", description="One bounded statistics package per signed-in timed race; actual device/OS filters, sampled track/segment presence and frame buckets. Old streamed race summaries are retired. Crash stacks, Play vitals and consented enhanced captures remain unavailable.")
     sources.extend([
+        {"key": "rivalry_planning", "title": "Weekly Rivalry calendar", "status": "supported",
+            "description": "Metric-weighted random selection maintains four future UTC weeks; owners can preview and audit future line-up edits. Started groups retain their pinned tracks.", "requirement_ids": ["WRP01", "WRP02", "WRP03"]},
+        {"key":"continuous_monitoring","title":"Continuous incidents","status":"partial",
+            "description":"Durable occurrences, audited acknowledgement/assignment/recovery/closure, leased signed notifications and an independent watchdog are implemented. Runtime sources, independent hosting and destinations must be explicitly configured.","requirement_ids":["BMT-070","BMT-071"]},
         {"key": "competition_inspection", "title": "Competition provenance", "status": "partial",
             "description": "Bounded rivalry/challenge roster, pinned contracts, accepted-run checks, ranks/points and exact target; archived runs and reward delivery may be unavailable.", "requirement_ids": ["BMT-034"]},
         {"key": "case_workflow", "title": "Support and moderation cases", "status": "partial",
             "description": "Append-only notes/issues, case transitions, signed-in reports and appeals, audited track quarantine. Expiring scopes, verified recovery and production compensation are unavailable.", "requirement_ids": ["BMT-033", "BMT-050", "BMT-054", "BMT-056"]},
     ])
+    for source in sources:
+        if source["key"]=="remote_config":
+            source.update(status="partial",description="A versioned presentation-only experiment registry, stable assignment, explicit exposure, pause/stop, fixed follow-up and sample-ratio checks are implemented. Actual client adoption and complete guardrails are required before an experiment decision; canonical settings are excluded.")
+        elif source["key"]=="staff_identity":
+            source.update(status="partial",description="Separate staff token audiences, subject allowlists, role policies, optional required signed MFA claims and named audit actors are implemented. Provider connection and the browser SSO experience require configuration; legacy access remains explicit.")
+            if not request.app.state.settings.studio_staff_audiences:source["status"]="unavailable"
+        elif source["key"]=="provider_commerce":
+            source.update(status="partial",description="Google Play server-proof and account-binding adapters plus AdMob estimated-revenue imports and restatement ledgers are implemented behind explicit configuration. Live SDK, notification/refund policies and settled financial reconciliation are not inferred from catalogue prices.")
+            if not (request.app.state.settings.studio_play_package or request.app.state.settings.studio_admob_account):
+                source["status"]="unavailable"
     return {
         "schema": "bmt-studio-capabilities-v1", "as_of": now(),
         "environment": request.app.state.settings.environment, "role": role, "read_only": True,
@@ -75,9 +89,12 @@ def pinned_manifest(board):
 
 @router.get("/v1/admin/studio/context")
 def studio_context(request: Request, role: Access, window: Window, days: int = Query(7, ge=1, le=90)):
+    from .migrate import SCHEMA_HEAD
     first, until = window or calendar_range(days)
     return {"role": role, "environment": request.app.state.settings.environment,
-        "since": first, "until": until, "as_of": now()}
+        "since": first, "until": until, "as_of": now(), "schema": SCHEMA_HEAD,
+        "population": "all_players", "timezone": "UTC",
+        "scope": "Reporting dates apply to observations; operational queues are current snapshots."}
 
 
 def race_evidence(session, run_id):

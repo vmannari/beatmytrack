@@ -41,6 +41,8 @@ def process_one(app, *, refresh_histograms=False) -> bool:
     """Claim at most one job; keep the expensive verifier outside DB transactions."""
     if stopping(app):
         return False
+    from .rivalry_planning import maintain as maintain_rivalry_plans
+    maintain_rivalry_plans(app)
     pending = getattr(app.state, "pending_finalization", None)
     if pending is not None and finalize(app, *pending):
         return True
@@ -61,11 +63,11 @@ def process_one(app, *, refresh_histograms=False) -> bool:
     # Foreground races take priority. An explicit publication is verified before
     # artificial races/background generation; editor saves never enter a queue.
     from .publications import process_one as publish_one
-    from .track_validation import process_one as validate_one
+    pinned = pinned_filter(Board.manifest, manifest)
     with app.state.session_factory() as session:
         foreground = session.scalar(select(Run.id).join(Board, Board.id == Run.board_id)
             .join(Player, Player.id == Run.player_id).where(Player.is_test_driver.is_(False),
-                pinned_filter(Board.manifest, manifest), Run.status.in_(("queued", "verifying")),
+                pinned, Run.status.in_(("queued", "verifying")),
                 Run.lease_until <= now()).limit(1))
     if foreground is None and publish_one(app):
         return True
@@ -73,13 +75,14 @@ def process_one(app, *, refresh_histograms=False) -> bool:
     maximum_attempts = settings.max_job_attempts
     token = new_id()
     with app.state.session_factory() as session:
-        run = session.scalar(
-            select(Run)
+        claimed = session.execute(
+            select(Run, Board, TrackVersion, Player)
             .join(Board, Board.id == Run.board_id)
+            .join(TrackVersion, TrackVersion.id == Board.version_id)
             .join(Player, Player.id == Run.player_id)
             .outerjoin(QueuePlayer, QueuePlayer.player_id == Run.player_id)
             .where(
-                pinned_filter(Board.manifest, manifest),
+                pinned,
                 or_(
                     and_(Run.status == "queued", Run.lease_until <= now()),
                     and_(Run.status == "verifying", Run.lease_until <= now()),
@@ -88,27 +91,35 @@ def process_one(app, *, refresh_histograms=False) -> bool:
             .order_by(Player.is_test_driver, func.coalesce(QueuePlayer.last_claim_at, 0), Run.created_at, Run.id)
             .with_for_update(skip_locked=True, of=Run)
             .limit(1)
-        )
-        if run is None:
+        ).first()
+        if claimed is None:
             session.rollback()
             if expire_unserviceable(app):
                 return True
             if publish_one(app):
                 return True
-            if validate_one(app):
-                return True
             if refresh_histograms:
+                from .achievements import drive_idle as progress_achievements
+                if progress_achievements(app):
+                    return True
+                from .news import process_requested
+                if process_requested(app):
+                    return True
                 from .lap_bests import backfill_one
                 if backfill_one(app.state.session_factory)["worked"]:
                     return True
                 from .histogram_snapshots import refresh_one as refresh_histogram
-                if refresh_histogram(app):
+                if refresh_histogram(app, active_only=True):
                     return True
+            driver_work = getattr(app.state, "driver_work", None)
+            if driver_work is not None:
+                return driver_work.poll()
             from .test_population_batch import drive_idle as drive_batch
             if drive_batch(app):
                 return True
             from .automatic_test_drivers import drive_idle
             return drive_idle(app)
+        run, board, version, player = claimed
         if stopping(app):
             return False
         if run.attempts >= maximum_attempts:
@@ -120,14 +131,12 @@ def process_one(app, *, refresh_histograms=False) -> bool:
         record_claim(session, None, run.player_id)
         run.attempts += 1
         run.status, run.lease_token, run.lease_until = "verifying", token, now() + lease_seconds
-        board = session.get(Board, run.board_id)
-        version = session.get(TrackVersion, board.version_id)
         document_hash, replay_hash, vehicle_id = version.content_hash, run.replay_hash, board.vehicle_id
         redacted_track_hash = version.redacted_track_hash
         creator_test = board.manifest.get("purpose") == "creator_test"
         # Optional client-recorded ghosts accompany trajectory evidence.
         from .rivalry_models import RivalryTicket
-        needs_ghost = not creator_test and (not session.get(Player, run.player_id).is_test_driver
+        needs_ghost = not creator_test and (not player.is_test_driver
                                             or session.get(RivalryTicket, run.ticket_id) is not None)
         # Keep immutable geometry/hash, use the exact claimed cohort's actual build.
         expected_manifest = {**version.manifest, **{field: manifest[field] for field in BUILD_FIELDS}}
@@ -151,14 +160,16 @@ def process_one(app, *, refresh_histograms=False) -> bool:
             or pinned_manifest.get("track_content_hash") != expected_manifest.get("track_content_hash")
             or pinned_manifest.get("laps") != (1 if creator_test else expected_manifest.get("laps"))):
             raise BuildMismatch
-        document = app.state.blobs.get_json(document_hash)
-        replay = app.state.blobs.get_json(replay_hash)
         from .verifier import GodotVerifier
         options = {"creator_test": True} if creator_test else {}
         if isinstance(app.state.verifier, GodotVerifier):
             options["capture_ghost"] = needs_ghost
             from .trajectory_verifier import prepared_geometry
-            options["geometry"] = prepared_geometry(app,document_hash,document)
+            options["geometry"] = prepared_geometry(app,document_hash)
+            document = None  # The complete pinned descriptor supplies acceptance geometry.
+        else:
+            document = app.state.blobs.get_json(document_hash)
+        replay = app.state.blobs.get_json(replay_hash)
         result = app.state.verifier.verify_run(document, replay, vehicle_id, **options)
         ticks, lap_ticks = result.get("time_ticks"), result.get("lap_ticks")
         if redacted_track_hash and result.get("manifest", {}).get("track_content_hash") == redacted_track_hash:
@@ -246,7 +257,7 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
         # Run ownership is immutable. Discover it without a row lock, then use
         # the same Player -> Run order as retry/admission/account writers.
         player_id = session.scalar(select(Run.player_id).where(Run.id == run_id))
-        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
+        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update(key_share=True)
             .execution_options(populate_existing=True)) if player_id is not None else None
         run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
         if run is None or run.status != "verifying" or run.lease_token != token or run.lease_until <= now():
@@ -277,15 +288,19 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
             session.commit()
             app.state.pending_finalization = None
             return True
+        from .economy import accept_verified as award_coins
+        from .race_acceptance import Acceptance
+        acceptance = Acceptance.load(session, run) if not creator_test else None
+        coin_previous = acceptance.previous if acceptance else (0, 0)
         run.status, run.time_ticks, run.lap_ticks = "verified", result["time_ticks"], result["lap_ticks"]
         run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
         session.flush()
         if not creator_test:
             from .rivalry import accept_verified
             run.ghost_hash = ghost_hash
-            accept_verified(session, run)
+            accept_verified(session, run, acceptance=acceptance)
             from .challenges import accept_verified as accept_challenge
-            accept_challenge(session, run)
+            accept_challenge(session, run, acceptance=acceptance)
             values = {
                 "board_id": run.board_id,
                 "player_id": run.player_id,
@@ -303,9 +318,14 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
                     where=PersonalBest.time_ticks > values["time_ticks"],
                 )
             )
-        board = session.get(Board, run.board_id)
-        version = session.get(TrackVersion, board.version_id)
-        track = session.get(Track, version.track_id)
+            award_coins(session, run, coin_previous, incident_free=result.get("incident_free") is True,
+                        acceptance=acceptance)
+        board = acceptance.board if acceptance else session.get(Board, run.board_id)
+        version = acceptance.version if acceptance else session.get(TrackVersion, board.version_id)
+        track = acceptance.track if acceptance else session.get(Track, version.track_id)
+        if not creator_test:
+            from .news import capture_verified
+            capture_verified(session, run, board, version, track, player)
         if track.owner_id == run.player_id:
             session.execute(
                 update(TrackVersion)
@@ -348,6 +368,9 @@ def process_worker_job(app) -> bool:
         if count == 0:
             from .privacy import cleanup_one
             cleanup_one(app)
+            if not stopping(app):
+                from .histogram_snapshots import refresh_one
+                refresh_one(app, active_only=True)
         return True
     from .privacy import cleanup_one
     return cleanup_one(app)

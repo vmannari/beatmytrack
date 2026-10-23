@@ -1,9 +1,9 @@
 'use strict';
 let supportCurrent = null;
 const supportBack = new Map();
-const accessLabels = {slots:'Purchased / initial slots remaining', simulated_slots:'Simulated slots remaining',
-  ad_free_until:'Purchased monthly access until', simulated_ad_free_until:'Simulated monthly access until',
-  forever:'Purchased permanent access', simulated_forever:'Simulated permanent access'};
+const accessLabels = {slots:'Account slots remaining', simulated_slots:'Simulated slots remaining',
+  ad_free_until:'Account monthly access until', simulated_ad_free_until:'Simulated monthly access until',
+  forever:'Account permanent access', simulated_forever:'Simulated permanent access'};
 function accessTable(values) {
   return `<dl>${Object.entries(values).map(([name,value])=>`<div class="console-kv"><dt>${esc(accessLabels[name] || name)}</dt><dd>${name.endsWith('_until') ? esc(date(value)) : esc(value)}</dd></div>`).join('')}</dl>`;
 }
@@ -24,6 +24,7 @@ function activitySummary(item) {
   if (item.kind === 'resume') return `Resume ${row.ordinal} · ${row.source}`;
   if (item.kind === 'grant') return `${row.quantity} resumes · ${row.source}`;
   if (item.kind === 'race') return row.failure_code || 'Race submission';
+  if (item.kind === 'audit' && row.action === 'player_grant') return `Granted ${row.after.title} × ${row.after.quantity}`;
   return row.action.replaceAll('_',' ');
 }
 async function supportWorkspace(id, params) {
@@ -91,6 +92,54 @@ function developmentCommand(id,data,action,purchase=null) {
     if(action==='adjust_slots')draft.slots_delta=Number($('#dev-slots').value);
     try{const preview=await api(`players/${encodeURIComponent(id)}/development/preview`,draft);if(!dialogIsCurrent(token))return;confirmDevelopment(id,draft,preview,titles[action]);}
     catch(error){if(!dialogIsCurrent(token))return;$('#dev-error').hidden=false;$('#dev-error').textContent=error.message;button.disabled=false;}
+  };
+}
+
+function playerGrants(id,data,params) {
+  const grants=data.grants, products=new Map(grants.products.map(p=>[p.id,p]));
+  const owned=grants.owned.map(item=>`<li><strong>${esc(products.get(item)?.title||item)}</strong><small class="stc-id">${esc(item)}</small></li>`).join('');
+  return `<h3>Purchases &amp; grants</h3><div class="stc-access-grid">${catalogueStat('Track slots remaining',data.effective.publishing_slots,'Available for publication')}${catalogueStat('Owned customisations',grants.owned.length,'Kits and liveries')}${catalogueStat('Banked resumes',data.resumes.banked,'Permanent balance')}${catalogueStat('Coins',grants.coin_balance,'Current earned balance')}</div><dl class="stc-facts"><div><dt>Ad-free access</dt><dd>${data.effective.ad_free_forever?'Permanent':data.effective.ad_free?'Until '+esc(date(data.effective.ad_free_until)):'Inactive'}</dd></div></dl><div class="console-actions">${grants.editable?'<button class="btn btn-primary" id="player-grant">Grant an item</button>':`<p class="console-note">${role==='owner'?'Restore this account before granting items.':'Owner access is required to grant items.'}</p>`}<a class="btn" href="${scopedHref('economy?player_id='+id,params)}">Purchase records</a><a class="btn" href="${catalogueHref('players/'+id,params,{tab:'timeline',kind:'audit',all:'1',since:null,until:null,cursor:null,q:'player_grant',state:null})}">Grant audit history</a></div><p class="console-note">Support grants add account access without charging the player. Store payments remain in purchase records.</p><h4>Owned kits &amp; liveries</h4>${owned?`<ul class="stc-owned-items">${owned}</ul>`:'<p class="console-empty">No kits or liveries unlocked.</p>'}`;
+}
+function wirePlayerGrants() {
+  const button=$('#player-grant');
+  if(button&&supportCurrent)button.onclick=()=>playerGrantCommand(supportCurrent.id,supportCurrent.data);
+}
+function playerGrantError(error) {
+  return ({STATE_CHANGED_REFRESH_REQUIRED:'This player’s access changed. Close and preview the grant again.',
+    PREVIEW_EXPIRED_REFRESH_REQUIRED:'This preview expired. Close and preview the grant again.',
+    COSMETIC_ALREADY_OWNED:'This player already owns that item.',
+    ALREADY_AD_FREE_FOREVER:'This player already has permanent ad-free access.',
+    PLAYER_NOT_ELIGIBLE_FOR_GRANT:'This account is restricted or removed. Refresh the player view.',
+    GRANT_CAPACITY_EXCEEDED:'This grant would exceed the account balance limit.',
+    OWNER_REQUIRED:'Owner access is required to grant items.',REASON_REQUIRED:'Enter a reason with at least eight nonblank characters.'})[error.message]||error.message;
+}
+function playerGrantCommand(id,data) {
+  const available=data.grants.products.filter(p=>!data.grants.owned.includes(p.id)), draft={command_id:crypto.randomUUID()};
+  modal(`<h2>Grant an item</h2><p><strong>${esc(data.player.display_name)}</strong><small class="stc-id">${esc(id)}</small></p><form id="grant-draft"><label>Find an item<input id="grant-search" type="search" placeholder="Track slots, kit, livery, ad-free or resumes" maxlength="100"></label><label>Item<select id="grant-product" required></select></label><label>Quantity<input id="grant-quantity" type="number" min="1" max="1000" step="1" value="1" required></label><p id="grant-error" class="console-error" role="alert" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" id="grant-preview">Preview grant</button></div></form>`);
+  const token=dialogToken(), select=$('#grant-product'), quantity=$('#grant-quantity');
+  function updateQuantity(){const item=available.find(p=>p.id===select.value);quantity.max=item?.max_quantity||1;quantity.disabled=!item||item.max_quantity===1;if(quantity.disabled||Number(quantity.value)>Number(quantity.max))quantity.value='1';$('#grant-preview').disabled=!item;}
+  function options(){const selected=select.value,query=$('#grant-search').value.trim().toLowerCase(),items=available.filter(p=>(p.title+' '+p.group+' '+p.id).toLowerCase().includes(query));const groups=[...new Set(items.map(p=>p.group))];select.innerHTML=groups.map(group=>`<optgroup label="${esc(group)}">${items.filter(p=>p.group===group).map(p=>`<option value="${esc(p.id)}">${esc(p.title)}</option>`).join('')}</optgroup>`).join('');if(items.some(p=>p.id===selected))select.value=selected;updateQuantity();}
+  options();select.onchange=updateQuantity;$('#grant-search').oninput=options;
+  $('#grant-draft').onsubmit=async event=>{
+    event.preventDefault();draft.product_id=select.value;draft.quantity=Number(quantity.value);$('#grant-preview').disabled=true;$('#grant-error').hidden=true;
+    try{const preview=await api(`players/${encodeURIComponent(id)}/grants/preview`,draft);if(dialogIsCurrent(token))confirmPlayerGrant(id,draft,preview);}
+    catch(error){if(!dialogIsCurrent(token))return;$('#grant-error').hidden=false;$('#grant-error').textContent=playerGrantError(error);updateQuantity();}
+  };
+}
+function confirmPlayerGrant(id,draft,preview) {
+  const labels={...accessLabels,slots:'Track slots remaining',banked_resumes:'Banked resumes',owned:'Item owned'};
+  const display=(field,value)=>field.endsWith('_until')?date(value):typeof value==='boolean'?(value?'Yes':'No'):value;
+  const changed=Object.keys(preview.after).filter(field=>preview.before[field]!==preview.after[field]&&field!=='wallet_revision');
+  modal(`<h2>Confirm grant</h2><p><strong>${esc(preview.player.display_name)}</strong><small class="stc-id">${esc(id)}</small></p><p>${esc(preview.product.title)} &times; ${esc(preview.quantity)}</p><div class="console-table player-grant-comparison"><table><thead><tr><th>Access</th><th>Before</th><th>After</th></tr></thead><tbody>${changed.map(field=>`<tr><td>${esc(labels[field]||field)}</td><td>${esc(display(field,preview.before[field]))}</td><td>${esc(display(field,preview.after[field]))}</td></tr>`).join('')}</tbody></table></div><form id="grant-confirm"><label>Recorded reason<textarea id="grant-reason" required minlength="8" maxlength="500"></textarea></label><label><input id="grant-acknowledged" type="checkbox" required> Grant this item to the player shown above.</label><p id="grant-error" class="console-error" role="alert" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" id="grant-submit">Confirm grant</button></div></form>`);
+  const token=dialogToken();let command=null;
+  $('#grant-confirm').onsubmit=async event=>{
+    event.preventDefault();$('#grant-submit').disabled=true;$('#grant-error').hidden=true;
+    const reason=$('#grant-reason').value.trim();
+    if(!command&&reason.length<8){$('#grant-error').hidden=false;$('#grant-error').textContent='Enter a reason with at least eight nonblank characters.';$('#grant-submit').disabled=false;return;}
+    command??={...draft,preview_at:preview.preview_at,expected_hash:preview.expected_hash,reason,acknowledged:true};
+    $('#grant-reason').disabled=true;$('#grant-acknowledged').disabled=true;
+    try{await api(`players/${encodeURIComponent(id)}/grants/commands`,command);if(!dialogIsCurrent(token))return;$('#dialog').close();render();}
+    catch(error){if(!dialogIsCurrent(token))return;$('#grant-error').hidden=false;$('#grant-error').textContent=playerGrantError(error);$('#grant-submit').disabled=[403,409,422].includes(error.status);$('#grant-submit').textContent='Retry same grant';}
   };
 }
 function confirmDevelopment(id,draft,preview,title) {

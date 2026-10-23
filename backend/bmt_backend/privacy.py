@@ -212,6 +212,7 @@ def erase_models():
 def cleanup_one(app):
     """At most one redaction or 100 private rows per worker iteration; retries survive restart."""
     factory = app.state.session_factory
+    from .studio_erasure import erase_studio_private
     with factory() as session:
         job = session.scalar(select(AccountDeletion).where(AccountDeletion.completed_at.is_(None),
             AccountDeletion.next_attempt_at <= now()).order_by(AccountDeletion.requested_at)
@@ -230,6 +231,10 @@ def cleanup_one(app):
                 resumed.commit()
             return True
         player_id, stage, cursor = job.player_id, job.stage, job.cursor
+        # Additive cleanup leaves version-one's persisted stage numbering intact.
+        if erase_studio_private(session, player_id):
+            session.commit()
+            return True
         if stage == 2 + len(erase_models()):
             version = session.scalar(select(TrackVersion).join(Track).where(Track.owner_id == player_id,
                 TrackVersion.id > cursor).order_by(TrackVersion.id).limit(1))
@@ -258,14 +263,14 @@ def cleanup_one(app):
         elif stage <= len(erase_models()):
             model = erase_models()[stage - 1]
             from .resume_models import ResumeRace, ResumeReceipt
-            from .telemetry_models import ProductEvent, ProductPublication, ProductState
+            from .telemetry_models import ProductEvent, ProductPublication
             from .track_models import Rating
             criterion = (model.race_id.in_(select(ResumeRace.id).where(ResumeRace.player_id == player_id))
                          if model is ResumeReceipt else (model.owner_id == player_id if model is ProductPublication else model.player_id == player_id))
-            # Serialize erasure with prepared-product projection, which never recreates a deleted profile.
-            if model is ProductEvent:
-                state = session.scalar(select(ProductState).where(ProductState.id == 1).with_for_update())
             rows = session.scalars(select(model).where(criterion).limit(BATCH)).all()
+            if model is ProductEvent:
+                from .telemetry_erasure import cancel_events
+                cancel_events(session, rows)
             for row in rows:
                 if model is Rating:
                     version = session.scalar(select(TrackVersion).where(TrackVersion.id == row.version_id).with_for_update())
@@ -274,10 +279,6 @@ def cleanup_one(app):
                 if hasattr(row, "replay_hash"):
                     remember_blob(session, player_id, row.replay_hash)
                     remember_blob(session, player_id, row.content_hash)
-                if model is ProductEvent and row.processed_at is None:
-                    state.pending_events = max(0, state.pending_events - 1)
-                    if row.source == "client":
-                        state.pending_clients = max(0, state.pending_clients - 1)
                 session.delete(row)
             if not rows:
                 job.stage += 1
@@ -341,11 +342,34 @@ def cleanup_one(app):
 
 
 def finish_cleanup(app, session, job, *, final=True):
+    # Extend the final cleanup without changing the persisted v1 stage indices.
+    from .discovery_erasure import erase_private as erase_discovery
+    if not erase_discovery(session, job.player_id):
+        session.commit()
+        return True
+    from .economy_models import CoinMilestone, CoinReward, CoinWallet, CosmeticUnlock
+    for model in (CoinReward, CoinMilestone, CosmeticUnlock, CoinWallet):
+        rows = session.scalars(select(model).where(model.player_id == job.player_id).limit(BATCH)).all()
+        if rows:
+            for row in rows:
+                session.delete(row)
+            session.commit()
+            return True
+    from .achievements import erase_private as erase_achievements
+    erase_achievements(session, job.player_id)
     from .admin_models import AdminAudit
     from .commerce_models import Purchase
+    from .community_models import CommunityAcceptance, PlayerBlock
+    from .news import erase_private as erase_news
     from .object_models import ObjectPin
     from .publication_models import PublicationIntent, PublicationUpload
     from .studio_case_models import StudioCase, StudioCaseEvent
+    if not erase_news(session, job.player_id):
+        session.commit()
+        return True
+    session.execute(delete(CommunityAcceptance).where(CommunityAcceptance.player_id == job.player_id))
+    session.execute(delete(PlayerBlock).where(or_(PlayerBlock.player_id == job.player_id, PlayerBlock.blocked_id == job.player_id)))
+    session.execute(update(StudioCase).where(StudioCase.reported_player_id == job.player_id).values(reported_player_id=None))
     # Support evidence is private; retain only its nonpersonal operation skeleton.
     case_ids = select(StudioCase.id).where(StudioCase.player_id == job.player_id)
     session.execute(update(StudioCaseEvent).where(StudioCaseEvent.case_id.in_(case_ids)).values(detail={}))
@@ -375,6 +399,8 @@ def finish_cleanup(app, session, job, *, final=True):
     if not rows:
         if final:
             job.completed_at = now()
+            from .telemetry_queue_models import TelemetryErasure
+            session.execute(delete(TelemetryErasure).where(TelemetryErasure.player_id == job.player_id))
         else:
             job.stage, job.cursor = job.stage + 1, ""
     job.next_attempt_at = now() + 60 if deferred else 0
@@ -384,6 +410,11 @@ def finish_cleanup(app, session, job, *, final=True):
 
 def expire_records(app, session):
     from .commerce_models import Purchase
+    from .news import cleanup_expired
+    pruned_news = 0
+    if getattr(app.state, "news_prune_at", 0) <= now():
+        pruned_news = cleanup_expired(session, now())
+        app.state.news_prune_at = now() + 60
     rows = session.scalars(select(Purchase).join(Player).where(Player.deleted_at.is_not(None),
         Purchase.created_at < now() - app.state.settings.privacy_purchase_days * 86400).limit(BATCH)).all()
     for row in rows:
@@ -393,7 +424,7 @@ def expire_records(app, session):
     for row in receipts:
         row.credential_hash, row.operation_hash = "", ""
     session.commit()
-    return bool(rows or receipts)
+    return bool(rows or receipts or pruned_news)
 
 
 def redact_snapshot(value, player_id):

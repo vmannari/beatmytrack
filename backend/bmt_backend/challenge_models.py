@@ -9,12 +9,14 @@ from .track_models import new_id, now
 class Challenge(Base):
     __tablename__ = "challenges"
     __table_args__ = (Index("ix_challenge_creator_recent", "creator_id", "created_at"),
+                      Index("ix_challenge_discover", "visibility", "cancelled", "ends_at", "id"),
                       CheckConstraint("member_count >= 1 AND member_count <= 20"))
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     code: Mapped[str] = mapped_column(String(16), unique=True)
     creator_id: Mapped[str] = mapped_column(ForeignKey("players.id"))
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"))
     mode: Mapped[str] = mapped_column(String(8))
+    visibility: Mapped[str] = mapped_column(String(8), default="private", server_default="private")
     target_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
     target_ticks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[int] = mapped_column(Integer, default=now)

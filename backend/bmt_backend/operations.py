@@ -69,8 +69,8 @@ def _write_heartbeat(app, worker_id, details):
         return copy.deepcopy(state.details.get("build"))
 
 
-def competition_health(app) -> dict:
-    with app.state.session_factory() as session:
+def competition_health(app, *, existing_session=None) -> dict:
+    with nullcontext(existing_session) if existing_session is not None else app.state.session_factory() as session:
         current = now()
         depth, oldest = session.execute(select(func.count(), func.min(Run.created_at)).where(Run.status.in_(("queued", "verifying")))).one()
         recent_workers = session.scalars(select(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at >= current - app.state.settings.worker_stale_seconds)).all()
@@ -83,7 +83,11 @@ def competition_health(app) -> dict:
             func.avg(case((verified, Run.finished_at - Run.created_at))),
             func.max(case((verified, Run.finished_at - Run.created_at)))
         ).where(Run.finished_at >= current - 300)).one()
-        failures = dict(session.execute(select(Run.failure_code, func.count()).where(Run.finished_at >= current - 300, Run.failure_code.is_not(None)).group_by(Run.failure_code)).all())
+        failures = dict(session.execute(select(Run.failure_code, func.count()).where(Run.finished_at >= current - 300,
+            Run.status == "failed", Run.failure_code.is_not(None)).group_by(Run.failure_code)).all())
+        rejection_codes = dict(session.execute(select(Run.failure_code, func.count()).where(
+            Run.finished_at >= current - 300, Run.status == "rejected", Run.failure_code.is_not(None))
+            .group_by(Run.failure_code)).all())
         arrivals = session.scalar(select(func.count()).select_from(Run).where(Run.created_at >= current - 300))
         validations, validation_oldest = session.execute(select(func.count(), func.min(TrackValidation.created_at)).where(TrackValidation.status.in_(("queued", "validating")))).one()
         publications, publication_oldest = session.execute(select(func.count(), func.min(PublicationIntent.created_at))
@@ -132,6 +136,7 @@ def competition_health(app) -> dict:
                 "arrivals_last_5_minutes":arrivals, "pending_track_validations":validations, "pending_publications":publications,
                 "worker_builds":[w.details.get("build", {}) for w in workers],
                 "failures_last_5_minutes": failures,
+                "rejections_last_5_minutes": rejection_codes,
                 "estimated_wait_seconds": round(300 * depth / completions) if completions and not validations and not publications else None,
                 "storage_backend":app.state.settings.object_backend,
                 "storage_free_bytes": shutil.disk_usage(app.state.settings.object_dir).free if app.state.settings.object_backend=="local" else None,

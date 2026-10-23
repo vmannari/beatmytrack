@@ -110,6 +110,37 @@ def test_insufficient_tracks_no_fabricated_field(rivalry_domain):
         assert session.scalars(select(RivalryGroup)).all() == []
 
 
+def test_blocks_and_quarantine_hide_pinned_content_without_changing_membership(rivalry_domain):
+    seed(rivalry_domain)
+    initial = join(rivalry_domain)
+    group_id = initial["group_id"]
+    creator = rivalry_domain.players["Creator"]
+    alice = headers(rivalry_domain, "Alice")
+    block_path = "/v1/community/blocks/" + creator
+    assert rivalry_domain.client.put(block_path, headers=alice).status_code == 200
+    current_path = "/v1/rivalry/current?vehicle_id=compact"
+    blocked = rivalry_domain.client.get(current_path, headers=alice).json()
+    assert blocked["group_id"] == group_id and blocked["standings"] == initial["standings"]
+    assert all(not item["available"] and item["entry"]["name"] == "Unavailable track"
+               and item["entry"]["points"] == [] for item in blocked["tracks"])
+    denied = rivalry_domain.client.post(f"/v1/rivalry/{group_id}/tickets", json={"slot": 0}, headers=alice)
+    assert denied.status_code == 403 and denied.json()["detail"] == "PLAYER_BLOCKED"
+    assert rivalry_domain.client.delete(block_path, headers=alice).status_code == 200
+    restored = rivalry_domain.client.get(current_path, headers=alice).json()
+    assert all(item["available"] for item in restored["tracks"])
+    assert restored["tracks"][0]["entry"] == initial["tracks"][0]["entry"]
+    version_id = restored["tracks"][0]["entry"]["version_id"]
+    with rivalry_domain.factory() as session:
+        version = session.get(TrackVersion, version_id)
+        session.get(Track, version.track_id).hidden = True
+        session.commit()
+    quarantined = rivalry_domain.client.get(current_path, headers=alice).json()
+    assert not quarantined["tracks"][0]["available"]
+    assert quarantined["tracks"][0]["entry"]["name"] == "Unavailable track"
+    assert quarantined["tracks"][0]["entry"]["points"] == []
+    assert quarantined["standings"] == initial["standings"]
+
+
 def test_random_pinned_unique_selection_idempotent_membership_and_private_views(rivalry_domain):
     eligible = seed(rivalry_domain)
     first = join(rivalry_domain, key="join-once-key")

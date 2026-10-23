@@ -1,6 +1,6 @@
 """Pseudonymous product observations and bounded prepared reporting facts."""
 
-from sqlalchemy import JSON, Boolean, Index, Integer, String, text
+from sqlalchemy import JSON, BigInteger, Boolean, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -20,7 +20,15 @@ class ProductEvent(Base):
             postgresql_where=text("source='server' AND processed_at IS NOT NULL AND compacted=false")),
         Index("ix_product_network_failures", "occurred_at", "id",
             sqlite_where=text("source='client' AND name='network_failure'"),
-            postgresql_where=text("source='client' AND name='network_failure'")))
+            postgresql_where=text("source='client' AND name='network_failure'")),
+        Index("ix_telemetry_actor_pending", "partition_id", "position",
+            sqlite_where=text("actor_at IS NULL AND processed_at IS NULL"),
+            postgresql_where=text("actor_at IS NULL AND processed_at IS NULL")),
+        Index("ix_telemetry_full_pending", "partition_id", "position",
+            sqlite_where=text("processed_at IS NULL"), postgresql_where=text("processed_at IS NULL")),
+        Index("ix_telemetry_legacy_pending", "id",
+            sqlite_where=text("partition_id IS NULL AND processed_at IS NULL"),
+            postgresql_where=text("partition_id IS NULL AND processed_at IS NULL")))
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     client_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -41,6 +49,10 @@ class ProductEvent(Base):
     properties: Mapped[dict] = mapped_column(JSON, default=dict)
     processed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     compacted: Mapped[bool] = mapped_column(Boolean, default=False)
+    partition_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    position: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    actor_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    credit_bucket: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ProductPlayerDay(Base):
@@ -55,7 +67,7 @@ class ProductMetric(Base):
     day: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(48), primary_key=True)
     dimension: Mapped[str] = mapped_column(String(32), primary_key=True, default="")
-    value: Mapped[int] = mapped_column(Integer, default=0)
+    value: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class ProductProfile(Base):
@@ -77,7 +89,7 @@ class ProductState(Base):
     latest_receipt_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     observed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pending_events: Mapped[int] = mapped_column(Integer, default=0)
-    processed_events: Mapped[int] = mapped_column(Integer, default=0)
+    processed_events: Mapped[int] = mapped_column(BigInteger, default=0)
     truncated_profiles: Mapped[int] = mapped_column(Integer, default=0)
     pending_clients: Mapped[int] = mapped_column(Integer, default=0)
     pending_capped: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -87,7 +99,8 @@ class ProductState(Base):
 
 class ProductPublication(Base):
     __tablename__ = "product_publications"
-    __table_args__ = (Index("ix_product_publication_age", "published_at"),)
+    __table_args__ = (Index("ix_product_publication_age", "published_at"),
+        Index("ix_product_publication_owner", "owner_id", "version_id"))
     version_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(36))
     published_at: Mapped[int] = mapped_column(Integer)

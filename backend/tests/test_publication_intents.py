@@ -8,6 +8,7 @@ from test_domains import headers
 
 from bmt_backend.commerce_models import Entitlements, PublicationSlot
 from bmt_backend.config import Settings
+from bmt_backend.news_models import NewsItem, NewsPublication
 from bmt_backend.publication_models import PublicationIntent
 from bmt_backend.publications import process_one
 from bmt_backend.track_models import Board, PersonalBest, QueueCapacity, Run, Track, TrackVersion
@@ -67,6 +68,8 @@ def test_no_track_inventory_until_verified_publish_and_exact_provenance(publicat
     assert intent["state"] == "queued" and intent["receipt"] is None
     with domain.factory() as session:
         assert count(session, Track) == count(session, TrackVersion) == count(session, Run) == 0
+        assert count(session, NewsPublication) == 0
+        assert count(session, NewsItem) == 0
         assert session.get(QueueCapacity, 1).pending == 1
         assert session.get(Entitlements, domain.players["Creator"]).slots == 1
     assert domain.client.get("/v1/tracks").json()["items"] == []
@@ -80,6 +83,11 @@ def test_no_track_inventory_until_verified_publish_and_exact_provenance(publicat
         assert count(session, Track) == count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 1
         assert count(session, PersonalBest) == 0  # Creator validity is never a score.
         version = session.get(TrackVersion, version_id)
+        assert session.get(NewsPublication, version.track_id).version_id == version.id
+        assert count(session, NewsItem) == 1  # Creator headline; no friend inbox fan-out.
+        headline = session.scalar(select(NewsItem))
+        assert headline.player_id == domain.players["Creator"] and headline.kind == "track_published"
+        assert headline.version_id == version_id
         run = session.get(Run, version.creator_test_run_id)
         board = session.get(Board, run.board_id)
         assert run.status == "verified" and run.time_ticks == 120 and run.lap_ticks == [120]
@@ -106,6 +114,7 @@ def test_permanent_retries_dedupe_content_and_slot(publications):
     assert status(domain, repeated["publication_id"])["receipt"]["version_id"] == status(domain, first["publication_id"])["receipt"]["version_id"]
     with domain.factory() as session:
         assert count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 1
+        assert count(session, NewsPublication) == 1
         assert session.get(Entitlements, domain.players["Creator"]).slots == 0
 
 
@@ -124,6 +133,7 @@ def test_invalid_lap_and_build_mismatch_leave_only_failed_publication(publicatio
     assert invalid["failure_code"] == "invalid_creator_proof" and not invalid["retryable"]
     with domain.factory() as session:
         assert count(session, Track) == count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 0
+        assert count(session, NewsPublication) == 0
         assert session.get(Entitlements, domain.players["Creator"]).slots == 1
         assert session.get(QueueCapacity, 1).pending == 0
 
@@ -148,6 +158,7 @@ def test_no_capacity_rolls_back_every_catalogue_and_proof_write(publications):
     assert published["receipt"]["track_id"] == status(domain, first["publication_id"])["receipt"]["track_id"]
     with domain.factory() as session:
         assert count(session, Track) == 1 and count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 2
+        assert count(session, NewsPublication) == 1  # A successful revision is not a new track.
         assert session.get(QueueCapacity, 1).pending == 0
 
 

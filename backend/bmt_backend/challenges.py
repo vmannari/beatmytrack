@@ -1,4 +1,4 @@
-"""Unlisted invitations over pinned contracts and canonically verified results."""
+"""Discoverable competitions and private invitations over verified pinned races."""
 from __future__ import annotations
 
 import html
@@ -6,17 +6,19 @@ import re
 import secrets
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, case, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 
 from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
 from .cursors import decode_cursor, encode_cursor
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
 from .runs import PINNED_FIELDS, _ticket_payload, board_manifest
+from .security import bearer, current_player
 from .track_models import (
     Board,
     PersonalBest,
@@ -54,6 +56,7 @@ class Create(BaseModel):
     mode: Literal["beat", "group"] = "beat"
     duration_seconds: Literal[86400, 259200, 604800] = 604800
     attempt_limit: int | None = Field(default=None, strict=True)
+    visibility: Literal["private", "public"] = "private"
     source_run_id: str | None = Field(default=None, min_length=36, max_length=36)
     source_ticket_id: str | None = Field(default=None, min_length=36, max_length=36)
 
@@ -102,6 +105,15 @@ def compatible(request, pinned):
         raise HTTPException(409, "Challenge requires a different game build")
 
 
+def check_participant_blocks(session, player_id, challenge):
+    from .community import check_creator, is_blocked
+    board = session.get(Board, challenge.board_id)
+    check_creator(session, player_id, session.get(Track, session.get(TrackVersion, board.version_id).track_id).owner_id)
+    peers = session.scalars(select(ChallengeMember.player_id).where(ChallengeMember.challenge_id == challenge.id)).all()
+    if any(is_blocked(session, player_id, peer, mutual=True) for peer in {challenge.creator_id, *peers}):
+        raise HTTPException(403, "PLAYER_BLOCKED")
+
+
 def prepare_board(session, request, version_id, vehicle_id):
     version = published_version(session, version_id)
     if session.get(Track, version.track_id).hidden:
@@ -142,6 +154,10 @@ def snapshot(session, request, challenge, player_id=""):
     version = session.get(TrackVersion, board.version_id)
     track = session.get(Track, version.track_id)
     creator = session.get(Player, challenge.creator_id)
+    from .community import check_creator, is_blocked
+    check_creator(session, player_id, track.owner_id)
+    if is_blocked(session, player_id, creator.id, mutual=True):
+        raise HTTPException(403, "PLAYER_BLOCKED")
     rows = standings(session, challenge)
     current = now()
     pending = session.scalar(select(Run.id).join(ChallengeTicket, ChallengeTicket.ticket_id == Run.ticket_id)
@@ -150,7 +166,10 @@ def snapshot(session, request, challenge, player_id=""):
     target = session.get(Run, challenge.target_run_id) if challenge.target_run_id else None
     member = session.get(ChallengeMember, (challenge.id, player_id)) if player_id else None
     attempts_used = member.attempts_used if member else 0
+    from .economy import challenge_rewards
     return {"id": challenge.id, "code": challenge.code, "mode": challenge.mode, "state": state,
+            "visibility": challenge.visibility, "capacity": 2 if challenge.mode == "beat" else 20,
+            "rewards": challenge_rewards(session, challenge.id, player_id, current),
             "creator_id": creator.id, "creator": creator.display_name, "self_id": player_id,
             "joined": any(row["id"] == player_id for row in rows), "vehicle_id": board.vehicle_id,
             "created_at": challenge.created_at, "ends_at": challenge.ends_at, "server_now": current,
@@ -221,7 +240,12 @@ def sources(request: Request, session: DB, player: Auth,
 
 
 def create_record(session, request, player, payload, key, scope, body):
+    if payload.visibility == "public":
+        from .community import require_terms
+        require_terms(session, player.id)
     board = prepare_board(session, request, payload.version_id, payload.vehicle_id)
+    from .community import check_creator
+    check_creator(session, player.id, session.get(Track, session.get(TrackVersion, payload.version_id).track_id).owner_id)
     source = source_for(session, board, player.id, payload.source_run_id, payload.source_ticket_id) if payload.mode == "beat" or payload.source_run_id or payload.source_ticket_id else None
     if source:
         ensure_ghost(session, request, source, board)
@@ -229,7 +253,7 @@ def create_record(session, request, player, payload, key, scope, body):
         board = prepare_board(session, request, payload.version_id, payload.vehicle_id)
         source = source_for(session, board, player.id, source.id)
     challenge = Challenge(code=secrets.token_hex(8).upper(), creator_id=player.id, board_id=board.id,
-        mode=payload.mode, target_run_id=source.id if source else None,
+        mode=payload.mode, visibility=payload.visibility, target_run_id=source.id if source else None,
         target_ticks=source.time_ticks if source and payload.mode == "beat" else None,
         attempt_limit=payload.attempt_limit, ends_at=now()+payload.duration_seconds)
     session.add(challenge)
@@ -245,43 +269,118 @@ def create_record(session, request, player, payload, key, scope, body):
 def create(payload: Create, request: Request, session: DB, player: Auth, key: Key):
     real_player(player)
     # Unlimited is the existing contract, including persisted pre-migration keys.
-    body = payload.model_dump(exclude={"attempt_limit"} if payload.attempt_limit is None else set())
+    omitted = {"attempt_limit"} if payload.attempt_limit is None else set()
+    if payload.visibility == "private":
+        omitted.add("visibility")  # Preserve retry identities from older clients.
+    body = payload.model_dump(exclude=omitted)
     old = replay_response(session, player.id, "challenge_create", key, body)
     return old if old is not None else create_record(session, request, player, payload, key, "challenge_create", body)
 
 
 @router.get("/challenges")
 def inbox(request: Request, session: DB, player: Auth,
-          folder: Literal["received", "sent"] = "received", cursor: str | None = Query(default=None, max_length=400)):
-    real_player(player)
-    query = select(Challenge).join(ChallengeMember, ChallengeMember.challenge_id == Challenge.id).where(
-        ChallengeMember.player_id == player.id, Challenge.creator_id == player.id if folder == "sent" else Challenge.creator_id != player.id)
+          folder: Literal["discover", "friends", "received", "sent"] = "received",
+          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group"] = "all",
+          vehicle: str = Query(default="", max_length=80), sort: Literal["ending", "newest"] = "ending",
+          cursor: str | None = Query(default=None, max_length=800)):
+    return challenge_list(request, session, player, folder, search, mode, vehicle, sort, cursor)
+
+
+@router.get("/challenges/discover")
+def public_discovery(request: Request, session: DB, credentials=Depends(bearer),
+          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group"] = "all",
+          vehicle: str = Query(default="", max_length=80), sort: Literal["ending", "newest"] = "ending",
+          cursor: str | None = Query(default=None, max_length=800)):
+    player = current_player(request, credentials, session) if credentials else None
+    return challenge_list(request, session, player, "discover", search, mode, vehicle, sort, cursor)
+
+
+def challenge_list(request, session, player, folder, search, mode, vehicle, sort, cursor):
+    if player:
+        real_player(player)
+    if player is None and folder != "discover":
+        raise HTTPException(401, "SIGN_IN_REQUIRED")
+    player_id = player.id if player else ""
+    author = aliased(Player)
+    track_author = aliased(Player)
+    query = (select(Challenge).join(Board, Board.id == Challenge.board_id)
+        .join(TrackVersion, TrackVersion.id == Board.version_id).join(Track, Track.id == TrackVersion.track_id)
+        .join(author, author.id == Challenge.creator_id).join(track_author, track_author.id == Track.owner_id)
+        .where(author.disabled.is_(False), author.deleted_at.is_(None), author.is_test_driver.is_(False),
+               track_author.disabled.is_(False), track_author.is_test_driver.is_(False),
+               Track.hidden.is_(False), TrackVersion.state == "published"))
+    public = folder in ("discover", "friends")
+    if public:
+        query = query.where(Challenge.visibility == "public", Track.archived.is_(False), Challenge.cancelled.is_(False),
+            Challenge.ends_at > now(), Challenge.member_count < case((Challenge.mode == "beat", 2), else_=20))
+        # Only actionable, compatible races appear; never fetch blobs or run a verifier here.
+        try:
+            active = request.app.state.verifier.manifest()
+        except RuntimeError:
+            raise HTTPException(503, "Race verifier temporarily unavailable") from None
+        for field in PINNED_FIELDS:
+            value = active.get(field)
+            column = Board.manifest[field].as_integer() if type(value) is int else Board.manifest[field].as_string()
+            query = query.where(column == value)
+        configurations = [and_(Board.vehicle_id == car,
+            Board.manifest["handling_version"].as_string() == config.get("handling_version"),
+            Board.manifest["config_hash"].as_string() == config.get("config_hash"))
+            for car, config in active.get("vehicles", {}).items()]
+        query = query.where(or_(*configurations) if configurations else False)
+        if player:
+            query = query.where(Challenge.creator_id != player.id,
+                ~exists().where(ChallengeMember.challenge_id == Challenge.id, ChallengeMember.player_id == player.id))
+        if folder == "friends":
+            from .news_models import Friendship
+            query = query.where(exists().where(Friendship.accepted.is_(True), or_(
+                and_(Friendship.low_id == player_id, Friendship.high_id == Challenge.creator_id),
+                and_(Friendship.high_id == player_id, Friendship.low_id == Challenge.creator_id))))
+    else:
+        query = query.where(exists().where(ChallengeMember.challenge_id == Challenge.id,
+            ChallengeMember.player_id == player_id),
+            Challenge.creator_id == player_id if folder == "sent" else Challenge.creator_id != player_id)
+    if player:
+        from .community_models import PlayerBlock
+        blocked = select(PlayerBlock.blocked_id).where(PlayerBlock.player_id == player.id)
+        blockers = select(PlayerBlock.player_id).where(PlayerBlock.blocked_id == player.id)
+        query = query.where(Challenge.creator_id.not_in(blocked), Challenge.creator_id.not_in(blockers),
+                            Track.owner_id.not_in(blocked))
+        if public:
+            query = query.where(~exists().where(ChallengeMember.challenge_id == Challenge.id,
+                or_(ChallengeMember.player_id.in_(blocked), ChallengeMember.player_id.in_(blockers))))
+    search = search.strip()
+    if search:
+        term = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        query = query.where(or_(TrackVersion.name.ilike(term, escape="\\"), author.display_name.ilike(term, escape="\\")))
+    if mode != "all":
+        query = query.where(Challenge.mode == mode)
+    if vehicle:
+        query = query.where(Board.vehicle_id == vehicle)
+    ascending = public and sort == "ending"
+    order_column = Challenge.ends_at if ascending else Challenge.created_at
+    context = {"folder": folder, "player": player_id, "search": search, "mode": mode, "vehicle": vehicle, "sort": sort}
     if cursor is not None:
         position = decode_cursor(cursor)
-        if (set(position) != {"at", "id", "folder", "player"} or type(position["at"]) is not int
+        if (set(position) != {"at", "id", *context} or type(position["at"]) is not int
                 or type(position["id"]) is not str or len(position["id"]) != 36
-                or position["folder"] != folder or position["player"] != player.id):
+                or any(position.get(key) != value for key, value in context.items())):
             raise HTTPException(422, "INVALID_CURSOR")
-        query = query.where(or_(Challenge.created_at < position["at"],
-                               (Challenge.created_at == position["at"]) & (Challenge.id > position["id"])))
-    challenges = session.scalars(query.order_by(Challenge.created_at.desc(), Challenge.id).limit(51)).all()
-    items = []
-    for challenge in challenges[:50]:
-        try:
-            available(session, challenge.code)
-        except HTTPException as error:
-            if error.status_code == 404:
-                continue
-            raise
-        items.append(snapshot(session, request, challenge, player.id))
-    next_cursor = encode_cursor({"at": challenges[49].created_at, "id": challenges[49].id,
-                                 "folder": folder, "player": player.id}) if len(challenges) > 50 else None
+        query = query.where(or_(order_column > position["at"] if ascending else order_column < position["at"],
+                               (order_column == position["at"]) & (Challenge.id > position["id"])))
+    limit = 20 if public else 50
+    challenges = session.scalars(query.order_by(order_column.asc() if ascending else order_column.desc(), Challenge.id)
+                                .limit(limit+1)).all()
+    items = [snapshot(session, request, challenge, player_id) for challenge in challenges[:limit]]
+    last = challenges[limit-1] if len(challenges) > limit else None
+    next_cursor = encode_cursor({"at": last.ends_at if ascending else last.created_at, "id": last.id,
+                                 **context}) if last else None
     return {"items": items, "next_cursor": next_cursor}
 
 
 @router.get("/challenges/{code}")
-def invitation(code: str, request: Request, session: DB):
-    return snapshot(session, request, available(session, code))
+def invitation(code: str, request: Request, session: DB, credentials=Depends(bearer)):
+    player = current_player(request, credentials, session) if credentials else None
+    return snapshot(session, request, available(session, code), player.id if player else "")
 
 
 @router.get("/challenges/{code}/me")
@@ -298,6 +397,7 @@ def join(code: str, request: Request, session: DB, player: Auth, key: Key):
     if old is not None:
         return old
     challenge = available(session, code, lock=True)
+    check_participant_blocks(session, player.id, challenge)
     compatible(request, session.get(Board, challenge.board_id).manifest)
     if session.get(ChallengeMember, (challenge.id, player.id)) is None:
         capacity = 2 if challenge.mode == "beat" else 20
@@ -321,6 +421,7 @@ def ticket(code: str, request: Request, session: DB, player: Auth, key: Key):
     if old is not None:
         return old
     challenge = available(session, code, lock=True)
+    check_participant_blocks(session, player.id, challenge)
     # Another request with the same key may have committed while this one waited.
     old = replay_response(session, player.id, scope, key, {})
     if old is not None:
@@ -349,8 +450,8 @@ def ticket(code: str, request: Request, session: DB, player: Auth, key: Key):
         "attempts_remaining": max(0, challenge.attempt_limit-member.attempts_used) if challenge.attempt_limit is not None else None})
 
 
-def accept_verified(session, run):
-    binding = session.get(ChallengeTicket, run.ticket_id)
+def accept_verified(session, run, *, acceptance=None):
+    binding = acceptance.challenge if acceptance else session.get(ChallengeTicket, run.ticket_id)
     if binding is None or binding.outcome is not None:
         return
     challenge = session.scalar(select(Challenge).where(Challenge.id == binding.challenge_id).with_for_update())
@@ -373,7 +474,9 @@ def accept_verified(session, run):
     binding.outcome = {"counted": True, "improved": improved, "before_ticks": prior, "after": own,
         "ms": round(run.time_ticks*1000/board.manifest["tick_rate"]),
         "gap_ms": round((run.time_ticks-challenge.target_ticks)*1000/board.manifest["tick_rate"]) if challenge.target_ticks else None,
-        "beaten": run.time_ticks < challenge.target_ticks if challenge.target_ticks else own["rank"] == 1}
+        "beaten": run.time_ticks < challenge.target_ticks if challenge.target_ticks else any(
+            row["ticks"] is not None and row["id"] != run.player_id for row in rows) and all(
+            row["ticks"] is None or row["id"] == run.player_id or run.time_ticks < row["ticks"] for row in rows)}
 
 
 @router.get("/challenge-results/{ticket_id}")
@@ -394,8 +497,11 @@ def result(ticket_id: str, request: Request, session: DB, player: Auth):
 
 
 @router.get("/challenges/{code}/ghost")
-def ghost(code: str, request: Request, session: DB):
+def ghost(code: str, request: Request, session: DB, credentials=Depends(bearer)):
     challenge = available(session, code)
+    viewer = current_player(request, credentials, session) if credentials else None
+    if viewer:
+        check_participant_blocks(session, viewer.id, challenge)
     if challenge.cancelled:
         raise HTTPException(410, "Challenge was cancelled")
     rows = standings(session, challenge)
@@ -438,7 +544,8 @@ def rematch(code: str, payload: Rematch, request: Request, session: DB, player: 
         raise HTTPException(409, "Beat the leading time before rematching")
     board = session.get(Board, challenge.board_id)
     created = Create(version_id=board.version_id, vehicle_id=board.vehicle_id, source_run_id=member.run_id,
-                     mode="beat", duration_seconds=payload.duration_seconds, attempt_limit=challenge.attempt_limit)
+                     mode="beat", duration_seconds=payload.duration_seconds, attempt_limit=challenge.attempt_limit,
+                     visibility=challenge.visibility)
     return create_record(session, request, player, created, key, scope, body)
 
 

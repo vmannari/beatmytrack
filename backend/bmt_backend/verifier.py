@@ -361,8 +361,8 @@ class GodotVerifier:
         _json_bytes(normalized, MAX_TRACK_BYTES)
         return normalized, manifest
 
-    def verify_run(self, document: dict, replay: dict, vehicle_id: str, *, creator_test: bool = False, capture_ghost: bool = True, geometry: dict | None = None) -> dict:
-        """Race acceptance is a trajectory check. No controls are re-simulated."""
+    def verify_run(self, document: dict | None, replay: dict, vehicle_id: str, *, creator_test: bool = False, capture_ghost: bool = True, geometry: dict | None = None) -> dict:
+        """Check the path; a prepared descriptor needs no source-document read."""
         from .trajectory_verifier import check, duration, validate_envelope
         self._check_stopping()
         if type(replay) is not dict or not replay.get("race_proof"):
@@ -435,7 +435,7 @@ def finite_number(value):
 
 
 def validate_race_proof(proof, frames):
-    if (type(proof) is not dict or set(proof) != {"schema", "samples"}
+    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
             or proof.get("schema") != "bmt-race-proof-v1" or type(proof["samples"]) is not list
             or not 2 <= len(proof["samples"]) <= MAX_FRAMES // 6 + 12):
         raise VerificationError("Malformed race movement proof")

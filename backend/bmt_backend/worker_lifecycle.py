@@ -34,11 +34,19 @@ def aborting(app):
     return bool(control and control.abort.is_set())
 
 
-def run_worker(app, process_job, *, once=False, control=None, install_signals=True):
+def run_worker(app, process_job, *, once=False, control=None, install_signals=True, idle_seconds=1.0):
+    if not 0.1 <= idle_seconds <= 60:
+        raise ValueError("Invalid bounded worker idle interval")
     control = control or WorkerControl()
     app.state.worker_control = control
     app.state.worker_id = new_id()
+    if not once:
+        from .driver_work import DriverWork
+        app.state.driver_work = DriverWork(app)
     worker_id = app.state.worker_id
+    signals = getattr(app.state, "run_signals", None)
+    if signals is not None and not once:
+        signals.open()
     finished = threading.Event()
     errors = []
     previous = {}
@@ -53,6 +61,8 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
     def work():
         try:
             while not stopping(app):
+                if signals is not None:
+                    signals.begin_scan()
                 try:
                     worked = process_job(app)
                 except Exception:
@@ -62,8 +72,10 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
                     worked = False
                 if once:
                     return
+                if signals is not None:
+                    signals.set_idle(not worked)
                 if not worked:
-                    control.stop.wait(1)
+                    (signals.worker if signals is not None else control.stop).wait(idle_seconds)
         except BaseException as error:  # noqa: BLE001 - transport fatal job-thread errors to the supervisor
             errors.append(error)
         finally:
@@ -79,6 +91,8 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
         while not finished.wait(0.05):
             if stopping(app) and timer is None:
                 control.stop.set()
+                if signals is not None:
+                    signals.worker.set()
                 started = control.requested_at or time.monotonic()
                 remaining = max(0, started + app.state.settings.worker_shutdown_grace_seconds - time.monotonic())
                 # Cancellation must not wait for a slow/unavailable heartbeat database.
@@ -91,12 +105,24 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
                     logger.exception("worker_drain_heartbeat_failed", extra={"worker_id": worker_id})
     finally:
         control.stop.set()
+        if signals is not None:
+            signals.worker.set()
         if thread.is_alive():
             abort()
             thread.join()
         if timer is not None:
             timer.cancel()
             timer.join()
+        if signals is not None and not once:
+            signals.set_idle(False)
+            signals.close()
+        driver_work = getattr(app.state, "driver_work", None)
+        if driver_work is not None:
+            try:
+                driver_work.close()
+            except Exception as error:
+                logger.exception("worker_driver_cleanup_failed", extra={"worker_id": worker_id})
+                errors.append(error)
         try:
             heartbeat(app, worker_id, lifecycle="stopped")
         except Exception:

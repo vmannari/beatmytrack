@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Protocol
 
 from .json_data import parse_json
+from .local_object_listing import TEMPORARY_NAME, candidates, prepare_scan, read_page, validate_cursor
 
 MAX_BLOB_BYTES = 8 * 1024 * 1024
 MAX_STORED_BLOB_BYTES = MAX_BLOB_BYTES + 65536
-TEMPORARY_NAME = re.compile(r"\.pending-[A-Za-z0-9_-]{6,80}(?:\.guard)?")
 
 
 def decode_blob_json(body: bytes, digest: str) -> dict:
@@ -84,11 +84,11 @@ class LocalBlobStore:
     def __init__(self, root: str):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        # Startup is a single bounded pass. Retention's resumable cursor reaches
-        # later shards; active writers and legacy unguarded files stay intact.
+        # Startup does not prepare a full manifest. Its separate bounded pass
+        # preserves guarded temporary-file recovery without delaying API startup.
         try:
-            rows, _cursor = self.list_objects(None, 1000, True)
-            for row in rows:
+            names = candidates(self.root, maximum_entries=1000, temporary_only=True)
+            for row in self._candidate_rows(names, True):
                 if "temporary" in row:
                     self.cleanup_temporary(row, time.time()-86400, apply=True)
         except OSError as exc:
@@ -153,36 +153,40 @@ class LocalBlobStore:
     def delete(self, digest):
         self._path(digest).unlink(missing_ok=True)
 
-    def list_objects(self, cursor, limit, include_temporary=False):
-        from itertools import islice
-        cursor = cursor or {"shard":0,"offset":0}
-        shard, offset = cursor["shard"], cursor["offset"]
-        inspected, rows = 0, []
-        while shard < 256 and inspected < limit:
-            directory = self.root / f"{shard:02x}"
-            if not directory.is_dir() or directory.is_symlink():
-                shard, offset = shard+1, 0
+    @staticmethod
+    def validate_object_cursor(cursor):
+        validate_cursor(cursor)
+
+    def prepare_object_scan(self, cursor=None):
+        return prepare_scan(self.root, cursor, lock_temporary, sync_directory)
+
+    def _candidate_rows(self, names, include_temporary):
+        previous_shard, directory = None, None
+        for shard, name in names:
+            if shard != previous_shard:
+                previous_shard, directory = shard, self.root / shard
+            # Reuse only the path object. Recheck the actual directory for each
+            # candidate so a changed directory cannot reuse an earlier verdict.
+            if directory.is_symlink():
                 continue
-            with os.scandir(directory) as stream:
-                exhausted = True
-                for entry in islice(stream, offset, None):
-                    inspected, offset = inspected+1, offset+1
-                    name = entry.name
-                    if (entry.is_file(follow_symlinks=False) and re.fullmatch(r"[0-9a-f]{64}\.json", name)
-                            and name.startswith(directory.name)):
-                        info = entry.stat(follow_symlinks=False)
-                        rows.append({"digest":name[:64],"modified":int(info.st_mtime),"bytes":info.st_size})
-                    elif (include_temporary and TEMPORARY_NAME.fullmatch(name)
-                            and entry.is_file(follow_symlinks=False)):
-                        info = entry.stat(follow_symlinks=False)
-                        rows.append({"temporary": name, "shard": directory.name,
-                                     "modified": int(info.st_mtime), "bytes": info.st_size})
-                    if inspected >= limit:
-                        exhausted = False
-                        break
-                if exhausted:
-                    shard, offset = shard+1, 0
-        return rows, {"shard":shard,"offset":offset} if shard < 256 else None
+            if not include_temporary and TEMPORARY_NAME.fullmatch(name):
+                continue
+            try:
+                info = (directory / name).stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            row = {"modified": int(info.st_mtime), "bytes": info.st_size}
+            yield ({**row, "temporary": name, "shard": shard} if TEMPORARY_NAME.fullmatch(name)
+                   else {**row, "digest": name[:64]})
+
+    def list_objects(self, cursor, limit, include_temporary=False):
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Invalid local object page limit")
+        cursor = self.prepare_object_scan(cursor)
+        names, next_cursor = read_page(self.root, cursor, limit)
+        return list(self._candidate_rows(names, include_temporary)), next_cursor
 
     def cleanup_temporary(self, row, cutoff, *, apply=False, offline=False):
         """Clean only aged, unlocked writer groups from the bounded GC scan.

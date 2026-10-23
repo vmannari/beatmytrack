@@ -18,6 +18,7 @@ def test_postgres_one_race_package_parallel_retry_and_projection(postgres_auth):
     app.state.settings=replace(app.state.settings,telemetry_enabled=True,client_quality_enabled=True)
     signed=client.post('/v1/auth/google',json=google_request(app,client,'statistics-racer')).json()
     headers={'Authorization':'Bearer '+signed['access_token']};value=package()
+    assert client.post('/v1/privacy/preferences',headers=headers,json={'analytics_enabled':True}).status_code==200
     event=observed('race_statistics',at=now(),properties=value,id=value['race_id'])
     with ThreadPoolExecutor(max_workers=4) as pool:
         responses=list(pool.map(lambda _:client.post('/v1/telemetry/batches',headers=headers,json=body([event])),range(4)))
@@ -35,6 +36,7 @@ def test_postgres_render_context_json_filters_and_distinct_options(postgres_auth
         admin_analyst_key="a" * 40)
     signed = client.post('/v1/auth/google', json=google_request(app, client, 'render-statistics-racer')).json()
     headers = {'Authorization': 'Bearer ' + signed['access_token']}
+    assert client.post('/v1/privacy/preferences',headers=headers,json={'analytics_enabled':True}).status_code==200
     for renderer in ('mobile', 'gl_compatibility'):
         value = package(schema_version=3, render_context=render_setup(renderer=renderer), render_context_changed=False)
         event = observed('race_statistics', at=now(), properties=value, id=value['race_id'])

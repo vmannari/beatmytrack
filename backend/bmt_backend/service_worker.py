@@ -1,4 +1,4 @@
-"""Supervise competition and optional low-priority product work in one container."""
+"""Supervise publications, competition and optional product work in one container."""
 
 from __future__ import annotations
 
@@ -81,10 +81,12 @@ def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, c
         raise ValueError("Invalid bounded service shutdown budget")
     shipping = {
         "worker": (sys.executable, "-m", "bmt_backend.worker"),
+        "publication": (sys.executable, "-m", "bmt_backend.publication_worker"),
+        "discovery": (sys.executable, "-m", "bmt_backend.discovery_worker"),
         "product": (sys.executable, "-m", "bmt_backend.product_worker"),
     }
     selected = commands if commands is not None else shipping
-    roles = ("worker", "product") if telemetry_enabled else ("worker",)
+    roles = ("worker", "publication", "discovery", "product") if telemetry_enabled else ("worker", "publication", "discovery")
     children, previous = {}, {}
     requested_at, requested_signal, failed = None, None, False
 

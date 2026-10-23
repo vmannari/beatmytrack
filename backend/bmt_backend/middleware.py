@@ -271,7 +271,7 @@ class RequestBoundary:
                     message["headers"].append((b"x-server-time", str(int(time.time())).encode()))
                 if not any(name.lower() == b"cache-control" for name, _ in message["headers"]):
                     message["headers"].append((b"cache-control", b"no-store"))
-                if status in (429, 503):
+                if status in (429, 503) and not any(name.lower() == b"retry-after" for name, _ in message["headers"]):
                     message["headers"].append((b"retry-after", b"60" if status == 429 else b"5"))
             elif message["type"] == "http.response.body":
                 response_bytes += len(message.get("body",b""))
@@ -304,7 +304,7 @@ class RequestBoundary:
                 category = (
                     "auth_session" if token_auth else "auth"
                     if scope["path"].startswith("/v1/auth/")
-                    else ("read" if method in ("GET", "HEAD") or scope["path"] in ("/v1/discovery/tracks", "/v1/discovery/random") else "write")
+                    else ("read" if method in ("GET", "HEAD") or scope["path"] in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random") else "write")
                 )
                 credential_key = hashlib.sha256(headers.get(b"authorization", b"")).hexdigest()
                 provided = b"authorization" in headers and category in ("read", "write")
@@ -359,7 +359,7 @@ class RequestBoundary:
                             or method in ("POST", "PUT", "PATCH", "DELETE"))
             limit = min(self.settings.max_body_bytes, 32768 if route is None and scope.get("app") is not None else
                         64*1024 if path == "/v1/telemetry/batches" else
-                        8*1024*1024 if path in ("/v1/runs", "/v1/publications", "/v1/discovery/tracks", "/v1/discovery/random") else
+                        8*1024*1024 if path in ("/v1/runs", "/v1/publications", "/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random") else
                         600*1024 if path == "/v1/tracks" or path.endswith("/versions") else 32768)
             upload = body_allowed and limit > 32768
             length = headers.get(b"content-length")
@@ -389,7 +389,7 @@ class RequestBoundary:
             if upload:
                 try:
                     acquired_pool = (self.telemetry_parsers if path == "/v1/telemetry/batches" else
-                                     self.discovery_parsers if path in ("/v1/discovery/tracks", "/v1/discovery/random")
+                                     self.discovery_parsers if path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
                                      else self.parsers)
                     await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
                     acquired = True

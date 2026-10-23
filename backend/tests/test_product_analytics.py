@@ -272,7 +272,8 @@ def test_partial_batch_ack_commit_duplicate_conflict_and_redacted_rejection(prod
         assert len(events) == 2
         assert {event.player_id for event in events} == {player}
         assert all("private@" not in str(event.properties) for event in events)
-        assert session.get(ProductState, 1).pending_clients == 2
+        from bmt_backend.telemetry_queue_models import TelemetryCredit
+        assert session.scalar(select(func.sum(TelemetryCredit.capacity - TelemetryCredit.free))) == 2
 
 
 def test_unknown_properties_finite_dimensions_and_claimed_authority_rejected(product):

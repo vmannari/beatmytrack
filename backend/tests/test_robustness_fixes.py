@@ -380,6 +380,11 @@ def test_actual_worker_kill_recovery_with_current_publication_workflow(review_re
 
     replicas = review_replicas
     creator = replica_tests.sign_in(replicas, "Creator")
+    from bmt_backend.community import TERMS_VERSION
+
+    consent = replicas.a.client.post("/v1/community/terms",
+        json={"version": TERMS_VERSION, "accepted": True}, headers=replica_tests.auth(creator))
+    assert consent.status_code == 200, consent.text
     content = publication_body(
         SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(verifier=FakeVerifier())))
     )
@@ -464,6 +469,11 @@ def test_concurrent_publication_retry_has_one_durable_receipt(review_replicas):
 
     replicas = review_replicas
     creator = replica_tests.sign_in(replicas, "Creator")
+    from bmt_backend.community import TERMS_VERSION
+
+    consent = replicas.a.client.post("/v1/community/terms",
+        json={"version": TERMS_VERSION, "accepted": True}, headers=replica_tests.auth(creator))
+    assert consent.status_code == 200, consent.text
     content = publication_body(
         SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(verifier=FakeVerifier())))
     )

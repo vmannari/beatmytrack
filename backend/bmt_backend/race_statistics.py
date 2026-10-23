@@ -5,11 +5,12 @@ from collections import Counter
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import BigInteger, case, cast, delete, func, select, tuple_
 
 from .admin import Access, Window
 from .admin_ranges import calendar_range
 from .race_statistics_models import RaceStatisticsDay, RaceStatisticsReceipt
+from .studio_queries import read_snapshot
 from .telemetry_models import ProductState
 from .track_models import Board, RunTicket, TrackVersion, digest, now
 
@@ -41,10 +42,13 @@ def text_value(value):
     return value
 
 
-def uuid_value(value):
-    if not isinstance(value, str) or len(value) != 36 or UUID(value).version != 4:
+def uuid_value(value, *, client=False):
+    if not isinstance(value, str) or len(value) != 36:
         raise ValueError("INVALID_RACE_STATISTICS")
-    return str(UUID(value))
+    parsed = UUID(value)
+    if client and parsed.version != 4:
+        raise ValueError("INVALID_RACE_STATISTICS")
+    return str(parsed)
 
 
 def render_context(value):
@@ -74,7 +78,7 @@ def validate(value):
         raise ValueError("INVALID_RACE_STATISTICS")
     for field in ("race_id", *REFERENCES):
         if field in result:
-            result[field] = uuid_value(result[field])
+            result[field] = uuid_value(result[field], client=field == "race_id")
     if result["outcome"] not in OUTCOMES or result["device_class"] not in DEVICE_CLASSES:
         raise ValueError("INVALID_RACE_STATISTICS")
     for field in ("device_model", "os_version"):
@@ -249,6 +253,7 @@ def report(request: Request, role: Access, window: Window, track_version_id: str
         raise HTTPException(422, "INVALID_DIAGNOSTIC_FILTER")
     first, until = window or calendar_range(7)
     with request.app.state.session_factory() as session:
+        read_snapshot(session)
         conditions = [RaceStatisticsDay.day >= first // 86400, RaceStatisticsDay.day <= (until - 1) // 86400]
         for field, value in (("track_version_id", track_version_id), ("device_model", device_model), ("os_version", os_version),
                 ("platform", platform), ("build_id", build_id), ("outcome", outcome)):
@@ -271,11 +276,19 @@ def report(request: Request, role: Access, window: Window, track_version_id: str
         version = session.get(TrackVersion, track_version_id) if track_version_id else None
         latest_receipt = session.scalar(select(RaceStatisticsReceipt.received_at).order_by(RaceStatisticsReceipt.received_at.desc()).limit(1))
         state = session.get(ProductState, 1)
-        bins, cells, cell_heap, segments, totals = [0] * 8, {}, [], Counter(), Counter()
+        full = dict(session.execute(select(*[func.coalesce(func.sum(getattr(RaceStatisticsDay,name)),0).label(name)
+            for name in ("races","elapsed_ms","position_samples","dropped_samples","aggregate_dropped_samples")],
+            *[func.coalesce(func.sum(cast(RaceStatisticsDay.frame_buckets[i].as_string(),BigInteger)),0).label("b"+str(i)) for i in range(8)],
+            func.coalesce(func.sum(case((RaceStatisticsDay.render_context_key.is_not(None),RaceStatisticsDay.races),else_=0)),0).label("known_races"),
+            func.coalesce(func.sum(case((RaceStatisticsDay.render_context_key.is_(None),RaceStatisticsDay.races),else_=0)),0).label("unknown_races"),
+            func.coalesce(func.sum(case((RaceStatisticsDay.render_context_changed.is_(True),RaceStatisticsDay.races),else_=0)),0).label("changed_races"),
+            func.max(RaceStatisticsDay.latest_received_at).label("latest"))
+            .where(*conditions)).mappings().one())
+        bins=[full.pop("b"+str(i)) for i in range(8)]
+        context_coverage={key:full.pop(key) for key in ("known_races","unknown_races","changed_races")}
+        scope_latest=full.pop("latest")
+        cells,cell_heap,segments,totals = {},[],Counter(),Counter(full if full["races"] else {})
         for row in rows[:limit]:
-            bins = [a + b for a, b in zip(bins, row.frame_buckets, strict=True)]
-            for name in ("races", "elapsed_ms", "position_samples", "dropped_samples", "aggregate_dropped_samples"):
-                totals[name] += getattr(row, name)
             # Different versions do not share a spatial coordinate or route-segment contract.
             if track_version_id:
                 totals["query_dropped_samples"] += merge_cells(cells, cell_heap, row.cells)
@@ -290,9 +303,8 @@ def report(request: Request, role: Access, window: Window, track_version_id: str
             "options": [{"platform": p, "device_model": d, "os_version": o, "build_id": b} for p, d, o, b in options[:200]],
             "render_options": [{"key": key, "context": context} for key, context in render_options[:200]],
             "render_options_truncated": len(render_options) > 200,
-            "render_context_coverage": {"known_races": sum(row.races for row in rows[:limit] if row.render_context_key),
-                "unknown_races": sum(row.races for row in rows[:limit] if not row.render_context_key),
-                "changed_races": sum(row.races for row in rows[:limit] if row.render_context_changed)},
+            "render_context_coverage": context_coverage,
+            "totals_scope": "Full filtered SQL aggregates; spatial cells/segments use the bounded detail prefix",
             "options_truncated": len(options) > 200, "totals": dict(totals), "frame_buckets": bins,
             "cells": [{"x": int(identity.split(":")[0]), "y": int(identity.split(":")[1]), "samples": pair[0],
                 "slow": pair[1]} for identity, pair in visible_cells],
@@ -304,7 +316,7 @@ def report(request: Request, role: Access, window: Window, track_version_id: str
                 "preferred_client_schema": 3,
                 "accepted_client_schemas": [2, 3],
                 "latest_race_receipt_at": latest_receipt,
-                "scope_latest_receipt_at": max((row.latest_received_at for row in rows[:limit]), default=None),
+                "scope_latest_receipt_at": scope_latest,
                 "processor_observed_at": state.observed_at if state else None, "pending_events": state.pending_events if state else None,
                 "latest_receipt_at": state.latest_receipt_at if state else None, "guest_available": False},
             "coverage": "One bounded package per signed-in timed race, including abandoned/restarted attempts. Client-observed frames and 1 Hz positions; no score eligibility is inferred. Local unpublished geometry is excluded. Missing device/OS values remain explicitly reported, never guessed."}

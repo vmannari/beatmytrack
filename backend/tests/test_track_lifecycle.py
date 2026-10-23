@@ -4,13 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
+from legacy_authoring_fixture import process_one
 from sqlalchemy import func, select
 from test_domains import domain as domain_fixture
 from test_domains import headers, submit
 
 from bmt_backend.track_models import Run, Track, TrackValidation, TrackVersion
 from bmt_backend.verifier import VerificationError
-from bmt_backend.worker import process_one
 
 domain = domain_fixture
 

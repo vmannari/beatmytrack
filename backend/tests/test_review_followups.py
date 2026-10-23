@@ -3,6 +3,7 @@ import os
 from dataclasses import replace
 
 import pytest
+from legacy_validation_fixture import process_one
 from sqlalchemy import event, select
 from test_domains import domain as domain_fixture
 from test_domains import headers, public_course
@@ -14,7 +15,6 @@ from bmt_backend.middleware import parse_body
 from bmt_backend.operations import competition_health, heartbeat
 from bmt_backend.storage import canonical_json
 from bmt_backend.track_models import TrackValidation, TrackVersion, now
-from bmt_backend.track_validation import process_one
 from bmt_backend.verifier import MAX_FRAMES, MAX_REQUEST_BYTES, _json_bytes, validate_replay
 
 domain = domain_fixture

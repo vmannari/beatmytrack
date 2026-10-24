@@ -42,6 +42,10 @@ var _turn_viewport: SubViewport
 var _turn_material: ShaderMaterial
 var _paper: PanelContainer
 var _paper_host: Control
+var _ranking: Control
+var _controls: HFlowContainer
+var _ranking_footer: HFlowContainer
+var _eyebrow: Label
 
 func _ready() -> void:
 	name = "GarageNewsMenu"
@@ -97,7 +101,7 @@ func _build_paper() -> void:
 	var mast := VBoxContainer.new()
 	mast.add_theme_constant_override("separation",0)
 	header.add_child(mast)
-	_text(mast,"THE GARAGE JOURNAL",14,RED)
+	_eyebrow = _text(mast,"THE GARAGE JOURNAL",14,RED)
 	_masthead = _text(mast,"Trackside",64 if size.x >= 1360 else 58,INK,true)
 	_masthead.name = "NewsMasthead"
 	_masthead.add_theme_font_override("font",_headline_font())
@@ -106,12 +110,13 @@ func _build_paper() -> void:
 	_tagline = _text(header,"YOUR RACING WORLD,\nIN PRINT",17,MUTED)
 	_tagline.name = "NewsTagline"
 	_tagline.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	var controls := HBoxContainer.new()
-	controls.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var controls := HFlowContainer.new()
+	_controls = controls
 	controls.add_theme_constant_override("separation",4)
 	header.add_child(controls)
-	for id: String in ["news","friends"]:
-		var button := _button("Headlines" if id == "news" else "Friends",_select_tab.bind(id))
+	for id: String in ["news","friends","ranking"]:
+		var button := _button({"news":"Headlines","friends":"Friends","ranking":"World Ranking"}[id],_select_tab.bind(id))
+		button.name = "NewsTab_"+id
 		controls.add_child(button)
 		_tabs[id] = button
 	_refresh_button = _button("",_open)
@@ -181,6 +186,9 @@ func _build_paper() -> void:
 	_folio = _text(footer,"",16,MUTED)
 	_folio.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_folio.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_ranking_footer = HFlowContainer.new()
+	_ranking_footer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(_ranking_footer)
 	_account_button = _button("Sign in",func() -> void: page.account_requested.emit())
 	footer.add_child(_account_button)
 	_previous = _button("‹  Previous",_step.bind(-1))
@@ -208,8 +216,18 @@ func _apply_layout() -> void:
 	_layout_queued = false
 	if not is_inside_tree() or size.is_equal_approx(_layout_size): return
 	_layout_size = size
-	_masthead.add_theme_font_size_override("font_size",64 if size.x >= 1360 else 58)
-	_render()
+	_layout_header()
+	if _tab != "ranking": _render()
+
+func _layout_header() -> void:
+	var ranking: bool = _tab == "ranking"
+	_masthead.add_theme_font_size_override("font_size",34 if ranking else 44 if size.x < 1100 else 64 if size.x >= 1360 else 58)
+	_tagline.visible = not ranking
+	_eyebrow.visible = not ranking
+	for button: Button in _tabs.values(): button.add_theme_font_size_override("font_size",19)
+	_controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_controls.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_controls.alignment = FlowContainer.ALIGNMENT_END
 
 func _vertical_rule(parent: Node) -> VSeparator:
 	var line := VSeparator.new()
@@ -249,9 +267,12 @@ func _select_tab(id: String) -> void:
 	_poll.stop()
 	_scroll.scroll_vertical = 0
 	_render()
-	_open()
+	if _tab != "ranking": _open()
 
 func _open() -> void:
+	if _tab == "ranking":
+		if _active() and is_instance_valid(_ranking): _ranking.refresh()
+		return
 	if not _active() or service == null: return
 	if service.busy:
 		_waiting = true
@@ -263,6 +284,7 @@ func _open() -> void:
 
 func _changed() -> void:
 	if not _active(): return
+	if _tab == "ranking": return
 	_render()
 	if _waiting and service != null and not service.busy:
 		_waiting = false
@@ -483,6 +505,13 @@ func _render(direction: int = 0) -> void:
 	for child: Node in _list.get_children():
 		_list.remove_child(child)
 		child.queue_free()
+	_ranking = null
+	for child: Node in _ranking_footer.get_children():
+		_ranking_footer.remove_child(child)
+		child.queue_free()
+	_ranking_footer.visible = _tab == "ranking"
+	_folio.visible = _tab != "ranking"
+	_layout_header()
 	for id: String in _tabs:
 		_tabs[id].add_theme_color_override("font_color",RED if id == _tab else INK)
 		var active := _box(Color.TRANSPARENT)
@@ -495,14 +524,25 @@ func _render(direction: int = 0) -> void:
 	var stories: Array = _stories()
 	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
 	_refresh_button.disabled = service == null or not service.available() or service.busy
-	_previous.visible = _tab != "friends"
-	_next.visible = _tab != "friends"
-	_navigation_separator.visible = _tab != "friends"
+	_previous.visible = _tab == "news"
+	_next.visible = _tab == "news"
+	_navigation_separator.visible = _tab == "news"
 	_previous.disabled = _index() == 0
 	_next.disabled = stories.is_empty() or (_index() >= stories.size()-1 and not can_more) or (not examples and service != null and service.busy)
 	_account_button.visible = _tab != "friends" and (service == null or not service.client.signed_in())
 	_folio.text = "DRIVERS' DIRECTORY" if _tab == "friends" else "THE PERSONAL EDITION"
 	_status.text = "UPDATING YOUR EDITION…" if service != null and (service.busy or service.refreshing) else "PERSONAL EDITION"
+	if _tab == "ranking":
+		_folio.text = "WORLD RANKING"
+		_status.text = "COMPACT CIRCUIT"
+		_refresh_button.disabled = false
+		_refresh_button.tooltip_text = "Refresh World Ranking"
+		_ranking = preload("res://ui/garage_news_ranking.gd").new()
+		_ranking.newspaper = self
+		_ranking.client = service.client if service != null else null
+		_list.add_child(_ranking)
+		return
+	_refresh_button.tooltip_text = "Check for new stories"
 	if _tab == "friends" and (service == null or not service.client.signed_in()):
 		_empty("Your next chapter starts here.","Sign in for track milestones, records and news from your friends.")
 		_list.add_child(_button("Sign in",func() -> void: page.account_requested.emit()))

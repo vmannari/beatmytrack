@@ -27,7 +27,7 @@ static func texture(mode: String) -> Texture2D:
 			<path fill-rule='evenodd' d='M28 9c-4 8-18 21-18 31a18 18 0 0 0 36 0C46 30 32 17 28 9Zm-9 27a1.8 1.8 0 0 0-3.5.5A13 13 0 0 0 27 50a1.8 1.8 0 0 0 .5-3.5A9.5 9.5 0 0 1 19 36Z'/>
 			<path d='m48 8 2.5 7.5L58 18l-7.5 2.5L48 28l-2.5-7.5L38 18l7.5-2.5Z'/>
 			"""
-		"tuning":
+		"tuning", "workshop":
 			# Forged open-end spanner. A real open jaw and punched socket, no outline.
 			art = """
 			<path fill-rule='evenodd' d='M39 9q-14 0-14 14 0 3 1 5L10 44a7 7 0 0 0 10 10l17-17q3 1 5 1 14 0 14-14l-1-5-10 10-9-2-2-9 9-9Zm-26 38a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z'/>

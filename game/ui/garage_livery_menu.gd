@@ -2,6 +2,7 @@ class_name GarageLiveryMenu
 extends VBoxContainer
 ## Native sidebar workbench. Browsing uses offline model renders only.
 const PALETTE: Array[String] = ["ebe3d0","c1c9cb","7b8d96","253747","121b24","317573","50734f","b8a170","d6ab50","cc7448","a44844","764654","9b879e","67849e","b9c8bb"]
+const Studio = preload("res://ui/garage_studio_style.gd")
 var page: GaragePage
 var pattern_tiles: Dictionary = {}
 var sticker_tiles: Dictionary = {}
@@ -10,6 +11,7 @@ var colour_chips: Array[LiveryColourChip] = []
 var slider_labels: Dictionary = {}
 var active_picker: Control
 var pattern_scroll: ScrollContainer
+var pattern_shelf: VBoxContainer
 var _tabs: Dictionary = {}
 var _contents: Dictionary = {}
 var _content: VBoxContainer
@@ -21,34 +23,25 @@ func _ready() -> void:
 	name = "GarageLiveryWorkbench"
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_theme_constant_override("separation",12)
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation",8)
-	add_child(header)
-	var title: Label = MenuStyle.label("CUSTOMISE",26)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title)
 	var reset := MenuStyle.button("",page._reset)
 	reset.name = "ResetLivery"
 	reset.icon = MenuIcon.texture("restart")
 	reset.expand_icon = true
 	reset.add_theme_constant_override("icon_max_width",21)
-	reset.custom_minimum_size = Vector2(48,48)
+	reset.custom_minimum_size = Vector2(52,52)
 	reset.tooltip_text = "Reset livery"
-	header.add_child(reset)
+	page._studio_header(self,reset)
 	var tabs := HBoxContainer.new()
-	tabs.add_theme_constant_override("separation",2)
+	tabs.add_theme_constant_override("separation",4)
 	add_child(tabs)
 	for entry: Array in [["livery","Patterns"],["colours","Colours"],["stickers","Stickers"]]:
 		var tab: Button = MenuStyle.tab(entry[1],page._set_customise_tab.bind(entry[0]),page._customise_tab == entry[0])
 		tab.name = "LiveryMenu_"+entry[0]
 		_tabs[entry[0]] = tab
-		tab.custom_minimum_size = Vector2(88,44)
+		tab.custom_minimum_size = Vector2(88,52)
 		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		tab.add_theme_font_size_override("font_size",20)
-		for state: String in ["normal","hover","pressed"]:
-			var style := MenuStyle.box(Color("213543") if page._customise_tab == entry[0] else Color("101f2b"),6)
-			style.set_corner_radius_all(7)
-			tab.add_theme_stylebox_override(state,style)
+		Studio.tab(tab,page._customise_tab == entry[0])
 		tabs.add_child(tab)
 	show_tab(page._customise_tab)
 
@@ -60,11 +53,7 @@ func show_tab(tab: String) -> void:
 	if not LiveryCatalog.has_roof(page.vehicle_id): page._sticker_surface = "hood"
 	for id: String in _tabs:
 		var button: Button = _tabs[id]
-		button.add_theme_color_override("font_color",MenuStyle.ACCENT if id==tab else MenuStyle.MUTED)
-		for state: String in ["normal","hover","pressed"]:
-			var style := MenuStyle.box(Color("213543") if id==tab else Color("101f2b"),6)
-			style.set_corner_radius_all(7)
-			button.add_theme_stylebox_override(state,style)
+		Studio.tab(button,id==tab)
 	for root: Control in _contents.values(): root.hide()
 	if is_instance_valid(_editing_content):
 		remove_child(_editing_content)
@@ -110,24 +99,24 @@ func _scroll() -> ScrollContainer:
 	return scroll
 
 func _patterns() -> void:
-	pattern_scroll = _scroll()
+	pattern_shelf = preload("res://ui/garage_cosmetic_shelf.gd").new()
+	_content.add_child(pattern_shelf)
+	pattern_shelf.equip.pressed.connect(page._equip_cosmetic_preview)
+	pattern_shelf.cancel.pressed.connect(page._cancel_cosmetic_preview)
+	pattern_scroll = pattern_shelf.scroll
 	pattern_scroll.name = "LiveryPatternGallery"
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation",10)
-	grid.add_theme_constant_override("v_separation",10)
-	pattern_scroll.add_child(grid)
+	var grid: GridContainer = pattern_shelf.cards
 	for index: int in range(page._preset_count()):
 		var plain_count: int = GaragePage.LIVERY_NAMES.size()
 		var title: String = GaragePage.LIVERY_NAMES[index] if index < plain_count else LiveryCatalog.patterns[index-plain_count].title
 		var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index < plain_count else LiveryCatalog.patterns[index-plain_count].id
 		var texture: Texture2D = load("res://assets/liveries/previews_v2/"+page.vehicle_id+"/"+key+".png")
-		var tile: LiveryTile = LiveryTile.make(title,texture,page._select_livery.bind(index))
+		var tile: LiveryTile = LiveryTile.make(title,texture,page._preview_livery.bind(index))
 		tile.name = "Pattern_"+key
 		tile.set_meta("livery_index",index)
 		grid.add_child(tile)
 		pattern_tiles[index] = tile
+		tile.focus_entered.connect(pattern_shelf.reveal.bind(tile),CONNECT_DEFERRED)
 	# Restore the selected design to view when reopening this tool.
 	var selected_index: int = page._preset_index()
 	if pattern_tiles.has(selected_index): pattern_scroll.ensure_control_visible.call_deferred(pattern_tiles[selected_index])
@@ -151,6 +140,7 @@ func _colours() -> void:
 		button.custom_minimum_size = Vector2(72,58)
 		button.colour = Color(str(page.draft.colors[slot]))
 		button.tooltip_text = slot.capitalize()
+		button.accessibility_name = slot.capitalize()+" paint"
 		button.pressed.connect(_select_slot.bind(slot))
 		button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
 		button.add_theme_stylebox_override("hover",MenuStyle.box(Color("213543"),0))
@@ -169,7 +159,8 @@ func _colours() -> void:
 	for pigment: String in PALETTE:
 		var chip := LiveryColourChip.new()
 		chip.colour = Color(pigment)
-		chip.custom_minimum_size = Vector2(50,50)
+		chip.accessibility_name = "Paint "+pigment
+		chip.custom_minimum_size = Vector2(50,52)
 		chip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		chip.add_theme_stylebox_override("normal",MenuStyle.box(Color("101f2b"),0))
 		chip.add_theme_stylebox_override("hover",MenuStyle.box(Color("213543"),0))
@@ -287,9 +278,20 @@ func refresh() -> void:
 	# A custom colour retains the design's selected card.
 	if page.draft.pattern != "plain": selected_index = GaragePage.LIVERY_NAMES.size()+LiveryCatalog.pattern_index(page.draft.pattern)
 	else: selected_index = 0 # Custom plain colours still belong to Midnight's design.
+	var preview_index: int = int(page._cosmetic_preview.get("index",selected_index))
 	for index: int in pattern_tiles:
-		pattern_tiles[index].set_selected(index == selected_index)
+		pattern_tiles[index].set_selected(index == preview_index)
 		page._shop_badge(pattern_tiles[index],"livery/"+str(page._preset_value(index).pattern))
+		var equipped: bool = index == selected_index
+		var badge: Label = pattern_tiles[index].get_node_or_null("CoinPrice")
+		if badge != null and equipped: badge.text = "Equipped"
+		if index == preview_index:
+			var tile: LiveryTile = pattern_tiles[index]
+			var item: String = "livery/"+str(page._preset_value(index).pattern)
+			var cost: String = "" if page.economy == null or page._cosmetic_preview.is_empty() else "Owned" if page.economy.owns(item) else "%d coins" % page.economy.price(item)
+			var photo: TextureRect = tile.find_child("LiveryModelPreview",true,false)
+			pattern_shelf.show_choice(photo.texture,tile.accessibility_name,"Equipped" if page._cosmetic_preview.is_empty() else "Previewing · Pattern",cost,index,pattern_tiles.size())
+			if not page._cosmetic_preview.is_empty() and page._cosmetic_preview.kind == "livery": pattern_shelf.reveal.call_deferred(tile)
 	for slot: String in slot_buttons:
 		var button: LiveryColourChip = slot_buttons[slot]
 		button.colour = Color(str(page.draft.colors[slot]))

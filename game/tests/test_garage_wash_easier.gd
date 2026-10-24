@@ -47,7 +47,7 @@ func run() -> void:
 		wear.slow_wash = wear.wash
 		effect.restore(wear)
 		check(inspector.is_clean(view),id+" washed body with light upper film is ready")
-		check(inspector.description(view) == "Clean enough for company",id+" tolerates film without claiming spotless")
+		check(inspector.description(view) == "Clean for most people.",id+" tolerates film without claiming spotless")
 		var retained: Dictionary = effect.snapshot()
 		inspector.description(view)
 		check(effect.snapshot() == retained,id+" readiness leaves the actual saved dirt and masks exact")

@@ -2,6 +2,21 @@ extends RefCounted
 ## Original closed microfiber mitt/cuff and a shallow lather surface; shared menu meshes.
 static var meshes: Dictionary = {}
 
+static func nozzle() -> ArrayMesh:
+	if meshes.has("nozzle"): return meshes.nozzle
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for section: Vector3 in [Vector3(0.033,0.12,0.04),Vector3(0.044,0.055,-0.055),Vector3(0.027,0.035,-0.10)]:
+		var barrel := CylinderMesh.new()
+		barrel.top_radius = section.x*0.85
+		barrel.bottom_radius = section.x
+		barrel.height = section.y
+		barrel.radial_segments = 20
+		_append(tool,barrel,Transform3D(Basis(Vector3.RIGHT,PI*0.5),Vector3(0,0,section.z)))
+	tool.index()
+	meshes.nozzle = tool.commit()
+	return meshes.nozzle
+
 static func mitt() -> ArrayMesh:
 	if meshes.has("mitt"): return meshes.mitt
 	var sphere := SphereMesh.new()

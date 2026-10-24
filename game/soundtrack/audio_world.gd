@@ -108,8 +108,10 @@ func apply_settings(settings: Dictionary) -> void:
 			_pending_record = next
 	if mode == "menu":
 		menu_target = 1.0 if music_enabled else 0.0
-		if music_enabled and output_enabled and not menu_player.playing and _pending_record == null:
-			menu_player.play()
+		if music_enabled and output_enabled and _pending_record == null:
+			# A paused player reports playing=false while retaining its decoder.
+			# Only a cold start needs play(); calling it on resume resets the cursor.
+			if not menu_player.has_stream_playback(): menu_player.play()
 			menu_player.stream_paused = app_suspended
 	for item: Array in [["Music", "music_volume"], ["Vehicle", "vehicle_volume"], ["Impacts", "vehicle_volume"], ["Interface", "interface_volume"]]:
 		var level: float = preference(settings, item[1])
@@ -132,9 +134,9 @@ func show_menu() -> void:
 	blocked = false
 	menu_target = 1.0 if music_enabled else 0.0
 	race_target = 0.0
-	menu_player.stream_paused = app_suspended
 	race_player.stream_paused = app_suspended
-	if output_enabled and music_enabled and not menu_player.playing: menu_player.play()
+	if output_enabled and music_enabled and not menu_player.has_stream_playback(): menu_player.play()
+	menu_player.stream_paused = app_suspended
 
 
 func begin_race(owner: Node, theme: String, state: VehicleState) -> void:

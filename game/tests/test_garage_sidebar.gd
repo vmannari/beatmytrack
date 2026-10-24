@@ -70,7 +70,7 @@ func click(button: Button, touch: bool = false) -> void:
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL","")
-	var evidence_root: String = "res://../docs/evidence/garage-sidebar-2026-10-19/final"
+	var evidence_root: String = "res://../docs/evidence/garage-workshop-navigation-2026-10-24/native"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
 	before = "--before" in OS.get_cmdline_user_args()
@@ -101,6 +101,9 @@ func run() -> void:
 		page._confirm_car()
 		await settle()
 		rail_bounds("selected "+str(dimensions))
+		# The owner's new reference promotes Appearance/Wash/Parts into the rail.
+		check(page.rail.get_child_count() == 7,"seven stable destinations including car selection")
+		check(not page._workshop_tabs.visible,"reference navigation leaves the car header unobstructed")
 		await capture("customise-"+str(dimensions.x))
 		var rects: Array = []
 		for button: Node in page.rail.get_children(): rects.append({"name":button.name,"rect":str(button.get_global_rect())})
@@ -112,10 +115,22 @@ func run() -> void:
 			await click(target,destination in ["records","news"])
 			await settle()
 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
+			check(page._preview_column.visible == (destination != "news"),"preview column follows destination "+destination)
+			if destination == "news":
+				check(page.tools_panel.global_position.y <= page.global_position.y+1,"News keeps its full-height layout")
 			for index: int in range(positions.size()):
 				check(page.rail.get_child(index).get_global_rect().is_equal_approx(positions[index]),"rail stays fixed across sections "+destination+" "+str(index)+" "+str(dimensions))
 			check(page.showroom.showroom_viewport == viewport and page.showroom.car == car,"retained car/viewport "+destination)
 			if dimensions.x == 1280: await capture(destination+"-1280")
+		check(not page._workshop_tabs.visible,"tabs hidden outside workshop")
+		await click(page.rail.get_node("GarageTuning"))
+		await settle()
+		check(page.section == "tuning","Parts opens directly after News")
+		check(not page._workshop_tabs.visible,"Parts uses the single navigation rail")
+		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
+		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
+		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
+		if dimensions.x == 1280: await capture("workshop-return-1280")
 		page._car_menu_open = false
 	page._show_section("cars")
 	await settle()

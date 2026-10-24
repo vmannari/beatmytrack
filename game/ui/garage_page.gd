@@ -12,12 +12,15 @@ signal news_share_requested(story: Dictionary)
 
 const Carousel = preload("res://ui/track_carousel.gd")
 const RailIcons = preload("res://ui/garage_mode_icons.gd")
+const StudioStyle = preload("res://ui/garage_studio_style.gd")
+const WashTool = preload("res://ui/garage_wash_tool.gd")
 const LIVERY_NAMES: Array[String] = ["Midnight"]
 const LIVERY_COLORS: Array[Array] = [["273b50", "ced7dc"]]
 const MENU_MOVE_SECONDS: float = 0.32
 
 var _layout: HBoxContainer
 var _preview_slot: Control
+var _preview_column: VBoxContainer
 var _rail_slot: Control
 var _tools_slot: Control
 var _actions_slot: Control
@@ -39,6 +42,7 @@ var _achievement_button: Button
 var _wash_achievement_pending: bool = false
 var _coin_balance: Label
 var _coin_status: Label
+var _studio_balance: Label
 var _purchase_dialog: ConfirmationDialog
 var showroom: CarShowroom
 var draft: Dictionary
@@ -54,6 +58,8 @@ var _wash_status_icon: TextureRect
 var _wash_status_state: Array = []
 var section: String = "cars"
 var _car_menu_open: bool = false
+var _workshop_section: String = "customise"
+var _workshop_tabs: HBoxContainer
 var gallery: ScrollContainer
 var gallery_slot: Control
 var gallery_content: Control
@@ -77,6 +83,11 @@ var kit_category: String = "hood"
 var kit_cards: GridContainer
 var kit_scroll: ScrollContainer
 var kit_categories: Dictionary = {}
+var kit_shelf: VBoxContainer
+var _cosmetic_preview: Dictionary = {}
+var _preview_serial: int = 0
+var _preview_hint: Label
+var _part_highlight := preload("res://ui/garage_part_highlight.gd").new()
 var _customise_tab: String = "livery"
 var _sticker_surface: String = "hood"
 var _sticker_board: StickerPlacement
@@ -110,10 +121,19 @@ func _ready() -> void:
 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main.add_theme_constant_override("separation", 8)
 	_layout.add_child(main)
+	_preview_column = VBoxContainer.new()
+	_preview_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_preview_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_preview_column.add_theme_constant_override("separation",8)
+	main.add_child(_preview_column)
+	_workshop_tabs = HBoxContainer.new()
+	_workshop_tabs.name = "GarageWorkshopTabs"
+	_workshop_tabs.add_theme_constant_override("separation",8)
+	_preview_column.add_child(_workshop_tabs)
 	_preview_slot = Control.new()
 	_preview_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_preview_slot.custom_minimum_size.y = 250
-	main.add_child(_preview_slot)
+	_preview_column.add_child(_preview_slot)
 	_tools_slot = Control.new()
 	main.add_child(_tools_slot)
 	# The live viewport never leaves this parent when layout slots move.
@@ -157,6 +177,16 @@ func _ready() -> void:
 	preview.add_child(heading)
 	heading.position = Vector2(24, 14)
 	heading.size = Vector2(520, 46)
+	_preview_hint = MenuStyle.label("",16)
+	_preview_hint.name = "GarageCosmeticPreviewHint"
+	_preview_hint.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	_preview_hint.hide()
+	preview.add_child(_preview_hint)
+	_preview_hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	_preview_hint.offset_left = 24
+	_preview_hint.offset_top = -88
+	_preview_hint.offset_right = 240
+	_preview_hint.offset_bottom = -64
 	_build_view_controls()
 	_build_carousel()
 	_actions_slot = Control.new()
@@ -165,7 +195,7 @@ func _ready() -> void:
 	_show_section("cars")
 	visibility_changed.connect(_visibility_changed)
 	if economy != null:
-		_coin_balance = MenuStyle.label("",22)
+		_coin_balance = MenuStyle.label("",18)
 		_coin_balance.name = "GarageCoinBalance"
 		_coin_balance.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		_coin_balance.add_theme_color_override("font_color",MenuStyle.ACCENT)
@@ -192,15 +222,19 @@ func _ready() -> void:
 func _shop_changed() -> void:
 	if economy == null or not is_instance_valid(_coin_balance): return
 	_coin_balance.text = "%d coins" % economy.balance() if economy.authenticated() else "Sign in to earn coins"
+	_coin_balance.add_theme_color_override("font_color",MenuStyle.ACCENT if economy.authenticated() else MenuStyle.MUTED)
 	_coin_balance.tooltip_text = "Account coins" if economy.authenticated() else "Guests do not earn coins."
 	_coin_status.text = economy.status
 	_coin_status.tooltip_text = economy.status
+	for balance_label: Node in find_children("CustomisationBalance","Label",true,false): balance_label.text = _coin_balance.text if economy.authenticated() else "Guest"
 	if is_instance_valid(_purchase_dialog) and _purchase_dialog.get_meta("scope","") != economy.scope: _purchase_dialog.hide()
 	if is_instance_valid(_retained_livery): _retained_livery.refresh()
 	if is_instance_valid(kit_cards) and section == "tuning":
 		for card: Node in kit_cards.get_children():
 			var id: String = "kit/compact/"+kit_category+"/"+str(card.name).trim_prefix("KitOption_")
 			_shop_badge(card,id)
+		_refresh_kit_preview()
+	if not _cosmetic_preview.is_empty() and str(_cosmetic_preview.scope) != str(economy.scope): _cancel_cosmetic_preview()
 
 func _shop_badge(tile: Control, id: String) -> void:
 	if economy == null: return
@@ -212,6 +246,14 @@ func _shop_badge(tile: Control, id: String) -> void:
 		badge.add_theme_stylebox_override("normal",MenuStyle.box(Color("0b1823"),3))
 		badge.position = Vector2(7,7)
 		tile.add_child(badge)
+	if tile is CompactKitThumbnail:
+		badge.remove_theme_stylebox_override("normal")
+		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		badge.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+		badge.offset_left = 4
+		badge.offset_right = -4
+		badge.offset_top = -25
+		badge.offset_bottom = -5
 	badge.text = economy.caption(id)
 	badge.add_theme_color_override("font_color",MenuStyle.MUTED if economy.owns(id) else MenuStyle.ACCENT)
 
@@ -221,6 +263,7 @@ func _require_owned(id: String, title: String, apply: Callable) -> bool:
 	var expected_car: String = vehicle_id
 	var expected_section: String = section
 	var expected_scope: String = economy.scope
+	var expected_preview: int = _preview_serial
 	var price: int = economy.price(id)
 	var dialog := ConfirmationDialog.new()
 	_purchase_dialog = dialog
@@ -242,7 +285,7 @@ func _require_owned(id: String, title: String, apply: Callable) -> bool:
 			account_requested.emit()
 			return
 		var purchased: bool = await economy.purchase(id)
-		if purchased and is_inside_tree() and is_visible_in_tree() and expected_car == vehicle_id and expected_section == section and expected_scope == economy.scope: apply.call())
+		if purchased and is_inside_tree() and is_visible_in_tree() and expected_car == vehicle_id and expected_section == section and expected_scope == economy.scope and expected_preview == _preview_serial: apply.call())
 	dialog.visibility_changed.connect(func() -> void:
 		if dialog.visible: return
 		if _purchase_dialog == dialog: _purchase_dialog = null
@@ -268,6 +311,25 @@ func _new_menu_panels() -> void:
 	for panel: Control in [rail,tools_panel,actions]:
 		panel.minimum_size_changed.connect(_sync_menu_minimums)
 
+func _studio_header(workbench: Control, reset: Button) -> void:
+	StudioStyle.header(workbench,"CUSTOMISE",reset)
+	if economy == null: return
+	var row: HBoxContainer = workbench.get_child(0)
+	var wallet := PanelContainer.new()
+	wallet.name = "CustomisationWallet"
+	var frame: StyleBoxFlat = MenuStyle.box(Color("101e27"),8)
+	frame.border_color = StudioStyle.EDGE
+	frame.set_border_width_all(1)
+	wallet.add_theme_stylebox_override("panel",frame)
+	row.add_child(wallet)
+	row.move_child(wallet,1)
+	_studio_balance = MenuStyle.label("%d coins" % economy.balance() if economy.authenticated() else "Guest",18)
+	wallet.tooltip_text = "Account coins" if economy.authenticated() else "Sign in to earn coins"
+	_studio_balance.name = "CustomisationBalance"
+	_studio_balance.add_theme_font_override("font",MenuStyle.DISPLAY)
+	_studio_balance.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	wallet.add_child(_studio_balance)
+
 func _sync_menu_minimums() -> void:
 	_rail_slot.custom_minimum_size = rail.get_combined_minimum_size()
 	_tools_slot.custom_minimum_size = tools_panel.get_combined_minimum_size() if tools_panel.visible else Vector2.ZERO
@@ -278,6 +340,7 @@ func _slot_rect(slot: Control) -> Rect2:
 	return Rect2(get_global_transform().affine_inverse() * slot.global_position,slot.size)
 
 func _set_panel_input(panel: Node, enabled: bool) -> void:
+	if panel.get_script() == Carousel: panel.set_process_input(enabled)
 	if panel is Control:
 		if enabled and panel.has_meta("garage_motion_mouse"):
 			panel.mouse_filter = panel.get_meta("garage_motion_mouse")
@@ -363,6 +426,23 @@ func _place_menu_panel(panel: Control, destination: Rect2, direction: String) ->
 
 func _present_menu_layout() -> void:
 	if size.x <= 0 or main.size.x <= 0: return
+	if section == "records":
+		var record_width: float = clampf(size.x*0.28,304.0,432.0)
+		if tools_panel.custom_minimum_size.x != record_width:
+			tools_panel.custom_minimum_size.x = record_width
+			_sync_menu_minimums()
+	if section in ["customise","tuning"]:
+		var studio_width: float = clampf(size.x*0.35,344.0,600.0)
+		if tools_panel.custom_minimum_size.x != studio_width:
+			tools_panel.custom_minimum_size.x = studio_width
+			_sync_menu_minimums()
+		var compact_studio: bool = get_viewport_rect().size.y < 650
+		if not tools_panel.has_meta("compact_studio") or bool(tools_panel.get_meta("compact_studio",false)) != compact_studio:
+			tools_panel.set_meta("compact_studio",compact_studio)
+			tools_panel.add_theme_stylebox_override("panel",StudioStyle.panel(8 if compact_studio else 16))
+			var workbench: Control = tools.get_node_or_null("GarageTuningWorkbench")
+			if workbench != null: workbench.add_theme_constant_override("separation",4 if compact_studio else 12)
+			if is_instance_valid(livery_menu): livery_menu.add_theme_constant_override("separation",4 if compact_studio else 12)
 	# Reserve the carousel and action row on short landscape windows too.
 	# The parent may already exceed its viewport because of our minimum height.
 	var available_height: float = get_viewport_rect().end.y-global_position.y-16.0
@@ -392,12 +472,12 @@ func _build_rail() -> void:
 	for child: Node in rail.get_children():
 		rail.remove_child(child)
 		child.queue_free()
-	var destinations: Array = [["cars", "Select car"], ["records", "Record player"], ["trophies", "Trophy wall"]] if not _car_menu_open else [["customise", "Customise"], ["care", "Care"], ["tuning", "Tuning"], ["records", "Record player"], ["trophies", "Trophy wall"]]
+	var destinations: Array = [["cars", "Select car"], ["customise", "Appearance"], ["care", "Wash"], ["tuning", "Parts"], ["records", "Record player"], ["trophies", "Trophy wall"]]
 	destinations.append(["news","News"])
 	rail.add_theme_constant_override("separation",8 if destinations.size() > 5 else 12)
 	for entry: Array in destinations:
 		var destination: String = entry[0]
-		var active: bool = destination == section
+		var active: bool = destination == section or (destination == "workshop" and section in ["customise","tuning","care"])
 		var button := MenuStyle.button("", _show_section.bind(destination), active)
 		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
 		button.icon = RailIcons.texture(destination)
@@ -446,7 +526,7 @@ func _create_showroom() -> void:
 	showroom.garage_mode = true
 	showroom.interaction_inset_top = 68
 	showroom.interaction_inset_bottom = 58
-	showroom.framing_scale = 0.96
+	showroom.framing_scale = 0.84
 	showroom.livery = draft
 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
 	showroom.customisation = kit_draft
@@ -468,8 +548,21 @@ func _build_view_controls() -> void:
 	_wash_status_panel = PanelContainer.new()
 	_wash_status_panel.name = "GarageWashStatus"
 	_wash_status_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_wash_status_panel.add_theme_stylebox_override("panel",MenuStyle.card(10))
+	_wash_status_panel.add_theme_stylebox_override("panel",StudioStyle.panel(10))
 	preview.add_child(_wash_status_panel)
+	var wash_tools := HBoxContainer.new()
+	wash_tools.name = "GarageWashTools"
+	wash_tools.position = Vector2(24,124)
+	wash_tools.add_theme_constant_override("separation",10)
+	preview.add_child(wash_tools)
+	var wash_group := ButtonGroup.new()
+	for tool: String in ["mitt", "hose"]:
+		var choice: Button = WashTool.make(tool,_select_wash_tool.bind(tool))
+		choice.button_group = wash_group
+		choice.sync_selection(showroom.wash_tool == tool)
+		choice.custom_minimum_size = Vector2(144,176)
+		wash_tools.add_child(choice)
+	preview.resized.connect(_layout_wash_tools)
 	_wash_status_panel.position = Vector2(24,72)
 	_wash_status_panel.size = Vector2(320,44)
 	var status_row := HBoxContainer.new()
@@ -501,14 +594,24 @@ func _build_view_controls() -> void:
 		button.name = str(entry[0])
 		button.name = str(entry[0])
 		button.tooltip_text = str(entry[2])
-		button.custom_minimum_size = Vector2(48, 48)
+		button.custom_minimum_size = Vector2(52,52)
+		StudioStyle.tile(button,false,8)
 		if entry[0] == "GarageTopView": button.add_theme_font_size_override("font_size",18)
 		button.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
 		if entry[0] == "GarageResetView": button.icon = MenuIcon.texture("restart")
 		row.add_child(button)
 
+func _layout_wash_tools() -> void:
+	var dock: HBoxContainer = preview.get_node("GarageWashTools")
+	var compact: bool = preview.size.y < 410 or preview.size.x < 900
+	for choice: Button in dock.get_children():
+		choice.custom_minimum_size = Vector2(112,136) if compact else Vector2(144,176)
+	dock.size = dock.get_combined_minimum_size()
+	dock.position = Vector2(24,124)
+
 func _update_wash_status() -> void:
 	_wash_status_panel.visible = section == "care"
+	preview.get_node("GarageWashTools").visible = section == "care"
 	if section != "care": return
 	var effect: VehicleWeathering = showroom.weathering
 	var state: Array = [showroom.car.get_instance_id(),showroom.customisation,effect.bounds,effect.wash_image.get_instance_id(),effect.slow_wash_image.get_instance_id(),effect.wash_mask_uploads,effect.dirt_amount,effect.snow_amount,effect.slow_dirt_amount,effect.slow_snow_amount]
@@ -700,6 +803,7 @@ func refresh_cosmetics() -> void:
 				(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
 
 func _show_section(next: String) -> void:
+	if next == "workshop": next = _workshop_section
 	if next == "car": next = "customise"
 	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
 	_finish_tools()
@@ -710,24 +814,40 @@ func _show_section(next: String) -> void:
 	_prepare_menu_move()
 	_set_customise_layout(next in ["customise","tuning","records"])
 	section = next
+	if next in ["customise","tuning","care"]: _workshop_section = next
+	_workshop_tabs.hide()
+	for child: Node in _workshop_tabs.get_children():
+		_workshop_tabs.remove_child(child)
+		child.queue_free()
+	for entry: Array in [["customise","Appearance"],["tuning","Parts"],["care","Wash"]]:
+		var tab := MenuStyle.tab(str(entry[1]),_show_section.bind(str(entry[0])),next == entry[0])
+		tab.name = "Workshop"+str(entry[1])
+		tab.custom_minimum_size.y = 48
+		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_workshop_tabs.add_child(tab)
 	_update_wash_status()
 	# The newspaper takes the desk. Keep the live car attached and dormant so
 	# leaving News restores the same car, camera, condition and reflection rig.
 	preview.visible = next not in ["news","achievements"]
+	_preview_column.visible = next not in ["news","achievements"]
 	_preview_slot.visible = next not in ["news","achievements"]
-	_actions_slot.visible = next not in ["news","achievements"]
-	actions.visible = next not in ["news","achievements"]
+	_actions_slot.visible = next not in ["news","achievements","customise","tuning"]
+	actions.visible = _actions_slot.visible
+	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["customise","tuning"]
+	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["customise","tuning"]
 	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
 	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
 	if next == "news": tools_panel.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
 	elif next == "achievements": tools_panel.add_theme_stylebox_override("panel",MenuStyle.card(8))
+	elif next in ["customise","tuning"]: tools_panel.add_theme_stylebox_override("panel",StudioStyle.panel(16))
+	elif next == "records": tools_panel.add_theme_stylebox_override("panel",StudioStyle.panel(12))
 	if next == "cars": _car_menu_open = false
 	elif next not in ["trophies","records","news","achievements"]: _car_menu_open = true
 	showroom.set_trophy_view(next == "trophies")
 	showroom.set_record_view(next == "records")
 	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
 	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"]
-	preview.get_node("GarageViewControls/GarageTopView").visible = next in ["customise","tuning"]
+	preview.get_node("GarageViewControls/GarageTopView").visible = next in ["customise","tuning","care"]
 	pickers.clear()
 	wash_button = null
 	_presets = null
@@ -758,11 +878,12 @@ func _show_section(next: String) -> void:
 		_start_menu_move()
 		return
 	if section not in ["customise","tuning","records","news","achievements"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
-	var back := MenuStyle.button("Trophy Room" if section == "achievements" else "Back to cars", _show_section.bind("trophies" if section == "achievements" else "cars"))
-	back.name = "GarageBack"
-	back.custom_minimum_size = Vector2(240, 60)
-	actions.add_child(back)
-	if section in ["customise","tuning","care"]: _add_test_drive_action()
+	if section not in ["customise","tuning"]:
+		var back := MenuStyle.button("Trophy Room" if section == "achievements" else "Back to cars", _show_section.bind("trophies" if section == "achievements" else "cars"))
+		back.name = "GarageBack"
+		back.custom_minimum_size = Vector2(240, 60)
+		actions.add_child(back)
+	if section == "care": _add_test_drive_action()
 	if _customisation_locked:
 		_build_wash_requirement()
 	elif section == "customise":
@@ -869,15 +990,15 @@ func _set_customise_layout(active: bool) -> void:
 		customise_layout.add_theme_constant_override("separation",16)
 		main.add_child(customise_layout)
 		main.move_child(customise_layout,0)
-		_preview_slot.reparent(customise_layout)
+		_preview_column.reparent(customise_layout)
 		_tools_slot.reparent(customise_layout)
 		_preview_slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_tools_slot.size_flags_horizontal = Control.SIZE_FILL
 		_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		tools.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	elif not active and is_instance_valid(customise_layout):
-		_preview_slot.reparent(main)
-		main.move_child(_preview_slot,0)
+		_preview_column.reparent(main)
+		main.move_child(_preview_column,0)
 		_tools_slot.reparent(main)
 		main.move_child(_tools_slot,1)
 		_tools_slot.size_flags_vertical = Control.SIZE_FILL
@@ -894,13 +1015,8 @@ func _build_tuning() -> void:
 	workbench.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	workbench.add_theme_constant_override("separation",12)
 	tools.add_child(workbench)
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation",8)
-	workbench.add_child(header)
-	var title: Label = MenuStyle.label("TUNING",26)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title)
 	if vehicle_id != "compact":
+		workbench.add_child(MenuStyle.label("TUNING",30))
 		var unavailable: Label = MenuStyle.label("Kits available for the Compact",18,true)
 		unavailable.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		workbench.add_child(unavailable)
@@ -910,52 +1026,42 @@ func _build_tuning() -> void:
 	reset.icon = MenuIcon.texture("restart")
 	reset.expand_icon = true
 	reset.add_theme_constant_override("icon_max_width",21)
-	reset.custom_minimum_size = Vector2(48,48)
+	reset.custom_minimum_size = Vector2(52,52)
 	reset.tooltip_text = "Reset kits"
-	header.add_child(reset)
+	_studio_header(workbench,reset)
 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
 	var categories := GridContainer.new()
 	categories.name = "CompactKitCategories"
-	categories.columns = 2
-	categories.add_theme_constant_override("h_separation",2)
-	categories.add_theme_constant_override("v_separation",2)
+	categories.columns = 4
+	categories.add_theme_constant_override("h_separation",0)
+	categories.add_theme_constant_override("v_separation",4)
 	workbench.add_child(categories)
 	for category: String in VehicleCustomisation.CATEGORIES:
 		var tab := MenuStyle.tab(str(VehicleCustomisation.LABELS[category]),_select_kit_category.bind(category),category==kit_category)
 		tab.name = "KitCategory_"+category
-		tab.custom_minimum_size = Vector2(112,48)
+		tab.custom_minimum_size = Vector2(64,48)
 		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		tab.add_theme_font_size_override("font_size",20)
+		tab.add_theme_font_size_override("font_size",19)
 		_style_kit_category(tab,category==kit_category)
 		categories.add_child(tab)
 		kit_categories[category] = tab
-	kit_scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+	kit_shelf = preload("res://ui/garage_cosmetic_shelf.gd").new()
+	workbench.add_child(kit_shelf)
+	kit_shelf.equip.pressed.connect(_equip_cosmetic_preview)
+	kit_shelf.cancel.pressed.connect(_cancel_cosmetic_preview)
+	kit_scroll = kit_shelf.scroll
 	kit_scroll.name = "CompactKitScroll"
-	kit_scroll.custom_minimum_size.y = 102
-	kit_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	kit_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	kit_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	kit_scroll.follow_focus = true
-	workbench.add_child(kit_scroll)
-	kit_cards = GridContainer.new()
+	kit_scroll.resized.connect(_reveal_selected_kit,CONNECT_DEFERRED)
+	kit_cards = kit_shelf.cards
 	kit_cards.name = "CompactKitCards"
-	kit_cards.columns = 2
-	kit_cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	kit_cards.add_theme_constant_override("h_separation",10)
-	kit_cards.add_theme_constant_override("v_separation",10)
-	kit_scroll.add_child(kit_cards)
 	_build_kit_cards()
 
 func _style_kit_category(tab: Button, selected: bool) -> void:
-	for state: String in ["font_color","font_hover_color","font_pressed_color","font_focus_color","font_hover_pressed_color"]:
-		tab.add_theme_color_override(state,MenuStyle.ACCENT if selected else MenuStyle.MUTED)
-	for state: String in ["normal","hover","pressed"]:
-		var style := MenuStyle.box(Color("213543") if selected else Color("101f2b"),6)
-		style.set_corner_radius_all(7)
-		tab.add_theme_stylebox_override(state,style)
+	StudioStyle.tab(tab,selected)
 
 func _select_kit_category(category: String) -> void:
 	if category not in VehicleCustomisation.CATEGORIES or section != "tuning": return
+	_cancel_cosmetic_preview()
 	kit_category = category
 	for id: String in kit_categories:
 		var tab: Button = kit_categories[id]
@@ -967,10 +1073,12 @@ func _build_kit_cards() -> void:
 		kit_cards.remove_child(child)
 		child.queue_free()
 	for option: Array in VehicleCustomisation.OPTIONS[kit_category]:
-		var card := CompactKitThumbnail.make(kit_category,option,kit_draft[kit_category]==option[0],_select_kit.bind(kit_category,str(option[0])))
+		var card := CompactKitThumbnail.make(kit_category,option,kit_draft[kit_category]==option[0],_preview_kit.bind(kit_category,str(option[0])))
 		card.focus_entered.connect(_reveal_focused_kit.bind(card.get_instance_id()),CONNECT_DEFERRED)
 		kit_cards.add_child(card)
 		_shop_badge(card,"kit/compact/"+kit_category+"/"+str(option[0]))
+	_refresh_kit_preview()
+	kit_shelf._layout_cards.call_deferred()
 	_reveal_selected_kit.call_deferred()
 
 func _reveal_focused_kit(instance: int) -> void:
@@ -981,7 +1089,7 @@ func _reveal_focused_kit(instance: int) -> void:
 func _reveal_selected_kit() -> void:
 	if section!="tuning" or not is_instance_valid(kit_scroll): return
 	for card: CompactKitThumbnail in kit_cards.get_children():
-		if card.name=="KitOption_"+str(kit_draft[kit_category]):
+		if card.name=="KitOption_"+str(_cosmetic_preview.get("option",kit_draft[kit_category])):
 			kit_scroll.ensure_control_visible(card)
 			return
 
@@ -997,8 +1105,79 @@ func _select_kit(category: String, option: String) -> void:
 	if not _require_owned("kit/compact/"+category+"/"+option,title,_select_kit.bind(category,option)): return
 	_save_kits(next)
 
+func _preview_kit(category: String, option: String) -> void:
+	if section != "tuning" or vehicle_id != "compact" or category != kit_category: return
+	if not _require_clean_car(): return
+	var value: Dictionary = kit_draft.duplicate(true)
+	value[category] = option
+	if not VehicleCustomisation.valid(value): return
+	_cancel_cosmetic_preview(false)
+	if value != kit_draft:
+		_cosmetic_preview = {"kind":"kit","category":category,"option":option,"scope":"" if economy == null else economy.scope}
+		_preview_hint.text = "PREVIEW · "+str(VehicleCustomisation.LABELS[category])
+	_preview_hint.visible = not _cosmetic_preview.is_empty()
+	showroom.apply_customisation(value)
+	_condition_presented = showroom.weathering.snapshot()
+	_part_highlight.show_part(showroom.car,category)
+	showroom.invalidate_render()
+	_refresh_kit_preview()
+	_reveal_selected_kit.call_deferred()
+
+func _refresh_kit_preview() -> void:
+	if section != "tuning" or vehicle_id != "compact" or not is_instance_valid(kit_shelf): return
+	var selected: String = str(_cosmetic_preview.get("option",kit_draft[kit_category]))
+	for index: int in range(kit_cards.get_child_count()):
+		var card := kit_cards.get_child(index) as CompactKitThumbnail
+		var option: Array = VehicleCustomisation.OPTIONS[kit_category][index]
+		card.set_selected(str(option[0]) == selected)
+		var item: String = "kit/compact/"+kit_category+"/"+str(option[0])
+		var equipped: bool = str(option[0]) == str(kit_draft[kit_category])
+		_shop_badge(card,item)
+		if is_instance_valid(card.get_node_or_null("CoinPrice")) and equipped: card.get_node("CoinPrice").text = "Equipped"
+		if str(option[0]) == selected:
+			var cost: String = "" if economy == null or equipped else "Owned" if economy.owns(item) else "%d coins" % economy.price(item)
+			kit_shelf.show_choice(card.image.texture,str(option[1]),"Equipped" if equipped else "Previewing · "+str(VehicleCustomisation.LABELS[kit_category]),cost,index,kit_cards.get_child_count())
+	kit_shelf.present_part(showroom,kit_category)
+
+func _cancel_cosmetic_preview(refresh: bool = true) -> void:
+	_preview_serial += 1
+	if is_instance_valid(_preview_hint): _preview_hint.hide()
+	_part_highlight.clear()
+	if not _cosmetic_preview.is_empty():
+		var kind: String = str(_cosmetic_preview.kind)
+		_cosmetic_preview.clear()
+		if showroom.is_inside_tree():
+			if kind == "kit": showroom.apply_customisation(kit_draft)
+			else: showroom.apply_livery(draft)
+		_condition_presented = showroom.weathering.snapshot()
+	if is_instance_valid(showroom): showroom.invalidate_render()
+	if refresh:
+		_refresh_kit_preview()
+		if is_instance_valid(livery_menu): livery_menu.refresh()
+
+func _equip_cosmetic_preview() -> void:
+	if _cosmetic_preview.is_empty() or not is_visible_in_tree(): return
+	if not _require_clean_car(): return
+	var value: Dictionary = _cosmetic_preview.duplicate(true)
+	var serial: int = _preview_serial
+	var id: String
+	var title: String
+	if value.kind == "kit":
+		id = "kit/compact/"+str(value.category)+"/"+str(value.option)
+		title = kit_shelf.title.text
+	else:
+		id = "livery/"+str(_preset_value(int(value.index)).pattern)
+		title = livery_menu.pattern_shelf.title.text
+	var commit := func() -> void:
+		if serial != _preview_serial or _cosmetic_preview != value: return
+		_cancel_cosmetic_preview(false)
+		if value.kind == "kit": _select_kit(str(value.category),str(value.option))
+		else: _select_livery(int(value.index))
+	if _require_owned(id,title,commit): commit.call()
+
 func _save_kits(value: Dictionary) -> void:
 	if not _require_clean_car(): return
+	_cancel_cosmetic_preview(false)
 	var collection: Dictionary = records.settings.get("vehicle_customisation",{}).duplicate(true)
 	collection[vehicle_id] = value.duplicate(true)
 	records.settings.vehicle_customisation = collection
@@ -1010,6 +1189,7 @@ func _save_kits(value: Dictionary) -> void:
 	for index: int in range(kit_cards.get_child_count()):
 		(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category]==VehicleCustomisation.OPTIONS[kit_category][index][0])
 	_reveal_selected_kit.call_deferred()
+	_refresh_kit_preview()
 	if result != OK: save_failed.emit()
 
 func _reset_kits() -> void:
@@ -1064,6 +1244,7 @@ func _select_livery(index: int) -> void:
 	var value: Dictionary = _preset_value(index)
 	var title: String = LIVERY_NAMES[index] if index < LIVERY_NAMES.size() else str(LiveryCatalog.patterns[index-LIVERY_NAMES.size()].title)
 	if not _require_owned("livery/"+str(value.pattern),title,_select_livery.bind(index)): return
+	_cancel_cosmetic_preview(false)
 	var stickers: Dictionary = draft.stickers.duplicate(true)
 	draft = _preset_value(index)
 	draft.stickers = stickers
@@ -1071,6 +1252,19 @@ func _select_livery(index: int) -> void:
 	_update_pickers()
 	_save()
 	if _customise_tab == "livery": _refresh_pattern_selection()
+
+func _preview_livery(index: int) -> void:
+	if section != "customise" or _customise_tab != "livery" or index < 0 or index >= _preset_count(): return
+	if not _require_clean_car(): return
+	_cancel_cosmetic_preview(false)
+	var value: Dictionary = _preset_value(index)
+	value.stickers = draft.stickers.duplicate(true)
+	if value != draft:
+		_cosmetic_preview = {"kind":"livery","index":index,"scope":"" if economy == null else economy.scope}
+		_preview_hint.text = "PREVIEW · Pattern"
+	_preview_hint.visible = not _cosmetic_preview.is_empty()
+	showroom.apply_livery(value)
+	livery_menu.refresh()
 
 func _refresh_pattern_selection() -> void:
 	if is_instance_valid(livery_menu): livery_menu.refresh()
@@ -1182,6 +1376,7 @@ func _preview_sticker() -> void:
 
 func _finish_tools() -> void:
 	if showroom == null: return
+	_cancel_cosmetic_preview(false)
 	if is_instance_valid(records_menu): records_menu.finish()
 	if draft != _livery_saved: _save()
 	showroom.set_wash_mode(false)
@@ -1263,8 +1458,19 @@ func _toggle_wash() -> void:
 	if not showroom.wash_mode: _wash_achievement_pending = not _cleanliness.is_clean(showroom)
 	showroom.set_wash_mode(not showroom.wash_mode)
 	wash_button.text = "Done" if showroom.wash_mode else "Wash"
-	view_hint.text = "Drag to wash / Two fingers to turn" if showroom.wash_mode else "Drag to turn"
+	_update_wash_hint()
 	if not showroom.wash_mode: _save_condition()
+
+func _select_wash_tool(tool: String) -> void:
+	if section != "care": return
+	showroom.set_wash_tool(tool)
+	for choice: Button in preview.get_node("GarageWashTools").get_children():
+		choice.sync_selection(choice.name == ("GarageWashHose" if tool == "hose" else "GarageWashMitt"))
+	if not showroom.wash_mode: _toggle_wash()
+	_update_wash_hint()
+
+func _update_wash_hint() -> void:
+	view_hint.text = ("Hold to rinse / Two fingers to turn" if showroom.wash_tool == "hose" else "Drag to wash / Two fingers to turn") if showroom.wash_mode else "Drag to turn"
 
 func _save_condition() -> void:
 	if showroom == null: return

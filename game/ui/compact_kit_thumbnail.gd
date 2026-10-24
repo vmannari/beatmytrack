@@ -12,7 +12,8 @@ var cache_key: String
 static func make(category: String, option: Array, chosen: bool, action: Callable) -> CompactKitThumbnail:
 	var button := CompactKitThumbnail.new()
 	button.name = "KitOption_"+str(option[0])
-	button.custom_minimum_size = Vector2(128,102)
+	button.custom_minimum_size = Vector2(128,122)
+	button.accessibility_name = str(option[1])
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	button.tooltip_text = str(option[1])
 	button.pressed.connect(action)
@@ -27,7 +28,8 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 			if images.size()>=CACHE_LIMIT: images.erase(images.keys()[0])
 			images[button.cache_key] = button.image.texture
 	button.image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	button.image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	button.image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	button.image.clip_contents = true
 	button.image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	button.image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(button.image)
@@ -35,22 +37,23 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 	button.image.offset_left = 4
 	button.image.offset_right = -4
 	button.image.offset_top = 4
-	button.image.offset_bottom = -30
-	var label := MenuStyle.label(str(option[1]),16)
+	button.image.offset_bottom = -48
+	var label := MenuStyle.label(str(option[1]),15)
+	label.add_theme_font_override("font",MenuStyle.DISPLAY)
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	button.add_child(label)
 	label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	label.offset_top = -28
-	label.offset_bottom = -4
+	label.offset_left = 3
+	label.offset_right = -3
+	label.offset_top = -48
+	label.offset_bottom = -25
 	if button.image.texture == null: button._build_preview(category,str(option[0]))
 	return button
 
 func set_selected(chosen: bool) -> void:
-	var style: StyleBoxFlat = MenuStyle.card(4)
-	style.border_color = MenuStyle.ACCENT if chosen else MenuStyle.BORDER
-	style.set_border_width_all(2 if chosen else 1)
-	add_theme_stylebox_override("normal",style)
+	preload("res://ui/garage_studio_style.gd").tile(self,chosen)
 	add_theme_color_override("font_color",MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
 
 func _ready() -> void:

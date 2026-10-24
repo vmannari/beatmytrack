@@ -37,6 +37,8 @@ func _run() -> void:
 	var renderer: String = RenderingServer.get_current_rendering_method()
 	if DisplayServer.get_name() == "headless": renderer = "headless"
 	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
 	DirAccess.make_dir_recursive_absolute(output)
 	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
@@ -168,7 +170,7 @@ func _run() -> void:
 		page._process(0.0)
 		check(not page._customisation_locked,id+" faint layers no longer add up to a false lock")
 		page._show_section("care")
-		check(page._wash_status.text == "Clean enough for company",id+" care indication agrees with faint-film customisation")
+		check(page._wash_status.text == "Clean for most people.",id+" care indication agrees with faint-film customisation")
 		var faint_condition: Dictionary = page.showroom.weathering.snapshot()
 		page._show_section("customise")
 		page._preview_color(Color("49798a"),"body")
@@ -283,7 +285,7 @@ func _run() -> void:
 			check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"graded status fits preview "+str(dimensions))
 			check(page._wash_status.size.x >= page._wash_status.get_minimum_size().x,"graded label is not clipped")
 			await capture(label.to_snake_case().replace(".","")+"-"+str(dimensions.x))
-	check(labels == ["Certified mud magnet","Grubby but proud","Needs a rinse","Clean enough for company","Shiny. For now."],"all five humorous grades appear in washing order")
+	check(labels == ["There is a car under there. Maybe.","I can tell the color now","OK in the dark","Clean for most people.","Shiny. For now."],"all five humorous grades appear in washing order")
 	page.queue_free()
 	await process_frame
 	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":renderer,"phone_test":false}

@@ -8,33 +8,46 @@ const CLEAN_RESIDUE: float = 0.20
 # missed area. Keep the mean limit so broadly dirty cars still need a wash.
 const MISSED_PATCH_RESIDUE: float = 0.30
 const MAX_DIRTY_FRACTION: float = 0.25
+const LOCAL_PATCH_RESIDUE: float = 0.25
+# Negligible film can remain in interpolated wash cells after the car looks
+# clean. A visible patch still prevents the spotless grade, even on one side.
+const SHINY_RESIDUE: float = 0.04
+const VISIBLE_RESIDUE: float = 0.08
+const MAX_VISIBLE_FRACTION: float = 0.02
 # The finish's broad slow film has 0.42 to 0.62 opacity before its coverage mask.
 const SLOW_FILM_WEIGHT: float = 0.62
 const SAMPLES_PER_AXIS: int = VehicleCondition.GRID
+const EXTERIOR_DIRECTIONS: Array[Vector3] = [Vector3.DOWN,Vector3.LEFT,Vector3.RIGHT,Vector3.FORWARD,Vector3.BACK]
 var points := PackedVector3Array()
 var _scopes := PackedVector3Array()
+var _regions := PackedInt32Array()
 var _geometry: Array = []
 var _state: Array = []
 var _clean: bool = true
 var _mean_residue: float = 0.0
 var _dirty_fraction: float = 0.0
+var _shiny: bool = true
 
 func description(view: CarShowroom) -> String:
 	if is_clean(view):
-		return "Shiny. For now." if _mean_residue <= 0.025 and _dirty_fraction <= 0.01 else "Clean enough for company"
-	if _mean_residue >= 0.50: return "Certified mud magnet"
-	if _mean_residue >= 0.25: return "Grubby but proud"
-	return "Needs a rinse"
+		return "Shiny. For now." if _shiny else "Clean for most people."
+	if _mean_residue >= 0.50: return "There is a car under there. Maybe."
+	if _mean_residue >= 0.25: return "I can tell the color now"
+	return "OK in the dark"
 
 func is_clean(view: CarShowroom) -> bool:
 	var effect: VehicleWeathering = view.weathering
 	var primary: float = maxf(effect.dirt_amount,effect.snow_amount)
 	var slow: float = maxf(effect.slow_dirt_amount * SLOW_FILM_WEIGHT,effect.slow_snow_amount * 0.38)
+	# Spotless uses the film's typical rendered opacity, rather than treating
+	# every sample as the darkest possible mottling (0.42 + 0.20).
+	var visible_slow: float = maxf(effect.slow_dirt_amount * 0.52,effect.slow_snow_amount * 0.38)
 	if maxf(primary,slow) == 0.0:
 		_state.clear()
 		_clean = true
 		_mean_residue = maxf(primary,slow)
 		_dirty_fraction = 0.0
+		_shiny = true
 		return true
 	var wash: PackedByteArray = effect.wash_image.get_data()
 	var slow_wash: PackedByteArray = effect.slow_wash_image.get_data()
@@ -48,14 +61,26 @@ func is_clean(view: CarShowroom) -> bool:
 	var total_residue: float = 0.0
 	var total_weight: float = 0.0
 	var missed_weight: float = 0.0
+	# Separate road spray, upper snow and slow film in every reachable view.
+	# A fully washed film footprint must not dilute a still-dirty door below it.
+	var region_weight := PackedFloat64Array()
+	var region_residue := PackedFloat64Array()
+	var region_missed := PackedFloat64Array()
+	var region_visible := PackedFloat64Array()
+	for values: PackedFloat64Array in [region_weight,region_residue,region_missed,region_visible]:
+		values.resize(EXTERIOR_DIRECTIONS.size() * 3)
+		values.fill(0.0)
 	var cutoff: float = minf(maxf(primary,slow),CLEAN_RESIDUE)
 	for index: int in range(points.size()):
 		var point: Vector3 = points[index]
 		var scope: Vector3 = _scopes[index]
 		# The finish distributes these layers across complementary coverage.
 		# Adding full-strength layers everywhere overstated barely visible film.
+		var remaining: float = 1.0 - _washed(point,effect.bounds,wash)
 		var primary_here: float = maxf(effect.dirt_amount * scope.x,effect.snow_amount * scope.y)
-		var residue: float = clampf(maxf(primary_here * (1.0 - _washed(point,effect.bounds,wash)),slow * scope.z * (1.0 - _washed(point,effect.bounds,slow_wash))),0.0,1.0)
+		var primary_residue: float = primary_here * remaining
+		var slow_residue: float = slow * scope.z * (1.0 - _washed(point,effect.bounds,slow_wash))
+		var residue: float = clampf(maxf(primary_residue,slow_residue),0.0,1.0)
 		# Clean roof/trim must not dilute a missed dirty door either. Weight by
 		# the layer's potential footprint, fixed across strokes in this wash.
 		var weight: float = maxf(scope.x if effect.dirt_amount >= cutoff else 0.0,scope.y if effect.snow_amount >= cutoff else 0.0)
@@ -63,14 +88,37 @@ func is_clean(view: CarShowroom) -> bool:
 		total_weight += weight
 		total_residue += residue * weight
 		if residue > MISSED_PATCH_RESIDUE: missed_weight += weight
+		var layer_weights := Vector3(scope.x if primary >= cutoff else 0.0,scope.y if effect.snow_amount >= cutoff else 0.0,scope.z if slow >= cutoff else 0.0)
+		var layer_residues := Vector3(primary * scope.x * remaining,effect.snow_amount * scope.y * remaining,slow_residue)
+		for layer: int in range(3):
+			var region: int = _regions[index] * 3 + layer
+			var layer_weight: float = layer_weights[layer]
+			var layer_residue: float = layer_residues[layer]
+			region_weight[region] += layer_weight
+			region_residue[region] += layer_residue * layer_weight
+			if layer_residue > MISSED_PATCH_RESIDUE: region_missed[region] += layer_weight
+			if layer_residue > VISIBLE_RESIDUE: region_visible[region] += layer_weight
 	_mean_residue = total_residue / maxf(total_weight,0.0001)
 	_dirty_fraction = missed_weight / maxf(total_weight,0.0001)
 	_clean = not points.is_empty() and _mean_residue <= CLEAN_RESIDUE and _dirty_fraction <= MAX_DIRTY_FRACTION
+	_shiny = _mean_residue <= SHINY_RESIDUE and _dirty_fraction <= 0.01
+	for region: int in range(region_weight.size()):
+		# Tiny silhouettes remain under the existing missed-speck allowance.
+		if region_weight[region] < 4.0: continue
+		var mean: float = region_residue[region] / region_weight[region]
+		var missed: float = region_missed[region] / region_weight[region]
+		# Require both substantial strength and missed area locally. The narrow
+		# interpolated sill strip above hidden underbody cells and light upper
+		# film retain their established tolerance; an unwiped door fails both.
+		if mean > LOCAL_PATCH_RESIDUE and missed > MAX_DIRTY_FRACTION: _clean = false
+		var visible_mean: float = mean * (visible_slow / slow if region % 3 == 2 and slow > 0.0 else 1.0)
+		if visible_mean > SHINY_RESIDUE or region_visible[region] / region_weight[region] > MAX_VISIBLE_FRACTION: _shiny = false
 	return _clean
 
 func _sample_exterior(view: CarShowroom) -> void:
 	points.clear()
 	_scopes.clear()
+	_regions.clear()
 	var body: Transform3D = view.car.body.global_transform
 	var inverse_body: Transform3D = body.affine_inverse()
 	var entries: Array[Dictionary] = []
@@ -95,7 +143,8 @@ func _sample_exterior(view: CarShowroom) -> void:
 	envelope = envelope.grow(0.1)
 	# Top and four sides are reachable with the original orbit/wash controls.
 	# The hidden underside and enclosed body volume do not demand scrubbing.
-	for direction: Vector3 in [Vector3.DOWN,Vector3.LEFT,Vector3.RIGHT,Vector3.FORWARD,Vector3.BACK]:
+	for region: int in range(EXTERIOR_DIRECTIONS.size()):
+		var direction: Vector3 = EXTERIOR_DIRECTIONS[region]
 		var axis: int = direction.abs().max_axis_index()
 		var u: int = (axis + 1) % 3
 		var v: int = (axis + 2) % 3
@@ -141,6 +190,7 @@ func _sample_exterior(view: CarShowroom) -> void:
 				var point: Vector3 = view.weathering.wash_point(target,position)
 				points.append(point)
 				_scopes.append(_surface_scope(bindings[surface],point,normal,view.weathering))
+				_regions.append(region)
 
 static func _surface_scope(binding: Dictionary, point: Vector3, normal: Vector3, effect: VehicleWeathering) -> Vector3:
 	# Broad coverage from vehicle_weathering.gdshader; ignore fine noise/specks.

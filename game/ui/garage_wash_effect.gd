@@ -8,6 +8,9 @@ const Geometry = preload("res://ui/garage_wash_geometry.gd")
 var mitt: Node3D
 var foam: MultiMeshInstance3D
 var water: MultiMeshInstance3D
+var hose: Node3D
+var jet: MultiMeshInstance3D
+var tool: String = "mitt"
 var foam_slots: Array[Dictionary] = []
 var water_slots: Array[Dictionary] = []
 var foam_cursor: int = 0
@@ -85,6 +88,8 @@ func reset() -> void:
 	touching_previous = false
 	if mitt == null: return
 	mitt.hide()
+	if hose != null: hose.hide()
+	if jet != null: jet.hide()
 	for index: int in range(FOAM_COUNT):
 		foam_slots[index] = {}
 		_hide_slot(foam, index)
@@ -97,14 +102,27 @@ func reset() -> void:
 func begin_frame() -> void:
 	contact.clear()
 
-func set_contact(surface: Dictionary) -> void:
+func set_contact(surface: Dictionary, selected_tool: String = "mitt") -> void:
+	if selected_tool != tool:
+		reset()
+		tool = selected_tool
+	if tool == "hose" and hose == null: _prepare_hose()
 	contact = surface.duplicate()
+
+func _prepare_hose() -> void:
+	hose = preload("res://ui/garage_hose_rig.gd").new()
+	add_child(hose)
+	jet = hose.spray
+	hose.visibility_changed.connect(visual_changed.emit)
+	jet.visibility_changed.connect(visual_changed.emit)
 
 func advance(delta: float, active: bool) -> void:
 	var step: float = clampf(delta, 0.0, 0.1)
 	clock += step
 	var touching: bool = active and not contact.is_empty()
-	mitt.visible = touching
+	mitt.visible = touching and tool == "mitt"
+	if hose != null: hose.visible = touching and tool == "hose"
+	if jet != null: jet.visible = touching and tool == "hose"
 	if touching:
 		var normal: Vector3 = contact.normal
 		var tangent: Vector3 = Vector3.UP.cross(normal).normalized() if absf(normal.y) < 0.9 else Vector3.RIGHT
@@ -121,8 +139,10 @@ func advance(delta: float, active: bool) -> void:
 		var frame := Basis(tangent, normal, tangent.cross(normal))
 		# Gentle pressure and an oval scrub keep the soft underside seated on the patch.
 		var phase: float = clock*TAU*1.7
-		mitt.global_transform = Transform3D(frame.rotated(normal,sin(phase)*0.07),contact.position+normal*0.004+tangent*sin(phase)*0.013+frame.z*cos(phase)*0.005)
-		mitt.scale.y = 0.96+sin(phase)*0.035
+		if tool == "hose": _aim_hose(frame)
+		else:
+			mitt.global_transform = Transform3D(frame.rotated(normal,sin(phase)*0.07),contact.position+normal*0.004+tangent*sin(phase)*0.013+frame.z*cos(phase)*0.005)
+			mitt.scale.y = 0.96+sin(phase)*0.035
 		emission += step*36.0
 		while emission >= 1.0:
 			emission -= 1.0
@@ -146,15 +166,24 @@ func _emit(frame: Basis) -> void:
 	var normal: Vector3 = frame.y
 	var size: float = 0.078+float(foam_cursor%5)*0.009
 	var gravity: Vector3 = Vector3.DOWN-normal*Vector3.DOWN.dot(normal)
-	foam_slots[foam_cursor] = {"position": contact.position+radial*(0.020+float(foam_cursor%3)*0.012)+normal*0.0015-stroke*0.06+gravity*float(foam_cursor%4)*0.015,
-		"velocity": gravity*0.035, "basis": frame.rotated(normal,sin(float(foam_cursor)*2.399963)*0.32), "age": 0.0, "life": 0.57+float(foam_cursor%4)*0.065,
-		"radius": size, "seed": float((foam_cursor*7)%24)/24.0}
+	if tool == "mitt":
+		foam_slots[foam_cursor] = {"position": contact.position+radial*(0.020+float(foam_cursor%3)*0.012)+normal*0.0015-stroke*0.06+gravity*float(foam_cursor%4)*0.015,
+			"velocity": gravity*0.035, "basis": frame.rotated(normal,sin(float(foam_cursor)*2.399963)*0.32), "age": 0.0, "life": 0.57+float(foam_cursor%4)*0.065,
+			"radius": size, "seed": float((foam_cursor*7)%24)/24.0}
 	foam_cursor = (foam_cursor + 1) % FOAM_COUNT
 	water_slots[water_cursor] = {"position": contact.position+normal*0.014+radial*0.082,
 		"velocity": normal*0.075+radial*0.07+Vector3.DOWN*0.10+stroke*0.07, "basis": Basis.IDENTITY,
 		"age": 0.0, "life": 0.43+float(water_cursor%5)*0.028, "radius": 0.0045+float(water_cursor%4)*0.0012,
 		"seed": float(water_cursor)/32.0}
+	if tool == "hose":
+		var spread: float = sqrt(float((water_cursor*13)%32+1)/32.0)*float(contact.get("radius",0.95))*0.85
+		water_slots[water_cursor].position = contact.position+normal*0.025+radial*spread
+		water_slots[water_cursor].velocity = normal*0.18+radial*0.24+Vector3.DOWN*0.08
+		water_slots[water_cursor].radius = 0.0055+float(water_cursor%4)*0.0015
 	water_cursor = (water_cursor + 1) % WATER_COUNT
+
+func _aim_hose(frame: Basis) -> void:
+	hose.aim(contact,frame,clock)
 
 func _advance_pool(node: MultiMeshInstance3D, slots: Array[Dictionary], delta: float, falling: bool) -> int:
 	var alive: int = 0

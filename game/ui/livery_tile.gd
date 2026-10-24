@@ -7,7 +7,8 @@ var _selection_ready: bool = false
 
 static func make(title: String, texture: Texture2D, action: Callable, compact: bool = false) -> LiveryTile:
 	var tile := LiveryTile.new()
-	tile.custom_minimum_size = Vector2(134,106 if not compact else 100)
+	tile.custom_minimum_size = Vector2(134,126 if not compact else 108)
+	tile.accessibility_name = title
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tile.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tile.pressed.connect(action)
@@ -37,6 +38,7 @@ static func make(title: String, texture: Texture2D, action: Callable, compact: b
 	var label: Label = MenuStyle.label(title,17)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.add_theme_font_override("font",MenuStyle.DISPLAY)
+	label.add_theme_color_override("font_color",Color("dce3e3"))
 	if compact:
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.max_lines_visible = 2
@@ -61,9 +63,4 @@ func set_selected(value: bool) -> void:
 	_selection_ready = true
 	selected = value
 	marker.visible = value
-	for state: String in ["normal","hover","pressed","focus"]:
-		var style := MenuStyle.box(Color("182d39") if value or state == "hover" else Color("0b1823"),4)
-		style.set_corner_radius_all(10)
-		style.border_color = MenuStyle.ACCENT if value or state == "focus" else Color("496474") if state == "hover" else Color("29404e")
-		style.set_border_width_all(2 if value or state == "focus" else 1)
-		add_theme_stylebox_override(state,style)
+	preload("res://ui/garage_studio_style.gd").tile(self,value)

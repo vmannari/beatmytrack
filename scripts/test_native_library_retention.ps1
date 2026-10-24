@@ -33,4 +33,29 @@ if (@($again.libraries).Count -ne 0) { throw 'A repeat archive was not idempoten
 $rejected = $false
 try { & $script -ResourceRoot $resource -ArchiveRoot 'C:\Windows' -ReportPath $report | Out-Null } catch { $rejected = $true }
 if (-not $rejected) { throw 'An archive escaped the repository.' }
-Write-Output 'NATIVE_LIBRARY_RETENTION: 7 checks, 0 failures'
+# Every redirect stays inside this isolated fixture; the configured roots must
+# still reject it before any file is moved or a report is written.
+$linkedResource = Join-Path $testRoot 'hash-link-game'
+$linkedSource = Join-Path $linkedResource 'platform/windows'
+$linkedArchive = Join-Path $testRoot 'hash-link-archive'
+$outsideArchive = Join-Path $testRoot 'outside-named-archive'
+foreach ($path in @($linkedSource,$linkedArchive,$outsideArchive)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+$linkedDll = Join-Path $linkedSource 'obsolete.dll'
+[IO.File]::WriteAllText($linkedDll,'archive junction regression')
+$linkedHash = (Get-FileHash -LiteralPath $linkedDll -Algorithm SHA256).Hash.ToLowerInvariant()
+New-Item -ItemType Junction -Path (Join-Path $linkedArchive $linkedHash) -Target $outsideArchive | Out-Null
+$rejected = $false
+try { & $script -Archive -ResourceRoot $linkedResource -ArchiveRoot $linkedArchive -ReportPath $report | Out-Null } catch { $rejected = $true }
+if (-not $rejected -or -not (Test-Path -LiteralPath $linkedDll) -or (Test-Path -LiteralPath (Join-Path $outsideArchive 'obsolete.dll'))) { throw 'A hash-directory junction redirected the archive.' }
+$sourceLinkRoot = Join-Path $testRoot 'source-link-game'
+New-Item -ItemType Directory -Path (Join-Path $sourceLinkRoot 'platform') -Force | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $sourceLinkRoot 'platform/windows') -Target $linkedSource | Out-Null
+$rejected = $false
+try { & $script -Archive -ResourceRoot $sourceLinkRoot -ArchiveRoot $archive -ReportPath $report | Out-Null } catch { $rejected = $true }
+if (-not $rejected -or -not (Test-Path -LiteralPath $linkedDll)) { throw 'A source-directory junction was traversed.' }
+$reportLink = Join-Path $testRoot 'report-link'
+New-Item -ItemType Junction -Path $reportLink -Target $outsideArchive | Out-Null
+$rejected = $false
+try { & $script -ResourceRoot $resource -ArchiveRoot $archive -ReportPath (Join-Path $reportLink 'escaped.json') | Out-Null } catch { $rejected = $true }
+if (-not $rejected -or (Test-Path -LiteralPath (Join-Path $outsideArchive 'escaped.json'))) { throw 'A report-directory junction was traversed.' }
+Write-Output 'NATIVE_LIBRARY_RETENTION: 10 checks, 0 failures'

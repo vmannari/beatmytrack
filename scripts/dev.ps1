@@ -503,7 +503,7 @@ try {
                 & $backendPython -m pytest (Join-Path $repoRoot 'backend/tests') -q
             }
             'BackendRun' {
-                & $backendPython -m uvicorn bmt_backend.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers
+                & $backendPython -m bmt_backend.http_server bmt_backend.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers
             }
             'BackendWorker' { & $backendPython -m bmt_backend.worker }
             'BackendMigrate' { & $backendPython -m bmt_backend.migrate }

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bmt-trajectory-v1",
+  "title": "Completed race trajectory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "input_count", "race_proof"],
+  "properties": {
+    "schema": {"const": "bmt-trajectory-v1"},
+    "input_count": {"type": "integer", "minimum": 1, "maximum": 216000},
+    "race_proof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "samples"],
+      "properties": {
+        "schema": {"const": "bmt-race-path-v1"},
+        "samples": {
+          "type": "array", "minItems": 2, "maxItems": 36012,
+          "items": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "prefixItems": [
+              {"type": "integer", "minimum": 0, "maximum": 216000},
+              {"type": "number"}, {"type": "number"},
+              {"type": "integer", "enum": [0, 1]}
+            ], "items": false
+          }
+        }
+      }
+    },
+    "rewinds": {"$ref": "replay-v2.schema.json#/properties/rewinds"},
+    "ghost": {"type": "object"}
+  },
+  "$comment": "Only timestamped positions/layers are needed for acceptance. Rewind events use the existing authorized-receipt contract; final duration is input_count minus discarded ticks. Five ordinary laps / one creator lap, ordered gates, correct start/finish, bounded sample gaps and speed. Ghosts are optional presentation, checked/stored separately. Input-only recordings have no race-verification fallback."
+}

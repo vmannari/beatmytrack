@@ -1,0 +1,198 @@
+{
+  "date": "2026-10-24",
+  "recorded_at_utc": "2026-10-24T11:58:18.754258+00:00",
+  "requirements": [
+    "DTR01",
+    "DTR02",
+    "DTR03",
+    "DTR04",
+    "DTR05",
+    "R01",
+    "Q01"
+  ],
+  "status": "Implemented and validated locally; not deployed",
+  "policy": {
+    "id": "daily-tracks-v1",
+    "size": 100,
+    "mix": {
+      "ranked": 60,
+      "fresh": 20,
+      "explore": 20
+    },
+    "weights_percent": {
+      "rating": 30,
+      "recent_players": 20,
+      "replay": 20,
+      "races": 10,
+      "freshness": 15,
+      "lifetime_players": 5
+    },
+    "freshness_days": 14,
+    "per_player_track_day_race_cap": 5,
+    "activity_calendar_days": 7,
+    "batch": 128,
+    "candidate_pool_per_lane": 500
+  },
+  "changed_files": [
+    "backend/bmt_backend/app.py",
+    "backend/bmt_backend/database_privileges.py",
+    "backend/bmt_backend/discovery_activity.py",
+    "backend/bmt_backend/discovery_daily.py",
+    "backend/bmt_backend/discovery_erasure.py",
+    "backend/bmt_backend/discovery_models.py",
+    "backend/bmt_backend/discovery_projection.py",
+    "backend/bmt_backend/discovery_query.py",
+    "backend/bmt_backend/discovery_v3.py",
+    "backend/bmt_backend/discovery_worker.py",
+    "backend/bmt_backend/migrations/versions/0064_daily_track_selection.py",
+    "backend/schemas/discovery-query-v3.schema.json",
+    "backend/tests/test_discovery_daily.py",
+    "backend/tests/test_discovery_daily_native.py",
+    "game/backend/discovery_filters.gd",
+    "game/backend/discovery_windows.gd",
+    "game/tests/test_daily_track_selection.gd",
+    "game/tests/test_daily_track_selection.gd.uid",
+    "docs/DAILY_TRACK_SELECTION_2026_10_24.md",
+    "docs/DISCOVERY_PAGING.md",
+    "AGENTS.md",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md"
+  ],
+  "validation": {
+    "backend_final": {
+      "passed": 111,
+      "skipped": 2,
+      "postgres_deselected": 73,
+      "seconds": 173.7,
+      "log": "backend-regression-final.log"
+    },
+    "native_real_http": {
+      "headless": 21,
+      "gl_compatibility": 24,
+      "desktop_mobile": 24,
+      "failures": 0,
+      "logs": [
+        "native-headless.log",
+        "http-gl_compatibility.log",
+        "http-mobile.log"
+      ]
+    },
+    "native_regression": {
+      "discovery_windows": 321,
+      "legacy_entry_point": 321,
+      "preload": 120,
+      "free_race_list": 233,
+      "startup": 18,
+      "challenge_discovery": 92,
+      "app": 141,
+      "parser_scripts": 1076,
+      "failures": 0
+    },
+    "rollback": {
+      "passed": 1,
+      "skipped": 1,
+      "log": "daily-rollback.log"
+    },
+    "legacy_member_migration": {
+      "passed": 1,
+      "skipped": 1,
+      "log": "migration-regression.log"
+    },
+    "ruff": "All task Python sources/tests pass"
+  },
+  "commands": [
+    "From backend: ../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_discovery_daily.py tests/test_discovery_v3.py tests/test_discovery_projection.py tests/test_discovery_resources.py tests/test_discovery_hardening.py tests/test_security_fixes.py tests/test_legacy_cleanup.py -k 'not postgres' -q --disable-warnings --maxfail=1",
+    "From backend: ../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_discovery_daily_native.py -q -s --disable-warnings --maxfail=1; repeated with BMT_DAILY_NATIVE_RENDERER=gl_compatibility and mobile",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File build/run_daily_regression.ps1",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File build/run_daily_final_native.ps1",
+    "From backend: ../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_discovery_resources.py::test_migration_preserves_legacy_members_and_accounts_them_incrementally -q --disable-warnings --maxfail=1",
+    "From backend: ../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_discovery_daily.py::test_rollback_invalidates_only_daily_cursors_and_preserves_sources -q --disable-warnings --maxfail=1",
+    "Ruff check on all task Python sources/tests; git diff --check; git apply --reverse --check scoped-checkpoint.patch"
+  ],
+  "retained_interruptions": [
+    "First pytest command from root could not import backend package; corrected working directory to backend.",
+    "Direct dev.ps1 invocation was blocked by local PowerShell script policy; used the established -ExecutionPolicy Bypass wrapper.",
+    "Initial default userdata write and Windows certificate-store access were denied by sandbox; isolated workspace APPDATA and approved unsandboxed local native tests resolved these environment limits.",
+    "Native HTTP caption fixture originally checked while prefetch was pending; the corrected fixture waits for owned reads. Initial log retained.",
+    "First 0064 downgrade guard interrupted legacy-member migration regression; implemented source-preserving derived-cache rollback and added a daily-cursor rollback test. Both tests pass.",
+    "A concurrent recording_cache.gd PackedByteArray.sha256_text parser edit interrupted App. The other work corrected that file; this task did not edit it. Final App141 and parser1076 pass.",
+    "Full backend attempt reached107 pass/72 skip before an existing local PostgreSQL fixture timed out at localhost:55439. Final explicitly SQLite/non-PostgreSQL selection passes111/2skip with73 deselections. No PostgreSQL pass is claimed."
+  ],
+  "limitations": [
+    "No PostgreSQL, production-load/DAU, contention, migration-cost or physical-device certification",
+    "Weights and selection/diversity/cap values are proposed owner-acceptance balances",
+    "Original Track.created_at defines freshness; latest-version finishers define the lifetime signal",
+    "Seven-calendar-day capped volume and exact seven-day unique-player windows differ",
+    "Replay signal is repeated racing, not a separate measured return-day retention metric",
+    "New volume/replay counters are prospective on an already bootstrapped service and mature over seven days",
+    "Background scan samples projections over its duration; membership becomes immutable at atomic publication"
+  ],
+  "remaining_acceptance": [
+    "Matching migration0064, explicit grants, discovery-worker/API/client rollout",
+    "Owner policy/appearance acceptance and PostgreSQL/load/cost/device validation"
+  ],
+  "actions_not_performed": [
+    "Phone/tablet attachment check",
+    "Physical-device test",
+    "APK export/install",
+    "Live account/backend mutation",
+    "Existing-process restart",
+    "Purchase",
+    "Deployment"
+  ],
+  "checkpoint": {
+    "path": "scoped-checkpoint.patch",
+    "shared_file_scope": "app.py includes only discovery_daily_version; status/AGENTS/plan and discovery guide include only this task's marked blocks; unrelated concurrent work is preserved"
+  },
+  "source_sha256": {
+    "backend/bmt_backend/app.py": "28dd0c30b684ac1bb9b7bf2a70132ccfcfb15934d8dcc7c4f6f83ea1d68a2db5",
+    "backend/bmt_backend/database_privileges.py": "0817bc86a9c07d3a10ea7f70245668907bc08194533ad74e33fce66211848120",
+    "backend/bmt_backend/discovery_activity.py": "59de5a4a01f75afc75bbe970abafa64d14a9d8ba6ae9676fc5f7498f139dcb08",
+    "backend/bmt_backend/discovery_daily.py": "fbd18c2c3fd7649fc44871cb952580de2cc6d846ef9c87baea0716484f401719",
+    "backend/bmt_backend/discovery_erasure.py": "7d95ea0083003fcc45e17b714890a5f028519b5aa2643f4cb89a8c60e23663f4",
+    "backend/bmt_backend/discovery_models.py": "90099794e1f8f9208c7dd5062e6f3b68ecea08bc6c24325cc90d7f1ee4e65b2d",
+    "backend/bmt_backend/discovery_projection.py": "f33fdcae1d2e5ad1352d89a9ff6ccb5d067ecc48973da7e04c50ef859f26cb01",
+    "backend/bmt_backend/discovery_query.py": "88eb62ce2dfdd0fc3258e6e39473f9197bff2e20d1683a1bbf984e31bc4c7651",
+    "backend/bmt_backend/discovery_v3.py": "8025a688a4c36c863c2e4f519aae64794afc5ca345767c350ed6996cb269540a",
+    "backend/bmt_backend/discovery_worker.py": "b7de3c4da92927e2884e8602f59918ec623167fe0fba59afce2d5cfd178418bf",
+    "backend/bmt_backend/migrations/versions/0064_daily_track_selection.py": "507399c427338855fff9cccde355f76d73db5b7b320ed6d3466470ee03360d9a",
+    "backend/schemas/discovery-query-v3.schema.json": "559f7b3df5528b0718d595b097a91db9cc824927c7c7061317abfc12db8ddf11",
+    "backend/tests/test_discovery_daily.py": "564b63d731d7f91cbe85c40faacd09e4dc7501e46206346190bfe56c0c1771c8",
+    "backend/tests/test_discovery_daily_native.py": "f4c8fb526e6ba7000c7fcf61ea3424505b62fe8f58c1315475e7bb0398973f4b",
+    "game/backend/discovery_filters.gd": "8b080e7f5438c8de4e991c9e597d5553622cbdd7d637726e5d867085bc6f5494",
+    "game/backend/discovery_windows.gd": "06a3d45bc62d3f87826406478607925d27f6389441bb4e0e26d207edfc19f1ad",
+    "game/tests/test_daily_track_selection.gd": "bd854978477b67f14bbc443e4a8e9863478ff6d6a9186bc39d8d4a58ee9bff87",
+    "game/tests/test_daily_track_selection.gd.uid": "596c3e5e8b8c7035b0069b5b50efad115feb9e192017872fa7a36fec3a840325",
+    "docs/DAILY_TRACK_SELECTION_2026_10_24.md": "95ed8ff6b05eed5bb3467893a0bcc05722f7d57c4b4edca758046b7fa2f18bd4",
+    "docs/DISCOVERY_PAGING.md": "986be7786cc2481d4bf9dbdccb8467a9c89c88b80c48d6ac92cf3d2e5cd0046f",
+    "AGENTS.md": "16c75ee40453f06c267fa78dc36cba3271db875f873d15c8d718fd45db125585",
+    "DEVELOPMENT_STATUS.md": "a6f6bf87c8759eaa85aa1f77aad4176bb05b3d7b4684d3435e86f62582998e5f",
+    "docs/PHASE_0_PLAN.md": "4f1a1daa355dc019fe6c1a06ddd243bb9bd146ce002fec4594f955ffb19041c5"
+  },
+  "captures": [
+    {
+      "path": "captures/gl_compatibility-daily-compact.png",
+      "sha256": "7988c01b7a3fb9d226b6b224188333a8631014569b16f2c93a980a54163f175f"
+    },
+    {
+      "path": "captures/gl_compatibility-daily-free-race.png",
+      "sha256": "4fac26d5ce3a3f34d4dc4e7d8922c86d2059fdf81918126580f2be76efba4320"
+    },
+    {
+      "path": "captures/gl_compatibility-full-catalogue-search.png",
+      "sha256": "3561128205e4bca9c6049c9741eee975fcff925a8498f9d9a7fbf064331282b8"
+    },
+    {
+      "path": "captures/mobile-daily-compact.png",
+      "sha256": "67dd64301ffa0bf95bc8b1d8d680dc6cfbb312548a01979e5d24fe6e1ea7cbb6"
+    },
+    {
+      "path": "captures/mobile-daily-free-race.png",
+      "sha256": "a746d18afe62d8ffebdbf7fcb3c692e78000739cef0a02a8ea8c11aa7dd5a28e"
+    },
+    {
+      "path": "captures/mobile-full-catalogue-search.png",
+      "sha256": "9b53ef9bf6f0114b542e25cd46b67c0fd57c0140f4c315909d985b373f45b309"
+    }
+  ]
+}

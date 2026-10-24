@@ -1,0 +1,490 @@
+diff --git a/game/ui/garage_cleanliness.gd b/game/ui/garage_cleanliness.gd
+--- a/game/ui/garage_cleanliness.gd
++++ b/game/ui/garage_cleanliness.gd
+@@ -8,20 +8,29 @@
+ # missed area. Keep the mean limit so broadly dirty cars still need a wash.
+ const MISSED_PATCH_RESIDUE: float = 0.30
+ const MAX_DIRTY_FRACTION: float = 0.25
++const LOCAL_PATCH_RESIDUE: float = 0.25
++# Negligible film can remain in interpolated wash cells after the car looks
++# clean. A visible patch still prevents the spotless grade, even on one side.
++const SHINY_RESIDUE: float = 0.04
++const VISIBLE_RESIDUE: float = 0.08
++const MAX_VISIBLE_FRACTION: float = 0.02
+ # The finish's broad slow film has 0.42 to 0.62 opacity before its coverage mask.
+ const SLOW_FILM_WEIGHT: float = 0.62
+ const SAMPLES_PER_AXIS: int = VehicleCondition.GRID
++const EXTERIOR_DIRECTIONS: Array[Vector3] = [Vector3.DOWN,Vector3.LEFT,Vector3.RIGHT,Vector3.FORWARD,Vector3.BACK]
+ var points := PackedVector3Array()
+ var _scopes := PackedVector3Array()
++var _regions := PackedInt32Array()
+ var _geometry: Array = []
+ var _state: Array = []
+ var _clean: bool = true
+ var _mean_residue: float = 0.0
+ var _dirty_fraction: float = 0.0
++var _shiny: bool = true
+ 
+ func description(view: CarShowroom) -> String:
+ 	if is_clean(view):
+-		return "Shiny. For now." if _mean_residue <= 0.025 and _dirty_fraction <= 0.01 else "Clean enough for company"
++		return "Shiny. For now." if _shiny else "Clean enough for company"
+ 	if _mean_residue >= 0.50: return "Certified mud magnet"
+ 	if _mean_residue >= 0.25: return "Grubby but proud"
+ 	return "Needs a rinse"
+@@ -30,11 +39,15 @@
+ 	var effect: VehicleWeathering = view.weathering
+ 	var primary: float = maxf(effect.dirt_amount,effect.snow_amount)
+ 	var slow: float = maxf(effect.slow_dirt_amount * SLOW_FILM_WEIGHT,effect.slow_snow_amount * 0.38)
++	# Spotless uses the film's typical rendered opacity, rather than treating
++	# every sample as the darkest possible mottling (0.42 + 0.20).
++	var visible_slow: float = maxf(effect.slow_dirt_amount * 0.52,effect.slow_snow_amount * 0.38)
+ 	if maxf(primary,slow) == 0.0:
+ 		_state.clear()
+ 		_clean = true
+ 		_mean_residue = maxf(primary,slow)
+ 		_dirty_fraction = 0.0
++		_shiny = true
+ 		return true
+ 	var wash: PackedByteArray = effect.wash_image.get_data()
+ 	var slow_wash: PackedByteArray = effect.slow_wash_image.get_data()
+@@ -48,14 +61,26 @@
+ 	var total_residue: float = 0.0
+ 	var total_weight: float = 0.0
+ 	var missed_weight: float = 0.0
++	# Separate road spray, upper snow and slow film in every reachable view.
++	# A fully washed film footprint must not dilute a still-dirty door below it.
++	var region_weight := PackedFloat64Array()
++	var region_residue := PackedFloat64Array()
++	var region_missed := PackedFloat64Array()
++	var region_visible := PackedFloat64Array()
++	for values: PackedFloat64Array in [region_weight,region_residue,region_missed,region_visible]:
++		values.resize(EXTERIOR_DIRECTIONS.size() * 3)
++		values.fill(0.0)
+ 	var cutoff: float = minf(maxf(primary,slow),CLEAN_RESIDUE)
+ 	for index: int in range(points.size()):
+ 		var point: Vector3 = points[index]
+ 		var scope: Vector3 = _scopes[index]
+ 		# The finish distributes these layers across complementary coverage.
+ 		# Adding full-strength layers everywhere overstated barely visible film.
++		var remaining: float = 1.0 - _washed(point,effect.bounds,wash)
+ 		var primary_here: float = maxf(effect.dirt_amount * scope.x,effect.snow_amount * scope.y)
+-		var residue: float = clampf(maxf(primary_here * (1.0 - _washed(point,effect.bounds,wash)),slow * scope.z * (1.0 - _washed(point,effect.bounds,slow_wash))),0.0,1.0)
++		var primary_residue: float = primary_here * remaining
++		var slow_residue: float = slow * scope.z * (1.0 - _washed(point,effect.bounds,slow_wash))
++		var residue: float = clampf(maxf(primary_residue,slow_residue),0.0,1.0)
+ 		# Clean roof/trim must not dilute a missed dirty door either. Weight by
+ 		# the layer's potential footprint, fixed across strokes in this wash.
+ 		var weight: float = maxf(scope.x if effect.dirt_amount >= cutoff else 0.0,scope.y if effect.snow_amount >= cutoff else 0.0)
+@@ -63,14 +88,37 @@
+ 		total_weight += weight
+ 		total_residue += residue * weight
+ 		if residue > MISSED_PATCH_RESIDUE: missed_weight += weight
++		var layer_weights := Vector3(scope.x if primary >= cutoff else 0.0,scope.y if effect.snow_amount >= cutoff else 0.0,scope.z if slow >= cutoff else 0.0)
++		var layer_residues := Vector3(primary * scope.x * remaining,effect.snow_amount * scope.y * remaining,slow_residue)
++		for layer: int in range(3):
++			var region: int = _regions[index] * 3 + layer
++			var layer_weight: float = layer_weights[layer]
++			var layer_residue: float = layer_residues[layer]
++			region_weight[region] += layer_weight
++			region_residue[region] += layer_residue * layer_weight
++			if layer_residue > MISSED_PATCH_RESIDUE: region_missed[region] += layer_weight
++			if layer_residue > VISIBLE_RESIDUE: region_visible[region] += layer_weight
+ 	_mean_residue = total_residue / maxf(total_weight,0.0001)
+ 	_dirty_fraction = missed_weight / maxf(total_weight,0.0001)
+ 	_clean = not points.is_empty() and _mean_residue <= CLEAN_RESIDUE and _dirty_fraction <= MAX_DIRTY_FRACTION
++	_shiny = _mean_residue <= SHINY_RESIDUE and _dirty_fraction <= 0.01
++	for region: int in range(region_weight.size()):
++		# Tiny silhouettes remain under the existing missed-speck allowance.
++		if region_weight[region] < 4.0: continue
++		var mean: float = region_residue[region] / region_weight[region]
++		var missed: float = region_missed[region] / region_weight[region]
++		# Require both substantial strength and missed area locally. The narrow
++		# interpolated sill strip above hidden underbody cells and light upper
++		# film retain their established tolerance; an unwiped door fails both.
++		if mean > LOCAL_PATCH_RESIDUE and missed > MAX_DIRTY_FRACTION: _clean = false
++		var visible_mean: float = mean * (visible_slow / slow if region % 3 == 2 and slow > 0.0 else 1.0)
++		if visible_mean > SHINY_RESIDUE or region_visible[region] / region_weight[region] > MAX_VISIBLE_FRACTION: _shiny = false
+ 	return _clean
+ 
+ func _sample_exterior(view: CarShowroom) -> void:
+ 	points.clear()
+ 	_scopes.clear()
++	_regions.clear()
+ 	var body: Transform3D = view.car.body.global_transform
+ 	var inverse_body: Transform3D = body.affine_inverse()
+ 	var entries: Array[Dictionary] = []
+@@ -95,7 +143,8 @@
+ 	envelope = envelope.grow(0.1)
+ 	# Top and four sides are reachable with the original orbit/wash controls.
+ 	# The hidden underside and enclosed body volume do not demand scrubbing.
+-	for direction: Vector3 in [Vector3.DOWN,Vector3.LEFT,Vector3.RIGHT,Vector3.FORWARD,Vector3.BACK]:
++	for region: int in range(EXTERIOR_DIRECTIONS.size()):
++		var direction: Vector3 = EXTERIOR_DIRECTIONS[region]
+ 		var axis: int = direction.abs().max_axis_index()
+ 		var u: int = (axis + 1) % 3
+ 		var v: int = (axis + 2) % 3
+@@ -141,6 +190,7 @@
+ 				var point: Vector3 = view.weathering.wash_point(target,position)
+ 				points.append(point)
+ 				_scopes.append(_surface_scope(bindings[surface],point,normal,view.weathering))
++				_regions.append(region)
+ 
+ static func _surface_scope(binding: Dictionary, point: Vector3, normal: Vector3, effect: VehicleWeathering) -> Vector3:
+ 	# Broad coverage from vehicle_weathering.gdshader; ignore fine noise/specks.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->
++## Garage cleanliness and visible dirt override (2026-10-24)
++2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->
++
+ ## Broader Desert sand placement override (2026-10-24)
+ 2026-10-24 DSP01-DSP03/R01/G01/Q01: More Desert dune edges use twelve sites/96quads/192triangles, five-metre separation, seven-metre placement updates and all valid guides. Real prepared nearby-site coverage 220to388 (76.4%); distinct locations 30to53, more sites at78/80 route positions. Source-cap-only/spacing trials retained. Shader/palette, wind sync, guides/support and Game exact. Spatial/full-App 49/67/67, focused 168/181/181, ambience125, biomes108 and parser1087 pass; roof pixels exact. Native audio/motion and six/twelve-site views, commands, hashes and scoped checkpoint: docs/DESERT_SAND_PLACES_2026_10_24.md and docs/evidence/desert-sand-places-2026-10-24/report.json. Restart and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation or deployment; concurrent work/owner processes preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->
++2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->
++
+ 2026-10-24 DSP01-DSP03/R01/G01/Q01: More Desert dune edges use twelve sites/96quads/192triangles, five-metre separation, seven-metre placement updates and all valid guides. Real prepared nearby-site coverage 220to388 (76.4%); distinct locations 30to53, more sites at78/80 route positions. Source-cap-only/spacing trials retained. Shader/palette, wind sync, guides/support and Game exact. Spatial/full-App 49/67/67, focused 168/181/181, ambience125, biomes108 and parser1087 pass; roof pixels exact. Native audio/motion and six/twelve-site views, commands, hashes and scoped checkpoint: docs/DESERT_SAND_PLACES_2026_10_24.md and docs/evidence/desert-sand-places-2026-10-24/report.json. Restart and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation or deployment; concurrent work/owner processes preserved.
+ 
+ 2026-10-24 DWS01-DWS03/R01/G01/Q01: More frequent local sand (2.4-4s periods) follows the selected wind recording's loudness/corrected playback cursor via bounded birth history, so gusts lift new grains at traced lips. Audible rising gusts 60to73 in twelve seeded90s controls; unchanged clips/gains, palette, six sites/48quads/96triangles and pyramid repair remain. Sync/App 44/56/56, focused 57/70/70, ambience125, biomes108 and parser1085 pass. Actual driving readable samples 15/18 Mobile/16/18 Compatibility; roof pixels exact. Initial parse/control/overlap corrections retained; no invariant weakened. Native audio preview, commands, hashes and scoped checkpoint: docs/DESERT_WIND_SYNC_2026_10_24.md and docs/evidence/desert-wind-sync-2026-10-24/report.json. Restart and owner/device appearance/cost/acoustic acceptance remain. No device attachment check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->
++2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->
++
+ 2026-10-24 DSP01-DSP03/R01/G01/Q01: More Desert dune edges use twelve sites/96quads/192triangles, five-metre separation, seven-metre placement updates and all valid guides. Real prepared nearby-site coverage 220to388 (76.4%); distinct locations 30to53, more sites at78/80 route positions. Source-cap-only/spacing trials retained. Shader/palette, wind sync, guides/support and Game exact. Spatial/full-App 49/67/67, focused 168/181/181, ambience125, biomes108 and parser1087 pass; roof pixels exact. Native audio/motion and six/twelve-site views, commands, hashes and scoped checkpoint: docs/DESERT_SAND_PLACES_2026_10_24.md and docs/evidence/desert-sand-places-2026-10-24/report.json. Restart and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation or deployment; concurrent work/owner processes preserved.
+ 
+ 2026-10-24 DWS01-DWS03/R01/G01/Q01: More frequent local sand (2.4-4s periods) follows the selected wind recording's loudness/corrected playback cursor via bounded birth history, so gusts lift new grains at traced lips. Audible rising gusts 60to73 in twelve seeded90s controls; unchanged clips/gains, palette, six sites/48quads/96triangles and pyramid repair remain. Sync/App 44/56/56, focused 57/70/70, ambience125, biomes108 and parser1085 pass. Actual driving readable samples 15/18 Mobile/16/18 Compatibility; roof pixels exact. Initial parse/control/overlap corrections retained; no invariant weakened. Native audio preview, commands, hashes and scoped checkpoint: docs/DESERT_WIND_SYNC_2026_10_24.md and docs/evidence/desert-wind-sync-2026-10-24/report.json. Restart and owner/device appearance/cost/acoustic acceptance remain. No device attachment check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.
+diff --git a/game/tests/test_garage_cleanliness_match.gd b/game/tests/test_garage_cleanliness_match.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_cleanliness_match.gd
+@@ -0,0 +1,127 @@
++extends SceneTree
++## Real native exteriors: concentrated dirty sides and negligible film residue.
++var checks: int = 0
++var failures: int = 0
++var output: String
++var inspector_script: GDScript = preload("res://ui/garage_cleanliness.gd")
++var rows: Array[Dictionary] = []
++var before: bool = false
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",message)
++
++func fixture(effect: VehicleWeathering, kind: String) -> Dictionary:
++	var wear: Dictionary = effect.snapshot()
++	wear.dirt = 0.95
++	wear.slow_dirt = 1.0
++	wear.snow = 0.0
++	wear.slow_snow = 0.0
++	wear.mud = 1.0
++	var primary := PackedByteArray()
++	primary.resize(VehicleCondition.CELLS)
++	primary.fill(255)
++	var slow: PackedByteArray = primary.duplicate()
++	if kind in ["dirty-side","dirty-other-side","snowy-side"]:
++		# A substantial central lower-door section on one side, roof washed.
++		for y: int in range(16):
++			for z: int in range(4,12):
++					for x: int in (range(0,5) if kind == "dirty-other-side" else range(11,16)): primary[y*256+z*16+x] = 0
++		if kind == "snowy-side":
++			wear.dirt = 0.0
++			wear.snow = 0.95
++	elif kind == "negligible-film":
++		# Only nearly removed upper dust remains. Primary dirt is fully gone.
++		slow.fill(237)
++	elif kind == "light-film":
++		wear.dirt = 0.08
++		wear.slow_dirt = 0.08
++		primary.fill(0)
++		slow.fill(0)
++	wear.wash = Marshalls.raw_to_base64(primary)
++	wear.slow_wash = Marshalls.raw_to_base64(slow)
++	return wear
++
++func capture_page() -> void:
++	if DisplayServer.get_name() == "headless" or before: return
++	var selected: String = VehicleCatalog.selected
++	var records := LocalRecords.new(output.path_join("isolated-records.json"))
++	VehicleCatalog.selected = "compact"
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.theme = MenuStyle.theme()
++	var page := GaragePage.new()
++	page.records = records
++	root.add_child(page)
++	MenuStyle.fill(page)
++	for id: String in VehicleCatalog.IDS:
++		page._show_section("cars")
++		page.open_car(VehicleCatalog.IDS.find(id))
++		page.showroom.finish_car_transition()
++		page._show_section("care")
++		await create_timer(0.45).timeout
++		for kind: String in ["dirty-side","negligible-film"]:
++			var wear: Dictionary = fixture(page.showroom.weathering,kind)
++			check(VehicleCondition.save(records,id,wear) == OK,id+" isolated fixture saves")
++			page._process(0.0)
++			check(page._wash_status.text == ("Needs a rinse" if kind == "dirty-side" else "Shiny. For now."),id+" live status agrees with the inspection")
++			check(page._clean_for_customisation() == (kind != "dirty-side"),id+" editing gate agrees with the live status")
++			for angle: float in [-PI*0.5,PI*0.5]:
++				page.showroom.yaw = angle
++				page.showroom.elevation = 0.16
++				page.showroom._orbit()
++				page.showroom.invalidate_render()
++				for frame: int in range(8): await process_frame
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(output.path_join("%s-%s-%s.png" % [id,kind,"left" if angle < 0.0 else "right"])) == OK,id+" native side capture")
++	page.queue_free()
++	await process_frame
++	VehicleCatalog.selected = selected
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = ProjectSettings.globalize_path("res://../build/garage-cleanliness-match-2026-10-24/probe")
++	for argument: String in OS.get_cmdline_user_args():
++		# dev.ps1 receives one string from an external PowerShell process.
++		for option: String in argument.split(","):
++			if option.begins_with("--evidence-root="): output = option.trim_prefix("--evidence-root=")
++			if option == "--before":
++				before = true
++				inspector_script = GDScript.new()
++				inspector_script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/garage-cleanliness-match-2026-10-24/before/game/ui/garage_cleanliness.gd").replace("class_name GarageCleanliness","")
++				check(inspector_script.reload() == OK,"original inspector compiles")
++	DirAccess.make_dir_recursive_absolute(output)
++	for id: String in VehicleCatalog.IDS:
++		var view := CarShowroom.new()
++		view.vehicle_id = id
++		root.add_child(view)
++		await process_frame
++		var inspector: RefCounted = inspector_script.new()
++		for kind: String in ["dirty-side","dirty-other-side","snowy-side","negligible-film","light-film","fully-washed"]:
++			var wear: Dictionary = fixture(view.weathering,kind)
++			view.weathering.restore(wear)
++			var label: String = inspector.description(view)
++			print(id," ",kind," ",label," mean=",inspector._mean_residue," missed=",inspector._dirty_fraction)
++			rows.append({"car":id,"fixture":kind,"label":label,"mean":inspector._mean_residue,"missed":inspector._dirty_fraction})
++			if kind in ["dirty-side","dirty-other-side","snowy-side"]: check(not inspector.is_clean(view),id+" "+kind+" prevents a clean status")
++			if kind in ["negligible-film","fully-washed"]: check(label == "Shiny. For now.",id+" "+kind+" earns the fully clean status")
++			if kind == "light-film": check(label == "Clean enough for company",id+" noticeable light film retains the intermediate grade")
++			check(view.weathering.snapshot() == wear,id+" inspection preserves every condition field and mask")
++			check(inspector.description(view) == label,id+" repeated cached inspection retains the grade")
++			if kind == "dirty-side":
++				view.weathering.begin_wash_batch()
++				for point: Vector3 in inspector.points: view.weathering.wash(point,8.0)
++				view.weathering.end_wash_batch()
++				check(inspector.description(view) == "Shiny. For now.",id+" actual local washing refreshes the cached grade")
++		view.queue_free()
++		await process_frame
++	await capture_page()
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"cases":rows},"\t"))
++	file.close()
++	print("CLEANLINESS_MATCH: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_cleanliness_match.gd.uid b/game/tests/test_garage_cleanliness_match.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_cleanliness_match.gd.uid
+@@ -0,0 +1 @@
++uid://bb8gfst2wclv6
+diff --git a/docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md b/docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md
+@@ -0,0 +1,60 @@
++# Garage cleanliness matches missed sides and negligible film — 2026-10-24
++
++The owner reports a visibly dirty side receiving **Clean enough for company**, and an apparently clean car failing to reach the fully clean grade. This change fixes two reproduced classification errors in `game/ui/garage_cleanliness.gd`.
++
++| Requirement | Implementation |
++| --- | --- |
++| CCM01 | Check each of the five reachable exterior views independently, separating road spray, upper snow and slow dust. Clean upper panels cannot dilute a dirty lower door. |
++| CCM02 | Award **Shiny. For now.** for negligible interpolated film, while retaining **Clean enough for company** for noticeable light film and preventing localized visible patches from earning Shiny. |
++| R01 | Preserve local condition/masks, gradual mitt/hose work, paint/parts, achievements, shared editing gate, hidden-underbody and small-patch tolerance, existing five labels and canonical driving. |
++| Q01 | Reproduce with exact task-start source; exercise all five cars, both sides, snow, cache refresh and real washing; capture the actual Garage status on both desktop renderers. |
++
++The original checker combines the potential footprints of primary grime and slow dust into one whole-car average. Even a fully washed dust layer contributes its large clean footprint to the denominator. The dirty-door fixtures therefore have only **0.0217–0.0409** mean residue and **2.99–5.55%** strongly dirty area, despite the dark lower-door band in the native view. All five cars incorrectly receive Clean enough for company. The original also refuses Shiny for nearly removed slow dust: its conservative maximum-opacity estimate is **0.0322–0.0366**, just above the old 0.025 cutoff.
++
++The existing global 0.20 mean / 0.30 strong-patch / 25% missed-area tests remain. Fifteen bounded view/footprint buckets add a local check: a substantial bucket fails readiness when its mean exceeds 0.25 **and** more than 25% of its footprint contains strong residue. Requiring both preserves the accepted light upper film and the narrow interpolation strip above hidden bottom cells. No new rays, meshes, shaders or GPU readbacks are added; the same five 16×16 exterior ray grids are cached with one additional region index per sample.
++
++Shiny permits up to 0.04 negligible mean residue and retains the 1% strong-patch limit. Each substantial local bucket must also have no more than 0.04 mean and 2% of its weight above 0.08 residue. For this top grade, slow dirt uses the shader's typical 0.52 film coefficient instead of its 0.62 darkest-mottle bound; the conservative readiness calculation remains unchanged. These are bounded exterior estimates, not exact visible-pixel measurements for every paint colour, livery or lighting condition.
++
++The shared `is_clean` decision still controls the live status, Customise/Tuning and wash completion. Inspection never clears condition fields or fills masks. Actual washing invalidates the cached grade through the existing mask state. Runtime changes are confined to `garage_cleanliness.gd`; the new `test_garage_cleanliness_match.gd` and its UID provide the regression and native captures.
++
++| Actual validation | Result |
++| --- | --- |
++| Exact task-start checker, expanded regression | 96 checks, 20 reproduced failures |
++| Focused regression, headless | 95 checks, zero failures |
++| Focused regression, Compatibility / desktop Mobile | 145 / 145 checks, zero failures; 20 actual Garage captures each |
++| Existing surface/underside/material boundaries | 45 checks, zero failures |
++| Existing easier washing / light upper film | 40 checks, zero failures |
++| Existing clean-customisation guards and all five grades | 262 checks, zero failures |
++| Existing gradual scrubbing / ageing / split samples / persistence | 501 checks, zero failures |
++| Existing native mouse/touch washing and App flow, Compatibility | 1,402 checks, zero failures |
++| Existing App regression | 141 checks, zero failures |
++| Project script compilation | 1,091 scripts, zero failures |
++
++The new tests preserve every condition field/mask during inspection, check both dirty sides and a snowy side, retain the intermediate light-film grade, and use actual local strokes to reach Shiny and refresh the cached result. Native Garage checks verify that the status and actual editing gate agree. Existing assertions were left intact.
++
++Initial corrections are retained in `evidence/garage-cleanliness-match-2026-10-24/corrections/`: the first local-mean-only trial rejected accepted upper film and the Classic's bottom interpolation strip; the first Shiny trial still used darkest dust strength; the expanded snow fixture exposed Formula road-spray dilution by upper-snow coverage. The final separate footprints and strength-plus-area rule resolve these without changing the existing tests. The initial sandbox run could not read the Windows certificate store; successful runs use approved native access with workspace-only APPDATA and an empty backend URL.
++
++Run the retained wrapper from the repository root:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Before
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_garage_wash_surfaces
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_garage_wash_easier
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_garage_clean_customisation
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_gentle_scrubbing
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_car_wash -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_app
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 -Test test_script_parse
++python docs/evidence/garage-cleanliness-match-2026-10-24/checkpoint.py
++```
++
++The `-Before` command deliberately fails to demonstrate the original classification errors. Expanded arguments, exit codes, elapsed time and full output are retained with each command. Source hashes, capture hashes and a task-only reverse-checked patch are in [report.json](evidence/garage-cleanliness-match-2026-10-24/report.json).
++
++![Missed muddy side correctly needs a rinse](evidence/garage-cleanliness-match-2026-10-24/test_garage_cleanliness_match-gl_compatibility/compact-dirty-side-right.png)
++
++![Negligible remaining film earns Shiny on desktop Mobile](evidence/garage-cleanliness-match-2026-10-24/test_garage_cleanliness_match-mobile/compact-negligible-film-right.png)
++
++Restart the client to load the correction. Owner acceptance with the reported real car/paint/wash state and physical-device appearance remains. No phone/tablet attachment check or physical-device test, APK/export/install, owner-process restart, live account/backend mutation or deployment was performed. Concurrent work and the Git index remain preserved.
+diff --git a/docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1 b/docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1
+@@ -0,0 +1,21 @@
++param(
++    [string]$Test = 'test_garage_cleanliness_match',
++    [ValidateSet('headless','gl_compatibility','mobile')][string]$Mode = 'headless',
++    [switch]$Before
++)
++$ErrorActionPreference = 'Stop'
++$cleanRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$cleanOutput = Join-Path $PSScriptRoot ("$Test-$Mode" + $(if ($Before) {'-before'} else {''}))
++New-Item -ItemType Directory -Force -Path $cleanOutput | Out-Null
++$env:APPDATA = Join-Path $cleanRepo 'build/garage-cleanliness-match-2026-10-24/user'
++$env:BMT_API_URL = ''
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$cleanArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $cleanRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$cleanOutput")
++if ($Before) { $cleanArgs[-1] += ',--before' }
++if ($Mode -ne 'headless') { $cleanArgs += @('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'})) }
++$cleanStarted = [DateTime]::UtcNow
++& powershell @cleanArgs *> (Join-Path $cleanOutput 'console.log')
++$cleanCode = $LASTEXITCODE
++@{command='powershell'; arguments=$cleanArgs; exit_code=$cleanCode; started_utc=$cleanStarted.ToString('o'); duration_seconds=([DateTime]::UtcNow-$cleanStarted).TotalSeconds} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $cleanOutput 'command.json')
++Get-Content (Join-Path $cleanOutput 'console.log') -Tail 24
++exit $cleanCode
+diff --git a/docs/evidence/garage-cleanliness-match-2026-10-24/checkpoint.py b/docs/evidence/garage-cleanliness-match-2026-10-24/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-match-2026-10-24/checkpoint.py
+@@ -0,0 +1,78 @@
++"""Build a reviewable patch against exact task-start source without staging."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++RUNTIME = "game/ui/garage_cleanliness.gd"
++NEW = [
++    "game/tests/test_garage_cleanliness_match.gd",
++    "game/tests/test_garage_cleanliness_match.gd.uid",
++    "docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md",
++    "docs/evidence/garage-cleanliness-match-2026-10-24/run_validation.ps1",
++    "docs/evidence/garage-cleanliness-match-2026-10-24/checkpoint.py",
++    "docs/evidence/garage-cleanliness-match-2026-10-24/doc-prefixes.json",
++]
++
++
++def read(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig").replace("\r\n", "\n")
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++prefixes = json.loads(read(OUT / "doc-prefixes.json"))
++before = {RUNTIME: read(OUT / "before" / RUNTIME)}
++for name, prefix in prefixes.items():
++    current = read(ROOT / name)
++    assert current.count(prefix) == 1, name
++    before[name] = current.replace(prefix, "", 1)
++patch = []
++for name in [*before, *NEW]:
++    old, current = before.get(name, ""), read(ROOT / name)
++    if old == current:
++        continue
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    if name not in before:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(old.splitlines(True), current.splitlines(True), fromfile=f"a/{name}" if name in before else "/dev/null", tofile=f"b/{name}"))
++(OUT / "checkpoint.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(["git", "apply", "--reverse", "--check", str(OUT / "checkpoint.patch")], cwd=ROOT, capture_output=True, text=True)
++assert result.returncode == 0, result.stderr
++validation = []
++for receipt in sorted(OUT.glob("*/command.json")):
++    item = json.loads(read(receipt))
++    item["name"] = receipt.parent.name
++    item["results"] = [line for line in read(receipt.parent / "console.log").splitlines() if re.search(r"\d+ (?:checks|scripts), \d+ failures", line)]
++    validation.append(item)
++report = {
++    "date": "2026-10-24",
++    "requirements": ["CCM01", "CCM02", "R01", "Q01"],
++    "engine": read(ROOT / "godot-version.txt").strip(),
++    "changed_files": [RUNTIME, *prefixes, *NEW],
++    "source_sha256": {name: sha(ROOT / name) for name in [RUNTIME, *prefixes, *NEW]},
++    "before_sha256": {RUNTIME: sha(OUT / "before" / RUNTIME)},
++    "checkpoint_reverse_check": "passed",
++    "checkpoint_sha256": sha(OUT / "checkpoint.patch"),
++    "checkpoint_scope": "One runtime checker against its exact task-start source, new regression and exact added documentation prefixes. No staging or commit; concurrent work excluded.",
++    "validation": validation,
++    "focused_cases": {p.parent.name: json.loads(read(p)) for p in sorted(OUT.glob("test_garage_cleanliness_match-*/report.json"))},
++    "native_capture_sha256": {str(p.relative_to(ROOT)).replace("\\", "/"): sha(p) for p in sorted(OUT.glob("test_garage_cleanliness_match-*/*.png"))},
++    "limits": [
++        "Bounded five-view 16x16 exterior sampling with 15 local footprint buckets; no new rays, draw calls or GPU readback.",
++        "Classification still estimates exterior residue; not exact visible pixels for every livery, light or device.",
++        "Initial local-only tolerance and Formula snow-footprint corrections retained; no existing assertions weakened.",
++        "Initial sandbox certificate-store failure resolved by approved isolated native execution.",
++        "Client restart and owner acceptance of the reported actual condition remain.",
++        "No phone/tablet attachment check or device test, APK, owner-process restart, live mutation or deployment.",
++    ],
++}
++(OUT / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8", newline="\n")
++print(json.dumps({"checkpoint_reverse_check": "passed", "validation": {row["name"]: row["results"] for row in validation}}, indent=2))
+diff --git a/docs/evidence/garage-cleanliness-match-2026-10-24/doc-prefixes.json b/docs/evidence/garage-cleanliness-match-2026-10-24/doc-prefixes.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-match-2026-10-24/doc-prefixes.json
+@@ -0,0 +1,5 @@
++{
++  "AGENTS.md": "<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->\n## Garage cleanliness and visible dirt override (2026-10-24)\n2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->\n\n",
++  "DEVELOPMENT_STATUS.md": "<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->\n2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->\n\n",
++  "docs/PHASE_0_PLAN.md": "<!-- GARAGE-CLEANLINESS-MATCH-20261024 -->\n2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-MATCH-20261024 -->\n\n"
++}

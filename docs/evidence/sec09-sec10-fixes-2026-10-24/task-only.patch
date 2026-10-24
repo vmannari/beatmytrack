@@ -1,0 +1,1104 @@
+diff --git a/backend/bmt_backend/http_server.py b/backend/bmt_backend/http_server.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/http_server.py
+@@ -0,0 +1,112 @@
++"""Bound HTTP connections before ASGI, using the locked Uvicorn/h11 parser."""
++import argparse
++from collections import OrderedDict
++
++import h11
++import uvicorn
++from uvicorn.protocols.http.h11_impl import H11Protocol
++
++HEADER_SECONDS = 2.0
++IDLE_CONNECTIONS = 8
++HEADER_BYTES = 16384
++
++
++class BoundedH11Protocol(H11Protocol):
++    """Keep idle/incomplete heads out of the application's connection reserve.
++
++    The oldest inactive socket yields to an arriving connection. Active bodies
++    and responses are never evicted. Header deadlines are absolute, including
++    the next request on a persistent connection; dripping bytes cannot renew one.
++    """
++
++    def __init__(self, *args, **kwargs):
++        super().__init__(*args, **kwargs)
++        if not hasattr(self.server_state, "bmt_inactive_connections"):
++            self.server_state.bmt_inactive_connections = OrderedDict()
++        self.inactive = self.server_state.bmt_inactive_connections
++        self.header_timer = None
++        self.closed_by_guard = False
++
++    def _forget(self):
++        self.inactive.pop(self, None)
++        if self.header_timer is not None:
++            self.header_timer.cancel()
++            self.header_timer = None
++
++    def _expire(self):
++        self._forget()
++        self.closed_by_guard = True
++        # Release the allowance synchronously, before the next complete request
++        # reaches Uvicorn's admission check. connection_lost remains idempotent.
++        self.connections.discard(self)
++        self.transport.close()
++
++    def _wait_for_head(self, *, deadline):
++        if self.transport.is_closing():
++            self._forget()
++            return
++        self.inactive.setdefault(self, None)
++        if deadline and self.header_timer is None:
++            self.header_timer = self.loop.call_later(HEADER_SECONDS, self._expire)
++        while len(self.inactive) > IDLE_CONNECTIONS:
++            next(iter(self.inactive))._expire()
++
++    def connection_made(self, transport):
++        super().connection_made(transport)
++        self._wait_for_head(deadline=True)
++
++    def data_received(self, data):
++        if self.closed_by_guard or self.transport.is_closing():
++            return
++        if self.conn.their_state is h11.IDLE:
++            self._wait_for_head(deadline=True)
++        super().data_received(data)
++
++    def handle_events(self):
++        super().handle_events()
++        if self.transport.is_closing():
++            self._forget()
++        elif self.conn.their_state is h11.IDLE:
++            # A pipelined partial head may already be buffered when the previous
++            # response completes. Empty keep-alive uses Uvicorn's existing timer.
++            self._wait_for_head(deadline=bool(self.conn.trailing_data[0]))
++        else:
++            self._forget()
++
++    def on_response_complete(self):
++        super().on_response_complete()
++        if not self.transport.is_closing() and self.conn.their_state is h11.IDLE:
++            self._wait_for_head(deadline=bool(self.conn.trailing_data[0]))
++
++    def connection_lost(self, exc):
++        self._forget()
++        super().connection_lost(exc)
++
++    def shutdown(self):
++        self._forget()
++        super().shutdown()
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("app", nargs="?", default="bmt_backend.app:create_app")
++    parser.add_argument("--factory", action="store_true", default=True)
++    parser.add_argument("--host", default="0.0.0.0")
++    parser.add_argument("--port", type=int, default=8080)
++    parser.add_argument("--limit-concurrency", type=int, default=24)
++    parser.add_argument("--timeout-keep-alive", type=int, default=5)
++    parser.add_argument("--no-proxy-headers", action="store_true")
++    parser.add_argument("--no-access-log", action="store_true")
++    args = parser.parse_args(argv)
++    if args.limit_concurrency < 16 or not 1 <= args.timeout_keep_alive <= 5:
++        parser.error("Connection admission needs at least 16 slots and keep-alive of 1–5 seconds")
++    uvicorn.run(args.app, factory=args.factory, host=args.host, port=args.port,
++                http=BoundedH11Protocol, ws="none", loop="asyncio",
++                proxy_headers=False, access_log=False,
++                limit_concurrency=args.limit_concurrency,
++                timeout_keep_alive=args.timeout_keep_alive,
++                h11_max_incomplete_event_size=HEADER_BYTES)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/backend/bmt_backend/database_privileges.py b/backend/bmt_backend/database_privileges.py
+--- a/backend/bmt_backend/database_privileges.py
++++ b/backend/bmt_backend/database_privileges.py
+@@ -185,6 +185,87 @@
+         "world_ranking_corrections",
+     }
+ )
++CRUD = ("SELECT", "INSERT", "UPDATE", "DELETE")
++COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
++KNOWN_RELATIONS = DOMAIN_TABLES | AUTH_TABLES | ADMIN_TABLES | {
++    "admin_audit", "alembic_version", "bmt_staging_guard", "queue_capacity"
++}
++HELPERS = {
++    ("bmt_finish_delta", "text, text, integer, integer"): "void",
++    ("bmt_tick_delta", "text, integer, integer, integer"): "void",
++    ("bmt_queue_reserve", "text, text, text"): "void",
++    ("bmt_reward_rank_delta", "text, text, integer, integer, integer"): "void",
++    ("bmt_leaderboard_time", "text, text, integer, integer, integer"): "void",
++    ("bmt_leaderboard_tie", "text, integer, text, integer"): "void",
++    ("discovery_short_grams", "text"): "text[]",
++}
++TRIGGERS = frozenset([
++    "bmt_histogram_board", "bmt_histogram_dirty", "bmt_histogram_invalidate",
++    "bmt_histogram_reset", "bmt_histogram_version", "bmt_lap_capture",
++    "bmt_lap_pb_eligible", "bmt_lap_pb_revision", "bmt_lap_player_reclassify",
++    "bmt_lap_state_board", "bmt_lap_state_cutoff", "bmt_lap_state_reset",
++    "bmt_leaderboard_pb", "bmt_leaderboard_player", "bmt_pb_projection",
++    "bmt_pb_revision", "bmt_player_board_revision", "bmt_queue_delta",
++    "bmt_reward_rank_pb", "bmt_reward_rank_player", "discovery_players_update",
++    "discovery_runs_insert", "discovery_runs_update", "discovery_track_versions_delete",
++    "discovery_track_versions_insert", "discovery_track_versions_update",
++    "discovery_tracks_delete", "discovery_tracks_insert", "discovery_tracks_update",
++])
++
++
++def relation_policy(workload):
++    """One source for provisioning and effective table/column verification."""
++    policy = {}
++
++    def grant(tables, privileges):
++        for table in tables:
++            policy.setdefault(table, {}).update(dict.fromkeys(privileges))
++
++    grant(DOMAIN_TABLES, CRUD)
++    grant({"alembic_version", "queue_capacity"}, ("SELECT",))
++    if workload == "api":
++        grant(AUTH_TABLES, CRUD)
++        grant(ADMIN_READS, ("SELECT",))
++    elif workload == "worker":
++        grant(ADMIN_READS, ("SELECT",))
++        grant({"admin_audit"}, ("INSERT",))
++        policy["game_config_control"]["UPDATE"] = {"revision", "active_generation"}
++        policy["game_config_releases"]["UPDATE"] = {"state"}
++    elif workload == "admin":
++        grant(ADMIN_TABLES, CRUD)
++        grant({"admin_audit"}, ("SELECT", "INSERT"))
++        policy["identities"] = {"SELECT": {"id", "player_id", "provider"}}
++        policy["session_families"] = {"SELECT": None, "UPDATE": {"revoked"}}
++    else:
++        raise ValueError("Unknown runtime workload")
++    return policy
++
++
++def reviewed_function(row):
++    signature = row["proname"], row["args"]
++    if row["prosecdef"]:
++        return (signature == ("bmt_redact_removed_audit", "text") and row["returns"] == "void"
++                and row["proconfig"] == ["search_path=pg_catalog"])
++    return (row["extension"] == "pg_trgm"
++            or HELPERS.get(signature) == row["returns"]
++            or (row["proname"] in TRIGGERS and not row["args"] and row["returns"] == "trigger"))
++
++
++def function_allowed(row, workload, schema):
++    return (reviewed_function(row) and (row["schema"] == schema or row["extension"] == "pg_trgm")
++            and (not row["prosecdef"] or workload == "worker"))
++
++
++def functions(connection):
++    return connection.execute(text("""SELECT p.oid,p.proname,n.nspname AS schema,
++        oidvectortypes(p.proargtypes) AS args,p.prorettype::regtype::text AS returns,
++        p.prosecdef,p.proconfig,e.extname AS extension,
++        has_function_privilege(p.oid,'EXECUTE') AS executable,
++        has_function_privilege(p.oid,'EXECUTE WITH GRANT OPTION') AS delegable
++        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
++        LEFT JOIN pg_catalog.pg_depend d ON d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e'
++        LEFT JOIN pg_catalog.pg_extension e ON e.oid=d.refobjid
++        WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'""")).mappings().all()
+ 
+ 
+ def identifier(value):
+@@ -194,44 +275,84 @@
+ 
+ 
+ def verify_runtime(engine, settings):
+-    """Fail closed if an old owner credential reaches a production workload."""
++    """Read-only, effective permission checks, including PUBLIC and column ACLs."""
+     if (
+         settings.environment != "production"
+         or engine.dialect.name != "postgresql"
+         or settings.workload_role not in DEFAULT_ROLES
+     ):
+         return
++    workload = settings.workload_role
++    policy = relation_policy(workload)
+     with engine.connect() as db:
++        schema = db.scalar(text("SELECT current_schema()"))
+         unsafe = db.scalar(
+             text("""SELECT r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR
+             r.rolreplication OR r.rolbypassrls OR EXISTS
+             (SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=r.oid) OR EXISTS
+-            (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=current_schema() AND nspowner=r.oid) OR EXISTS
++            (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname !~ '^pg_' AND nspname<>'information_schema' AND nspowner=r.oid) OR EXISTS
+             (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+-             WHERE n.nspname=current_schema() AND c.relowner=r.oid) OR EXISTS
++             WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND c.relowner=r.oid) OR EXISTS
+             (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+-             WHERE n.nspname=current_schema() AND p.proowner=r.oid)
++             WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND p.proowner=r.oid)
+             FROM pg_catalog.pg_roles r WHERE rolname=current_user""")
+         )
+         if unsafe is not False:
+             raise RuntimeError(
+                 "Production runtime database credentials must not own objects or inherit privileged authority"
+             )
+-        forbidden = [("admin_audit", "UPDATE"), ("admin_audit", "DELETE")]
+-        if settings.workload_role != "admin":
+-            forbidden.append(("studio_staff", "SELECT"))
+-        if settings.workload_role != "api":
+-            forbidden.append(("session_tokens", "SELECT"))
+-        for table, privilege in forbidden:
+-            # Includes column grants: table-level REVOKE alone is insufficient.
+-            allowed = db.scalar(
+-                text("SELECT has_any_column_privilege(current_user,:table,:privilege)")
+-                if privilege != "DELETE"
+-                else text("SELECT has_table_privilege(current_user,:table,:privilege)"),
+-                {"table": table, "privilege": privilege},
+-            )
+-            if allowed:
+-                raise RuntimeError("Production database grants exceed this workload's authority")
++        if not schema or db.scalar(text("""SELECT has_database_privilege(current_database(),'CREATE') OR EXISTS
++            (SELECT 1 FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname<>'information_schema'
++             AND (has_schema_privilege(oid,'CREATE') OR has_schema_privilege(oid,'USAGE WITH GRANT OPTION')))""")):
++            raise RuntimeError("Production runtime cannot create database/schema objects or delegate access")
++        privileges = (*CRUD, "REFERENCES", "TRIGGER", "TRUNCATE")
++        if db.dialect.server_version_info >= (17,):
++            privileges += ("MAINTAIN",)
++        # Constant privilege names only; object names/columns arrive as catalog data.
++        values = ",".join("('" + p + "')" for p in privileges)
++        relations = db.execute(text(f"""SELECT c.oid,c.relname,n.nspname AS schema,
++            ARRAY(SELECT p FROM (VALUES {values}) AS v(p) WHERE has_table_privilege(c.oid,p)) AS privileges,
++            ARRAY(SELECT p FROM (VALUES {values}) AS v(p) WHERE has_table_privilege(c.oid,p||' WITH GRANT OPTION')) AS delegable
++            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
++            WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'""")).mappings().all()
++        for row in relations:
++            expected = policy.get(row["relname"], {}) if row["schema"] == schema else {}
++            if (row["schema"] == schema and row["relname"] not in KNOWN_RELATIONS
++                    or row["delegable"]
++                    or set(row["privileges"]) != {p for p, columns in expected.items() if columns is None}):
++                raise RuntimeError("Production database grants exceed or differ from the workload policy")
++        columns = db.execute(text("""SELECT c.relname,n.nspname AS schema,a.attname,
++            ARRAY(SELECT p FROM unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) p
++                WHERE has_column_privilege(c.oid,a.attnum,p)) AS privileges,
++            ARRAY(SELECT p FROM unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) p
++                WHERE has_column_privilege(c.oid,a.attnum,p||' WITH GRANT OPTION')) AS delegable
++            FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
++            WHERE a.attnum>0 AND NOT a.attisdropped AND c.relkind IN ('r','p','v','m','f')
++            AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'""")).mappings().all()
++        for row in columns:
++            expected = policy.get(row["relname"], {}) if row["schema"] == schema else {}
++            allowed = {p for p, names in expected.items() if p in COLUMN_PRIVILEGES
++                       and (names is None or row["attname"] in names)}
++            if row["delegable"] or set(row["privileges"]) != allowed:
++                raise RuntimeError("Production database column grants differ from the workload policy")
++        sequences = db.execute(text("""SELECT c.oid,n.nspname AS schema,
++            EXISTS(SELECT 1 FROM pg_depend d JOIN pg_class t ON t.oid=d.refobjid
++                WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype IN ('a','i')
++                AND t.relnamespace=c.relnamespace) AS attached,
++            has_sequence_privilege(c.oid,'USAGE') AS usage,has_sequence_privilege(c.oid,'SELECT') AS reading,
++            has_sequence_privilege(c.oid,'UPDATE') AS writing,
++            has_sequence_privilege(c.oid,'USAGE WITH GRANT OPTION') OR
++            has_sequence_privilege(c.oid,'SELECT WITH GRANT OPTION') OR
++            has_sequence_privilege(c.oid,'UPDATE WITH GRANT OPTION') AS delegable
++            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
++            WHERE c.relkind='S' AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema'""")).mappings().all()
++        for row in sequences:
++            allowed = row["schema"] == schema and row["attached"]
++            if row["delegable"] or row["writing"] or row["usage"] != allowed or row["reading"] != allowed:
++                raise RuntimeError("Production database sequence grants differ from the workload policy")
++        for row in functions(db):
++            if row["delegable"] or row["executable"] != function_allowed(row, workload, schema):
++                raise RuntimeError("Production database function grants differ from the workload policy")
+         table, privilege = {
+             "api": ("session_tokens", "SELECT"),
+             "worker": ("runs", "UPDATE"),
+@@ -289,14 +410,11 @@
+     if engine.dialect.name != "postgresql":
+         raise ValueError("Workload grants require PostgreSQL")
+     with engine.begin() as connection:
+-        actual = set(inspect(connection).get_table_names(schema=schema))
+-        known = (
+-            DOMAIN_TABLES
+-            | AUTH_TABLES
+-            | ADMIN_TABLES
+-            | {"admin_audit", "alembic_version", "bmt_staging_guard"}
+-        )
+-        if actual - known:
++        inspector = inspect(connection)
++        actual = (set(inspector.get_table_names(schema=schema))
++                  | set(inspector.get_view_names(schema=schema))
++                  | set(inspector.get_materialized_view_names(schema=schema)))
++        if actual - KNOWN_RELATIONS:
+             raise RuntimeError("New schema tables require an explicit workload privilege review")
+         columns = {
+             table: ",".join(
+@@ -378,57 +496,33 @@
+             text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {qschema} REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
+         )
+ 
+-        def grant(role, privilege, names):
+-            for name in sorted(set(names) & actual):
+-                connection.execute(
+-                    text(f"GRANT {privilege} ON {qschema}.{identifier(name)} TO {identifier(roles[role])}")
+-                )
+-
+-        for role in roles:
+-            grant(role, "SELECT,INSERT,UPDATE,DELETE", DOMAIN_TABLES)
+-            grant(role, "SELECT", {"alembic_version"})
+-            connection.execute(text(f"GRANT SELECT ON {qschema}.queue_capacity TO {identifier(roles[role])}"))
+-            connection.execute(
+-                text(f"GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {qschema} TO {identifier(roles[role])}")
+-            )
+-            # Existing non-definer projection helpers run with the caller's own grants.
+-            functions = connection.execute(
+-                text("""SELECT p.oid::regprocedure::text FROM pg_catalog.pg_proc p
+-                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+-                WHERE n.nspname=:schema AND NOT p.prosecdef"""),
+-                {"schema": schema},
+-            ).scalars()
+-            for function in functions:
+-                connection.execute(text(f"GRANT EXECUTE ON FUNCTION {function} TO {identifier(roles[role])}"))
+-        grant("api", "SELECT,INSERT,UPDATE,DELETE", AUTH_TABLES)
+-        grant("api", "SELECT", ADMIN_READS)
+-        grant("worker", "SELECT", ADMIN_READS)
+-        # The worker activates already-published schedules. It may change only
+-        # activation metadata and append history, never edit policy or old audit.
+-        worker = identifier(roles["worker"])
+-        connection.execute(
+-            text(f"GRANT UPDATE(revision,active_generation) ON {qschema}.game_config_control TO {worker}")
+-        )
+-        connection.execute(text(f"GRANT UPDATE(state) ON {qschema}.game_config_releases TO {worker}"))
+-        grant("worker", "INSERT", {"admin_audit"})
+-        grant("admin", "SELECT,INSERT,UPDATE,DELETE", ADMIN_TABLES)
+-        grant("admin", "SELECT,INSERT", {"admin_audit"})
+-        # Support can identify providers and revoke sessions, without reading game-token hashes.
+-        connection.execute(
+-            text(
+-                f"GRANT SELECT(id,player_id,provider) ON {qschema}.identities TO {identifier(roles['admin'])}"
+-            )
+-        )
+-        connection.execute(
+-            text(
+-                f"GRANT SELECT,UPDATE(revoked) ON {qschema}.session_families TO {identifier(roles['admin'])}"
+-            )
+-        )
+-        connection.execute(
+-            text(
+-                f"GRANT EXECUTE ON FUNCTION {qschema}.bmt_redact_removed_audit(text) TO {identifier(roles['worker'])}"
+-            )
+-        )
++        reviewed = [row for row in functions(connection) if row["schema"] == schema]
++        if any(not reviewed_function(row) for row in reviewed):
++            raise RuntimeError("New database functions require an explicit workload privilege review")
++        sequences = connection.execute(text("""SELECT c.relname,EXISTS
++            (SELECT 1 FROM pg_depend d JOIN pg_class t ON t.oid=d.refobjid
++             WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype IN ('a','i')
++             AND t.relnamespace=c.relnamespace) AS attached
++            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
++            WHERE c.relkind='S' AND n.nspname=:schema"""), {"schema": schema}).mappings().all()
++        if any(not row["attached"] for row in sequences):
++            raise RuntimeError("New database sequences require an explicit workload privilege review")
++        for workload, name in roles.items():
++            quoted = identifier(name)
++            for table, privileges in relation_policy(workload).items():
++                if table not in actual:
++                    continue
++                for privilege, names in privileges.items():
++                    columns_clause = "(" + ",".join(identifier(c) for c in sorted(names)) + ")" if names else ""
++                    connection.execute(text(
++                        f"GRANT {privilege}{columns_clause} ON {qschema}.{identifier(table)} TO {quoted}"))
++            for row in sequences:
++                connection.execute(text(f"GRANT USAGE,SELECT ON {qschema}.{identifier(row['relname'])} TO {quoted}"))
++            for row in reviewed:
++                if function_allowed(row, workload, schema):
++                    # regprocedure is emitted by PostgreSQL with identifier quoting.
++                    signature = connection.scalar(text("SELECT CAST(:oid AS oid)::regprocedure::text"), {"oid": row["oid"]})
++                    connection.execute(text(f"GRANT EXECUTE ON FUNCTION {signature} TO {quoted}"))
+ 
+ 
+ def main():
+diff --git a/backend/tests/test_http_server.py b/backend/tests/test_http_server.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_http_server.py
+@@ -0,0 +1,216 @@
++"""Real TCP tests of admission before ASGI; all servers are owned loopback fixtures."""
++import http.client
++import os
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++import pytest
++
++
++def application():
++    import asyncio
++
++    from fastapi import Request
++
++    from bmt_backend.app import create_app
++    from bmt_backend.config import Settings
++    from bmt_backend.migrate import upgrade
++    app = create_app(Settings(database_url="sqlite://", object_dir=os.environ["BMT_HTTP_TEST_OBJECTS"],
++                              google_client_ids=("fixture",)))
++    upgrade(app.state.engine)
++
++    @app.get("/review/active")
++    async def active():
++        await asyncio.sleep(2.3)
++        return {"active": True}
++
++    @app.post("/review/echo")
++    @app.post("/review/upload/versions")
++    async def echo(request: Request):
++        return await request.json()
++
++    return app
++
++
++class Peer:
++    def __init__(self, port):
++        self.port = port
++
++    def connect(self):
++        return socket.create_connection(("127.0.0.1", self.port), timeout=4)
++
++    def request(self, path="/healthz", *, method="GET", body=None):
++        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
++        try:
++            conn.request(method, path, body, {"Connection": "close", "Content-Type": "application/json"})
++            response = conn.getresponse()
++            return response.status, response.read()
++        finally:
++            conn.close()
++
++
++@pytest.fixture(scope="module", params=["bounded"])
++def server(tmp_path_factory, request):
++    folder = tmp_path_factory.mktemp("http-guard")
++    with socket.socket() as listener:
++        listener.bind(("127.0.0.1", 0))
++        port = listener.getsockname()[1]
++    backend = Path(__file__).resolve().parents[1]
++    env = {k: v for k, v in os.environ.items() if not k.startswith("BMT_")}
++    env["PYTHONPATH"] = str(backend) + os.pathsep + str(backend / "tests")
++    env["BMT_HTTP_TEST_OBJECTS"] = str(folder / "objects")
++    command = [sys.executable, "-m", "bmt_backend.http_server" if request.param == "bounded" else "uvicorn",
++               "test_http_server:application", "--factory", "--host", "127.0.0.1", "--port", str(port),
++               "--limit-concurrency", "24", "--timeout-keep-alive", "5", "--no-proxy-headers", "--no-access-log"]
++    peer = Peer(port)
++    with (folder / "server.log").open("wb") as output:
++        process = subprocess.Popen(command, env=env, stdout=output, stderr=output)
++        try:
++            for _ in range(150):
++                try:
++                    if peer.request()[0] == 200:
++                        break
++                except (OSError, http.client.HTTPException):
++                    pass
++                assert process.poll() is None, (folder / "server.log").read_text(errors="replace")
++                time.sleep(.1)
++            else:
++                pytest.fail("Owned HTTP fixture did not start")
++            yield peer
++        finally:
++            process.terminate()
++            try:
++                process.wait(timeout=5)
++            except subprocess.TimeoutExpired:
++                process.kill()
++                process.wait(timeout=5)
++
++
++@pytest.mark.parametrize("server", ["original", "bounded"], indirect=True)
++def test_incomplete_heads_cannot_deny_health_or_normal_auth(server, request):
++    held = []
++    try:
++        for _ in range(23):
++            connection = server.connect()
++            connection.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Partial: ")
++            held.append(connection)
++            time.sleep(.01)
++        expected = 503 if request.node.callspec.params["server"] == "original" else 200
++        assert [server.request()[0] for _ in range(3)] == [expected] * 3
++        auth = server.request("/v1/auth/google/challenge", method="POST", body="{}")[0]
++        assert auth == (503 if expected == 503 else 201)
++        time.sleep(2.2)
++        assert server.request()[0] == expected
++        if expected == 200:
++            for connection in held:
++                assert connection.recv(1024) == b""
++    finally:
++        for connection in held:
++            connection.close()
++    time.sleep(.1)
++    assert server.request()[0] == 200
++
++
++def test_no_byte_connections_cannot_deny_an_arriving_complete_request(server):
++    held = [server.connect() for _ in range(23)]
++    try:
++        assert server.request()[0] == 200
++        time.sleep(2.2)
++        assert all(connection.recv(1024) == b"" for connection in held)
++    finally:
++        for connection in held:
++            connection.close()
++
++
++def test_header_deadline_is_not_renewed_by_progress(server):
++    with server.connect() as connection:
++        connection.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Partial: ")
++        started = time.monotonic()
++        for _ in range(3):
++            time.sleep(.55)
++            connection.sendall(b"x")
++        assert connection.recv(1024) == b""
++        assert time.monotonic() - started < 2.8
++    assert server.request()[0] == 200
++
++
++def test_active_response_survives_header_deadline(server):
++    assert server.request("/review/active")[0] == 200
++    assert server.request("/review/echo", method="POST", body='{"value":"unchanged"}')[1] == b'{"value":"unchanged"}'
++
++
++def test_active_upload_keeps_its_existing_body_allowance(server):
++    with server.connect() as connection:
++        body = b'{"value":"' + b'x' * 100 + b'"}'
++        head = (b"POST /review/upload/versions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
++                b"Content-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n")
++        connection.sendall(head + body[:20])
++        time.sleep(2.3)
++        connection.sendall(body[20:])
++        response = http.client.HTTPResponse(connection)
++        response.begin()
++        assert response.status == 200
++        assert response.read() == body
++
++
++def test_idle_keepalive_connections_yield_to_new_work(server):
++    peers = []
++    try:
++        for _ in range(23):
++            connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=4)
++            connection.request("GET", "/healthz")
++            reply = connection.getresponse()
++            assert reply.status == 200
++            reply.read()
++            peers.append(connection)
++        assert server.request()[0] == 200
++    finally:
++        for connection in peers:
++            connection.close()
++
++
++def test_partial_second_request_has_an_absolute_deadline(server):
++    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=4)
++    try:
++        connection.request("GET", "/healthz")
++        reply = connection.getresponse()
++        assert reply.status == 200
++        reply.read()
++        connection.sock.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Partial: ")
++        assert connection.sock.recv(1024) == b""
++        assert server.request()[0] == 200
++    finally:
++        connection.close()
++
++
++def test_pipelined_partial_head_expires_after_active_response(server):
++    with server.connect() as connection:
++        connection.sendall(b"GET /review/active HTTP/1.1\r\nHost: localhost\r\n\r\n"
++                           b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Partial: ")
++        received = bytearray()
++        while True:
++            part = connection.recv(1024)
++            if not part:
++                break
++            received.extend(part)
++        assert received.startswith(b"HTTP/1.1 200")
++        assert b'{"active":true}' in received
++        assert received.count(b"HTTP/1.1") == 1
++
++
++def test_oversized_partial_headers_and_malformed_heads_close(server):
++    for body in (b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nX: " + b"x" * 17000,
++                 b"GET /healthz HTTP/1.1\r\nBad Header\r\n\r\n"):
++        with server.connect() as connection:
++            connection.sendall(body)
++            received = bytearray()
++            while True:
++                part = connection.recv(4096)
++                if not part:
++                    break
++                received.extend(part)
++            assert received.startswith(b"HTTP/1.1 400")
++    assert server.request()[0] == 200
+diff --git a/backend/tests/test_runtime_privileges.py b/backend/tests/test_runtime_privileges.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_runtime_privileges.py
+@@ -0,0 +1,136 @@
++"""Actual effective-grant drift, not configuration-name assertions (SEC10)."""
++import importlib.util
++import os
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, text
++from sqlalchemy.engine import make_url
++from test_cloud_setup import database as _database_fixture
++
++from bmt_backend import cloud_setup
++from bmt_backend.config import Settings
++from bmt_backend.database_privileges import configure, verify_runtime
++
++pytestmark = pytest.mark.postgres
++database = _database_fixture
++
++
++def runtime(database, kind):
++    engine, schema, roles, url = database
++    cloud_setup.setup(engine, uuid.uuid4().hex, roles, schema)
++    peer = create_engine(make_url(url).set(username=roles[kind], password="isolated-security-test-role"),
++                         hide_parameters=True, connect_args={"options": "-c search_path=" + schema})
++    return peer
++
++
++@pytest.mark.parametrize("kind,grant", [
++    ("worker", "GRANT CREATE ON SCHEMA {schema} TO {role}"),
++    ("api", "GRANT CREATE ON SCHEMA {schema} TO {role}"),
++    ("admin", "GRANT CREATE ON SCHEMA {schema} TO {role}"),
++    ("worker", "GRANT UPDATE(enabled) ON {schema}.studio_staff TO {role}"),
++    ("worker", "GRANT UPDATE(enabled) ON {schema}.studio_staff TO PUBLIC"),
++    ("worker", "GRANT INSERT ON {schema}.session_tokens TO {role}"),
++    ("worker", "GRANT UPDATE(subject) ON {schema}.identities TO {role}"),
++    ("worker", "GRANT UPDATE(emergency) ON {schema}.game_config_control TO {role}"),
++    ("worker", "GRANT UPDATE(policy) ON {schema}.game_config_releases TO {role}"),
++    ("api", "GRANT DELETE ON {schema}.game_config_releases TO {role}"),
++    ("admin", "GRANT SELECT(subject) ON {schema}.identities TO {role}"),
++    ("worker", "GRANT TRUNCATE ON {schema}.admin_audit TO {role}"),
++    ("api", "GRANT TRUNCATE ON {schema}.admin_audit TO {role}"),
++    ("admin", "GRANT TRUNCATE ON {schema}.admin_audit TO {role}"),
++    ("worker", "GRANT TRIGGER ON {schema}.players TO {role}"),
++    ("worker", "GRANT REFERENCES(id) ON {schema}.players TO {role}"),
++    ("worker", "GRANT SELECT ON {schema}.players TO {role} WITH GRANT OPTION"),
++    ("worker", "GRANT UPDATE(revision) ON {schema}.game_config_control TO {role} WITH GRANT OPTION"),
++    ("worker", "GRANT USAGE ON SCHEMA {schema} TO {role} WITH GRANT OPTION"),
++    ("worker", "GRANT UPDATE ON ALL SEQUENCES IN SCHEMA {schema} TO {role}"),
++    ("api", "GRANT EXECUTE ON FUNCTION {schema}.bmt_redact_removed_audit(text) TO {role}"),
++    ("worker", "GRANT EXECUTE ON FUNCTION {schema}.discovery_short_grams(text) TO {role} WITH GRANT OPTION"),
++])
++def test_startup_rejects_effective_privilege_drift(database, kind, grant):
++    peer = runtime(database, kind)
++    engine, schema, roles, _ = database
++    try:
++        verify_runtime(peer, Settings(workload_role=kind))
++        with engine.begin() as db:
++            db.execute(text(grant.format(schema='"' + schema + '"', role='"' + roles[kind] + '"')))
++        with pytest.raises(RuntimeError):
++            verify_runtime(peer, Settings(workload_role=kind))
++    finally:
++        peer.dispose()
++
++
++@pytest.mark.parametrize("kind", ["api", "worker", "admin"])
++def test_reviewed_policy_accepts_every_role_and_its_required_operations(database, kind):
++    peer = runtime(database, kind)
++    try:
++        verify_runtime(peer, Settings(workload_role=kind))
++        with peer.begin() as db:
++            db.execute(text("SELECT id FROM players LIMIT 1"))
++            if kind == "worker":
++                db.execute(text("UPDATE game_config_control SET revision=revision"))
++                db.execute(text("UPDATE game_config_releases SET state=state WHERE false"))
++                db.execute(text("INSERT INTO admin_audit(id,command_id,request_hash,actor,action,entity_id,reason,before,after,request_id,created_at) "
++                                "VALUES (:id,:id,'fixture','scheduler','test','fixture','fixture','{}','{}','fixture',1)"), {"id": str(uuid.uuid4())})
++            if kind == "admin":
++                db.execute(text("SELECT id,player_id,provider FROM identities LIMIT 1"))
++                db.execute(text("UPDATE session_families SET revoked=true WHERE false"))
++    finally:
++        peer.dispose()
++
++
++def test_database_create_permission_is_rejected_without_repairing_it(database):
++    peer = runtime(database, "worker")
++    engine, _, roles, _ = database
++    try:
++        with engine.begin() as db:
++            name = db.scalar(text("SELECT current_database()"))
++            db.execute(text('GRANT CREATE ON DATABASE "' + name.replace('"', '""') + '" TO "' + roles["worker"] + '"'))
++        with pytest.raises(RuntimeError):
++            verify_runtime(peer, Settings(workload_role="worker"))
++        with peer.connect() as db:
++            assert db.scalar(text("SELECT has_database_privilege(current_database(),'CREATE')"))
++    finally:
++        peer.dispose()
++
++
++@pytest.mark.parametrize("object_sql", [
++    "CREATE TABLE future_unreviewed(id integer)",
++    "CREATE FUNCTION future_unreviewed() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
++    "CREATE FUNCTION future_unreviewed() RETURNS integer LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS 'SELECT 1'",
++])
++def test_future_objects_never_gain_automatic_authority(database, object_sql):
++    peer = runtime(database, "worker")
++    engine, schema, roles, _ = database
++    try:
++        with engine.begin() as db:
++            db.execute(text(object_sql))
++        with pytest.raises(RuntimeError):
++            verify_runtime(peer, Settings(workload_role="worker"))
++        with pytest.raises(RuntimeError, match="explicit workload privilege review"):
++            configure(engine, schema=schema, roles=roles)
++    finally:
++        peer.dispose()
++
++
++@pytest.mark.parametrize("grant", ["GRANT CREATE ON SCHEMA {schema} TO {role}",
++                                  "GRANT UPDATE(enabled) ON {schema}.studio_staff TO {role}"])
++def test_original_checker_control_accepts_the_reproduced_drift(database, grant):
++    path = os.environ.get("BMT_ORIGINAL_PRIVILEGES_SOURCE")
++    if not path:
++        pytest.skip("Original-method control requires the task-start source snapshot")
++    spec = importlib.util.spec_from_file_location("original_grant_checker", Path(path))
++    original = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(original)
++    peer = runtime(database, "worker")
++    engine, schema, roles, _ = database
++    try:
++        with engine.begin() as db:
++            db.execute(text(grant.format(schema='"' + schema + '"', role='"' + roles["worker"] + '"')))
++        original.verify_runtime(peer, Settings(workload_role="worker"))
++        with pytest.raises(RuntimeError):
++            verify_runtime(peer, Settings(workload_role="worker"))
++    finally:
++        peer.dispose()
+diff --git a/backend/Dockerfile b/backend/Dockerfile
+--- a/backend/Dockerfile
++++ b/backend/Dockerfile
+@@ -38,4 +38,4 @@
+ ENV HOME=/tmp/bmt BMT_GODOT_BIN=/usr/local/bin/godot BMT_GAME_PROJECT=/opt/bmt/game BMT_OBJECT_DIR=/var/lib/bmt/objects
+ USER 10001:10001
+ EXPOSE 8080
+-CMD ["uvicorn", "bmt_backend.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-access-log", "--limit-concurrency", "24", "--timeout-keep-alive", "5"]
++CMD ["python", "-m", "bmt_backend.http_server", "bmt_backend.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-access-log", "--limit-concurrency", "24", "--timeout-keep-alive", "5"]
+diff --git a/backend/deploy/compose.yaml b/backend/deploy/compose.yaml
+--- a/backend/deploy/compose.yaml
++++ b/backend/deploy/compose.yaml
+@@ -92,7 +92,7 @@
+ 
+   api:
+     <<: *runtime
+-    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
++    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
+     environment:
+       <<: *environment
+       BMT_WORKLOAD_ROLE: api
+@@ -138,7 +138,7 @@
+   admin:
+     <<: *runtime
+     profiles: [studio]
+-    command: [uvicorn, "bmt_backend.app:create_admin_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
++    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_admin_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
+     environment:
+       <<: *environment
+       BMT_WORKLOAD_ROLE: admin
+diff --git a/backend/deploy/compose.pc.yaml b/backend/deploy/compose.pc.yaml
+--- a/backend/deploy/compose.pc.yaml
++++ b/backend/deploy/compose.pc.yaml
+@@ -67,7 +67,7 @@
+         GODOT_SHA256: 8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e
+     restart: unless-stopped
+     ports: ["127.0.0.1:18181:8080"]
+-    command: [uvicorn, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log]
++    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log]
+     depends_on:
+       migrate: {condition: service_completed_successfully}
+     healthcheck:
+@@ -92,7 +92,7 @@
+   admin:
+     <<: *runtime
+     profiles: [studio]
+-    command: [uvicorn, "bmt_backend.app:create_admin_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
++    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_admin_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
+     environment:
+       <<: *environment
+       BMT_WORKLOAD_ROLE: admin
+diff --git a/backend/deploy/gcp/staging.py b/backend/deploy/gcp/staging.py
+--- a/backend/deploy/gcp/staging.py
++++ b/backend/deploy/gcp/staging.py
+@@ -166,6 +166,11 @@
+     return [*config["gcloud"], "--project=" + config["project"], *args, "--quiet"]
+ 
+ 
++def http_command(factory="create_app"):
++    return ["--command=python", "--args=-m,bmt_backend.http_server,bmt_backend.app:" + factory
++            + ",--factory,--host,0.0.0.0,--port,8080,--no-proxy-headers,--no-access-log,--limit-concurrency,24,--timeout-keep-alive,5"]
++
++
+ def deployment_commands(config, image, directory):
+     n = names(config)
+     region, project = config["region"], config["project"]
+@@ -187,6 +192,7 @@
+             *job, "--args=-m,bmt_backend.cloud_setup"),
+         "migrate_execute": command(config, "run", "jobs", "execute", n["migrate"], "--region=" + region, "--wait"),
+         "api": command(config, "run", "deploy", n["api"], *common("api", "runtime", "app_secret"),
++            *http_command(),
+             "--port=8080", "--concurrency=16", "--min=" + str(config.get("api_min", 0)), "--max=" + str(config["api_max"]),
+             "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
+             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
+@@ -202,7 +208,7 @@
+ 
+     if config.get("admin_enabled"):
+         result["admin"] = command(config, "run", "deploy", n["admin"], *common("admin", "staff_runtime", "staff_secret"),
+-            "--command=uvicorn", "--args=bmt_backend.app:create_admin_app,--factory,--host,0.0.0.0,--port,8080,--no-proxy-headers,--no-access-log,--limit-concurrency,24,--timeout-keep-alive,5",
++            *http_command("create_admin_app"),
+             "--port=8080", "--concurrency=8", "--min=0", "--max=1", "--timeout=60s", "--ingress=all", "--no-allow-unauthenticated")
+     return result
+ 
+diff --git a/backend/deploy/gcp/update.py b/backend/deploy/gcp/update.py
+--- a/backend/deploy/gcp/update.py
++++ b/backend/deploy/gcp/update.py
+@@ -4,7 +4,7 @@
+ import json
+ import os
+ import re
+-from datetime import datetime, timezone, timedelta
++from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ 
+ import staging
+@@ -133,7 +133,8 @@
+         for kind, command in targets:
+             self.check_source()
+             print("Updating " + kind, flush=True)
+-            s.call("run", command, "update", s.n[kind], "--region=" + self.config["region"], "--image=" + image)
++            http = staging.http_command("create_admin_app" if kind == "admin" else "create_app") if kind in ("api", "admin") else []
++            s.call("run", command, "update", s.n[kind], "--region=" + self.config["region"], "--image=" + image, *http)
+             self.receipt[kind + "_updated"] = True
+             self.save()
+         for job in ([s.n["smoke"], catalog] if catalog_exists else [s.n["smoke"]]):
+diff --git a/scripts/dev.ps1 b/scripts/dev.ps1
+--- a/scripts/dev.ps1
++++ b/scripts/dev.ps1
+@@ -503,7 +503,7 @@
+                 & $backendPython -m pytest (Join-Path $repoRoot 'backend/tests') -q
+             }
+             'BackendRun' {
+-                & $backendPython -m uvicorn bmt_backend.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers
++                & $backendPython -m bmt_backend.http_server bmt_backend.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers
+             }
+             'BackendWorker' { & $backendPython -m bmt_backend.worker }
+             'BackendMigrate' { & $backendPython -m bmt_backend.migrate }
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,3 +1,7 @@
++<!-- SEC09-SEC10-FIXES-20261024 -->
++SEC09/SEC10 are repaired in source: all deployment HTTP entry points select `python -m bmt_backend.http_server`; retained Google updates also replace old command overrides. Production PostgreSQL startup verifies effective table/column/schema/sequence/function grants against the provisioning policy. Apply reviewed owner grants after migrations and verify production-mode startup during an authorized rollout. No deployment occurred for these fixes. See [actual tests, current-schema correction and rollout limits](../../docs/SEC09_SEC10_FIXES_2026_10_24.md).
++<!-- /SEC09-SEC10-FIXES-20261024 -->
++
+ 2026-10-24 cloud rollout: schema0062 and separate API/worker identities are active; public Studio is disabled. PC remains unchanged pending private backup approval. See [actual security deployment, validation and remaining acceptance](../../docs/SECURITY_DEPLOYMENT_2026_10_24.md).
+ 
+ 2026-10-24 cost optimisation: [implementation and rollout gates](../../docs/COST_OPTIMISATION_IMPLEMENTATION_2026_10_24.md) cover explicit packing/archival enablement, matching0065/0066 migrations and workload grants, compatible readers/supervisor, pack-aware restore and PostgreSQL calibration. The offline Google profile proposes billing/log choices without applying provider changes.
+diff --git a/backend/README.md b/backend/README.md
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -5,6 +5,10 @@
+ <!-- SECURITY-FIXES-20261024 -->
+ Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../docs/SECURITY_FIXES_2026_10_24.md).
+ <!-- /SECURITY-FIXES-20261024 -->
++
++<!-- SEC09-SEC10-FIXES-20261024 -->
++SEC09/SEC10 source fixes use `python -m bmt_backend.http_server` for bounded pre-ASGI headers/idle connections and share the reviewed provisioning/startup PostgreSQL grant policy. Existing cloud command overrides need the matching updater. Current schema0065 also quotes its reserved `offset` constraint identifier. Validated locally; no rollout performed. See [implementation, tests and rollout limits](../docs/SEC09_SEC10_FIXES_2026_10_24.md).
++<!-- /SEC09-SEC10-FIXES-20261024 -->
+ 
+ # Beat my track backend
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -212,6 +212,11 @@
+ 
+ ## Indexed discovery and bounded browsing override (2026-10-22)
+ 2026-10-22 DSI01-DSI04/DRR01-DRR13/R01/Q01: Discovery v3 replaces complete matching catalogues with twenty-item keyset pages, retained changed-row epochs, current authority checks and uniform bounded Random. Transactional receipts, sixteen independent partitions, coalesced exact seven-day pairs, expiry/erasure, worker health and reserved busy-partition scheduling serve a bounded native window with scoped caches and exact revision anchors. Final SQLite/PostgreSQL57pass/1SQLite-lock skip, security/migration/staging60, native80headless/83Compatibility/83desktopMobile, legacy paging269/list233/challenge68, real native HTTP safety/privacy and parser934 pass. A local synthetic million-track probe has warm-page median60.73ms; a two-character miss returns503. The same10k receipt burst improves261.4 to761.1/s before daemon sleeps; neither is cloud/DAU certification. An older publication fixture's null-root failure reproduces with task-original Cloud; assertions remain. Actual commands, initial corrections, SQL plans, native views, risk dispositions and task-only checkpoint: docs/evidence/discovery-indexed-2026-10-22/report.json. Migration/API/worker/client rollout, old-client update, representative migration/load/storage and owner/device acceptance remain; no phone attachment check/device test, APK, live backend/account/queue mutation or deployment.
++
++<!-- SEC09-SEC10-FIXES-20261024 -->
++## HTTP admission and effective database grants override (2026-10-24)
++2026-10-24 SEC09/SEC10/R01/Q01: Guarded Uvicorn/h11 lifecycle adds absolute2s headers and eight inactive slots, retaining active bodies/responses and existing receiver limits. All deployment/development HTTP commands and retained cloud command overrides use the guard. Shared provisioning/startup policy checks effective table/column/schema/sequence/function rights, PUBLIC and grant options, preserving scheduler/support/audit exceptions. PostgreSQL0065 quotes reserved offset; no new revision. Final real TCP10Windows/10Linux, regression78 and PostgreSQL54pass/1Godot deselection; original controls reproduce both grants and header denial. Initial0065 DDL and raw audit-fixture ID failures retained. Commands, hashes, source-scoped Git checkpoint and limits: docs/SEC09_SEC10_FIXES_2026_10_24.md and docs/evidence/sec09-sec10-fixes-2026-10-24/report.json. Matching authorized rollout, real edge/load and owner acceptance remain. Production grant guard retains production-only gating. No device attachment check/test, APK, client restart, live records/grants/migration, service update or deployment. Concurrent work and owner processes preserved.
++<!-- /SEC09-SEC10-FIXES-20261024 -->
+ 
+ # Project agent instructions
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,8 @@
+ 2026-10-24 GSP01-GSP03/R01/Q01: Hose/mitt picture choices replace plain washing text switches; native customisation/tuning use coordinated charcoal panels, larger model previews, paint swatches, accessible names and consistent touch/focus states. Garage-only framing0.96to0.84 keeps all five cars visible; responsive workbenches and deferred selected-part reveal fix the retained initial three clipping failures without weakening assertions. Focused57headless/86Compatibility/86desktopMobile, tuning61, hose84 per renderer, clean262/retained1396/App141/parser1091 and import pass. Actual native before/after views, exact built-in image_gen prompts, commands, hashes and task-only binary-capable checkpoint: docs/GARAGE_STUDIO_POLISH_2026_10_24.md and docs/evidence/garage-studio-polish-2026-10-24/report.json. Client reload and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check or physical-device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
++
++<!-- SEC09-SEC10-FIXES-20261024 -->
++2026-10-24 SEC09/SEC10/R01/Q01: Absolute2s header completion/eight inactive HTTP slots protect admission before ASGI while active uploads/responses retain their limits. Shared reviewed provisioning/startup policy rejects effective database privilege drift, including PUBLIC/column/grant-option rights; required worker/admin operations remain. All HTTP entry points and retained cloud command overrides select the guard. Current0065 reserved-offset constraint is quoted without a schema revision. Windows10/Linux10 real TCP, regression78 and PostgreSQL54pass/1Godot deselection; initial DDL/audit-fixture failures retained. Actual commands, hashes, scoped Git checkpoint and rollout limits: docs/SEC09_SEC10_FIXES_2026_10_24.md and docs/evidence/sec09-sec10-fixes-2026-10-24/report.json. No device attachment check/test, APK, live mutation, migration, client/owner-process restart or deployment. Concurrent work preserved; matching authorized rollout and real proxy/load acceptance remain.
++<!-- /SEC09-SEC10-FIXES-20261024 -->
+ 
+ <!-- GARAGE-CLEANLINESS-MATCH-20261024 -->
+ 2026-10-24 CCM01-CCM02/R01/Q01: Reproduce dirty sides receiving Clean enough for company and negligible film missing Shiny on all five cars. Fifteen cached view/footprint buckets prevent road/snow/dust dilution; negligible-film top-grade tolerance retains visible-patch guards. Existing global/underbody/small-patch/light-film rules, local masks, mitt/hose, shared editing gate and driving remain. Original96checks/20fail; final95headless/145Compatibility/145desktopMobile, surfaces45/easier40/customisation262/scrubbing501/native washing1402/App141/parser1091 pass. Initial local-tolerance, film-opacity, Formula-snow and sandbox certificate corrections retained; no existing assertion changed. Commands, native views, hashes and scoped checkpoint: docs/GARAGE_CLEANLINESS_MATCH_2026_10_24.md and docs/evidence/garage-cleanliness-match-2026-10-24/report.json. Client restart and owner actual-state/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/README.md b/docs/README.md
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -7,6 +7,7 @@
+ 
+ | Topic | Current entry point | Implementation to consult |
+ |---|---|---|
++| SEC09 and SEC10 security fixes | [Implementation, evidence and rollout limits](SEC09_SEC10_FIXES_2026_10_24.md) | [Guarded HTTP server](../backend/bmt_backend/http_server.py), [effective grant policy](../backend/bmt_backend/database_privileges.py) |
+ | Backend downloads and costs | [Implementation, validation and rollout gates](COST_OPTIMISATION_IMPLEMENTATION_2026_10_24.md) | [Google-only scenarios](GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md), [cost profile](../backend/deploy/gcp/cost_profile.py) |
+ | Run, build and checks | [Repository README](../README.md) | [Development wrapper](../scripts/dev.ps1), [engine pin](../godot-version.txt), [project settings](../game/project.godot) |
+ | Menus, racing and authoring | [Menu and creator guide](MENUS_AND_CREATOR.md) | [App](../game/core/app.gd), [race rules](../game/race/race_rules.gd) |
+diff --git a/docs/SEC09_SEC10_FIXES_2026_10_24.md b/docs/SEC09_SEC10_FIXES_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SEC09_SEC10_FIXES_2026_10_24.md
+@@ -0,0 +1,71 @@
++# SEC09 and SEC10 fixes — 24 October 2026
++
++SEC09 and SEC10 are repaired in source. The HTTP listener bounds connections before ASGI, and production PostgreSQL startup compares effective permissions with the same reviewed policy used to provision grants. This task does not deploy or restart an existing backend.
++
++Requirements: **SEC09, SEC10, R01, Q01**. The [second security review](SECURITY_SECOND_REVIEW_2026_10_24.md) records the original findings. [Machine-readable evidence](evidence/sec09-sec10-fixes-2026-10-24/report.json) contains commands, source hashes, results and the scoped checkpoint.
++
++## SEC09: bound connections before request dispatch
++
++[`bmt_backend.http_server`](../backend/bmt_backend/http_server.py) extends the locked Uvicorn 0.54.0 h11 protocol lifecycle, retaining its parser. Each accepted connection has an absolute **two-second** first-header deadline. Partial subsequent headers, including a buffered pipelined request, have the same deadline. Sending occasional bytes cannot renew it. Incomplete headers retain a **16 KiB** parser buffer limit.
++
++At most **eight inactive connections** are retained per HTTP process. A new connection closes the oldest inactive one and releases its concurrency allowance synchronously. This leaves room within the existing 24-connection allowance for a complete request even while incomplete heads or empty keep-alive sockets are held. Empty keep-alive also retains Uvicorn's five-second timeout. Active bodies and responses are excluded from eviction and the header timer; the existing ASGI body size, receiver and time limits still apply. The launcher rejects fewer than 16 concurrency slots or a keep-alive outside 1–5 seconds.
++
++The Docker default, production/PC API and private Studio Compose commands, development launcher, isolated Compose smoke command, Google initial deployment and retained updater all select this entry point. The retained updater explicitly replaces command/arguments as well as the image, because an existing Cloud Run command override can otherwise keep selecting raw Uvicorn. No dependencies were added; h11 and Uvicorn remain at their existing lock versions.
++
++Real TCP tests compare original and guarded listeners on owned loopback fixtures. Holding 23 partial heads makes the original return health **503/503/503** and normal authentication **503**. The repaired listener returns health **200/200/200** and authentication **201**, and closes the held connections. Other tests exercise zero-byte sockets, byte dripping, idle persistent sockets, subsequent/pipelined partial heads, malformed/oversized incomplete heads, a 2.3-second active response and a valid upload whose body takes longer than the header deadline.
++
++The two-second deadline and eight inactive slots are deliberate admission limits: a very slow request head can be closed, and a burst can displace the oldest inactive socket. These tests establish the local server behavior, not resistance to arbitrary connection floods or Google/NAS edge acceptance. Keep the existing private listener/proxy topology and calibrate the limits against actual proxy/device connections during rollout.
++
++## SEC10: validate effective grants against the provisioning policy
++
++[`database_privileges.py`](../backend/bmt_backend/database_privileges.py) now shares `relation_policy()` between grant provisioning and production runtime verification. The check is read-only and includes effective PUBLIC grants and column permissions. It rejects:
++
++- Database/schema CREATE, object ownership, role inheritance/elevation and delegated schema access.
++- Unexpected or missing table/column privileges, grant options and non-CRUD rights such as TRUNCATE, REFERENCES, TRIGGER and PostgreSQL 17 MAINTAIN.
++- Sequence UPDATE/delegation or permissions outside reviewed attached sequences.
++- Unexpected function execution/delegation, with explicit helper/trigger signatures, actual pg_trgm extension membership and the narrowly scoped worker audit-redaction function.
++- Effective access to unrelated persistent schemas and unknown application relations.
++
++The intended existing workload permissions remain: workers can activate scheduled configuration through the selected columns and append audit rows; private Studio can read the approved identity columns and revoke session families. The audit-redaction function remains worker-only with its exact signature and fixed search path. New tables, views, functions and unattached sequences require explicit provisioning review. A future function with no effective execution grant conveys no runtime authority. PostgreSQL temporary/system facilities are outside this persistent application-object policy.
++
++The guard retains its existing activation condition: production PostgreSQL API/worker/admin workloads. Development mode and SQLite do not claim this production credential validation. Runtime startup rejects drift; an owner/migrator must review and reapply grants separately. Startup never silently repairs permissions.
++
++Disposable PostgreSQL tests cover all three valid roles and actual required worker/admin operations, 22 table/column/schema/function/sequence drift variants, database CREATE, three unreviewed-object variants and the two original-method controls. Both task-original checker controls accept the reproduced schema CREATE/staff UPDATE drift; the repaired checker rejects it. A rejection test confirms the checker leaves the offending grant unchanged.
++
++## Current schema compatibility correction
++
++The first PostgreSQL run could not reach either credential checker because migration0065 used the reserved word `offset` unquoted in a check constraint. The migration and matching ORM constraint now quote `"offset"`. This changes no column, data or storage rule and permits the current migration chain through0067 to run on PostgreSQL. SEC09/SEC10 add no migration revision or new workload privilege.
++
++## Verification
++
++| Check | Actual result |
++|---|---|
++| Windows real TCP, including original control | 10 passed, 29.38s |
++| Linux real TCP, network-disabled container | 10 passed, 33.56s |
++| Security fixes, staging, retained updater, deployment regression | 78 passed, 28.20s |
++| Current-schema PostgreSQL setup and effective-grant checks | 54 passed, 1 Godot-dependent case deselected, 176.40s |
++| Focused Ruff E9/F/I/B/SIM | Passed |
++
++Actual commands, from the repository root:
++
++```powershell
++$env:PYTHONPATH='backend'
++.tools/backend-secure-venv/Scripts/python.exe -X utf8 -m pytest backend/tests/test_http_server.py -q --tb=short --basetemp=build/sec09-sec10-fixes-2026-10-24/http-final -p no:cacheprovider --junitxml=docs/evidence/sec09-sec10-fixes-2026-10-24/http.xml
++.tools/backend-secure-venv/Scripts/python.exe -X utf8 -m pytest backend/tests/test_security_fixes.py backend/tests/test_gcp_staging.py backend/tests/test_gcp_update.py backend/tests/test_results_deployment.py -q --tb=short --basetemp=build/sec09-sec10-fixes-2026-10-24/regression-final -p no:cacheprovider --junitxml=docs/evidence/sec09-sec10-fixes-2026-10-24/regression.xml
++.tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/sec0910_linux_http_20261024.py
++.tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/sec0910_postgres_20261024.py
++```
++
++The Linux and PostgreSQL wrappers use a cached local image for dependencies and mount current backend source read-only. PostgreSQL17 runs on a labelled, owned internal Docker network with tmpfs data and newly generated fixture credentials; cleanup stops only that labelled fixture. The original checker is mounted as a separate control. The Godot-dependent cloud smoke case is explicitly deselected. No player database or cloud credential is involved. Retained copies of the wrappers, the control source, pytest XML/logs and the patch are in the evidence directory.
++
++The first PostgreSQL attempt recorded 53 failures/1 pass before the0065 identifier correction. The second recorded 53 passes/1 failure because the new raw-SQL audit fixture omitted its ORM-generated primary key. The fixture now supplies its ID explicitly; no security invariant was relaxed. Those receipts remain as `postgres-initial.*` and `postgres-second.*`. Existing Starlette deprecation/SQLite expression-index reflection warnings are retained.
++
++## Files and rollout limits
++
++Runtime files: `backend/bmt_backend/http_server.py`, `database_privileges.py`, `object_models.py`, `migrations/versions/0065_packed_objects.py`. Entry points: `backend/Dockerfile`, both Compose files, `backend/deploy/smoke_compose.py`, Google `staging.py`/`update.py`, `scripts/dev.ps1`. Tests: `test_http_server.py`, `test_runtime_privileges.py`, `test_gcp_staging.py`, `test_gcp_update.py`. Backend/deployment/index/status documentation links this report.
++
++The scoped Git patch uses task-start source baselines and documentation baselines captured immediately before this task's insertions, preserving concurrent work. The initial manifest is retained separately. `git apply --reverse --check --ignore-space-change` validates the LF patch against the workspace's mixed Windows line endings; the initial plain check rejected those line-ending differences. No mixed-tree commit is made.
++
++Rollout requires the matching guarded HTTP command and API/worker/private Studio image, the normal owner-run reviewed grants step after migrations, and successful production-mode credential checks. A rollout of the whole current tree must also account for its independently developed0063–0067 features and prerequisites. The earlier cloud release remains separate; this task performs no live migration, GRANT, service update, player mutation, backup/export or deployment. Previous PC backup approval remains outstanding.
++
++No frontend/physics change or visible UI change was made. Device attachment was not checked; no physical-device test, APK, client/owner-process restart, purchase or provider interaction occurred. Real edge/proxy/device/load and deployment-host acceptance remain. Previously accepted SEC01/SEC02/SEC05 policy risks are outside this fix.
+diff --git a/backend/bmt_backend/migrations/versions/0065_packed_objects.py b/backend/bmt_backend/migrations/versions/0065_packed_objects.py
+--- a/backend/bmt_backend/migrations/versions/0065_packed_objects.py
++++ b/backend/bmt_backend/migrations/versions/0065_packed_objects.py
+@@ -27,7 +27,7 @@
+         sa.Column("created_at", sa.Integer(), nullable=False), sa.Column("pending", sa.LargeBinary(), nullable=True),
+         sa.Column("pack_digest", sa.String(64), sa.ForeignKey("object_packs.digest"), nullable=True),
+         sa.Column("offset", sa.Integer(), nullable=False), sa.Column("length", sa.Integer(), nullable=False),
+-        sa.CheckConstraint("length > 0 AND offset >= 0"))
++        sa.CheckConstraint('length > 0 AND "offset" >= 0'))
+     op.create_index("ix_packed_object_pending", "packed_objects", ["partition", "created_at", "digest"],
+                     postgresql_where=sa.text("pending IS NOT NULL"), sqlite_where=sa.text("pending IS NOT NULL"))
+     op.create_index("ix_packed_objects_created_at", "packed_objects", ["created_at"])
+diff --git a/backend/bmt_backend/object_models.py b/backend/bmt_backend/object_models.py
+--- a/backend/bmt_backend/object_models.py
++++ b/backend/bmt_backend/object_models.py
+@@ -54,7 +54,7 @@
+     __table_args__ = (
+         Index("ix_packed_object_pending", "partition", "created_at", "digest",
+               postgresql_where=text("pending IS NOT NULL"), sqlite_where=text("pending IS NOT NULL")),
+-        CheckConstraint("length > 0 AND offset >= 0"),
++        CheckConstraint('length > 0 AND "offset" >= 0'),
+     )
+     digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+     partition: Mapped[int] = mapped_column(Integer)
+diff --git a/backend/deploy/smoke_compose.py b/backend/deploy/smoke_compose.py
+--- a/backend/deploy/smoke_compose.py
++++ b/backend/deploy/smoke_compose.py
+@@ -48,7 +48,7 @@
+     config.chmod(0o600)
+     override = evidence / "override.yaml"
+     override_content = (
+-        'services:\n  api:\n    command: [uvicorn, "bmt_backend.app:create_app", --factory, '
++        'services:\n  api:\n    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_app", --factory, '
+         '--host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log]\n'
+     )
+     if args.full_image:
+diff --git a/backend/tests/test_gcp_staging.py b/backend/tests/test_gcp_staging.py
+--- a/backend/tests/test_gcp_staging.py
++++ b/backend/tests/test_gcp_staging.py
+@@ -51,6 +51,18 @@
+     c["retain_data"] = False
+     with pytest.raises(ValueError, match="retained staging"):
+         staging.environment(c, "api")
++
++
++def test_api_and_private_studio_explicitly_select_the_bounded_http_entrypoint(tmp_path):
++    c = config()
++    c["admin_enabled"] = True
++    commands = staging.deployment_commands(c, "fixture-image", tmp_path)
++    for role, factory in (("api", "create_app"), ("admin", "create_admin_app")):
++        assert "--command=python" in commands[role]
++        args = next(v for v in commands[role] if v.startswith("--args="))
++        assert args.startswith("--args=-m,bmt_backend.http_server,bmt_backend.app:" + factory + ",")
++        assert "--no-proxy-headers" in args
++    assert not any("bmt_backend.http_server" in v for v in commands["worker"])
+ 
+ 
+ class Runner:
+diff --git a/backend/tests/test_gcp_update.py b/backend/tests/test_gcp_update.py
+--- a/backend/tests/test_gcp_update.py
++++ b/backend/tests/test_gcp_update.py
+@@ -97,4 +97,7 @@
+         queue = next(i for i, event in enumerate(events) if event[0] == "remote-check" and "queue_depth" in event[1])
+         migration = next(i for i, event in enumerate(events) if event[:4] == ("run", "jobs", "update", "migrate"))
+         assert backup < queue < migration
++        api = next(event for event in events if event[:4] == ("run", "services", "update", "api"))
++        assert "--command=python" in api
++        assert any(v.startswith("--args=-m,bmt_backend.http_server,bmt_backend.app:create_app,") for v in api)
+         assert json.loads((tmp_path / "update-receipt.json").read_text())["completed"] is True

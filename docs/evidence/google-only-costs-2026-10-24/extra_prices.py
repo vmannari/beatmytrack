@@ -27,7 +27,7 @@ def main():
     output = {}
     for service in services:
         name = service["displayName"]
-        if any(word in name for word in ("CDN", "Network")):
+        if name in ("Cloud CDN", "Networking", "Network Service Tiers", "Network Services"):
             print(name, service["name"], flush=True)
         if name not in ("Cloud CDN", "Networking", "Network Service Tiers", "Network Services"):
             continue
@@ -39,8 +39,8 @@ def main():
             data = response.json()
             for sku in data.get("skus", []):
                 desc = sku["description"].lower()
-                include = name == "Cloud CDN" and ("europe" in desc or "lookup" in desc or "request" in desc)
-                include |= "standard" in desc and ("europe" in desc or "europe-west1" in sku.get("serviceRegions", []))
+                include = "cdn" in desc
+                include |= "standard" in desc and ("emea" in desc or "europe" in desc or "europe-west1" in sku.get("serviceRegions", []))
                 if include:
                     rows.append(sku)
             page = data.get("nextPageToken", "")

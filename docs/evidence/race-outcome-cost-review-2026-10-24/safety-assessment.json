@@ -1,0 +1,240 @@
+{
+  "date": "2026-10-24",
+  "task": "Safety and unintended-consequence analysis of proposed outcome-dependent optimisations",
+  "status": "review_complete_no_runtime_changes",
+  "supersedes": "Risk assessment and implementation priority in report.json; original measurements remain valid",
+  "conclusion": {
+    "reject": "Skipping all race validation based solely on race PB or weekly rank",
+    "recommended_first": [
+      "RCO07: conservative early return from newspaper candidate reads",
+      "RCO04: negotiated smaller pending responses with equivalent current authorization",
+      "RCO05: additive terminal enrichment with exact receipts and monotonic account revisions"
+    ],
+    "conditional_followups": [
+      "RCO03: standings reuse with participant-eligibility consistency",
+      "RCO02: deferred ghosts only after durable references, recovery and reader support"
+    ],
+    "defer": "RCO06: series aggregate no-op elimination has less SQL benefit than initially implied and changes an observable source reference"
+  },
+  "corrections_to_first_review": [
+    "The unchanged series total is already omitted from SQL UPDATE. The observed write changes member.run_id only. Eliminating it is a semantic/reference-retention change, not a simple identical-value write optimisation.",
+    "A Rivalry group row lock does not by itself freeze Player.disabled, which standings_data filters. Own weekly time unchanged is insufficient to prove that two live standings reads are identical.",
+    "Challenge snapshot construction performs viewer-specific block checks. Keeping available() while removing snapshot() does not preserve the complete current visibility boundary.",
+    "Current Rivalry/Challenge ghost readers return 404 when the selected run lacks ghost_hash; deferring winning-source storage needs a compatible recovery/serving path."
+  ],
+  "findings": [
+    {
+      "id": "RCO01",
+      "risk": "high",
+      "verdict": "unsafe as a blanket verification bypass",
+      "consequence": "An unvalidated completion could receive earned effects, or a valid slower race could lose lap-PB rewards, weekly first completion, achievements or exact challenge-source eligibility.",
+      "concrete_evidence": [
+        "A fixture race slower than the lifetime PB still improved the first weekly result and earned 30 weekly points.",
+        "A 120-tick attempt left the 100-tick race PB unchanged but established a 10-tick flying-lap PB and received the New lap PB reward."
+      ],
+      "conditions": [
+        "Retain the existing lightweight path, pinned-build, ticket, rewind-receipt and account validation.",
+        "Only skip downstream competitive work whose actual server-owned inputs are unchanged.",
+        "Use strict integer race/flying-lap/weekly/stage comparisons within the same track version, car and rules board. Preserve ties, first completions and exact slower source runs.",
+        "Do not rely on submitted noncompetitive flags or local cached times to authorize rewards."
+      ],
+      "sources": [
+        "backend/bmt_backend/verifier.py:364",
+        "backend/bmt_backend/economy.py:140",
+        "backend/bmt_backend/rivalry.py:504",
+        "backend/bmt_backend/challenges.py:216"
+      ]
+    },
+    {
+      "id": "RCO02",
+      "risk": "medium_to_high",
+      "verdict": "safe only as a coordinated deferred-presentation design",
+      "consequences": [
+        "A newly retained weekly/stage source can be slower than the lifetime PB; checking lifetime PB alone would lose its recording.",
+        "Publishing a source before its separate ghost is recoverable makes existing recording endpoints return 404.",
+        "Deferring upload to the client can lose recordings after shutdown, device/account change or local cleanup.",
+        "Retention, object collection, account erasure and concurrent winners can race with a later materialization job.",
+        "Cold object reads and ghost reconstruction can move latency/failure into challenge creation or Race Again."
+      ],
+      "concrete_evidence": "A current Challenge recording endpoint returned 200 with the stored ghost_hash and 404 after clearing that hash in the disposable fixture.",
+      "conditions": [
+        "Retain the exact submitted evidence and necessary ghost bytes durably until all future source uses in the supported retention window are covered.",
+        "Check all retained references: race/lap PBs where needed, weekly slots, challenge targets/member/stage sources and creator evidence.",
+        "Support on-demand serving or materialization before publishing a source that existing readers expect to be immediately readable.",
+        "Use idempotent jobs, original hash/build identity, object pins and post-I/O account/source revalidation. Never resurrect erased content.",
+        "Keep disk/object I/O outside competition locks.",
+        "Measure net savings: omitting the standalone object copy does not eliminate embedded ghost upload/storage bytes."
+      ],
+      "sources": [
+        "backend/bmt_backend/worker.py:127",
+        "backend/bmt_backend/challenges.py:235",
+        "backend/bmt_backend/challenges.py:582",
+        "backend/bmt_backend/rivalry.py:580",
+        "backend/bmt_backend/maintenance.py:63",
+        "backend/bmt_backend/privacy.py:250"
+      ]
+    },
+    {
+      "id": "RCO03",
+      "risk": "medium",
+      "verdict": "conditionally safe within a defined, consistent participant snapshot",
+      "consequences": [
+        "A suspension or other participant eligibility change can alter ranks/points while the current run fails to improve its weekly time.",
+        "Reusing pre-improvement data for comeback achievements changes the pre/post distinction.",
+        "Sharing mutable standings across requests/viewers risks stale or viewer-inappropriate decoration."
+      ],
+      "concrete_evidence": "An injected participant suspension between two reads changed the slower attempt's position from 2 to 1 and points_delta to 4 with improved=false.",
+      "conditions": [
+        "Keep reuse transaction-local and preserve separate before and after snapshots when a best changes.",
+        "Provide a coherent eligibility snapshot or a fenced eligibility revision/recheck with fallback; the group lock alone is insufficient.",
+        "Preserve exact outcome, week boundaries, ties and achievement post-result inputs.",
+        "Do not introduce broad participant locks without measuring contention and deadlock behavior."
+      ],
+      "evidence_limit": "The eligibility change was injected in one SQLite fixture transaction; it demonstrates data dependence, not a real PostgreSQL concurrency result.",
+      "sources": [
+        "backend/bmt_backend/rivalry.py:205",
+        "backend/bmt_backend/rivalry.py:504",
+        "backend/bmt_backend/achievements.py:114"
+      ]
+    },
+    {
+      "id": "RCO04",
+      "risk": "medium",
+      "verdict": "safe with equivalent authorization and negotiated client support",
+      "consequences": [
+        "Moving directly from available() to a small response would omit current viewer/creator block checks embedded in snapshot().",
+        "The existing client requires a valid challenge snapshot on every result read and would treat a slim response as an error.",
+        "The displayed attempts, opponent standings, cancellation, expiry and UTC-day reward availability can become stale while a run stays queued."
+      ],
+      "concrete_evidence": "A pending result read returned 200, then 403 after the challenger blocked the challenge creator. The viewer-specific enforcement resides in snapshot construction.",
+      "conditions": [
+        "Extract and preserve the existing current authorization/visibility checks before choosing a compact representation.",
+        "Advertise a capability; continue full responses for existing clients.",
+        "Preserve ticket/account/session fences, retry timing, unavailable/expired/cancelled handling and fresh terminal data.",
+        "Define refresh behavior for elapsed time, day boundaries and external competition changes rather than assuming no row change means no visible change.",
+        "Return complete requested terminal information and retain an explicit full-refresh fallback."
+      ],
+      "sources": [
+        "backend/bmt_backend/challenges.py:97",
+        "backend/bmt_backend/challenges.py:173",
+        "backend/bmt_backend/challenges.py:565",
+        "game/backend/challenges_client.gd:418"
+      ]
+    },
+    {
+      "id": "RCO05",
+      "risk": "medium",
+      "verdict": "safe as additive, bounded terminal-response enrichment",
+      "consequences": [
+        "A delayed completion response can overwrite a newer wallet after another race or purchase.",
+        "Adding a receipt amount locally on each reply can count duplicated responses twice.",
+        "A slow/missing old archive or failed optional enrichment can make the entire combined endpoint unavailable if failures are coupled.",
+        "Joining extra account data for every pending read or duplicating it for every item in a 32-run batch may increase database work and payloads.",
+        "Achievement rarity and background creator/competition awards can change independently of this race's account-state revision."
+      ],
+      "conditions": [
+        "Send only committed receipt/outcome data, tied to the original ticket/run.",
+        "Apply absolute wallet snapshots monotonically by server revision and retain account/origin/session generation fences; do not mint via local addition.",
+        "Include terminal enrichment only as needed and share account state once per batch.",
+        "Keep result status recoverable when optional receipt/archive enrichment is temporarily unavailable; retain existing fallback endpoints and durable outbox identities.",
+        "Use revision domains that actually cover each rendered component and preserve background achievement refresh paths.",
+        "Never call an award writer as a side effect of a read."
+      ],
+      "sources": [
+        "backend/bmt_backend/runs.py:309",
+        "backend/bmt_backend/runs.py:328",
+        "backend/bmt_backend/economy.py:108",
+        "game/backend/cosmetic_economy.gd:100",
+        "game/backend/achievements_client.gd:68"
+      ]
+    },
+    {
+      "id": "RCO06",
+      "risk": "medium_semantic_low_performance_value",
+      "verdict": "defer; not a proven no-op",
+      "consequences": [
+        "A slower attempt changes the public top-level member.run_id despite an unchanged aggregate time.",
+        "That reference is also part of ordinary retention protection; skipping its change alters which exact run remains protected.",
+        "Most stage reads remain necessary to build completed-track counts and result feedback; summing at most five integers is small work."
+      ],
+      "concrete_evidence": {
+        "unchanged_total_ticks": 315,
+        "current_sql": "UPDATE challenge_members SET run_id=? WHERE challenge_members.challenge_id = ? AND challenge_members.player_id = ?",
+        "time_ticks_column_written": false
+      },
+      "conditions": [
+        "Clarify and test representative-run semantics before eliminating the reference write.",
+        "Preserve stage bests, first completion, limited starts, exact per-attempt result and coin/achievement effects.",
+        "Measure a meaningful query/write reduction instead of counting an unchanged ORM assignment as a SQL write."
+      ],
+      "excluded_claim": "No current series-rematch regression is claimed; that endpoint explicitly rejects series rematches.",
+      "sources": [
+        "backend/bmt_backend/challenge_series.py:97",
+        "backend/bmt_backend/challenges.py:159",
+        "backend/bmt_backend/challenges.py:626",
+        "backend/bmt_backend/maintenance.py:69"
+      ]
+    },
+    {
+      "id": "RCO07",
+      "risk": "low_if_narrow",
+      "verdict": "lowest-risk candidate: conservative early skip only",
+      "consequences": [
+        "A race-only gate loses a flying-lap world-record/reach path on a slower overall race.",
+        "A missing previous PB must count as a first improvement.",
+        "Pre-lock/client-derived or rounded improvement guesses can disagree with the committed PB projections."
+      ],
+      "conditions": [
+        "Calculate both strict race and eligible flying-lap improvement possibilities from existing locked server acceptance facts.",
+        "Ignore the standing first lap exactly as the lap projection does; use integer ticks.",
+        "Return early only when neither can improve. Keep the current actual-source candidate query and all eligibility/record/reach logic for every possible improvement.",
+        "Retain same-transaction finalization and original once-only result fences; do not use the flags themselves to announce a winning source."
+      ],
+      "evidence": "Source dependency review plus the slower-race/new-lap-PB counterexample; no new early-return implementation or equivalence claim.",
+      "sources": [
+        "backend/bmt_backend/news.py:81",
+        "backend/bmt_backend/race_acceptance.py:29",
+        "backend/bmt_backend/migrations/versions/0024_lap_personal_bests.py:17"
+      ]
+    }
+  ],
+  "validation": {
+    "probe_command": ".tools/backend-venv/Scripts/python.exe docs/evidence/race-outcome-cost-review-2026-10-24/safety_probe.py",
+    "probe_exit_code": 0,
+    "probe_results": "safety-probe-results.json",
+    "deterministic_edge_cases": 6,
+    "lint_command": ".tools/backend-venv/Scripts/ruff.exe check docs/evidence/race-outcome-cost-review-2026-10-24/safety_probe.py --output-format concise",
+    "lint_result": "passed",
+    "regression_command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_challenges.py backend/tests/test_challenge_series.py backend/tests/test_race_acceptance_sql.py backend/tests/test_news.py -k 'not postgres and (finished_ticket_pins_slower or pending_finished_ticket or independent_budgets or every_stage_obeys or late_ledger_failure or new_revisions_and_rolled_back or mutual_friend_requests)' -q -rs --disable-warnings",
+    "regression_result": {
+      "passed": 7,
+      "deselected": 130,
+      "warnings": 36,
+      "seconds": 9.46
+    },
+    "original_reviewed_runtime_hashes_compared": 10,
+    "changed_original_runtime_hashes": [],
+    "limitation": "Checks validate current contracts and demonstrate hazards. They do not certify proposed, unimplemented changes or production-shaped PostgreSQL concurrency."
+  },
+  "changed_files": [
+    "docs/evidence/race-outcome-cost-review-2026-10-24/safety_probe.py",
+    "docs/evidence/race-outcome-cost-review-2026-10-24/safety-probe-results.json",
+    "docs/evidence/race-outcome-cost-review-2026-10-24/safety-assessment.json"
+  ],
+  "remaining_acceptance": [
+    "Implement only within the stated constraints; compare rewards, balances, exact source references, standings, current authorization and retry outcomes before and after.",
+    "Exercise simultaneous same-player and competing-player finalization, account/content removal, lost replies, ghost materialization failure and cleanup in disposable PostgreSQL.",
+    "For protocol changes, test old and new clients, out-of-order replies, account switches, offline recovery and midnight/week rollover.",
+    "Measure actual endpoint SQL/WAL/object/byte savings and result-screen latency before rollout."
+  ],
+  "boundaries": {
+    "runtime_changes": false,
+    "deployment": false,
+    "live_mutation": false,
+    "phone_or_tablet_attachment_check": false,
+    "physical_device_test": false,
+    "apk": false,
+    "owner_process_restart": false,
+    "concurrent_work_preserved": true
+  }
+}

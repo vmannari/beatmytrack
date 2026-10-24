@@ -1,0 +1,257 @@
+{
+  "task": "Implement high-impact items 1-4 from the last priority list",
+  "date": "2026-10-24",
+  "requirement_ids": [
+    "HIO01",
+    "HIO02",
+    "HIO03",
+    "HIO04",
+    "R01",
+    "Q01"
+  ],
+  "implemented": {
+    "HIO01": "Clean Garage polling yields while a Game is retained. Dirty/first/lost-reply/error recovery continues; stale menu and foreground entry refresh. Explicit Rivalry synchronization remains.",
+    "HIO02": "Established wallets use one coherent eligible-owner/balance/revision/ownership/opening-ledger SELECT. Missing or legacy wallets retain locked initialization and financial reconciliation; purchases/rewards keep original locks.",
+    "HIO03": "Negotiated lossless 21-byte Float64 paths decode before existing validation/hash/storage. Metadata retains layer and exact JSON integer identity. New jobs pin wire and incident options before first send; old jobs keep old encoding; unsupported readers cause transient deferral without replacing the saved body/key.",
+    "HIO04": "Discovery claims only work/due partitions, retaining 30s health, 60s audits, ranks/expiry. Empty global maintenance and telemetry preparation coalesce for five seconds; bounded nonempty work drains promptly. Schedules reset on restart and advance after commit. Global cleanup still runs without a due partition."
+  },
+  "metrics": {
+    "wallet_handler_sql": {
+      "before": 5,
+      "after": 1,
+      "payload_exact": true,
+      "authentication_excluded": true
+    },
+    "three_idle_discovery_turns": {
+      "before_sql": 51,
+      "after_sql": 3,
+      "before_updates": 3,
+      "after_updates": 0
+    },
+    "three_idle_telemetry_preparation_turns": {
+      "before_sql": 12,
+      "after_sql": 0
+    },
+    "idle_limits": "SQLite; three scheduled after-checks inside the five-second empty interval. Due health/audits/backlogs and periodic maintenance retain work, so this is not a claim of zero ongoing cost.",
+    "garage": "Sixty simulated clean-race timer opportunities caused zero requests; menu freshness, dirty edits, lost replies and retries passed. This is not a measured player session.",
+    "native_http_upload_including_same_race_ghost": {
+      "plain_gzip_bytes": 100402,
+      "packed_gzip_bytes": 90653,
+      "reduction_percent": 9.71,
+      "samples": 2130,
+      "normalized_replay_and_idempotency_exact": true
+    },
+    "native_proof_only": {
+      "native_samples": 2130,
+      "exact_normalized_replay_hash_equal": true,
+      "native_metrics": {
+        "packed_native_gzip_bytes": 29389,
+        "packed_preparation_encode_gzip_median_usec": 15250,
+        "plain_native_gzip_bytes": 40368,
+        "plain_preparation_encode_gzip_median_usec": 18319
+      },
+      "gzip_levels": {
+        "1": {
+          "plain_bytes": 43664,
+          "packed_bytes": 32509,
+          "reduction_percent": 25.55
+        },
+        "3": {
+          "plain_bytes": 42733,
+          "packed_bytes": 31067,
+          "reduction_percent": 27.3
+        },
+        "6": {
+          "plain_bytes": 40318,
+          "packed_bytes": 29354,
+          "reduction_percent": 27.19
+        }
+      }
+    },
+    "receiver_cpu": {
+      "scope": "gzip decompress + JSON parse + binary normalization + unchanged canonical digest; desktop Python, 31 samples each, same retained fixture ghost",
+      "variants": {
+        "proof_only": {
+          "plain": {
+            "wire_bytes": 42733,
+            "median_usec": 3587.2
+          },
+          "packed": {
+            "wire_bytes": 31067,
+            "median_usec": 3789.9
+          }
+        },
+        "with_ghost": {
+          "plain": {
+            "wire_bytes": 105228,
+            "median_usec": 9230.5
+          },
+          "packed": {
+            "wire_bytes": 95342,
+            "median_usec": 9155.4
+          }
+        }
+      }
+    },
+    "limits": "Retained/disposable fixtures and desktop measurements; no player-day, bill, DAU, production-load or mobile CPU/battery certification. Canonical proof storage is unchanged; byte savings are upload savings."
+  },
+  "validation": {
+    "backend_focused": {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_scale_optimisations.py -q -k \"not postgres\"",
+      "result": "25 passed, 8 PostgreSQL cases deselected, 41 warnings",
+      "log": "backend-focused-final.log"
+    },
+    "native_focused": {
+      "script": "res://tests/test_scale_optimisations.gd",
+      "result": "26 checks, zero failures, with paired native artifact export",
+      "log": "native-focused-final.log",
+      "covers": [
+        "exact binary golden Float64/integer/signed-zero records",
+        "pinned options, exact restart bodies/keys and older jobs",
+        "unsupported-reader deferral through actual upload consumer",
+        "clean-race suppression, menu refresh, dirty edits and durable lost replies"
+      ]
+    },
+    "actual_native_http": {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_scale_optimisations_http.py -q -s",
+      "result": "1 passed; 13 native checks, zero failures",
+      "log": "http-packed-final.log",
+      "covers": [
+        "real authenticated receiver and trajectory worker",
+        "same five laps and exact canonical finish ticks",
+        "original normalized proof and ghost",
+        "same-run retry, credited reward and unchanged repeat wallet reads"
+      ]
+    },
+    "backend_regressions": {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_scale_optimisations.py backend/tests/test_earned_coins.py backend/tests/test_outcome_reads.py backend/tests/test_appearance_sync.py backend/tests/test_discovery_projection.py backend/tests/test_discovery_resources.py backend/tests/test_discovery_daily.py backend/tests/test_discovery_continuation.py backend/tests/test_telemetry_parallel.py backend/tests/test_scalability.py -q -k \"not postgres and not migration and not expansion\"",
+      "result": "122 passed, 5 skipped, 2 failed, 108 deselected; failures investigated below",
+      "log": "backend-regressions.log"
+    },
+    "native_regressions": {
+      "appearance_sync": 52,
+      "legacy_cleanup": 23,
+      "earned_coins": 56,
+      "outcome_reads": 19,
+      "run_confirmation": 14,
+      "App": 141,
+      "result": "All zero failures; App rerun after concurrent tutorial additions",
+      "logs": [
+        "test_appearance_sync.log",
+        "test_legacy_cleanup.log",
+        "test_earned_coins.log",
+        "test_outcome_reads.log",
+        "test_run_confirmation.log",
+        "test_app-final.log"
+      ]
+    },
+    "parser": {
+      "result": "1117 scripts, zero failures",
+      "log": "test_script_parse-final.log"
+    },
+    "import": {
+      "result": "Pinned Godot headless editor import exited zero; three new script UIDs created",
+      "log": "import-final.log"
+    },
+    "lint": "Ruff passed on all changed backend runtime/tests; whitespace diff check passed",
+    "postgres": "Configured localhost:55439 was unreachable; no PostgreSQL contention/plan/WAL claim."
+  },
+  "retained_failures": [
+    {
+      "test": "test_scalability.py::test_snapshot_is_batched_read_and_etag_rechecks_visibility[sqlite]",
+      "finding": "Expected four Rivalry snapshot reads, observed seventeen. Reproduces with task-start Python sources loaded only in an isolated import loader. Assertion retained.",
+      "log": "backend-baseline-failures.log"
+    },
+    {
+      "test": "test_discovery_daily.py::test_daily_hiding_blocks_and_random_use_current_authority[sqlite]",
+      "finding": "Hit unchanged 1500ms query budget during the broad concurrent run. Passes with task-start sources and in an isolated unchanged-current rerun. No budget/assertion weakened.",
+      "logs": [
+        "backend-baseline-failures.log",
+        "daily-authority-isolated.log"
+      ]
+    },
+    {
+      "test": "test_cloud_client.py::test_cloud_library_against_http",
+      "finding": "Existing native publication intent/state assertions fail before the ordinary race path. The same two assertions reproduce with all task-start Python sources and task-start native Client/Cloud sources loaded only in the isolated test process. The focused actual packed-race HTTP test passes.",
+      "logs": [
+        "http-host.log",
+        "http-baseline-corrected.log"
+      ]
+    }
+  ],
+  "corrections_and_environment": [
+    "Initial native test used a wrong internal helper name; corrected it to the actual _submit_saved call.",
+    "Native fixture corrected StringName dictionary keys to String keys, built negative zero from IEEE bits, and compared original typed incident metadata; assertions retained.",
+    "Initial baseline fixture resolved a wrong before-source path. Corrected it and added nonempty/existence guards before successful task-start reproduction.",
+    "Sandboxed Godot cannot read Windows root certificates. Pinned direct native checks passed with the retained warning; real localhost HTTP checks used approved host certificate access.",
+    "The stalled initial task-owned dev-wrapper Godot was stopped using its exact unique test-script process filter. Owner game/editor processes were preserved.",
+    "The initial two-byte metadata trial was replaced, before rollout, by one metadata byte carrying three bits; all exactness/validation tests passed on the final 21-byte format."
+  ],
+  "rollout_and_remaining_acceptance": [
+    "No database migration. Deploy/retain compatible API decoder and capability before clients queue packed jobs; keep it while such jobs can still retry. Matching client and discovery/product worker changes remain to roll out.",
+    "PostgreSQL query plans, lock contention, deployed resource/grant validation, representative load and owner/device CPU/battery acceptance remain.",
+    "No phone/tablet attachment check, physical-device test, APK, purchase, live player/backend mutation, deployment or owner-process restart."
+  ],
+  "concurrent_work": "Tutorial and Garage edits were preserved. The App checkpoint contains only this task's three sync integration lines; documentation bases exclude only this task's own block.",
+  "changed_files": [
+    "game/backend/appearance_sync.gd",
+    "game/core/app.gd",
+    "game/backend/backend_client.gd",
+    "game/backend/cloud_tracks.gd",
+    "game/backend/path_wire.gd",
+    "game/backend/path_wire.gd.uid",
+    "backend/bmt_backend/economy.py",
+    "backend/bmt_backend/replay_wire.py",
+    "backend/bmt_backend/path_wire.py",
+    "backend/bmt_backend/app.py",
+    "backend/bmt_backend/discovery_projection.py",
+    "backend/bmt_backend/discovery_worker.py",
+    "backend/bmt_backend/product_worker.py",
+    "backend/bmt_backend/telemetry_queue.py",
+    "backend/schemas/trajectory-v1.schema.json",
+    "backend/tests/test_scale_optimisations.py",
+    "backend/tests/test_scale_optimisations_http.py",
+    "game/tests/test_scale_optimisations.gd",
+    "game/tests/test_scale_optimisations.gd.uid",
+    "game/tests/test_scale_optimisations_http.gd",
+    "game/tests/test_scale_optimisations_http.gd.uid",
+    "game/tests/fixtures/packed_path_v1.json",
+    "backend/README.md",
+    "AGENTS.md",
+    "DEVELOPMENT_STATUS.md"
+  ],
+  "source_sha256": {
+    "game/backend/appearance_sync.gd": "e62c41f38b6d763e293423e99869fd95dd95963c882321d21b6d82a1cf2c4bb0",
+    "game/core/app.gd": "96d2fba89284e2d33957362b5af44a6335d2c5e346be0bc3661aec0774cdc2b0",
+    "game/backend/backend_client.gd": "a2154968c1d161644d45f5a388d96e8ea522a07ede9ee38a9707b987d1975f8c",
+    "game/backend/cloud_tracks.gd": "9236f51254731d732e8e35a28a5cd7a29d20cd5cff7fc275d4e66b518c519065",
+    "game/backend/path_wire.gd": "e43c87af2c78dab96ca45d35efd1bd55dc8163b2ed48fffd6047f9679c704cd2",
+    "game/backend/path_wire.gd.uid": "e776106ed9bfb3426a64268ac63a4f5a73353c18aff9d23f577be3fe96500338",
+    "backend/bmt_backend/economy.py": "4c8a7d3a17a825a2a2be221e5d651525054fc17c92fefca8ce5eec52f79a9d82",
+    "backend/bmt_backend/replay_wire.py": "948f427c2f59b208be360dbfc5e346449183816fe5757d774a5bc48484fbcc7d",
+    "backend/bmt_backend/path_wire.py": "56ccb5267df71908367e17d421ca5dd16ccdb9e87bc09b3f627abf6ce64af7f7",
+    "backend/bmt_backend/app.py": "07c7939f6e32cd15ae8b11e3dd2b500f450d91b80a34fb7617eee131f0cc697a",
+    "backend/bmt_backend/discovery_projection.py": "f530173656871d8c7edd2f28117da395ecab105cfe638db74bb5097d762eb5d2",
+    "backend/bmt_backend/discovery_worker.py": "03f1b31b07bc8e6e7fb81ccd042eadc21571d2446033a84974a1188463c4577a",
+    "backend/bmt_backend/product_worker.py": "7417a5ec1d33b0a6acff9e6aec077c8e90a67c0f1d604e4873eda13529ecbbb6",
+    "backend/bmt_backend/telemetry_queue.py": "b0e5eaf70d0461aee2a6c4c8b5f604525f9a34711da924da9ddaec180371dfbb",
+    "backend/schemas/trajectory-v1.schema.json": "5694a7757dfc15b22c4ca27da3f3503ce44d6f5519ef2ed18fd3840d7528be0a",
+    "backend/tests/test_scale_optimisations.py": "f14e61775a119b35140f5a5932c6e60e4a36934a9102750d4e5c72295c49b885",
+    "backend/tests/test_scale_optimisations_http.py": "d33c9c2cb1033a43b760dacd8f636218f42626cde276beae79809b10b56957df",
+    "game/tests/test_scale_optimisations.gd": "4ae79bc6bd1cd9332984bd54b310bc3d3aefdb0f08023dc80cfd71727e0232d0",
+    "game/tests/test_scale_optimisations.gd.uid": "ab20859365ceab40198d7f34fa34817cc07c005e13e32bd19b944d1ffb97ca7f",
+    "game/tests/test_scale_optimisations_http.gd": "67779a1957b7b20cdffb22d76a4b727e85ab50b43d60e2dd9856cc6322149c3f",
+    "game/tests/test_scale_optimisations_http.gd.uid": "ef76c6c34f9b43deb7f281dc8dc86c8f4ddc6556e1023fbfe1c4b5cb14bb06ec",
+    "game/tests/fixtures/packed_path_v1.json": "3a2e9197fd6270bd2e95066067c5bc26db3db68f8fda2c214866cf5382f41c9e",
+    "backend/README.md": "37dd14f3fd9c27a85a5d98abeb03e0fe47cf73737615578d87a1d0ba0abde939",
+    "AGENTS.md": "9cc35a535cc0c5901b13238e465f474faebca6a3befdad6c8af5f9db0251cb03",
+    "DEVELOPMENT_STATUS.md": "71a4e6d59dd0e1d6ed432a01511528787fa88e94684ef88832e2a7f643d1132b"
+  },
+  "checkpoint": "checkpoint.patch; task-only runtime/schema/golden/tests/docs plus this report. Supporting logs, before snapshots and reproduction helpers remain in this evidence directory.",
+  "scoped_base_sha256": {
+    "AGENTS.md": "6a62b58b7bb23540214ce1d5e30174a99b4b91f5a3078686fe545481e4e93b7f",
+    "DEVELOPMENT_STATUS.md": "e4d650d0b76d0cd79df3a07c8fe08e43895503951e9ce6b2ee51e6cfb0b434e0",
+    "backend/README.md": "79731c8577cacc71a06171a49dc45c9e8541c047a237e84b981cdd9f69902e19",
+    "game/core/app.gd": "3f7a6f9e48da08cd354c984e936415b267f776d62312ea1211708b9f7049a9b9"
+  }
+}

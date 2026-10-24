@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Customisation carousel — native review</title>
+<style>
+body{margin:0;background:#080f16;color:#f1f4f3;font:16px system-ui,sans-serif}main{max-width:1440px;margin:auto;padding:28px}h1{font-size:28px}p{color:#a4bac7;max-width:90ch;line-height:1.55}button,select,a{font:inherit}button,select{background:#172630;color:#fff;border:1px solid #52616a;border-radius:6px;padding:12px;min-height:48px}button:focus-visible,select:focus-visible{outline:3px solid #ffd348}nav{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}img{display:block;max-width:100%;height:auto;border:1px solid #36444c;border-radius:8px}figure{margin:20px 0}figcaption{color:#a4bac7;margin:12px 0}a{color:#ffd348}.motion{max-width:520px}.motion img{width:100%}
+</style>
+<main>
+<h1>Customisation carousel</h1>
+<p>Actual Godot App captures. Parts and paint designs preview on the car before purchase. The selected part receives a gold highlight; only the separate equip action can save or unlock it. Short landscape screens keep the live car visible and use a compact workbench.</p>
+<nav aria-label="Capture selection">
+<select id="renderer" aria-label="Renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Desktop Mobile</option></select>
+<select id="size" aria-label="Window size"><option value="1280">1280 × 720</option><option value="960">960 × 540</option><option value="1720">1720 × 900</option></select>
+<select id="section" aria-label="Customisation type"><option value="kits">Hood</option><option value="part-aero">Rear aero (1280)</option><option value="part-rims">Rims (1280)</option><option value="part-body">Body kits (1280)</option><option value="patterns">Patterns</option></select>
+<button id="before" type="button">Show before (1280)</button>
+</nav>
+<figure><img id="capture" src="test_customisation_carousel-gl_compatibility/app-kits-1280.png" alt="Actual App with free Twin louvres preview and part carousel"><figcaption id="caption">After — Compatibility, 1280 × 720, parts</figcaption></figure>
+<p>The before captures come from the preceding native Garage review, whose GaragePage and livery-menu source hashes exactly match this task's saved starting copies. The final views use isolated guest records. No player account or live backend was modified.</p>
+<h2>Carousel motion</h2>
+<p>The sequence below consists of 24 native workbench crops: a bounce at the first option, then a move to the next card.</p>
+<button id="play" type="button">Play captured animation</button>
+<figure class="motion"><img id="motion" src="test_customisation_carousel-gl_compatibility/carousel-motion/frame-00.png" alt="Native carousel motion frames"></figure>
+<p><a href="../../CUSTOMISATION_CAROUSEL_2026_10_24.md">Implementation and checks</a> · <a href="report.json">Commands, results and hashes</a></p>
+</main>
+<script>
+const renderer=document.querySelector('#renderer'),size=document.querySelector('#size'),section=document.querySelector('#section'),capture=document.querySelector('#capture'),caption=document.querySelector('#caption');
+let before=false,timer;
+function refresh(){const width=section.value.startsWith('part-')?'1280':size.value;capture.src=before?`before-${section.value==='patterns'?'patterns':'kits'}-1280.png`:`test_customisation_carousel-${renderer.value}/app-${section.value}-${width}.png`;caption.textContent=before?'Before — retained native 1280 × 720 capture':`After — ${renderer.options[renderer.selectedIndex].text}, ${width} pixels wide, ${section.options[section.selectedIndex].text}`;document.querySelector('#before').textContent=before?'Show after':'Show before (1280)';}
+for(const control of [renderer,size,section])control.addEventListener('change',()=>{before=false;refresh();});
+document.querySelector('#before').addEventListener('click',()=>{before=!before;refresh();});
+document.querySelector('#play').addEventListener('click',async()=>{clearInterval(timer);const frames=await Promise.all(Array.from({length:24},(_,i)=>new Promise(resolve=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=`test_customisation_carousel-${renderer.value}/carousel-motion/frame-${String(i).padStart(2,'0')}.png`;})));if(frames.some(frame=>!frame))return;let frame=0;timer=setInterval(()=>{document.querySelector('#motion').src=frames[frame++].src;if(frame===frames.length)clearInterval(timer);},33);});
+</script></html>

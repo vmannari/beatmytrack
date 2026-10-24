@@ -1,0 +1,104 @@
+--- a/docs/SECURITY_DEPLOYMENT_2026_10_24.md
++++ b/docs/SECURITY_DEPLOYMENT_2026_10_24.md
+@@ -0,0 +1,38 @@
++# Security deployment — 2026-10-24
++
++The retained Google Cloud staging API, one worker and all five existing owned job definitions now use the SEC06/SEC07/SEC03/SEC08/SEC04 release at schema `0062_retire_discovery_cache`. API revision **bmt-stg-e7a444ab-api-00099-ret**, worker **bmt-stg-e7a444ab-worker-00040-kvd**. The existing [API](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app) is healthy and receives 100% of traffic. Private Studio remains disabled because named staff identities and a verified MFA provider have not been configured. The PC backend and running clients remain unchanged.
++
++The immutable image is `europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e`. Frozen source SHA256 is `32239ccce29943b54f95a029f919aa75089fa561825b0f830159e1469b0d26bc`. Godot4.7.2 / compiler27 / physics0.66 / rules23 / five laps remain exact. The snapshot includes migrations0058–0062 and the tested concurrent ranking/configuration/cache-retirement changes; later concurrent schema0063/client changes are outside this artifact.
++
++## Authority and preservation
++
++The API and worker now have separate service accounts, database credentials and scoped secret grants. Runtime database users are nonowners. The migrator alone receives the schema-owner credential; diagnostic/operator jobs use the restricted API database credential. The former shared SQL login is `NOLOGIN`, its old service identity and secret version are disabled, and its storage/Cloud SQL access is removed. Current definitions contain no legacy administrator keys, staff subject lists or monitor credentials. Existing development/test-driver policy is retained explicitly; this is development staging, not a production-mode certification.
++
++Public Studio/admin/monitor paths return404 before database work. Legacy Studio opt-in and temporary ad-preview resumes are explicitly false. The deployment also corrects the development API boundary: administrative routers require an explicit legacy opt-in outside production. Appearance ownership enforcement and the server-stored grandfathering migration are active. Old insecure appearance writers must not be redeployed.
++
++Maintenance ran from **2026-10-24T11:24:16.283440+00:00** to **2026-10-24T11:38:25.077892+00:00**, about **14.1 minutes**. A database-free maintenance revision paused all application routes. Old requests drained, the worker stopped, and accepted race/publication/validation queues were empty. Managed Cloud SQL backup **1792841359801** succeeded without exporting player records. After57→62, all **314,798 original rows across132 compared tables** match their pre-migration fingerprints; no invalid indexes remain. The schema marker and two deliberately retired disposable discovery tables are excluded. Existing cosmetic grants are compared at the original cutoff; legitimate migration grants are additions. Comparisons precede ordinary worker projections/retention.
++
++## Verification
++
++- Working-source authority selection: **70 passed**. Exact frozen image with disposable PostgreSQL17: **258 passed,1 skipped,12 deselected**. These are focused gates, not a full-suite claim.
++- Synthetic-only57→62 rehearsal: **131 tables /103,328 original rows exact**, no real player records copied. Measured1.557s is a local rehearsal, not cloud latency/capacity evidence.
++- Actual live native replay/schema/GCS smoke: **passed**,12,757 canonical ticks, two temporary diagnostic objects, zero player writes.
++- One matching live worker, empty queue and all **16 discovery partitions ready** before public traffic reopened. Public discovery traverses **30 tracks**, with no duplicate IDs.
++- Live production-strength API role validation passes even though staging runs development mode. Worker cannot read session tokens/staff or rewrite/delete administrative audit records; API cannot read staff; Studio role cannot read session tokens. Preview resumes/legacy Studio keys are false.
++- All seven target images match, existing resource/process settings and worker count are preserved, temporary traffic tags are removed and the owned deployment lock is released. PC container images/configuration/start times remain exact.
++
++Initial failures and corrections are retained in [the machine-readable report](evidence/security-deploy-2026-10-24/report.json): disposable PostgreSQL startup retry, receipt merge, gcloud flags-file spelling, a correctly denied application-role read of the protected staging guard, shell quoting and the initial missing exact-secret grant for retained staging test drivers. None required weakening the runtime database grants or exposing Studio.
++
++## PC approval and remaining acceptance
++
++Automatic approval review rejected the proposed PC database backup copy before execution because the sensitive player records, identities/token hashes and destination were not specifically authorized by “deploy.” The pending request names `C:\Codes\Godot\Beat my track\build\security-deploy-2026-10-24\pc-backup`. No PC backup was copied, no alternative real-data rehearsal bypassed that rejection, and PC containers/data were not changed. Explicit backup approval is required before the PC rollout can continue.
++
++Client restart/install and owner/device acceptance remain. No phone/tablet attachment check, physical-device test, APK/export/install, real provider sign-in, purchase, population execution or reporting replica was performed. Studio activation needs named staff/provider/MFA acceptance; broad reporting retains its separate replica/cost gate. Load/edge calibration and restore exercises remain operational acceptance. Concurrent work and owner processes are preserved; no mixed-tree commit is created.
++
++Operational scripts are private ignored `.tools/`; code-only audit copies, exact image/package hashes, logs and aggregate receipts are in [the evidence folder](evidence/security-deploy-2026-10-24/). Credentials, environment files and raw resource metadata remain in ignored private build storage. Actual entry point:
++
++```text
++.tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_deploy_20261024.py <stage>
++```
++
++Executed stages: `inspect, freeze, build, preflight, test, plan, provision, push, maintenance, runtime-files, operator-access, transport-check, synthetic-rehearse, quiesce, stop-worker, cutover-data, test-secret-access, canary, promote, smoke, authority, discovery, retire, finish`. The proposed real-PC `rehearse` command was rejected before execution; `synthetic-rehearse` uses invented data and aggregate cardinalities only. The dated [source-fix report](SECURITY_FIXES_2026_10_24.md) describes the implementation and prior tests; [the23October release](LATEST_BACKEND_DEPLOY_2026_10_23.md) remains the PC deployment receipt.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Security cloud deployment override (2026-10-24)
++2026-10-24 SEC-D01/SEC06/SEC07/SEC03/SEC08/SEC04/R01/Q01: Authorized retained cloud rollout reaches schema62 on API99/worker40 and all five matching job definitions. Separate runtime identities/credentials and explicit grants are active; old shared SQL login, service account and secret are disabled. Studio/admin/monitor return404 and ad previews are off. Managed backup1792841359801; all314798 original rows/132 compared tables exact, invalid indexes0. Focused70/exact-image258pass1skip12deselected, synthetic131tables/103328rows, live native/schema/GCS smoke with zero player writes, worker16partitions and discovery30 pass. Existing development test-driver policy/resources remain; later concurrent schema63 is outside the frozen artifact. Actual commands, corrections, hashes and scoped checkpoint: docs/SECURITY_DEPLOYMENT_2026_10_24.md and docs/evidence/security-deploy-2026-10-24/report.json. PC backup copy was rejected by automatic review pending explicit sensitive-data/destination approval; PC remains unchanged. Studio staff/MFA, client/owner/device/restore/load acceptance remain; no device check/test/APK, population job, reporting replica or client restart. Concurrent work/owner processes preserved.
++
+ ## Legacy cleanup recovery and review fixes override (2026-10-24)
+ 2026-10-24 LCRR01-LCRR05/R01/G01/Q01: Bounded saved-input recovery preserves original bodies/keys, restores cutover-stranded jobs and reconciles lost/in-flight replies; normal uploads remain trajectory-only. Owned main-thread publication checks journal hashes before applying worker repairs. Native retention rejects hash/source/report junctions. Exact surviving-row migration checks pass with explicit disposable-cache retirement, rollout guidance is current, and four unused helpers are removed. Backend25pass/1skip plus recovery17, native recovery37/legacy23/rename8/backend17/App141, rendered keyboard21/actual rename9, filesystem10 and parser1072 pass. Six broad object-browser assertions reproduce with the pre-change fixture; headless display and concurrent Garage import trial limits remain documented. Commands, native view, hashes and scoped checkpoint: docs/LEGACY_CLEANUP_FOLLOWUP_2026_10_24.md and docs/evidence/legacy-cleanup-followup-2026-10-24/report.json. Client restart, matching API/0062 rollout and owner/device acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 SEC-D01/SEC06/SEC07/SEC03/SEC08/SEC04/R01/Q01: Authorized retained cloud rollout reaches schema62 on API99/worker40 and all five matching job definitions. Separate runtime identities/credentials and explicit grants are active; old shared SQL login, service account and secret are disabled. Studio/admin/monitor return404 and ad previews are off. Managed backup1792841359801; all314798 original rows/132 compared tables exact, invalid indexes0. Focused70/exact-image258pass1skip12deselected, synthetic131tables/103328rows, live native/schema/GCS smoke with zero player writes, worker16partitions and discovery30 pass. Existing development test-driver policy/resources remain; later concurrent schema63 is outside the frozen artifact. Actual commands, corrections, hashes and scoped checkpoint: docs/SECURITY_DEPLOYMENT_2026_10_24.md and docs/evidence/security-deploy-2026-10-24/report.json. PC backup copy was rejected by automatic review pending explicit sensitive-data/destination approval; PC remains unchanged. Studio staff/MFA, client/owner/device/restore/load acceptance remain; no device check/test/APK, population job, reporting replica or client restart. Concurrent work/owner processes preserved.
++
+ 2026-10-24 LCRR01-LCRR05/R01/G01/Q01: Bounded saved-input recovery preserves original bodies/keys, restores cutover-stranded jobs and reconciles lost/in-flight replies; normal uploads remain trajectory-only. Owned main-thread publication checks journal hashes before applying worker repairs. Native retention rejects hash/source/report junctions. Exact surviving-row migration checks pass with explicit disposable-cache retirement, rollout guidance is current, and four unused helpers are removed. Backend25pass/1skip plus recovery17, native recovery37/legacy23/rename8/backend17/App141, rendered keyboard21/actual rename9, filesystem10 and parser1072 pass. Six broad object-browser assertions reproduce with the pre-change fixture; headless display and concurrent Garage import trial limits remain documented. Commands, native view, hashes and scoped checkpoint: docs/LEGACY_CLEANUP_FOLLOWUP_2026_10_24.md and docs/evidence/legacy-cleanup-followup-2026-10-24/report.json. Client restart, matching API/0062 rollout and owner/device acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-24 HWS01-HWS03/R01/Q01: Garage washing adds Mitt/Hose choices and Top view. Local hose rinsing clears faint film quickly while primary grime washes at 0.025 versus the unchanged mitt rate1.15; separate masks, fractional work, saved condition, paint/kits/camera, grades and canonical driving remain. Original cached nozzle/hose,12 water filaments and32 droplets stay bounded with gesture/navigation cleanup. Focused81headless/84Compatibility/84desktopMobile, scrubbing501, surfaces45, native full washing/App1402, parser1066 and import pass. Animation139 retains one restart assertion also reproduced with exact task-start versions of all five runtime sources; no assertion weakened. Initial sandbox certificate and concurrent Desert parser interruptions are retained. Commands, native views, hashes and task-only checkpoint: docs/GARAGE_HOSE_2026_10_24.md and docs/evidence/hose-wash-2026-10-24/report.json. Client restart and owner/device feel/appearance/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -20,7 +20,7 @@
+ | Store | [Store reference](STORE_REFERENCE_2026_10_24.md), [purchase simulation](PURCHASE_SIMULATION.md) | [Store UI](../game/ui/store_page.gd) |
+ | Android | [Toolchain, commands and recorded deployments](ANDROID.md) | [Export preset](../game/export_presets.cfg), [development wrapper](../scripts/dev.ps1) |
+ | Backend setup and architecture | [Backend README](../backend/README.md), [architecture](BACKEND_V1.md) | [API composition/bootstrap](../backend/bmt_backend/app.py), [settings](../backend/bmt_backend/config.py) |
+-| Backend operations | [Deployment runbook](../backend/deploy/README.md), [latest recorded release](LATEST_BACKEND_DEPLOY_2026_10_23.md), [Studio activation](STUDIO_PLATFORM_ACTIVATION.md) | [Migration chain](../backend/bmt_backend/migrations/versions), [worker supervisor](../backend/bmt_backend/service_worker.py) |
++| Backend operations | [Deployment runbook](../backend/deploy/README.md), [latest cloud release](SECURITY_DEPLOYMENT_2026_10_24.md), [PC release](LATEST_BACKEND_DEPLOY_2026_10_23.md), [Studio activation](STUDIO_PLATFORM_ACTIVATION.md) | [Migration chain](../backend/bmt_backend/migrations/versions), [worker supervisor](../backend/bmt_backend/service_worker.py) |
+ | Privacy and moderation | [Account privacy](ACCOUNT_PRIVACY_2026_10_14.md), [public-content safety](PUBLIC_CONTENT_SAFETY.md) | [Privacy service](../backend/bmt_backend/privacy.py) |
+ 
+ The source currently uses five-lap rules `standing-5-road-gates-v23`, physics
+@@ -35,12 +35,7 @@
+ documents and a provisional 128 MiB prop estimate. The estimate is an admission
+ bound, not device memory or frame-rate certification.
+ 
+-The latest recorded backend deployment is schema **0057**. The workspace also
+-contains subsequent challenge-series, World Ranking and game-configuration migrations;
+-their presence does not prove rollout. Consult each feature report and release receipt
+-before selecting matching client/API/worker artifacts. World Ranking requires its
+-declared prospective launch; production billing and broad Studio reporting have their
+-own configuration gates.
++The [latest cloud security deployment](SECURITY_DEPLOYMENT_2026_10_24.md) is schema **0062**, with separate runtime credentials and Studio disabled. The PC backend remains at schema **0057** pending explicit private-backup approval. Later workspace migrations do not prove rollout. Consult feature reports and release receipts before selecting matching artifacts; World Ranking launch, production billing, private staff access and broad reporting retain their configuration gates.
+ 
+ [Development status](../DEVELOPMENT_STATUS.md) and [Phase 0 plan](PHASE_0_PLAN.md)
+ retain the chronological checkpoints, failures and acceptance work. The
+--- a/docs/SECURITY_FIXES_2026_10_24.md
++++ b/docs/SECURITY_FIXES_2026_10_24.md
+@@ -1,6 +1,6 @@
+ # Security fixes: SEC06, SEC07, SEC03, SEC08 and SEC04
+ 
+-The five requested findings from [the review](SECURITY_REVIEW_2026_10_24.md) are fixed in source, client behavior, migration and deployment templates. **These changes have not been deployed.** Existing game/editor processes, PC backend containers and cloud services were left running unchanged. No device, APK, purchase, provider sign-in or production account was used.
++The five requested findings from [the review](SECURITY_REVIEW_2026_10_24.md) are fixed in source, client behavior, migration and deployment templates. **The later [24October cloud deployment](SECURITY_DEPLOYMENT_2026_10_24.md) activates the backend fixes; PC/client rollout remains pending.** This report records the implementation checkpoint before that deployment. Existing game/editor processes, PC backend containers and cloud services were left running unchanged. No device, APK, purchase, provider sign-in or production account was used.
+ 
+ | Finding | Result |
+ | --- | --- |
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -1,5 +1,7 @@
++2026-10-24 cloud rollout: schema0062 and separate API/worker identities are active; public Studio is disabled. PC remains unchanged pending private backup approval. See [actual security deployment, validation and remaining acceptance](../../docs/SECURITY_DEPLOYMENT_2026_10_24.md).
++
+ <!-- SECURITY-FIXES-20261024 -->
+-Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../../docs/SECURITY_FIXES_2026_10_24.md).
++Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 require matching client/API/worker sources, migration0061 and separate workload credentials. The retained cloud backend has completed its authority cutover at schema0062; public Studio is disabled and ad-preview resumes are off. PC/client rollout remains pending. Other existing deployments still require their own authority cutover. See [the deployment receipt](../../docs/SECURITY_DEPLOYMENT_2026_10_24.md) and [implementation requirements](../../docs/SECURITY_FIXES_2026_10_24.md).
+ <!-- /SECURITY-FIXES-20261024 -->
+ 
+ 2026-10-14 final combined backend review covers the current 0033/0034 source, including real publication upload/account-deletion fencing and cross-process restart recovery. Reused discovery snapshots report their actual remaining lifetime. Local checks pass; coordinated approved migrations, matching API/worker images and deployment-host reboot/restore/load acceptance remain. No production operation was performed. Evidence: ../../docs/evidence/backend-final-review-2026-10-14/review.json.

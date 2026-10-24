@@ -1,0 +1,1366 @@
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -276,6 +276,7 @@
+             "lightweight_race_proofs": True,
+             "track_lifecycle_version": 1,
+             "discovery_paging_version": 3,
++            "discovery_daily_version": 1,
+             "max_request_bytes": settings.max_body_bytes,
+             "upload_encodings": ["identity", "gzip"],
+             "ghost_identity_version": 1,
+diff --git a/backend/bmt_backend/database_privileges.py b/backend/bmt_backend/database_privileges.py
+--- a/backend/bmt_backend/database_privileges.py
++++ b/backend/bmt_backend/database_privileges.py
+@@ -34,6 +34,8 @@
+         "creator_achievement_partitions",
+         "deletion_blobs",
+         "discovery_bootstrap",
++        "discovery_activity",
++        "discovery_days",
+         "discovery_boundaries",
+         "discovery_changes",
+         "discovery_collections",
+@@ -67,6 +69,9 @@
+         "news_track_reach",
+         "news_watches",
+         "object_pins",
++        "object_partitions",
++        "object_packs",
++        "packed_objects",
+         "operation_state",
+         "personal_bests",
+         "player_blocks",
+diff --git a/backend/bmt_backend/discovery_activity.py b/backend/bmt_backend/discovery_activity.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/discovery_activity.py
+@@ -0,0 +1,108 @@
++"""Transactional seven-calendar-day race/replay contributions, never client counts."""
++import uuid
++from collections import Counter
++
++from sqlalchemy import select
++
++from .discovery_models import DiscoveryActivity, DiscoveryHead
++from .identity_models import Player
++from .track_models import Board, Run, Track, TrackVersion
++
++DAY = 86400
++CAP = 5
++
++
++def contribution(row):
++    return (row.races, max(0, row.races - 1)) if row.counted else (0, 0)
++
++
++def apply(db, changes):
++    if not changes:
++        return
++    heads = {h.track_id: h for h in db.scalars(select(DiscoveryHead).where(DiscoveryHead.track_id.in_(changes)))}
++    for tid, (races, replays) in changes.items():
++        head = heads.get(tid)
++        if head is None:
++            raise RuntimeError("Activity contribution has no discovery head")
++        head.activity_races += races
++        head.activity_replays += replays
++        if min(head.activity_races, head.activity_replays) < 0:
++            raise RuntimeError("Discovery activity contribution underflow")
++
++
++def collect(db, shard, events, stamp):
++    from .discovery_projection import eligible
++
++    run_ids = [e.run_id for e in events if e.kind == "finish" and e.run_id]
++    if not run_ids:
++        return
++    # Read authoritative committed runs, including the late creator-proof binding.
++    rows = list(db.execute(select(Run, Board.manifest, TrackVersion, Track.owner_id, Player)
++        .join(Board, Board.id == Run.board_id).join(TrackVersion, TrackVersion.id == Board.version_id)
++        .join(Track, Track.id == TrackVersion.track_id).join(Player, Player.id == Run.player_id)
++        .where(Run.id.in_(run_ids), Run.status == "verified")))
++    counts = Counter()
++    for run, manifest, version, owner, player in rows:
++        if (not eligible(player) or player.id == owner or manifest.get("purpose") == "creator_test"
++                or manifest.get("test_population") or version.creator_test_run_id == run.id
++                or run.finished_at is None or run.finished_at > stamp
++                or not stamp // DAY - 6 <= run.finished_at // DAY <= stamp // DAY):
++            continue
++        counts[(version.track_id, player.id, run.finished_at // DAY)] += 1
++    ids = {str(uuid.uuid5(uuid.NAMESPACE_URL, f"activity:{tid}:{pid}:{day}")): (tid, pid, day, n)
++        for (tid, pid, day), n in counts.items()}
++    previous = {r.id: r for r in db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.id.in_(ids)))} if ids else {}
++    changes = {}
++    for identity, (tid, pid, day, n) in ids.items():
++        row = previous.get(identity)
++        before = contribution(row) if row else (0, 0)
++        if row is None:
++            row = DiscoveryActivity(id=identity, track_id=tid, player_id=pid, partition=shard.id,
++                day=day, races=0, counted=True)
++            db.add(row)
++        row.races = min(CAP, row.races + n)
++        row.counted = True
++        after = contribution(row)
++        old = changes.get(tid, (0, 0))
++        changes[tid] = tuple(old[i] + after[i] - before[i] for i in range(2))
++    apply(db, changes)
++
++
++def expire(db, shard, stamp, limit):
++    rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.partition == shard,
++        DiscoveryActivity.day < stamp // DAY - 6).order_by(DiscoveryActivity.day, DiscoveryActivity.id).limit(limit)))
++    remove(db, rows)
++    return len(rows)
++
++
++def remove(db, rows):
++    changes = {}
++    for row in rows:
++        old = changes.get(row.track_id, (0, 0))
++        value = contribution(row)
++        changes[row.track_id] = tuple(old[i] - value[i] for i in range(2))
++        db.delete(row)
++    apply(db, changes)
++
++
++def owner_page(db, job, stamp, limit):
++    from .discovery_projection import eligible
++
++    player = db.get(Player, job.player_id)
++    rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.player_id == job.player_id,
++        DiscoveryActivity.partition == job.partition, DiscoveryActivity.id > job.cursor)
++        .order_by(DiscoveryActivity.id).limit(limit)))
++    changes = {}
++    for row in rows:
++        before = contribution(row)
++        row.counted = eligible(player) and row.day >= stamp // DAY - 6
++        after = contribution(row)
++        old = changes.get(row.track_id, (0, 0))
++        changes[row.track_id] = tuple(old[i] + after[i] - before[i] for i in range(2))
++        if player is None or player.deleted_at is not None:
++            db.delete(row)
++    apply(db, changes)
++    if rows:
++        job.cursor = rows[-1].id
++    else:
++        db.delete(job)
+diff --git a/backend/bmt_backend/discovery_daily.py b/backend/bmt_backend/discovery_daily.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/discovery_daily.py
+@@ -0,0 +1,155 @@
++"""Resumable daily Free Race curation. HTTP reads only the published 100 IDs."""
++import hashlib
++import math
++from collections import Counter
++
++from sqlalchemy import delete, select
++
++from .discovery_models import (
++    DiscoveryActivity,
++    DiscoveryBootstrap,
++    DiscoveryDay,
++    DiscoveryEntry,
++    DiscoveryHead,
++    DiscoveryPartition,
++)
++from .identity_models import Player
++from .track_models import Track, TrackVersion, now
++
++POLICY = "daily-tracks-v1"
++DAY = 86400
++SIZE = 100
++BATCH = 128
++POOL = 500
++
++
++def score(*, rating_sum, rating_count, recent_players, lifetime_players, races, replays, created_at, stamp):
++    """0..1 signals; fixed weights, saturation and evidence shrinkage."""
++    def volume(value, ceiling):
++        return min(1.0, math.log1p(max(0, value)) / math.log1p(ceiling))
++
++    quality = (max(0, rating_sum) + 17.5) / (max(0, rating_count) + 5) / 5
++    # Include repeated finishes within a day and returns on subsequent days.
++    repeat = max(replays, races - recent_players, 0) / (max(0, races) + 20)
++    signals = {"rating": min(1.0, quality), "recent_players": volume(recent_players, 1000),
++        "replay": min(1.0, repeat), "races": volume(races, 5000),
++        "freshness": max(0.0, 1 - max(0, stamp - created_at) / (14 * DAY)),
++        "lifetime_players": volume(lifetime_players, 10000)}
++    weights = {"rating": 30, "recent_players": 20, "replay": 20,
++        "races": 10, "freshness": 15, "lifetime_players": 5}
++    return round(sum(signals[k] * weights[k] for k in weights) * 10000)
++
++
++def lane_key(item, lane):
++    if lane == "ranked":
++        return item["score"], item["rotation"], item["track_id"]
++    if lane == "fresh":
++        return item["rotation"], item["score"], item["track_id"]
++    return item["unseen"], item["rotation"], item["track_id"]
++
++
++def retain(items, lane):
++    owners = Counter()
++    result = []
++    for item in sorted(items, key=lambda x: lane_key(x, lane), reverse=True):
++        # Bound each creator as well as the whole pool, preserving alternatives.
++        if owners[item["owner_id"]] >= SIZE:
++            continue
++        owners[item["owner_id"]] += 1
++        result.append(item)
++        if len(result) == POOL:
++            break
++    return result
++
++
++def select_mix(pools):
++    """60% ranked, 20% new, 20% rotating; soft creator/biome diversity."""
++    result, seen = [], set()
++    owners, themes = Counter(), Counter()
++    pattern = ("ranked", "ranked", "fresh", "ranked", "explore")
++    for owner_cap, theme_cap in ((3, 35), (10, 60), (SIZE, SIZE)):
++        while len(result) < SIZE:
++            lane = pattern[len(result) % len(pattern)]
++            candidate = next(((item, source) for source in (lane, "ranked", "fresh", "explore")
++                for item in pools.get(source, []) if item["track_id"] not in seen
++                and owners[item["owner_id"]] < owner_cap and themes[item["theme"]] < theme_cap), None)
++            if candidate is None:
++                break
++            item, source = candidate
++            result.append({**item, "reason": source})
++            seen.add(item["track_id"])
++            owners[item["owner_id"]] += 1
++            themes[item["theme"]] += 1
++    return result
++
++
++def step(factory, *, clock=None):
++    from .discovery_projection import budget, insert
++
++    stamp = now() if clock is None else clock
++    day = stamp // DAY
++    with factory() as db:
++        budget(db)
++        # Singleton daily row is also the cross-worker fence. No source locks.
++        db.execute(insert(db, DiscoveryDay).values(day=day, policy=POLICY, shard=0, cursor="",
++            pools={}, items=[], published_at=0).on_conflict_do_nothing(index_elements=["day"]))
++        job = db.scalar(select(DiscoveryDay).where(DiscoveryDay.day == day).with_for_update(skip_locked=True))
++        if job is None:
++            return False
++        if job.published_at:
++            # Fixed retention: active sessions live only thirty minutes.
++            old = list(db.scalars(select(DiscoveryDay.day).where(DiscoveryDay.day < day - 2).limit(16)))
++            if old:
++                db.execute(delete(DiscoveryDay).where(DiscoveryDay.day.in_(old)))
++            db.commit()
++            return False
++        ready = list(db.scalars(select(DiscoveryPartition.ready).order_by(DiscoveryPartition.id)))
++        bootstrap = db.get(DiscoveryBootstrap, 1)
++        if len(ready) != 16 or not all(ready) or bootstrap is None or not bootstrap.ready:
++            db.commit()
++            return False
++        # The projection expires yesterday's contributions before this shard
++        # is sampled. Midnight never scores an eighth activity day.
++        expired = db.scalar(select(DiscoveryActivity.id).where(DiscoveryActivity.partition == job.shard,
++            DiscoveryActivity.day < day - 6).limit(1))
++        if expired is not None:
++            db.commit()
++            return False
++        previous = db.get(DiscoveryDay, day - 1)
++        shown = {i["track_id"] for i in previous.items} if previous and previous.published_at else set()
++        # Traverse narrow current heads in primary-key order. Even ineligible
++        # rows advance the checkpoint, so work and memory stay bounded.
++        heads = list(db.scalars(select(DiscoveryHead).where(DiscoveryHead.partition == job.shard,
++            DiscoveryHead.track_id > job.cursor).order_by(DiscoveryHead.track_id).limit(BATCH)))
++        rows = list(db.execute(select(DiscoveryEntry, Track.created_at, DiscoveryHead.activity_races,
++            DiscoveryHead.activity_replays).join(DiscoveryHead,
++                (DiscoveryHead.track_id == DiscoveryEntry.track_id) & (DiscoveryHead.epoch == DiscoveryEntry.epoch))
++            .join(Track, Track.id == DiscoveryEntry.track_id).join(Player, Player.id == Track.owner_id)
++            .join(TrackVersion, TrackVersion.id == DiscoveryEntry.version_id)
++            .where(DiscoveryHead.track_id.in_([h.track_id for h in heads]), DiscoveryEntry.visible.is_(True),
++                Track.hidden.is_(False), TrackVersion.state == "published", Player.disabled.is_(False),
++                Player.deleted_at.is_(None), Player.is_test_driver.is_(False)))) if heads else []
++        pools = {lane: list(job.pools.get(lane, [])) for lane in ("ranked", "fresh", "explore")}
++        for entry, created, races, replays in rows:
++            value = score(rating_sum=entry.rating_sum, rating_count=entry.rating_count,
++                recent_players=entry.popularity, lifetime_players=entry.finishers, races=races, replays=replays,
++                created_at=created, stamp=day * DAY)
++            rotation = hashlib.sha256(f"{POLICY}:{day}:{entry.track_id}".encode()).hexdigest()
++            item = {"track_id": entry.track_id, "version_id": entry.version_id, "owner_id": entry.owner_id,
++                "theme": entry.theme, "score": value, "rotation": rotation, "unseen": entry.track_id not in shown}
++            pools["ranked"].append(item)
++            pools["explore"].append(item)
++            if created >= (day - 14) * DAY:
++                pools["fresh"].append(item)
++        job.pools = {lane: retain(items, lane) for lane, items in pools.items()}
++        if heads:
++            job.cursor = heads[-1].track_id
++        else:
++            job.shard += 1
++            job.cursor = ""
++        if job.shard == 16:
++            job.items = select_mix(job.pools)
++            job.pools = {}
++            job.published_at = stamp
++        db.commit()
++        return True
+diff --git a/backend/bmt_backend/discovery_erasure.py b/backend/bmt_backend/discovery_erasure.py
+--- a/backend/bmt_backend/discovery_erasure.py
++++ b/backend/bmt_backend/discovery_erasure.py
+@@ -2,6 +2,7 @@
+ from sqlalchemy import delete, select, tuple_
+ 
+ from .discovery_models import (
++    DiscoveryActivity,
+     DiscoveryBoundary,
+     DiscoveryChange,
+     DiscoveryCollection,
+@@ -47,6 +48,16 @@
+             db.delete(collection)
+         return False
+     db.execute(delete(DiscoveryGuard).where(DiscoveryGuard.scope == actor))
++    activity_rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.player_id == player_id).limit(limit)))
++    if activity_rows:
++        from .discovery_activity import remove
++
++        list(db.scalars(select(DiscoveryPartition).where(DiscoveryPartition.id.in_({r.partition for r in activity_rows}))
++            .order_by(DiscoveryPartition.id).with_for_update()))
++        activity_rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.id.in_([r.id for r in activity_rows]))
++            .execution_options(populate_existing=True)))
++        remove(db, activity_rows)
++        return False
+     # Lock affected partitions in the same order as all projection writers.
+     drivers = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.player_id == player_id).limit(limit)))
+     if drivers:
+diff --git a/backend/bmt_backend/discovery_models.py b/backend/bmt_backend/discovery_models.py
+--- a/backend/bmt_backend/discovery_models.py
++++ b/backend/bmt_backend/discovery_models.py
+@@ -32,7 +32,10 @@
+     epoch: Mapped[int] = mapped_column(BigInteger, default=0)
+     popularity: Mapped[int] = mapped_column(BigInteger, default=0)
+     due_at: Mapped[int] = mapped_column(BigInteger, default=0)
+-    __table_args__ = (UniqueConstraint("partition", "slot"), Index("ix_discovery_head_due", "partition", "due_at"))
++    activity_races: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
++    activity_replays: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
++    __table_args__ = (UniqueConstraint("partition", "slot"), Index("ix_discovery_head_due", "partition", "due_at"),
++        Index("ix_discovery_head_track", "partition", "track_id"))
+ 
+ 
+ class DiscoveryEntry(Base):
+@@ -112,6 +115,33 @@
+     phase: Mapped[int] = mapped_column(Integer, default=0)
+ 
+ 
++class DiscoveryActivity(Base):
++    """At most five verified finishes per driver/track/UTC day; seven days."""
++    __tablename__ = "discovery_activity"
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)
++    track_id: Mapped[str] = mapped_column(String(36))
++    player_id: Mapped[str] = mapped_column(String(36))
++    partition: Mapped[int] = mapped_column(Integer)
++    day: Mapped[int] = mapped_column(BigInteger)
++    races: Mapped[int] = mapped_column(Integer)
++    counted: Mapped[bool] = mapped_column(Boolean)
++    __table_args__ = (UniqueConstraint("track_id", "player_id", "day"),
++        Index("ix_discovery_activity_expire", "partition", "day", "id"),
++        Index("ix_discovery_activity_player", "player_id", "partition", "id"))
++
++
++class DiscoveryDay(Base):
++    """One resumable, bounded candidate pool and immutable selection per UTC day."""
++    __tablename__ = "discovery_days"
++    day: Mapped[int] = mapped_column(BigInteger, primary_key=True)
++    policy: Mapped[str] = mapped_column(String(40))
++    shard: Mapped[int] = mapped_column(Integer, default=0)
++    cursor: Mapped[str] = mapped_column(String(36), default="")
++    pools: Mapped[dict] = mapped_column(JSON, default=dict)
++    items: Mapped[list] = mapped_column(JSON, default=list)
++    published_at: Mapped[int] = mapped_column(BigInteger, default=0)
++
++
+ class DiscoveryBootstrap(Base):
+     __tablename__ = "discovery_bootstrap"
+     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+diff --git a/backend/bmt_backend/discovery_projection.py b/backend/bmt_backend/discovery_projection.py
+--- a/backend/bmt_backend/discovery_projection.py
++++ b/backend/bmt_backend/discovery_projection.py
+@@ -10,14 +10,17 @@
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
++from . import discovery_activity as activity
+ from . import discovery_retention as retention
+ from .discovery_models import (
+     LIFETIME,
+     WINDOW,
++    DiscoveryActivity,
+     DiscoveryBootstrap,
+     DiscoveryBoundary,
+     DiscoveryChange,
+     DiscoveryCollection,
++    DiscoveryDay,
+     DiscoveryDriver,
+     DiscoveryEntry,
+     DiscoveryGuard,
+@@ -216,7 +219,7 @@
+             job.cursor = tracks[-1]
+         else:
+             job.phase, job.cursor = 1, ""
+-    else:
++    elif job.phase == 1:
+         player = db.get(Player, job.player_id)
+         rows = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.player_id == job.player_id,
+             DiscoveryDriver.partition == shard.id, DiscoveryDriver.track_id > job.cursor)
+@@ -230,7 +233,9 @@
+         if rows:
+             job.cursor = rows[-1].track_id
+         else:
+-            db.delete(job)
++            job.phase, job.cursor = 2, ""
++    else:
++        activity.owner_page(db, job, stamp, BATCH)
+     return changed, deltas
+ 
+ 
+@@ -282,7 +287,9 @@
+             DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp))
+         expired = exists(select(DiscoveryDriver.track_id).where(DiscoveryDriver.partition == DiscoveryPartition.id,
+             DiscoveryDriver.expires_at < stamp))
+-        priority = case((or_(pending, owners, due, expired, DiscoveryPartition.ready.is_(False),
++        old_activity = exists(select(DiscoveryActivity.id).where(DiscoveryActivity.partition == DiscoveryPartition.id,
++            DiscoveryActivity.day < stamp // 86400 - 6))
++        priority = case((or_(pending, owners, due, expired, old_activity, DiscoveryPartition.ready.is_(False),
+             DiscoveryPartition.checked_at < time.time_ns()-30_000_000_000), 0), else_=1)
+         shard = db.scalar(select(DiscoveryPartition).order_by(priority, DiscoveryPartition.checked_at,
+             DiscoveryPartition.id).with_for_update(skip_locked=True).limit(1))
+@@ -355,11 +362,13 @@
+             DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp).order_by(DiscoveryHead.due_at,
+                 DiscoveryHead.track_id).limit(BATCH)))
+         changed = publish(db, shard, force | due, stamp)
++        activity.collect(db, shard, events, stamp)
++        expired_activity = activity.expire(db, shard.id, stamp, BATCH)
+         for event in events:
+             event.processed_at = stamp
+         removed = cleanup(db, stamp)
+         db.commit()
+-        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed)
++        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed or expired_activity)
+ 
+ 
+ def settle_for_diagnostics(factory, *, clock=None, maximum=10000):
+@@ -431,7 +440,13 @@
+         ):
+             oldest = db.scalar(select(column).where(column < stamp - grace).order_by(column).limit(1))
+             cleanup_age[name] = max(0, stamp - grace - oldest) if oldest is not None else 0
++        daily = db.execute(select(DiscoveryDay.day, DiscoveryDay.policy, DiscoveryDay.shard, DiscoveryDay.published_at)
++            .order_by(DiscoveryDay.day.desc()).limit(1)).first()
++        daily_health = None if daily is None else {"day": daily.day, "policy": daily.policy,
++            "building_partition": daily.shard, "published_at": daily.published_at,
++            "age_days": max(0, stamp // 86400 - daily.day)}
+         return {"population_backfill_ready":bool(bootstrap and bootstrap.ready),"partitions":values,
++                "daily_selection": daily_health,
+                 "cleanup_oldest_age_seconds": cleanup_age,
+                 "storage_backfill_ready": bool(db.scalar(select(DiscoveryStorageBootstrap.ready)
+                     .where(DiscoveryStorageBootstrap.id == 1))),
+diff --git a/backend/bmt_backend/discovery_query.py b/backend/bmt_backend/discovery_query.py
+--- a/backend/bmt_backend/discovery_query.py
++++ b/backend/bmt_backend/discovery_query.py
+@@ -16,6 +16,6 @@
+     raced_ids: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=50000)
+     ids: list[Annotated[str, Field(max_length=80)]] | None = Field(None, max_length=50000)
+     section: str = Field("all", pattern="^(all|favorites|saved)$")
+-    feed: str = Field("recommended", pattern="^(recommended|new|popular|rated|trending)$")
++    feed: str = Field("recommended", pattern="^(recommended|daily|new|popular|rated|trending)$")
+     sort: str = Field("recommended", pattern="^(recommended|name|creator|score|plays|new)$")
+ 
+diff --git a/backend/bmt_backend/discovery_v3.py b/backend/bmt_backend/discovery_v3.py
+--- a/backend/bmt_backend/discovery_v3.py
++++ b/backend/bmt_backend/discovery_v3.py
+@@ -26,6 +26,7 @@
+     DiscoveryBoundary,
+     DiscoveryChange,
+     DiscoveryCollection,
++    DiscoveryDay,
+     DiscoveryHead,
+     DiscoveryMember,
+     DiscoveryPartition,
+@@ -206,8 +207,24 @@
+     values["owner"] = player.id if player and query.section == "saved" else ""
+     values["favorites_present"] = query.ids is not None
+     values["frozen_blocks"] = bool(blocks)
++    if (query.feed == "daily" and not query.search.strip() and query.section == "all"
++            and query.sort == "recommended" and query.theme == "all" and not query.minimum_rating
++            and not query.age_days and query.race_count == "any" and query.race_history == "any"
++            and query.ids is None):
++        # Publish once per UTC day; yesterday is a bounded rollover fallback
++        # while today's background scan finishes. Never build inside HTTP.
++        daily = db.scalar(select(DiscoveryDay).where(DiscoveryDay.day.in_([stamp // 86400, stamp // 86400 - 1]),
++            DiscoveryDay.published_at > 0).order_by(DiscoveryDay.day.desc()).limit(1))
++        if daily is None:
++            raise HTTPException(503, "DISCOVERY_DAILY_PREPARING", headers={"Retry-After": "2"})
++        if not anchor or any(item["version_id"] == anchor for item in daily.items):
++            values["daily_day"] = daily.day
++        else:
++            values["feed"] = "recommended" # Direct links may target a track outside today's picks.
++    elif query.feed == "daily":
++        values["feed"] = "recommended" # Search and filters reach the whole catalogue.
+     identity = str(uuid.uuid5(uuid.NAMESPACE_URL, digest([actor, query.model_dump(),
+-        [p.epoch for p in partitions], stamp // 20, anchor, blocks])))
++        [p.epoch for p in partitions], stamp // 20, anchor, blocks, values.get("daily_day")])))
+     existing = db.get(DiscoverySession, identity)
+     if existing and existing.expires_at > stamp:
+         return existing, boundary(db, existing, {}, 0, anchor=anchor or None)
+@@ -364,6 +381,8 @@
+ 
+ 
+ def page(db, request, view, start, player, deadline):
++    if "daily_day" in view.query:
++        return daily_page(db, request, view, start, player, deadline)
+     order, fields = ordering(view.query)
+     positions, phase = dict(start.positions), start.phase
+     anchor = None
+@@ -417,6 +436,15 @@
+ 
+ 
+ def choose(db, request, view, player, exclude, deadline):
++    if "daily_day" in view.query:
++        rows = daily_rows(db, view, player)
++        eligible = [r for r in rows if r["track_id"] != exclude] or rows
++        selected = [secrets.choice(eligible)] if eligible else []
++        check_deadline(db, deadline)
++        items = list(hydrate(db, request, selected, player).values())
++        if selected and not items:
++            raise HTTPException(503, "DISCOVERY_VISIBILITY_CHANGED", headers={"Retry-After": "1"})
++        return {"schema": "bmt-discovery-random-v3", "items": items, "complete": True}
+     _, fields = ordering(view.query)
+     check_deadline(db, deadline)
+     small = fetch(db, view, player, fields, limit=RANDOM_SMALL + 1, extra=(E.track_id != exclude,))
+@@ -456,6 +484,49 @@
+     if selected and not items:
+         raise HTTPException(503, "DISCOVERY_VISIBILITY_CHANGED", headers={"Retry-After": "1"})
+     return {"schema": "bmt-discovery-random-v3", "items": items, "complete": True}
++
++
++def daily_rows(db, view, player):
++    daily = db.get(DiscoveryDay, view.query["daily_day"])
++    if daily is None or not daily.published_at:
++        raise HTTPException(410, "DISCOVERY_CURSOR_EXPIRED")
++    rows = [{**item, "position": i} for i, item in enumerate(daily.items)]
++    # Cheap current authority checks over at most 100 IDs; no global sort/scan.
++    statement = (select(TrackVersion.id).join(Track, Track.id == TrackVersion.track_id)
++        .join(Player, Player.id == Track.owner_id).where(
++            TrackVersion.id.in_([r["version_id"] for r in rows]), TrackVersion.state == "published",
++            Track.hidden.is_(False), Player.disabled.is_(False), Player.deleted_at.is_(None),
++            Player.is_test_driver.is_(False)))
++    if player:
++        statement = statement.where(~Track.owner_id.in_(blocked_ids(db, player.id)))
++    if view.query.get("frozen_blocks"):
++        statement = statement.where(~Track.owner_id.in_(select(DiscoveryMember.track_id).where(
++            DiscoveryMember.collection_id == view.collection_id, DiscoveryMember.kind == "block")))
++    allowed = set(db.scalars(statement))
++    return [r for r in rows if r["version_id"] in allowed]
++
++
++def daily_page(db, request, view, start, player, deadline):
++    check_deadline(db, deadline)
++    after = start.positions.get("daily", -1)
++    available = daily_rows(db, view, player)
++    if start.anchor_version:
++        anchor = next((r for r in available if r["version_id"] == start.anchor_version), None)
++        if anchor is None:
++            raise HTTPException(409, "DISCOVERY_ANCHOR_UNAVAILABLE", headers={"Retry-After": "1"})
++        after = anchor["position"] - 1
++    rows = [r for r in available if r["position"] > after][:PAGE + 1]
++    has_more = len(rows) > PAGE
++    rows = rows[:PAGE]
++    payloads = hydrate(db, request, rows, player)
++    items = [payloads[r["version_id"]] for r in rows if r["version_id"] in payloads]
++    check_deadline(db, deadline)
++    next_page = boundary(db, view, {"daily": rows[-1]["position"]}, 0, previous=start.id) if has_more else None
++    previous = db.get(DiscoveryBoundary, start.previous_id) if start.previous_id else None
++    return {"schema": "bmt-discovery-page-v3", "items": items, "total": None, "has_more": has_more,
++        "next_cursor": token(view, next_page) if next_page else None,
++        "previous_cursor": token(view, previous) if previous else None, "page_cursor": token(view, start),
++        "expires_in": max(0, view.expires_at - now()), "anchored": bool(start.anchor_version)}
+ 
+ 
+ def handle(body, request, db, credentials, random_choice):
+diff --git a/backend/bmt_backend/discovery_worker.py b/backend/bmt_backend/discovery_worker.py
+--- a/backend/bmt_backend/discovery_worker.py
++++ b/backend/bmt_backend/discovery_worker.py
+@@ -9,6 +9,7 @@
+ 
+ from .config import Settings
+ from .db import make_engine, make_session_factory
++from .discovery_daily import step as daily_step
+ from .discovery_projection import health, repair_track, step
+ 
+ 
+@@ -25,6 +26,7 @@
+     factory = make_session_factory(engine)
+     idle = 0
+     report_at = 0.0
++    daily_at = 0.0
+     try:
+         if args.repair_track:
+             import uuid
+@@ -35,6 +37,10 @@
+         while not stop.is_set():
+             try:
+                 worked = step(factory)
++                if time.monotonic() >= daily_at:
++                    daily_work = daily_step(factory)
++                    daily_at = time.monotonic() + (0.01 if daily_work else 30)
++                    worked = daily_work or worked
+                 if time.monotonic() >= report_at:
+                     logging.getLogger("bmt.discovery").info("discovery_projection_health %s",json.dumps(health(factory)))
+                     report_at = time.monotonic()+60
+diff --git a/backend/bmt_backend/migrations/versions/0064_daily_track_selection.py b/backend/bmt_backend/migrations/versions/0064_daily_track_selection.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0064_daily_track_selection.py
+@@ -0,0 +1,48 @@
++"""Daily Free Race selection and bounded, prospective verified replay signals."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0064_daily_track_selection"
++down_revision = "0063_custom_challenge_tracks"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    for name in ("activity_races", "activity_replays"):
++        op.add_column("discovery_heads", sa.Column(name, sa.BigInteger(), nullable=False, server_default="0"))
++    op.create_index("ix_discovery_head_track", "discovery_heads", ["partition", "track_id"])
++    op.create_table("discovery_activity",
++        sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("track_id", sa.String(36), nullable=False),
++        sa.Column("player_id", sa.String(36), nullable=False),
++        sa.Column("partition", sa.Integer(), nullable=False),
++        sa.Column("day", sa.BigInteger(), nullable=False),
++        sa.Column("races", sa.Integer(), nullable=False),
++        sa.Column("counted", sa.Boolean(), nullable=False),
++        sa.UniqueConstraint("track_id", "player_id", "day"))
++    op.create_index("ix_discovery_activity_expire", "discovery_activity", ["partition", "day", "id"])
++    op.create_index("ix_discovery_activity_player", "discovery_activity", ["player_id", "partition", "id"])
++    op.create_table("discovery_days",
++        sa.Column("day", sa.BigInteger(), primary_key=True),
++        sa.Column("policy", sa.String(40), nullable=False),
++        sa.Column("shard", sa.Integer(), nullable=False),
++        sa.Column("cursor", sa.String(36), nullable=False),
++        sa.Column("pools", sa.JSON(), nullable=False),
++        sa.Column("items", sa.JSON(), nullable=False),
++        sa.Column("published_at", sa.BigInteger(), nullable=False))
++
++
++def downgrade():
++    # Explicit rollback invalidates only disposable daily cursors. Canonical
++    # tracks, runs, ratings, collections and ordinary discovery views survive.
++    condition = ("json_extract(query, '$.daily_day') IS NOT NULL" if op.get_bind().dialect.name == "sqlite"
++        else "query->>'daily_day' IS NOT NULL")
++    op.execute(sa.text("DELETE FROM discovery_boundaries WHERE session_id IN "
++        "(SELECT id FROM discovery_sessions WHERE " + condition + ")"))
++    op.execute(sa.text("DELETE FROM discovery_sessions WHERE " + condition))
++    op.drop_table("discovery_days")
++    op.drop_table("discovery_activity")
++    op.drop_index("ix_discovery_head_track", table_name="discovery_heads")
++    op.drop_column("discovery_heads", "activity_replays")
++    op.drop_column("discovery_heads", "activity_races")
+diff --git a/backend/schemas/discovery-query-v3.schema.json b/backend/schemas/discovery-query-v3.schema.json
+--- a/backend/schemas/discovery-query-v3.schema.json
++++ b/backend/schemas/discovery-query-v3.schema.json
+@@ -82,7 +82,7 @@
+         },
+         "feed": {
+           "default": "recommended",
+-          "pattern": "^(recommended|new|popular|rated|trending)$",
++          "pattern": "^(recommended|daily|new|popular|rated|trending)$",
+           "title": "Feed",
+           "type": "string"
+         },
+diff --git a/backend/tests/test_discovery_daily.py b/backend/tests/test_discovery_daily.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_discovery_daily.py
+@@ -0,0 +1,279 @@
++"""Ranking balance, bounded background publication and real Free Race/search API."""
++import time
++import uuid
++
++from alembic import command
++from sqlalchemy import event, func, select, update
++from test_discovery_paging import auth_app as auth_app_fixture
++from test_discovery_v3 import browse
++from test_discovery_v3 import indexed as indexed_fixture
++
++from bmt_backend import discovery_daily as daily
++from bmt_backend.discovery_erasure import erase_private
++from bmt_backend.discovery_models import (
++    DiscoveryActivity,
++    DiscoveryDay,
++    DiscoveryHead,
++    DiscoveryPartition,
++    DiscoverySession,
++)
++from bmt_backend.discovery_projection import settle_for_diagnostics
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration
++from bmt_backend.track_models import Board, Run, RunTicket, Track, TrackVersion
++
++auth_app = auth_app_fixture
++indexed = indexed_fixture
++
++
++def build(d, stamp=None):
++    stamp = int(time.time()) if stamp is None else stamp
++    for _ in range(100):
++        if not daily.step(d.app.state.session_factory, clock=stamp):
++            break
++    else:
++        raise AssertionError("Daily build did not finish within a bounded test catalogue")
++    with d.app.state.session_factory() as db:
++        row = db.get(DiscoveryDay, stamp // daily.DAY)
++        assert row.published_at > 0 and not row.pools
++        return row.items
++
++
++def finish(d, player, *, count=1, stamp=None, purpose=None, track=0):
++    stamp = int(time.time()) - 1 if stamp is None else stamp
++    with d.app.state.session_factory() as db:
++        board = Board(id=uuid.uuid4().hex * 2, version_id=d.versions[track]["id"],
++            vehicle_id="compact", manifest=purpose or {})
++        db.add(board)
++        db.flush()
++        ids = []
++        for _ in range(count):
++            ticket = RunTicket(player_id=player, board_id=board.id, expires_at=stamp + 100)
++            db.add(ticket)
++            db.flush()
++            run = Run(ticket_id=ticket.id, player_id=player, board_id=board.id, replay_hash="a" * 64,
++                status="verified", time_ticks=100, lap_ticks=[20] * 5, finished_at=stamp)
++            db.add(run)
++            db.flush()
++            ids.append(run.id)
++        db.commit()
++    return ids
++
++
++def activity(d):
++    with d.app.state.session_factory() as db:
++        head = db.get(DiscoveryHead, d.tracks[0]["id"])
++        return head.activity_races, head.activity_replays
++
++
++def test_score_balances_confidence_freshness_reach_volume_and_replay():
++    base = {"rating_sum": 0, "rating_count": 0, "recent_players": 0, "lifetime_players": 0,
++        "races": 0, "replays": 0, "created_at": 0, "stamp": 30 * daily.DAY}
++    baseline = daily.score(**base)
++    for change in ({"recent_players": 30}, {"lifetime_players": 200}, {"races": 30, "replays": 20},
++                   {"created_at": base["stamp"]}, {"rating_sum": 90, "rating_count": 20}):
++        assert daily.score(**{**base, **change}) > baseline
++    assert daily.score(**{**base, "rating_sum": 5, "rating_count": 1}) < daily.score(
++        **{**base, "rating_sum": 90, "rating_count": 20})
++    assert daily.score(**{**base, "rating_sum": 100, "rating_count": 100}) < baseline
++    assert daily.score(**{**base, "races": 10**12, "recent_players": 10**12,
++        "lifetime_players": 10**12, "replays": 10**12}) <= 1_000_000
++
++
++def test_mix_deduplicates_and_spreads_creators_and_biomes():
++    items = [{"track_id": str(n), "owner_id": str(n % 40), "theme": str(n % 5),
++        "score": 1000 - n, "rotation": str(n).zfill(3), "unseen": True} for n in range(200)]
++    pools = {lane: daily.retain(items, lane) for lane in ("ranked", "fresh", "explore")}
++    result = daily.select_mix(pools)
++    assert len({i["track_id"] for i in result}) == daily.SIZE
++    assert max(sum(i["owner_id"] == str(n) for i in result) for n in range(40)) <= 3
++    assert {lane: sum(i["reason"] == lane for i in result) for lane in pools} == {
++        "ranked": 60, "fresh": 20, "explore": 20}
++    assert len({i["theme"] for i in result}) == 5
++    assert len(daily.retain(items * 20, "ranked")) <= daily.POOL
++
++
++def test_daily_publication_stable_resumable_and_rotates(indexed):
++    d = indexed
++    stamp = int(time.time())
++    daily.step(d.app.state.session_factory, clock=stamp)
++    with d.app.state.session_factory() as db:
++        job = db.get(DiscoveryDay, stamp // daily.DAY)
++        assert not job.published_at and len(job.pools["ranked"]) <= daily.BATCH
++    first = build(d, stamp)
++    assert len(first) == len({i["track_id"] for i in first}) == daily.SIZE
++    with d.app.state.session_factory() as db:
++        db.execute(update(DiscoveryHead).values(activity_races=5000, activity_replays=4000))
++        db.commit()
++    assert build(d, stamp + 1) == first
++    tomorrow = build(d, stamp + daily.DAY)
++    assert {i["track_id"] for i in tomorrow} != {i["track_id"] for i in first}
++    assert any(i["reason"] == "explore" and i["track_id"] not in {x["track_id"] for x in first} for i in tomorrow)
++
++
++def test_daily_pages_search_full_catalogue_and_bounded_sql(indexed):
++    d = indexed
++    selected = build(d)
++    first = page = browse(d, {"feed": "daily"})
++    found = []
++    while True:
++        found.extend(i["track_id"] for i in page["items"])
++        if not page["next_cursor"]:
++            break
++        page = browse(d, cursor=page["next_cursor"])
++    assert found == [i["track_id"] for i in selected]
++    assert browse(d, cursor=first["page_cursor"])["items"] == first["items"]
++    missing = next(i for i, t in enumerate(d.tracks) if t["id"] not in found)
++    result = browse(d, {"feed": "daily", "search": d.versions[missing]["name"]})
++    assert [i["track_id"] for i in result["items"]] == [d.tracks[missing]["id"]]
++    assert len(browse(d, {"feed": "daily", "theme": "pine"})["items"]) == 20
++    statements = []
++    def capture(_c, _cursor, sql, *_args):
++        statements.append(sql.lower())
++    event.listen(d.app.state.engine, "before_cursor_execute", capture)
++    try:
++        browse(d, cursor=first["next_cursor"])
++    finally:
++        event.remove(d.app.state.engine, "before_cursor_execute", capture)
++    assert not any("from runs" in s or "count(" in s or "discovery_entries" in s for s in statements)
++
++
++def test_daily_hiding_blocks_and_random_use_current_authority(indexed, sign_in):
++    d = indexed
++    build(d)
++    first = browse(d, {"feed": "daily"})
++    hidden = first["items"][0]["track_id"]
++    with d.app.state.session_factory() as db:
++        db.execute(update(Track).where(Track.id == hidden).values(hidden=True))
++        db.commit()
++    assert hidden not in [i["track_id"] for i in browse(d, cursor=first["page_cursor"])["items"]]
++    response = d.client.post("/v1/discovery/v3/random", json={"cursor": first["page_cursor"]})
++    assert response.status_code == 200
++    assert response.json()["items"][0]["track_id"] != hidden
++    random_id = response.json()["items"][0]["version_id"]
++    anchored = browse(d, {"feed": "daily"}, locate_version=random_id)
++    assert anchored["anchored"] and anchored["items"][0]["version_id"] == random_id
++    reader = sign_in("Daily reader")
++    headers = {"Authorization": "Bearer " + reader["access_token"]}
++    assert d.client.put("/v1/community/blocks/" + d.owner, headers=headers).status_code == 200
++    blocked = d.client.post("/v1/discovery/v3/tracks", json={"query": {"feed": "daily"}}, headers=headers)
++    assert blocked.status_code == 200 and not blocked.json()["items"]
++    with d.app.state.session_factory() as db:
++        db.execute(update(Player).where(Player.id == d.owner).values(disabled=True))
++        db.commit()
++    assert not browse(d, cursor=first["page_cursor"])["items"]
++
++
++def test_ranking_uses_verified_signals_and_edit_does_not_renew_freshness(indexed):
++    d = indexed
++    stamp = int(time.time())
++    with d.app.state.session_factory() as db:
++        db.execute(update(Track).values(created_at=stamp - 40 * daily.DAY))
++        db.execute(update(TrackVersion).values(created_at=stamp, published_at=stamp))
++        db.execute(update(TrackVersion).where(TrackVersion.id == d.versions[179]["id"])
++            .values(rating_sum=475, rating_count=100))
++        db.execute(update(DiscoveryHead).where(DiscoveryHead.track_id == d.tracks[179]["id"])
++            .values(popularity=500, activity_races=2000, activity_replays=1500))
++        db.commit()
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp + 61)
++    selected = build(d, stamp + 61)
++    assert selected[0]["track_id"] == d.tracks[179]["id"]
++    assert not any(i["reason"] == "fresh" for i in selected)
++
++
++def test_rollover_uses_yesterday_until_published_and_preserves_open_cursor(indexed, monkeypatch):
++    from bmt_backend import discovery_v3
++    d = indexed
++    stamp = int(time.time())
++    original = build(d, stamp)
++    tomorrow = (stamp // daily.DAY + 1) * daily.DAY + 1
++    monkeypatch.setattr(discovery_v3, "now", lambda: tomorrow)
++    # Health remains current in this isolated future-clock fixture.
++    settle_for_diagnostics(d.app.state.session_factory, clock=tomorrow)
++    with d.app.state.session_factory() as db:
++        db.execute(update(DiscoveryPartition).values(checked_at=tomorrow * 1_000_000_000))
++        db.commit()
++    first = browse(d, {"feed": "daily"})
++    assert [i["track_id"] for i in first["items"]] == [i["track_id"] for i in original[:20]]
++    build(d, tomorrow)
++    assert browse(d, cursor=first["page_cursor"])["items"] == first["items"]
++    fresh = browse(d, {"feed": "daily"})
++    assert fresh["page_cursor"] != first["page_cursor"]
++
++
++def test_empty_selection_is_valid_but_unbuilt_selection_is_retryable(indexed):
++    d = indexed
++    result = d.client.post("/v1/discovery/v3/tracks", json={"query": {"feed": "daily"}})
++    assert result.status_code == 503 and result.json()["detail"] == "DISCOVERY_DAILY_PREPARING"
++    assert "retry-after" in result.headers
++    with d.app.state.session_factory() as db:
++        db.execute(update(Track).values(hidden=True))
++        db.commit()
++    build(d)
++    assert not browse(d, {"feed": "daily"})["items"]
++
++
++def test_rollback_invalidates_only_daily_cursors_and_preserves_sources(indexed):
++    d = indexed
++    build(d)
++    browse(d, {"feed": "daily"})
++    browse(d, {"sort": "name"})
++    engine = d.app.state.engine
++    command.downgrade(configuration(engine), "0063_custom_challenge_tracks")
++    with d.app.state.session_factory() as db:
++        views = list(db.scalars(select(DiscoverySession)))
++        assert len(views) == 1 and "daily_day" not in views[0].query
++        assert db.scalar(select(func.count()).select_from(Track)) == 180
++        assert db.scalar(select(func.count()).select_from(TrackVersion)) == 180
++    command.upgrade(configuration(engine), "head")
++    assert len(browse(d, {"sort": "name"})["items"]) == 20
++
++
++def test_real_activity_caps_replays_excludes_owner_and_nonpublic_runs(indexed, sign_in):
++    d = indexed
++    driver = sign_in("Daily driver")["player"]["id"]
++    finish(d, driver, count=12)
++    finish(d, d.owner, count=4)
++    finish(d, driver, count=2, purpose={"purpose": "creator_test"})
++    finish(d, driver, count=2, purpose={"test_population": True})
++    settle_for_diagnostics(d.app.state.session_factory)
++    assert activity(d) == (5, 4)
++    settle_for_diagnostics(d.app.state.session_factory)
++    assert activity(d) == (5, 4)
++    with d.app.state.session_factory() as db:
++        assert db.scalar(select(func.count()).select_from(DiscoveryActivity)) == 1
++
++
++def test_activity_expiry_restriction_restore_and_erasure(indexed, sign_in):
++    d = indexed
++    driver = sign_in("Returning driver")["player"]["id"]
++    stamp = int(time.time())
++    finish(d, driver, count=3, stamp=stamp - 1)
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp)
++    assert activity(d) == (3, 2)
++    with d.app.state.session_factory() as db:
++        db.get(Player, driver).disabled = True
++        db.commit()
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp)
++    assert activity(d) == (0, 0)
++    with d.app.state.session_factory() as db:
++        db.get(Player, driver).disabled = False
++        db.commit()
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp)
++    assert activity(d) == (3, 2)
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp + 7 * daily.DAY)
++    assert activity(d) == (0, 0)
++    finish(d, driver, count=2, stamp=stamp + 7 * daily.DAY)
++    settle_for_diagnostics(d.app.state.session_factory, clock=stamp + 7 * daily.DAY)
++    assert activity(d) == (2, 1)
++    with d.app.state.session_factory() as db:
++        db.get(Player, driver).deleted_at = stamp
++        db.get(Player, driver).disabled = True
++        db.commit()
++    for _ in range(100):
++        with d.app.state.session_factory() as db:
++            done = erase_private(db, driver, limit=5)
++            db.commit()
++        if done:
++            break
++    assert done and activity(d) == (0, 0)
+diff --git a/backend/tests/test_discovery_daily_native.py b/backend/tests/test_discovery_daily_native.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_discovery_daily_native.py
+@@ -0,0 +1,69 @@
++"""Pinned Godot menu against an owned HTTP server, never an existing service."""
++import json
++import os
++import socket
++import subprocess
++import threading
++import time
++from pathlib import Path
++
++import pytest
++import uvicorn
++from sqlalchemy import update
++from test_discovery_daily import build
++from test_discovery_paging import auth_app as auth_app_fixture
++from test_discovery_v3 import indexed as indexed_fixture
++
++from bmt_backend.discovery_projection import settle_for_diagnostics
++from bmt_backend.track_models import TrackVersion
++
++auth_app = auth_app_fixture
++indexed = indexed_fixture
++
++
++@pytest.mark.godot
++def test_native_daily_feed_and_global_search(indexed):
++    d = indexed
++    root = Path(__file__).resolve().parents[2]
++    if os.name != "nt" or not Path(r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe").is_file():
++        pytest.skip("Pinned Windows native menu runner unavailable")
++    document = json.loads((root / "backend/tests/fixtures/verified_oval.json").read_text())["document"]
++    digest = d.app.state.blobs.put_json(document)
++    with d.app.state.session_factory() as db:
++        db.execute(update(TrackVersion).values(content_hash=digest,
++            discovery={"theme": "pine", "points": document["points"]}))
++        db.commit()
++    settle_for_diagnostics(d.app.state.session_factory)
++    selected = {i["track_id"] for i in build(d)}
++    missing = next(i for i, t in enumerate(d.tracks) if t["id"] not in selected)
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    origin = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    server = uvicorn.Server(uvicorn.Config(d.app, log_level="error", access_log=False))
++    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
++    thread.start()
++    renderer = os.environ.get("BMT_DAILY_NATIVE_RENDERER", "headless")
++    env = {**os.environ, "APPDATA": str(root / "build/daily-track-selection-user"),
++        "BMT_DAILY_API_URL": origin, "BMT_DAILY_MISSING_ID": d.tracks[missing]["id"],
++        "BMT_DAILY_MISSING_NAME": d.versions[missing]["name"]}
++    Path(env["APPDATA"]).mkdir(parents=True, exist_ok=True)
++    command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(root / "scripts/dev.ps1"),
++        "-Action", "TestScript", "-ScriptPath", "res://tests/test_daily_track_selection.gd"]
++    if renderer != "headless":
++        command += ["-Graphical", "-RenderingMethod", renderer]
++    try:
++        for _ in range(100):
++            if server.started:
++                break
++            time.sleep(.05)
++        result = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=120, check=False)
++        print(result.stdout + result.stderr)
++        if env.get("BMT_DAILY_EVIDENCE_DIR"):
++            output = Path(env["BMT_DAILY_EVIDENCE_DIR"]).parent / f"native-{renderer}.log"
++            output.write_text(result.stdout + result.stderr, encoding="utf-8")
++        assert result.returncode == 0, result.stdout + result.stderr
++        assert "0 failures" in result.stdout and "SCRIPT ERROR" not in result.stdout + result.stderr
++    finally:
++        server.should_exit = True
++        thread.join(timeout=10)
++        listener.close()
+diff --git a/game/backend/discovery_filters.gd b/game/backend/discovery_filters.gd
+--- a/game/backend/discovery_filters.gd
++++ b/game/backend/discovery_filters.gd
+@@ -18,5 +18,9 @@
+ 	if body.sort not in ["recommended","name","creator","score","plays","new"]: body.sort = "recommended"
+ 	if body.section == "favorites": body.ids = ids(favorites)
+ 	if body.race_history != "any": body.raced_ids = ids(raced)
++	# The ordinary Free Race view is today's selection. Search, explicit sorts,
++	# filters and personal collections continue to query the full catalogue.
++	if body.feed == "recommended" and body.section == "all" and body.search.strip_edges().is_empty() and body.sort == "recommended" and body.theme == "all" and is_zero_approx(body.minimum_rating) and body.age_days == 0 and body.race_count == "any" and body.race_history == "any":
++		body.feed = "daily"
+ 	return body
+ 
+diff --git a/game/backend/discovery_windows.gd b/game/backend/discovery_windows.gd
+--- a/game/backend/discovery_windows.gd
++++ b/game/backend/discovery_windows.gd
+@@ -37,6 +37,8 @@
+ 
+ func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
+ 	var body: Dictionary = payload(filters,favorites,raced)
++	if body.feed == "daily" and int(client.get("_capabilities").get("discovery_daily_version",0)) < 1:
++		body.feed = "recommended"
+ 	var key: String = JSON.stringify(body)
+ 	var same_query: bool = key == query_key and origin == scope()
+ 	if same_query and Time.get_ticks_msec() < retry_at_msec: return
+@@ -220,7 +222,8 @@
+ 	return index >= 0 and pages.has(index/PAGE_SIZE) and entry_at(index).is_empty()
+ 
+ func status_text() -> String:
+-	return "%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
++	var prefix: String = "Daily picks · " if query.get("feed","") == "daily" else ""
++	return prefix+"%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
+ 
+ func random_entry(exclude: String) -> Dictionary:
+ 	if loading or Time.get_ticks_msec() < retry_at_msec: return {}
+diff --git a/game/tests/test_daily_track_selection.gd b/game/tests/test_daily_track_selection.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_track_selection.gd
+@@ -0,0 +1,94 @@
++extends SceneTree
++## Isolated real-HTTP daily feed, full search and native Free Race presentation.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; push_error(label)
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await create_timer(0.3).timeout
++	await RenderingServer.frame_post_draw
++	var folder: String = OS.get_environment("BMT_DAILY_EVIDENCE_DIR")
++	if folder.is_empty(): return
++	DirAccess.make_dir_recursive_absolute(folder)
++	check(root.get_texture().get_image().save_png(folder.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.theme = MenuStyle.theme()
++	create_timer(80).timeout.connect(func() -> void: push_error("Daily selection HTTP deadline"); quit(1))
++	var filters = preload("res://backend/discovery_filters.gd")
++	check(filters.payload({}).feed == "daily","ordinary Free Race requests daily selection")
++	for state: Dictionary in [{"search":"Circuit"},{"sort":"name"},{"theme":"pine"},{"section":"favorites"},{"race_history":"unraced"},{"feed":"popular"},{"age_days":7},{"minimum_rating":4.0},{"race_count":"low"}]:
++		check(filters.payload(state).feed != "daily","explicit search or filters reach the full catalogue: "+str(state))
++	var client := preload("res://backend/backend_client.gd").new()
++	root.add_child(client)
++	check(client.configure(OS.get_environment("BMT_DAILY_API_URL")) == OK,"isolated local HTTP origin")
++	var boot: Dictionary = await client.request_api("/bootstrap")
++	check(boot.ok and int(client._capabilities.get("discovery_daily_version",0)) == 1,"real bootstrap advertises daily selection")
++	var folder: String = ProjectSettings.globalize_path("res://../build/daily-native-"+str(Time.get_ticks_usec()))
++	var cloud := preload("res://backend/cloud_tracks.gd").new()
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	root.add_child(cloud)
++	await cloud.query_discovery({},[],[],true)
++	var pages: Node = cloud.discovery_pages
++	check(pages.query.feed == "daily" and pages.error.is_empty(),"real default query loads the daily publication")
++	while pages.has_more and pages.error.is_empty(): await cloud.load_more()
++	check(cloud.entries.size() == 100 and not pages.has_more,"daily list stops at exactly the selected hundred tracks")
++	var selected: Array = cloud.entries.map(func(item: Dictionary) -> String: return str(item.track_id))
++	check(not selected.has(OS.get_environment("BMT_DAILY_MISSING_ID")),"search fixture is outside the daily selection")
++	var random: Dictionary = await pages.random_entry("")
++	check(not random.is_empty() and selected.has(str(random.track_id)),"Random chooses within daily picks")
++	check(pages.query.feed == "daily" and pages.error.is_empty(),"Random anchors the same daily feed")
++	await cloud.query_discovery({},[],[],true)
++	var entry: Dictionary = cloud.entry_from_metadata(cloud.entries[0])
++	check(await cloud.download(entry),"actual immutable track document downloads")
++	var native: NativeTrack = cloud.compile_entry(entry)
++	check(native != null,"actual selected track compiles for native presentation")
++	if native == null: quit(1); return
++	var library := TrackLibrary.new(folder.path_join("drafts"))
++	var catalog := TrackCatalog.new(library)
++	cloud.add_to_catalog(catalog)
++	catalog.remember_track(entry,native)
++	var browser := TrackBrowser.new()
++	browser.library = library
++	browser.catalog = catalog
++	browser.cloud = cloud
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	browser.selected_track = native
++	browser.state = {}
++	browser.size = Vector2(1280,720)
++	root.add_child(browser)
++	for _frame: int in range(12): await process_frame
++	var ready_deadline: int = Time.get_ticks_msec()+10000
++	while (pages.loading or cloud.refreshing) and Time.get_ticks_msec() < ready_deadline: await process_frame
++	for _frame: int in range(3): await process_frame
++	check(browser.count_label.text.contains("Daily picks"),"Free Race identifies the daily selection")
++	await capture("daily-free-race")
++	browser.search_dialog.open_for(browser.state,browser.find_child("RaceSearch",true,false))
++	browser.search_dialog.edit.text = OS.get_environment("BMT_DAILY_MISSING_NAME")
++	browser.search_dialog.edit.text_changed.emit(browser.search_dialog.edit.text)
++	await create_timer(0.6).timeout
++	var deadline: int = Time.get_ticks_msec()+10000
++	while (not is_instance_valid(browser.search_dialog.server_pages) or browser.search_dialog.server_pages.loading) and Time.get_ticks_msec() < deadline: await process_frame
++	check(browser.search_dialog.matches.any(func(item: Dictionary) -> bool: return str(item.track_id) == OS.get_environment("BMT_DAILY_MISSING_ID")),"actual Search drawer finds a track outside the daily picks")
++	await capture("full-catalogue-search")
++	browser.search_dialog.close()
++	root.size = Vector2i(960,540)
++	browser.scale = Vector2(0.75,0.75)
++	browser.size = Vector2(1280,720)
++	for _frame: int in range(8): await process_frame
++	await capture("daily-compact")
++	browser.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await process_frame
++	await process_frame
++	print("DAILY_TRACK_SELECTION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_daily_track_selection.gd.uid b/game/tests/test_daily_track_selection.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_track_selection.gd.uid
+@@ -0,0 +1 @@
++uid://cxbdhmitj3if8
+diff --git a/docs/DAILY_TRACK_SELECTION_2026_10_24.md b/docs/DAILY_TRACK_SELECTION_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DAILY_TRACK_SELECTION_2026_10_24.md
+@@ -0,0 +1,130 @@
++# Daily Free Race track ranking
++
++Implemented locally on 2026-10-24. Requirements DTR01–DTR05 / R01 / Q01.
++The default Free Race view receives up to 100 daily picks. Search by name or
++creator continues across the complete eligible catalogue. The numerical policy
++below is a starting balance for owner acceptance.
++
++| Requirement | Result |
++|---|---|
++| DTR01: rank tracks from several signals | Versioned, deterministic score combining rating confidence, freshness, recent unique racers, repeated racing, capped race volume and lifetime unique finishers. |
++| DTR02: choose a fresh set each day | Resumable background selection once per UTC day; a target mix of 60 ranked, 20 fresh and 20 rotating tracks. |
++| DTR03: retain catalogue search | Search, explicit filters/sorts, Favorites, My tracks and New/Popular/Top rated query the full eligible catalogue. Direct links and publication return still reach exact revisions. |
++| DTR04: protect ranking and existing gameplay | Server-verified contributions, per-player caps, creator/test exclusions, confidence shrinkage, current moderation/block checks, bounded expiry and account erasure. No canonical driving or rewards changes. |
++| DTR05: bounded delivery and review | Background batches, capped candidate pools, atomic publication, actor-scoped existing cursors, native HTTP tests and retained evidence. |
++
++The score is an integer from 0 to 1,000,000, with these weights:
++
++| Signal | Weight | Definition |
++|---|---:|---|
++| Rating | 30% | `(rating_sum + 17.5) / (rating_count + 5) / 5`, capped at one; the existing five-vote, 3.5-star prior reduces single-vote influence. Cards still show actual ratings. |
++| Recent unique racers | 20% | Existing distinct eligible verified racers over the preceding seven days; logarithmic saturation at 1,000. |
++| Replay frequency | 20% | `max(within_day_repeats, capped_races - recent_unique_racers, 0) / (capped_races + 20)`, capped at one. The denominator shrinks small samples. It measures repeated racing, not a separately observed return-day retention rate. |
++| Race volume | 10% | Eligible verified finishes, capped at five per player/track/UTC day; logarithmic saturation at 5,000. |
++| Freshness | 15% | Linear boost declining to zero after 14 days from the original track record's creation, evaluated at UTC day start. Editing or publishing another revision does not reset it. |
++| Lifetime unique racers | 5% | Existing latest-version verified-finisher count, logarithmically saturated at 10,000. It is version-scoped, rather than a newly reconstructed cross-version lifetime total. |
++
++Race volume and within-day repeats retain the current UTC day plus the previous
++six days. The pre-existing recent-unique signal uses its exact rolling seven-day
++window. New race/replay counters are prospective after this worker update on an
++already bootstrapped service; they mature over seven days. Existing ratings and
++unique-finisher projections remain available immediately. Historical run scans
++are not introduced into browsing or normal racing.
++
++Only committed verified runs contribute. Creator-owned races, creator proof,
++creator-test boards, artificial/test players, test populations, disabled and
++deleted players are excluded from the new race/replay counters. Each retained
++driver/track/day row stores at most five contributions. The contribution update,
++journal processing and projection checkpoint commit together. Restriction,
++restoration, expiry and privacy erasure update the associated totals under the
++existing partition lock. Existing unique-player/rating eligibility is retained.
++These caps limit repeated play influence; this is not a claim of complete
++multi-account fraud prevention.
++
++Each daily list interleaves three ranked slots, one fresh slot and one discovery
++slot per five. Fresh choices rotate among tracks created within 14 days.
++Discovery first prefers tracks absent from the previous day's list, then uses
++the hash of policy/day/track for reproducible rotation. Candidates deduplicate by
++track. Creator and biome caps are soft: first try three tracks per creator and
++35 per biome, then relax to ten/60 and finally the list size if supply is limited.
++Missing fresh candidates use the other pools. Small catalogues can supply fewer
++than 100 tracks, and a catalogue of 100 or fewer cannot always change membership.
++This replaces the default view's previous official/community mix; the explicit
++legacy Recommended API feed retains its original full-catalogue behaviour.
++
++The existing discovery daemon performs one bounded selection step alongside a
++projection turn. Each step scans at most 128 indexed current heads, with three
++candidate pools capped at 500 each and a per-creator pool cap of 100. The daemon
++retains its single connection. Scan position and pools commit together; publication
++and the final list are atomic. Initial projection/bootstrap must be ready, and
++expired activity for a partition must drain before its candidates are sampled.
++The daily score samples projections during the background scan; it is not a
++single catalogue-wide database snapshot. The finished list is immutable for that
++day. Discovery health includes the daily policy, partition and publication time.
++
++At UTC rollover, yesterday's publication remains available while today's build
++finishes. With neither today nor yesterday ready, the API returns retryable
++`DISCOVERY_DAILY_PREPARING`, rather than a false empty catalogue. Empty published
++catalogues are valid. Up to three days of derived daily records remain for open
++cursors; older records are removed in bounded batches. Day selection pins IDs and
++revisions; current visibility, account restrictions and blocks are checked again
++on every page and Random request. Hidden items can reduce the list until the next
++publication. Daily HTTP requests never rank or scan the catalogue: they check at
++most 100 version IDs and hydrate at most 20 cards. Search retains the existing
++indexed query and resource budgets.
++
++Bootstrap advertises `discovery_daily_version: 1`. The client requests `feed:
++daily` for ordinary unfiltered Recommended Free Race only when this capability is
++available, and otherwise uses the existing Recommended feed. Random anchors within
++the same daily list. Search, filters and links outside the picks retain catalogue
++access. The status text identifies “Daily picks” in the existing status area.
++No new screen, external service, dependency or runtime AI was added.
++
++Changed runtime files are the discovery models, activity and daily selector,
++projection/erasure/worker, query/v3 API, explicit database grants, the single
++bootstrap capability in `app.py`, `discovery_filters.gd` and
++`discovery_windows.gd`. Migration `0064_daily_track_selection` follows the current
++`0063_custom_challenge_tracks` migration. The request schema now permits `daily`.
++Tests are `test_discovery_daily.py`, `test_discovery_daily_native.py` and
++`test_daily_track_selection.gd`. The task-only checkpoint and SHA256 manifest in
++the evidence directory exclude unrelated concurrent changes to shared files.
++
++The final backend selection passes **111 tests**, with two skips and 73 explicitly
++deselected PostgreSQL cases (`-k 'not postgres'`). The full attempt before that
++completed 107 tests before an existing PostgreSQL fixture could not connect to its
++local database. No PostgreSQL pass is claimed. The dedicated daily rollback and
++the existing legacy-member migration test also pass separately.
++
++Validation uses disposable SQLite databases, loopback HTTP, isolated workspace
++userdata and the pinned Godot 4.7.2. The actual commands, final counts, source
++hashes and retained interruptions are in
++[report.json](evidence/daily-track-selection-2026-10-24/report.json). The focused
++native HTTP test passes 21 headless checks and 24 checks on each desktop renderer.
++It follows the real default feed to 100 tracks, tests Random and exact revision
++anchors, downloads/compiles an immutable track, renders Free Race, and uses the
++actual Search drawer to find a track outside the daily list. Native views:
++[Compatibility Free Race](evidence/daily-track-selection-2026-10-24/captures/gl_compatibility-daily-free-race.png),
++[Mobile Search](evidence/daily-track-selection-2026-10-24/captures/mobile-full-catalogue-search.png),
++[compact layout](evidence/daily-track-selection-2026-10-24/captures/mobile-daily-compact.png).
++
++Existing native discovery/window checks321, legacy entry point321,
++preloading120, Free Race list233, startup18, challenge discovery92, App141 and
++parser1076 pass. Initial script-policy/userdata/certificate-store interruptions,
++a native fixture checking its caption before prefetch completed, the first
++migration rollback guard, a concurrent recording-cache parser interruption and
++an unavailable local PostgreSQL fixture are retained. The caption fixture now
++waits for its actual owned reads. Explicit migration rollback removes only daily
++cursors/derived data and preserves ordinary views, tracks and versions; it has a
++dedicated test. The unrelated recording-cache source was corrected concurrently;
++this task did not edit it. No invariant was weakened.
++
++Release requires the matching client, API, discovery worker and migration0064,
++with the explicit runtime database grants reapplied by the release operator.
++No live database or existing worker/process was changed. PostgreSQL migration,
++query plans, worker contention, sustained catalogue/DAU load, production resource
++cost and physical-device behaviour remain unverified. The weights, 100-track
++size, 60/20/20 balance, diversity limits, freshness horizon and activity caps need
++owner acceptance and later calibration against real play. Balance changes require
++a policy version and a future daily publication; published lists are not silently
++rewritten. No phone/tablet attachment check, physical-device test, APK, purchase,
++live account/backend mutation or deployment was performed.
+diff --git a/docs/DISCOVERY_PAGING.md b/docs/DISCOVERY_PAGING.md
+--- a/docs/DISCOVERY_PAGING.md
++++ b/docs/DISCOVERY_PAGING.md
+@@ -1,5 +1,13 @@
+ # Current discovery protocol and loaded-card browsing
+ 
++<!-- DAILY-TRACK-SELECTION-20261024 -->
++Free Race now has a local implementation of ranked daily selection: up to 100
++tracks, targeting 60 ranked / 20 fresh / 20 rotating discoveries. Ratings,
++verified unique players, repeated racing, capped race volume and freshness feed
++the score. Search and explicit filters still query the full catalogue. Matching
++migration0064, API/discovery-worker/client rollout and owner/device acceptance
++remain. See [policy, implementation and evidence](DAILY_TRACK_SELECTION_2026_10_24.md).
++<!-- /DAILY-TRACK-SELECTION-20261024 -->
+ 
+ Reviewed 2026-10-24. The game uses **protocol 3**, negotiated through bootstrap
+ `discovery_paging_version`. Reads use `POST /v1/discovery/v3/tracks` and Random uses
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++## Daily Free Race selection override (2026-10-24)
++2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++<!-- /DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++
+ ## Connected washing hose and broad spray override (2026-10-24)
+ 2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++<!-- /DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++
+ 2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ 
+ 2026-10-24 SEC-D01/SEC06/SEC07/SEC03/SEC08/SEC04/R01/Q01: Authorized retained cloud rollout reaches schema62 on API99/worker40 and all five matching job definitions. Separate runtime identities/credentials and explicit grants are active; old shared SQL login, service account and secret are disabled. Studio/admin/monitor return404 and ad previews are off. Managed backup1792841359801; all314798 original rows/132 compared tables exact, invalid indexes0. Focused70/exact-image258pass1skip12deselected, synthetic131tables/103328rows, live native/schema/GCS smoke with zero player writes, worker16partitions and discovery30 pass. Existing development test-driver policy/resources remain; later concurrent schema63 is outside the frozen artifact. Actual commands, corrections, hashes and scoped checkpoint: docs/SECURITY_DEPLOYMENT_2026_10_24.md and docs/evidence/security-deploy-2026-10-24/report.json. PC backup copy was rejected by automatic review pending explicit sensitive-data/destination approval; PC remains unchanged. Studio staff/MFA, client/owner/device/restore/load acceptance remain; no device check/test/APK, population job, reporting replica or client restart. Concurrent work/owner processes preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++<!-- /DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
++
+ 2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ 
+ 2026-10-24 HWS01-HWS03/R01/Q01: Garage washing adds Mitt/Hose choices and Top view. Local hose rinsing clears faint film quickly while primary grime washes at 0.025 versus the unchanged mitt rate1.15; separate masks, fractional work, saved condition, paint/kits/camera, grades and canonical driving remain. Original cached nozzle/hose,12 water filaments and32 droplets stay bounded with gesture/navigation cleanup. Focused81headless/84Compatibility/84desktopMobile, scrubbing501, surfaces45, native full washing/App1402, parser1066 and import pass. Animation139 retains one restart assertion also reproduced with exact task-start versions of all five runtime sources; no assertion weakened. Initial sandbox certificate and concurrent Desert parser interruptions are retained. Commands, native views, hashes and task-only checkpoint: docs/GARAGE_HOSE_2026_10_24.md and docs/evidence/hose-wash-2026-10-24/report.json. Client restart and owner/device feel/appearance/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.

@@ -1,0 +1,603 @@
+diff --git a/docs/evidence/further-optimisation-review-2026-10-24/probe.py b/docs/evidence/further-optimisation-review-2026-10-24/probe.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/further-optimisation-review-2026-10-24/probe.py
+@@ -0,0 +1,260 @@
++"""Review-only SQL counts and lossless transport experiments; no runtime edits."""
++from __future__ import annotations
++
++import base64
++import gzip
++import hashlib
++import json
++import logging
++import random
++import struct
++import sys
++import tempfile
++import time
++from collections import Counter, defaultdict
++from contextlib import contextmanager
++from pathlib import Path
++from types import SimpleNamespace
++
++ROOT = Path(__file__).resolve().parents[3]
++sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "backend/tests")]
++logging.disable(logging.CRITICAL)
++
++from bmt_backend.discovery_models import DiscoveryPartition
++from bmt_backend.discovery_projection import settle_for_diagnostics, step
++from bmt_backend.economy import PRICES, balance
++from bmt_backend.economy_models import CoinWallet, CosmeticUnlock, RewardRankCount
++from bmt_backend.identity_models import Player
++from bmt_backend.reward_ranks import TIERS, TREE_SIZE, percentile_amount, prefix_nodes
++from bmt_backend.studio_platform_models import StudioCoinEntry
++from bmt_backend.telemetry_queue import prepare
++from bmt_backend.track_models import digest
++from sqlalchemy import and_, delete, event, insert, or_, select, update
++from test_domains import domain, headers, public_course, race
++from test_rivalry_appearance import appearance
++
++
++@contextmanager
++def sql_counts(engine):
++    statements = []
++
++    def record(_connection, _cursor, statement, *_args):
++        statements.append(statement)
++
++    event.listen(engine, "before_cursor_execute", record)
++    try:
++        yield statements
++    finally:
++        event.remove(engine, "before_cursor_execute", record)
++
++
++def counts(statements):
++    kinds = Counter(s.lstrip().split()[0].upper() for s in statements)
++    return {"total_statements": len(statements), "statement_kinds": dict(kinds)}
++
++
++def batch_percentiles(session, board, metrics):
++    """Prototype only: retain each metric's root, prefixes and integer ties."""
++    nodes = {metric: prefix_nodes(ticks) for metric, ticks in metrics.items()}
++    rows = session.execute(select(RewardRankCount.metric, RewardRankCount.node, RewardRankCount.total).where(
++        RewardRankCount.board_id == board,
++        or_(*(and_(RewardRankCount.metric == metric, RewardRankCount.node.in_([TREE_SIZE, *keys]))
++              for metric, keys in nodes.items())))).all()
++    values = {(metric, node): total for metric, node, total in rows}
++    result = {}
++    for metric, keys in nodes.items():
++        population = values.get((metric, TREE_SIZE), 0)
++        rank = sum(values.get((metric, node), 0) for node in keys) + 1
++        result[metric] = next((amount for limit, amount in TIERS
++                               if population and rank * 100 <= population * limit), 0)
++    return result
++
++
++def rank_probe(d, board):
++    populations = {"race": [100 + i // 2 * 10 for i in range(100)],
++                   "lap": [10 + i // 2 * 2 for i in range(100)]}
++    totals = defaultdict(int)
++    for metric, ticks in populations.items():
++        for tick in ticks:
++            node = tick
++            while node <= TREE_SIZE:
++                totals[metric, node] += 1
++                node += node & -node
++    rng = random.Random(145)
++    probes = [{"race": t, "lap": l} for t, l in
++              [(1, 1), (100, 10), (140, 18), (150, 20), (220, 34),
++               (340, 58), (350, 60), (591, 109), (TREE_SIZE - 1, TREE_SIZE - 1)]]
++    probes.extend({"race": rng.randint(1, 650), "lap": rng.randint(1, 125)} for _ in range(100))
++    engine = d.app.state.engine
++    with d.factory() as session:
++        session.execute(delete(RewardRankCount).where(RewardRankCount.board_id == board))
++        session.execute(insert(RewardRankCount), [{"board_id": board, "metric": m, "node": n, "total": v}
++                                                for (m, n), v in totals.items()])
++        amounts = Counter()
++        for ticks in probes:
++            with sql_counts(engine) as old_sql:
++                old = {m: percentile_amount(session, board, m, t) for m, t in ticks.items()}
++            with sql_counts(engine) as new_sql:
++                new = batch_percentiles(session, board, ticks)
++            assert old == new
++            for metric, tick in ticks.items():
++                population = populations[metric]
++                rank = 1 + sum(value < tick for value in population)
++                oracle = next((amount for limit, amount in TIERS if rank * 100 <= len(population) * limit), 0)
++                assert new[metric] == oracle
++                amounts[oracle] += 1
++            assert len(old_sql) == 2 and len(new_sql) == 1
++        session.rollback()
++    return {"paired_cases": len(probes), "metric_results_compared": len(probes) * 2,
++            "population_per_metric": 100, "tier_results": dict(amounts),
++            "current_sql_per_pair": 2, "prototype_sql_per_pair": 1,
++            "exact_current_and_independent_oracle_equality": True,
++            "limitation": "Single-thread SQLite; PostgreSQL snapshot/lock concurrency not exercised"}
++
++
++def path_transport_probe():
++    source = ROOT / ".tools/trajectory-approved-20261009/proof.json"
++    proof = json.loads(source.read_text(encoding="utf-8"))
++    path = [[s[0], s[1], s[2], s[6]] for s in proof["samples"]]
++    record = struct.Struct("<IddB")
++    binary = b"".join(record.pack(*s) for s in path)
++    decoded = [list(record.unpack_from(binary, offset)) for offset in range(0, len(binary), record.size)]
++    assert decoded == path
++    old = {"schema": "bmt-race-path-v1", "input_count": path[-1][0], "samples": path, "rewinds": []}
++    new = {"schema": "review-only-f64-path", "input_count": path[-1][0],
++           "count": len(path), "packed": base64.b64encode(binary).decode("ascii"), "rewinds": []}
++    encode = lambda obj: json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
++    old_bytes, new_bytes = encode(old), encode(new)
++    ghosts = json.loads((ROOT / "docs/evidence/cost-optimisation-implementation-2026-10-24/ghost-wire-fixture.json").read_text())
++    old_full, new_full = dict(old, ghost=ghosts["packed"]), dict(new, ghost=ghosts["packed"])
++    return {"samples": len(path), "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
++            "float64_exact_roundtrip": True, "codec": "Little-endian uint32 tick, float64 x/y, uint8 layer; base64 JSON",
++            "path_current_json_bytes": len(old_bytes), "path_prototype_json_bytes": len(new_bytes),
++            "path_current_gzip_bytes": len(gzip.compress(old_bytes, mtime=0)),
++            "path_prototype_gzip_bytes": len(gzip.compress(new_bytes, mtime=0)),
++            "with_existing_packed_ghost_current_gzip_bytes": len(gzip.compress(encode(old_full), mtime=0)),
++            "with_existing_packed_ghost_prototype_gzip_bytes": len(gzip.compress(encode(new_full), mtime=0)),
++            "gzip_comparison_by_level": {str(level): {
++                "path_current": len(gzip.compress(old_bytes, compresslevel=level, mtime=0)),
++                "path_prototype": len(gzip.compress(new_bytes, compresslevel=level, mtime=0)),
++                "with_ghost_current": len(gzip.compress(encode(old_full), compresslevel=level, mtime=0)),
++                "with_ghost_prototype": len(gzip.compress(encode(new_full), compresslevel=level, mtime=0)),
++            } for level in (1, 6, 9)},
++            "limitation": "Retained proof and unrelated synthetic packed ghost, gzip level 9, not an actual player upload or mobile CPU measurement"}
++
++
++def probe(d):
++    engine = d.app.state.engine
++    version, board = public_course(d)
++    race(d, version, "Alice", frames=20)
++    with sql_counts(engine) as repeated:
++        result = race(d, version, "Alice", frames=40)
++    rank_selects = [s for s in repeated if s.lstrip().upper().startswith("SELECT")
++                    and "FROM reward_rank_counts" in s]
++    achievement_inserts = [s for s in repeated if s.lstrip().upper().startswith("INSERT INTO ACHIEVEMENT_STATES")]
++    Path(__file__).with_name("repeat-flow-sql.json").write_text(json.dumps(repeated, indent=2), encoding="utf-8")
++    print(json.dumps({"rank_selects": len(rank_selects), "achievement_inserts": len(achievement_inserts)}), flush=True)
++    assert len(rank_selects) == 2 and len(achievement_inserts) == 1
++    result_out = {"repeat_slower_race": {**counts(repeated), "status": result["status"],
++        "rank_selects": len(rank_selects), "achievement_state_conflict_insert_attempts": len(achievement_inserts),
++        "scope": "Whole ticket/submission/worker/status flow, not worker-only statement count"}}
++    result_out["batched_percentile_prototype"] = rank_probe(d, board)
++
++    warm = d.client.get("/v1/economy", headers=headers(d, "Alice"))
++    assert warm.status_code == 200
++    with sql_counts(engine) as wallet_sql:
++        current = d.client.get("/v1/economy", headers=headers(d, "Alice"))
++    with sql_counts(engine) as handler_sql, d.factory() as session:
++        handler = balance(session, SimpleNamespace(id=d.players["Alice"]))
++    with sql_counts(engine) as coherent_sql, d.factory() as session:
++        opening_id = digest({"player": d.players["Alice"], "reference": "opening"})
++        query = select(CoinWallet.balance, CoinWallet.revision, CosmeticUnlock.item_id, StudioCoinEntry.id) \
++            .select_from(CoinWallet).join(Player, Player.id == CoinWallet.player_id) \
++            .outerjoin(CosmeticUnlock, CosmeticUnlock.player_id == CoinWallet.player_id)
++        query = query.outerjoin(StudioCoinEntry, StudioCoinEntry.id == opening_id).where(
++            CoinWallet.player_id == d.players["Alice"], Player.disabled.is_(False), Player.deleted_at.is_(None)) \
++            .order_by(CosmeticUnlock.item_id)
++        rows = session.execute(query).all()
++        assert rows and rows[0][3] == opening_id
++        prototype = {"schema": 1, "balance": rows[0][0], "revision": rows[0][1],
++                     "owned": [row[2] for row in rows if row[2] is not None], "prices": PRICES}
++    assert current.json() == warm.json() == handler == prototype
++    with d.factory() as session:
++        session.execute(delete(StudioCoinEntry).where(StudioCoinEntry.id == opening_id))
++        assert session.execute(query).first()[3] is None  # Legacy wallet must use locked reconciliation fallback.
++        session.rollback()
++    for field, value in (("disabled", True), ("deleted_at", int(time.time()))):
++        with d.factory() as session:
++            setattr(session.get(Player, d.players["Alice"]), field, value)
++            session.flush()
++            assert session.execute(query).first() is None
++            session.rollback()
++    with d.factory() as session:
++        session.execute(delete(CoinWallet).where(CoinWallet.player_id == d.players["Alice"]))
++        assert session.execute(query).first() is None
++        session.rollback()
++    result_out["established_wallet_read"] = {"current_http_with_fixture_auth": counts(wallet_sql),
++        "current_handler_excluding_auth": counts(handler_sql),
++        "prototype_coherent_authorised_projection": counts(coherent_sql), "payload_equal": True,
++        "opening_marker_present_and_legacy_absence_detected": True,
++        "disabled_deleted_and_missing_wallet_detected": True,
++        "limitation": "Both handler counts exclude authentication; missing wallet/opening fact requires existing locked initialisation/reconciliation fallback; no concurrent PostgreSQL test"}
++
++    first = d.client.put("/v1/me/appearances", headers=headers(d, "Alice"),
++                         json={"appearance": appearance(), "previous": None})
++    assert first.status_code == 200
++    with sql_counts(engine) as appearance_sql:
++        retry = d.client.put("/v1/me/appearances", headers=headers(d, "Alice"),
++                             json={"appearance": appearance(), "previous": None})
++    assert retry.status_code == 200 and retry.json() == first.json()
++    result_out["identical_appearance_retry"] = {**counts(appearance_sql),
++        "dummy_player_updates": sum(s.lstrip().upper().startswith("UPDATE PLAYERS SET ID=") for s in appearance_sql),
++        "limitation": "SQLite count only; PostgreSQL WAL/MVCC effect inferred from source, not measured"}
++
++    assert prepare(d.factory) == 0
++    with sql_counts(engine) as telemetry_sql:
++        prepared = [prepare(d.factory) for _ in range(3)]
++    assert prepared == [0, 0, 0]
++    result_out["idle_telemetry_legacy_preparation"] = {**counts(telemetry_sql), "turns": 3, "receipts_routed": 0}
++
++    stamp = int(time.time())
++    settled = settle_for_diagnostics(d.factory, clock=stamp)
++    with d.factory() as session:
++        session.execute(update(DiscoveryPartition).values(checked_at=time.time_ns(), audit_at=stamp + 60))
++        session.commit()
++    with sql_counts(engine) as discovery_sql:
++        worked = [step(d.factory, clock=stamp) for _ in range(3)]
++    assert worked == [False, False, False]
++    result_out["idle_discovery"] = {**counts(discovery_sql), "turns": 3, "worked": worked,
++        "settle_iterations": settled,
++        "partition_updates": sum(s.lstrip().upper().startswith("UPDATE DISCOVERY_PARTITIONS") for s in discovery_sql),
++        "setup": "Settled current fixture; all partition health timestamps fresh and audit deadlines in future"}
++    result_out["lossless_path_transport_prototype"] = path_transport_probe()
++    return result_out
++
++
++def main():
++    names = ["backend/bmt_backend/economy.py", "backend/bmt_backend/reward_ranks.py",
++             "backend/bmt_backend/achievements.py", "backend/bmt_backend/discovery_projection.py",
++             "backend/bmt_backend/discovery_worker.py", "backend/bmt_backend/telemetry_queue.py",
++             "backend/bmt_backend/product_worker.py", "backend/bmt_backend/appearance_routes.py",
++             "game/backend/appearance_sync.gd", "game/core/app.gd"]
++    hashes = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in names}
++    with tempfile.TemporaryDirectory(prefix="bmt-further-review-") as folder:
++        fixture = domain.__wrapped__(Path(folder), SimpleNamespace(param="sqlite"))
++        d = next(fixture)
++        try:
++            result = probe(d)
++        finally:
++            fixture.close()
++    result["source_sha256"] = hashes
++    result["limits"] = ["Disposable SQLite domain fixture and FakeVerifier; no live player data",
++                         "Review-only prototypes; runtime and contracts unchanged",
++                         "No PostgreSQL/load/device test, attachment check, deployment or owner-process restart"]
++    target = Path(__file__).with_name("probe-results.json")
++    target.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({k: v for k, v in result.items() if k != "source_sha256"}, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/further-optimisation-review-2026-10-24/probe-results.json b/docs/evidence/further-optimisation-review-2026-10-24/probe-results.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/further-optimisation-review-2026-10-24/probe-results.json
+@@ -0,0 +1,140 @@
++{
++  "repeat_slower_race": {
++    "total_statements": 62,
++    "statement_kinds": {
++      "INSERT": 15,
++      "SELECT": 42,
++      "UPDATE": 5
++    },
++    "status": "verified",
++    "rank_selects": 2,
++    "achievement_state_conflict_insert_attempts": 1,
++    "scope": "Whole ticket/submission/worker/status flow, not worker-only statement count"
++  },
++  "batched_percentile_prototype": {
++    "paired_cases": 109,
++    "metric_results_compared": 218,
++    "population_per_metric": 100,
++    "tier_results": {
++      "500": 32,
++      "200": 9,
++      "100": 29,
++      "50": 37,
++      "0": 111
++    },
++    "current_sql_per_pair": 2,
++    "prototype_sql_per_pair": 1,
++    "exact_current_and_independent_oracle_equality": true,
++    "limitation": "Single-thread SQLite; PostgreSQL snapshot/lock concurrency not exercised"
++  },
++  "established_wallet_read": {
++    "current_http_with_fixture_auth": {
++      "total_statements": 6,
++      "statement_kinds": {
++        "SELECT": 5,
++        "UPDATE": 1
++      }
++    },
++    "current_handler_excluding_auth": {
++      "total_statements": 5,
++      "statement_kinds": {
++        "UPDATE": 1,
++        "SELECT": 4
++      }
++    },
++    "prototype_coherent_authorised_projection": {
++      "total_statements": 1,
++      "statement_kinds": {
++        "SELECT": 1
++      }
++    },
++    "payload_equal": true,
++    "opening_marker_present_and_legacy_absence_detected": true,
++    "disabled_deleted_and_missing_wallet_detected": true,
++    "limitation": "Both handler counts exclude authentication; missing wallet/opening fact requires existing locked initialisation/reconciliation fallback; no concurrent PostgreSQL test"
++  },
++  "identical_appearance_retry": {
++    "total_statements": 4,
++    "statement_kinds": {
++      "INSERT": 1,
++      "SELECT": 2,
++      "UPDATE": 1
++    },
++    "dummy_player_updates": 1,
++    "limitation": "SQLite count only; PostgreSQL WAL/MVCC effect inferred from source, not measured"
++  },
++  "idle_telemetry_legacy_preparation": {
++    "total_statements": 12,
++    "statement_kinds": {
++      "SELECT": 12
++    },
++    "turns": 3,
++    "receipts_routed": 0
++  },
++  "idle_discovery": {
++    "total_statements": 51,
++    "statement_kinds": {
++      "SELECT": 48,
++      "UPDATE": 3
++    },
++    "turns": 3,
++    "worked": [
++      false,
++      false,
++      false
++    ],
++    "settle_iterations": 65,
++    "partition_updates": 3,
++    "setup": "Settled current fixture; all partition health timestamps fresh and audit deadlines in future"
++  },
++  "lossless_path_transport_prototype": {
++    "samples": 2130,
++    "source_sha256": "4c22606b76c0a2785259e679631c4a5d072e70a8c765df909aec68dc24a490f9",
++    "float64_exact_roundtrip": true,
++    "codec": "Little-endian uint32 tick, float64 x/y, uint8 layer; base64 JSON",
++    "path_current_json_bytes": 92932,
++    "path_prototype_json_bytes": 59731,
++    "path_current_gzip_bytes": 40287,
++    "path_prototype_gzip_bytes": 29092,
++    "with_existing_packed_ghost_current_gzip_bytes": 88489,
++    "with_existing_packed_ghost_prototype_gzip_bytes": 76229,
++    "gzip_comparison_by_level": {
++      "1": {
++        "path_current": 43618,
++        "path_prototype": 32478,
++        "with_ghost_current": 92810,
++        "with_ghost_prototype": 80443
++      },
++      "6": {
++        "path_current": 40277,
++        "path_prototype": 29327,
++        "with_ghost_current": 88481,
++        "with_ghost_prototype": 76459
++      },
++      "9": {
++        "path_current": 40287,
++        "path_prototype": 29092,
++        "with_ghost_current": 88489,
++        "with_ghost_prototype": 76229
++      }
++    },
++    "limitation": "Retained proof and unrelated synthetic packed ghost, gzip level 9, not an actual player upload or mobile CPU measurement"
++  },
++  "source_sha256": {
++    "backend/bmt_backend/economy.py": "47ef99f4ffca7c8578676543f2741db20c06b473279111f28fb9ef3612ffb240",
++    "backend/bmt_backend/reward_ranks.py": "d999286bbfed51a3ee39483834b421c30252b35cbea6cdcd53f25ec1f28c8011",
++    "backend/bmt_backend/achievements.py": "45acb7fa5b1c6b8adc5e32ebd884f0545bd6d54e96375ecbda865b7eadc3811e",
++    "backend/bmt_backend/discovery_projection.py": "d9192aa97856f24d312388d39905ac0ea493a81cb40101006e314672ad1ccaa1",
++    "backend/bmt_backend/discovery_worker.py": "b7de3c4da92927e2884e8602f59918ec623167fe0fba59afce2d5cfd178418bf",
++    "backend/bmt_backend/telemetry_queue.py": "e8f0263dc48f700c3a9e727eefb32b82c19c465cfc8f9eef4b95f03438193eef",
++    "backend/bmt_backend/product_worker.py": "945000afc7a399cd4fdbc368cb9da2260823c42442946f80c404c8b907efab9c",
++    "backend/bmt_backend/appearance_routes.py": "56f7a313751b8df22f217c39d7e65724a23e24ac3bd9ee2fc70b1ec722d3fb79",
++    "game/backend/appearance_sync.gd": "aa04abda785006ba2cc17a656476410bbffd0ae1fc8c651e01706df5417236bc",
++    "game/core/app.gd": "a47e705e5753ade90f4510a9f96feab6f8bab1f0979a50f1d4925254d4dd4540"
++  },
++  "limits": [
++    "Disposable SQLite domain fixture and FakeVerifier; no live player data",
++    "Review-only prototypes; runtime and contracts unchanged",
++    "No PostgreSQL/load/device test, attachment check, deployment or owner-process restart"
++  ]
++}
+diff --git a/docs/evidence/further-optimisation-review-2026-10-24/report.json b/docs/evidence/further-optimisation-review-2026-10-24/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/further-optimisation-review-2026-10-24/report.json
+@@ -0,0 +1,188 @@
++{
++  "task": "Look for more optimisation possibilities",
++  "date": "2026-10-24",
++  "scope": "Review after ROO01-ROO03 implementation. New candidates only; no runtime, schema or contract changes.",
++  "requirement_ids": [
++    "FOP01",
++    "FOP02",
++    "FOP03",
++    "FOP04",
++    "FOP05",
++    "FOP06",
++    "FOP07",
++    "FOP08",
++    "R01",
++    "Q01"
++  ],
++  "recommended_first": [
++    "FOP01",
++    "FOP02",
++    "FOP03",
++    "FOP04",
++    "FOP05"
++  ],
++  "candidates": [
++    {
++      "id": "FOP01",
++      "title": "Avoid work on discovery partitions with nothing due",
++      "priority": "High",
++      "source": [
++        "backend/bmt_backend/discovery_projection.py:279",
++        "backend/bmt_backend/discovery_worker.py:42"
++      ],
++      "evidence": "Three settled idle turns executed 51 statements: 48 SELECTs and 3 partition UPDATEs. Every turn returned false. All partition health timestamps were fresh and audits in the future.",
++      "proposed_change": "Only claim a partition with committed work, bootstrap work, due rank refresh, expiry, source audit or health deadline. Schedule global retention/accounting maintenance separately at bounded deadlines rather than run every empty turn.",
++      "expected_effect": "Fewer repeated reads, empty row locks and checked_at writes. Target statement reduction is not measured by an implemented variant.",
++      "safety": "Preserve current wake/poll latency for new work, the reserved 30-second health turn, 60-second source audit cadence, bounded rank refresh/expiry, privacy erasure, storage accounting and global collection cleanup even when no partition has work. Busy SKIP LOCKED rows must not be called complete.",
++      "validation_needed": "PostgreSQL query plans and competing workers; hot partition fairness; no missed due work; storage/bootstrap/collection cleanup with no ordinary traffic."
++    },
++    {
++      "id": "FOP02",
++      "title": "Run telemetry legacy routing on a bounded cadence after readiness",
++      "priority": "High",
++      "source": [
++        "backend/bmt_backend/product_worker.py:51",
++        "backend/bmt_backend/telemetry_queue.py:139",
++        "backend/bmt_backend/telemetry.py:174"
++      ],
++      "evidence": "Three prepare() calls with no unpartitioned receipts executed 12 SELECTs and no writes: four reads per empty worker turn. Ordinary server and client intake already register new receipts in their admission transaction.",
++      "proposed_change": "Drain continuously while pre-cutover receipts exist; after a confirmed ready state, coalesce empty legacy checks independently of actor/shared/rollup work.",
++      "expected_effect": "Remove four repeated preparation reads from most worker turns after cutover; exact rate depends on actual workload and topology.",
++      "safety": "Retain restart and mixed-version rollout recovery, registration/capacity accounting, ready gating and server receipts at exhausted client credit. Zero rows claimed can mean contention; readiness cannot be inferred from that alone. Do not permanently disable legacy recovery.",
++      "validation_needed": "New late legacy receipt after readiness, restart while backfilling, exhausted credits, contended claims and independent role processes."
++    },
++    {
++      "id": "FOP03",
++      "title": "Reduce clean garage appearance polling while racing",
++      "priority": "High potential client/network value; source-based",
++      "source": [
++        "game/backend/appearance_sync.gd:21",
++        "game/backend/appearance_sync.gd:57",
++        "game/core/app.gd:384"
++      ],
++      "evidence": "A repeating 30-second timer invokes refresh without a race/visible-screen condition. Busy, signed-out and mismatched scopes return early. Sixty opportunities per 30 minutes is arithmetic, not measured traffic.",
++      "proposed_change": "Keep prompt dirty-edit and pending-write recovery, but reduce clean-state polling during a race. Refresh on sign-in, returning to an appearance-dependent view and before actions whose server appearance must match the displayed car.",
++      "expected_effect": "Avoid complete authenticated requests when no visible/competitive state can use their results. No session or mobile savings have been measured.",
++      "safety": "Cross-device changes become visible later during a race. Preserve first adoption, account fences, original pending acknowledgements, save failures, fresh reads before CAS writes and explicit Rivalry sync. Never throttle recovery as if it were a clean no-op.",
++      "validation_needed": "Two-device remote edit while racing, return to each visible car view, all race modes, pending upload/lost reply, process restart, sign-out/in and physical-device lifecycle."
++    },
++    {
++      "id": "FOP04",
++      "title": "Use a read-only fast path for an established wallet",
++      "priority": "Medium; concrete prototype",
++      "source": [
++        "backend/bmt_backend/economy.py:47",
++        "backend/bmt_backend/economy.py:76",
++        "backend/bmt_backend/completion_reads.py:42",
++        "backend/bmt_backend/studio_finance.py:30"
++      ],
++      "evidence": "Current SQLite handler used five SQL statements excluding authentication (four SELECTs and one SQLite serialization UPDATE). A prototype read the eligible owner, wallet balance/revision, owned items and existing opening-ledger marker in one SELECT with an identical payload. Missing opening marker, disabled/deleted owner and missing wallet were detected.",
++      "proposed_change": "Use one coherent SELECT for an established wallet with its opening marker; retain the existing locked initialization/reconciliation fallback for missing wallet or marker.",
++      "expected_effect": "Fewer reads and no exclusive account lock for ordinary established balance reads. PostgreSQL current handler has a locking SELECT rather than SQLite's extra dummy UPDATE, so the SQLite five-to-one count is not a PostgreSQL count.",
++      "safety": "Keep current authentication and eligibility checks, a single-statement balance/revision/ownership snapshot, monotonic client revisions and financial opening reconciliation. Purchases/rewards still require their existing locks and idempotent writes.",
++      "validation_needed": "PostgreSQL purchase-vs-read races, missing/legacy ledger, opening insertion races, disabled/deleted account, stale client reply and durable purchase recovery."
++    },
++    {
++      "id": "FOP05",
++      "title": "Batch race and lap reward-rank reads",
++      "priority": "Medium; small per-race saving with strong local equivalence",
++      "source": [
++        "backend/bmt_backend/economy.py:202",
++        "backend/bmt_backend/reward_ranks.py:30"
++      ],
++      "evidence": "The slower repeat race executed two indexed reward-rank reads. One bounded SELECT prototype matched both current results and an independent rank oracle for 109 pairs / 218 metric results covering all reward tiers, shared ties and boundary ticks.",
++      "proposed_change": "Read the required (metric,node) keys for both candidate times in one query. Keep the existing maximum-earned-tier skip and exact integer threshold arithmetic.",
++      "expected_effect": "Two SQL round trips become one when both metrics require evaluation. Does not halve the entire race cost, and no savings remain when both maximum tiers are already earned.",
++      "safety": "Do not gate this on personal-best improvement: population changes can make a tier newly available on a slower repeat. Keep each metric's own population/root, strictly-faster prefix and submitted candidate time. A combined statement gives one population snapshot; PostgreSQL planning must retain bounded index reads.",
++      "validation_needed": "PostgreSQL EXPLAIN with large counters, concurrent PB/restriction writes, one/both maximum tiers, correction/deletion, BIGINT counts and exact tier boundaries."
++    },
++    {
++      "id": "FOP06",
++      "title": "Avoid the existing-achievement conflict insert in the race path",
++      "priority": "Lower; one statement per eligible accepted race",
++      "source": [
++        "backend/bmt_backend/achievements.py:57",
++        "backend/bmt_backend/achievements.py:146"
++      ],
++      "evidence": "The slower repeat flow attempted INSERT INTO achievement_states ... ON CONFLICT DO NOTHING despite the state already existing, then selected it for update.",
++      "proposed_change": "Under the race worker's existing eligible Player lock, select/lock the existing race state first and conditionally initialize only when absent. Keep other callers' authority and locking semantics explicit.",
++      "expected_effect": "One conflict-insert attempt avoided for an established race state; no WAL reduction measured and conflict-do-nothing is not claimed to insert a row.",
++      "safety": "Do not skip the achievement update on a non-PB: race, distance, clean streak and completion metrics still change. Preserve erasure fencing, accepted creator event policy, lock order and fresh ORM state. In SKIP LOCKED paths, a missing selection can mean a busy existing state; falling back to an insert may block.",
++      "validation_needed": "Concurrent first race/erasure and finalizers, creator accepted events, busy state claims and missing state initialization."
++    },
++    {
++      "id": "FOP07",
++      "title": "Replace PostgreSQL dummy appearance UPDATE with a row lock",
++      "priority": "Lower; PostgreSQL-specific",
++      "source": [
++        "backend/bmt_backend/appearance_routes.py:18",
++        "backend/bmt_backend/rivalry.py:61"
++      ],
++      "evidence": "Both appearance writers use owner_for_write(), which issues Player.id = Player.id UPDATE followed by a Player SELECT. One dummy update was observed even on an exact acknowledged retry in SQLite.",
++      "proposed_change": "Use SELECT FOR UPDATE with the same current eligibility checks on PostgreSQL; retain SQLite's serialization UPDATE.",
++      "expected_effect": "Avoid a PostgreSQL dummy updated row version and its associated trigger/WAL work. This is inferred from the SQL path, not a measured WAL saving. SQLAlchemy already omits an unchanged appearance JSON write on an identical retry.",
++      "safety": "Preserve lock acquisition order relative to ownership/purchases, SQLite serialization, CAS conflict behavior, lost-reply acknowledgment and row-level grant compatibility.",
++      "validation_needed": "Actual PostgreSQL race between both appearance routes, account restriction, ownership grant changes and WAL comparison."
++    },
++    {
++      "id": "FOP08",
++      "title": "Negotiate a lossless packed race-path transport",
++      "priority": "Later protocol project",
++      "source": [
++        "game/backend/backend_client.gd:1057",
++        "backend/bmt_backend/trajectory_verifier.py:1"
++      ],
++      "evidence": "For a retained 2,130-sample proof, exact float64 packing plus base64 and gzip level 6 reduced the path from 40,277 to 29,327 bytes (27.2%). An illustrative envelope containing an unrelated existing packed ghost fell from 88,481 to 76,459 bytes (13.6%). Exact sample roundtrip passed.",
++      "proposed_change": "If real upload volume justifies it, add a negotiated versioned transport that decodes to the same normalized proof using full float64 precision and unchanged sampling. Existing packed ghost transport is already implemented and is not counted as new work.",
++      "expected_effect": "Potential upload/storage reduction; this is not an actual player upload, HTTP measurement, provider bill estimate or mobile CPU benchmark.",
++      "safety": "Preserve original saved outbox bodies/idempotency keys across upgrades, canonical normalization/hash semantics, old-client fallback, rewind/incident/ghost contracts and all verification. Validate byte length/count/domain before bounded decode; reject nonfinite floats and malformed frames.",
++      "validation_needed": "Actual Godot encoder/decoder parity, bounded hostile input, exact retries before/after upgrade, HTTP compression, verifier equality, mobile CPU/memory/battery and representative upload corpus."
++    }
++  ],
++  "not_recommended": [
++    "Skip verification merely because a race does not improve PB or Rivalry rank: rewards, laps, achievements and exact challenge-source contracts still require it.",
++    "Cache current authority/visibility or extend emergency configuration permission leases to save reads.",
++    "Describe existing max-tier skips, packed ghosts, immutable document caches, shared GETs or worker notifications as new optimisations.",
++    "Project SQL counts or synthetic compressed bytes directly into cloud-bill or player-day savings."
++  ],
++  "validation": {
++    "review_probe": {
++      "command": ".tools/backend-venv/Scripts/python.exe docs/evidence/further-optimisation-review-2026-10-24/probe.py",
++      "result": "Passed with exact reward oracle, coherent wallet equality/fallback guards, current SQL counts and lossless float64 roundtrip.",
++      "output": "probe-results.json",
++      "log": "probe-final.log"
++    },
++    "focused_existing_contracts": {
++      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_reward_ranks.py backend/tests/test_discovery_projection.py backend/tests/test_appearance_sync.py backend/tests/test_telemetry_parallel.py -q -k \"sqlite and (exact_tier_boundaries or prefix_queries_are_bounded or maximum_tier_skips or hot_partition_drains or bounded_reconciliation or private_five_car or deferred_work_keeps_credit)\"",
++      "result": "7 passed, 81 deselected, 36 existing warnings in 19.08s",
++      "log": "contracts.log",
++      "purpose": "Validate current safety contracts; these are not implementation tests for unimplemented candidates."
++    },
++    "lint": {
++      "command": ".tools/backend-venv/Scripts/ruff.exe check docs/evidence/further-optimisation-review-2026-10-24/probe.py",
++      "result": "Passed",
++      "log": "lint.log"
++    },
++    "corrections": "Initial review probe failed because the statement counter uppercased SQL but compared a lowercase table token; fixed the counter, preserving the assertion. Initial logs retained. Ruff import/style findings corrected in the review script.",
++    "runtime_changes": "None. Only this review evidence directory was edited.",
++    "limits": [
++      "Disposable SQLite/FakeVerifier fixture, not production load or canonical driving timing",
++      "PostgreSQL planning, contention and WAL effects have not been measured",
++      "No phone/tablet attachment check, physical-device test, APK, purchase, live mutation, deployment or owner-process restart",
++      "Concurrent workspace changes preserved; existing suites were not weakened"
++    ]
++  },
++  "artifacts": [
++    "probe.py",
++    "probe-results.json",
++    "report.json",
++    "repeat-flow-sql.json",
++    "probe-initial.log",
++    "probe-second.log",
++    "probe-final.log",
++    "contracts.log",
++    "lint.log",
++    "checkpoint.patch"
++  ],
++  "checkpoint": "Task-only additive patch for probe.py, probe-results.json and report.json; verification recorded in checkpoint-check.log."
++}

@@ -1,0 +1,167 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -20,6 +20,7 @@
+ 
+ var _layout: HBoxContainer
+ var _preview_slot: Control
++var _preview_column: VBoxContainer
+ var _rail_slot: Control
+ var _tools_slot: Control
+ var _actions_slot: Control
+@@ -56,6 +57,8 @@
+ var _wash_status_state: Array = []
+ var section: String = "cars"
+ var _car_menu_open: bool = false
++var _workshop_section: String = "customise"
++var _workshop_tabs: HBoxContainer
+ var gallery: ScrollContainer
+ var gallery_slot: Control
+ var gallery_content: Control
+@@ -117,10 +120,19 @@
+ 	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation", 8)
+ 	_layout.add_child(main)
++	_preview_column = VBoxContainer.new()
++	_preview_column.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	_preview_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_preview_column.add_theme_constant_override("separation",8)
++	main.add_child(_preview_column)
++	_workshop_tabs = HBoxContainer.new()
++	_workshop_tabs.name = "GarageWorkshopTabs"
++	_workshop_tabs.add_theme_constant_override("separation",8)
++	_preview_column.add_child(_workshop_tabs)
+ 	_preview_slot = Control.new()
+ 	_preview_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	_preview_slot.custom_minimum_size.y = 250
+-	main.add_child(_preview_slot)
++	_preview_column.add_child(_preview_slot)
+ 	_tools_slot = Control.new()
+ 	main.add_child(_tools_slot)
+ 	# The live viewport never leaves this parent when layout slots move.
+@@ -431,12 +443,12 @@
+ 	for child: Node in rail.get_children():
+ 		rail.remove_child(child)
+ 		child.queue_free()
+-	var destinations: Array = [["cars", "Select car"], ["records", "Record player"], ["trophies", "Trophy wall"]] if not _car_menu_open else [["customise", "Customise"], ["care", "Care"], ["tuning", "Tuning"], ["records", "Record player"], ["trophies", "Trophy wall"]]
++	var destinations: Array = [["cars", "Select car"], ["workshop", "Workshop"], ["records", "Record player"], ["trophies", "Trophy wall"]]
+ 	destinations.append(["news","News"])
+ 	rail.add_theme_constant_override("separation",8 if destinations.size() > 5 else 12)
+ 	for entry: Array in destinations:
+ 		var destination: String = entry[0]
+-		var active: bool = destination == section
++		var active: bool = destination == section or (destination == "workshop" and section in ["customise","tuning","care"])
+ 		var button := MenuStyle.button("", _show_section.bind(destination), active)
+ 		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
+ 		button.icon = RailIcons.texture(destination)
+@@ -762,6 +774,7 @@
+ 				(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
+ 
+ func _show_section(next: String) -> void:
++	if next == "workshop": next = _workshop_section
+ 	if next == "car": next = "customise"
+ 	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
+ 	_finish_tools()
+@@ -772,10 +785,22 @@
+ 	_prepare_menu_move()
+ 	_set_customise_layout(next in ["customise","tuning","records"])
+ 	section = next
++	if next in ["customise","tuning","care"]: _workshop_section = next
++	_workshop_tabs.visible = next in ["customise","tuning","care"]
++	for child: Node in _workshop_tabs.get_children():
++		_workshop_tabs.remove_child(child)
++		child.queue_free()
++	for entry: Array in [["customise","Appearance"],["tuning","Parts"],["care","Wash"]]:
++		var tab := MenuStyle.tab(str(entry[1]),_show_section.bind(str(entry[0])),next == entry[0])
++		tab.name = "Workshop"+str(entry[1])
++		tab.custom_minimum_size.y = 48
++		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		_workshop_tabs.add_child(tab)
+ 	_update_wash_status()
+ 	# The newspaper takes the desk. Keep the live car attached and dormant so
+ 	# leaving News restores the same car, camera, condition and reflection rig.
+ 	preview.visible = next not in ["news","achievements"]
++	_preview_column.visible = next not in ["news","achievements"]
+ 	_preview_slot.visible = next not in ["news","achievements"]
+ 	_actions_slot.visible = next not in ["news","achievements"]
+ 	actions.visible = next not in ["news","achievements"]
+@@ -933,15 +958,15 @@
+ 		customise_layout.add_theme_constant_override("separation",16)
+ 		main.add_child(customise_layout)
+ 		main.move_child(customise_layout,0)
+-		_preview_slot.reparent(customise_layout)
++		_preview_column.reparent(customise_layout)
+ 		_tools_slot.reparent(customise_layout)
+ 		_preview_slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		_tools_slot.size_flags_horizontal = Control.SIZE_FILL
+ 		_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		tools.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	elif not active and is_instance_valid(customise_layout):
+-		_preview_slot.reparent(main)
+-		main.move_child(_preview_slot,0)
++		_preview_column.reparent(main)
++		main.move_child(_preview_column,0)
+ 		_tools_slot.reparent(main)
+ 		main.move_child(_tools_slot,1)
+ 		_tools_slot.size_flags_vertical = Control.SIZE_FILL
+--- a/game/ui/garage_mode_icons.gd
++++ b/game/ui/garage_mode_icons.gd
+@@ -27,7 +27,7 @@
+ 			<path fill-rule='evenodd' d='M28 9c-4 8-18 21-18 31a18 18 0 0 0 36 0C46 30 32 17 28 9Zm-9 27a1.8 1.8 0 0 0-3.5.5A13 13 0 0 0 27 50a1.8 1.8 0 0 0 .5-3.5A9.5 9.5 0 0 1 19 36Z'/>
+ 			<path d='m48 8 2.5 7.5L58 18l-7.5 2.5L48 28l-2.5-7.5L38 18l7.5-2.5Z'/>
+ 			"""
+-		"tuning":
++		"tuning", "workshop":
+ 			# Forged open-end spanner. A real open jaw and punched socket, no outline.
+ 			art = """
+ 			<path fill-rule='evenodd' d='M39 9q-14 0-14 14 0 3 1 5L10 44a7 7 0 0 0 10 10l17-17q3 1 5 1 14 0 14-14l-1-5-10 10-9-2-2-9 9-9Zm-26 38a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z'/>
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -70,7 +70,7 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+-	var evidence_root: String = "res://../docs/evidence/garage-sidebar-2026-10-19/final"
++	var evidence_root: String = "res://../docs/evidence/garage-workshop-navigation-2026-10-24/native"
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	before = "--before" in OS.get_cmdline_user_args()
+@@ -101,6 +101,11 @@
+ 		page._confirm_car()
+ 		await settle()
+ 		rail_bounds("selected "+str(dimensions))
++		check(page.rail.get_child_count() == 5,"five stable destinations")
++		check(page._workshop_tabs.visible,"workshop tabs visible after selecting car")
++		for tab: Control in page._workshop_tabs.get_children():
++			check(page.get_global_rect().encloses(tab.get_global_rect()),"workshop tab fits "+str(dimensions))
++			check(tab.size.y >= 48,"workshop tab touch target")
+ 		await capture("customise-"+str(dimensions.x))
+ 		var rects: Array = []
+ 		for button: Node in page.rail.get_children(): rects.append({"name":button.name,"rect":str(button.get_global_rect())})
+@@ -108,14 +113,26 @@
+ 		var positions: Array[Rect2] = []
+ 		for button: Node in page.rail.get_children(): positions.append(button.get_global_rect())
+ 		for destination: String in ["care","tuning","records","trophies","news"]:
+-			var target: Button = page.rail.get_node("Garage"+destination.capitalize())
++			var target: Button = page._workshop_tabs.get_node("WorkshopWash" if destination == "care" else "WorkshopParts") if destination in ["care","tuning"] else page.rail.get_node("Garage"+destination.capitalize())
+ 			await click(target,destination in ["records","news"])
+ 			await settle()
+ 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
++			check(page._preview_column.visible == (destination != "news"),"preview column follows destination "+destination)
++			if destination == "news":
++				check(page.tools_panel.global_position.y <= page.global_position.y+1,"News keeps its full-height layout")
+ 			for index: int in range(positions.size()):
+ 				check(page.rail.get_child(index).get_global_rect().is_equal_approx(positions[index]),"rail stays fixed across sections "+destination+" "+str(index)+" "+str(dimensions))
+ 			check(page.showroom.showroom_viewport == viewport and page.showroom.car == car,"retained car/viewport "+destination)
+ 			if dimensions.x == 1280: await capture(destination+"-1280")
++		check(not page._workshop_tabs.visible,"tabs hidden outside workshop")
++		await click(page.rail.get_node("GarageWorkshop"))
++		await settle()
++		check(page.section == "tuning","Workshop remembers Parts after News")
++		check(page._workshop_tabs.visible,"tabs return with Workshop")
++		check(page.get_global_rect().encloses(page.actions.get_global_rect()),"workshop footer fits "+str(dimensions))
++		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
++		check(root.get_visible_rect().encloses(page.actions.get_global_rect()),"workshop footer fits window "+str(dimensions))
++		if dimensions.x == 1280: await capture("workshop-return-1280")
+ 		page._car_menu_open = false
+ 	page._show_section("cars")
+ 	await settle()

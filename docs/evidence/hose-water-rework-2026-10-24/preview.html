@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Garage hose and broad spray — native previews</title>
+<style>body{margin:24px auto;max-width:1200px;padding:0 18px;background:#101e29;color:#f1f4f3;font:17px/1.5 system-ui}button,select{padding:10px 18px;font:inherit}img{display:block;max-width:100%;height:auto;margin:18px 0}p{color:#a4bac7}</style>
+<h1>Moving water droplets and thinner hose</h1>
+<p>Actual native Garage captures. The loop advances the water in 1/30-second steps with the camera and nozzle held still; it is a visual preview, not a frame-rate measurement.</p>
+<select id="renderer" aria-label="Renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Mobile / Vulkan on desktop</option></select>
+<button id="play">Pause</button>
+<img id="motion" alt="Animated broad water fan and hose connected to its reel">
+<p>The sheet-shaped cone and striped ribbons have been replaced with short moving droplets. The wider rinse and slow heavy-dirt removal are retained.</p>
+<img id="ordinary" alt="Connected hose reel and wide spray in the ordinary Garage view">
+<script>
+let playing=true,frames=[],start=performance.now();
+const renderer=document.getElementById('renderer'),motion=document.getElementById('motion'),ordinary=document.getElementById('ordinary');
+function prepare(){const base='test_garage_hose_refinement-'+renderer.value+'/';frames=Array.from({length:12},(_,index)=>{const image=new Image();image.src=base+'motion-'+String(index).padStart(2,'0')+'.png';return image});ordinary.src=base+'wide-spray-ordinary-view.png';motion.src=frames[0].src;start=performance.now()}
+renderer.addEventListener('change',prepare);
+document.getElementById('play').addEventListener('click',event=>{playing=!playing;event.target.textContent=playing?'Pause':'Play'});
+function tick(now){if(playing&&frames.length){const frame=frames[Math.floor((now-start)/33.333)%frames.length];if(frame.complete)motion.src=frame.src}requestAnimationFrame(tick)}
+prepare();requestAnimationFrame(tick);
+</script></html>

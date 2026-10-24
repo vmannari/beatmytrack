@@ -1,0 +1,880 @@
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -625,7 +625,11 @@
+ func wash_at(location: Vector2, seconds: float) -> bool:
+ 	var surface: Dictionary = pick_body_surface(location)
+ 	if surface.is_empty(): return false
+-	weathering.wash(surface.point, seconds, wash_tool)
++	var wash_normal: Vector3 = (weathering._body.global_transform.basis.transposed()*(surface.normal as Vector3)).normalized()
++	weathering.wash(surface.point, seconds, wash_tool, wash_normal)
++	if wash_tool == "hose":
++		surface.radius = VehicleWeathering.HOSE_RADIUS*HandlingConfig.BODY_SCALE
++		surface.car_bounds = weathering._body.global_transform*weathering.bounds
+ 	if wash_effect != null: wash_effect.set_contact(surface, wash_tool)
+ 	if not washing: invalidate_render()
+ 	return true
+diff --git a/game/ui/garage_wash_effect.gd b/game/ui/garage_wash_effect.gd
+--- a/game/ui/garage_wash_effect.gd
++++ b/game/ui/garage_wash_effect.gd
+@@ -3,7 +3,6 @@
+ ## Garage-only contact animation. Fixed pools; no condition or simulation ownership.
+ const FOAM_COUNT: int = 24
+ const WATER_COUNT: int = 32
+-const JET_COUNT: int = 12
+ const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
+ const Geometry = preload("res://ui/garage_wash_geometry.gd")
+ var mitt: Node3D
+@@ -111,22 +110,9 @@
+ 	contact = surface.duplicate()
+ 
+ func _prepare_hose() -> void:
+-	hose = Node3D.new()
+-	hose.name = "HoseNozzle"
++	hose = preload("res://ui/garage_hose_rig.gd").new()
+ 	add_child(hose)
+-	for entry: Array in [["Nozzle",Geometry.nozzle(),Color("586a6d"),0.6], ["Hose",Geometry.hose(),Color("263f46"),0.0]]:
+-		var part := MeshInstance3D.new()
+-		part.name = entry[0]
+-		part.mesh = entry[1]
+-		var material := StandardMaterial3D.new()
+-		material.albedo_color = entry[2]
+-		material.metallic = entry[3]
+-		material.roughness = 0.48
+-		part.material_override = material
+-		part.layers = LAYERS
+-		part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+-		hose.add_child(part)
+-	jet = _pool("HoseSpray",JET_COUNT,water.multimesh.mesh,water.material_override)
++	jet = hose.spray
+ 	hose.visibility_changed.connect(visual_changed.emit)
+ 	jet.visibility_changed.connect(visual_changed.emit)
+ 
+@@ -189,23 +175,15 @@
+ 		"velocity": normal*0.075+radial*0.07+Vector3.DOWN*0.10+stroke*0.07, "basis": Basis.IDENTITY,
+ 		"age": 0.0, "life": 0.43+float(water_cursor%5)*0.028, "radius": 0.0045+float(water_cursor%4)*0.0012,
+ 		"seed": float(water_cursor)/32.0}
++	if tool == "hose":
++		var spread: float = sqrt(float((water_cursor*13)%32+1)/32.0)*float(contact.get("radius",0.95))*0.85
++		water_slots[water_cursor].position = contact.position+normal*0.025+radial*spread
++		water_slots[water_cursor].velocity = normal*0.18+radial*0.24+Vector3.DOWN*0.08
++		water_slots[water_cursor].radius = 0.0055+float(water_cursor%4)*0.0015
+ 	water_cursor = (water_cursor + 1) % WATER_COUNT
+ 
+ func _aim_hose(frame: Basis) -> void:
+-	var source: Vector3 = contact.position + frame.y*0.65 + frame.x*0.25
+-	var direction: Vector3 = (contact.position-source).normalized()
+-	hose.global_transform = Transform3D(Basis.looking_at(direction,frame.z),source)
+-	# Twelve moving water filaments share one draw. No foam is made by rinsing.
+-	var origin: Vector3 = source+direction*0.14
+-	var across: Vector3 = direction.cross(frame.z).normalized()
+-	var jet_basis := Basis(across,direction,across.cross(direction))
+-	for index: int in range(JET_COUNT):
+-		var phase: float = fposmod(float(index)/JET_COUNT+clock*2.7,1.0)
+-		var angle: float = float(index)*2.399963
+-		var spread: Vector3 = (across*cos(angle)+frame.z*sin(angle))*phase*0.07
+-		var at: Vector3 = origin.lerp(contact.position,phase)+spread
+-		jet.multimesh.set_instance_transform(index,Transform3D(jet_basis*Basis.from_scale(Vector3(0.005,0.045,0.005)),at))
+-		jet.multimesh.set_instance_custom_data(index,Color(float(index)/JET_COUNT,0.25,1,0.003))
++	hose.aim(contact,frame,clock)
+ 
+ func _advance_pool(node: MultiMeshInstance3D, slots: Array[Dictionary], delta: float, falling: bool) -> int:
+ 	var alive: int = 0
+diff --git a/game/ui/garage_wash_geometry.gd b/game/ui/garage_wash_geometry.gd
+--- a/game/ui/garage_wash_geometry.gd
++++ b/game/ui/garage_wash_geometry.gd
+@@ -16,28 +16,6 @@
+ 	tool.index()
+ 	meshes.nozzle = tool.commit()
+ 	return meshes.nozzle
+-
+-static func hose() -> ArrayMesh:
+-	if meshes.has("hose"): return meshes.hose
+-	var tool := SurfaceTool.new()
+-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	var path: Array[Vector3] = []
+-	for index: int in range(21):
+-		var t: float = float(index)/20.0
+-		path.append(Vector3(sin(t*PI)*0.16,-t*t*0.38,0.1+t*0.62))
+-	for index: int in range(path.size()-1):
+-		var direction: Vector3 = (path[index+1]-path[index]).normalized()
+-		var side: Vector3 = direction.cross(Vector3.UP).normalized()
+-		var up: Vector3 = side.cross(direction).normalized()
+-		for ring: int in range(10):
+-			var a: float = float(ring)*TAU/10.0
+-			var b: float = float(ring+1)*TAU/10.0
+-			var radial_a: Vector3 = (side*cos(a)+up*sin(a))*0.022
+-			var radial_b: Vector3 = (side*cos(b)+up*sin(b))*0.022
+-			_face(tool,[path[index]+radial_a,path[index]+radial_b,path[index+1]+radial_b,path[index+1]+radial_a],(radial_a+radial_b).normalized(),[Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN])
+-	tool.index()
+-	meshes.hose = tool.commit()
+-	return meshes.hose
+ 
+ static func mitt() -> ArrayMesh:
+ 	if meshes.has("mitt"): return meshes.mitt
+diff --git a/game/vehicle/vehicle_weathering.gd b/game/vehicle/vehicle_weathering.gd
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -7,7 +7,8 @@
+ const SLOW_RATE: float = 1.0 / 20.0
+ const SCRUB_RATE: float = 1.15
+ const SCRUB_RADIUS: float = 0.60
+-const HOSE_RADIUS: float = 0.72
++const HOSE_RADIUS: float = 1.08
++const HOSE_DEPTH: float = 0.24
+ const HOSE_FILM_RATE: float = 1.60
+ const HOSE_GRIME_RATE: float = 0.025
+ const MAX_SCRUB_RESISTANCE: float = 0.40
+@@ -327,12 +328,13 @@
+ 	slow_wash_texture.update(slow_wash_image)
+ 	wash_mask_uploads += 2
+ 
+-func wash(point: Vector3, seconds: float, tool: String = "mitt") -> void:
++func wash(point: Vector3, seconds: float, tool: String = "mitt", surface_normal: Vector3 = Vector3.ZERO) -> void:
+ 	if wash_image == null or seconds <= 0.0 or not is_finite(seconds): return
+ 	if tool not in ["mitt", "hose"] or not point.is_finite(): return
+ 	var radius: float = HOSE_RADIUS if tool == "hose" else SCRUB_RADIUS
+ 	var primary_rate: float = HOSE_GRIME_RATE if tool == "hose" else SCRUB_RATE
+ 	var film_rate: float = HOSE_FILM_RATE if tool == "hose" else SCRUB_RATE
++	var normal: Vector3 = surface_normal.normalized() if tool == "hose" and surface_normal.is_finite() else Vector3.ZERO
+ 	var grid: int = VehicleCondition.GRID
+ 	var bytes: PackedByteArray = _wash_bytes if _wash_depth > 0 else wash_image.get_data()
+ 	var slow_bytes: PackedByteArray = _slow_wash_bytes if _wash_depth > 0 else slow_wash_image.get_data()
+@@ -344,6 +346,10 @@
+ 			for x: int in range(int(lower.x), int(upper.x) + 1):
+ 				var centre: Vector3 = bounds.position + Vector3(float(x), float(y), float(z)) / float(grid - 1) * bounds.size
+ 				var distance: float = centre.distance_to(point)
++				if normal != Vector3.ZERO:
++					var offset: Vector3 = centre-point
++					var depth: float = offset.dot(normal)
++					distance = sqrt((offset-normal*depth).length_squared()+pow(depth*radius/HOSE_DEPTH,2.0))
+ 				if distance >= radius: continue
+ 				touched = true
+ 				var index: int = y * grid * grid + z * grid + x
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Connected washing hose and broad spray override (2026-10-24)
++2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ ## Security cloud deployment override (2026-10-24)
+ 2026-10-24 SEC-D01/SEC06/SEC07/SEC03/SEC08/SEC04/R01/Q01: Authorized retained cloud rollout reaches schema62 on API99/worker40 and all five matching job definitions. Separate runtime identities/credentials and explicit grants are active; old shared SQL login, service account and secret are disabled. Studio/admin/monitor return404 and ad previews are off. Managed backup1792841359801; all314798 original rows/132 compared tables exact, invalid indexes0. Focused70/exact-image258pass1skip12deselected, synthetic131tables/103328rows, live native/schema/GCS smoke with zero player writes, worker16partitions and discovery30 pass. Existing development test-driver policy/resources remain; later concurrent schema63 is outside the frozen artifact. Actual commands, corrections, hashes and scoped checkpoint: docs/SECURITY_DEPLOYMENT_2026_10_24.md and docs/evidence/security-deploy-2026-10-24/report.json. PC backup copy was rejected by automatic review pending explicit sensitive-data/destination approval; PC remains unchanged. Studio staff/MFA, client/owner/device/restore/load acceptance remain; no device check/test/APK, population job, reporting replica or client restart. Concurrent work/owner processes preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ 2026-10-24 SEC-D01/SEC06/SEC07/SEC03/SEC08/SEC04/R01/Q01: Authorized retained cloud rollout reaches schema62 on API99/worker40 and all five matching job definitions. Separate runtime identities/credentials and explicit grants are active; old shared SQL login, service account and secret are disabled. Studio/admin/monitor return404 and ad previews are off. Managed backup1792841359801; all314798 original rows/132 compared tables exact, invalid indexes0. Focused70/exact-image258pass1skip12deselected, synthetic131tables/103328rows, live native/schema/GCS smoke with zero player writes, worker16partitions and discovery30 pass. Existing development test-driver policy/resources remain; later concurrent schema63 is outside the frozen artifact. Actual commands, corrections, hashes and scoped checkpoint: docs/SECURITY_DEPLOYMENT_2026_10_24.md and docs/evidence/security-deploy-2026-10-24/report.json. PC backup copy was rejected by automatic review pending explicit sensitive-data/destination approval; PC remains unchanged. Studio staff/MFA, client/owner/device/restore/load acceptance remain; no device check/test/APK, population job, reporting replica or client restart. Concurrent work/owner processes preserved.
+ 
+ 2026-10-24 LCRR01-LCRR05/R01/G01/Q01: Bounded saved-input recovery preserves original bodies/keys, restores cutover-stranded jobs and reconciles lost/in-flight replies; normal uploads remain trajectory-only. Owned main-thread publication checks journal hashes before applying worker repairs. Native retention rejects hash/source/report junctions. Exact surviving-row migration checks pass with explicit disposable-cache retirement, rollout guidance is current, and four unused helpers are removed. Backend25pass/1skip plus recovery17, native recovery37/legacy23/rename8/backend17/App141, rendered keyboard21/actual rename9, filesystem10 and parser1072 pass. Six broad object-browser assertions reproduce with the pre-change fixture; headless display and concurrent Garage import trial limits remain documented. Commands, native view, hashes and scoped checkpoint: docs/LEGACY_CLEANUP_FOLLOWUP_2026_10_24.md and docs/evidence/legacy-cleanup-followup-2026-10-24/report.json. Client restart, matching API/0062 rollout and owner/device acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ 2026-10-24 HWS01-HWS03/R01/Q01: Garage washing adds Mitt/Hose choices and Top view. Local hose rinsing clears faint film quickly while primary grime washes at 0.025 versus the unchanged mitt rate1.15; separate masks, fractional work, saved condition, paint/kits/camera, grades and canonical driving remain. Original cached nozzle/hose,12 water filaments and32 droplets stay bounded with gesture/navigation cleanup. Focused81headless/84Compatibility/84desktopMobile, scrubbing501, surfaces45, native full washing/App1402, parser1066 and import pass. Animation139 retains one restart assertion also reproduced with exact task-start versions of all five runtime sources; no assertion weakened. Initial sandbox certificate and concurrent Desert parser interruptions are retained. Commands, native views, hashes and task-only checkpoint: docs/GARAGE_HOSE_2026_10_24.md and docs/evidence/hose-wash-2026-10-24/report.json. Client restart and owner/device feel/appearance/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ 
+ 2026-10-24 CAD01-CAD03/R01/Q01: Configured race and active-time ad counters now persist locally across app launches, with a separate first-completed-race guard on every launch. One bounded low-priority atomic writer plus background/shutdown flush preserves cumulative usage; actual shown ads reset both counters and no-fill retains them. Existing OR/AND, ad-free, permission, delay, cooldown and session caps remain. Studio preview/timeline follows both cumulative and session-local state. Focused28, actual App ad63/configuration40/App141, backend14, browser13 with zero page errors, parser1064, import and Ruff pass. Initial concurrent Desert parser interruption is retained. Actual commands, views, limitations and scoped checkpoint: docs/CUMULATIVE_AD_CADENCE_2026_10_24.md and docs/evidence/cumulative-ad-cadence-2026-10-24/report.json. Matching client/API/Studio rollout and owner/device acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/GARAGE_HOSE_2026_10_24.md b/docs/GARAGE_HOSE_2026_10_24.md
+--- a/docs/GARAGE_HOSE_2026_10_24.md
++++ b/docs/GARAGE_HOSE_2026_10_24.md
+@@ -1,3 +1,5 @@
++> Owner follow-up: the connected reel, broader water animation and 1.08 rinse radius in [Garage hose spray refinement](GARAGE_HOSE_SPRAY_2026_10_24.md) supersede the first implementation below.
++
+ # Garage hose — 2026-10-24
+ 
+ Garage → Washing now offers **Mitt** and **Hose**. Selecting Hose enters washing; holding a mouse button or one finger over the car rinses the selected surface. Top view is available here for the hood and roof. Done saves progress and returns to ordinary orbiting.
+diff --git a/game/ui/garage_hose_rig.gd b/game/ui/garage_hose_rig.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_rig.gd
+@@ -0,0 +1,115 @@
++extends Node3D
++## One continuous reusable hose from nozzle to a fixed reel, with a broad water fan.
++const Geometry = preload("res://ui/garage_hose_geometry.gd")
++const WashGeometry = preload("res://ui/garage_wash_geometry.gd")
++const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
++const REEL_POSITION := Vector3(2.65,0.22,1.0)
++const REEL_OUTLET := Vector3(0.27,0.43,-0.13)
++const SPRAY_COUNT: int = 12
++var nozzle: Node3D
++var reel: Node3D
++var cable: MeshInstance3D
++var cable_points := PackedVector3Array()
++var spray: MultiMeshInstance3D
++var mist: MeshInstance3D
++var endpoints := PackedVector3Array()
++
++func _ready() -> void:
++	name = "ConnectedWashHose"
++	nozzle = Node3D.new()
++	nozzle.name = "SprayNozzle"
++	add_child(nozzle)
++	var steel := StandardMaterial3D.new()
++	steel.albedo_color = Color("607477")
++	steel.metallic = 0.55
++	steel.roughness = 0.44
++	var rubber := StandardMaterial3D.new()
++	rubber.albedo_color = Color("28474a")
++	rubber.roughness = 0.82
++	_part(nozzle,"Nozzle",WashGeometry.nozzle(),steel)
++	_part(nozzle,"Grip",Geometry.grip(),rubber)
++	reel = Node3D.new()
++	reel.name = "HoseReel"
++	add_child(reel)
++	reel.position = REEL_POSITION
++	_part(reel,"ReelFrame",Geometry.reel(),steel)
++	_part(reel,"CoiledHose",Geometry.coil(),rubber)
++	var cable_finish := ShaderMaterial.new()
++	cable_finish.shader = preload("res://ui/garage_hose_cable.gdshader")
++	cable = _part(self,"ContinuousHose",Geometry.cable(),cable_finish)
++	var spray_finish := ShaderMaterial.new()
++	spray_finish.shader = preload("res://ui/garage_hose_spray.gdshader")
++	spray = MultiMeshInstance3D.new()
++	spray.name = "WideWaterFan"
++	spray.multimesh = MultiMesh.new()
++	spray.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++	spray.multimesh.use_custom_data = true
++	spray.multimesh.mesh = Geometry.ribbon()
++	spray.multimesh.instance_count = SPRAY_COUNT
++	spray.material_override = spray_finish
++	spray.layers = LAYERS
++	spray.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(spray)
++	var mist_finish: ShaderMaterial = spray_finish.duplicate() as ShaderMaterial
++	mist_finish.set_shader_parameter("mist",true)
++	mist = _part(self,"SprayMist",Geometry.mist(),mist_finish)
++	cable_points.resize(49)
++	endpoints.resize(SPRAY_COUNT)
++
++func _part(parent: Node3D, label: String, mesh: Mesh, finish: Material) -> MeshInstance3D:
++	var part := MeshInstance3D.new()
++	part.name = label
++	part.mesh = mesh
++	part.material_override = finish
++	part.layers = LAYERS
++	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	parent.add_child(part)
++	return part
++
++func aim(surface: Dictionary, frame: Basis, time: float) -> void:
++	var source: Vector3 = surface.position+frame.y*1.0+frame.x*0.65
++	source.y = maxf(0.8,source.y)
++	var direction: Vector3 = (surface.position-source).normalized()
++	nozzle.global_transform = Transform3D(Basis.looking_at(direction,frame.z),source)
++	var origin: Vector3 = source+direction*0.12
++	var radius: float = float(surface.get("radius",0.95))
++	for index: int in range(SPRAY_COUNT):
++		var angle: float = float(index)*2.399963
++		var reach: float = sqrt(float(index+1)/SPRAY_COUNT)*radius*0.94
++		var target: Vector3 = surface.position+(frame.x*cos(angle)+frame.z*sin(angle))*reach
++		endpoints[index] = target
++		var ray: Vector3 = target-origin
++		var across: Vector3 = ray.normalized().cross(frame.z).normalized()
++		var pose := Basis(across,ray.normalized(),across.cross(ray.normalized()))
++		spray.multimesh.set_instance_transform(index,Transform3D(pose*Basis.from_scale(Vector3(0.055,ray.length(),1.0)),to_local(origin)))
++		spray.multimesh.set_instance_custom_data(index,Color(float(index)/SPRAY_COUNT,0,0,0))
++	(spray.material_override as ShaderMaterial).set_shader_parameter("flow",time)
++	mist.transform = Transform3D(Basis(frame.x*radius,surface.position-origin,frame.z*radius),to_local(origin))
++	(mist.material_override as ShaderMaterial).set_shader_parameter("flow",time)
++	_route_hose(surface)
++
++func _route_hose(surface: Dictionary) -> void:
++	var start: Vector3 = nozzle.global_transform*Vector3(0,0,0.10)
++	var bounds: AABB = surface.get("car_bounds",AABB(Vector3(-1,0.2,-2.3),Vector3(2,1.6,4.6)))
++	var safe_x: float = bounds.position.x-0.55 if start.x < bounds.position.x else maxf(REEL_POSITION.x,bounds.end.x+0.55)
++	var high := Vector3(safe_x,maxf(0.65,start.y*0.5),start.z+0.40)
++	var ground := Vector3(safe_x,0.26,start.z+0.65)
++	var end: Vector3 = reel.global_transform*REEL_OUTLET
++	var knots: Array[Vector3] = [start,start+nozzle.global_basis.z*0.28,high,ground]
++	if safe_x < 0.0:
++		var front: float = bounds.position.z-0.65
++		knots.append(Vector3(safe_x,0.26,front))
++		knots.append(Vector3(REEL_POSITION.x,0.26,front))
++	knots.append(Vector3(REEL_POSITION.x+0.25,0.26,end.z))
++	knots.append(end)
++	var box := AABB(to_local(start),Vector3.ZERO)
++	for index: int in range(49):
++		var along: float = float(index)/48.0*float(knots.size()-1)
++		var segment: int = mini(int(along),knots.size()-2)
++		var weight: float = along-float(segment)
++		var at: Vector3 = knots[segment].cubic_interpolate(knots[segment+1],knots[maxi(segment-1,0)],knots[mini(segment+2,knots.size()-1)],weight)
++		at.y = maxf(0.255,at.y)
++		cable_points[index] = to_local(at)
++		box = box.expand(cable_points[index])
++	cable.custom_aabb = box.grow(0.04)
++	(cable.material_override as ShaderMaterial).set_shader_parameter("cable_points",cable_points)
+diff --git a/game/ui/garage_hose_rig.gd.uid b/game/ui/garage_hose_rig.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_rig.gd.uid
+@@ -0,0 +1 @@
++uid://c0v8ywmig4fu3
+diff --git a/game/ui/garage_hose_geometry.gd b/game/ui/garage_hose_geometry.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_geometry.gd
+@@ -0,0 +1,100 @@
++extends RefCounted
++## Original shared reel, grip, continuous tube template and spray ribbon.
++const Base = preload("res://ui/garage_wash_geometry.gd")
++static var meshes: Dictionary = {}
++
++static func _box(tool: SurfaceTool, at: Vector3, size: Vector3, rotation: Basis = Basis.IDENTITY) -> void:
++	var box := BoxMesh.new()
++	box.size = size
++	Base._append(tool,box,Transform3D(rotation,at))
++
++static func reel() -> ArrayMesh:
++	if meshes.has("reel"): return meshes.reel
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for z: float in [-0.19,0.19]:
++		var rim := TorusMesh.new()
++		rim.inner_radius = 0.30
++		rim.outer_radius = 0.34
++		rim.rings = 32
++		rim.ring_segments = 8
++		Base._append(tool,rim,Transform3D(Basis(Vector3.RIGHT,PI*0.5),Vector3(0,0.43,z)))
++		for index: int in range(4):
++			var angle: float = float(index)*PI*0.5
++			_box(tool,Vector3(cos(angle)*0.16,0.43+sin(angle)*0.16,z),Vector3(0.29,0.028,0.025),Basis(Vector3.BACK,angle))
++		_box(tool,Vector3(0,0.23,z),Vector3(0.045,0.45,0.045))
++		_box(tool,Vector3(0,0.025,z),Vector3(0.62,0.05,0.09))
++	_box(tool,Vector3(0,0.43,0),Vector3(0.10,0.10,0.52))
++	_box(tool,Vector3(0.16,0.43,0.29),Vector3(0.30,0.035,0.035))
++	_box(tool,Vector3(0.30,0.43,0.34),Vector3(0.055,0.055,0.13))
++	tool.index()
++	meshes.reel = tool.commit()
++	return meshes.reel
++
++static func coil() -> ArrayMesh:
++	if meshes.has("coil"): return meshes.coil
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(6):
++		var ring := TorusMesh.new()
++		ring.inner_radius = 0.225
++		ring.outer_radius = 0.278
++		ring.rings = 32
++		ring.ring_segments = 8
++		Base._append(tool,ring,Transform3D(Basis(Vector3.RIGHT,PI*0.5),Vector3(0,0.43,-0.135+float(index)*0.054)))
++	tool.index()
++	meshes.coil = tool.commit()
++	return meshes.coil
++
++static func grip() -> ArrayMesh:
++	if meshes.has("grip"): return meshes.grip
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	_box(tool,Vector3(0,-0.07,0.045),Vector3(0.055,0.16,0.058),Basis(Vector3.RIGHT,-0.22))
++	_box(tool,Vector3(0,-0.05,-0.018),Vector3(0.018,0.095,0.018),Basis(Vector3.RIGHT,0.28))
++	tool.index()
++	meshes.grip = tool.commit()
++	return meshes.grip
++
++static func cable() -> ArrayMesh:
++	if meshes.has("cable"): return meshes.cable
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(48):
++		for side: int in range(10):
++			var points: Array[Vector3] = []
++			var uv: Array[Vector2] = []
++			for cell: Vector2i in [Vector2i(side,index),Vector2i(side+1,index),Vector2i(side+1,index+1),Vector2i(side,index+1)]:
++				var angle: float = float(cell.x)*TAU/10.0
++				points.append(Vector3(cos(angle)*0.025,float(cell.y)/48.0,sin(angle)*0.025))
++				uv.append(Vector2(float(cell.x)/10.0,float(cell.y)/48.0))
++			Base._face(tool,points,Vector3(cos(float(side)*TAU/10.0),0,sin(float(side)*TAU/10.0)),uv)
++	tool.index()
++	meshes.cable = tool.commit()
++	return meshes.cable
++
++static func ribbon() -> ArrayMesh:
++	if meshes.has("ribbon"): return meshes.ribbon
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	Base._face(tool,[Vector3(-0.5,0,0),Vector3(0.5,0,0),Vector3(0.5,1,0),Vector3(-0.5,1,0)],Vector3.BACK,[Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN])
++	meshes.ribbon = tool.commit()
++	return meshes.ribbon
++
++static func mist() -> ArrayMesh:
++	if meshes.has("mist"): return meshes.mist
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for band: int in range(8):
++		for side: int in range(32):
++			var points: Array[Vector3] = []
++			var uv: Array[Vector2] = []
++			for cell: Vector2i in [Vector2i(side,band),Vector2i(side+1,band),Vector2i(side+1,band+1),Vector2i(side,band+1)]:
++				var angle: float = float(cell.x)*TAU/32.0
++				var along: float = float(cell.y)/8.0
++				points.append(Vector3(cos(angle)*along,along,sin(angle)*along))
++				uv.append(Vector2(float(cell.x)/32.0,along))
++			Base._face(tool,points,Vector3(cos(float(side)*TAU/32.0),0,sin(float(side)*TAU/32.0)),uv)
++	tool.index()
++	meshes.mist = tool.commit()
++	return meshes.mist
+diff --git a/game/ui/garage_hose_geometry.gd.uid b/game/ui/garage_hose_geometry.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_geometry.gd.uid
+@@ -0,0 +1 @@
++uid://d12clrv3bdfec
+diff --git a/game/ui/garage_hose_cable.gdshader b/game/ui/garage_hose_cable.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_cable.gdshader
+@@ -0,0 +1,19 @@
++shader_type spatial;
++render_mode diffuse_burley, specular_schlick_ggx;
++uniform vec3 cable_points[49];
++uniform vec4 pigment : source_color = vec4(0.12,0.23,0.24,1.0);
++void vertex() {
++	int point = clamp(int(round(UV.y*48.0)),0,48);
++	vec3 direction = normalize(cable_points[min(point+1,48)]-cable_points[max(point-1,0)]);
++	vec3 axis = abs(direction.y)>0.9 ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0);
++	vec3 side = normalize(cross(direction,axis));
++	vec3 up = cross(side,direction);
++	vec3 radial = side*cos(UV.x*6.2831853)+up*sin(UV.x*6.2831853);
++	VERTEX = cable_points[point]+radial*0.025;
++	NORMAL = radial;
++}
++void fragment() {
++	ALBEDO = pigment.rgb;
++	ROUGHNESS = 0.79;
++	SPECULAR = 0.25;
++}
+diff --git a/game/ui/garage_hose_cable.gdshader.uid b/game/ui/garage_hose_cable.gdshader.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_cable.gdshader.uid
+@@ -0,0 +1 @@
++uid://enib7inkwds2
+diff --git a/game/ui/garage_hose_spray.gdshader b/game/ui/garage_hose_spray.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_spray.gdshader
+@@ -0,0 +1,17 @@
++shader_type spatial;
++render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
++uniform float flow = 0.0;
++uniform bool mist = false;
++varying vec4 spray;
++void vertex() {
++	spray = INSTANCE_CUSTOM;
++	if (!mist) { VERTEX.x *= mix(0.10,1.0,UV.y); }
++}
++void fragment() {
++	float edge = 1.0-smoothstep(0.12,0.50,abs(UV.x-0.5));
++	float threads = pow(0.5+0.5*sin(UV.x*31.416+spray.x*17.0),3.0);
++	float travel = 0.62+0.38*sin(UV.y*84.0-flow*29.0+spray.x*11.0);
++	float end_fade = 1.0-smoothstep(0.86,1.0,UV.y);
++	ALBEDO = mix(vec3(0.58,0.76,0.81),vec3(0.93,0.98,0.98),threads);
++	ALPHA = (mist ? (0.045+0.08*threads) : edge*(0.10+0.38*threads))*end_fade*travel;
++}
+diff --git a/game/ui/garage_hose_spray.gdshader.uid b/game/ui/garage_hose_spray.gdshader.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_hose_spray.gdshader.uid
+@@ -0,0 +1 @@
++uid://dtb3vixwkanu7
+diff --git a/game/tests/test_garage_hose_refinement.gd b/game/tests/test_garage_hose_refinement.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_hose_refinement.gd
+@@ -0,0 +1,185 @@
++extends SceneTree
++## Broad surface-only rinsing, connected endpoints, actual visible spray and motion.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/hose-spray-refinement-2026-10-24"
++var page: GaragePage
++var metrics: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	while page._menu_motion != null: await frame()
++	for tick: int in range(6): await frame()
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	for tick: int in range(4): await frame()
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func mathematical_coverage() -> void:
++	var effect := VehicleWeathering.new()
++	var initial: Dictionary = effect.snapshot()
++	effect.restore(initial)
++	effect.bounds = AABB(Vector3(-2,-2,-2),Vector3(4,4,4))
++	var point: Vector3 = effect.bounds.position+effect.bounds.size*Vector3(7,10,7)/15.0
++	effect.wash(point,0.8,"hose",Vector3.UP)
++	var broad: PackedByteArray = effect.slow_wash_image.get_data()
++	check(broad[10*256+7*16+10] > 0,"new fan cleans tangential cells 0.8 model-units from the aim")
++	check(broad[12*256+7*16+7] == 0,"wide fan never penetrates to the opposite surface")
++	check(broad[10*256+7*16+12] == 0,"spray still stops outside its footprint")
++	var primary: PackedByteArray = effect.wash_image.get_data()
++	check(primary[10*256+7*16+7] <= 6,"large spray retains very slow heavy-grime rate")
++	effect.restore(initial)
++	effect.begin_wash_batch()
++	for tick: int in range(80): effect.wash(point,0.01,"hose",Vector3.UP)
++	effect.end_wash_batch()
++	check(effect.slow_wash_image.get_data() == broad and effect.wash_image.get_data() == primary,"split surface spray preserves exact work in both layers")
++	var normal_miss: Dictionary = effect.snapshot()
++	effect.wash(point+Vector3.UP*0.8,0.8,"hose",Vector3.UP)
++	check(effect.slow_wash_image.get_data()[10*256+7*16+7] == broad[10*256+7*16+7],"depth fence protects panels behind the aimed plane")
++	check(normal_miss != effect.snapshot(),"depth-fenced spray still works on its own plane")
++
++func mouse(view: CarShowroom, pixel: Vector2, pressed: bool) -> void:
++	var event := InputEventMouseButton.new()
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.position = pixel
++	event.pressed = pressed
++	view.gui_input.emit(event)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameSoundtrack.instance().music_enabled = false
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	mathematical_coverage()
++	var folder: String = "user://hose_refinement_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var records := LocalRecords.new(folder.path_join("records.json"))
++	root.size = Vector2i(1280,720)
++	VehicleCatalog.selected = "compact"
++	page = GaragePage.new()
++	page.records = records
++	page.theme = MenuStyle.theme()
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	page._show_section("care")
++	await settle()
++	page._select_wash_tool("hose")
++	var view: CarShowroom = page.showroom
++	view.set_process(false)
++	view.yaw = 0.3
++	view.elevation = 0.93
++	view.set_zoom(0.95)
++	var point := Vector3(0,1.44,0.1)
++	var pixel: Vector2 = view.camera.unproject_position(view.car.body.global_transform*point)*view.size/Vector2(view.showroom_viewport.size)
++	mouse(view,pixel,true)
++	view._process(0.05)
++	var effect: Node3D = view.wash_effect
++	var rig: Node3D = effect.hose
++	var resources: Array = [rig.cable.mesh,rig.spray.multimesh,rig.mist.mesh]
++	var child_count: int = rig.get_child_count()
++	check(rig.reel.visible and rig.cable.visible,"active spray has a reel and a continuous hose")
++	check(rig.cable_points.size() == 49,"one fixed continuous tube path")
++	var start: Vector3 = rig.nozzle.global_transform*Vector3(0,0,0.1)
++	var end: Vector3 = rig.reel.global_transform*rig.REEL_OUTLET
++	check((rig.cable_points[0] as Vector3).distance_to(rig.to_local(start)) < 0.0001,"hose starts inside nozzle coupling")
++	check((rig.cable_points[48] as Vector3).distance_to(rig.to_local(end)) < 0.0001,"hose finishes at the fixed reel outlet")
++	var reel_pose: Transform3D = rig.reel.global_transform
++	var water_on := PackedByteArray()
++	if DisplayServer.get_name() != "headless":
++		await capture("wide-spray-roof")
++		water_on = view.showroom_viewport.get_texture().get_image().get_data()
++		rig.spray.hide()
++		rig.mist.hide()
++		effect.water.hide()
++		view.invalidate_render()
++		for tick: int in range(5): await frame()
++		var dry: Image = view.showroom_viewport.get_texture().get_image()
++		var wet := Image.create_from_data(dry.get_width(),dry.get_height(),false,dry.get_format(),water_on)
++		var changed: int = 0
++		var lower := Vector2i(dry.get_width(),dry.get_height())
++		var upper := Vector2i.ZERO
++		for y: int in range(dry.get_height()):
++			for x: int in range(dry.get_width()):
++				var a: Color = dry.get_pixel(x,y)
++				var b: Color = wet.get_pixel(x,y)
++				if maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b))) < 0.025: continue
++				changed += 1
++				lower = lower.min(Vector2i(x,y))
++				upper = upper.max(Vector2i(x,y))
++		check(changed > 300,"spray changes a readable number of actual native pixels")
++		check(upper.x-lower.x > 80 and upper.y-lower.y > 50,"actual water spreads across a broad projected area")
++		metrics.append({"water_pixels_over_2_5_percent":changed,"water_pixel_span":upper-lower})
++		rig.spray.show()
++		rig.mist.show()
++		effect.water.show()
++	var before: PackedByteArray = water_on
++	for tick: int in range(12):
++		view._process(1.0/30.0)
++		await capture("motion-%02d" % tick)
++	check(rig.get_child_count() == child_count and [rig.cable.mesh,rig.spray.multimesh,rig.mist.mesh] == resources,"motion retains original meshes and bounded pools")
++	if DisplayServer.get_name() != "headless":
++		check(view.showroom_viewport.get_texture().get_image().get_data() != before,"actual native water animates while nozzle stays aimed")
++	mouse(view,pixel,false)
++	view._process(0.05)
++	check(not rig.visible and not rig.spray.is_visible_in_tree() and not rig.mist.is_visible_in_tree(),"release stops all spray layers and connected hose")
++	view.elevation = 0.42
++	view.yaw = -0.75
++	view.set_zoom(1.05)
++	pixel = view.camera.unproject_position(view.car.body.global_transform*Vector3(-0.5,0.88,-1.35))*view.size/Vector2(view.showroom_viewport.size)
++	mouse(view,pixel,true)
++	for tick: int in range(8): view._process(1.0/30.0)
++	check(rig.reel.global_transform == reel_pose,"reel stays anchored when aiming and orbiting")
++	check(rig.cable_points[0].distance_to(rig.to_local(rig.nozzle.global_transform*Vector3(0,0,0.1))) < 0.0001,"moving nozzle retains its hose connection")
++	await capture("wide-spray-ordinary-view")
++	mouse(view,pixel,false)
++	page._select_wash_tool("mitt")
++	check(not rig.visible,"switching back to mitt clears the complete hose rig")
++	page._show_section("cars")
++	await settle()
++	check(not rig.visible and not view.wash_mode,"navigation clears the complete rig")
++	page.queue_free()
++	await frame()
++	check(not is_instance_valid(rig),"teardown frees hose, reel, water and cable together")
++	for id: String in VehicleCatalog.IDS:
++		var other := CarShowroom.new()
++		other.garage_mode = true
++		other.vehicle_id = id
++		other.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++		root.add_child(other)
++		other.set_process(false)
++		other.yaw = -PI*0.5
++		other.elevation = 0.45
++		other.set_zoom(1.1)
++		for tick: int in range(4): await frame()
++		var target: Vector3 = other.car.body.global_transform*other.weathering.bounds.get_center()
++		var hit: Vector2 = other.camera.unproject_position(target)*other.size/Vector2(other.showroom_viewport.size)
++		other.set_wash_tool("hose")
++		other.set_wash_mode(true)
++		mouse(other,hit,true)
++		other._process(0.05)
++		check(other.wash_effect.hose != null and other.wash_effect.hose.visible,id+" actual side contact shows connected hose and broad fan")
++		if other.wash_effect.hose != null:
++			var car_rig: Node3D = other.wash_effect.hose
++			check(car_rig.cable_points[0].distance_to(car_rig.to_local(car_rig.nozzle.global_transform*Vector3(0,0,0.1))) < 0.0001,id+" moving end stays coupled")
++			check(car_rig.cable_points[48].distance_to(car_rig.to_local(car_rig.reel.global_transform*car_rig.REEL_OUTLET)) < 0.0001,id+" fixed end stays coupled")
++		other.set_wash_mode(false)
++		check(not other.wash_effect.visible,id+" Done clears the complete rig")
++		other.queue_free()
++		await frame()
++	FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"\t"))
++	print("Garage hose refinement: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_hose_refinement.gd.uid b/game/tests/test_garage_hose_refinement.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_hose_refinement.gd.uid
+@@ -0,0 +1 @@
++uid://cjrhtsbusilye
+diff --git a/docs/GARAGE_HOSE_SPRAY_2026_10_24.md b/docs/GARAGE_HOSE_SPRAY_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_HOSE_SPRAY_2026_10_24.md
+@@ -0,0 +1,48 @@
++# Connected hose and wider spray — 2026-10-24
++
++The owner rejected the short detached hose tail and sparse water animation. The hose now connects the moving spray nozzle to a fixed, coiled reel beside the car. A translucent spreading water cone, flowing filaments and distributed splash droplets replace the twelve isolated thin streaks. The actual rinse covers a larger panel area.
++
++| Requirement | Result |
++| --- | --- |
++| HSR01 | A continuous rubber hose starts inside the nozzle coupling and ends at the reel outlet. The reel stays anchored when aiming or orbiting. |
++| HSR02 | Water spreads from the nozzle into a broad cone, with twelve flowing filaments, soft mist and the retained 32-droplet pool distributed across the footprint. |
++| HSR03 | Rinse radius increases from 0.72 to 1.08 model units: 50% wider and 2.25 times the nominal surface area. A 0.24-unit depth fence follows the picked panel normal, protecting the opposite side. |
++| R01 | Fine-film rate 1.60, heavy-grime rate 0.025, mitt rate/radius, local masks/save format, appearance, camera, grades, achievements and canonical driving remain. |
++| Q01 | Verify both hose ends, real native spray visibility/motion, all five cars, surface depth, existing washing and both desktop renderers. Preserve concurrent work. |
++
++The reel and nozzle use original shared geometry. A single reusable 960-triangle tube uses 49 path points; the shader places its rings along the current route without rebuilding meshes. The tube routes toward the clear side of the car and down to the reel, with a floor clamp. The nozzle stays above the deck even when aiming low. Its fixed reel and both moving/fixed endpoints are checked on actual side contacts for every car. Hidden, released, cancelled or finished washing clears the entire rig through the existing lifecycle.
++
++The spray uses two shader materials: flowing surface ribbons and a soft transparent outer cone. Both stop with the held contact. Twelve filament instances and the original 32 splash slots remain fixed. The spray shares the existing room/car reflection layers. This adds original game-native geometry and shaders; no generated images, remote service, audio asset or runtime dependency is introduced. Uniform-array use follows the [Godot shader language documentation](https://docs.godotengine.org/en/4.3/tutorials/shaders/shader_reference/shading_language.html#uniforms).
++
++The cleaning path transforms the actual picked world normal into wash-volume coordinates. Hose work uses a broad tangential radius and shallow normal depth; the mitt retains its original arithmetic. The normal and volume bounds also drive the visual footprint and hose route. Existing two/three-argument calls remain supported. Existing local condition amounts and both wash volumes persist in their original format.
++
++Changed existing runtime files are `game/ui/car_showroom.gd`, `game/ui/garage_wash_effect.gd`, `game/ui/garage_wash_geometry.gd` and `game/vehicle/vehicle_weathering.gd`. New runtime files are `game/ui/garage_hose_rig.gd`, `game/ui/garage_hose_geometry.gd`, `game/ui/garage_hose_cable.gdshader` and `game/ui/garage_hose_spray.gdshader`, with their UIDs. `game/tests/test_garage_hose_refinement.gd` adds focused checks and captures. Repository status notes, this report and the scoped evidence/checkpoint complete the slice.
++
++The original hose report remains a historical record of the first implementation; this revision supersedes its detached-tail visuals and 0.72 radius.
++
++Actual validation results are recorded in [report.json](evidence/hose-spray-refinement-2026-10-24/report.json), with expanded command receipts and full console logs. The focused refinement has passed 38 headless checks and 55 checks on each native desktop renderer. Existing scrubbing passes 501 checks and all-car exterior boundaries pass 45. Final broader-suite results are retained in the report.
++
++The native visibility control holds the car, camera, nozzle, reel and cable still, then hides only the water layers. On the captured roof view, 6,043 Compatibility pixels and 13,901 desktop Mobile pixels change by at least 2.5% in a colour channel. Water, droplets and their reflections span 204 × 153 and 208 × 285 pixels respectively. These are desktop readability checks, not measured physical spray coverage or phone performance. Twelve successive native frames verify flowing water without moving the nozzle; [the local preview](evidence/hose-spray-refinement-2026-10-24/preview.html) replays those exact frames in 1/30-second animation steps.
++
++The initial comparison retained a connected reel with insufficiently clear strands; the final mist/cone and wider flowing ribbons supersede it. An initial mathematical fixture omitted `restore()`, leaving fractional work arrays uninitialized; the fixture was corrected and its failure log retained. One existing-suite launch encountered a concurrently edited recording cache's temporary `PackedByteArray.sha256_text` parser error. The unrelated source was preserved; its owner corrected it before the final checks. No test assertion was removed or weakened.
++
++Commands use the pinned `scripts/dev.ps1` entry point with isolated workspace APPDATA via the retained runner:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_hose_refinement -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_hose_refinement -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_hose_refinement -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_hose -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_hose -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_gentle_scrubbing
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_garage_wash_surfaces
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_car_wash -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 -Test test_script_parse
++python docs/evidence/hose-spray-refinement-2026-10-24/checkpoint.py
++```
++
++![Ordinary Garage view with connected reel and broad water fan](evidence/hose-spray-refinement-2026-10-24/test_garage_hose_refinement-gl_compatibility/wide-spray-ordinary-view.png)
++
++![Overhead roof rinse](evidence/hose-spray-refinement-2026-10-24/test_garage_hose_refinement-mobile/wide-spray-roof.png)
++
++Restart the desktop game to load the revision. Owner spray/hose appearance and washing-effort acceptance remain, as do physical-device touch, fragment cost and thermal checks. No phone/tablet attachment check or device test, APK/export/install, owner-process restart, backend/account mutation, purchase or deployment was performed. Earlier baseline-confirmed restart-test limitations remain documented in the original hose report. Concurrent source and document work is preserved.
+diff --git a/docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1 b/docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1
+@@ -0,0 +1,18 @@
++param(
++    [string]$Test = 'test_garage_hose',
++    [ValidateSet('headless','gl_compatibility','mobile')][string]$Mode = 'headless'
++)
++$ErrorActionPreference = 'Stop'
++$hoseRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$hoseOutput = Join-Path $PSScriptRoot "$Test-$Mode"
++New-Item -ItemType Directory -Force -Path $hoseOutput | Out-Null
++$env:APPDATA = Join-Path $hoseRepo "build/hose-spray-refinement-2026-10-24/$Test-$Mode/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$hoseArguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $hoseRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$hoseOutput")
++if ($Mode -ne 'headless') { $hoseArguments += @('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'})) }
++$hoseStarted = [DateTime]::UtcNow
++& powershell @hoseArguments *> (Join-Path $hoseOutput 'console.log')
++$hoseCode = $LASTEXITCODE
++@{command = 'powershell'; arguments = $hoseArguments; exit_code = $hoseCode; started_utc = $hoseStarted.ToString('o'); duration_seconds = ([DateTime]::UtcNow-$hoseStarted).TotalSeconds} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $hoseOutput 'command.json')
++Get-Content (Join-Path $hoseOutput 'console.log') -Tail 18
++exit $hoseCode
+diff --git a/docs/evidence/hose-spray-refinement-2026-10-24/preview.html b/docs/evidence/hose-spray-refinement-2026-10-24/preview.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/hose-spray-refinement-2026-10-24/preview.html
+@@ -0,0 +1,20 @@
++<!doctype html>
++<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Garage hose and broad spray — native previews</title>
++<style>body{margin:24px auto;max-width:1200px;padding:0 18px;background:#101e29;color:#f1f4f3;font:17px/1.5 system-ui}button,select{padding:10px 18px;font:inherit}img{display:block;max-width:100%;height:auto;margin:18px 0}p{color:#a4bac7}</style>
++<h1>Connected hose and broader water spray</h1>
++<p>Actual native Garage captures. The loop advances the water in 1/30-second steps with the camera and nozzle held still; it is a visual preview, not a frame-rate measurement.</p>
++<select id="renderer" aria-label="Renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Mobile / Vulkan on desktop</option></select>
++<button id="play">Pause</button>
++<img id="motion" alt="Animated broad water fan and hose connected to its reel">
++<p>The wider rinse has a shallow surface depth and retains the slow removal of heavier dirt.</p>
++<img id="ordinary" alt="Connected hose reel and wide spray in the ordinary Garage view">
++<script>
++let playing=true,frames=[],start=performance.now();
++const renderer=document.getElementById('renderer'),motion=document.getElementById('motion'),ordinary=document.getElementById('ordinary');
++function prepare(){const base='test_garage_hose_refinement-'+renderer.value+'/';frames=Array.from({length:12},(_,index)=>{const image=new Image();image.src=base+'motion-'+String(index).padStart(2,'0')+'.png';return image});ordinary.src=base+'wide-spray-ordinary-view.png';motion.src=frames[0].src;start=performance.now()}
++renderer.addEventListener('change',prepare);
++document.getElementById('play').addEventListener('click',event=>{playing=!playing;event.target.textContent=playing?'Pause':'Play'});
++function tick(now){if(playing&&frames.length){const frame=frames[Math.floor((now-start)/33.333)%frames.length];if(frame.complete)motion.src=frame.src}requestAnimationFrame(tick)}
++prepare();requestAnimationFrame(tick);
++</script></html>
+diff --git a/docs/evidence/hose-spray-refinement-2026-10-24/doc-prefixes.json b/docs/evidence/hose-spray-refinement-2026-10-24/doc-prefixes.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/hose-spray-refinement-2026-10-24/doc-prefixes.json
+@@ -0,0 +1,6 @@
++{
++  "AGENTS.md": "## Connected washing hose and broad spray override (2026-10-24)\n2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.\n\n",
++  "DEVELOPMENT_STATUS.md": "2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.\n\n",
++  "docs/PHASE_0_PLAN.md": "2026-10-24 HSR01-HSR03/R01/Q01: Owner rejects the detached hose tail and sparse water. A continuous 49-point hose now connects the nozzle to a fixed coiled reel; a broad translucent cone,12 flowing filaments and distributed32-slot splashes animate water. Rinse radius0.72 to1.08 gives2.25x nominal surface area, with actual picked-normal depth0.24 protecting the opposite side. Film/heavy-grime/mitt rates, local masks/save format, appearance, camera and canonical driving remain. Refinement38headless/55Compatibility/55desktopMobile, existing hose84 per desktop renderer, scrubbing501/surfaces45, native full washing/App1402 and parser1076 pass. Initial fixture and concurrent recording-cache parser interruptions are retained. Commands, all-car/native motion views, limits and scoped checkpoint: docs/GARAGE_HOSE_SPRAY_2026_10_24.md and docs/evidence/hose-spray-refinement-2026-10-24/report.json. Client restart and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.\n\n",
++  "docs/GARAGE_HOSE_2026_10_24.md": "> Owner follow-up: the connected reel, broader water animation and 1.08 rinse radius in [Garage hose spray refinement](GARAGE_HOSE_SPRAY_2026_10_24.md) supersede the first implementation below.\n\n"
++}
+diff --git a/docs/evidence/hose-spray-refinement-2026-10-24/checkpoint.py b/docs/evidence/hose-spray-refinement-2026-10-24/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/hose-spray-refinement-2026-10-24/checkpoint.py
+@@ -0,0 +1,82 @@
++"""Capture only the owner-requested connected hose and broad spray follow-up."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++RUNTIME = ["game/ui/car_showroom.gd", "game/ui/garage_wash_effect.gd", "game/ui/garage_wash_geometry.gd", "game/vehicle/vehicle_weathering.gd"]
++NEW = [
++    "game/ui/garage_hose_rig.gd", "game/ui/garage_hose_rig.gd.uid",
++    "game/ui/garage_hose_geometry.gd", "game/ui/garage_hose_geometry.gd.uid",
++    "game/ui/garage_hose_cable.gdshader", "game/ui/garage_hose_cable.gdshader.uid",
++    "game/ui/garage_hose_spray.gdshader", "game/ui/garage_hose_spray.gdshader.uid",
++    "game/tests/test_garage_hose_refinement.gd", "game/tests/test_garage_hose_refinement.gd.uid",
++    "docs/GARAGE_HOSE_SPRAY_2026_10_24.md",
++    "docs/evidence/hose-spray-refinement-2026-10-24/run_validation.ps1",
++    "docs/evidence/hose-spray-refinement-2026-10-24/preview.html",
++    "docs/evidence/hose-spray-refinement-2026-10-24/doc-prefixes.json",
++    "docs/evidence/hose-spray-refinement-2026-10-24/checkpoint.py",
++]
++
++
++def read(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig").replace("\r\n", "\n")
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++prefixes = json.loads(read(OUT / "doc-prefixes.json"))
++before = {name: read(OUT / "before" / name) for name in RUNTIME}
++for name, prefix in prefixes.items():
++    content = read(ROOT / name)
++    assert content.count(prefix) == 1, name
++    before[name] = content.replace(prefix, "", 1)
++patch = []
++for name in [*before, *NEW]:
++    previous, current = before.get(name, ""), read(ROOT / name)
++    if previous == current:
++        continue
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    if name not in before:
++        patch.append("new file mode 100644\n")
++    for line in difflib.unified_diff(previous.splitlines(True), current.splitlines(True), fromfile=f"a/{name}" if name in before else "/dev/null", tofile=f"b/{name}"):
++        patch.append(line if line.endswith("\n") else line+"\n\\ No newline at end of file\n")
++(OUT / "checkpoint.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++checked = subprocess.run(["git", "apply", "--reverse", "--check", str(OUT / "checkpoint.patch")], cwd=ROOT, text=True, capture_output=True)
++assert checked.returncode == 0, checked.stderr
++
++validation = []
++for receipt in sorted(OUT.glob("*/command.json")):
++    item = json.loads(read(receipt))
++    item["name"] = receipt.parent.name
++    item["result"] = [line for line in read(receipt.parent / "console.log").splitlines() if re.search(r"\d+ (?:checks|scripts), \d+ failures", line)]
++    validation.append(item)
++report = {
++    "date": "2026-10-24", "requirements": ["HSR01", "HSR02", "HSR03", "R01", "Q01"],
++    "engine": read(ROOT / "godot-version.txt").strip(),
++    "changed_files": [*RUNTIME, *prefixes, *NEW],
++    "source_sha256": {name: sha(ROOT / name) for name in [*RUNTIME, *prefixes, *NEW]},
++    "before_sha256": {name: sha(OUT / "before" / name) for name in RUNTIME},
++    "checkpoint_sha256": sha(OUT / "checkpoint.patch"), "checkpoint_reverse_check": "passed",
++    "checkpoint_scope": "Only this follow-up: exact task-start runtime copies and exact added documentation prefixes. Earlier hose implementation and concurrent changes excluded. No staging or commit.",
++    "tuning": {"previous_radius": 0.72, "radius": 1.08, "nominal_surface_area_ratio": 2.25, "normal_depth": 0.24, "film_rate": 1.6, "primary_grime_rate": 0.025, "tube_points": 49, "tube_triangles": 960, "filaments": 12, "droplet_slots": 32},
++    "validation": validation,
++    "water_visibility_controls": {folder.name: json.loads(read(folder / "metrics.json")) for folder in sorted(OUT.glob("test_garage_hose_refinement-*")) if (folder / "metrics.json").is_file()},
++    "native_images_sha256": {str(p.relative_to(ROOT)).replace("\\", "/"): sha(p) for p in sorted(OUT.glob("test*/*.png"))},
++    "limitations": [
++        "Owner hose/spray appearance and washing-effort acceptance remains; client reload required.",
++        "No phone/tablet attachment check or device test, APK/export/install, owner-process restart, live backend/account mutation, purchase or deployment.",
++        "Native desktop pixel visibility is not phone fragment-cost, thermal or FPS certification.",
++        "Earlier baseline-confirmed animation restart assertion remains documented in the first hose slice; not rerun or changed here.",
++        "Initial fixture initialization error, rejected sparse-strand visual and concurrent recording-cache parser interruption retained. No existing assertion was relaxed.",
++    ],
++}
++(OUT / "report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8",newline="\n")
++print(json.dumps({"checkpoint_reverse_check":"passed", "results": {v["name"]: v["result"] for v in validation}},indent=2))

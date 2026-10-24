@@ -1,0 +1,21 @@
+# Weekly Rivalry track panel, 2026-10-24
+
+The owner requested the supplied track-panel reference and explicitly removed the persistent row highlight. This supersedes the previous selected-row fill: a track now receives a filled highlight only while pressed.
+
+| Requirement | Result |
+| --- | --- |
+| RTR01: press-only feedback | Normal, hover and released rows share a transparent fill and bottom divider regardless of remembered selection. Pressing adds a temporary blue fill; release removes it. Keyboard focus remembers the intended track and outlines its small thumbnail number without filling the row. Existing whole-row detail navigation remains. |
+| RTR02: reference hierarchy | Wider numbered native scenery thumbnails, uppercase track titles, aligned angled place badges, a quiet vertical rule, larger right-aligned times, green leading status and gold time-to-lead status. All five rows stay visible with the existing six-unit right inset. |
+| RTR03: useful weekly context | A verified lead count and five per-track segments accompany the independent completion count. The hint describes the actual lead count. Next target is a larger 16-unit badge between the name and place columns, marking the playable track with the smallest positive verified gap to the driver immediately ahead. Its tooltip gives that gap. Unplayed, unavailable and pending-verification tracks are excluded; a full sweep has no target. |
+
+The new context reads the existing `WeeklyRivalry.track_summary()` result. Pending local times retain their row's Verifying label but grant no new rank, lead or completion. When some tracks are unplayed, the time heading says BEST / LEADER so an existing leader-time fallback is not mislabeled as the player's best. Confirmed receipt updates refresh retained controls through the existing score-update path. No new request, scoring change, account mutation or automatic race start is added.
+
+`game/ui/weekly_rivalry_page.gd` builds the panel and handles its live presentation. `game/ui/rivalry_track_accents.gd` draws only the small native rank/progress polygons, with no animation or added viewport. The existing Label named RivalryStatusMessage remains available for exact service-error display, parked-page recovery and retained-menu checks; the styled hint is separate and hides during errors. Accepted podium background sources are byte-for-byte unchanged, and the podium/footer assertions remain.
+
+`game/tests/test_rivalry_view_polish.gd` replaces only the superseded selected-fill assertions and adds actual pointer down/up/release checks, keyboard focus behavior, ordered thumbnail numbers, verified lead/completion states, target eligibility, pending-proof exclusion and full-sweep handling. A distinguishing case has a two-second gap to first place on one track and a seven-second gap on another, but a 0.1-second gap to the next driver on the latter: that latter track is the target. It also checks badge readability, placement between name/place and full reference-name visibility. The car, score, footer, clipping, live-refresh and track-padding checks remain. Native captures include the actual pressed state and the neutral released view at 960x540, 1280x720 and 1600x720. The initial layout passed; its log is retained before the focus-cue/badge refinement and owner's nearest-position clarification.
+
+Commands, durations, outcomes, native before/after, source hashes and the task-only checkpoint are in `docs/evidence/rivalry-tracks-reference-2026-10-24/`. Checks run through the pinned Godot entry point with isolated workspace user data. Mobile means the desktop Vulkan renderer.
+
+Client reload and owner appearance/interaction acceptance remain. No phone/tablet attachment check or physical-device test, APK, live backend/account mutation, purchase, deployment or owner-process restart was performed. Concurrent work is preserved. The earlier unrelated detail-count test limitation remains documented in the preceding task; its code and assertion are unchanged.
+
+Final checks: 352 headless, 372 Compatibility and 372 desktop Mobile focused checks pass. Full Weekly Rivalry interactions1145, verified-time/receipt checks18, actual parked-page/pointer input57 and parser1117 pass. The accepted podium function and both background files are unchanged.

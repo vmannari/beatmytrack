@@ -1,0 +1,556 @@
+{
+  "requirements": [
+    "SEC-R2",
+    "SEC09",
+    "SEC10",
+    "SEC01",
+    "SEC02",
+    "SEC05",
+    "R01",
+    "Q01"
+  ],
+  "completed_at": "2026-10-24T13:31:13.296456+00:00",
+  "scope": "Second working-tree security pass, frozen deployed-release comparison and read-only cloud inspection",
+  "new_findings": [
+    {
+      "id": "SEC09",
+      "severity": "medium",
+      "title": "Incomplete HTTP headers bypass application receive deadlines and exhaust the default server connection allowance",
+      "sources": [
+        "backend/Dockerfile:41",
+        "backend/deploy/compose.yaml:95",
+        "backend/bmt_backend/middleware.py:518"
+      ],
+      "precondition": "A network path can hold incomplete HTTP headers at Uvicorn; cloud edge exploitability was not tested",
+      "evidence": {
+        "scope": "disposable loopback Uvicorn only; no live attack",
+        "held_connections": 23,
+        "baseline": 200,
+        "immediate_health": [
+          503,
+          503,
+          503
+        ],
+        "after_6_2_seconds_health": [
+          503,
+          503,
+          503
+        ],
+        "ordinary_auth": 503,
+        "released_health": 200,
+        "configured_limit_concurrency": 24,
+        "configured_keep_alive_seconds": 5
+      }
+    },
+    {
+      "id": "SEC10",
+      "severity": "medium",
+      "title": "Production startup accepts unexpected schema CREATE and staff UPDATE grants",
+      "sources": [
+        "backend/bmt_backend/database_privileges.py:196",
+        "backend/bmt_backend/database_privileges.py:220"
+      ],
+      "precondition": "Privileged grant/configuration drift; not an unauthenticated way to grant database permissions",
+      "evidence": {
+        "disposable_postgresql_only": true,
+        "baseline_restricted_worker_passed": true,
+        "startup_accepted_unexpected_schema_create": true,
+        "worker_created_table": true,
+        "startup_accepted_unexpected_staff_update": true,
+        "worker_reenabled_fictional_revoked_staff": true
+      }
+    }
+  ],
+  "retained_findings": {
+    "SEC01": "Approved lightweight trajectory trust limitation confirmed with current 879-tick synthetic proof",
+    "SEC02": "Caller-controlled incident claim still changes the clean result",
+    "SEC05": "Normal valid bearer still initiates permanent deletion without fresh identity proof"
+  },
+  "fixed_findings_rechecked": [
+    "SEC03",
+    "SEC04",
+    "SEC06 application body phase",
+    "SEC07",
+    "SEC08 configured grants and cloud credential separation"
+  ],
+  "backend": {
+    "tests": 184,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 183
+  },
+  "backend_deselected": 54,
+  "daily_current_fixture_recheck": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 1
+  },
+  "retained_risk_probes": {
+    "tests": 6,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 6
+  },
+  "native": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "results": [
+      {
+        "test": "test_security_ownership",
+        "exit_code": 0,
+        "timed_out": false,
+        "seconds": 1.227,
+        "summaries": [
+          "SECURITY_OWNERSHIP: 9 checks, 0 failures"
+        ],
+        "failures": [],
+        "script_errors": 0
+      },
+      {
+        "test": "test_session_rotation",
+        "exit_code": 0,
+        "timed_out": false,
+        "seconds": 2.802,
+        "summaries": [
+          "SESSION_ROTATION: 17 checks, 0 failures"
+        ],
+        "failures": [],
+        "script_errors": 0
+      },
+      {
+        "test": "test_backend_exception_recovery",
+        "exit_code": 1,
+        "timed_out": true,
+        "seconds": 50.205,
+        "summaries": [],
+        "failures": [
+          "FAIL: mixed API transport recovers"
+        ],
+        "script_errors": 1
+      },
+      {
+        "test": "test_draft_privacy",
+        "exit_code": 1,
+        "timed_out": false,
+        "seconds": 9.935,
+        "summaries": [
+          "DRAFT_PRIVACY: 17 checks, 3 failures"
+        ],
+        "failures": [
+          "FAIL: draft browser shows only Bob work",
+          "FAIL: draft browser shows only Alice work",
+          "FAIL: draft browser shows only Guest work"
+        ],
+        "script_errors": 0
+      },
+      {
+        "test": "test_cost_downloads",
+        "exit_code": 0,
+        "timed_out": false,
+        "seconds": 4.34,
+        "summaries": [
+          "Cost downloads: 120 checks, 0 failures"
+        ],
+        "failures": [],
+        "script_errors": 0
+      },
+      {
+        "test": "test_account_privacy",
+        "exit_code": 0,
+        "timed_out": false,
+        "seconds": 3.379,
+        "summaries": [
+          "Account privacy: 27 checks, 0 failures"
+        ],
+        "failures": [],
+        "script_errors": 0
+      }
+    ]
+  },
+  "draft_wait_fixture": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "results": [
+      {
+        "test": "test_draft_privacy_after_scan",
+        "exit_code": 0,
+        "timed_out": false,
+        "seconds": 10.951,
+        "summaries": [
+          "DRAFT_PRIVACY: 20 checks, 0 failures"
+        ],
+        "failures": [],
+        "script_errors": 3
+      }
+    ]
+  },
+  "cloud": {
+    "scope": "read-only cloud metadata and ordinary public GETs; no secret contents, SQL, job execution or configuration change",
+    "targets": {
+      "bmt-stg-e7a444ab-api": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "development",
+          "BMT_WORKLOAD_ROLE": "api",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "true",
+          "BMT_TEST_DRIVERS_ENABLED": "true",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-worker": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "development",
+          "BMT_WORKLOAD_ROLE": "worker",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "true",
+          "BMT_TEST_DRIVERS_ENABLED": "true",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-catalog": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "production",
+          "BMT_WORKLOAD_ROLE": "operator",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "false",
+          "BMT_TEST_DRIVERS_ENABLED": "false",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-migrate": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-migrator@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "production",
+          "BMT_WORKLOAD_ROLE": "migrator",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "false",
+          "BMT_TEST_DRIVERS_ENABLED": "false",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-pace2": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "development",
+          "BMT_WORKLOAD_ROLE": "operator",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "true",
+          "BMT_TEST_DRIVERS_ENABLED": "true",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-smoke": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "production",
+          "BMT_WORKLOAD_ROLE": "operator",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "false",
+          "BMT_TEST_DRIVERS_ENABLED": "false",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      },
+      "bmt-stg-e7a444ab-studio-simulator": {
+        "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:16c22624a9bf5f1995c8315fbf1554d62dc3707826ba6a9217ff0f2d65327c0e",
+        "account": "bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+        "settings": {
+          "BMT_ENVIRONMENT": "development",
+          "BMT_WORKLOAD_ROLE": "operator",
+          "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false",
+          "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false",
+          "BMT_DEV_AUTH_ENABLED": "false",
+          "BMT_TEST_DRIVERS_ENABLED": "false",
+          "BMT_TRUSTED_PROXY_NETWORKS": null,
+          "BMT_OBJECT_PACKING_ENABLED": null
+        },
+        "administrator_variable_names": []
+      }
+    },
+    "api_traffic": [
+      {
+        "percent": 100,
+        "revisionName": "bmt-stg-e7a444ab-api-00099-ret"
+      }
+    ],
+    "api_url": "https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app",
+    "worker_instances": "1",
+    "old_service_account_disabled": true,
+    "old_secret_version_state": "DISABLED",
+    "http": {
+      "/health": {
+        "status": 200
+      },
+      "/ready": {
+        "status": 200
+      },
+      "/v1/bootstrap": {
+        "status": 200,
+        "admin_console_configured": false
+      },
+      "/admin": {
+        "status": 404
+      },
+      "/v1/admin/overview": {
+        "status": 404
+      },
+      "/v1/admin/publications": {
+        "status": 404
+      },
+      "/v1/monitor/source/control": {
+        "status": 404
+      },
+      "/v1/game-config": {
+        "status": 200,
+        "ads_permitted": false
+      }
+    },
+    "database_secret_iam": {
+      "bmt-stg-e7a444ab-api-db": [
+        {
+          "role": "roles/secretmanager.secretAccessor",
+          "members": [
+            "serviceAccount:bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+            "serviceAccount:bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "bmt-stg-e7a444ab-worker-db": [
+        {
+          "role": "roles/secretmanager.secretAccessor",
+          "members": [
+            "serviceAccount:bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "bmt-stg-e7a444ab-admin-db": [
+        {
+          "role": "roles/secretmanager.secretAccessor",
+          "members": [
+            "serviceAccount:bmt-stg-e7a444ab-migrator@beat-my-track.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "bmt-stg-e7a444ab-studio-db": []
+    }
+  },
+  "cloud_iam": {
+    "accounts": {
+      "api": "bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+      "worker": "bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com",
+      "migrator": "bmt-stg-e7a444ab-migrator@beat-my-track.iam.gserviceaccount.com",
+      "operator": "bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+      "retired": "bmt-stg-e7a444ab-runtime@beat-my-track.iam.gserviceaccount.com"
+    },
+    "project_bindings": [
+      {
+        "role": "roles/cloudsql.client",
+        "members": [
+          "serviceAccount:bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-migrator@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com"
+        ],
+        "condition": null
+      }
+    ],
+    "bucket_bindings": [
+      {
+        "role": "projects/beat-my-track/roles/bmtStge7a444abObjectDelete",
+        "members": [
+          "serviceAccount:bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com"
+        ],
+        "condition": {
+          "description": "Exclude the independent erasure journal; ordinary game object prefix only",
+          "expression": "resource.name.startsWith(\"projects/_/buckets/bmt-stg-beat-my-track-e7a444ab/objects/bmt/v1/\")",
+          "title": "bmt-ordinary-objects-e7a444ab"
+        }
+      },
+      {
+        "role": "roles/storage.objectCreator",
+        "members": [
+          "serviceAccount:bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com"
+        ],
+        "condition": null
+      },
+      {
+        "role": "roles/storage.objectUser",
+        "members": [
+          "serviceAccount:bmt-stg-e7a444ab-operator@beat-my-track.iam.gserviceaccount.com"
+        ],
+        "condition": null
+      },
+      {
+        "role": "roles/storage.objectViewer",
+        "members": [
+          "serviceAccount:bmt-stg-e7a444ab-api@beat-my-track.iam.gserviceaccount.com",
+          "serviceAccount:bmt-stg-e7a444ab-worker@beat-my-track.iam.gserviceaccount.com"
+        ],
+        "condition": null
+      }
+    ],
+    "bucket_public": false,
+    "database_version": "POSTGRES_17",
+    "sql_authorized_network_count": 0,
+    "deletion_protection": true
+  },
+  "inventory": {
+    "source_files": 599,
+    "public_route_declarations": 140,
+    "changed_since_manifest": [
+      "backend/schemas/discovery-page-v3.schema.json",
+      "backend/schemas/discovery-query-v3.schema.json",
+      "game/project.godot",
+      "scripts/bake_desert_wind_envelope.py"
+    ],
+    "secret_scan": {
+      "scope": "current Git-tracked and selected untracked source text files <=2MB, known credential formats; no ignored files/history",
+      "files": 24245,
+      "bytes": 838553068,
+      "candidates": [
+        {
+          "path": "backend/tests/test_s3_storage.py",
+          "line": 22,
+          "kind": "aws_access_key"
+        },
+        {
+          "path": "docs/evidence/backend-scalability-2026-10-05/scoped-change.patch",
+          "line": 4250,
+          "kind": "aws_access_key"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "pip_check": "No broken requirements found",
+    "advisories_checked": [
+      {
+        "url": "https://github.com/Kludex/starlette/security/advisories/GHSA-86qp-5c8j-p5mr",
+        "patched": "1.0.1",
+        "locked": "1.7.0",
+        "affected": false
+      },
+      {
+        "url": "https://github.com/Kludex/starlette/security/advisories/GHSA-82w8-qh3p-5jfq",
+        "patched": "1.3.1",
+        "locked": "1.7.0",
+        "affected": false
+      }
+    ],
+    "complete_cve_scan": false,
+    "prior_inventory_export_rejection_not_retried": true
+  },
+  "limitations": [
+    "Review only; no runtime remediation, deployment or live player mutation",
+    "Incomplete-header reproduction was loopback only, not a cloud denial-of-service test",
+    "Grant drift reproduction used disposable PostgreSQL17 schema62 plus the current grant checker; no retained database used",
+    "Broader current schema66 PostgreSQL concurrency/migration/pack/archive acceptance remains separate",
+    "Working tree is concurrent; inventory is not a frozen client release",
+    "Native exception-recovery fixture retains removed-transport expectations and times out after its missing-schema exception",
+    "Original draft test has three early assertions; separate wait fixture passes20 owner checks with3 unrelated Desert script diagnostics",
+    "No real provider/MFA/purchase/ad workflow, APK inspection/install, device attachment check or physical-device test",
+    "No complete dependency/container OS/native memory-safety audit or sustained distributed-abuse certification",
+    "Cloud staging deliberately retains development/test-driver mode; private Studio disabled; PC remains at prior release"
+  ],
+  "harness_corrections": [
+    "Initial fictional StudioStaff INSERT used a nonexistent created_at column; fixture corrected, disposable container removed in both runs",
+    "One native-runner generation command had shell quoting syntax failure before execution; replaced by a script file",
+    "Initial broad daily rollback fixture failed; current independently changed fixture includes projection readiness and passes its focused recheck"
+  ],
+  "commands": [
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_probe_20261024.py",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_cloud_20261024.py",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_pg_20261024.py",
+    "PYTHONPATH=backend python -m pytest backend/tests/{test_security_fixes,test_auth,test_browser_auth,test_appearance_sync,test_rivalry_appearance,test_resumes,test_privacy,test_cost_transport,test_packed_storage,test_cost_archives,test_cost_http,test_custom_challenge_tracks,test_discovery_daily}.py -m \"not godot\" -k \"not postgres and not canonical_three_rewinds and not additive_attempt_migration\" -q --tb=short --basetemp=build/security-second-review-2026-10-24/pytest -p no:cacheprovider --junitxml=docs/evidence/security-second-review-2026-10-24/backend-tests.xml",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_native_20261024.py",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_draft_fixture_20261024.py",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_native_20261024.py test_draft_privacy_after_scan",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_inventory_20261024.py",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 -m pip check",
+    "PYTHONPATH=backend python -m pytest docs/evidence/security-second-review-2026-10-24/test_retained_risks.py -q --tb=short --basetemp=build/security-second-review-2026-10-24/retained-risks -p no:cacheprovider --junitxml=docs/evidence/security-second-review-2026-10-24/retained-risks.xml",
+    "PYTHONPATH=backend python -m pytest backend/tests/test_discovery_daily.py -k \"rollback and sqlite\" -q --tb=short --basetemp=build/security-second-review-2026-10-24/daily-recheck -p no:cacheprovider --junitxml=docs/evidence/security-second-review-2026-10-24/daily-recheck.xml",
+    ".tools/backend-secure-venv/Scripts/python.exe -X utf8 .tools/security_second_review_iam_20261024.py"
+  ],
+  "artifact_sha256": {
+    "backend-tests.log": "36de42755f0aa526c5ac53aa76f25738ca18759d292b17810f75eee1a8d2ef8b",
+    "backend-tests.xml": "484392c03dad9209806b52ce3db71d2108415c5ad0e51eb191514d0b9d9a8f13",
+    "cloud-iam.json": "5fa953c40b13274d351fc920c2073ae91f5e3fbf698eb8ce0f4131636417ee68",
+    "cloud-read-only.json": "284d3b50c34ab1e119558aadc292954e1dae3e720938969264affbdb34088cce",
+    "completion-source-hashes.json": "b0937cd16f3be29a20021518c0fee8b963c29e559c7add90c51deb0a6a12b51e",
+    "credential-scan.json": "af5da01785e6ac6b1084f77805fef533d8b4b84f6a4643048b092022797fb328",
+    "daily-recheck.log": "6b1fffb3e0533c4f9aaef75fd37d71a7ce926d86a03bb8a69dd034accb1cf1c6",
+    "daily-recheck.xml": "8c6dfabd9a6dbd1566215d99c731197aaaa2716a55ec44400852b148d3dfbfe4",
+    "dependencies.json": "73812787ff1af4370d2cc64e700ba53b0fe3691ed18d941ced6caf1d9fdfbf21",
+    "incomplete-headers-server.log": "6f76f9264c9fe31e06e595f6487234b7462ab1a0931b4725df7372edf1ee2459",
+    "incomplete-headers.json": "19da4746439f9fa1719a82ad3109eb6b3226d07356671625d28c191c425ebcec",
+    "native-results.json": "4f49e2311955204c5299661a80fc15bc093056153a2fe7654c1e85eadafdd6f6",
+    "postgres-drift.json": "1f44341a1cd7c1849b24ae9bde0b577eab56dab7a96164770450413870f32135",
+    "postgres-drift.log": "ee43525f6ccefc4496c775ffd925de71d438785e3ff2c8faf0868561b5552a40",
+    "retained-risks.log": "787d2d8e4889a29e1341928769db63ea991c02cf15a07bc7ba1b3c47b9b9e105",
+    "retained-risks.xml": "96e5c556077d1d3e80863251fe3c88705f76e605429ea0ca6fbb8990775d4bee",
+    "routes.json": "42a6c602f29ab4157f438d47c2108387335d6b8aba59f4e0e789b4782188be71",
+    "source-manifest.json": "7503dd907517b6baa65fb0a029e26f58f1466d21a498725de9acdc4d7e9acf5f",
+    "supplemental-source-hashes.json": "88ca3eca47bd2b63e854410407f9f5ff8b1d4ff093acf5cd6b263dd9a97d107d",
+    "test_account_privacy-engine.log": "c076d3cb39ff9de529fc90e3c2cfe9b273c2acf64dacd6e781cbdb64e622d575",
+    "test_account_privacy.log": "59e717818283f618fafc775882fc9c6549490d28749ecc89f65f9a8272f4f7bf",
+    "test_backend_exception_recovery-engine.log": "140317ed7b03c71737eb803afaa762bc1a39922c833faa14d10a4d7bdbd798a1",
+    "test_backend_exception_recovery.log": "9d7a0dde1fcec9c6da923256672769a659658aeabab7f4ea1c8ead38a39ab038",
+    "test_cost_downloads-engine.log": "8a1ab6b2086b9485fd8fd2a78beba74aad8c2bf58ba0ed4b5f40154dfc866ae7",
+    "test_cost_downloads.log": "c2d544a7a0c1b159e23e1755c06d480df0d0759c91cf052d6a4223fac30349c0",
+    "test_draft_privacy-engine.log": "43d2399a2041f3ab26018dfd3c076210b98c75347298e450430771254ee10668",
+    "test_draft_privacy.log": "0bd73296db96096052840dd17d4693f286b86d29cb5dde78930ccf16d75f31da",
+    "test_draft_privacy_after_scan-engine.log": "2463eecdd709d3a5cbd473d620ba81a68e49a78994836039daa4c0b32e8f2376",
+    "test_draft_privacy_after_scan-results.json": "773c812c90c5ff64dcc16a448bd8919f489baf7d377eddde7e79925a1070524a",
+    "test_draft_privacy_after_scan.gd": "767944d63df787dd3bb23e657c3a8ce9c3732a9aac0f854892ada0178fe17dce",
+    "test_draft_privacy_after_scan.log": "d3bf890fe3d4575d57ae8db7387fd20d1131b9b481d1b9a21afb319c106f9839",
+    "test_retained_risks.py": "358590ad42cd49f48c5d1444662e639ec2fda39f931d43793a7d42f2d727022a",
+    "test_security_ownership-engine.log": "64fba1a7dbce0ac4904b8aed79c042c3f1839bda28c85419b1859b14ac0cf355",
+    "test_security_ownership.log": "a6d4e478a2768138e1a61ef2f125f83a4c8c256a6b3ec68e6517e772f85b1f3e",
+    "test_session_rotation-engine.log": "fc641d6696ba8b6ee8ea045d952a3722781a3316d1cb8cd92b6ef60df05f07c6",
+    "test_session_rotation.log": "93f00c65ffe09ceccb9db5a345b7b8d65618704ddbe8bdb7e86ab9cdae025fc3",
+    "audit/security_second_review_cloud_20261024.py": "79805a39b71912e6e669681c231842b3fc2f35369bec4be2bac81c884baf2e94",
+    "audit/security_second_review_draft_fixture_20261024.py": "3f7ef0b1eb251c9bbe8d7553519c7263b78940290cf8891d5ee9c05bafb3d9a9",
+    "audit/security_second_review_finalize_20261024.py": "a6f22372f155984f4341921aeccfcbdbde76b5bfcfda6f63ea519082a3b0665a",
+    "audit/security_second_review_iam_20261024.py": "87092b078dc3c3ae071504bc72b4d43388d61838ec3f6226e250938dd4a8a7db",
+    "audit/security_second_review_inventory_20261024.py": "8b254c023f3ec0c403f843490cec09ad455a1ad7926e36bff057d0a41706eab8",
+    "audit/security_second_review_native_20261024.py": "07f7f009422196ec38f0ff6983b6156bd6d4ce3f7ccedd8f6f21dbdfac31b1d4",
+    "audit/security_second_review_pg_20261024.py": "89fd934fb0724994604b4034ff545dfeb099a5dd9b9ca6666c9ea411c8700e44",
+    "audit/security_second_review_probe_20261024.py": "e83e437dfbf5f3f9ca21725380a8d3e4b62116b776f46cb633fd4333c2ee6f45",
+    "__pycache__/test_retained_risks.cpython-314-pytest-9.1.1.pyc": "788526ec5d56be4b6cc605173a005aa5bbff933a9bf156b87a0f59abb4251ab7",
+    "audit/backend/Dockerfile": "9ad96cb02f3bdf6a855ee317517fa25039eecc77989a32728939aa0ebb54944e",
+    "audit/backend/bmt_backend/database_privileges.py": "9f056f6ec1284c5546ea8a70cac1a2feadbce8292bbcb1e08e45f2aedf741fe8",
+    "audit/backend/bmt_backend/middleware.py": "76dac9753cdd348bb1c65da202808acd40835258f15c929daa8e8723abdd9f75",
+    "audit/backend/bmt_backend/workloads.py": "2c8ec5cd644a67f29a59ecd89e01310ce0ff2b9b0a9c343bb47492a7177c4e68",
+    "audit/backend/deploy/compose.yaml": "2aae859a986e3050f0ab834035ae6bdded6500d621b3d20ca42cbb10822b3aa6"
+  }
+}

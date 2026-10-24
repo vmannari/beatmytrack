@@ -1,0 +1,820 @@
+diff --git a/game/track/desert_sand_wind.gd b/game/track/desert_sand_wind.gd
+--- a/game/track/desert_sand_wind.gd
++++ b/game/track/desert_sand_wind.gd
+@@ -11,6 +11,10 @@
+ const DENSITY: Texture2D = preload("res://assets/textures/desert_wind_density_v1.png")
+ const SAND_COLOR: Color = TrackTheme.DESERT[2]
+ const ORDINARY_STRENGTH: float = 0.65
++const ROOT_FADE_START: float = 14.0
++const ROOT_FADE_END: float = 20.0
++const DUNE_EDGES = preload("res://track/desert_dune_edges.gd")
++const SOURCE_SURFACE = preload("res://track/desert_dune_source_surface.gd")
+ var plumes: MultiMeshInstance3D
+ var material: ShaderMaterial
+ var track: NativeTrack
+@@ -23,6 +27,8 @@
+ var ground_height: float = 0.0
+ var sources := PackedVector2Array()
+ var anchor_heights: Dictionary = {}
++var anchor_roots: Dictionary = {}
++var source_surface: RefCounted
+ var source_samples: int = 0
+ 
+ func configure(data: NativeTrack, visual: NativeTrackVisual = null) -> void:
+@@ -32,8 +38,12 @@
+ 	relief = visual.desert_relief if is_instance_valid(visual) and enabled else null
+ 	ground_height = -0.06 if enabled and not data.metadata.get("creator_document", {}).get("pieces", []).is_empty() else 0.0
+ 	anchor_heights.clear()
++	anchor_roots.clear()
+ 	source_samples = 0
+-	if enabled and is_instance_valid(visual): _prepare_crests(visual)
++	source_surface = SOURCE_SURFACE.new()
++	if enabled:
++		if is_instance_valid(visual): source_surface.prepare(visual)
++		_prepare_crests(track.route[0] if not track.route.is_empty() else Vector2.ZERO)
+ 	if enabled and plumes == null:
+ 		var plane := QuadMesh.new()
+ 		plane.size = Vector2.ONE
+@@ -47,6 +57,8 @@
+ 		material.shader = SAND_SHADER
+ 		material.set_shader_parameter("density_texture", DENSITY)
+ 		material.set_shader_parameter("sand_color", SAND_COLOR)
++		material.set_shader_parameter("source_fade_start", ROOT_FADE_START)
++		material.set_shader_parameter("source_fade_end", ROOT_FADE_END)
+ 		plumes = MultiMeshInstance3D.new()
+ 		plumes.name = "WindLiftedSandPlumes"
+ 		plumes.multimesh = batch
+@@ -55,39 +67,39 @@
+ 		add_child(plumes)
+ 	reset()
+ 
+-func _prepare_crests(visual: NativeTrackVisual) -> void:
+-	var meshes: Array[MeshInstance3D] = []
+-	for child: Node in visual.get_children():
+-		if not child is MeshInstance3D or child.mesh == null: continue
+-		var role: ShaderMaterial = child.material_override as ShaderMaterial
+-		if role != null and role.get_shader_parameter("gravel") == true: meshes.append(child)
+-	var buckets: Dictionary = {}
+-	var per_mesh: int = maxi(1, floori(float(SOURCE_SAMPLES) / maxi(1, meshes.size())))
+-	# Read prepared cosmetic bank vertices once, within a fixed sample budget.
+-	# Actual crests survive fresh/cached world batching through their gravel role.
+-	for mesh: MeshInstance3D in meshes:
+-		if source_samples >= SOURCE_SAMPLES: break
+-		for surface: int in range(mesh.mesh.get_surface_count()):
+-			if source_samples >= SOURCE_SAMPLES: break
+-			var arrays: Array = mesh.mesh.surface_get_arrays(surface)
+-			if not arrays[Mesh.ARRAY_TEX_UV] is PackedVector2Array: continue
+-			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+-			var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+-			var stride: int = maxi(1, ceili(float(vertices.size()) / per_mesh))
+-			for i: int in range(0, vertices.size(), stride):
+-				if source_samples >= SOURCE_SAMPLES: break
+-				source_samples += 1
+-				if uv[i].x >= -0.5: continue
+-				var at: Vector3 = visual.transform * mesh.transform * vertices[i]
+-				var point := Vector2(at.x, -at.z)
+-				if track.cell_at(point) not in [1, 2] or track.has_overhead_bridge(point, false): continue
+-				var floor_height: float = ground_height + (float(relief.height(point)) if relief != null else 0.0)
+-				if at.y - floor_height < 0.10: continue
+-				var key := Vector2i((point / SPACING).floor())
+-				if not buckets.has(key) or Vector3(buckets[key]).y < at.y: buckets[key] = at
+-	for at: Vector3 in buckets.values():
+-		if anchor_heights.size() >= 512: break
+-		anchor_heights[Vector2(at.x, -at.z)] = at.y + 0.035
++func _prepare_crests(focus: Vector2) -> void:
++	# Guide UVs address the visible artwork, not the unrelated 32m normal map.
++	# Keep live sites, then rebuild a bounded local window as the car moves.
++	var retained: Dictionary = {}
++	for source: Vector2 in sources:
++		if anchor_roots.has(source): retained[source] = anchor_roots[source]
++	anchor_roots = retained
++	anchor_heights.clear()
++	for source: Vector2 in retained: anchor_heights[source] = retained[source][0].y
++	source_samples = 0
++	var tile := Vector2i((Vector2(focus.x, -focus.y) / DUNE_EDGES.TILE).floor())
++	for y: int in range(tile.y - 1, tile.y + 2):
++		for x: int in range(tile.x - 1, tile.x + 2):
++			for guide: Array in DUNE_EDGES.ROOTS:
++				var roots := PackedVector3Array()
++				for uv: Vector2 in guide:
++					source_samples += 1
++					var world_xz: Vector2 = (Vector2(x, y) + uv) * DUNE_EDGES.TILE
++					var point := Vector2(world_xz.x, -world_xz.y)
++					if absf(point.x) >= track.half_extent.x or absf(point.y) >= track.half_extent.y or track.cell_at(point) not in [1, 2]: break
++					if track.has_overhead_bridge(point, false) or not source_surface.clear(point): break
++					var loose: bool = true
++					for offset: Vector2 in [Vector2(2.5, 0), Vector2(-2.5, 0), Vector2(0, 2.5), Vector2(0, -2.5)]:
++						if track.cell_at(point + offset) not in [1, 2]: loose = false; break
++					if not loose: break
++					var at: Vector3 = VisualGeometry.world(point)
++					at.y = ground_height + (float(relief.height(point)) if relief != null else 0.0) + 0.025
++					roots.append(at)
++				if roots.size() != PUFFS_PER_PATCH: continue
++				var at: Vector3 = roots[PUFFS_PER_PATCH / 2]
++				var source := Vector2(at.x, -at.z)
++				anchor_roots[source] = roots
++				anchor_heights[source] = at.y
+ 
+ func reset() -> void:
+ 	elapsed = 0.0
+@@ -116,31 +128,18 @@
+ func _place(focus: Vector2) -> void:
+ 	var previous: PackedVector2Array = sources.duplicate()
+ 	sources.clear()
+-	# Keep sites until their entire hop envelope is beyond the visible fade.
+-	# Crossing a collection-cell boundary must not relocate a visible burst.
++	# The shader fades the entire site by root distance, so a finished site
++	# can release its slot even when a large proxy overlaps the view bounds.
+ 	for source: Vector2 in previous:
+-		# Match the shader's visible radius and full downwind hop. A radial 36m
+-		# lease kept invisible upwind sites occupying all six slots while driving.
+-		var along: Vector2 = WIND.rotated((_hash(source) - 0.5) * 0.30)
+-		var tip: Vector2 = source + along * 12.0
+-		var nearest: Vector2 = Geometry2D.get_closest_point_to_segment(focus, source, tip)
+-		# 6m bounds the billboard half-diagonal plus its lateral scatter.
+-		if nearest.distance_squared_to(focus) < 26.0 * 26.0: sources.append(source)
++		if not anchor_roots.has(source): continue
++		for at: Vector3 in anchor_roots[source]:
++			if Vector2(at.x, -at.z).distance_squared_to(focus) < ROOT_FADE_END * ROOT_FADE_END:
++				sources.append(source)
++				break
++	_prepare_crests(focus)
+ 	var candidates: Array[Vector2] = []
+-	if not anchor_heights.is_empty():
+-		for source: Vector2 in anchor_heights:
+-			if _hash(source + Vector2(81, 43)) <= 0.65: candidates.append(source)
+-	else:
+-		# Flat/native fallback retains irregular world sites, never a full grid.
+-		for y: int in range(-3, 4):
+-			for x: int in range(-3, 4):
+-				var cell: Vector2 = center / SPACING + Vector2(x, y)
+-				if _hash(cell + Vector2(81, 43)) > 0.48: continue
+-				var source: Vector2 = (cell + Vector2(_hash(cell + Vector2(17, 31)), _hash(cell + Vector2(67, 11)))) * SPACING
+-				if track.cell_at(source) not in [1, 2]: continue
+-				if absf(source.x) > track.half_extent.x or absf(source.y) > track.half_extent.y: continue
+-				if track.has_overhead_bridge(source, false) or track.has_overhead_bridge(source + WIND * 4.0, false): continue
+-				candidates.append(source)
++	for source: Vector2 in anchor_heights:
++		if _hash(source + Vector2(81, 43)) <= 0.85: candidates.append(source)
+ 	candidates.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.distance_squared_to(focus) < b.distance_squared_to(focus))
+ 	for source: Vector2 in candidates:
+ 		if sources.size() >= MAX_PATCHES: break
+@@ -155,9 +154,8 @@
+ 		var seed: float = _hash(source)
+ 		var along: Vector3 = VisualGeometry.world(WIND.rotated((seed - 0.5) * 0.30))
+ 		var basis := Basis(along, Vector3.UP, along.cross(Vector3.UP))
+-		var at: Vector3 = VisualGeometry.world(source)
+-		at.y = float(anchor_heights.get(source, ground_height + (float(relief.height(source)) if relief != null else 0.0) + 0.035))
+ 		for puff: int in range(PUFFS_PER_PATCH):
++			var at: Vector3 = anchor_roots[source][puff]
+ 			plumes.multimesh.set_instance_transform(index, Transform3D(basis, at))
+ 			plumes.multimesh.set_instance_custom_data(index, Color(seed, (puff + 0.5) / PUFFS_PER_PATCH, _hash(source + Vector2(puff, 73)), 1.0))
+ 			index += 1
+diff --git a/game/track/desert_sand_wind.gdshader b/game/track/desert_sand_wind.gdshader
+--- a/game/track/desert_sand_wind.gdshader
++++ b/game/track/desert_sand_wind.gdshader
+@@ -7,23 +7,26 @@
+ uniform float elapsed = 0.0;
+ uniform float strength = 0.0;
+ uniform vec3 focus;
++uniform float source_fade_start = 14.0;
++uniform float source_fade_end = 20.0;
+ varying vec3 world_position;
+ varying float presence;
+ varying float center_height;
+ varying vec2 field_position;
++varying vec3 root_position;
+ 
+ float sand_hash(float p) {
+     return fract(sin(p * 127.1 + 311.7) * 43758.5453);
+ }
+ 
+ float emission(float time, float seed) {
+-    float period = 5.0 + sand_hash(seed + 3.0) * 4.0;
++    float period = 3.6 + sand_hash(seed + 3.0) * 2.4;
+     float clock = time + seed * 31.0;
+     float cycle = floor(clock / period);
+     float local_time = mod(clock, period);
+     float event_seed = sand_hash(seed * 39.0 + cycle * 7.0);
+-    float start = 0.8 + event_seed * 1.3;
+-    float duration = min(mix(2.8, 4.6, sand_hash(event_seed + 9.0)), period - start - 0.15);
++    float start = 0.35 + event_seed * 0.60;
++    float duration = min(mix(2.3, 3.2, sand_hash(event_seed + 9.0)), period - start - 0.15);
+     return step(0.10, event_seed) * smoothstep(start, start + 0.25, local_time)
+         * (1.0 - smoothstep(start + duration - 0.45, start + duration, local_time));
+ }
+@@ -32,26 +35,30 @@
+     float patch_seed = INSTANCE_CUSTOM.x;
+     float id = INSTANCE_CUSTOM.y;
+     float variation = INSTANCE_CUSTOM.z;
+-    float life = mix(2.2, 3.6, sand_hash(variation + patch_seed));
++    // Even age spacing avoids piles of coincident cards at the narrow root.
++    float life = mix(2.8, 3.6, sand_hash(patch_seed + 11.0));
+     float age = fract(elapsed / life + id) * life;
+     float u = age / life;
+     vec3 wind = normalize(MODEL_MATRIX[0].xyz);
+     vec3 side = normalize(MODEL_MATRIX[2].xyz);
+     vec3 center = MODEL_MATRIX[3].xyz;
+-    center += wind * age * mix(1.6, 3.2, variation) * mix(0.75, 1.0, strength);
+-    center += side * ((sand_hash(id * 83.0 + patch_seed) - 0.5) * 2.2 + age * (variation - 0.5) * 0.20);
+-    center.y += 0.06 + sin(u * PI) * mix(0.30, 0.85, variation);
++    root_position = center;
++    center += wind * age * mix(1.8, 2.8, patch_seed) * mix(0.75, 1.0, strength);
++    // Each instance starts at a traced texture edge; scatter begins in flight.
++    center += side * age * (variation - 0.5) * 0.20;
++    center.y += 0.015 + sin(u * PI) * mix(0.30, 0.85, variation);
+     center_height = center.y;
+     vec3 facing = normalize(INV_VIEW_MATRIX[2].xyz);
+     vec3 along_view = normalize(wind - facing * dot(wind, facing));
+     vec3 across_view = normalize(cross(facing, along_view));
+-    vec3 at = center + along_view * VERTEX.x * mix(2.0, 8.5, u)
+-        + across_view * VERTEX.y * mix(0.8, 3.0, u);
++    float spread = smoothstep(0.0, 0.20, u);
++    vec3 at = center + along_view * VERTEX.x * mix(0.10, mix(2.0, 8.5, u), spread)
++        + across_view * VERTEX.y * mix(0.08, mix(0.8, 3.0, u), spread);
+     VERTEX = transpose(mat3(MODEL_MATRIX)) * (at - MODEL_MATRIX[3].xyz);
+     NORMAL = vec3(0.0, 1.0, 0.0);
+     world_position = at;
+-    presence = emission(elapsed - age, patch_seed) * smoothstep(0.0, 0.12, u)
+-        * (1.0 - smoothstep(0.58, 1.0, u));
++    presence = emission(elapsed - age, patch_seed) * smoothstep(0.0, 0.025, age)
++        * (1.0 - smoothstep(0.58, 1.0, u)) * mix(1.0, 0.80, u);
+     vec3 world_wind = normalize(vec3(0.91, 0.0, -0.414608));
+     vec3 world_side = vec3(-world_wind.z, 0.0, world_wind.x);
+     field_position = vec2(dot(at, world_wind), dot(at, world_side));
+@@ -60,6 +67,7 @@
+ void fragment() {
+     if (strength <= 0.0 || presence <= 0.005) discard;
+     float distance_fade = 1.0 - smoothstep(14.0, 20.0, length(world_position.xz - focus.xz));
++    distance_fade *= 1.0 - smoothstep(source_fade_start, source_fade_end, length(root_position.xz - focus.xz));
+     if (distance_fade <= 0.0) discard;
+     vec2 flow = field_position * vec2(0.11, 0.32) - vec2(elapsed * 0.25, 0.0);
+     vec3 broad = texture(density_texture, flow * 0.48).rgb;
+@@ -84,13 +92,15 @@
+     // Airborne sunlit powder keeps the terrain hue while lifting its value
+     // enough to read against similarly coloured ground at the driving zoom.
+     float pigment_value = 1.35;
+-    float pigment_saturation = 0.55;
+-    float opacity = 0.23;
++    float pigment_saturation = 0.48;
++    float opacity = 0.38;
++    float opacity_cap = 0.043;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+     // Stay below this renderer's bright-channel clipping point, preserving hue.
+     pigment_value = 1.0;
+-    pigment_saturation = 0.65;
+-    opacity = 0.24;
++    pigment_saturation = 0.58;
++    opacity = 0.42;
++    opacity_cap = 0.07;
+ #endif
+     // Fine airborne grains scatter a little more neutral light than the
+     // settled pigment. Preserve its warm hue without dense yellow cores.
+@@ -100,5 +110,6 @@
+     SPECULAR = 0.0;
+     // Preserve broken wisps at driving scale; sparse cores need contrast
+     // against sunlit dune detail while their feathered tails stay transparent.
+-    ALPHA = opacity * strength * presence * sqrt(shape) * distance_fade * intersection;
++    // Keep a tightly shared root from becoming an opaque overlapping core.
++    ALPHA = min(opacity_cap, opacity * strength * presence * sqrt(shape) * distance_fade * intersection);
+ }
+diff --git a/game/tests/test_desert_sand_wind.gd b/game/tests/test_desert_sand_wind.gd
+--- a/game/tests/test_desert_sand_wind.gd
++++ b/game/tests/test_desert_sand_wind.gd
+@@ -51,7 +51,7 @@
+ 	var next_focus := Vector2(14, -18)
+ 	fx.present(1.0 / 60.0, next_focus, 1.0, false, false)
+ 	for source: Vector2 in original_sites:
+-		if source.distance_to(next_focus) < 20.0:
++		if source.distance_to(next_focus) < FX.ROOT_FADE_END:
+ 			check(fx.sources.has(source), "visible sites stay fixed when the collection cell changes")
+ 	fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
+ 	var before: Array = state(fx)
+@@ -109,6 +109,7 @@
+ 	var simulation: Array = game.sim.state.snapshot().duplicate(true)
+ 	fx.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
+ 	for i: int in range(240): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
++	print("DUNE_SOURCE_SUPPORT: input_triangles=", fx.source_surface.input_triangles, " cells=", fx.source_surface.cells.size(), " conservative=", fx.source_surface.conservative.size(), " sources=", fx.sources)
+ 	check(game.sim.state.snapshot() == simulation, "wind leaves actual driving snapshot exact")
+ 	if DisplayServer.get_name() != "headless": await capture(game, fx)
+ 	game.restart()
+diff --git a/game/tests/test_desert_visibility_regression.gd b/game/tests/test_desert_visibility_regression.gd
+--- a/game/tests/test_desert_visibility_regression.gd
++++ b/game/tests/test_desert_visibility_regression.gd
+@@ -3,9 +3,13 @@
+ var checks: int = 0
+ var failures: int = 0
+ const OUT: String = "res://../docs/evidence/desert-visibility-regression-2026-10-24/"
++var capture_out: String = OUT
+ var app: Node
+ 
+-func _initialize() -> void: run.call_deferred()
++func _initialize() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): capture_out = argument.trim_prefix("--evidence=").trim_suffix("/") + "/"
++	run.call_deferred()
+ 
+ func check(ok: bool, message: String) -> void:
+ 	checks += 1
+@@ -141,7 +145,7 @@
+ 	await RenderingServer.frame_post_draw
+ 
+ func capture(game: Node, track: NativeTrack, pass_index: int) -> void:
+-	var folder: String = OUT + RenderingServer.get_current_rendering_method() + "/"
++	var folder: String = capture_out + RenderingServer.get_current_rendering_method() + "/"
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+ 	root.size = Vector2i(1280, 720)
+ 	game.race_cues.hide()
+diff --git a/game/track/desert_dune_edges.gd b/game/track/desert_dune_edges.gd
+--- /dev/null
++++ b/game/track/desert_dune_edges.gd
+@@ -0,0 +1,20 @@
++extends RefCounted
++## Generated from the original dune albedo; run scripts/bake_desert_dune_edges.py.
++const SOURCE_SHA256: String = "716bddbf85086fa1d226ac0b58a44d14418b85d656fe6dcfe9f3776696df95aa"
++const TILE: float = 28.0
++const ROOTS: Array[Array] = [
++	[Vector2(0.1707305, 0.1308350), Vector2(0.1748130, 0.1349059), Vector2(0.1643882, 0.1404648), Vector2(0.1648439, 0.1449077), Vector2(0.1667503, 0.1492019), Vector2(0.1679314, 0.1535704), Vector2(0.1683871, 0.1580133), Vector2(0.1666667, 0.1626794)],
++	[Vector2(0.6409468, 0.1284379), Vector2(0.6444068, 0.1322624), Vector2(0.6456990, 0.1363799), Vector2(0.6484364, 0.1403020), Vector2(0.6504512, 0.1443218), Vector2(0.6524660, 0.1483416), Vector2(0.6544808, 0.1523614), Vector2(0.6536053, 0.1567717)],
++	[Vector2(0.8330160, 0.1980320), Vector2(0.8372067, 0.2010709), Vector2(0.8362980, 0.2069426), Vector2(0.8385765, 0.2110438), Vector2(0.8472290, 0.2116038), Vector2(0.8482326, 0.2164132), Vector2(0.8454117, 0.2233472), Vector2(0.8451405, 0.2288649)],
++	[Vector2(0.1388464, 0.3537024), Vector2(0.1412874, 0.3579165), Vector2(0.1430043, 0.3620454), Vector2(0.1476178, 0.3665151), Vector2(0.1500588, 0.3707292), Vector2(0.1510515, 0.3747729), Vector2(0.1368365, 0.3770275), Vector2(0.1371050, 0.3809860)],
++	[Vector2(0.4201831, 0.2951302), Vector2(0.4204528, 0.2996475), Vector2(0.4192717, 0.3040161), Vector2(0.4188160, 0.3084590), Vector2(0.4169096, 0.3127531), Vector2(0.4157286, 0.3171217), Vector2(0.4123715, 0.3212670), Vector2(0.4082890, 0.3253379)],
++	[Vector2(0.6364342, 0.3473130), Vector2(0.6416802, 0.3466618), Vector2(0.6456241, 0.3477684), Vector2(0.6495680, 0.3488749), Vector2(0.6543800, 0.3488096), Vector2(0.6591919, 0.3487443), Vector2(0.6644379, 0.3480931), Vector2(0.6679478, 0.3497856)],
++	[Vector2(0.8238551, 0.4200592), Vector2(0.8272532, 0.4226644), Vector2(0.8313283, 0.4249989), Vector2(0.8333724, 0.4281457), Vector2(0.8469257, 0.4266888), Vector2(0.8381376, 0.4341685), Vector2(0.8381506, 0.4381278), Vector2(0.8381636, 0.4420870)],
++	[Vector2(0.2429331, 0.6062973), Vector2(0.2466406, 0.6071092), Vector2(0.2503482, 0.6079211), Vector2(0.2540557, 0.6087330), Vector2(0.2577633, 0.6095450), Vector2(0.2617608, 0.6096878), Vector2(0.2654683, 0.6104998), Vector2(0.2697557, 0.6099736)],
++	[Vector2(0.5117867, 0.6394951), Vector2(0.5168227, 0.6428475), Vector2(0.5349351, 0.6416232), Vector2(0.5262066, 0.6497933), Vector2(0.5278015, 0.6543501), Vector2(0.5287081, 0.6591479), Vector2(0.5254854, 0.6653909), Vector2(0.5215745, 0.6718748)],
++	[Vector2(0.8536293, 0.5869835), Vector2(0.8577245, 0.5877604), Vector2(0.8618196, 0.5885373), Vector2(0.8673898, 0.5876988), Vector2(0.8714849, 0.5884757), Vector2(0.8770550, 0.5876371), Vector2(0.8811502, 0.5884140), Vector2(0.8867203, 0.5875755)],
++	[Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721), Vector2(0.3508772, 0.8524721)],
++	[Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582), Vector2(0.1212121, 0.9505582)],
++	[Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735), Vector2(0.5287081, 0.9457735)],
++	[Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502), Vector2(0.9098884, 0.7655502)],
++]
+diff --git a/game/track/desert_dune_source_surface.gd b/game/track/desert_dune_source_surface.gd
+--- /dev/null
++++ b/game/track/desert_dune_source_surface.gd
+@@ -0,0 +1,51 @@
++extends RefCounted
++## Conservative projection of banks that replace the world-space dune artwork.
++## Coalescing occupied cells avoids retaining every relief-subdivision triangle.
++const MAX_CELLS: int = 65536
++var cell_size: float = 1.0
++var cells: Dictionary = {}
++var conservative: Array[Rect2] = []
++var input_triangles: int = 0
++
++func prepare(visual: NativeTrackVisual) -> void:
++	for node: Node in visual.get_children():
++		if not node is MeshInstance3D or node.mesh == null: continue
++		var material: ShaderMaterial = node.material_override as ShaderMaterial
++		if material == null or material.get_shader_parameter("gravel") != true: continue
++		var transform: Transform3D = visual.transform * node.transform
++		for surface: int in range(node.mesh.get_surface_count()):
++			var arrays: Array = node.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var uv: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV] if arrays[Mesh.ARRAY_TEX_UV] != null else PackedVector2Array()
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			var count: int = indices.size() if not indices.is_empty() else vertices.size()
++			input_triangles += count / 3
++			for corner: int in range(0, count, 3):
++				if uv.is_empty() or uv[indices[corner] if not indices.is_empty() else corner].x >= -0.5: continue
++				var area := Rect2()
++				for offset: int in range(3):
++					var at: Vector3 = transform * vertices[indices[corner + offset] if not indices.is_empty() else corner + offset]
++					var point := Vector2(at.x, -at.z)
++					area = Rect2(point, Vector2.ZERO) if offset == 0 else area.expand(point)
++				mark(area)
++
++func mark(area: Rect2) -> void:
++	var first := Vector2i((area.position / cell_size).floor())
++	var last := Vector2i((area.end / cell_size).floor())
++	if (last.x - first.x + 1) * (last.y - first.y + 1) > 256:
++		conservative.append(area.grow(0.01))
++		return
++	if cells.size() + 256 > MAX_CELLS:
++		var coarser: Dictionary = {}
++		for key: Vector2i in cells: coarser[Vector2i((Vector2(key) / 2.0).floor())] = true
++		cells = coarser; cell_size *= 2.0
++		mark(area)
++		return
++	for y: int in range(first.y, last.y + 1):
++		for x: int in range(first.x, last.x + 1): cells[Vector2i(x, y)] = true
++
++func clear(point: Vector2) -> bool:
++	if cells.has(Vector2i((point / cell_size).floor())): return false
++	for area: Rect2 in conservative:
++		if area.has_point(point): return false
++	return true
+diff --git a/game/tests/test_desert_dune_edges.gd b/game/tests/test_desert_dune_edges.gd
+--- /dev/null
++++ b/game/tests/test_desert_dune_edges.gd
+@@ -0,0 +1,79 @@
++extends "res://tests/test_desert_visibility_regression.gd"
++const EDGES = preload("res://track/desert_dune_edges.gd")
++const EVIDENCE: String = "res://../docs/evidence/desert-dune-edges-2026-10-24/"
++
++func _initialize() -> void:
++	capture_out = EVIDENCE
++	super._initialize()
++
++func actual_app(track: NativeTrack) -> void:
++	check(FileAccess.get_sha256("res://assets/textures/desert_sand_v2.png") == EDGES.SOURCE_SHA256, "edge guides match the exact visible artwork")
++	var fx := DesertSandWind.new()
++	root.add_child(fx); fx.configure(track)
++	var valid_roots: bool = true
++	var attached: bool = true
++	var stable: bool = true
++	var covered: int = 0
++	for index: int in range(80):
++		var focus: Vector2 = track.route[index * track.route.size() / 80]
++		var previous: Dictionary = fx.anchor_roots.duplicate()
++		fx.present(0.1, focus, 0.0, false, false)
++		var nearest: float = INF
++		for source: Vector2 in fx.sources:
++			nearest = minf(nearest, source.distance_to(focus))
++			if previous.has(source): stable = stable and previous[source] == fx.anchor_roots[source]
++			var roots: PackedVector3Array = fx.anchor_roots[source]
++			for puff: int in range(8):
++				var at: Vector3 = roots[puff]
++				var uv := Vector2(fposmod(at.x / EDGES.TILE, 1.0), fposmod(at.z / EDGES.TILE, 1.0))
++				var found: bool = false
++				for guide: Array in EDGES.ROOTS:
++					if Vector2(guide[puff]).distance_to(uv) < 0.00001: found = true; break
++				valid_roots = valid_roots and found
++				attached = attached and absf(at.y - fx.ground_height - 0.025) < 0.00001
++				attached = attached and track.cell_at(Vector2(at.x, -at.z)) in [1, 2] and not track.has_overhead_bridge(Vector2(at.x, -at.z), false)
++				# The headless dummy renderer has no MultiMesh transform buffer.
++				if DisplayServer.get_name() != "headless":
++					var actual: Vector3 = fx.plumes.multimesh.get_instance_transform(fx.sources.find(source) * 8 + puff).origin
++					valid_roots = valid_roots and actual.distance_to(at) < 0.00001
++		if nearest < 20.0: covered += 1
++	check(valid_roots, "every emitted particle root uses the artwork's exact repeated XZ/28 edge coordinates")
++	check(attached, "birth roots stay on exposed loose ground without an initial airborne gap")
++	check(stable, "retained visible sites preserve each individual root when camera cells change")
++	check(covered >= 64, "edge-constrained sources remain near at least 80 percent of road positions")
++	check(fx.anchor_heights.size() <= 512 and fx.source_samples <= 8192, "local guide discovery remains bounded on moving routes")
++	print("DUNE_EDGE_COVERAGE: ", covered, "/80 roots=", EDGES.ROOTS.size() * 8)
++	fx.queue_free(); await process_frame
++	if DisplayServer.get_name() != "headless": await atlas_capture()
++	await super.actual_app(track)
++
++func atlas_capture() -> void:
++	var previous_scale: Vector2i = root.content_scale_size
++	root.content_scale_size = Vector2i(900, 900)
++	root.size = Vector2i(900, 900)
++	var guide_view := Control.new()
++	root.add_child(guide_view)
++	guide_view.draw.connect(func() -> void:
++		guide_view.draw_texture_rect(NativeTrackVisual.DUNE_ALBEDO, Rect2(0, 0, 900, 900), false)
++		for guide: Array in EDGES.ROOTS:
++			for uv: Vector2 in guide:
++				guide_view.draw_circle(uv * 900.0, 3.0, Color.WHITE)
++				guide_view.draw_circle(uv * 900.0, 1.5, Color(0.8, 0.08, 0.05)))
++	guide_view.queue_redraw()
++	for settle: int in range(3): await RenderingServer.frame_post_draw
++	var folder: String = EVIDENCE + RenderingServer.get_current_rendering_method() + "/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	check(root.get_texture().get_image().save_png(folder + "texture-roots.png") == OK, "actual artwork with emission-root overlay saved")
++	guide_view.queue_free(); await process_frame
++	root.content_scale_size = previous_scale
++
++func capture(game: Node, track: NativeTrack, pass_index: int) -> void:
++	var fx: DesertSandWind = game.desert_sand_wind
++	var exposed: bool = true
++	for roots: PackedVector3Array in fx.anchor_roots.values():
++		for at: Vector3 in roots:
++			var point := Vector2(at.x, -at.z)
++			exposed = exposed and fx.source_surface.clear(point)
++			exposed = exposed and absf(at.y - fx.ground_height - fx.relief.height(point) - 0.025) < 0.00001
++	check(exposed, "actual cold/cached race roots avoid geometry that covers the dune artwork")
++	await super.capture(game, track, pass_index)
+diff --git a/scripts/bake_desert_dune_edges.py b/scripts/bake_desert_dune_edges.py
+--- /dev/null
++++ b/scripts/bake_desert_dune_edges.py
+@@ -0,0 +1,86 @@
++"""Trace selected broad crest windows in the existing dune artwork into UV data.
++
++Image analysis only: no artwork is generated or modified. The runtime repeats
++these eight-point emission roots with the terrain's exact world XZ / 28m UVs.
++"""
++from pathlib import Path
++import hashlib
++import json
++import math
++import statistics
++import sys
++from PIL import Image, ImageFilter
++
++ROOT = Path(__file__).resolve().parents[1]
++SOURCE = ROOT / "game/assets/textures/desert_sand_v2.png"
++# Original-art crest windows, expressed in the 1254-square review view.
++WINDOWS = [
++    ((205, 165), (209, 204)), ((782, 164), (787, 201)),
++    ((1047, 247), (1067, 283)), ((195, 446), (191, 480)),
++    ((526, 370), (522, 409)), ((797, 437), (824, 457)),
++    ((1045, 522), (1057, 552)), ((313, 741), (343, 754)),
++    ((653, 798), (667, 838)), ((1076, 730), (1099, 751)),
++    ((440, 1069), (425, 1104)), ((123, 1179), (113, 1207)),
++    ((663, 1186), (653, 1223)), ((1141, 960), (1141, 995)),
++]
++LIP_ROOTS = {10: (440, 1069), 11: (152, 1192), 12: (663, 1186), 13: (1141, 960)}
++art = Image.open(SOURCE).convert("L").filter(ImageFilter.GaussianBlur(3))
++width, height = art.size
++
++def light(uv):
++    x = int(round(uv[0] * width)) % width
++    y = int(round(uv[1] * height)) % height
++    return art.getpixel((x, y)) / 255.0
++
++roots, contrasts, selected_windows = [], [], []
++for window_index, (first, last) in enumerate(WINDOWS):
++    a, b = [v / 1254.0 for v in first], [v / 1254.0 for v in last]
++    length = math.dist(a, b)
++    normal = [-(b[1] - a[1]) / length, (b[0] - a[0]) / length]
++    row, deltas = [], []
++    for step in range(8):
++        u = step / 7.0
++        at = [a[i] * (1.0 - u) + b[i] * u for i in range(2)]
++        choices = []
++        for probe in range(97):
++            offset = -0.035 + probe * 0.070 / 96
++            p = [at[i] + normal[i] * offset for i in range(2)]
++            delta = abs(light([p[i] + normal[i] * 0.004 for i in range(2)]) - light([p[i] - normal[i] * 0.004 for i in range(2)]))
++            choices.append((delta - abs(offset) * 0.5, delta, p))
++        _, delta, point = max(choices, key=lambda choice: choice[0])
++        row.append([round(float(v), 7) for v in point])
++        deltas.append(delta)
++    if window_index in LIP_ROOTS:
++        # The softly lit lower crowns have little luminance discontinuity.
++        # Pin their artist-reviewed lip rather than snapping onto a dark ripple.
++        point = [v / 1254.0 for v in LIP_ROOTS[window_index]]
++        row = [[round(v, 7) for v in point] for _ in range(8)]
++        deltas = [abs(light([point[i] + normal[i] * 0.004 for i in range(2)]) - light([point[i] - normal[i] * 0.004 for i in range(2)]))] * 8
++    elif statistics.mean(deltas) < 0.015:
++        continue
++    else:
++        strong = [i for i, delta in enumerate(deltas) if delta >= 0.01]
++        selected = [min(strong, key=lambda j: abs(j - i)) if deltas[i] < 0.01 else i for i in range(8)]
++        row = [row[i] for i in selected]
++        deltas = [deltas[i] for i in selected]
++    roots.append(row)
++    selected_windows.append([first, last])
++    contrasts.append([round(min(deltas), 5), round(statistics.mean(deltas), 5)])
++
++source_hash = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
++lines = ["extends RefCounted", "## Generated from the original dune albedo; run scripts/bake_desert_dune_edges.py.",
++         f'const SOURCE_SHA256: String = "{source_hash}"', "const TILE: float = 28.0", "const ROOTS: Array[Array] = ["]
++for row in roots:
++    lines.append("\t[" + ", ".join(f"Vector2({x:.7f}, {y:.7f})" for x, y in row) + "],")
++lines.append("]\n")
++generated = "\n".join(lines).encode()
++target = ROOT / "game/track/desert_dune_edges.gd"
++receipt = ROOT / "docs/evidence/desert-dune-edges-2026-10-24/atlas.json"
++receipt_bytes = (json.dumps(dict(source_sha256=source_hash, tile_metres=28, windows=selected_windows, lip_roots=LIP_ROOTS, roots=roots, contrast_min_mean=contrasts), indent=2) + "\n").encode()
++if "--check" in sys.argv:
++    assert target.read_bytes() == generated, "Generated guide data differs"
++    assert receipt.read_bytes() == receipt_bytes, "Atlas provenance differs"
++else:
++    target.write_bytes(generated)
++    receipt.write_bytes(receipt_bytes)
++print(json.dumps(dict(windows=len(roots), roots=sum(map(len, roots)), contrast_min_mean=contrasts)))
+diff --git a/docs/DESERT_DUNE_EDGES_2026_10_24.md b/docs/DESERT_DUNE_EDGES_2026_10_24.md
+--- /dev/null
++++ b/docs/DESERT_DUNE_EDGES_2026_10_24.md
+@@ -0,0 +1,46 @@
++# Desert texture-edge wind — 2026-10-24
++
++Requirements: DDE01 start blown sand at painted dune edges; DDE02 show bursts more frequently; DDE03 preserve ordinary-driving visibility and complete scenery; R01 canonical isolation; G01 native review; Q01 scoped checkpoint.
++
++## Result and implementation
++
++Sand births use 14 authored crest guides in the existing `desert_sand_v2.png`. Each guide supplies eight birth coordinates. The broad, high-contrast edges are traced within artist-selected windows; the softly lit lower crowns use pinned lip coordinates so the tracer cannot jump onto an unrelated ripple. The atlas is data generated by `scripts/bake_desert_dune_edges.py`; the PNG is unchanged, SHA256 `716bddbf85086fa1d226ac0b58a44d14418b85d656fe6dcfe9f3776696df95aa`.
++
++Use the visible albedo's exact **world XZ / 28m** coordinates, including negative-world wrapping. The unrelated 32m normal-map tile does not position emitters. Every MultiMesh instance starts at its own traced root. Remove the original lateral birth jitter; cards start narrow and nearly touching the ground, widen after lift, then drift downwind. Even age spacing and a per-layer opacity cap keep coincident root cards from building hard cores. Airborne hue, low lift and depth/roof exclusion remain.
++
++Ground support comes from the actual terrain floor and shared Desert relief. A conservative occupied-cell index excludes the raised banks whose shader replaces the photo with vertex pigment; a loose-surface margin avoids the road fringe. It scans the prepared geometry once and coalesces its projection rather than retaining all subdivision triangles. The native fixture reads 84,680 input triangles into 1,671 occupied cells. The cell map is capped at 65,536 entries and coarsens conservatively if needed. A local 3×3 tile window follows the car, so the anchor cap does not fill with one end of a large map. At most 126 new sites/1,008 root probes are considered per refresh, plus up to six retained live sites.
++
++Entire sites fade by their source distance before releasing their slot. CPU retirement and the shader share the same 14–20m source fade. The visible-site stability test now references that shared constant (still 20m); its guarantee is preserved. No arbitrary flat-ground fallback remains: all emitted roots come from the artwork guides. Empty or covered guide locations stay empty.
++
++Independent periods change **5–9s → 3.6–6s**, retaining the 10% skipped-event variation. This is about **46% more nominal starts** at a site, inferred from the mean periods, not a measured device-wide start count. Durations are 2.3–3.2s, bounded to fade before a cycle rolls over. Six sites still share 48 quads/96 triangles. Wind audio, camera, terrain artwork, pyramid repair and canonical driving code are outside the runtime edit scope.
++
++## Actual verification
++
++Godot 4.7.2.stable.official.ed1daf0bf; desktop NVIDIA RTX 3090. Exact commands, source hashes and native numbers are in [report.json](evidence/desert-dune-edges-2026-10-24/report.json).
++
++| Retained log | Checks/scripts | Failures |
++|---|---:|---:|
++| edges-headless.log | 28 | 0 |
++| edges-mobile.log | 37 | 0 |
++| edges-compatibility.log | 37 | 0 |
++| wind-headless.log | 57 | 0 |
++| wind-mobile.log | 70 | 0 |
++| wind-compatibility.log | 70 | 0 |
++| ambience-headless.log | 111 | 0 |
++| desert-headless.log | 87 | 0 |
++| biomes-headless.log | 108 | 0 |
++| parser.log | 1076 | 0 |
++
++The edge fixture checks the artwork hash; every particle's repeated UV coordinates and real MultiMesh transform; loose-ground/bridge exclusions; retained-root stability; bounded moving discovery; and 80/80 nearby-source road positions. The headless dummy has no MultiMesh buffer, so transform publication is checked on both native renderers. It then uses actual App cold/cached race installation, shared pyramid resources, complete ground, loading barriers, native pyramid pixels and ordinary seeded weather along a scripted 50km/h route. The canonical track bytes remain exact.
++
++At >=1% channel contrast, sand is visible in 14/18 Mobile samples (peak 6826 pixels) and 16/18 Compatibility samples (peak 12138). The stricter >=2% check passes 9/18 and 10/18 respectively. Both original visibility thresholds remain unchanged: nine samples with at least 1,000 pixels and a peak of at least 3,000. Hue, saturation, quiet intervals, soft-core contrast, bright-speck, lifecycle and opaque-roof checks also retain their limits. No failed invariant was weakened.
++
++[Native preview](evidence/desert-dune-edges-2026-10-24/preview.html) includes the actual artwork/root overlay, a sand on/off comparison in the same driving frame, and native motion links. These are Godot captures, not generated or retouched images. Explicit readbacks/pixel loops cause capture hitch diagnostics; they are not game FPS measurements.
++
++## Corrections, scope and remaining acceptance
++
++Retained initial logs cover the generated packed-array constant parse correction, the headless dummy-buffer fixture correction, too-dense root cards, too-small source-support triangle budgets and weaker contrast trials. The final support index coalesces cells rather than rejecting a whole family. A concurrent `recording_cache.gd` parse edit interrupted the first final focused/biome runs; its correction was left to that concurrent work and the checks were rerun. The default Python lacks Pillow; the existing `.tools/review` environment is used without installing dependencies. No runtime image loading or extra bitmap asset is introduced.
++
++Changed runtime files are the two sand files and the new `desert_dune_edges.gd`/`desert_dune_source_surface.gd`. The existing full-App fixture gains an optional capture-output path; its original deformer control stays pinned to its original evidence. The wind fixture uses the shared source-fade constant and logs prepared support. The new edge fixture extends the complete race regression. The bake script, this document, three status files and scoped evidence complete the change. `checkpoint.patch` is based on task-entry snapshots, with a reverse-application check against the working tree; concurrent changes are retained.
++
++Artist recognition of every selected lip, sustained appearance on the owner's affected track, and physical-device preparation/fragment cost remain to be accepted. Coarsening can conservatively omit an edge on an unusually large world; it cannot authorize a birth on a covered bank. The support scan occurs during race preparation; no Android load-time/FPS claim is made. No phone/tablet attachment check or physical-device test was performed. No APK/export/install, native rebuild, live account/backend mutation or deployment occurred. Existing owner processes remain running. Local source changes require a client restart; installed phone/tablet builds have not been updated.
+diff --git a/docs/evidence/desert-dune-edges-2026-10-24/preview.html b/docs/evidence/desert-dune-edges-2026-10-24/preview.html
+--- /dev/null
++++ b/docs/evidence/desert-dune-edges-2026-10-24/preview.html
+@@ -0,0 +1,9 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><title>Dune-edge wind — native review</title>
++<style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1280px;margin:32px auto;padding:0 20px}img{display:block;max-width:100%;margin:16px 0}button,select{font:inherit;background:#35434e;color:inherit;padding:8px 14px;margin:8px 12px 8px 0;border:1px solid #71838c}a{color:inherit;margin-right:24px}p{line-height:1.5}</style>
++<h1>Wind lifting from the dune texture</h1><p>Actual Godot captures. Red markers identify the artwork coordinates used for particle births; these repeat with the same 28m world-space tile as the terrain.</p>
++<label>Renderer <select id="renderer"><option value="mobile">Mobile / Vulkan</option><option value="gl_compatibility">Compatibility / OpenGL</option></select></label>
++<img id="atlas" alt="Actual dune artwork with the traced emission roots marked in red">
++<h2>Ordinary driving camera</h2><p>Toggle sand in the same frame. Bursts have independent phases and shorter gaps; six sites still share 48 quads.</p>
++<button id="toggle">Hide sand</button><span id="state">Sand visible</span><img id="driving" alt="Native race with edge-bound blown sand">
++<p><a id="motion">Actual sand motion</a><a href="report.json">Checks and source receipt</a></p>
++<script>let shown=true;const renderer=document.getElementById('renderer'),atlas=document.getElementById('atlas'),driving=document.getElementById('driving'),toggle=document.getElementById('toggle'),state=document.getElementById('state'),motion=document.getElementById('motion');function update(){const r=renderer.value;atlas.src=r+'/texture-roots.png';driving.src=r+'/'+(shown?'sand-in-race.png':'sand-hidden.png');motion.href='focused/'+r+'/motion.html';toggle.textContent=shown?'Hide sand':'Show sand';state.textContent=shown?'Sand visible':'Sand hidden'}renderer.onchange=update;toggle.onclick=()=>{shown=!shown;update()};update();</script></html>
+diff --git a/docs/evidence/desert-dune-edges-2026-10-24/finish_receipt.py b/docs/evidence/desert-dune-edges-2026-10-24/finish_receipt.py
+--- /dev/null
++++ b/docs/evidence/desert-dune-edges-2026-10-24/finish_receipt.py
+@@ -0,0 +1,131 @@
++"""Assemble the scoped evidence from completed native checks; no game execution."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++E = Path(__file__).resolve().parent
++PREFIX = E.relative_to(ROOT).as_posix()
++BASE = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1"
++
++def read_log(name):
++    raw = (E / name).read_bytes()
++    return raw.decode("utf-16" if raw.startswith(b"\xff\xfe") else "utf-8-sig")
++
++tests = []
++for name, script, renderer, timeout, action in [
++    ("edges-headless", "test_desert_dune_edges", "", 240, "TestScript"),
++    ("edges-mobile", "test_desert_dune_edges", "mobile", 300, "TestScript"),
++    ("edges-compatibility", "test_desert_dune_edges", "gl_compatibility", 300, "TestScript"),
++    ("wind-headless", "test_desert_sand_wind", "", 180, "TestScript"),
++    ("wind-mobile", "test_desert_sand_wind", "mobile", 300, "TestScript"),
++    ("wind-compatibility", "test_desert_sand_wind", "gl_compatibility", 300, "TestScript"),
++    ("ambience-headless", "test_desert_ambience", "", 180, "TestScript"),
++    ("desert-headless", "", "", 180, "TestDesert"),
++    ("biomes-headless", "", "", 180, "TestBiomes"),
++    ("parser", "test_script_parse", "", 240, "TestScript"),
++]:
++    log = name + ".log"
++    matches = re.findall(r"([A-Z_]+): (\d+) (checks|scripts), (\d+) failures", read_log(log))
++    assert matches, log
++    result = matches[-1]
++    assert result[3] == "0", (log, result)
++    command = BASE + " -Action " + action
++    if script: command += " -ScriptPath res://tests/" + script + ".gd"
++    if renderer: command += " -Graphical -RenderingMethod " + renderer
++    if name.startswith("wind-") and renderer: command += f" -TestArgument '--evidence=res://../{PREFIX}/focused'"
++    command += " -CommandTimeoutSeconds " + str(timeout)
++    tests.append(dict(log=log, checks=int(result[1]), failures=int(result[3]), command=command))
++
++native = {}
++for renderer in ("mobile", "gl_compatibility"):
++    native[renderer] = json.loads((E / renderer / "race.json").read_text())
++    native[renderer]["palette"] = json.loads((E / "focused" / renderer / "palette.json").read_text())
++    name = "wind-mobile.log" if renderer == "mobile" else "wind-compatibility.log"
++    roof = re.search(r"SAND_OPAQUE_SAMPLES: (\d+) changed=(\d+)", read_log(name))
++    native[renderer]["opaque_roof"] = dict(samples=int(roof[1]), changed=int(roof[2]))
++
++table = "\n".join(f"| {t['log']} | {t['checks']} | 0 |" for t in tests)
++counts = "/".join(str(tests[i]["checks"]) for i in range(3))
++wind_counts = "/".join(str(tests[i]["checks"]) for i in range(3, 6))
++coverage = re.search(r"DUNE_EDGE_COVERAGE: (\d+)/80", read_log("edges-headless.log"))[1]
++doc_path = "docs/DESERT_DUNE_EDGES_2026_10_24.md"
++doc = f"""# Desert texture-edge wind — 2026-10-24
++
++Requirements: DDE01 start blown sand at painted dune edges; DDE02 show bursts more frequently; DDE03 preserve ordinary-driving visibility and complete scenery; R01 canonical isolation; G01 native review; Q01 scoped checkpoint.
++
++## Result and implementation
++
++Sand births use 14 authored crest guides in the existing `desert_sand_v2.png`. Each guide supplies eight birth coordinates. The broad, high-contrast edges are traced within artist-selected windows; the softly lit lower crowns use pinned lip coordinates so the tracer cannot jump onto an unrelated ripple. The atlas is data generated by `scripts/bake_desert_dune_edges.py`; the PNG is unchanged, SHA256 `716bddbf85086fa1d226ac0b58a44d14418b85d656fe6dcfe9f3776696df95aa`.
++
++Use the visible albedo's exact **world XZ / 28m** coordinates, including negative-world wrapping. The unrelated 32m normal-map tile does not position emitters. Every MultiMesh instance starts at its own traced root. Remove the original lateral birth jitter; cards start narrow and nearly touching the ground, widen after lift, then drift downwind. Even age spacing and a per-layer opacity cap keep coincident root cards from building hard cores. Airborne hue, low lift and depth/roof exclusion remain.
++
++Ground support comes from the actual terrain floor and shared Desert relief. A conservative occupied-cell index excludes the raised banks whose shader replaces the photo with vertex pigment; a loose-surface margin avoids the road fringe. It scans the prepared geometry once and coalesces its projection rather than retaining all subdivision triangles. The native fixture reads 84,680 input triangles into 1,671 occupied cells. The cell map is capped at 65,536 entries and coarsens conservatively if needed. A local 3×3 tile window follows the car, so the anchor cap does not fill with one end of a large map. At most 126 new sites/1,008 root probes are considered per refresh, plus up to six retained live sites.
++
++Entire sites fade by their source distance before releasing their slot. CPU retirement and the shader share the same 14–20m source fade. The visible-site stability test now references that shared constant (still 20m); its guarantee is preserved. No arbitrary flat-ground fallback remains: all emitted roots come from the artwork guides. Empty or covered guide locations stay empty.
++
++Independent periods change **5–9s → 3.6–6s**, retaining the 10% skipped-event variation. This is about **46% more nominal starts** at a site, inferred from the mean periods, not a measured device-wide start count. Durations are 2.3–3.2s, bounded to fade before a cycle rolls over. Six sites still share 48 quads/96 triangles. Wind audio, camera, terrain artwork, pyramid repair and canonical driving code are outside the runtime edit scope.
++
++## Actual verification
++
++Godot 4.7.2.stable.official.ed1daf0bf; desktop NVIDIA RTX 3090. Exact commands, source hashes and native numbers are in [report.json](evidence/desert-dune-edges-2026-10-24/report.json).
++
++| Retained log | Checks/scripts | Failures |
++|---|---:|---:|
++{table}
++
++The edge fixture checks the artwork hash; every particle's repeated UV coordinates and real MultiMesh transform; loose-ground/bridge exclusions; retained-root stability; bounded moving discovery; and {coverage}/80 nearby-source road positions. The headless dummy has no MultiMesh buffer, so transform publication is checked on both native renderers. It then uses actual App cold/cached race installation, shared pyramid resources, complete ground, loading barriers, native pyramid pixels and ordinary seeded weather along a scripted 50km/h route. The canonical track bytes remain exact.
++
++At >=1% channel contrast, sand is visible in {native['mobile']['visible_samples']}/18 Mobile samples (peak {native['mobile']['peak_pixels']} pixels) and {native['gl_compatibility']['visible_samples']}/18 Compatibility samples (peak {native['gl_compatibility']['peak_pixels']}). The stricter >=2% check passes {native['mobile']['clear_samples']}/18 and {native['gl_compatibility']['clear_samples']}/18 respectively. Both original visibility thresholds remain unchanged: nine samples with at least 1,000 pixels and a peak of at least 3,000. Hue, saturation, quiet intervals, soft-core contrast, bright-speck, lifecycle and opaque-roof checks also retain their limits. No failed invariant was weakened.
++
++[Native preview](evidence/desert-dune-edges-2026-10-24/preview.html) includes the actual artwork/root overlay, a sand on/off comparison in the same driving frame, and native motion links. These are Godot captures, not generated or retouched images. Explicit readbacks/pixel loops cause capture hitch diagnostics; they are not game FPS measurements.
++
++## Corrections, scope and remaining acceptance
++
++Retained initial logs cover the generated packed-array constant parse correction, the headless dummy-buffer fixture correction, too-dense root cards, too-small source-support triangle budgets and weaker contrast trials. The final support index coalesces cells rather than rejecting a whole family. A concurrent `recording_cache.gd` parse edit interrupted the first final focused/biome runs; its correction was left to that concurrent work and the checks were rerun. The default Python lacks Pillow; the existing `.tools/review` environment is used without installing dependencies. No runtime image loading or extra bitmap asset is introduced.
++
++Changed runtime files are the two sand files and the new `desert_dune_edges.gd`/`desert_dune_source_surface.gd`. The existing full-App fixture gains an optional capture-output path; its original deformer control stays pinned to its original evidence. The wind fixture uses the shared source-fade constant and logs prepared support. The new edge fixture extends the complete race regression. The bake script, this document, three status files and scoped evidence complete the change. `checkpoint.patch` is based on task-entry snapshots, with a reverse-application check against the working tree; concurrent changes are retained.
++
++Artist recognition of every selected lip, sustained appearance on the owner's affected track, and physical-device preparation/fragment cost remain to be accepted. Coarsening can conservatively omit an edge on an unusually large world; it cannot authorize a birth on a covered bank. The support scan occurs during race preparation; no Android load-time/FPS claim is made. No phone/tablet attachment check or physical-device test was performed. No APK/export/install, native rebuild, live account/backend mutation or deployment occurred. Existing owner processes remain running. Local source changes require a client restart; installed phone/tablet builds have not been updated.
++"""
++(ROOT / doc_path).write_bytes(doc.encode())
++
++status = f"2026-10-24 DDE01-DDE03/R01/G01/Q01: Wind births follow14 painted dune-edge guides at exact worldXZ/28m UVs, with pinned soft lip roots, narrow attached births, bounded projected bank exclusion and moving local discovery. Independent periods5-9s become3.6-6s (~46% more nominal starts); six sites/48quads/96triangles remain. Full-App edge/scenery {counts}, focused {wind_counts}, ambience111, Desert87, biomes108 and parser{tests[-1]['checks']} pass. Native1% samples {native['mobile']['visible_samples']}/18 Mobile/{native['gl_compatibility']['visible_samples']}/18 Compatibility; stricter2% {native['mobile']['clear_samples']}/18/{native['gl_compatibility']['clear_samples']}/18. All sampled roof pixels exact; hue/soft-core/lifecycle/canonical guards remain. Initial support/shape/fixture and concurrent-cache parse corrections retained. Native preview, commands, hashes and scoped checkpoint: {doc_path} and {PREFIX}/report.json. Restart and owner lip/track/device cost acceptance remain. No device check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.\n\n"
++status_paths = ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]
++for relative in status_paths:
++    path = ROOT / relative
++    snapshot = E / "before" / relative.replace("/", "__")
++    if not snapshot.exists(): snapshot.write_bytes(path.read_bytes())
++    marker = "## Texture-edge Desert wind" if relative == "AGENTS.md" else "2026-10-24 DDE01"
++    if not path.read_text(encoding="utf-8").startswith(marker):
++        heading = "## Texture-edge Desert wind override (2026-10-24)\n" if relative == "AGENTS.md" else ""
++        path.write_bytes((heading + status).encode() + path.read_bytes())
++
++old_files = ["game/track/desert_sand_wind.gd", "game/track/desert_sand_wind.gdshader", "game/tests/test_desert_sand_wind.gd", "game/tests/test_desert_visibility_regression.gd"]
++new_files = ["game/track/desert_dune_edges.gd", "game/track/desert_dune_source_surface.gd", "game/tests/test_desert_dune_edges.gd", "scripts/bake_desert_dune_edges.py", doc_path, PREFIX + "/preview.html", PREFIX + "/finish_receipt.py"]
++new_files += [name + ".uid" for name in new_files[:3]]
++paths = old_files + new_files + status_paths
++patch, manifest = [], []
++(E / "after").mkdir(exist_ok=True)
++for relative in paths:
++    path = ROOT / relative
++    before = E / "before" / (relative.replace("/", "__") if relative in status_paths else path.name)
++    old = before.read_text(encoding="utf-8") if relative in old_files + status_paths else ""
++    new = path.read_text(encoding="utf-8")
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    patch.extend(difflib.unified_diff(old.splitlines(True), new.splitlines(True), fromfile="a/"+relative if old else "/dev/null", tofile="b/"+relative))
++    manifest.append(dict(path=relative, sha256=hashlib.sha256(path.read_bytes()).hexdigest(), before_sha256=hashlib.sha256(before.read_bytes()).hexdigest() if old else None))
++    (E / "after" / relative.replace("/", "__")).write_bytes(path.read_bytes())
++(E / "checkpoint.patch").write_bytes("".join(patch).encode())
++git_checks = []
++for command in (["git", "diff", "--check", "--"] + paths, ["git", "apply", "--reverse", "--check", str(E / "checkpoint.patch")]):
++    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
++    git_checks.append(dict(command=command, exit_code=result.returncode, output=result.stdout+result.stderr))
++    assert result.returncode == 0, git_checks[-1]
++report = dict(date="2026-10-24", requirements=["DDE01","DDE02","DDE03","R01","G01","Q01"], engine="4.7.2.stable.official.ed1daf0bf", gpu="desktop RTX 3090", tests=tests, native=native, atlas=json.loads((E / "atlas.json").read_text()), nominal_start_increase=7/4.8-1, changed_files=manifest, git_checks=git_checks, limits=["Owner lip/track appearance acceptance pending", "No physical-device appearance, load-time or fragment-cost measurement", "No device attachment check, APK, install or deployment", "Conservative occupancy coarsening can omit sites on unusually large worlds", "Concurrent work and owner processes preserved"])
++report["bake_validation"] = {"commands": [".tools/review/Scripts/python.exe scripts/bake_desert_dune_edges.py", ".tools/review/Scripts/python.exe scripts/bake_desert_dune_edges.py --check", "python -m py_compile scripts/bake_desert_dune_edges.py docs/evidence/desert-dune-edges-2026-10-24/finish_receipt.py"], "exact_repeat": True, "log": "repeat-bake.log"}
++(E / "report.json").write_bytes((json.dumps(report, indent=2)+"\n").encode())
++print(json.dumps(dict(tests=len(tests), failures=0, git_checks=[item["exit_code"] for item in git_checks], report=str(E / "report.json"))))
+diff --git a/game/track/desert_dune_edges.gd.uid b/game/track/desert_dune_edges.gd.uid
+--- /dev/null
++++ b/game/track/desert_dune_edges.gd.uid
+@@ -0,0 +1 @@
++uid://c10so1sagagbd
+diff --git a/game/track/desert_dune_source_surface.gd.uid b/game/track/desert_dune_source_surface.gd.uid
+--- /dev/null
++++ b/game/track/desert_dune_source_surface.gd.uid
+@@ -0,0 +1 @@
++uid://beb2knhkyw7oe
+diff --git a/game/tests/test_desert_dune_edges.gd.uid b/game/tests/test_desert_dune_edges.gd.uid
+--- /dev/null
++++ b/game/tests/test_desert_dune_edges.gd.uid
+@@ -0,0 +1 @@
++uid://dpe1rw2ct4i5a
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Texture-edge Desert wind override (2026-10-24)
++2026-10-24 DDE01-DDE03/R01/G01/Q01: Wind births follow14 painted dune-edge guides at exact worldXZ/28m UVs, with pinned soft lip roots, narrow attached births, bounded projected bank exclusion and moving local discovery. Independent periods5-9s become3.6-6s (~46% more nominal starts); six sites/48quads/96triangles remain. Full-App edge/scenery 28/37/37, focused 57/70/70, ambience111, Desert87, biomes108 and parser1076 pass. Native1% samples 14/18 Mobile/16/18 Compatibility; stricter2% 9/18/10/18. All sampled roof pixels exact; hue/soft-core/lifecycle/canonical guards remain. Initial support/shape/fixture and concurrent-cache parse corrections retained. Native preview, commands, hashes and scoped checkpoint: docs/DESERT_DUNE_EDGES_2026_10_24.md and docs/evidence/desert-dune-edges-2026-10-24/report.json. Restart and owner lip/track/device cost acceptance remain. No device check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.
++
+ <!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
+ ## Daily Free Race selection override (2026-10-24)
+ 2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 DDE01-DDE03/R01/G01/Q01: Wind births follow14 painted dune-edge guides at exact worldXZ/28m UVs, with pinned soft lip roots, narrow attached births, bounded projected bank exclusion and moving local discovery. Independent periods5-9s become3.6-6s (~46% more nominal starts); six sites/48quads/96triangles remain. Full-App edge/scenery 28/37/37, focused 57/70/70, ambience111, Desert87, biomes108 and parser1076 pass. Native1% samples 14/18 Mobile/16/18 Compatibility; stricter2% 9/18/10/18. All sampled roof pixels exact; hue/soft-core/lifecycle/canonical guards remain. Initial support/shape/fixture and concurrent-cache parse corrections retained. Native preview, commands, hashes and scoped checkpoint: docs/DESERT_DUNE_EDGES_2026_10_24.md and docs/evidence/desert-dune-edges-2026-10-24/report.json. Restart and owner lip/track/device cost acceptance remain. No device check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.
++
+ <!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
+ 2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ <!-- /DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-24 DDE01-DDE03/R01/G01/Q01: Wind births follow14 painted dune-edge guides at exact worldXZ/28m UVs, with pinned soft lip roots, narrow attached births, bounded projected bank exclusion and moving local discovery. Independent periods5-9s become3.6-6s (~46% more nominal starts); six sites/48quads/96triangles remain. Full-App edge/scenery 28/37/37, focused 57/70/70, ambience111, Desert87, biomes108 and parser1076 pass. Native1% samples 14/18 Mobile/16/18 Compatibility; stricter2% 9/18/10/18. All sampled roof pixels exact; hue/soft-core/lifecycle/canonical guards remain. Initial support/shape/fixture and concurrent-cache parse corrections retained. Native preview, commands, hashes and scoped checkpoint: docs/DESERT_DUNE_EDGES_2026_10_24.md and docs/evidence/desert-dune-edges-2026-10-24/report.json. Restart and owner lip/track/device cost acceptance remain. No device check/test, APK, live mutation or deployment; concurrent work and owner processes preserved.
++
+ <!-- DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->
+ 2026-10-24 DTR01-DTR05/R01/Q01: Free Race gains up to100 daily picks, targeting60 ranked/20 fresh/20 rotating tracks. Versioned scoring combines rating confidence, recent/lifetime unique racers, freshness, capped verified race volume and repeat play. Bounded background batches/pools, atomic daily publication, current authority, privacy erasure, exact anchors and full catalogue search remain. Final backend111pass/2skip/73explicit PostgreSQL deselections; native real HTTP21headless/24Compatibility/24desktopMobile, existing discovery321/legacy entry321/preload120/list233/startup18/challenge discovery92/App141/parser1076 and Ruff pass. Initial native sandbox/caption, migration rollback guard, concurrent recording-cache parser and unavailable PostgreSQL interruptions are retained. Commands, source hashes, native views, limits and scoped Git-checkable checkpoint: docs/DAILY_TRACK_SELECTION_2026_10_24.md and docs/evidence/daily-track-selection-2026-10-24/report.json. Matching migration0064/grants/API/discovery-worker/client rollout, owner balance/appearance, PostgreSQL/load/cost and device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ <!-- /DAILY-TRACK-SELECTION-20261024-CHECKPOINT -->

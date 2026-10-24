@@ -1,0 +1,2045 @@
+diff --git a/docs/GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md b/docs/GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md
+@@ -0,0 +1,66 @@
++# Google Cloud cost options
++
++**Keep Google Cloud while implementing the data and request reductions. A Google-only budget near €2,000–2,500/month at one million daily players is a useful test target if average downloads are around 0.2 MiB per player/day. €1,800 is a stretch target; it is not established capacity.** At the earlier unmeasured five-MiB assumption, the comparable model remains around €9,000–10,000/month because delivery is still expensive.
++
++This follows the corrected Python trajectory verification path. It retains ten races per player/day, bounded durable intake, exact rewards and competition results, HA PostgreSQL and a separate reporting reader. The model assumes the packed objects, compact receipts, shorter nonprotected detail retention and forty dynamic requests/player/day in the [cost reduction plan](BACKEND_COST_REDUCTION_PLAN_2026_10_24.md). No new traffic or retention policy is implemented here.
++
++Requirements GCO01 Google-only scope, GCO02 current regional prices, GCO03 billing and resource choices, GCO04 delivery sensitivity, GCO05 unvalidated capacity and preservation.
++
++## Retain the managed architecture first
++
++Cloud Run supports instance-based billing, which charges allocated instance lifetime without the request charge. This can be cheaper at sustained request volume. At forty requests/player/day and one million players, the thirty-day total is 1.2 billion requests; the request-based fee alone is about €421 at the retrieved regional catalogue tiers. Instance-based billing replaces that charge structure, but it also bills idle instance lifetime. It should be compared under measured traffic, not enabled blindly on today's quiet staging service. [Billing settings](https://docs.cloud.google.com/run/docs/configuring/billing-settings).
++
++One continuously allocated Cloud Run CPU/one GiB under the retrieved service instance rates is approximately €45.61 per thirty days. Three average equivalents would be about €137/month. Four one-CPU/one-GiB worker-pool equivalents add about €114/month at their separate worker rates. These are planning averages; peak instance count, concurrency, queue service rate and host-loss behaviour still need a current-image load test. Small checker computation does not establish total worker throughput.
++
++For the database, test a compact 250-GiB live dataset against a four-vCPU/sixteen-GiB HA primary and then eight/thirty-two if necessary. Their CPU/RAM prices are approximately €351/€703 per thirty days. A separate four-vCPU/sixteen-GiB reporting replica adds about €176 of compute plus disk. These are unvalidated test envelopes, not million-player ratings. Current broad Studio reporting requires a dedicated readable physical standby; Cloud SQL's internal HA failover standby cannot be treated as that extra reader.
++
++The illustrative model includes primary/reader disk and backup usage, four TiB of GCS objects, ten million object writes, two hundred million object reads, edge and monitoring allowances, internal-traffic allowance and €150 contingency. The subtotal before client delivery and CDN lookup/fill is approximately **€1,461–1,813/month**. This is not a complete upper bound on a future bill. Each storage/operation figure is a target to validate.
++
++The same region, pinned builds, current identity guarantees and short pool budgets remain useful. Keep manifests and prepared geometry cached. Give ordinary acceptance and low-priority projection/geometry work independent resource budgets. Do not introduce native physics replay into ordinary acceptance or allocate one idle CPU to each job waiting on I/O.
++
++## Delivery determines how close the target gets
++
++Cloud CDN reduces origin work and can lower the rate relative to serving everything through Cloud Run. A cache hit still incurs delivery and lookup charges. Device caching avoids a transfer; an edge cache usually changes who serves it. [CDN pricing](https://cloud.google.com/cdn/pricing).
++
++At one million daily players for thirty days, the retrieved EUR tiers give the following European CDN comparison:
++
++| Downloaded per player/day | Monthly volume | CDN delivery alone if cacheable | Full illustrative managed budget |
++| --- | ---: | ---: | ---: |
++| 0.1 MiB | 2.86 TiB | €206 | About €1,700–2,200 |
++| 0.2 MiB | 5.72 TiB | €412 | About €2,000–2,500 |
++| 0.5 MiB | 14.31 TiB | €934 | About €2,500–3,000 |
++| 1 MiB | 28.61 TiB | €1,643 | About €3,200–3,800 |
++| 5 MiB | 143.05 TiB | €7,315 | About €9,000–10,000 |
++
++The CDN-only column excludes lookups, cache fill, load balancing and other services. Total budgets include assumed fifty-to-two-hundred million CDN lookups/month and ten-percent fill bytes. They split 0.05 MiB/day/player of private/dynamic replies through Cloud Run's European premium egress and the remaining bytes through CDN; actual response/header bytes and routing remain to be measured. All-European delivery is not a worldwide quote. A mixed geographic audience changes the rates, and private records remain authenticated.
++
++The earlier five-MiB input was a scenario assumption. Measure compressed response bodies, header overhead, cold versus returning players, track/content changes, thumbnails, ghosts and cache misses before treating it as necessary demand. The 0.2-MiB figure is also a target, not observed consumption. Reuse immutable content, request only changed metadata and avoid fetching recordings that are never viewed. Do not lower visual quality, expose private recordings or change gameplay merely to satisfy the byte budget.
++
++Serving through Compute Engine Standard Tier is another Google-only delivery option, but it is also metered and has different routing/latency characteristics. It does not create free bulk delivery. [Network tiers](https://cloud.google.com/network-tiers/pricing).
++
++## Self management on Compute Engine is optional
++
++The official EMEA E2 CPU/RAM catalogue gives these on-demand thirty-day component prices:
++
++| Candidate VM allocation | CPU/RAM cost only |
++| --- | ---: |
++| One e2-standard-8, eight vCPUs/thirty-two GiB | €186.82 |
++| One e2-highmem-8, eight vCPUs/sixty-four GiB | €252.03 |
++| Two of each, thirty-two total vCPUs/192 GiB | €877.71 |
++| Four e2-standard-16, sixty-four total vCPUs/256 GiB | €1,494.60 |
++
++Disks, snapshots/WAL, networking, load balancing, logging, spare capacity and operations are additional. The smaller allocation is not equivalent to the larger allocation, and neither is capacity-tested for the target workload. Self-managed primary/standby failover, patching and restore become operator work. Compute Engine does not automatically beat an efficiently autoscaled Cloud Run service. [E2 machine definitions](https://docs.cloud.google.com/compute/docs/general-purpose-machines).
++
++Move only a measured expensive component if that comparison establishes a saving with acceptable operations. There is no cost evidence here requiring Kubernetes, a rewrite, or an immediate migration away from the current managed stack.
++
++## Commitments can close a small remaining gap
++
++Once minimum sustained demand is demonstrated, Google lists a 25% one-year Cloud SQL CPU/RAM commitment discount. The current Compute flexible table lists 28% for eligible instance-billed Cloud Run/worker and Compute Engine usage under a one-year commitment. These discounts cover qualifying committed compute, not bandwidth, storage or unused capacity. [Cloud SQL commitments](https://docs.cloud.google.com/sql/docs/postgres/cud), [Compute flexible commitments](https://docs.cloud.google.com/compute/docs/instances/committed-use-discounts-overview).
++
++In the low-download 0.2-MiB model, fully used qualifying commitments reduce approximately €202–290/month, giving roughly €1,750–2,150/month before unmodelled variation. That makes the €1,800 goal worth testing on Google alone, while leaving little margin in the cheaper case. No commitment purchase is recommended from an untested forecast; the obligation continues if actual traffic is lower.
++
++## Next step and evidence
++
++Keep the existing Google deployment while measuring current-flow bytes, SQL work, storage operations and complete acceptance latency. Implement the durable packing, receipt/archive and cache/request changes locally. Then test the managed candidate at approximately 579 accepted results/second and 2,315 dynamic requests/second, including failures, recovery, hot boards, real retained accounts and ongoing cleanup. Validate peak scaling and average billed instances independently.
++
++The [regional price receipts](evidence/google-only-costs-2026-10-24/prices.json), [CDN receipts](evidence/google-only-costs-2026-10-24/network-prices.json) and [calculated model](evidence/google-only-costs-2026-10-24/model.json) preserve the inputs. The new price reads inspect public catalogue metadata only. Existing Cloud Run/SQL/GCS EUR receipts from the same date are reused. No resource purchase, configuration/billing change, deployment, data mutation, device test or phone/tablet attachment check was performed.
+diff --git a/docs/evidence/google-only-costs-2026-10-24/extra_prices.py b/docs/evidence/google-only-costs-2026-10-24/extra_prices.py
+--- a/docs/evidence/google-only-costs-2026-10-24/extra_prices.py
++++ b/docs/evidence/google-only-costs-2026-10-24/extra_prices.py
+@@ -27,7 +27,7 @@
+     output = {}
+     for service in services:
+         name = service["displayName"]
+-        if any(word in name for word in ("CDN", "Network")):
++        if name in ("Cloud CDN", "Networking", "Network Service Tiers", "Network Services"):
+             print(name, service["name"], flush=True)
+         if name not in ("Cloud CDN", "Networking", "Network Service Tiers", "Network Services"):
+             continue
+@@ -39,8 +39,8 @@
+             data = response.json()
+             for sku in data.get("skus", []):
+                 desc = sku["description"].lower()
+-                include = name == "Cloud CDN" and ("europe" in desc or "lookup" in desc or "request" in desc)
+-                include |= "standard" in desc and ("europe" in desc or "europe-west1" in sku.get("serviceRegions", []))
++                include = "cdn" in desc
++                include |= "standard" in desc and ("emea" in desc or "europe" in desc or "europe-west1" in sku.get("serviceRegions", []))
+                 if include:
+                     rows.append(sku)
+             page = data.get("nextPageToken", "")
+diff --git a/docs/evidence/google-only-costs-2026-10-24/finalize.py b/docs/evidence/google-only-costs-2026-10-24/finalize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/google-only-costs-2026-10-24/finalize.py
+@@ -0,0 +1,73 @@
++"""Check the Google-only scenarios and retain a scoped, reviewable checkpoint."""
++import difflib
++import hashlib
++import json
++import math
++import re
++import subprocess
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[2]
++DOC = ROOT / "docs/GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md"
++
++
++def main():
++    model = json.loads((HERE / "model.json").read_text(encoding="utf-8"))
++    profiles = model["managed_profiles"]
++    for profile in profiles:
++        assert math.isclose(sum(profile["components_eur_month"].values()),
++                            profile["subtotal_before_delivery_eur_month"])
++    for scenario in model["download_scenarios"]:
++        assert scenario["gib_month"] == 1000000 * 30 * scenario["mib_downloaded_per_dau_day"] / 1024
++        for i, profile in enumerate(profiles):
++            delivery = sum(scenario[key] for key in (
++                "actual_split_public_cdn_eur_month", "actual_split_private_cloud_run_egress_eur_month",
++                "cdn_fill_at_tenpercent_miss_eur_month"))
++            total = profile["subtotal_before_delivery_eur_month"] + delivery + scenario["cdn_lookup_eur_month_range"][i]
++            assert math.isclose(total, scenario["managed_budget_with_reporting_eur_month_range"][i])
++            saving = scenario["conditional_one_year_commit_covered_compute_saving_eur_month_range"][i]
++            assert math.isclose(total - saving, scenario["conditional_commit_budget_eur_month_range"][i])
++    links = 0
++    for link in re.findall(r"\[[^\]]*\]\(([^)]+)\)", DOC.read_text(encoding="utf-8")):
++        if not link.startswith(("https://", "http://", "#")):
++            assert (DOC.parent / link.split("#")[0]).is_file(), link
++            links += 1
++    sources = [DOC, *sorted(p for p in HERE.iterdir() if p.suffix in (".json", ".py")
++                            and p.name != "report.json")]
++    report = {
++        "date": "2026-10-24", "requirements": ["GCO01", "GCO02", "GCO03", "GCO04", "GCO05"],
++        "status": "Google-only architecture and pricing scenarios prepared; no population capacity claim",
++        "checks": {"component_sums": "passed", "delivery_and_commitment_arithmetic": "passed",
++                   "json_readback": "passed", "relative_links": links,
++                   "runtime_tests": "Not rerun: no runtime changes; current trajectory benchmark reused",
++                   "lint_compilation_and_patch": "Run separately; results recorded in conversation"},
++        "source_sha256": {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++                          for p in sources},
++        "preservation": {"cloud_calls": "Read-only official public pricing catalogue metadata",
++                         "resource_configuration_changes": False, "deployments": False,
++                         "purchases": False, "runtime_changes": False, "data_deletions": False},
++        "limitations": model["qualifications"],
++    }
++    (HERE / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++    patch = []
++    changed = 0
++    for path in [*sources, HERE / "report.json"]:
++        name = path.relative_to(ROOT).as_posix()
++        baseline = subprocess.run(["git", "show", "HEAD:" + name], cwd=ROOT, capture_output=True, check=False)
++        before = baseline.stdout.decode("utf-8").splitlines(keepends=True) if baseline.returncode == 0 else []
++        after = path.read_text(encoding="utf-8").splitlines(keepends=True)
++        if before == after:
++            continue
++        changed += 1
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        if baseline.returncode:
++            patch.append("new file mode 100644\n")
++        patch.extend(difflib.unified_diff(before, after,
++                     fromfile="a/" + name if not baseline.returncode else "/dev/null", tofile="b/" + name))
++    (HERE / "scoped-change.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++    print(json.dumps({"arithmetic": "passed", "relative_links": links, "checkpoint_files": changed}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/google-only-costs-2026-10-24/model.json b/docs/evidence/google-only-costs-2026-10-24/model.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/google-only-costs-2026-10-24/model.json
+@@ -0,0 +1,209 @@
++{
++  "date": "2026-10-24",
++  "currency": "EUR",
++  "region": "europe-west1",
++  "month_days": 30,
++  "status": "Component pricing and unvalidated budget scenarios; no deployment or target-population capacity qualification",
++  "workload": {
++    "dau": 1000000,
++    "races_per_dau_day": 10,
++    "dynamic_requests_per_dau_day_target": 40,
++    "peak_factor": 5,
++    "peak_acceptances_per_second": 578.7037037037037
++  },
++  "managed_profiles": [
++    {
++      "ha_primary_cpu_ram": [
++        4,
++        16
++      ],
++      "components_eur_month": {
++        "api_average_three_one_cpu_one_gib_instances": 136.842048,
++        "worker_four_cpu_gib_equivalents": 113.84064,
++        "ha_sql_primary_cpu_ram": 351.2678256,
++        "reporting_replica_four_cpu_sixteen_gib": 175.6339056,
++        "ha_primary_and_replica_disks_250gib_each": 112.1999995,
++        "sql_backups_500gib_used": 35.199999500000004,
++        "gcs_four_tib_plus_operations": 186.27959590400002,
++        "load_balancing_security_allowance": 100,
++        "logging_monitoring_allowance": 50,
++        "internal_traffic_misc_allowance": 50,
++        "contingency": 150
++      },
++      "subtotal_before_delivery_eur_month": 1461.264014104
++    },
++    {
++      "ha_primary_cpu_ram": [
++        8,
++        32
++      ],
++      "components_eur_month": {
++        "api_average_three_one_cpu_one_gib_instances": 136.842048,
++        "worker_four_cpu_gib_equivalents": 113.84064,
++        "ha_sql_primary_cpu_ram": 702.5356512,
++        "reporting_replica_four_cpu_sixteen_gib": 175.6339056,
++        "ha_primary_and_replica_disks_250gib_each": 112.1999995,
++        "sql_backups_500gib_used": 35.199999500000004,
++        "gcs_four_tib_plus_operations": 186.27959590400002,
++        "load_balancing_security_allowance": 100,
++        "logging_monitoring_allowance": 50,
++        "internal_traffic_misc_allowance": 50,
++        "contingency": 150
++      },
++      "subtotal_before_delivery_eur_month": 1812.531839704
++    }
++  ],
++  "download_scenarios": [
++    {
++      "mib_downloaded_per_dau_day": 0.1,
++      "gib_month": 2929.6875,
++      "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": 206.2499970703125,
++      "private_dynamic_mib_per_dau_day_assumption": 0.05,
++      "actual_split_public_cdn_eur_month": 103.12499853515625,
++      "actual_split_private_cloud_run_egress_eur_month": 135.35156103515624,
++      "cdn_fill_at_tenpercent_miss_eur_month": 1.289062353515625,
++      "cdn_lookup_eur_month_range": [
++        32.949999999999996,
++        131.79999999999998
++      ],
++      "managed_budget_with_reporting_eur_month_range": [
++        1733.979636027828,
++        2184.097461627828
++      ],
++      "conditional_one_year_commit_covered_compute_saving_eur_month_range": [
++        201.91658544,
++        289.73354184
++      ],
++      "conditional_commit_budget_eur_month_range": [
++        1532.063050587828,
++        1894.363919787828
++      ]
++    },
++    {
++      "mib_downloaded_per_dau_day": 0.2,
++      "gib_month": 5859.375,
++      "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": 412.499994140625,
++      "private_dynamic_mib_per_dau_day_assumption": 0.05,
++      "actual_split_public_cdn_eur_month": 309.37499560546877,
++      "actual_split_private_cloud_run_egress_eur_month": 135.35156103515624,
++      "cdn_fill_at_tenpercent_miss_eur_month": 3.8671870605468746,
++      "cdn_lookup_eur_month_range": [
++        32.949999999999996,
++        131.79999999999998
++      ],
++      "managed_budget_with_reporting_eur_month_range": [
++        1942.8077578051718,
++        2392.925583405172
++      ],
++      "conditional_one_year_commit_covered_compute_saving_eur_month_range": [
++        201.91658544,
++        289.73354184
++      ],
++      "conditional_commit_budget_eur_month_range": [
++        1740.8911723651718,
++        2103.192041565172
++      ]
++    },
++    {
++      "mib_downloaded_per_dau_day": 0.5,
++      "gib_month": 14648.4375,
++      "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": 934.2643603515626,
++      "private_dynamic_mib_per_dau_day_assumption": 0.05,
++      "actual_split_public_cdn_eur_month": 863.3659243164063,
++      "actual_split_private_cloud_run_egress_eur_month": 135.35156103515624,
++      "cdn_fill_at_tenpercent_miss_eur_month": 11.601561181640625,
++      "cdn_lookup_eur_month_range": [
++        32.949999999999996,
++        131.79999999999998
++      ],
++      "managed_budget_with_reporting_eur_month_range": [
++        2504.533060637203,
++        2954.6508862372034
++      ],
++      "conditional_one_year_commit_covered_compute_saving_eur_month_range": [
++        201.91658544,
++        289.73354184
++      ],
++      "conditional_commit_budget_eur_month_range": [
++        2302.6164751972033,
++        2664.9173443972036
++      ]
++    },
++    {
++      "mib_downloaded_per_dau_day": 1,
++      "gib_month": 29296.875,
++      "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": 1643.248720703125,
++      "private_dynamic_mib_per_dau_day_assumption": 0.05,
++      "actual_split_public_cdn_eur_month": 1572.3502846679687,
++      "actual_split_private_cloud_run_egress_eur_month": 135.35156103515624,
++      "cdn_fill_at_tenpercent_miss_eur_month": 24.492184716796874,
++      "cdn_lookup_eur_month_range": [
++        32.949999999999996,
++        131.79999999999998
++      ],
++      "managed_budget_with_reporting_eur_month_range": [
++        3226.4080445239215,
++        3676.525870123922
++      ],
++      "conditional_one_year_commit_covered_compute_saving_eur_month_range": [
++        201.91658544,
++        289.73354184
++      ],
++      "conditional_commit_budget_eur_month_range": [
++        3024.4914590839217,
++        3386.792328283922
++      ]
++    },
++    {
++      "mib_downloaded_per_dau_day": 5,
++      "gib_month": 146484.375,
++      "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": 7315.123603515624,
++      "private_dynamic_mib_per_dau_day_assumption": 0.05,
++      "actual_split_public_cdn_eur_month": 7244.225167480468,
++      "actual_split_private_cloud_run_egress_eur_month": 135.35156103515624,
++      "cdn_fill_at_tenpercent_miss_eur_month": 127.61717299804687,
++      "cdn_lookup_eur_month_range": [
++        32.949999999999996,
++        131.79999999999998
++      ],
++      "managed_budget_with_reporting_eur_month_range": [
++        9001.407915617672,
++        9451.52574121767
++      ],
++      "conditional_one_year_commit_covered_compute_saving_eur_month_range": [
++        201.91658544,
++        289.73354184
++      ],
++      "conditional_commit_budget_eur_month_range": [
++        8799.491330177672,
++        9161.79219937767
++      ]
++    }
++  ],
++  "compute_engine_cpu_ram_floors_eur_month": {
++    "one_e2_standard_8": 186.82445375999998,
++    "one_e2_highmem_8": 252.03131712,
++    "two_standard8_and_two_highmem8_total32vcpu192gib": 877.71154176,
++    "four_standard16_total64vcpu256gib": 1494.5956300799999,
++    "qualification": "On-demand CPU/RAM only. Disks, backup, network, operations and availability remain additional. Profile sizes are test choices, not equivalent demonstrated capacity."
++  },
++  "instance_billing_one_cpu_one_gib_month_eur": 45.614016,
++  "request_based_fee_at_1point2b_calls_eur_month": 420.498,
++  "qualifications": [
++    "Current trajectory checker is used; no native replay fallback is assumed",
++    "Packed objects, bounded hot SQL and request reductions are prerequisites",
++    "AverageCloudRun3 and worker4 resource equivalents are targets; peak scaling and Nplus1 capacity must be proved",
++    "Bulk-delivery-only column assumes cacheability. Total model instead splits0.05MiB/day of private/dynamic bytes through CloudRun premium egress and the remainder through European CDN, without double-counting. Actual split and response/header bytes remain unmeasured.",
++    "50million to200million CDN lookups and10percent cache-fill bytes are assumptions",
++    "Storage allowances include a full reporting reader; removing it makes broad Studio reports unavailable under the current contract",
++    "Commitments are optional illustrations for a fully used covered baseline; not a recommendation to purchase before load is measured",
++    "Tax, engineering, migration costs and extra regions excluded; live bill not reconciled"
++  ],
++  "sources": [
++    "https://cloud.google.com/cdn/pricing",
++    "https://docs.cloud.google.com/run/docs/configuring/billing-settings",
++    "https://docs.cloud.google.com/compute/docs/general-purpose-machines",
++    "https://docs.cloud.google.com/sql/docs/postgres/cud",
++    "https://docs.cloud.google.com/compute/docs/instances/committed-use-discounts-overview"
++  ]
++}
+diff --git a/docs/evidence/google-only-costs-2026-10-24/model.py b/docs/evidence/google-only-costs-2026-10-24/model.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/google-only-costs-2026-10-24/model.py
+@@ -0,0 +1,106 @@
++"""Google-only component arithmetic; candidate resources are not capacity claims."""
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++PRIOR = HERE.parent / "backend-performance-review-2026-10-24"
++
++
++def main():
++    compute = json.loads((HERE / "prices.json").read_text(encoding="utf-8"))["skus"]
++    networking = json.loads((HERE / "network-prices.json").read_text(encoding="utf-8"))["Networking"]
++    prior = json.loads((PRIOR / "prices.json").read_text(encoding="utf-8"))["services"]
++    skus = {row["skuId"]: row for row in [*compute, *networking, *[s for value in prior.values() for s in value["skus"]]]}
++
++    def expression(identifier):
++        return skus[identifier]["pricingInfo"][-1]["pricingExpression"]
++
++    def price(row):
++        return int(row.get("units", 0)) + row.get("nanos", 0)/1e9
++
++    def rate(identifier):
++        return price(expression(identifier)["tieredRates"][-1]["unitPrice"])
++
++    def tier(identifier, quantity):
++        rows = expression(identifier)["tieredRates"]
++        return sum(max(0, min(quantity, rows[i+1]["startUsageAmount"] if i+1 < len(rows) else quantity)-r["startUsageAmount"])
++                   * price(r["unitPrice"]) for i, r in enumerate(rows))
++
++    def vm(cpu, ram):
++        return 720 * (cpu * rate("9FE0-8F60-A9F0") + ram * rate("F268-6CE7-AC16"))
++
++    def sql(cpu, ram, ha=False):
++        return 720 * (cpu * rate("84B5-2F8B-3A6D" if ha else "2154-E036-4CB2")
++                      + ram * rate("C690-8FB3-59EE" if ha else "8A88-5E4B-2265"))
++
++    run_unit = 2592000 * (rate("4C19-DF1E-81AB") + rate("A1D5-F449-FAFC"))
++    worker_unit = 2592000 * (rate("F7DC-B124-640A") + rate("F30E-913C-E55A"))
++    object_cost = 4096 * rate("A703-5CB6-E0BF") + 10000000*rate("4DBF-185F-A415") + 200000000*rate("7870-010B-2763")
++    managed = []
++    for cpu, ram in ((4, 16), (8, 32)):
++        lines = {"api_average_three_one_cpu_one_gib_instances": 3*run_unit,
++                 "worker_four_cpu_gib_equivalents": 4*worker_unit,
++                 "ha_sql_primary_cpu_ram": sql(cpu, ram, True),
++                 "reporting_replica_four_cpu_sixteen_gib": sql(4, 16),
++                 "ha_primary_and_replica_disks_250gib_each": 250*(rate("D901-4910-1FD2")+rate("B14E-2B60-F10B")),
++                 "sql_backups_500gib_used": 500*rate("FB45-227E-BC1B"),
++                 "gcs_four_tib_plus_operations": object_cost,
++                 "load_balancing_security_allowance": 100, "logging_monitoring_allowance": 50,
++                 "internal_traffic_misc_allowance": 50, "contingency": 150}
++        managed.append({"ha_primary_cpu_ram": [cpu, ram], "components_eur_month": lines,
++                        "subtotal_before_delivery_eur_month": sum(lines.values())})
++    scenarios = []
++    for mib in (.1, .2, .5, 1, 5):
++        gib = 1000000*30*mib/1024
++        delivery = tier("2A8D-245C-0E0B", gib)
++        private_gib = 1000000*30*.05/1024
++        public_gib = gib-private_gib
++        private_delivery = tier("0C22-3157-F0C9", private_gib)
++        public_delivery = tier("2A8D-245C-0E0B", public_gib)
++        fill = .1*public_gib*rate("AFF5-F24B-5F78")
++        lookups = [count*rate("4762-E550-B5D2") for count in (50000000, 200000000)]
++        totals = [managed[i]["subtotal_before_delivery_eur_month"]+public_delivery+private_delivery+fill+lookups[i] for i in (0, 1)]
++        discounts = [.25*(m["components_eur_month"]["ha_sql_primary_cpu_ram"]+m["components_eur_month"]["reporting_replica_four_cpu_sixteen_gib"])
++                     + .28*(3*run_unit+4*worker_unit) for m in managed]
++        scenarios.append({"mib_downloaded_per_dau_day": mib, "gib_month": gib,
++            "cdn_europe_delivery_if_all_bytes_cacheable_eur_month": delivery,
++            "private_dynamic_mib_per_dau_day_assumption": .05,
++            "actual_split_public_cdn_eur_month": public_delivery,
++            "actual_split_private_cloud_run_egress_eur_month": private_delivery,
++            "cdn_fill_at_tenpercent_miss_eur_month": fill,
++            "cdn_lookup_eur_month_range": lookups,
++            "managed_budget_with_reporting_eur_month_range": totals,
++            "conditional_one_year_commit_covered_compute_saving_eur_month_range": discounts,
++            "conditional_commit_budget_eur_month_range": [totals[i]-discounts[i] for i in (0, 1)]})
++    result = {"date": "2026-10-24", "currency": "EUR", "region": "europe-west1", "month_days": 30,
++        "status": "Component pricing and unvalidated budget scenarios; no deployment or target-population capacity qualification",
++        "workload": {"dau": 1000000, "races_per_dau_day": 10, "dynamic_requests_per_dau_day_target": 40,
++            "peak_factor": 5, "peak_acceptances_per_second": 10000000*5/86400},
++        "managed_profiles": managed, "download_scenarios": scenarios,
++        "compute_engine_cpu_ram_floors_eur_month": {
++            "one_e2_standard_8": vm(8, 32), "one_e2_highmem_8": vm(8, 64),
++            "two_standard8_and_two_highmem8_total32vcpu192gib": 2*vm(8, 32)+2*vm(8, 64),
++            "four_standard16_total64vcpu256gib": 4*vm(16, 64),
++            "qualification": "On-demand CPU/RAM only. Disks, backup, network, operations and availability remain additional. Profile sizes are test choices, not equivalent demonstrated capacity."},
++        "instance_billing_one_cpu_one_gib_month_eur": run_unit,
++        "request_based_fee_at_1point2b_calls_eur_month": tier("2DA5-55D3-E679", 1200000000),
++        "qualifications": ["Current trajectory checker is used; no native replay fallback is assumed",
++            "Packed objects, bounded hot SQL and request reductions are prerequisites",
++            "AverageCloudRun3 and worker4 resource equivalents are targets; peak scaling and Nplus1 capacity must be proved",
++            "Bulk-delivery-only column assumes cacheability. Total model instead splits0.05MiB/day of private/dynamic bytes through CloudRun premium egress and the remainder through European CDN, without double-counting. Actual split and response/header bytes remain unmeasured.",
++            "50million to200million CDN lookups and10percent cache-fill bytes are assumptions",
++            "Storage allowances include a full reporting reader; removing it makes broad Studio reports unavailable under the current contract",
++            "Commitments are optional illustrations for a fully used covered baseline; not a recommendation to purchase before load is measured",
++            "Tax, engineering, migration costs and extra regions excluded; live bill not reconciled"],
++        "sources": ["https://cloud.google.com/cdn/pricing", "https://docs.cloud.google.com/run/docs/configuring/billing-settings",
++            "https://docs.cloud.google.com/compute/docs/general-purpose-machines", "https://docs.cloud.google.com/sql/docs/postgres/cud",
++            "https://docs.cloud.google.com/compute/docs/instances/committed-use-discounts-overview"]}
++    assert scenarios[1]["cdn_europe_delivery_if_all_bytes_cacheable_eur_month"] < 413
++    assert 7314 < scenarios[-1]["cdn_europe_delivery_if_all_bytes_cacheable_eur_month"] < 7316
++    (HERE / "model.json").write_text(json.dumps(result, indent=2)+"\n", encoding="utf-8")
++    print(json.dumps({"compute_floors": result["compute_engine_cpu_ram_floors_eur_month"],
++        "managed_base": [m["subtotal_before_delivery_eur_month"] for m in managed], "downloads": scenarios}, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/google-only-costs-2026-10-24/network-prices.json b/docs/evidence/google-only-costs-2026-10-24/network-prices.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/google-only-costs-2026-10-24/network-prices.json
+@@ -0,0 +1,1491 @@
++{
++  "Networking": [
++    {
++      "name": "services/E505-1604-58F8/skus/016A-DBA5-499B",
++      "skuId": "016A-DBA5-499B",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer from Dammam",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "me-central2"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 96799999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 52799999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "me-central2"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/0708-52CB-0CAD",
++      "skuId": "0708-52CB-0CAD",
++      "description": "Media CDN Capacity Reservation per Tbps for India",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "asia-south1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "asia-south1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/0A6D-B3AF-D81E",
++      "skuId": "0A6D-B3AF-D81E",
++      "description": "Networking Cloud Armor Requests (Media CDN)",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "Armor",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "count",
++            "displayQuantity": 1000000,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 659
++                }
++              }
++            ],
++            "usageUnitDescription": "count",
++            "baseUnit": "count",
++            "baseUnitDescription": "count",
++            "baseUnitConversionFactor": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/1254-49B2-3C4C",
++      "skuId": "1254-49B2-3C4C",
++      "description": "Media CDN Capacity Reservation per Tbps for Other",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "africa-south1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "africa-south1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/13EC-4B91-3F59",
++      "skuId": "13EC-4B91-3F59",
++      "description": "Media CDN Capacity Reservation per Tbps for Middle East",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "me-central1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "me-central1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/15AE-8E35-C42B",
++      "skuId": "15AE-8E35-C42B",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to North America",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 70399999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 48399999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 26399999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/1CFA-CA47-0C6E",
++      "skuId": "1CFA-CA47-0C6E",
++      "description": "Networking Cloud Armor Enterprise Annual: Data Processing Fee for CDN",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Compute",
++        "resourceGroup": "LoadBalancing",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 21999999
++                }
++              },
++              {
++                "startUsageAmount": 102400,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              },
++              {
++                "startUsageAmount": 512000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 13199999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 8799999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/2A8D-245C-0E0B",
++      "skuId": "2A8D-245C-0E0B",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to Europe",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 70399999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 48399999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 26399999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/3CEE-9BD2-406C",
++      "skuId": "3CEE-9BD2-406C",
++      "description": "Media CDN Capacity Reservation per Tbps for Europe",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "europe-west2"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "europe-west2"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/4762-E550-B5D2",
++      "skuId": "4762-E550-B5D2",
++      "description": "Networking Cloud Cdn Cache Lookups",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "Cdn",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "count",
++            "displayQuantity": 10000,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 659
++                }
++              }
++            ],
++            "usageUnitDescription": "count",
++            "baseUnit": "count",
++            "baseUnitDescription": "count",
++            "baseUnitConversionFactor": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/5050-F53D-A6D6",
++      "skuId": "5050-F53D-A6D6",
++      "description": "Media CDN Capacity Reservation per Tbps for Oceania",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "australia-southeast1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "australia-southeast1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/620D-FE53-4BA9",
++      "skuId": "620D-FE53-4BA9",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to Other",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 52799999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 43999999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 35199999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/6C5E-44C4-703A",
++      "skuId": "6C5E-44C4-703A",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to Asia",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 52799999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 43999999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 35199999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/7393-8C37-77E1",
++      "skuId": "7393-8C37-77E1",
++      "description": "Media CDN Capacity Reservation per Tbps for North America",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "us-east1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "us-east1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/B44C-E763-C23B",
++      "skuId": "B44C-E763-C23B",
++      "description": "Media CDN Capacity Reservation per Tbps for Latin America",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "southamerica-east1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "southamerica-east1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/B916-AF2C-D64C",
++      "skuId": "B916-AF2C-D64C",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer from Doha",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "me-central1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 96799999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 52799999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "me-central1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/B932-7C57-E43B",
++      "skuId": "B932-7C57-E43B",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to China",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 175999999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 149599999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 140799999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 127599999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/D18B-A578-828C",
++      "skuId": "D18B-A578-828C",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer from Jakarta",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "asia-southeast2"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 105599999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 83599999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 70399999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "asia-southeast2"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/D6F1-17BC-A60A",
++      "skuId": "D6F1-17BC-A60A",
++      "description": "Networking Cloud Armor Enterprise Annual: Data Processing Fee for Media CDN",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Compute",
++        "resourceGroup": "LoadBalancing",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 21999999
++                }
++              },
++              {
++                "startUsageAmount": 102400,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              },
++              {
++                "startUsageAmount": 512000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 13199999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 8799999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/DA37-3BF1-2FEB",
++      "skuId": "DA37-3BF1-2FEB",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to Oceania",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 96799999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 70399999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 57199999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/E141-D225-4599",
++      "skuId": "E141-D225-4599",
++      "description": "Networking Cloud CDN Traffic Cache Data Transfer to Latin America",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "CDNCacheEgress",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 79199999
++                }
++              },
++              {
++                "startUsageAmount": 10240,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 52799999
++                }
++              },
++              {
++                "startUsageAmount": 153600,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 43999999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 35199999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "ACCOUNT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google"
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/EC58-B447-4756",
++      "skuId": "EC58-B447-4756",
++      "description": "Media CDN Capacity Reservation per Tbps for Asia",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "MediaCDN",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "asia-southeast1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "17599",
++                  "nanos": 999999994
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "REGIONAL",
++        "regions": [
++          "asia-southeast1"
++        ]
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/EE98-AADA-1E97",
++      "skuId": "EE98-AADA-1E97",
++      "description": "Networking Cloud Armor Enterprise Paygo: Data Processing Fee for CDN",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Compute",
++        "resourceGroup": "LoadBalancing",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 32999999
++                }
++              },
++              {
++                "startUsageAmount": 102400,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 26399999
++                }
++              },
++              {
++                "startUsageAmount": 512000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 21999999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "PROJECT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/F4BD-959B-5BC5",
++      "skuId": "F4BD-959B-5BC5",
++      "description": "Networking Cloud Armor Enterprise Paygo: Data Processing Fee for Media CDN",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Compute",
++        "resourceGroup": "LoadBalancing",
++        "usageType": "OnDemand"
++      },
++      "serviceRegions": [
++        "global"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "GiBy",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 32999999
++                }
++              },
++              {
++                "startUsageAmount": 102400,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 26399999
++                }
++              },
++              {
++                "startUsageAmount": 512000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 21999999
++                }
++              },
++              {
++                "startUsageAmount": 1024000,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 17599999
++                }
++              }
++            ],
++            "usageUnitDescription": "gibibyte",
++            "baseUnit": "By",
++            "baseUnitDescription": "byte",
++            "baseUnitConversionFactor": 1073741824
++          },
++          "aggregationInfo": {
++            "aggregationLevel": "PROJECT",
++            "aggregationInterval": "MONTHLY",
++            "aggregationCount": 1
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    },
++    {
++      "name": "services/E505-1604-58F8/skus/FF5A-2D3D-6AF7",
++      "skuId": "FF5A-2D3D-6AF7",
++      "description": "Media CDN Cache Egress Subscription",
++      "category": {
++        "serviceDisplayName": "Networking",
++        "resourceFamily": "Network",
++        "resourceGroup": "Commit",
++        "usageType": "Commit"
++      },
++      "serviceRegions": [
++        "us-east1",
++        "asia-southeast1",
++        "europe-west2",
++        "asia-south1",
++        "southamerica-east1",
++        "me-central1",
++        "australia-southeast1",
++        "africa-south1"
++      ],
++      "pricingInfo": [
++        {
++          "summary": "",
++          "pricingExpression": {
++            "usageUnit": "mo",
++            "displayQuantity": 1,
++            "tieredRates": [
++              {
++                "startUsageAmount": 0,
++                "unitPrice": {
++                  "currencyCode": "EUR",
++                  "units": "0",
++                  "nanos": 8799999
++                }
++              }
++            ],
++            "usageUnitDescription": "month",
++            "baseUnit": "s",
++            "baseUnitDescription": "second",
++            "baseUnitConversionFactor": 2678400
++          },
++          "currencyConversionRate": 0.8799999999997185,
++          "effectiveTime": "2026-10-24T07:00:00Z"
++        }
++      ],
++      "serviceProviderName": "Google",
++      "geoTaxonomy": {
++        "type": "GLOBAL",
++        "regions": []
++      }
++    }
++  ]
++}
+diff --git a/docs/evidence/google-only-costs-2026-10-24/report.json b/docs/evidence/google-only-costs-2026-10-24/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/google-only-costs-2026-10-24/report.json
+@@ -0,0 +1,47 @@
++{
++  "date": "2026-10-24",
++  "requirements": [
++    "GCO01",
++    "GCO02",
++    "GCO03",
++    "GCO04",
++    "GCO05"
++  ],
++  "status": "Google-only architecture and pricing scenarios prepared; no population capacity claim",
++  "checks": {
++    "component_sums": "passed",
++    "delivery_and_commitment_arithmetic": "passed",
++    "json_readback": "passed",
++    "relative_links": 4,
++    "runtime_tests": "Not rerun: no runtime changes; current trajectory benchmark reused",
++    "lint_compilation_and_patch": "Run separately; results recorded in conversation"
++  },
++  "source_sha256": {
++    "docs/GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md": "fb392831e70b1ba58d05fca43d04d85d1b26bebad92e2054badcb2707f22713b",
++    "docs/evidence/google-only-costs-2026-10-24/extra_prices.py": "b791fcaa65aef32cecd1813920b32a676e278be8155cbfcafa9bd400a9f1b28d",
++    "docs/evidence/google-only-costs-2026-10-24/finalize.py": "e4a27e19f496db2939288e5bec5a6d0adf8540c90d0426c4b734ea26dab95756",
++    "docs/evidence/google-only-costs-2026-10-24/model.json": "a7cc99d7e60def2e4d08480f8cf8c32c6c4cf4d7083dc9b60d5620f17807c8ad",
++    "docs/evidence/google-only-costs-2026-10-24/model.py": "0ddfb85e448226d1df2e6d4d51db19522628f1a5e2c34c067794cc5e680b585f",
++    "docs/evidence/google-only-costs-2026-10-24/network-prices.json": "4e78f872586797241b24d36f4bf49d2149b8885a59623ab78b9fec7bf1d2feb0",
++    "docs/evidence/google-only-costs-2026-10-24/prices.json": "c0ab7b208c3b097ddfd82b7b8fe71c8dc5c582b041e8b9b5467e534c3f31a5a6",
++    "docs/evidence/google-only-costs-2026-10-24/prices.py": "fa64e2ca02787fbd3caaf80e0e9fb2dca3093c25a9b57681cda9858ff772a1ee"
++  },
++  "preservation": {
++    "cloud_calls": "Read-only official public pricing catalogue metadata",
++    "resource_configuration_changes": false,
++    "deployments": false,
++    "purchases": false,
++    "runtime_changes": false,
++    "data_deletions": false
++  },
++  "limitations": [
++    "Current trajectory checker is used; no native replay fallback is assumed",
++    "Packed objects, bounded hot SQL and request reductions are prerequisites",
++    "AverageCloudRun3 and worker4 resource equivalents are targets; peak scaling and Nplus1 capacity must be proved",
++    "Bulk-delivery-only column assumes cacheability. Total model instead splits0.05MiB/day of private/dynamic bytes through CloudRun premium egress and the remainder through European CDN, without double-counting. Actual split and response/header bytes remain unmeasured.",
++    "50million to200million CDN lookups and10percent cache-fill bytes are assumptions",
++    "Storage allowances include a full reporting reader; removing it makes broad Studio reports unavailable under the current contract",
++    "Commitments are optional illustrations for a fully used covered baseline; not a recommendation to purchase before load is measured",
++    "Tax, engineering, migration costs and extra regions excluded; live bill not reconciled"
++  ]
++}

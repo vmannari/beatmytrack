@@ -1,0 +1,132 @@
+{
+  "date": "2026-10-24",
+  "scope": "Review of outcome-dependent race work and similar avoidable backend operations",
+  "status": "review_complete_no_runtime_changes",
+  "requirement_ids": ["RCO01", "RCO02", "RCO03", "RCO04", "RCO05", "RCO06", "RCO07"],
+  "decision": {
+    "recommended": "Retain the existing lightweight trajectory check for earned completion effects; avoid competitive projections and presentation work when their authoritative inputs are unchanged.",
+    "competitive_gate": "Use neither improvement, not either failure: no race PB, no flying-lap PB, no weekly slot-best improvement or first completion, and no challenge/stage-best or exact source-result need. Comparisons must use the same pinned board and current server state.",
+    "rank_is_insufficient": "A faster weekly slot time remains useful while rank and immediate points stay unchanged; it is the retained best used for later comparisons and tie handling.",
+    "slower_race_effects": [
+      "50 completion coins and potentially 200 clean-race coins",
+      "A flying-lap PB and its reward despite a slower race total",
+      "Achievement counts, distance, biome/car progress, precision and streak updates",
+      "First-track reward and discovery/repeat-play contributions",
+      "Challenge completion/goal rewards and independent limited-start accounting",
+      "Creation of a new challenge from this exact slower result"
+    ],
+    "full_bypass_limit": "PB/weekly rank comparisons alone cannot justify trusting an unverified finish for all existing earned effects. A different reward-evidence policy would need a separate explicit product decision. This review changes neither reward promises nor trust policy."
+  },
+  "findings": [
+    {
+      "id": "RCO01",
+      "priority": "boundary",
+      "title": "Distinguish completion validation from competitive updates",
+      "current": "Ordinary acceptance already performs one Python trajectory pass with cached prepared geometry; it does not run native physics per race. Slower/tied race-PB upserts are already avoided.",
+      "proposal": "Retain this completion check while gating downstream work by actual changes. Keep creator validation, first weekly/stage completions, lap PBs and exact post-race challenge sources eligible.",
+      "sources": ["backend/bmt_backend/verifier.py:364", "backend/bmt_backend/trajectory_verifier.py:103", "backend/bmt_backend/worker.py:302", "backend/bmt_backend/economy.py:140"]
+    },
+    {
+      "id": "RCO02",
+      "priority": "high",
+      "title": "Defer separate ghost storage for attempts with no retained competitive use",
+      "current": "Worker needs_ghost is true for all ordinary real players and writes a separate optional ghost object before finalization, including slower races. The original submitted envelope may also contain the ghost.",
+      "probe": "A slower Rivalry attempt kept the old PB and earned 50 coins, but stored a separate ghost.",
+      "proposal": "Persist standalone presentation ghosts for actual retained race/weekly/challenge sources. Recover a slower exact challenge-source ghost on demand from retained evidence, following the existing ensure_ghost pattern. Keep storage outside scoring locks and handle concurrent winners. A later negotiated proof-first/ghost-on-demand upload protocol could additionally remove unnecessary upload bytes.",
+      "limits": "Skipping the standalone copy alone does not remove ghost bytes embedded in the proof object. Dropping those bytes needs a separate durable upload/recovery protocol and exact post-race-source retention.",
+      "sources": ["backend/bmt_backend/worker.py:127", "backend/bmt_backend/worker.py:181", "backend/bmt_backend/challenges.py:235", "game/backend/backend_client.gd:1032"]
+    },
+    {
+      "id": "RCO03",
+      "priority": "high",
+      "title": "Reuse unchanged Rivalry standings inside acceptance",
+      "current": "Rivalry acceptance computes before and after standings even when improved is false. Achievement comeback evaluation can compute them again.",
+      "probe": "The slower two-member fixture called standings_data twice from accept_verified and once from capture_race, with improved=false and zero point delta.",
+      "proposal": "Reuse the before snapshot for after when the weekly slot best does not change; share appropriate transaction-local standings with achievement evaluation. Continue writing the exact attempt outcome and use actual weekly time improvement, not rank movement, as the gate.",
+      "sources": ["backend/bmt_backend/rivalry.py:504", "backend/bmt_backend/achievements.py:114"]
+    },
+    {
+      "id": "RCO04",
+      "priority": "high",
+      "title": "Return only status while challenge verification is pending",
+      "current": "Every challenge result poll builds and returns a full current challenge snapshot, including standings, route metadata, rewards and attempts.",
+      "probe": "One queued two-person challenge-result request executed 24 SQL statements and returned a 2540-byte decompressed response body, with one full snapshot call.",
+      "proposal": "Negotiate a compact pending response containing ticket status and retry timing. Load the current complete snapshot at terminal transition or when its relevant revision changes. Share the existing run completion wait/cache across modes.",
+      "limits": "Requires matching capability-gated client changes because the current challenge client validates a snapshot on every poll. Preserve current account/content authority and cancellation/expiry handling.",
+      "sources": ["backend/bmt_backend/challenges.py:565", "backend/bmt_backend/challenges.py:171", "game/backend/challenges_client.gd:418", "backend/bmt_backend/runs.py:309"]
+    },
+    {
+      "id": "RCO05",
+      "priority": "high",
+      "title": "Combine terminal result, reward receipt and changed account revisions",
+      "current": "Run status already includes Rivalry outcome but not challenge outcome or coin receipt. reward_for performs its own receipt GET and triggers a wallet refresh; achievement refresh is separate.",
+      "proposal": "Extend the authoritative terminal response with the once-only coin receipt, challenge/Rivalry outcome and appropriate wallet/achievement revisions. Consume those values with account and revision fencing, fetching other views only when their revision changed.",
+      "limits": "Report committed state; never use an older terminal response to overwrite a newer wallet or achievement state. Preserve archived receipt recovery. Existing batched run statuses and Rivalry result reuse are already implemented and should remain.",
+      "sources": ["backend/bmt_backend/runs.py:309", "backend/bmt_backend/runs.py:328", "game/backend/cosmetic_economy.gd:172", "game/backend/weekly_rivalry_client.gd:341", "game/core/app.gd:377"]
+    },
+    {
+      "id": "RCO06",
+      "priority": "medium",
+      "title": "Avoid unchanged multi-track challenge aggregate rewrites",
+      "current": "After all stages have times, series acceptance sums all stage bests and overwrites member.run_id on every accepted slower attempt, even when no stage best changed.",
+      "proposal": "Recompute the stored aggregate only after a stage-best/first-completion change. Preserve per-attempt receipts, start consumption, result feedback and protected exact source references; review representative run_id semantics explicitly.",
+      "validation": "Source inspection; no separate SQL savings benchmark.",
+      "sources": ["backend/bmt_backend/challenge_series.py:97"]
+    },
+    {
+      "id": "RCO07",
+      "priority": "medium",
+      "title": "Skip newspaper record-candidate reads when neither PB changed",
+      "current": "capture_verified queries both PB source projections for every eligible accepted race, then returns immediately when neither references the current run.",
+      "proposal": "Carry exact race/lap improvement flags from the existing acceptance facts and skip this candidate query when both are false. Keep first-time reach, record announcements and source eligibility behavior.",
+      "validation": "Source inspection; no separate SQL savings benchmark.",
+      "sources": ["backend/bmt_backend/news.py:81", "backend/bmt_backend/race_acceptance.py:29", "backend/bmt_backend/worker.py:327"]
+    }
+  ],
+  "already_present": [
+    "Cached immutable verification geometry and lightweight acceptance without native simulation",
+    "Slower/tied race-PB conflict-probe avoidance",
+    "Shared acceptance-fact read and reuse of verified results after finalization SQL failure",
+    "Batched run-status polling, bounded signal-assisted waits and Rivalry receipt reuse",
+    "Persistent ghost cache, shared GETs, prepared immutable responses, packing and cold receipt archives in the existing cost implementation"
+  ],
+  "benchmark_context": {
+    "artifact": "docs/evidence/backend-cost-reduction-2026-10-24/trajectory-current.json",
+    "retained_local_kernel_median_ms": 1.7127,
+    "retained_local_kernel_p95_ms": 2.9429,
+    "iterations": 500,
+    "limit": "Earlier local synthetic kernel measurement, not a new benchmark, end-to-end latency or measured bill saving"
+  },
+  "validation": {
+    "regression_command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_race_acceptance_sql.py backend/tests/test_earned_coins.py backend/tests/test_rivalry.py backend/tests/test_challenge_series.py backend/tests/test_cost_transport.py -m 'not godot' -k 'not postgres' -q --disable-warnings",
+    "result": {"passed": 41, "skipped": 3, "deselected": 32, "warnings": 186, "seconds": 50.68},
+    "skip_reasons": ["Independent PostgreSQL wallet concurrency", "PostgreSQL account mutation during verification", "SQLite StaticPool cannot exercise the PostgreSQL race-reward row-lock test"],
+    "probe_command": ".tools/backend-venv/Scripts/python.exe docs/evidence/race-outcome-cost-review-2026-10-24/probe.py",
+    "probe_exit_code": 0,
+    "probe_results": "probe-results.json",
+    "lint_command": ".tools/backend-venv/Scripts/ruff.exe check docs/evidence/race-outcome-cost-review-2026-10-24/probe.py --output-format concise",
+    "lint_result": "passed; initial import-order and nine unnecessary noqa diagnostics corrected by a scoped Ruff fix, then the probe passed again",
+    "artifact_validation": "Both JSON files parse; seven requirement IDs match seven findings and all declared changed files exist",
+    "probe_warning_limits": "Existing Starlette TestClient deprecation and SQLite expression-index reflection warnings; no production-shaped PostgreSQL or native acceptance cost claim"
+  },
+  "changed_files": [
+    "docs/evidence/race-outcome-cost-review-2026-10-24/probe.py",
+    "docs/evidence/race-outcome-cost-review-2026-10-24/probe-results.json",
+    "docs/evidence/race-outcome-cost-review-2026-10-24/report.json"
+  ],
+  "remaining_acceptance": [
+    "Implement selected changes and prove exact rewards, attempts, PB/lap/weekly/stage outcomes, challenge sources, retries and account erasure are preserved",
+    "Measure full PostgreSQL SQL/WAL/lock costs, ghost bytes/object operations and real request counts before claiming savings",
+    "Coordinate capability-gated client/API/worker rollout for any protocol change"
+  ],
+  "boundaries": {
+    "runtime_changes": false,
+    "deployment": false,
+    "live_account_or_backend_mutation": false,
+    "phone_or_tablet_attachment_check": false,
+    "physical_device_test": false,
+    "apk_or_export": false,
+    "owner_process_restart": false,
+    "concurrent_work_preserved": true
+  }
+}

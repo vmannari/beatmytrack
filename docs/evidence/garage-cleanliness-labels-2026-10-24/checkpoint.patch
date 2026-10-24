@@ -1,0 +1,236 @@
+diff --git a/game/ui/garage_cleanliness.gd b/game/ui/garage_cleanliness.gd
+--- a/game/ui/garage_cleanliness.gd
++++ b/game/ui/garage_cleanliness.gd
+@@ -30,10 +30,10 @@
+ 
+ func description(view: CarShowroom) -> String:
+ 	if is_clean(view):
+-		return "Shiny. For now." if _shiny else "Clean enough for company"
+-	if _mean_residue >= 0.50: return "Certified mud magnet"
+-	if _mean_residue >= 0.25: return "Grubby but proud"
+-	return "Needs a rinse"
++		return "Shiny. For now." if _shiny else "Clean for most people."
++	if _mean_residue >= 0.50: return "There is a car under there. Maybe."
++	if _mean_residue >= 0.25: return "I can tell the color now"
++	return "OK in the dark"
+ 
+ func is_clean(view: CarShowroom) -> bool:
+ 	var effect: VehicleWeathering = view.weathering
+diff --git a/game/tests/test_garage_clean_customisation.gd b/game/tests/test_garage_clean_customisation.gd
+--- a/game/tests/test_garage_clean_customisation.gd
++++ b/game/tests/test_garage_clean_customisation.gd
+@@ -37,6 +37,8 @@
+ 	var renderer: String = RenderingServer.get_current_rendering_method()
+ 	if DisplayServer.get_name() == "headless": renderer = "headless"
+ 	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+@@ -168,7 +170,7 @@
+ 		page._process(0.0)
+ 		check(not page._customisation_locked,id+" faint layers no longer add up to a false lock")
+ 		page._show_section("care")
+-		check(page._wash_status.text == "Clean enough for company",id+" care indication agrees with faint-film customisation")
++		check(page._wash_status.text == "Clean for most people.",id+" care indication agrees with faint-film customisation")
+ 		var faint_condition: Dictionary = page.showroom.weathering.snapshot()
+ 		page._show_section("customise")
+ 		page._preview_color(Color("49798a"),"body")
+@@ -283,7 +285,7 @@
+ 			check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"graded status fits preview "+str(dimensions))
+ 			check(page._wash_status.size.x >= page._wash_status.get_minimum_size().x,"graded label is not clipped")
+ 			await capture(label.to_snake_case().replace(".","")+"-"+str(dimensions.x))
+-	check(labels == ["Certified mud magnet","Grubby but proud","Needs a rinse","Clean enough for company","Shiny. For now."],"all five humorous grades appear in washing order")
++	check(labels == ["There is a car under there. Maybe.","I can tell the color now","OK in the dark","Clean for most people.","Shiny. For now."],"all five humorous grades appear in washing order")
+ 	page.queue_free()
+ 	await process_frame
+ 	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":renderer,"phone_test":false}
+diff --git a/game/tests/test_garage_wash_easier.gd b/game/tests/test_garage_wash_easier.gd
+--- a/game/tests/test_garage_wash_easier.gd
++++ b/game/tests/test_garage_wash_easier.gd
+@@ -47,7 +47,7 @@
+ 		wear.slow_wash = wear.wash
+ 		effect.restore(wear)
+ 		check(inspector.is_clean(view),id+" washed body with light upper film is ready")
+-		check(inspector.description(view) == "Clean enough for company",id+" tolerates film without claiming spotless")
++		check(inspector.description(view) == "Clean for most people.",id+" tolerates film without claiming spotless")
+ 		var retained: Dictionary = effect.snapshot()
+ 		inspector.description(view)
+ 		check(effect.snapshot() == retained,id+" readiness leaves the actual saved dirt and masks exact")
+diff --git a/game/tests/test_garage_cleanliness_match.gd b/game/tests/test_garage_cleanliness_match.gd
+--- a/game/tests/test_garage_cleanliness_match.gd
++++ b/game/tests/test_garage_cleanliness_match.gd
+@@ -68,7 +68,7 @@
+ 			var wear: Dictionary = fixture(page.showroom.weathering,kind)
+ 			check(VehicleCondition.save(records,id,wear) == OK,id+" isolated fixture saves")
+ 			page._process(0.0)
+-			check(page._wash_status.text == ("Needs a rinse" if kind == "dirty-side" else "Shiny. For now."),id+" live status agrees with the inspection")
++			check(page._wash_status.text == ("OK in the dark" if kind == "dirty-side" else "Shiny. For now."),id+" live status agrees with the inspection")
+ 			check(page._clean_for_customisation() == (kind != "dirty-side"),id+" editing gate agrees with the live status")
+ 			for angle: float in [-PI*0.5,PI*0.5]:
+ 				page.showroom.yaw = angle
+@@ -109,7 +109,7 @@
+ 			rows.append({"car":id,"fixture":kind,"label":label,"mean":inspector._mean_residue,"missed":inspector._dirty_fraction})
+ 			if kind in ["dirty-side","dirty-other-side","snowy-side"]: check(not inspector.is_clean(view),id+" "+kind+" prevents a clean status")
+ 			if kind in ["negligible-film","fully-washed"]: check(label == "Shiny. For now.",id+" "+kind+" earns the fully clean status")
+-			if kind == "light-film": check(label == "Clean enough for company",id+" noticeable light film retains the intermediate grade")
++			if kind == "light-film": check(label == "Clean for most people.",id+" noticeable light film retains the intermediate grade")
+ 			check(view.weathering.snapshot() == wear,id+" inspection preserves every condition field and mask")
+ 			check(inspector.description(view) == label,id+" repeated cached inspection retains the grade")
+ 			if kind == "dirty-side":
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->
++## Garage cleanliness labels override (2026-10-24)
++2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->
++
+ <!-- RIVALRY-NAME-INTEGRATION-20261024 -->
+ ## Rivalry integrated name section override (2026-10-24)
+ 2026-10-24 RNI01-RNI02/R01/Q01: Name section now belongs inside the podium's continuous metallic outline: one-unit content inset prevents the footer covering the frame; shared medal hue, quieter divider, tighter gaps and lightly tinted names integrate the band. Equal194-unit cards, footer56/flag28/name20/points22/PTS11, accepted backdrop/shader hashes, car/render/score/profile and selected-track contracts remain. Focused277headless/292Compatibility/292desktopMobile, Weekly1145/cars199/parser1115 pass. Native close-ups and full before/after, commands, hashes and task-only checkpoint: docs/RIVALRY_NAME_INTEGRATION_2026_10_24.md and docs/evidence/rivalry-name-integration-2026-10-24/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->
++2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->
++
+ <!-- RIVALRY-NAME-INTEGRATION-20261024 -->
+ 2026-10-24 RNI01-RNI02/R01/Q01: Name section now belongs inside the podium's continuous metallic outline: one-unit content inset prevents the footer covering the frame; shared medal hue, quieter divider, tighter gaps and lightly tinted names integrate the band. Equal194-unit cards, footer56/flag28/name20/points22/PTS11, accepted backdrop/shader hashes, car/render/score/profile and selected-track contracts remain. Focused277headless/292Compatibility/292desktopMobile, Weekly1145/cars199/parser1115 pass. Native close-ups and full before/after, commands, hashes and task-only checkpoint: docs/RIVALRY_NAME_INTEGRATION_2026_10_24.md and docs/evidence/rivalry-name-integration-2026-10-24/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+ <!-- /RIVALRY-NAME-INTEGRATION-20261024 -->
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->
++2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.
++<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->
++
+ <!-- RIVALRY-NAME-INTEGRATION-20261024 -->
+ 2026-10-24 RNI01-RNI02/R01/Q01: Name section now belongs inside the podium's continuous metallic outline: one-unit content inset prevents the footer covering the frame; shared medal hue, quieter divider, tighter gaps and lightly tinted names integrate the band. Equal194-unit cards, footer56/flag28/name20/points22/PTS11, accepted backdrop/shader hashes, car/render/score/profile and selected-track contracts remain. Focused277headless/292Compatibility/292desktopMobile, Weekly1145/cars199/parser1115 pass. Native close-ups and full before/after, commands, hashes and task-only checkpoint: docs/RIVALRY_NAME_INTEGRATION_2026_10_24.md and docs/evidence/rivalry-name-integration-2026-10-24/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+ <!-- /RIVALRY-NAME-INTEGRATION-20261024 -->
+diff --git a/docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md b/docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md
+@@ -0,0 +1,24 @@
++# Garage cleanliness labels — 2026-10-24
++
++GCL01 replaces the five status descriptions, from dirtiest to cleanest:
++
++1. There is a car under there. Maybe.
++2. I can tell the color now
++3. OK in the dark
++4. Clean for most people.
++5. Shiny. For now.
++
++The owner's “Sniny” is treated as a spelling typo. R01 retains every grading threshold, exterior sample, local patch rule, wash mask, editing gate and condition save. The only runtime changes are four string literals in `game/ui/garage_cleanliness.gd`; the top label already matched. Three existing tests have their expected strings updated. `test_garage_clean_customisation.gd` also accepts an evidence destination so this task preserves older captures.
++
++Q01 validation uses the pinned `scripts/dev.ps1` through the retained wrapper, with isolated workspace APPDATA and an empty backend URL. The existing native clean-customisation suite passes **286 checks**, including all five grades in order, 960×540 and 1280×720 label fit, live washing updates and editing gates. Existing easier-washing and cleanliness-match suites pass **40** and **95** checks. No existing invariant is weakened. Command arguments, exit codes, logs, hashes and a reverse-checked task-only patch are retained in [report.json](evidence/garage-cleanliness-labels-2026-10-24/report.json).
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1 -Test test_garage_wash_easier
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1 -Test test_garage_cleanliness_match
++python docs/evidence/garage-cleanliness-labels-2026-10-24/checkpoint.py
++```
++
++![Longest label at 960×540](evidence/garage-cleanliness-labels-2026-10-24/test_garage_clean_customisation-gl_compatibility/there_is_a_car_under_there_maybe-960.png)
++
++Reload the client to see the names. Owner/device appearance acceptance remains; no device attachment check or physical-device test, APK, owner-process restart, live mutation or deployment was performed. Concurrent work and the Git index are preserved.
+diff --git a/docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1 b/docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-labels-2026-10-24/run_validation.ps1
+@@ -0,0 +1,19 @@
++param(
++    [string]$Test = 'test_garage_clean_customisation',
++    [ValidateSet('headless','gl_compatibility','mobile')][string]$Mode = 'headless'
++)
++$ErrorActionPreference = 'Stop'
++$labelRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$labelOutput = Join-Path $PSScriptRoot "$Test-$Mode"
++New-Item -ItemType Directory -Force -Path $labelOutput | Out-Null
++$env:APPDATA = Join-Path $labelRepo 'build/garage-cleanliness-labels-2026-10-24/user'
++$env:BMT_API_URL = ''
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$labelArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $labelRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$labelOutput")
++if ($Mode -ne 'headless') { $labelArgs += @('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'})) }
++$labelStarted = [DateTime]::UtcNow
++& powershell @labelArgs *> (Join-Path $labelOutput 'console.log')
++$labelCode = $LASTEXITCODE
++@{command='powershell'; arguments=$labelArgs; exit_code=$labelCode; started_utc=$labelStarted.ToString('o'); duration_seconds=([DateTime]::UtcNow-$labelStarted).TotalSeconds} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $labelOutput 'command.json')
++Get-Content (Join-Path $labelOutput 'console.log') -Tail 16
++exit $labelCode
+diff --git a/docs/evidence/garage-cleanliness-labels-2026-10-24/checkpoint.py b/docs/evidence/garage-cleanliness-labels-2026-10-24/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-labels-2026-10-24/checkpoint.py
+@@ -0,0 +1,53 @@
++"""Retain this copy-only change independently of earlier cleanliness work."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++FILES = ["game/ui/garage_cleanliness.gd", "game/tests/test_garage_clean_customisation.gd", "game/tests/test_garage_wash_easier.gd", "game/tests/test_garage_cleanliness_match.gd"]
++NEW = ["docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md"] + [f"docs/evidence/garage-cleanliness-labels-2026-10-24/{name}" for name in ["run_validation.ps1", "checkpoint.py", "doc-prefixes.json"]]
++REPLACEMENTS = {"Certified mud magnet": "There is a car under there. Maybe.", "Grubby but proud": "I can tell the color now", "Needs a rinse": "OK in the dark", "Clean enough for company": "Clean for most people."}
++
++
++def read(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig").replace("\r\n", "\n")
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++before = {name: read(OUT / "before" / name) for name in FILES}
++expected = before[FILES[0]]
++for old, new in REPLACEMENTS.items():
++    expected = expected.replace('"' + old + '"', '"' + new + '"')
++assert read(ROOT / FILES[0]) == expected, "Runtime grading code changed beyond requested labels"
++prefixes = json.loads(read(OUT / "doc-prefixes.json"))
++for name, prefix in prefixes.items():
++    current = read(ROOT / name)
++    assert current.count(prefix) == 1
++    before[name] = current.replace(prefix, "", 1)
++patch = []
++for name in [*before, *NEW]:
++    old, current = before.get(name, ""), read(ROOT / name)
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    if name not in before:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(old.splitlines(True), current.splitlines(True), fromfile=f"a/{name}" if name in before else "/dev/null", tofile=f"b/{name}"))
++(OUT / "checkpoint.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++check = subprocess.run(["git", "apply", "--reverse", "--check", str(OUT / "checkpoint.patch")], cwd=ROOT, capture_output=True, text=True)
++assert check.returncode == 0, check.stderr
++validation = []
++for receipt in sorted(OUT.glob("*/command.json")):
++    row = json.loads(read(receipt))
++    row["name"] = receipt.parent.name
++    row["results"] = [line for line in read(receipt.parent / "console.log").splitlines() if re.search(r"\d+ checks, \d+ failures", line)]
++    validation.append(row)
++report = {"date": "2026-10-24", "requirements": ["GCL01", "R01", "Q01"], "labels_dirtiest_first": [*REPLACEMENTS.values(), "Shiny. For now."], "runtime_labels_only_check": "passed", "checkpoint_reverse_check": "passed", "changed_files": [*FILES, *prefixes, *NEW], "source_sha256": {name: sha(ROOT / name) for name in [*FILES, *prefixes, *NEW]}, "before_sha256": {name: sha(OUT / "before" / name) for name in FILES}, "checkpoint_sha256": sha(OUT / "checkpoint.patch"), "validation": validation, "capture_sha256": {str(path.relative_to(ROOT)).replace("\\", "/"): sha(path) for path in sorted(OUT.glob("*/*.png"))}, "limitations": ["Sniny interpreted as Shiny spelling typo.", "Client reload and owner/device appearance acceptance remain.", "No device attachment check or physical-device test, APK, owner-process restart, live mutation or deployment.", "Patch excludes preceding grading changes and concurrent work; no staging or commit."]}
++(OUT / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8", newline="\n")
++print(json.dumps({"runtime_labels_only_check": "passed", "checkpoint_reverse_check": "passed", "validation": {row["name"]: row["results"] for row in validation}}, indent=2))
+diff --git a/docs/evidence/garage-cleanliness-labels-2026-10-24/doc-prefixes.json b/docs/evidence/garage-cleanliness-labels-2026-10-24/doc-prefixes.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-cleanliness-labels-2026-10-24/doc-prefixes.json
+@@ -0,0 +1,5 @@
++{
++  "AGENTS.md": "<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->\n## Garage cleanliness labels override (2026-10-24)\n2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->\n\n",
++  "DEVELOPMENT_STATUS.md": "<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->\n2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->\n\n",
++  "docs/PHASE_0_PLAN.md": "<!-- GARAGE-CLEANLINESS-LABELS-20261024 -->\n2026-10-24 GCL01/R01/Q01: Rename the five cleanliness grades to There is a car under there. Maybe. / I can tell the color now / OK in the dark / Clean for most people. / Shiny. For now.; interpret Sniny as the spelling typo. Four runtime string literals only; all grading/local patch/mask/save/editing rules remain. Existing native customisation286, easier40 and cleanliness95 pass; all five grades fit960x540/1280x720. Commands, native views, hashes and scoped labels-only checkpoint: docs/GARAGE_CLEANLINESS_LABELS_2026_10_24.md and docs/evidence/garage-cleanliness-labels-2026-10-24/report.json. Reload and owner/device acceptance remain; no device attachment check/test, APK, owner-process restart, live mutation or deployment. Concurrent work preserved.\n<!-- /GARAGE-CLEANLINESS-LABELS-20261024 -->\n\n"
++}

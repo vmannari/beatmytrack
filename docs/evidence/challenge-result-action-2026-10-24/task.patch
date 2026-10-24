@@ -1,0 +1,260 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -4352,7 +4352,8 @@
+ 	panel.clean = clean
+ 	panel.saved = saved
+ 	panel.editor = returning_to_editor
+-	panel.challenge_available = online_queued and not returning_to_editor
++	panel.challenge_active = challenge_racing or challenge_practice or not challenge_seed.is_empty()
++	panel.challenge_available = online_queued and not returning_to_editor and not panel.challenge_active
+ 	panel.challenge_requested.connect(func() -> void:
+ 		_create_challenge_dialog(str(finished_challenge.entry.version_id),str(finished_challenge.vehicle_id),challenge_source_ticket,604800,finished_challenge))
+ 	panel.result = result_data
+diff --git a/game/ui/race_results.gd b/game/ui/race_results.gd
+--- a/game/ui/race_results.gd
++++ b/game/ui/race_results.gd
+@@ -16,6 +16,7 @@
+ var saved: bool
+ var editor: bool
+ var challenge_available: bool = false
++var challenge_active: bool = false
+ var result: RaceResultData
+ var selected_lap: int = 0
+ var map: LapRouteView
+@@ -263,9 +264,12 @@
+ 	retry.name = "RetryRace"
+ 	retry.add_theme_stylebox_override("normal",_panel_style(8))
+ 	row.add_child(retry)
+-	if challenge_available:
+-		var challenge := MenuStyle.button("CREATE CHALLENGE",func() -> void: challenge_requested.emit())
+-		challenge.name = "CreateResultChallenge"
++	if challenge_available or challenge_active:
++		var challenge := MenuStyle.button("CONTINUE CHALLENGE" if challenge_active else "CREATE CHALLENGE",func() -> void:
++			if challenge_active: continue_requested.emit()
++			else: challenge_requested.emit())
++		challenge.name = "ContinueResultChallenge" if challenge_active else "CreateResultChallenge"
++		if challenge_active: challenge.tooltip_text = "This race is part of your challenge. Continue with this result."
+ 		challenge.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		challenge.custom_minimum_size.y = 70
+ 		row.add_child(challenge)
+diff --git a/game/tests/test_challenge_result_action.gd b/game/tests/test_challenge_result_action.gd
+--- /dev/null
++++ b/game/tests/test_challenge_result_action.gd
+@@ -0,0 +1,126 @@
++extends SceneTree
++## Real App summaries and navigation, with isolated records and no upload transport.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var evidence: String = "res://../docs/evidence/challenge-result-action-2026-10-24/ui"
++
++class ResultApp extends "res://core/app.gd":
++	func _save_result_upload(_completed_game: Node, _ticket_data: Dictionary, _frames: Array, _publish_version: String, _rewinds: Array) -> void:
++		cloud_ticket = {}
++	func _try_race_ad(_finished_game: int, _panel: Control) -> void: pass
++
++func _initialize() -> void:
++	_timeout.call_deferred()
++	run.call_deferred()
++
++func _timeout() -> void:
++	await create_timer(90.0).timeout
++	push_error("Challenge result action fixture timed out")
++	quit(1)
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func settle() -> void:
++	for frame: int in range(5): await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	var directory: String = "user://challenge_result_action_"+TrackLibrary.unique_id()
++	app = ResultApp.new()
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.online.client.player = {"id":"challenge-result-fixture"}
++	app.online.client._access_token = "fixture"
++	app.challenges.reset()
++	app.challenges.busy = true
++	var track: NativeTrack = app.selected_track
++	track.metadata.cloud_version = "00000000-0000-4000-8000-000000000001"
++	await app._start_race(track,false,true)
++	var game: Node = app.game
++	game.set_physics_process(false)
++	game.paused = true
++	game.hud.pause_menu.hide()
++	game.attempt_practice = false
++	var session := TrackSession.new()
++	session.completed_laps = 5
++	session.elapsed_ticks = 13200
++	session.lap_start_time = 110.0
++	session.lap_times.assign([23.0,22.0,22.0,22.0,21.0])
++	session.finished = true
++	game.track_session = session
++	# A slower finish must remain the challenge source rather than the saved PB.
++	var prior_laps: Array[float] = [20.0,20.0,20.0,20.0,20.0]
++	check(app.records.record(track,game.handling,100.0,prior_laps) == OK,"save isolated faster PB")
++	for mode: String in ["free","challenge","practice","offline","seed"]:
++		app._result_game_id = 0
++		app.challenge_racing = mode == "challenge"
++		app.challenge_practice = mode == "practice"
++		app.challenge_seed = {"version_id":str(track.metadata.cloud_version),"vehicle_id":str(game.vehicle_id),"duration_seconds":86400,"attempt_limit":3,"configuration":{"format":"duel"}} if mode == "seed" else {}
++		app.cloud_ticket = {} if mode == "offline" else {"ticket_id":"exact-finished-ticket"}
++		app._results()
++		await settle()
++		var panel: RaceResults = app.root_ui.find_child("RaceResults",true,false)
++		var create: Button = panel.find_child("CreateResultChallenge",true,false)
++		var resume: Button = panel.find_child("ContinueResultChallenge",true,false)
++		check(panel.total == 110.0 and panel.best == 100.0,mode+" summary retains actual slower finish and saved PB")
++		if mode in ["challenge","practice","seed"]:
++			check(create == null and resume != null,mode+" offers continuation instead of creating another challenge")
++			check(resume.text == "CONTINUE CHALLENGE" and not resume.disabled,mode+" action identifies the challenge context")
++		elif mode == "free":
++			check(create != null and resume == null,"ordinary verified race still offers Create challenge")
++		else:
++			check(create == null and resume == null,"offline free race has no online challenge action")
++		if mode != "seed":
++			# Test the visible action's signal without leaving this reusable summary.
++			panel.continue_requested.disconnect(app._results_continue.bind(panel,panel.get_parent()))
++			var signals: Dictionary = {"continue":0,"create":0}
++			panel.continue_requested.connect(func() -> void: signals["continue"] += 1)
++			panel.challenge_requested.connect(func() -> void: signals.create += 1)
++			if resume != null: resume.pressed.emit()
++			elif create != null: create.pressed.emit()
++			check(signals["continue"] == (1 if resume != null else 0) and signals.create == (1 if create != null else 0),mode+" action emits only its intended signal")
++		await capture(mode)
++		if mode == "seed":
++			root.size = Vector2i(960,540)
++			await settle()
++			check(root.get_visible_rect().encloses(panel.get_global_rect()),"challenge summary fits the short landscape viewport")
++			await capture("seed-960x540")
++			root.size = Vector2i(1280,720)
++			await settle()
++			await click(resume.get_global_rect().get_center())
++			await settle()
++			var dialog: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
++			check(dialog != null and app.screen == "challenge_create","challenge action resumes the original creation flow")
++			if dialog != null:
++				check(dialog.initial_ticket == "exact-finished-ticket" and dialog.result_context.total == 110.0,"continuation pins this completed ticket and time")
++				check(dialog.initial_duration == 86400 and dialog.initial_attempt_limit == 3 and dialog.initial_configuration == {"format":"duel"},"continuation retains the chosen challenge settings")
++			check(app.challenge_seed.is_empty() and app.game == null,"continuation consumes the seed and releases the finished race")
++	app.queue_free()
++	await settle()
++	print("CHALLENGE_RESULT_ACTION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
++
++func click(position: Vector2) -> void:
++	for pressed: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = position
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = pressed
++		root.push_input(event,true)
++		await process_frame
++
++func capture(mode: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await create_timer(0.45).timeout
++	await RenderingServer.frame_post_draw
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence))
++	check(root.get_texture().get_image().save_png(evidence.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method()+"-"+mode+".png")) == OK,"capture "+mode)
+diff --git a/game/tests/test_challenge_result_action.gd.uid b/game/tests/test_challenge_result_action.gd.uid
+--- /dev/null
++++ b/game/tests/test_challenge_result_action.gd.uid
+@@ -0,0 +1 @@
++uid://cwk6paul3dhek
+diff --git a/docs/CHALLENGES.md b/docs/CHALLENGES.md
+--- a/docs/CHALLENGES.md
++++ b/docs/CHALLENGES.md
+@@ -11,6 +11,12 @@
+ choices. The separate Find & play browser discovers challenges. Car selection uses
+ the actual five Garage models, saved cosmetics and the retained showroom transition.
+ See [the current flow and artwork](CHALLENGE_PAGE.md).
++
++Challenge-setting races, existing challenge races and challenge practice show
++**Continue challenge** in the results action slot. It follows the existing challenge
++continuation path; a setup race retains its exact finished ticket/time and selected
++rules. Ordinary online races still offer **Create challenge**. See the
++[2026-10-24 validation](evidence/challenge-result-action-2026-10-24/report.json).
+ 
+ For ordinary one-track formats, Use personal best resolves the owned verified result
+ for the selected track/car. A source drive is available when a target is needed.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 CRA01-CRA02/R01/G01/Q01: Challenge-setting, existing challenge and challenge-practice results replace Create challenge with Continue challenge and use the existing continuation. Exact finished ticket/time and chosen rules remain; ordinary online creation remains available. Focused23headless/29Compatibility/29desktopMobile, results515 and create-and-race8 pass. Native wide/short-window views, initial execution/fixture corrections, commands, hashes and scoped checkpoint: docs/CHALLENGE_RESULT_ACTION_2026_10_24.md and docs/evidence/challenge-result-action-2026-10-24/report.json. Client reload and owner acceptance remain; no phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-24 CAD01-CAD03/R01/Q01: Configured race and active-time ad counters now persist locally across app launches, with a separate first-completed-race guard on every launch. One bounded low-priority atomic writer plus background/shutdown flush preserves cumulative usage; actual shown ads reset both counters and no-fill retains them. Existing OR/AND, ad-free, permission, delay, cooldown and session caps remain. Studio preview/timeline follows both cumulative and session-local state. Focused28, actual App ad63/configuration40/App141, backend14, browser13 with zero page errors, parser1064, import and Ruff pass. Initial concurrent Desert parser interruption is retained. Actual commands, views, limitations and scoped checkpoint: docs/CUMULATIVE_AD_CADENCE_2026_10_24.md and docs/evidence/cumulative-ad-cadence-2026-10-24/report.json. Matching client/API/Studio rollout and owner/device acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-24 RGC01-RGC11/R01/G01/Q01: Remote Game Configuration spans the app, gameplay API and private Studio with typed ad cadence/OR-AND/delay/minima/rewarded cooldown/session caps, entry availability, notices and Store order. Audiences, immutable CAS publications, nested stages, schedules, emergency leases, restore and audited previews preserve owned benefits and canonical contracts. Required A/B/A-A/A-B-n supports stable account assignment, actual boundary exposure, mature comparative scorecards and reviewed promotion. Backend60 plus owned PostgreSQL4, native configuration40/App13/HTTP17, rendered App16 per desktop renderer, ad57/adapter44/telemetry55/Store15+104/App141/driving72 and parser1058 pass; browser12 has zero page errors and offline Java compilation passes. Final long-race permission renewal, initial fixture corrections and transient telemetry limitation are documented. Sources, native/browser views, commands, hashes and scoped checkpoint: docs/GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md and docs/evidence/game-configuration-2026-10-24/report.json. Matching migration/API/private Studio/worker/client rollout, owner/device acceptance and production provider/consent/guardrail prerequisites remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/CHALLENGE_RESULT_ACTION_2026_10_24.md b/docs/CHALLENGE_RESULT_ACTION_2026_10_24.md
+--- /dev/null
++++ b/docs/CHALLENGE_RESULT_ACTION_2026_10_24.md
+@@ -0,0 +1,36 @@
++# Challenge result action — 2026-10-24
++
++CRA01–CRA02/R01/G01/Q01: A race started to set a challenge time must identify its
++existing challenge context in the results action. The action now reads **CONTINUE
++CHALLENGE** and uses the same continuation as the primary Continue button. Existing
++challenge races and challenge practice use that action too. Ordinary online races
++retain **CREATE CHALLENGE**; offline ordinary races have neither action.
++
++The existing seed continuation retains the actual finished ticket, time, track,
++car, duration, attempt limit and configuration. The focused real-App fixture uses
++an explicitly completed five-lap session of 110 seconds with a faster 100-second
++saved PB and checks that continuation carries the 110-second finish.
++
++Changed runtime sources: `game/core/app.gd` supplies the challenge context and
++excludes duplicate creation; `game/ui/race_results.gd` labels and routes the action.
++`game/tests/test_challenge_result_action.gd` covers the five contexts, button signals,
++native pointer continuation, exact source/settings and short-window bounds. Test
++records/cache are isolated; upload transport and ad presentation are fixture-only
++overrides. No service publication is needed for this UI change.
++
++Actual commands and outcomes, source/capture hashes and a task-only review patch
++are in [report.json](evidence/challenge-result-action-2026-10-24/report.json).
++The native [1280×720 result](evidence/challenge-result-action-2026-10-24/ui/Windows-gl_compatibility-seed.png)
++and [960×540 result](evidence/challenge-result-action-2026-10-24/ui/Windows-gl_compatibility-seed-960x540.png)
++show the action in the actual App results screen. These are controlled completed
++session fixtures, not a claim of driving or live challenge creation.
++
++Initial execution-policy/user-log failures, a transient concurrent Desert class
++parse error, and corrected fixture array/finished-time initialization are retained
++in the evidence. Windows sandbox root-certificate-store diagnostics remain in
++successful logs; these offline fixtures do not establish TLS or service acceptance.
++
++Client reload and owner flow/appearance acceptance remain. No phone/tablet attachment
++check or physical-device test was performed. No APK, install, live account/backend
++mutation, deployment or owner-process control. Concurrent changes are preserved;
++the scoped patch excludes them.
+diff --git a/docs/evidence/challenge-result-action-2026-10-24/run_validation.ps1 b/docs/evidence/challenge-result-action-2026-10-24/run_validation.ps1
+--- /dev/null
++++ b/docs/evidence/challenge-result-action-2026-10-24/run_validation.ps1
+@@ -0,0 +1,16 @@
++param(
++    [string]$Test = 'test_challenge_result_action',
++    [ValidateSet('headless', 'gl_compatibility', 'mobile')][string]$Mode = 'headless'
++)
++$ErrorActionPreference = 'Stop'
++$challengeRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$env:APPDATA = Join-Path $challengeRepo "build/challenge-result-action-2026-10-24/$Test-$Mode/appdata"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$challengeEngine = 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
++if ((& $challengeEngine --version).Trim() -ne (Get-Content -LiteralPath (Join-Path $challengeRepo 'godot-version.txt') -Raw).Trim()) { throw 'Pinned Godot version mismatch.' }
++$challengeArgs = @('--path', (Join-Path $challengeRepo 'game'), '--log-file', (Join-Path $PSScriptRoot "$Test-$Mode.log"), '--script', "res://tests/$Test.gd", '--audio-driver', 'Dummy')
++if ($Mode -eq 'headless') { $challengeArgs += '--headless' }
++else { $challengeArgs += @('--rendering-method', $Mode, '--max-fps', '60') }
++if ($Mode -eq 'mobile') { $challengeArgs += @('--rendering-driver', 'vulkan') }
++& $challengeEngine @challengeArgs
++exit $LASTEXITCODE

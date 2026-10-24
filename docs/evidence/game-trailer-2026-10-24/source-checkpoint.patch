@@ -1,0 +1,651 @@
+diff --git a/tools/trailer/assemble.py b/tools/trailer/assemble.py
+new file mode 100644
+index 000000000..697b9f7e2
+--- /dev/null
++++ b/tools/trailer/assemble.py
+@@ -0,0 +1,142 @@
++"""Assemble the offline native captures using an existing FFmpeg installation.
++
++Run with Linux Python and the existing WSL FFmpeg, or supply a native FFmpeg.
++No third-party Python packages, downloads, service access or game modifications.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++
++SHOTS = [
++    ("01-hook", 120, "Your track. Your rules."),
++    ("02-editor", 210, "Connect the road. Shape the circuit."),
++    ("03-biome-pine", 42, "Grass"),
++    ("03-biome-desert", 42, "Desert"),
++    ("03-biome-night_city", 42, "Night"),
++    ("03-biome-winter", 42, "Winter"),
++    ("03-biome-storm", 42, "Storm"),
++    ("04-garage", 240, "Liveries, body kits, aero and wheels"),
++    ("05-challenges", 150, "One-to-one, Group races and 3×3"),
++    ("06-finale", 150, "Set the challenge"),
++    ("07-end", 120, "Beat My Track"),
++]
++FPS = 30
++
++
++def digest(path: Path) -> str:
++    with path.open("rb") as stream:
++        return hashlib.file_digest(stream, "sha256").hexdigest()
++
++
++def run(command: list[str], log: Path) -> str:
++    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
++    log.write_text(result.stdout, encoding="utf-8")
++    if result.returncode:
++        raise RuntimeError(f"Command failed ({result.returncode}); see {log}\n{result.stdout[-1500:]}")
++    return result.stdout
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output", type=Path)
++    parser.add_argument("--ffmpeg", default="ffmpeg")
++    args = parser.parse_args()
++    root = args.root.resolve()
++    out = (args.output or root / "build/trailer-2026-10-24").resolve()
++    if root not in out.parents:
++        raise ValueError("Output must be inside the workspace")
++    raw = out / "raw"
++    frames = out / "timeline"
++    delivery = out / "deliverables"
++    frames.mkdir(parents=True, exist_ok=True)
++    delivery.mkdir(parents=True, exist_ok=True)
++    sources: dict[str, dict] = {}
++    for mode, expected in [("gameplay", 8), ("editor", 1), ("garage", 1), ("challenge", 1)]:
++        manifest = json.loads((raw / f"{mode}-manifest.json").read_text(encoding="utf-8"))
++        if len(manifest["shots"]) != expected:
++            raise ValueError(f"Incomplete {mode} manifest")
++        capture_log = (out / f"{mode}.log").read_text(encoding="utf-8")
++        if re.search(r"SCRIPT ERROR|Assertion failed|Parse Error|Failed loading resource|Unable to open file", capture_log):
++            raise ValueError(f"Capture error in {mode}.log")
++        for item in manifest["shots"]:
++            sources[item["id"]] = item
++
++    index = 0
++    timeline = []
++    for name, count, caption in SHOTS:
++        actual = sorted((raw / name).glob("*.jpg"))
++        if len(actual) != count or sources[name]["frames"] != count:
++            raise ValueError(f"Frame count for {name}: {len(actual)}, expected {count}")
++        if [p.name for p in actual] != [f"{i:05d}.jpg" for i in range(count)]:
++            raise ValueError(f"Noncontiguous frames in {name}")
++        if "start_tick" in sources[name]:
++            if sources[name]["end_tick"] - sources[name]["start_tick"] != count * 4:
++                raise ValueError(f"Canonical 120 Hz stepping mismatch in {name}")
++        timeline.append({"id": name, "start_seconds": index / FPS, "end_seconds": (index + count) / FPS, "caption": caption})
++        for original in actual:
++            target = frames / f"{index:05d}.jpg"
++            if not target.exists():
++                os.link(original, target)
++            elif not os.path.samefile(original, target):
++                raise ValueError(f"Timeline already contains a different frame: {target}")
++            index += 1
++    if index != 1200:
++        raise ValueError(f"Expected 1200 frames, got {index}")
++
++    music = root / "game/assets/audio/score_v1/daybreak_current.ogg"
++    video = delivery / "Beat-My-Track-trailer-v1.mp4"
++    command = [
++        args.ffmpeg, "-nostdin", "-y", "-hide_banner",
++        "-framerate", "30", "-i", str(frames / "%05d.jpg"),
++        "-stream_loop", "-1", "-i", str(music),
++        "-filter_complex", "[0:v]eq=gamma=1.3:brightness=0.01:enable='gte(t,13.8)*lt(t,15.2)',fade=t=in:st=0:d=0.2,fade=t=out:st=39.3:d=0.7,format=yuv420p[v];[1:a]atrim=duration=40,asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=9,afade=t=in:st=0:d=0.35,afade=t=out:st=37.8:d=2.2[a]",
++        "-map", "[v]", "-map", "[a]", "-t", "40", "-r", "30",
++        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
++        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
++        "-movflags", "+faststart", "-metadata", "title=Beat My Track — Build. Customise. Challenge.",
++        "-metadata", "comment=Actual native game scenes; offline editorial capture; original project score; first review cut.",
++        str(video),
++    ]
++    print("Encoding 1200 native frames to the 40-second trailer", flush=True)
++    run(command, out / "encode.log")
++    # Decode every final video/audio packet, checking for corrupt output.
++    run([args.ffmpeg, "-nostdin", "-hide_banner", "-v", "error", "-i", str(video), "-f", "null", "-"], out / "decode-check.log")
++    metadata = run([args.ffmpeg, "-nostdin", "-hide_banner", "-i", str(video), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"], out / "metadata.log")
++    if "1920x1080" not in metadata or "30 fps" not in metadata or "00:00:40.00" not in metadata:
++        raise ValueError("Final trailer metadata does not match 1080p / 30 fps / 40 seconds")
++    run([args.ffmpeg, "-nostdin", "-hide_banner", "-i", str(video), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], out / "audio-levels.log")
++    # Contact sheet and poster are taken from the encoded deliverable.
++    run([args.ffmpeg, "-nostdin", "-y", "-hide_banner", "-ss", "19", "-i", str(video), "-frames:v", "1", "-q:v", "2", str(delivery / "poster.jpg")], out / "poster.log")
++    contact_frames = [60, 315, 350, 392, 434, 476, 518, 570, 690, 900, 1000, 1140]
++    selection = "+".join(f"eq(n,{frame})" for frame in contact_frames)
++    run([args.ffmpeg, "-nostdin", "-y", "-hide_banner", "-i", str(video), "-vf", f"select='{selection}',scale=480:270,tile=3x4", "-frames:v", "1", "-q:v", "2", str(delivery / "contact-sheet.jpg")], out / "contact-sheet.log")
++    report = {
++        "requirements": {"TRV01": "40-second landscape trailer with actual gameplay", "TRV02": "Native modular track creation", "TRV03": "Challenge creation formats", "TRV04": "Five biomes and changing native liveries/body kits"},
++        "format": {"width": 1920, "height": 1080, "fps": 30, "frames": 1200, "seconds": 40, "video": "H.264 / yuv420p", "audio": "AAC / 48 kHz / stereo"},
++        "video": {"path": str(video.relative_to(root)), "bytes": video.stat().st_size, "sha256": digest(video)},
++        "timeline": timeline,
++        "shots": sources,
++        "music": {"path": str(music.relative_to(root)), "sha256": digest(music), "provenance": "Existing original project chamber score. Source recordings VSCO 2 Community Edition, CC0-1.0; game/assets/audio/score_v1/NOTICE.txt and manifest.json. Temporary editorial music choice for owner review."},
++        "editorial": {"night_exposure": "Gamma 1.3 and brightness +0.01 in the 1.4-second Night shot to retain car visibility in the video", "transitions": "Hard match cuts between biomes and cosmetics; 0.2-second opening fade and 0.7-second closing fade", "audio": "Music-only first cut; no synthetic engine audio or voice-over"},
++        "verification": {"frame_counts": "1200 contiguous JPEG captures; all 11 shot lengths match", "canonical_driving": "Every gameplay shot advances exactly four unmodified simulation ticks per output frame", "metadata": "1920x1080; 30 fps; duration 40.00 seconds", "complete_decode": "All final video and audio decoded without an error", "game_sources": "No runtime source changes required", "device_test": "No phone/tablet attachment check or device test performed"},
++        "limitations": ["First creative review cut; owner pacing/music/appearance acceptance remains", "Offline challenge format picker only; no challenge was submitted and no winning result is fabricated", "Native HUD is hidden for editorial gameplay; standard overhead camera is retained", "No APK, installation, deployment, live account/backend mutation, publishing or external media upload", "Captured on Windows desktop Compatibility renderer; no physical device performance claim", "Capture logs retain sandbox certificate-store and engine shutdown resource diagnostics; they do not invalidate successful native frames"],
++        "encode_command": command,
++    }
++    (delivery / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    chapters = "".join(f'<button data-time="{row["start_seconds"]}"><span>{row["start_seconds"]:04.1f}s</span>{row["caption"]}</button>' for row in timeline)
++    html = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Beat My Track — Trailer v1</title>
++<style>*{{box-sizing:border-box}}body{{margin:0;background:#0d171c;color:#f4efe5;font:16px system-ui,sans-serif}}main{{max-width:1300px;margin:auto;padding:40px 24px}}small{{letter-spacing:.18em;color:#dbb36d}}h1{{font-weight:600;font-size:36px;margin:12px 0 24px}}video{{display:block;width:100%;background:#000;border:1px solid #344047;border-radius:8px}}p{{color:#bcc6c9;line-height:1.6}}nav{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:24px}}button{{text-align:left;padding:14px;border:1px solid #35434a;border-radius:5px;background:#17252c;color:#eee7db;cursor:pointer}}button:hover{{border-color:#dbb36d}}button span{{display:block;font-size:12px;color:#dbb36d;margin-bottom:5px}}a{{color:#dbb36d}}img{{width:100%;margin-top:24px;border-radius:8px}}</style>
++<main><small>FIRST REVIEW CUT · 40 SECONDS · 1080P</small><h1>Beat My Track</h1><video id="trailer" controls playsinline preload="metadata" poster="poster.jpg"><source src="{video.name}" type="video/mp4"></video><p>Build it. Make it yours. Set the challenge.</p><nav>{chapters}</nav><p><a href="{video.name}" download>Download MP4</a> · <a href="report.json">Capture and music credits</a></p><img src="contact-sheet.jpg" alt="Twelve frames from the trailer"></main><script>document.querySelectorAll('button[data-time]').forEach(b=>b.onclick=()=>{{const v=document.getElementById('trailer');v.currentTime=Number(b.dataset.time);v.play()}})</script></html>'''
++    (delivery / "preview.html").write_text(html, encoding="utf-8")
++    print(json.dumps({"video": str(video), "bytes": video.stat().st_size, "sha256": digest(video), "verified": True}), flush=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/trailer/capture.gd b/tools/trailer/capture.gd
+new file mode 100644
+index 000000000..7404a1b8b
+--- /dev/null
++++ b/tools/trailer/capture.gd
+@@ -0,0 +1,322 @@
++extends SceneTree
++## Offline trailer capture. Uses real runtime scenes and quantized driving input.
++## All storage is redirected by the launcher; no account or service is used.
++
++const FPS: int = 30
++const SIZE := Vector2i(1920, 1080)
++const DISPLAY_FONT = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
++const TEXT_FONT = preload("res://assets/fonts/Barlow-Regular.ttf")
++var output: String
++var mode: String = "smoke"
++var shot: String = ""
++var frame_index: int = 0
++var evidence: Array[Dictionary] = []
++var overlay: TrailerOverlay
++var app: Node
++var trailer_document: Dictionary = {}
++
++class TrailerOverlay extends Control:
++	var heading: String = ""
++	var subtitle: String = ""
++	var tag: String = ""
++	var elapsed: float = 0.0
++	var end_card: bool = false
++	var editor_caption: bool = false
++	var challenge_caption: bool = false
++	var cursor := Vector2.INF
++	func _draw() -> void:
++		var s: Vector2 = size / Vector2(1920,1080)
++		draw_set_transform(Vector2.ZERO,0.0,s)
++		if end_card:
++			draw_rect(Rect2(0,0,1920,1080),Color(0.025,0.045,0.055,0.82))
++			draw_rect(Rect2(880,285,160,5),Color("dbb36d"))
++			_center("BEAT MY TRACK",560,150,DISPLAY_FONT,Color("f5f0e6"))
++			_center("BUILD IT.  MAKE IT YOURS.  SET THE CHALLENGE.",650,30,TEXT_FONT,Color("dfc28b"))
++			_center("Can they beat your track?",800,42,DISPLAY_FONT,Color("f5f0e6"))
++			return
++		if challenge_caption:
++			draw_style_box(_tag_box(),Rect2(48,822,1150,84))
++			draw_rect(Rect2(69,836,4,54),Color("dbb36d"))
++			draw_string(DISPLAY_FONT,Vector2(92,858),heading,HORIZONTAL_ALIGNMENT_LEFT,-1,36,Color("f5f0e6"))
++			draw_string(TEXT_FONT,Vector2(94,892),subtitle,HORIZONTAL_ALIGNMENT_LEFT,-1,22,Color("dedfd9"))
++		elif editor_caption:
++			draw_style_box(_tag_box(),Rect2(455,126,1110,115))
++			draw_rect(Rect2(478,151,4,63),Color("dbb36d"))
++			draw_string(DISPLAY_FONT,Vector2(505,184),heading,HORIZONTAL_ALIGNMENT_LEFT,-1,42,Color("f5f0e6"))
++			draw_string(TEXT_FONT,Vector2(507,220),subtitle,HORIZONTAL_ALIGNMENT_LEFT,-1,22,Color("dedfd9"))
++		elif not heading.is_empty():
++			for i: int in range(140):
++				var a: float = 0.74 * pow(float(i)/140.0,1.4)
++				draw_rect(Rect2(0,940+i,1920,1),Color(0.025,0.045,0.055,a))
++			draw_rect(Rect2(72,968,5,65),Color("dbb36d"))
++			draw_string(DISPLAY_FONT,Vector2(96,1010),heading,HORIZONTAL_ALIGNMENT_LEFT,-1,54,Color("f5f0e6"))
++			draw_string(TEXT_FONT,Vector2(98,1046),subtitle,HORIZONTAL_ALIGNMENT_LEFT,-1,23,Color("dedfd9"))
++		if not tag.is_empty():
++			var w: float = TEXT_FONT.get_string_size(tag,HORIZONTAL_ALIGNMENT_LEFT,-1,21).x+40
++			draw_style_box(_tag_box(),Rect2(1848-w,48,w,42))
++			draw_string(TEXT_FONT,Vector2(1868-w,77),tag,HORIZONTAL_ALIGNMENT_LEFT,-1,21,Color("f5f0e6"))
++		if cursor.is_finite():
++			draw_circle(cursor,15,Color(0.86,0.70,0.42,0.20))
++			draw_arc(cursor,15,0,TAU,48,Color("f4deb2"),2,true)
++	func _tag_box() -> StyleBoxFlat:
++		var box := StyleBoxFlat.new()
++		box.bg_color=Color(0.025,0.045,0.055,0.82)
++		box.set_corner_radius_all(4)
++		return box
++	func _center(text: String,y: float,font_size: int,font: Font,color: Color) -> void:
++		var w: float=font.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
++		draw_string(font,Vector2((1920-w)*0.5,y),text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size,color)
++
++func _initialize() -> void:
++	_run.call_deferred()
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
++		if arg.begins_with("--mode="): mode=arg.trim_prefix("--mode=")
++	assert(output.is_absolute_path(),"Explicit workspace output required")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size=SIZE
++	root.content_scale_size=Vector2i(1280,720)
++	var layer := CanvasLayer.new()
++	layer.layer=100
++	root.add_child(layer)
++	overlay=TrailerOverlay.new()
++	overlay.mouse_filter=Control.MOUSE_FILTER_IGNORE
++	layer.add_child(overlay)
++	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	if mode == "smoke":
++		await _gameplay("smoke","pine",15,"YOUR TRACK. YOUR RULES.","Create it. Customise it. Challenge them.",0)
++	elif mode == "gameplay":
++		await _gameplay("01-hook","pine",120,"YOUR TRACK. YOUR RULES.","Create it. Customise it. Challenge them.",0)
++		for biome: String in TrackTheme.IDS:
++			await _gameplay("03-biome-"+biome,biome,42,"ONE TRACK. FIVE WORLDS.","Grass / Desert / Night / Winter / Storm",TrackTheme.IDS.find(biome)%4)
++		await _gameplay("06-finale","desert",150,"SET THE CHALLENGE.","Build a circuit worth beating.",2)
++		await _gameplay("07-end","pine",120,"","",2,true)
++	elif mode == "garage":
++		await _garage()
++	elif mode == "editor":
++		await _editor()
++	elif mode == "challenge":
++		await _challenges()
++	var file := FileAccess.open(output.path_join(mode+"-manifest.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"mode":mode,"fps":FPS,"size":[1920,1080],"shots":evidence},"\t"))
++	file.close()
++	if is_instance_valid(app):
++		app.queue_free()
++		await process_frame
++	GameSoundtrack.instance().output_enabled=false
++	print("TRAILER_CAPTURE_COMPLETE ",mode," shots=",evidence.size())
++	quit(0)
++
++func _begin_shot(identity: String,heading: String,subtitle: String,tag: String="",end: bool=false) -> void:
++	shot=identity
++	frame_index=0
++	DirAccess.make_dir_recursive_absolute(output.path_join(shot))
++	overlay.heading=heading
++	overlay.subtitle=subtitle
++	overlay.tag=tag
++	overlay.end_card=end
++	overlay.editor_caption=identity=="02-editor"
++	overlay.challenge_caption=identity=="05-challenges"
++	overlay.cursor=Vector2.INF
++	overlay.queue_redraw()
++	print("TRAILER_SHOT ",shot)
++
++func _save_frame() -> void:
++	overlay.elapsed=float(frame_index)/FPS
++	overlay.queue_redraw()
++	await RenderingServer.frame_post_draw
++	var error: Error=root.get_texture().get_image().save_jpg(output.path_join(shot).path_join("%05d.jpg"%frame_index),0.94)
++	assert(error == OK,"Trailer frame write failed")
++	frame_index+=1
++
++func _finish_shot(extra: Dictionary={}) -> void:
++	var item: Dictionary={"id":shot,"frames":frame_index,"seconds":float(frame_index)/FPS}
++	item.merge(extra)
++	evidence.append(item)
++
++func _paint(index: int) -> Dictionary:
++	var value: Dictionary=VehicleLivery.defaults("compact")
++	var palettes: Array=[{"body":"294e68","accent":"ece2ce","detail":"d8a35b"},{"body":"ac4935","accent":"f0ddad","detail":"26383f"},{"body":"d6b45c","accent":"233b45","detail":"d9e1d6"},{"body":"507a70","accent":"e5dfca","detail":"c97343"}]
++	value.colors=palettes[index%4].duplicate()
++	value.pattern=["apex_twin","offset_gt","apex_twin","offset_gt"][index%4]
++	assert(VehicleLivery.valid(value))
++	return value
++
++func _parts(index: int) -> Dictionary:
++	var value: Dictionary=VehicleCustomisation.defaults()
++	if index%4==1: value.merge({"hood":"scoop","aero":"rallywing","rims":"rallydisc","body":"rally"},true)
++	if index%4==2: value.merge({"hood":"extractor","aero":"swan","rims":"split","body":"wide"},true)
++	if index%4==3: value.merge({"hood":"louvres","aero":"ducktail","rims":"mesh","body":"street"},true)
++	assert(VehicleCustomisation.valid(value))
++	return value
++
++func _document(theme: String="pine") -> Dictionary:
++	var doc: Dictionary=TrackDocument.create_default()
++	doc.id="trailer_circuit"
++	doc.name="Beat My Track"
++	doc["creator"]="Beat My Track"
++	doc.theme=theme
++	return doc
++
++func _gameplay(identity: String,theme: String,count: int,heading: String,subtitle: String,style: int,end: bool=false) -> void:
++	var doc: Dictionary=_document(theme)
++	print("TRAILER_DOCUMENT_VALIDATION ",TrackDocument.validate(doc))
++	var track: NativeTrack=TrackCompiler.compile(doc)
++	assert(track != null)
++	var race: Node=load("res://core/game.tscn").instantiate()
++	race.initial_track=track
++	race.production_mode=true
++	race.cooperative_preparation=true
++	race.ai_enabled=true
++	race.hitch_diagnostics_enabled=false
++	root.add_child(race)
++	while not race.preparation_complete: await process_frame
++	race.set_physics_process(false)
++	race.set_process(false)
++	race.paused=false
++	race.countdown_ticks=0
++	race.car.apply_livery(_paint(style))
++	# Install real cosmetic geometry before the captured simulation begins.
++	if style>0:
++		var previous: CarVisual=race.car
++		var model := CarVisual.new()
++		model.vehicle_id="compact"
++		model.livery=_paint(style)
++		model.customisation=_parts(style)
++		previous.get_parent().add_child(model)
++		race.car=model
++		previous.get_parent().remove_child(previous)
++		previous.queue_free()
++		race.car_weathering=VehicleWeathering.new()
++		race.car_weathering.configure(model,theme,race.handling)
++		race.car.set_night_headlights(theme=="night_city")
++		if race.winter_snow_wind != null: race.winter_snow_wind.car_visual=model
++	race.hud.hide()
++	race.race_cues.hide()
++	race.countdown_label.hide()
++	# Warm-up is real canonical driving, excluded from the edit.
++	for i: int in range(240): race._physics_process(1.0/120.0)
++	race.previous_position=race.sim.state.position
++	race.previous_heading=race.sim.state.heading
++	race._process(1.0/FPS)
++	race.camera.follow(race.sim.state.position,race.sim.state.velocity,race.sim.state.heading,0.0,true)
++	await process_frame
++	_begin_shot(identity,heading,subtitle,TrackTheme.title(theme) if not end else "",end)
++	var from: Vector2=race.sim.state.position
++	var start_tick: int=race.sim.state.tick
++	var max_speed: float=0
++	for i: int in range(count):
++		race.paused=false
++		for step: int in range(4): race._physics_process(1.0/120.0)
++		race.previous_position=race.sim.state.position
++		race.previous_heading=race.sim.state.heading
++		race._process(1.0/FPS)
++		max_speed=maxf(max_speed,race.sim.state.velocity.length())
++		await _save_frame()
++	_finish_shot({"theme":theme,"car":"compact","paint":_paint(style),"parts":_parts(style),"start_tick":start_tick,"end_tick":race.sim.state.tick,"start_position":[from.x,from.y],"end_position":[race.sim.state.position.x,race.sim.state.position.y],"max_speed_mps":max_speed,"source":"actual Game scene; ordinary RouteDriver quantized inputs; canonical 120 Hz simulation; HUD hidden for editorial capture"})
++	assert(race.sim.state.tick-start_tick==count*4)
++	assert(from.distance_to(race.sim.state.position)>1.0)
++	race.queue_free()
++	await process_frame
++
++func _garage() -> void:
++	var showroom := CarShowroom.new()
++	showroom.garage_mode=true
++	showroom.vehicle_id="compact"
++	showroom.livery=_paint(0)
++	showroom.customisation=_parts(0)
++	root.add_child(showroom)
++	showroom.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	for i: int in range(12): await process_frame
++	showroom.set_zoom(0.80)
++	showroom.elevation=0.34
++	_begin_shot("04-garage","MAKE IT YOURS.","Liveries. Body kits. Aero. Wheels.")
++	var variants: Array[Dictionary]=[]
++	for i: int in range(240):
++		var variant: int=i/60
++		if i%60==0:
++			showroom.apply_livery(_paint(variant))
++			showroom.apply_customisation(_parts(variant))
++			variants.append({"at_frame":i,"paint":_paint(variant),"parts":_parts(variant)})
++		showroom.yaw=-0.70+float(i)*0.005
++		showroom._orbit()
++		showroom.invalidate_render()
++		await _save_frame()
++	_finish_shot({"source":"actual Garage environment, CarShowroom, liveries and cosmetic kit geometry","variants":variants})
++	showroom.queue_free()
++	await process_frame
++
++func _new_app() -> void:
++	var directory: String=output.path_join("isolated-profile")
++	DirAccess.make_dir_recursive_absolute(directory)
++	app=load("res://core/app.tscn").instantiate()
++	app.records=LocalRecords.new(directory.path_join("records.json"))
++	app.library=TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override=directory.path_join("cloud")
++	root.add_child(app)
++	var deadline: int=Time.get_ticks_msec()+60000
++	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
++	assert(app.startup_complete,"Isolated app startup timed out")
++
++func _wait_editor() -> void:
++	var deadline: int=Time.get_ticks_msec()+60000
++	while Time.get_ticks_msec()<deadline:
++		if app.canvas.native_preview != null and app.editor_preview_thread == null and not app.editor_world._building and not app.editor_commits.unsettled(): break
++		await process_frame
++	assert(app.canvas.native_preview != null and not app.editor_world._building,"Editor preview timed out")
++	for i: int in range(3): await process_frame
++
++func _editor() -> void:
++	await _new_app()
++	var doc: Dictionary=TrackDocument.create_blank()
++	doc.id="trailer_build"
++	doc.name="Your next challenge"
++	doc["creator"]="Beat My Track"
++	app.document=doc
++	app.canvas=null
++	app.editor_view={}
++	app._show_screen("create")
++	await _wait_editor()
++	var canvas: EditorCanvas=app.canvas
++	canvas.zoom=0.72
++	canvas.pan=Vector2(55,-12)
++	canvas.queue_redraw()
++	_begin_shot("02-editor","BUILD YOUR NEXT CHALLENGE.","Connect the road. Shape the circuit. Make it your own.")
++	for index: int in range(8):
++		canvas.choose_piece("straight" if index%2==0 else "curve")
++		if index==0:
++			canvas.ghost.position=[-20.0,-35.0]
++			canvas.ghost.heading=0.0
++		canvas.ghost.length=40.0 if index%2==0 else 0.0
++		canvas.ghost.radius=15.0
++		canvas.queue_redraw()
++		app._build_editor_tools()
++		for i: int in range(12): await _save_frame()
++		canvas.confirm_piece()
++		await _wait_editor()
++		for i: int in range(12): await _save_frame()
++	# End on the actual completed native preview with editing handles visible.
++	for i: int in range(18): await _save_frame()
++	assert(doc.pieces.size()==8)
++	_finish_shot({"source":"actual App track editor; choose_piece and confirm_piece; native previews; eight committed modular sections","pieces":doc.pieces,"document":doc})
++
++func _challenges() -> void:
++	await _new_app()
++	app._show_screen("challenge_create")
++	var page := ChallengeCreate.new()
++	page.adapter=app.challenges
++	page.library=app.library
++	page.records=app.records
++	page.selected_track=app.selected_track
++	page.initial_vehicle="compact"
++	app.content.add_child(page)
++	for i: int in range(30): await process_frame
++	_begin_shot("05-challenges","CHALLENGE THEM.","One-to-one. Group races. 3×3.")
++	for i: int in range(150):
++		if i==50: page._choose_format("group")
++		if i==100: page._choose_format("three")
++		await _save_frame()
++	_finish_shot({"source":"actual ChallengeCreate format picker, offline isolated profile; no challenge submission or synthetic win/result"})
+diff --git a/tools/trailer/capture.ps1 b/tools/trailer/capture.ps1
+new file mode 100644
+index 000000000..5a9e52a24
+--- /dev/null
++++ b/tools/trailer/capture.ps1
+@@ -0,0 +1,20 @@
++param(
++    [ValidateSet('smoke','gameplay','garage','editor','challenge')]
++    [string]$Mode = 'smoke',
++    [string]$Output = 'build/trailer-2026-10-24'
++)
++$ErrorActionPreference = 'Stop'
++$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
++$destination = [IO.Path]::GetFullPath((Join-Path $repo $Output))
++if (-not $destination.StartsWith($repo + [IO.Path]::DirectorySeparatorChar)) { throw 'Output must be inside this workspace.' }
++New-Item -ItemType Directory -Force -Path $destination | Out-Null
++$env:APPDATA = Join-Path $destination 'userdata'
++$env:LOCALAPPDATA = $env:APPDATA
++$env:BMT_API_URL = ''
++$godotTrailer = 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe'
++$actualVersion = & $godotTrailer --version
++if ($actualVersion.Trim() -ne (Get-Content -LiteralPath (Join-Path $repo 'godot-version.txt') -Raw).Trim()) { throw 'Pinned Godot version mismatch.' }
++& $godotTrailer --path (Join-Path $repo 'game') --rendering-method gl_compatibility --rendering-driver opengl3 --audio-driver Dummy --fixed-fps 30 --resolution 1920x1080 --script (Join-Path $PSScriptRoot 'capture.gd') --log-file (Join-Path $destination "$Mode.log") -- "--output=$(Join-Path $destination 'raw')" "--mode=$Mode"
++if ($LASTEXITCODE -ne 0) { throw "Godot capture failed: $LASTEXITCODE" }
++$logText = Get-Content -LiteralPath (Join-Path $destination "$Mode.log") -Raw
++if ($logText -match 'SCRIPT ERROR|Assertion failed|Parse Error|Failed loading resource|Unable to open file' -or $logText -notmatch "TRAILER_CAPTURE_COMPLETE $Mode") { throw "Incomplete capture; inspect $Mode.log" }
+diff --git a/tools/trailer/checkpoint.py b/tools/trailer/checkpoint.py
+new file mode 100644
+index 000000000..33e6045b1
+--- /dev/null
++++ b/tools/trailer/checkpoint.py
+@@ -0,0 +1,91 @@
++"""Record a scoped source checkpoint and copy small trailer evidence locally."""
++from __future__ import annotations
++
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++
++
++def sha256(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def main() -> None:
++    root = Path(__file__).resolve().parents[2]
++    out = root / "build/trailer-2026-10-24"
++    delivery = out / "deliverables"
++    evidence = root / "docs/evidence/game-trailer-2026-10-24"
++    evidence.mkdir(parents=True, exist_ok=True)
++    report = json.loads((delivery / "report.json").read_text(encoding="utf-8"))
++    checksums = [row.rsplit(",", 1)[-1].strip() for row in (out / "frame-checksums.txt").read_text(encoding="utf-8").splitlines() if row and not row.startswith("#")]
++    if len(checksums) != 1200:
++        raise ValueError(f"Encoded frame count mismatch: {len(checksums)}")
++    moving_shots = {}
++    for row in report["timeline"]:
++        if "start_tick" not in report["shots"][row["id"]]:
++            continue
++        first, last = round(row["start_seconds"] * 30), round(row["end_seconds"] * 30)
++        unique = len(set(checksums[first:last]))
++        if unique < (last - first) * 0.9:
++            raise ValueError(f"Unexpected duplicate gameplay frames in {row['id']}")
++        moving_shots[row["id"]] = {"decoded_frames": last - first, "unique_frame_checksums": unique}
++    report["source_files_added"] = [str(p.relative_to(root)).replace("\\", "/") for p in sorted((root / "tools/trailer").glob("*")) if p.is_file()]
++    report["actual_commands"] = [
++        "Pinned Godot --version: 4.7.2.stable.official.ed1daf0bf",
++        *[f"powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/trailer/capture.ps1 -Mode {mode}" for mode in ["gameplay", "editor", "garage", "challenge"]],
++        "Pinned Godot --headless --editor --path game --import --log-file build/trailer-2026-10-24/import.log",
++        "wsl.exe -e python3 '/mnt/c/Codes/Godot/Beat my track/tools/trailer/assemble.py' --ffmpeg /home/ville/.local/share/bmt-music-tools/ffmpeg",
++        "python -m py_compile tools/trailer/assemble.py tools/trailer/checkpoint.py",
++        "PowerShell System.Management.Automation.Language.Parser.ParseFile(capture.ps1): no errors",
++        "FFmpeg final full-stream decode to null: exit 0, empty error log",
++        "FFmpeg ebur128=peak=true: -16.2 LUFS integrated; -1.5 dBFS true peak",
++        "FFmpeg select twelve feature frames from final MP4, scale 480x270, tile 3x4",
++        "FFmpeg -map 0:v:0 -f framemd5 build/trailer-2026-10-24/frame-checksums.txt: 1200 decoded video frames",
++    ]
++    report["verification"]["final_audio"] = "-16.2 LUFS integrated; -1.5 dBFS true peak after AAC encoding"
++    report["verification"]["encoded_video_frame_count"] = "1200 frames, counted from FFmpeg decoded-frame checksums"
++    report["verification"]["moving_gameplay_frames"] = moving_shots
++    report["verification"]["visual_review"] = "Native gameplay, Desert, Night, Garage, editor completion and 3×3 frames inspected; final encoded twelve-frame contact sheet inspected"
++    report["corrections"] = [
++        "Initial smoke capture rejected a newly added dictionary creator key. Use an explicit String key so the current strict document validator accepts it. Final smoke captures and all gameplay captures succeed.",
++        "First editor capture placed part of the circuit behind the bottom tool palette. The final capture uses wider editor framing and an upper caption, preserving normal gameplay framing.",
++        "Initial challenge capture could not load the concurrently added three-by-three-v5 texture import. Retained initial-challenge-import.log; refreshed the local asset import cache and recaptured. Final challenge log has no resource loading or script errors.",
++        "Moved the challenge trailer caption into the gap above the rule/action panel; final capture cycles duel, group and three selections.",
++    ]
++    report["remaining_acceptance"] = ["Owner creative review of pacing, captions and temporary music", "Optional later gameplay sound mix or platform-specific derivatives"]
++    report["source_hashes_at_delivery"] = {}
++    paths = report["source_files_added"] + [
++        "game/core/game.gd", "game/core/app.gd", "game/editor/track_document.gd", "game/editor/editor_canvas.gd",
++        "game/vehicle/car_visual.gd", "game/vehicle/vehicle_livery.gd", "game/vehicle/vehicle_customisation.gd",
++        "game/ui/car_showroom.gd", "game/ui/challenge_create.gd", "game/assets/audio/score_v1/NOTICE.txt",
++    ]
++    for relative in paths:
++        path = root / relative
++        report["source_hashes_at_delivery"][relative] = {"bytes": path.stat().st_size, "sha256": sha256(path)}
++    report["source_hash_scope"] = "Source hashes describe the shared workspace at delivery. Other tasks were concurrent; no whole-workspace immutable build or physical-device certification is claimed. This task adds tools and evidence only."
++    for name in ["gameplay.log", "editor.log", "garage.log", "challenge.log", "import.log", "metadata.log", "decode-check.log", "frame-checksums.txt"]:
++        shutil.copyfile(out / name, evidence / name)
++    for name in ["poster.jpg", "contact-sheet.jpg"]:
++        shutil.copyfile(delivery / name, evidence / name)
++    (evidence / "audio-levels-summary.txt").write_text("Final AAC audio: integrated -16.2 LUFS; loudness range 2.8 LU; true peak -1.5 dBFS. Full FFmpeg ebur128 log retained in build/trailer-2026-10-24/audio-levels.log.\n", encoding="utf-8")
++    patch = bytearray()
++    for relative in report["source_files_added"]:
++        result = subprocess.run(["git", "diff", "--no-index", "--no-ext-diff", "--", "NUL", relative], cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++        if result.returncode != 1:
++            raise RuntimeError(result.stderr.decode("utf-8", errors="replace"))
++        patch.extend(result.stdout)
++    patch_path = evidence / "source-checkpoint.patch"
++    patch_path.write_bytes(patch)
++    check = subprocess.run(["git", "apply", "--check", "--reverse", str(patch_path)], cwd=root, capture_output=True, text=True)
++    if check.returncode:
++        raise RuntimeError(check.stderr)
++    report["source_checkpoint"] = {"path": str(patch_path.relative_to(root)).replace("\\", "/"), "sha256": sha256(patch_path), "validation": "git apply --check --reverse passes against the exact new tool files; branch and index untouched"}
++    for target in [evidence / "report.json", delivery / "report.json"]:
++        target.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({"evidence": str(evidence), "video_sha256": report["video"]["sha256"], "source_checkpoint_check": "passed"}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/trailer/README.md b/tools/trailer/README.md
+new file mode 100644
+index 000000000..0b8c6182e
+--- /dev/null
++++ b/tools/trailer/README.md
+@@ -0,0 +1,46 @@
++# Native game trailer
++
++Captures the current game into a 40-second, 1920×1080, 30 fps landscape review cut.
++Uses the pinned Godot build, actual race simulation, App editor, Garage models,
++and ChallengeCreate. It does not change runtime code or submit service requests.
++
++Run from the repository root:
++
++```powershell
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/trailer/capture.ps1 -Mode gameplay
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/trailer/capture.ps1 -Mode editor
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/trailer/capture.ps1 -Mode garage
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/trailer/capture.ps1 -Mode challenge
++```
++
++The launcher redirects APPDATA/LOCALAPPDATA to the workspace, supplies disposable
++App records/library/cloud paths, disables the API URL, and uses Dummy audio.
++The game receives normal RouteDriver inputs at its unchanged 120 Hz tick rate.
++Every captured frame follows four ticks. The gameplay HUD is hidden; the normal
++overhead follow camera remains. Garage is a separate native menu camera.
++
++After the four captures, assemble with the existing local FFmpeg:
++
++```powershell
++wsl.exe -e python3 '/mnt/c/Codes/Godot/Beat my track/tools/trailer/assemble.py' --ffmpeg /home/ville/.local/share/bmt-music-tools/ffmpeg
++```
++
++Alternatively run `python tools/trailer/assemble.py --ffmpeg <native-ffmpeg>`.
++The assembler requires Python 3.11+ and no third-party Python packages.
++Outputs are in `build/trailer-2026-10-24/deliverables/`: MP4, local HTML player,
++poster, contact sheet and provenance/validation JSON. Intermediate JPEGs and
++encoder logs stay in the ignored build directory. Assembly uses hard links to
++avoid duplicating frame storage. An existing timeline must refer to the same
++raw frames; use a fresh output directory if changing the shot order.
++
++The five-biome sequence uses one default creator circuit with the compact's
++real cosmetic variants. The editor illustrates constructing a separate modular
++closed circuit. The challenge shot selects formats locally; no challenge is
++submitted, and no results or opponent data are fabricated. Music is the existing
++original `score_v1/daybreak_current.ogg`, with CC0 source-instrument provenance
++in that bank's NOTICE and manifest. This temporary music choice needs owner
++creative review. The first cut uses music only.
++
++Editorial changes consist of captions, cuts, opening/closing fades, a small
++exposure lift on the dark Night shot, and music normalization/fades. There is no
++generative footage, external media upload, APK, device test or deployment.

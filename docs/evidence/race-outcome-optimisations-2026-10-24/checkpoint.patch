@@ -1,0 +1,1142 @@
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -272,6 +272,8 @@
+             "verification": "trajectory-v1",
+             "trajectory_verification": True,
+             "submission_recovery_version": 1,
++            "run_completion_version": 1,
++            "challenge_pending_version": 1,
+             "race_incident_rewards_version": 1,
+             "challenge_discovery_version": 1,
+             "challenge_series_version": 1,
+--- a/backend/bmt_backend/news.py
++++ b/backend/bmt_backend/news.py
+@@ -78,11 +78,18 @@
+     session.execute(statement.on_conflict_do_nothing(index_elements=["player_id", "event_key"]))
+ 
+ 
+-def capture_verified(session, run, board, version, track, player):
++def capture_verified(session, run, board, version, track, player, *, previous=None):
+     """Called in the accepted-result transaction. Never fans out to friends/racers."""
+     if (player.is_test_driver or player.disabled or player.deleted_at is not None
+             or board.manifest.get("test_population") or board.manifest.get("purpose")
+             or version.state != "published" or track.hidden or track.archived):
++        return
++    # Worker facts precede PB triggers under the same Player/Run locks. A
++    # conservative negative gate saves the candidate read; possible winners
++    # still use the actual projections below, including first flying laps.
++    if (previous is not None and previous[0] and previous[1]
++            and run.time_ticks >= previous[0] and len(run.lap_ticks) == 5
++            and min(run.lap_ticks[1:]) >= previous[1]):
+         return
+     candidates = session.execute(select(literal("race"), PersonalBest.time_ticks).where(
+         PersonalBest.board_id == board.id, PersonalBest.player_id == player.id, PersonalBest.run_id == run.id)
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -317,7 +317,7 @@
+         track = acceptance.track if acceptance else session.get(Track, version.track_id)
+         if not creator_test:
+             from .news import capture_verified
+-            capture_verified(session, run, board, version, track, player)
++            capture_verified(session, run, board, version, track, player, previous=coin_previous)
+         if track.owner_id == run.player_id:
+             session.execute(
+                 update(TrackVersion)
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -289,7 +289,7 @@
+ 
+ 
+ @router.get("/run-tickets/{ticket_id}/submission")
+-def recover_submission(ticket_id: str, session: DB, player: Auth) -> dict:
++def recover_submission(ticket_id: str, request: Request, session: DB, player: Auth, completion: bool = False) -> dict:
+     """Read an already accepted ticket without replacing its immutable replay."""
+     if len(ticket_id) != 36:
+         raise HTTPException(404, "Run ticket not found")
+@@ -302,30 +302,39 @@
+         return {"run": None}
+     from .rivalry_models import RivalryTicket
+     binding = session.get(RivalryTicket, ticket.id)
++    from .completion_reads import single
+     return {"run": {**run_payload(run), "outcome": binding.outcome if binding else None,
+-                    "slot": binding.slot if binding else None}}
++                    "slot": binding.slot if binding else None,
++                    **(single(session, run, player.id, request) if completion else {})}}
+ 
+ 
+ @router.get("/runs/status")
+-def run_statuses(session: DB, player: Auth, ids: list[str] = Query(max_length=32)) -> dict:
++def run_statuses(session: DB, player: Auth, ids: list[str] = Query(max_length=32), completion: bool = False) -> dict:
+     from .rivalry_models import RivalryTicket
+     rows = session.execute(select(Run, RivalryTicket.outcome, RivalryTicket.slot)
+         .outerjoin(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
+         .where(Run.player_id == player.id, Run.id.in_(ids))).all()
+-    return {"items": [{**run_payload(run), "outcome": outcome, "slot": slot} for run, outcome, slot in rows], "poll_after_ms": 2500}
++    from .completion_reads import enrich
++    values, wallet = enrich(session, [row[0] for row in rows], player.id) if completion else ({}, None)
++    return {"items": [{**run_payload(run), "outcome": outcome, "slot": slot,
++                       **({"completion": values[run.id]} if run.id in values else {})}
++                      for run, outcome, slot in rows], "poll_after_ms": 2500,
++            **({"completion_wallet": wallet} if wallet is not None else {})}
+ 
+ 
+ @router.get("/runs/{run_id}")
+-def get_run(run_id: str, session: DB, player: Auth) -> dict:
++def get_run(run_id: str, request: Request, session: DB, player: Auth, completion: bool = False) -> dict:
+     run = session.scalar(select(Run).where(Run.id == run_id, Run.player_id == player.id))
+     if run is None:
+         raise HTTPException(404, "Run not found")
+     from .rivalry_models import RivalryTicket
+     binding = session.get(RivalryTicket, run.ticket_id)
+-    return {**run_payload(run), "outcome": binding.outcome if binding else None, "slot": binding.slot if binding else None}
+-
+-
+-def waiting_run_snapshot(request, run_id, player_id, credentials):
++    from .completion_reads import single
++    return {**run_payload(run), "outcome": binding.outcome if binding else None, "slot": binding.slot if binding else None,
++            **(single(session, run, player.id, request) if completion else {})}
++
++
++def waiting_run_snapshot(request, run_id, player_id, credentials, completion=False):
+     """One short, fresh read; no connection/transaction survives the return."""
+     from .identity_models import SessionFamily, SessionToken
+     from .rivalry_models import RivalryTicket
+@@ -350,12 +359,14 @@
+         from .security import development_session_disabled
+         if owner.disabled or owner.deleted_at is not None or development_session_disabled(request, session, owner):
+             raise HTTPException(401, "INVALID_SESSION")
+-        return {**run_payload(run), "outcome": outcome, "slot": slot}
++        from .completion_reads import single
++        return {**run_payload(run), "outcome": outcome, "slot": slot,
++                **(single(session, run, player_id, request) if completion else {})}
+ 
+ 
+ @router.get("/runs/{run_id}/wait")
+ async def wait_run(run_id: str, request: Request, session: DB, player: Auth,
+-                   credentials=Depends(bearer), timeout_ms: int = Query(2000, ge=0, le=2000)):
++                   credentials=Depends(bearer), timeout_ms: int = Query(2000, ge=0, le=2000), completion: bool = False):
+     """Bounded foreground completion; ordinary status polling remains available."""
+     from .run_signals import TERMINAL
+     if len(run_id) != 36:
+@@ -369,7 +380,7 @@
+         while True:
+             if watch:
+                 watch.event.clear()  # Register before reading so commit cannot be lost.
+-            value = await run_in_threadpool(waiting_run_snapshot, request, run_id, player_id, credentials)
++            value = await run_in_threadpool(waiting_run_snapshot, request, run_id, player_id, credentials, completion)
+             remaining = deadline - time.monotonic()
+             if not watch or value["status"] in TERMINAL or remaining <= 0 or signals.stopped:
+                 return value
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -170,7 +170,8 @@
+     return sorted(rows, key=lambda row: (row["ticks"] is None, row["ticks"] or 0, row["id"]))
+ 
+ 
+-def snapshot(session, request, challenge, player_id=""):
++def snapshot_access(session, challenge, player_id=""):
++    """Shared current visibility checks for full and compact result reads."""
+     board = session.get(Board, challenge.board_id)
+     version = session.get(TrackVersion, board.version_id)
+     track = session.get(Track, version.track_id)
+@@ -182,6 +183,11 @@
+     if challenge.is_series:
+         from .challenge_series import check_tracks
+         check_tracks(session, challenge, player_id)
++    return board, version, track, creator
++
++
++def snapshot(session, request, challenge, player_id=""):
++    board, version, track, creator = snapshot_access(session, challenge, player_id)
+     rows = standings(session, challenge)
+     current = now()
+     pending = session.scalar(select(Run.id).join(ChallengeTicket, ChallengeTicket.ticket_id == Run.ticket_id)
+@@ -562,7 +568,7 @@
+ 
+ 
+ @router.get("/challenge-results/{ticket_id}")
+-def result(ticket_id: str, request: Request, session: DB, player: Auth):
++def result(ticket_id: str, request: Request, session: DB, player: Auth, compact: bool = False):
+     real_player(player)
+     own = session.get(RunTicket, ticket_id)
+     binding = session.get(ChallengeTicket, ticket_id)
+@@ -573,9 +579,30 @@
+     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
+     status = run.status if run else "expired" if now() >= own.expires_at else "upload_pending"
+     from .runs import pending_poll_ms
+-    return {"status": status, "failure_code": run.failure_code if run else None, "outcome": binding.outcome,
+-            "poll_after_ms": pending_poll_ms(run,status),
+-            "challenge": snapshot(session, request, challenge, player.id)}
++    value = {"status": status, "failure_code": run.failure_code if run else None, "outcome": binding.outcome,
++             "poll_after_ms": pending_poll_ms(run,status)}
++    if compact and status in ("upload_pending", "queued", "verifying"):
++        snapshot_access(session, challenge, player.id)
++        current = now()
++        member = session.get(ChallengeMember, (challenge.id, player.id))
++        limit = challenge.attempt_limit * challenge.track_count if challenge.attempt_limit is not None else None
++        used = member.attempts_used if member else 0
++        from .economy import challenge_rewards
++        pending = {"id": challenge.id, "code": challenge.code, "self_id": player.id,
++            "state": "cancelled" if challenge.cancelled else "active" if current < challenge.ends_at else "settling",
++            "ends_at": challenge.ends_at, "server_now": current, "remaining_seconds": max(0, challenge.ends_at-current),
++            "attempt_limit": limit, "attempts_used": used,
++            "attempts_remaining": max(0, limit-used) if limit is not None else None,
++            "rewards": challenge_rewards(session, challenge.id, player.id, current)}
++        if challenge.is_series:
++            from .challenge_models import ChallengeStageMember
++            pending["stages"] = [{"index": row.ordinal, "attempt_limit": challenge.attempt_limit,
++                "attempts_used": row.attempts_used,
++                "attempts_remaining": max(0, challenge.attempt_limit-row.attempts_used) if challenge.attempt_limit is not None else None}
++                for row in session.scalars(select(ChallengeStageMember).where(
++                    ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.player_id == player.id))]
++        return {**value, "schema": "bmt-challenge-pending-v1", "challenge_pending": pending}
++    return {**value, "challenge": snapshot(session, request, challenge, player.id)}
+ 
+ 
+ @router.get("/challenges/{code}/ghost")
+--- /dev/null
++++ b/backend/bmt_backend/completion_reads.py
+@@ -0,0 +1,72 @@
++"""Optional hot completion reads; failures never hide the durable run status."""
++import logging
++
++from fastapi import HTTPException
++from sqlalchemy import select
++from sqlalchemy.exc import SQLAlchemyError
++
++from .economy import PRICES
++from .economy_models import CoinReward, CoinWallet, CosmeticUnlock
++
++logger = logging.getLogger("bmt.completion")
++TERMINAL = ("verified", "rejected", "failed")
++
++
++def enrich(session, runs, player_id, *, request=None):
++    """Read exact hot receipts and one coherent wallet snapshot, without writes.
++
++    Archived receipts deliberately use the existing independent recovery route.
++    A batch shares its account payload once; only single-run reads may include
++    a full authorized challenge view. Pending runs incur no enrichment reads.
++    """
++    terminal = [run for run in runs if run.status in TERMINAL]
++    if not terminal:
++        return {}, None
++    values, wallet = {}, None
++    try:
++        with session.begin_nested():
++            rewards = {row.run_id: row for row in session.scalars(select(CoinReward).where(
++                CoinReward.player_id == player_id, CoinReward.run_id.in_([run.id for run in terminal])))}
++            for run in terminal:
++                receipt = rewards.get(run.id)
++                # A concurrent archive can remove the hot row after the Run
++                # snapshot was read. Absence never proves "no reward": let the
++                # independent endpoint resolve current hot/archive provenance.
++                reward = {"status": "credited", "amount": receipt.amount, "rows": receipt.rows} if receipt else None
++                values[run.id] = {"version": 1, "reward": reward}
++            if rewards:
++                # One SQL statement binds balance/revision/ownership to the same
++                # snapshot even if another device purchases between reads.
++                rows = session.execute(select(CoinWallet.balance, CoinWallet.revision, CosmeticUnlock.item_id)
++                    .outerjoin(CosmeticUnlock, CosmeticUnlock.player_id == CoinWallet.player_id)
++                    .where(CoinWallet.player_id == player_id).order_by(CosmeticUnlock.item_id)).all()
++                if rows:
++                    wallet = {"schema": 1, "balance": rows[0][0], "revision": rows[0][1],
++                              "owned": [row[2] for row in rows if row[2] is not None], "prices": PRICES}
++    except (SQLAlchemyError, RuntimeError, ValueError):
++        logger.warning("completion_receipt_unavailable")
++        return {}, None
++    if request is not None and len(terminal) == 1:
++        from .challenge_models import ChallengeTicket
++        from .challenges import result
++        from .identity_models import Player
++        run = terminal[0]
++        try:
++            with session.begin_nested():
++                if session.get(ChallengeTicket, run.ticket_id) is not None:
++                    # Use the current result route's ownership/content/block
++                    # checks. Never expose a cached competition view here.
++                    values[run.id]["challenge_result"] = result(
++                        run.ticket_id, request, session, session.get(Player, player_id), compact=False)
++        except (HTTPException, SQLAlchemyError, RuntimeError, ValueError):
++            values[run.id].pop("challenge_result", None)
++            logger.warning("completion_challenge_unavailable")
++    return values, wallet
++
++
++def single(session, run, player_id, request=None):
++    values, wallet = enrich(session, [run], player_id, request=request)
++    value = values.get(run.id)
++    if value is None:
++        return {}
++    return {"completion": {**value, **({"wallet": wallet} if wallet is not None else {})}}
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -596,6 +596,28 @@
+ 	_race_status_cache[str(value.ticket_id)] = {"data":value,"at":Time.get_ticks_msec()}
+ 	while _race_status_cache.size() > 32: _race_status_cache.erase(_race_status_cache.keys()[0])
+ 
++func run_read_path(path: String) -> String:
++	return path+("&" if path.contains("?") else "?")+"completion=true" if int(_capabilities.get("run_completion_version",0)) == 1 else path
++
++func recent_completion(ticket_id: String) -> Dictionary:
++	var recent: Dictionary = recent_run(ticket_id)
++	if recent.get("status") not in ["verified","rejected","failed"]: return {}
++	var value: Variant = recent.get("completion")
++	return value if value is Dictionary and value.get("version") == 1 else {}
++
++func invalidate_challenge_completions() -> void:
++	for entry: Dictionary in _race_status_cache.values():
++		var value: Variant = entry.get("data",{}).get("completion")
++		if value is Dictionary: value.erase("challenge_result")
++
++static func valid_completion_reward(value: Variant) -> bool:
++	if not value is Dictionary or value.get("status") not in ["credited","unavailable"] or not _whole(value.get("amount"),0,2147483647) or not value.get("rows") is Array or value.rows.size() > 32: return false
++	var total: int = 0
++	for row: Variant in value.rows:
++		if not row is Dictionary or not _text(row.get("title")) or not _text(row.get("icon")) or not _whole(row.get("amount"),0,2147483647) or not row.get("eligible") is bool or not _text(row.get("status")): return false
++		total += int(row.amount)
++	return total == int(value.amount) and (value.status == "credited" or (value.rows.is_empty() and total == 0))
++
+ func recent_run(ticket_id: String) -> Dictionary:
+ 	var cached: Dictionary = _race_status_cache.get(ticket_id,{})
+ 	var duration: int = 250 if cached.get("data",{}).get("status","") in ["queued","verifying"] else 3000
+@@ -628,7 +650,7 @@
+ 	if not _run_waits.is_empty(): return _failure("WAIT_BUSY")
+ 	var pending: Dictionary = {"ticket":ticket_id,"done":false,"response":{}}
+ 	_run_waits[identity] = pending
+-	var response: Dictionary = await request_api("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms),HTTPClient.METHOD_GET,{},"",true)
++	var response: Dictionary = await request_api(run_read_path("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms)),HTTPClient.METHOD_GET,{},"",true)
+ 	if generation != _session_generation or origin != _base_url or owner != str(player.get("id","")):
+ 		response = _failure("ACCOUNT_CHANGED")
+ 	elif response.ok:
+@@ -793,7 +815,10 @@
+ 	if authorized and generation == _session_generation and status >= 200 and status < 300:
+ 		if parsed.has("ticket_id") and parsed.has("status") and not run_wait: remember_run(parsed)
+ 		if path.begins_with("/runs/status"):
+-			for item: Dictionary in parsed.get("items",[]): remember_run(item)
++			for item: Dictionary in parsed.get("items",[]):
++				if item.get("completion") is Dictionary and parsed.get("completion_wallet") is Dictionary:
++					item.completion.wallet = parsed.completion_wallet
++				remember_run(item)
+ 	if method == HTTPClient.METHOD_GET and status == 200 and not tag.is_empty() and bytes.size() <= 524288 and origin == _base_url and generation == _session_generation:
+ 		_read_cache.erase(cache_key)
+ 		_read_cache[cache_key] = {"tag":tag,"data":decoded.cache_data,"body":decoded.body,"bytes":bytes.size()}
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -902,6 +902,7 @@
+ 	if int(client._capabilities.get("submission_recovery_version",0)) < 1:
+ 		return {"ok":false,"status":0,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+ 	var endpoint: String = "/run-tickets/"+ticket_id.uri_encode()+"/submission"
++	if client.has_method("run_read_path"): endpoint = client.run_read_path(endpoint)
+ 	var response: Dictionary = await client.request_api(endpoint,HTTPClient.METHOD_GET,{},"",true)
+ 	if response.ok and not Client.valid_response(endpoint,HTTPClient.METHOD_GET,response.get("data")):
+ 		return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
+@@ -941,7 +942,9 @@
+ 		else: ids.append("ids="+str(job.run_id).uri_encode())
+ 	var batch: Dictionary = {}
+ 	if not ids.is_empty() and bool(client._capabilities.get("batch_run_status",false)):
+-		batch = await client.request_api("/runs/status?"+"&".join(ids),HTTPClient.METHOD_GET,{},"",true)
++		var batch_path: String = "/runs/status?"+"&".join(ids)
++		if client.has_method("run_read_path"): batch_path = client.run_read_path(batch_path)
++		batch = await client.request_api(batch_path,HTTPClient.METHOD_GET,{},"",true)
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: return
+ 		if int(batch.get("status",0)) == 429:
+ 			_pause_flush(request_scope,batch)
+@@ -1000,7 +1003,10 @@
+ 				_wait_for_upload.call_deferred(str(job.run_id),str(job.ticket),owner,origin)
+ 		if polled.has(str(job.run_id)): response = {"ok":true,"status":200,"data":polled[str(job.run_id)]}
+ 		elif not batch.is_empty() and not batch.ok: response = batch
+-		elif response.is_empty(): response = await client.request_api("/runs/"+str(job.run_id),HTTPClient.METHOD_GET,{},"",true)
++		elif response.is_empty():
++			var run_path: String = "/runs/"+str(job.run_id)
++			if client.has_method("run_read_path"): run_path = client.run_read_path(run_path)
++			response = await client.request_api(run_path,HTTPClient.METHOD_GET,{},"",true)
+ 		checked = true
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+ 		if not response.ok and int(response.get("status",0)) == 404:
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -28,12 +28,15 @@
+ var next_cursor: String = ""
+ var result_code: String = ""
+ var selected_stage: int = 0
++var _next_full_result: int = 0
+ 
+ func _ready() -> void:
+ 	if is_instance_valid(client) and client.has_signal("run_completed"): client.run_completed.connect(poll_result)
+ 	if is_instance_valid(client) and is_instance_valid(client.get("safety")): client.safety.changed.connect(_safety_changed)
+ 
+ func _safety_changed() -> void:
++	_next_full_result = 0
++	if client.has_method("invalidate_challenge_completions"): client.invalidate_challenge_completions()
+ 	if not is_instance_valid(client.get("safety")): return
+ 	if not _scope.is_empty() and _scope != scope():
+ 		reset()
+@@ -88,6 +91,7 @@
+ 	outcome = {}
+ 	_polling = false
+ 	_next_poll = 0
++	_next_full_result = 0
+ 	_failures = 0
+ 	_scope = scope()
+ 	next_cursor = ""
+@@ -422,7 +426,29 @@
+ 	result_state = "upload_pending"
+ 	outcome = {}
+ 	_next_poll = 0
++	_next_full_result = Time.get_ticks_msec()+10000
+ 	_failures = 0
++
++func _merge_pending(data: Dictionary) -> Dictionary:
++	if data.get("schema") != "bmt-challenge-pending-v1" or data.get("status") not in ["upload_pending","queued","verifying"] or not data.get("challenge_pending") is Dictionary: return {}
++	var update: Dictionary = data.challenge_pending
++	if selected.is_empty() or update.get("id") != selected.get("id") or update.get("code") != result_code or update.get("self_id") != str(client.player.get("id","")): return {}
++	var merged: Dictionary = selected.duplicate(true)
++	for key: String in ["state","ends_at","server_now","remaining_seconds","attempt_limit","attempts_used","attempts_remaining","rewards"]:
++		if not update.has(key): return {}
++		merged[key] = update[key]
++	if is_series(merged):
++		if not update.get("stages") is Array or update.stages.size() != merged.stages.size(): return {}
++		var seen: Dictionary = {}
++		for stage: Variant in update.stages:
++			if not stage is Dictionary or not preload("res://backend/backend_client.gd")._whole(stage.get("index"),0,merged.stages.size()-1): return {}
++			var index: int = int(stage.index)
++			if seen.has(index): return {}
++			seen[index] = true
++			for key: String in ["attempt_limit","attempts_used","attempts_remaining"]:
++				if not stage.has(key): return {}
++				merged.stages[index][key] = stage[key]
++	return merged if valid_snapshot(merged) else {}
+ 
+ func poll_result() -> void:
+ 	if _polling or result_ticket.is_empty() or result_state in ["verified","rejected","expired"]: return
+@@ -432,19 +458,31 @@
+ 	var expected: String = result_ticket
+ 	var original: String = scope()
+ 	_polling = true
+-	var response: Dictionary = await _request("/challenge-results/"+expected)
++	var completion: Dictionary = client.recent_completion(expected) if client.has_method("recent_completion") and _failures == 0 else {}
++	var cached: Variant = completion.get("challenge_result")
++	var compact: bool = client.get("_capabilities") is Dictionary and int(client._capabilities.get("challenge_pending_version",0)) == 1 and Time.get_ticks_msec() < _next_full_result and valid_snapshot(selected)
++	var response: Dictionary
++	if cached is Dictionary and valid_snapshot(cached.get("challenge")) and cached.challenge.get("code") == result_code and cached.challenge.get("self_id") == str(client.player.get("id","")):
++		response = {"ok":true,"status":200,"data":cached.duplicate(true)}
++		if is_instance_valid(client.get("safety")): client.safety.mask_public(response.data)
++	else:
++		response = await _request("/challenge-results/"+expected+("?compact=true" if compact else ""))
+ 	_polling = false
+ 	if expected != result_ticket or original != scope(): return
+ 	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
++	var pending_only: bool = data.get("schema") == "bmt-challenge-pending-v1"
++	if pending_only: data.challenge = _merge_pending(data)
+ 	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"]
+ 	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])*10
+ 	_next_poll = Time.get_ticks_msec()+maxi(1000,int(data.get("poll_after_ms",2500)))+jitter
+ 	if not valid:
++		_next_full_result = 0
+ 		_failures = mini(_failures+1,5)
+ 		var wait_msec: int = maxi(int(response.get("retry_after",0))*1000,mini(60000,2500*int(pow(2,_failures))))
+ 		_next_poll = Time.get_ticks_msec()+wait_msec+jitter
+ 		error = "Result saved. Reconnect to verify it."
+ 	else:
++		if not pending_only: _next_full_result = Time.get_ticks_msec()+10000
+ 		_failures = 0
+ 		if str(selected.get("code","")) == result_code: selected = response.data.challenge
+ 		result_state = str(response.data.get("status","upload_pending"))
+--- a/game/backend/cosmetic_economy.gd
++++ b/game/backend/cosmetic_economy.gd
+@@ -171,8 +171,17 @@
+ 
+ func reward_for(ticket: String) -> Dictionary:
+ 	if not authenticated() or ticket.is_empty(): return {"status":"unavailable","amount":0,"rows":[]}
++	sync_identity()
+ 	var expected: String = _current_scope()
+ 	var epoch: int = _epoch
++	var completion: Dictionary = client.recent_completion(ticket) if client.has_method("recent_completion") else {}
++	if preload("res://backend/backend_client.gd").valid_completion_reward(completion.get("reward")):
++		if _accept(completion.get("wallet")):
++			if not _persist(): status = "Coins are online. Local recovery could not be saved."
++			changed.emit()
++			if not pending.is_empty() and _storage_ok and not busy: _send_purchase.call_deferred()
++		elif completion.reward.status == "credited": refresh()
++		return completion.reward.duplicate(true)
+ 	var response: Dictionary = await client.request_api("/economy/rewards/"+ticket,HTTPClient.METHOD_GET,{},"",true)
+ 	if _current_scope() != expected or epoch != _epoch: return {"status":"unavailable","amount":0,"rows":[]}
+ 	if response.ok:
+--- /dev/null
++++ b/backend/tests/test_outcome_reads.py
+@@ -0,0 +1,240 @@
++"""Completion read savings retain exact effects, current authority and old clients."""
++# ruff: noqa: F811 - parametrized fixture imported for pytest.
++from sqlalchemy import event, select
++from sqlalchemy.exc import OperationalError
++from test_challenge_series import create as create_series
++from test_challenges import create, join, normal_run, setup
++from test_domains import domain, headers, public_course, race, submit, ticket  # noqa: F401
++from test_rivalry import seed
++
++from bmt_backend.community_models import PlayerBlock
++from bmt_backend.economy_models import CoinMilestone, CoinReward, CoinWallet
++from bmt_backend.news_models import NewsItem
++from bmt_backend.track_models import LapPersonalBest, PersonalBest, Run, TrackVersion
++from bmt_backend.worker import process_one
++
++
++def read(d, run_id, *, completion=True, player="Alice"):
++    return d.client.get(f"/v1/runs/{run_id}", params={"completion": completion}, headers=headers(d, player))
++
++
++def queued_challenge(d):
++    version = setup(d)
++    normal_run(d, version)
++    challenge = create(d, version, attempt_limit=3)
++    join(d, challenge["code"])
++    issued = d.client.post(f"/v1/challenges/{challenge['code']}/tickets", headers=headers(d, "Bob"))
++    assert issued.status_code == 201
++    run = submit(d, issued.json(), "Bob", frames=30)
++    return challenge, issued.json(), run
++
++
++def test_slow_news_gate_saves_only_candidate_read_and_keeps_lap_sources(domain, monkeypatch):
++    d = domain
++    version, board = public_course(d)
++    race(d, version, "Alice", frames=20)
++    queries = []
++
++    def capture(_connection, _cursor, sql, *_args):
++        queries.append(sql)
++
++    event.listen(d.app.state.engine, "before_cursor_execute", capture)
++    try:
++        slow = race(d, version, "Alice", frames=30)
++    finally:
++        event.remove(d.app.state.engine, "before_cursor_execute", capture)
++    assert not any("UNION ALL" in sql and "lap_personal_bests.run_id" in sql for sql in queries)
++    with d.factory() as session:
++        assert session.get(CoinReward, slow["run_id"]).amount == 50
++        assert session.get(PersonalBest, (board, d.players["Alice"])).time_ticks == 100
++    original = d.app.state.verifier.verify_run
++
++    def flying(*args, **kwargs):
++        result = original(*args, **kwargs)
++        result["lap_ticks"] = [50, 10, 20, 20, 20]
++        return result
++
++    monkeypatch.setattr(d.app.state.verifier, "verify_run", flying)
++    newer = race(d, version, "Alice", frames=24)
++    with d.factory() as session:
++        assert session.get(LapPersonalBest, (board, d.players["Alice"])).run_id == newer["run_id"]
++        assert any(item.details.get("metric") == "lap" and item.details.get("time_ticks") == 10
++                   for item in session.scalars(select(NewsItem).where(NewsItem.board_id == board)))
++
++
++def test_completion_is_opt_in_pending_is_cheap_and_reads_never_reaward(domain):
++    d = domain
++    version, _ = public_course(d)
++    accepted = submit(d, ticket(d, version, "Alice"), "Alice")
++    assert "completion" not in read(d, accepted["run_id"]).json()
++    assert process_one(d.app)
++    assert "completion" not in read(d, accepted["run_id"], completion=False).json()
++    with d.factory() as session:
++        wallet = session.get(CoinWallet, d.players["Alice"])
++        before = wallet.balance, wallet.revision
++    for _ in range(3):
++        response = read(d, accepted["run_id"])
++        assert response.status_code == 200
++        value = response.json()["completion"]
++        assert value["version"] == 1 and value["reward"]["status"] == "credited"
++        assert (value["wallet"]["balance"], value["wallet"]["revision"]) == before
++    with d.factory() as session:
++        wallet = session.get(CoinWallet, d.players["Alice"])
++        assert (wallet.balance, wallet.revision) == before
++    assert read(d, accepted["run_id"], player="Bob").status_code == 404
++
++
++def test_completion_batch_shares_wallet_and_matches_single_wait_and_recovery(domain):
++    d = domain
++    version, _ = public_course(d)
++    values = [race(d, version, "Alice", frames=frames) for frames in (20, 30)]
++    response = d.client.get("/v1/runs/status", params=[("completion", "true"), *[("ids", v["run_id"]) for v in values]],
++                            headers=headers(d, "Alice"))
++    assert response.status_code == 200
++    batch = response.json()
++    assert "completion_wallet" in batch and len(batch["items"]) == 2
++    assert all("wallet" not in v["completion"] for v in batch["items"])
++    for value in values:
++        run_id = value["run_id"]
++        expected = read(d, run_id).json()
++        wait = d.client.get(f"/v1/runs/{run_id}/wait", params={"completion": True, "timeout_ms": 0}, headers=headers(d, "Alice"))
++        recovery = d.client.get(f"/v1/run-tickets/{expected['ticket_id']}/submission", params={"completion": True}, headers=headers(d, "Alice"))
++        assert wait.json()["completion"] == recovery.json()["run"]["completion"] == expected["completion"]
++        assert expected["completion"]["wallet"] == batch["completion_wallet"]
++
++
++def test_optional_receipt_failure_and_archival_do_not_hide_result(domain, monkeypatch):
++    d = domain
++    version, _ = public_course(d)
++    value = race(d, version, "Alice")
++
++    def fail(_connection, _cursor, sql, *_args):
++        if "FROM coin_rewards" in sql:
++            raise OperationalError("owned optional read failure", {}, Exception("fixture"))
++
++    event.listen(d.app.state.engine, "before_cursor_execute", fail)
++    try:
++        response = read(d, value["run_id"])
++    finally:
++        event.remove(d.app.state.engine, "before_cursor_execute", fail)
++    assert response.status_code == 200 and response.json()["status"] == "verified"
++    assert "completion" not in response.json()
++    with d.factory() as session:
++        session.get(Run, value["run_id"]).reward_archive_hash = "a" * 64
++        session.delete(session.get(CoinReward, value["run_id"]))
++        session.commit()
++
++    def forbidden(*_args):
++        raise AssertionError("Completion must leave cold archive I/O to the independent fallback")
++
++    monkeypatch.setattr(d.app.state.blobs, "get_json", forbidden)
++    response = read(d, value["run_id"])
++    assert response.status_code == 200 and response.json()["completion"]["reward"] is None
++
++
++def test_missing_receipt_does_not_infer_unavailable_from_an_older_run_snapshot(domain):
++    d = domain
++    version, _ = public_course(d)
++    value = race(d, version, "Alice")
++    # Model the mixed view possible when archival commits between the run and
++    # receipt reads: no hot receipt, while the observed run has no archive hint.
++    with d.factory() as session:
++        assert session.get(Run, value["run_id"]).reward_archive_hash is None
++        session.delete(session.get(CoinReward, value["run_id"]))
++        session.commit()
++    response = read(d, value["run_id"])
++    assert response.status_code == 200 and response.json()["status"] == "verified"
++    assert response.json()["completion"]["reward"] is None
++
++
++def test_compact_pending_retains_authority_budgets_and_full_terminal(domain):
++    d = domain
++    _challenge, issued, _ = queued_challenge(d)
++    path = f"/v1/challenge-results/{issued['ticket_id']}"
++    full = d.client.get(path, headers=headers(d, "Bob"))
++    slim = d.client.get(path, params={"compact": True}, headers=headers(d, "Bob"))
++    assert full.status_code == slim.status_code == 200
++    assert "challenge" in full.json() and "challenge" not in slim.json()
++    pending = slim.json()["challenge_pending"]
++    assert pending["attempts_used"] == 1 and pending["attempts_remaining"] == 2
++    assert len(slim.content) < len(full.content)
++    with d.factory() as session:
++        block = PlayerBlock(player_id=d.players["Bob"], blocked_id=d.players["Alice"])
++        session.add(block)
++        session.commit()
++    assert d.client.get(path, params={"compact": True}, headers=headers(d, "Bob")).status_code == 403
++    with d.factory() as session:
++        session.delete(session.get(PlayerBlock, (d.players["Bob"], d.players["Alice"])))
++        session.commit()
++    assert process_one(d.app)
++    terminal = d.client.get(path, params={"compact": True}, headers=headers(d, "Bob"))
++    assert terminal.json()["status"] == "verified" and "challenge" in terminal.json()
++
++
++def test_terminal_challenge_enrichment_obeys_blocks_without_hiding_run(domain):
++    d = domain
++    challenge, _issued, queued = queued_challenge(d)
++    assert process_one(d.app)
++    response = read(d, queued["run_id"], player="Bob")
++    extra = response.json()["completion"]
++    assert extra["challenge_result"]["challenge"]["code"] == challenge["code"]
++    assert extra["challenge_result"]["outcome"]["counted"]
++    with d.factory() as session:
++        session.add(PlayerBlock(player_id=d.players["Bob"], blocked_id=d.players["Alice"]))
++        session.commit()
++    response = read(d, queued["run_id"], player="Bob")
++    assert response.status_code == 200 and response.json()["status"] == "verified"
++    assert "challenge_result" not in response.json()["completion"]
++    assert response.json()["completion"]["reward"]["status"] == "credited"
++
++
++def test_series_compact_tracks_and_changed_visibility_are_current(domain):
++    d = domain
++    versions = seed(d, 3)
++    response = create_series(d, versions)
++    assert response.status_code == 201
++    challenge = response.json()
++    join(d, challenge["code"])
++    issued = d.client.post(f"/v1/challenges/{challenge['code']}/tickets?stage=2", headers=headers(d, "Bob"))
++    assert issued.status_code == 201
++    path = f"/v1/challenge-results/{issued.json()['ticket_id']}"
++    pending = d.client.get(path, params={"compact": True}, headers=headers(d, "Bob")).json()["challenge_pending"]
++    assert pending["attempts_used"] == 1 and pending["attempts_remaining"] == 8
++    assert next(row for row in pending["stages"] if row["index"] == 2)["attempts_remaining"] == 2
++    with d.factory() as session:
++        version = session.get(TrackVersion, versions[1])
++        from bmt_backend.track_models import Track
++        session.get(Track, version.track_id).hidden = True
++        session.commit()
++    assert d.client.get(path, params={"compact": True}, headers=headers(d, "Bob")).status_code == 404
++
++
++def test_compact_pending_retains_midnight_expiry_and_cancellation(domain, monkeypatch):
++    from bmt_backend import challenges
++    from bmt_backend.challenge_models import Challenge
++    d = domain
++    value, issued, _run = queued_challenge(d)
++    stamp = challenges.now()
++    with d.factory() as session:
++        session.add(CoinMilestone(player_id=d.players["Bob"], scope="challenge/day/" + str(stamp // 86400), value=3))
++        session.commit()
++    path = f"/v1/challenge-results/{issued['ticket_id']}?compact=true"
++    def pending():
++        response = d.client.get(path, headers=headers(d, "Bob"))
++        assert response.status_code == 200
++        return response.json()["challenge_pending"]
++    assert pending()["rewards"]["remaining_today"] == 0
++    monkeypatch.setattr(challenges, "now", lambda: (stamp // 86400 + 1) * 86400)
++    assert pending()["rewards"]["remaining_today"] == 3
++    with d.factory() as session:
++        session.get(Challenge, value["id"]).cancelled = True
++        session.commit()
++    assert pending()["state"] == "cancelled"
++    with d.factory() as session:
++        challenge = session.get(Challenge, value["id"])
++        challenge.cancelled = False
++        end = challenge.ends_at
++        session.commit()
++    monkeypatch.setattr(challenges, "now", lambda: end + 1)
++    expired = pending()
++    assert expired["state"] == "settling" and expired["remaining_seconds"] == 0
+--- /dev/null
++++ b/backend/tests/test_outcome_http.py
+@@ -0,0 +1,42 @@
++"""Real authenticated native transport/consumers over a disposable HTTP API."""
++import pytest
++from test_cloud_client import run_client
++from test_cost_http import seed
++
++from bmt_backend.challenge_models import Challenge, ChallengeMember, ChallengeTicket
++from bmt_backend.economy_models import CoinReward, CoinWallet
++from bmt_backend.track_models import Run, RunTicket, now
++from bmt_backend.tracks import DB, Auth
++
++
++def prepare(app):
++    seed(app)
++    with app.state.session_factory() as session:
++        challenge = session.query(Challenge).filter_by(code="A" * 16).one()
++        run = session.get(Run, challenge.target_run_id)
++        session.add(CoinWallet(player_id=run.player_id, balance=900, revision=3))
++        session.add(CoinReward(run_id=run.id, player_id=run.player_id, amount=50,
++            rows=[{"title": "Race completed", "amount": 50, "icon": "flag", "eligible": True, "status": "Credited"}]))
++        challenge.attempt_limit = 3
++        session.get(ChallengeMember, (challenge.id, run.player_id)).attempts_used = 2
++        session.add(ChallengeTicket(ticket_id=run.ticket_id, challenge_id=challenge.id,
++            outcome={"counted": True, "improved": True}))
++        ticket = RunTicket(player_id=run.player_id, board_id=run.board_id, expires_at=now() + 600)
++        session.add(ticket)
++        session.flush()
++        pending = Run(player_id=run.player_id, board_id=run.board_id, ticket_id=ticket.id,
++                      replay_hash=run.replay_hash, status="queued", lease_until=now() + 600)
++        session.add(pending)
++        session.add(ChallengeTicket(ticket_id=ticket.id, challenge_id=challenge.id))
++        session.flush()
++        data = {"run_id": run.id, "ticket_id": run.ticket_id, "pending_run": pending.id, "pending_ticket": ticket.id}
++        session.commit()
++
++    @app.get("/v1/outcome-fixture")
++    def fixture_state(_session: DB, _player: Auth):
++        return data
++
++
++@pytest.mark.godot
++def test_native_completion_reads_against_http(tmp_path):
++    run_client(tmp_path, "res://tests/test_outcome_reads_http.gd", prepare=prepare)
+--- /dev/null
++++ b/game/tests/test_outcome_reads.gd
+@@ -0,0 +1,151 @@
++extends SceneTree
++## Real consumers: negotiated reads, exact receipts, late replies and live refresh.
++const Client = preload("res://backend/backend_client.gd")
++const Economy = preload("res://backend/cosmetic_economy.gd")
++const Shop = preload("res://persistence/cosmetic_catalog.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Stub extends "res://backend/backend_client.gd":
++	signal release
++	var answer: Dictionary = {"ok":true,"status":200,"data":{},"error":""}
++	var calls: int = 0
++	var last_path: String = ""
++	var delay: bool = false
++	func _ready() -> void: pass
++	func request_api(path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		calls += 1
++		last_path = path
++		var value: Dictionary = answer.duplicate(true)
++		if delay: await release
++		return value
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func wallet(balance: int, revision: int) -> Dictionary:
++	return {"schema":1,"balance":balance,"revision":revision,"owned":[],"prices":Shop.items()}
++
++func reward() -> Dictionary:
++	return {"status":"credited","amount":50,"rows":[{"title":"Race completed","amount":50,"icon":"flag","eligible":true,"status":"Credited"}]}
++
++func run_value(ticket_id: String = "ticket-a") -> Dictionary:
++	return {"run_id":"run-a","ticket_id":ticket_id,"board_id":"board-a","status":"verified","created_at":1,"finished_at":2,"time_ticks":100,"lap_ticks":[20,20,20,20,20],"failure_code":null,"retryable":false,"poll_after_ms":0,
++		"completion":{"version":1,"reward":reward(),"wallet":wallet(900,3)}}
++
++func snapshot() -> Dictionary:
++	return {"id":"challenge","code":"AB12CD34EF56AB78","mode":"beat","state":"active","creator_id":"rival","creator":"Mika","self_id":"self","joined":true,"vehicle_id":"compact",
++		"ends_at":604800,"server_now":432000,"remaining_seconds":172800,"manifest":{"laps":5,"tick_rate":120},"target_ticks":100,"target_ms":833,"attempt_limit":3,"attempts_used":0,"attempts_remaining":3,
++		"entry":{"name":"Forest Run","version_id":"00000000-0000-0000-0000-000000000001","track_id":"00000000-0000-0000-0000-000000000002","content_hash":"a".repeat(64),"points":[[0,0],[100,0],[100,100]]},
++		"share_url":"https://fixture/c/AB12CD34EF56AB78","standings":[{"id":"rival","name":"Mika","country_code":"FI","rank":1,"ticks":100,"ms":833,"run_id":"rival-run"},{"id":"self","name":"You","country_code":"FI","rank":null,"ticks":null,"ms":null,"run_id":null}]}
++
++func pending() -> Dictionary:
++	return {"schema":"bmt-challenge-pending-v1","status":"queued","failure_code":null,"outcome":null,"poll_after_ms":1000,
++		"challenge_pending":{"id":"challenge","code":"AB12CD34EF56AB78","self_id":"self","state":"active","ends_at":604800,"server_now":432001,"remaining_seconds":172799,
++		"attempt_limit":3,"attempts_used":1,"attempts_remaining":2,"rewards":{"finish":50,"goal":100,"finish_earned":false,"goal_earned":false,"eligible":true,"daily_limit":3,"remaining_today":3}}}
++
++func poll(page: Node, state: Dictionary) -> void:
++	await page.poll_result()
++	state.done = true
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var client := Stub.new()
++	client.player = {"id":"self"}
++	client._access_token = "owned-fixture-token"
++	client._base_url = "http://fixture.invalid"
++	client._capabilities = {"run_completion_version":1,"challenge_pending_version":1,"run_wait_ms":2000}
++	root.add_child(client)
++	check(client.run_read_path("/runs/a") == "/runs/a?completion=true","single completion opt-in")
++	check(client.run_read_path("/runs/status?ids=a") == "/runs/status?ids=a&completion=true","batch query retains IDs")
++	client._capabilities.erase("run_completion_version")
++	check(client.run_read_path("/runs/a") == "/runs/a","older server keeps old read")
++	client._capabilities.run_completion_version = 1
++	var directory: String = "user://outcome_reads_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	var economy := Economy.new()
++	economy.records = records
++	economy.client = client
++	root.add_child(economy)
++	client.remember_run(run_value())
++	var receipt: Dictionary = await economy.reward_for("ticket-a")
++	check(receipt.status == "credited" and economy.balance() == 900 and client.calls == 0,"combined receipt and absolute wallet avoid both GETs")
++	await economy.reward_for("ticket-a")
++	check(economy.balance() == 900 and client.calls == 0,"duplicate receipt never adds coins locally")
++	economy.wallet = wallet(800,4)
++	economy.wallet.owned = [str(Shop.items().keys()[0])]
++	await economy.reward_for("ticket-a")
++	check(economy.balance() == 800 and economy.wallet.revision == 4 and economy.wallet.owned.size() == 1,"late older wallet cannot undo a purchase or ownership")
++	var bad: Dictionary = run_value("bad-ticket")
++	bad.completion.reward.amount = 51
++	client.remember_run(bad)
++	client.answer.data = {"status":"unavailable","amount":0,"rows":[]}
++	await economy.reward_for("bad-ticket")
++	check(client.calls == 1 and client.last_path == "/economy/rewards/bad-ticket","malformed enrichment falls back independently")
++	bad = run_value("archived-ticket")
++	bad.completion.reward = null
++	client.remember_run(bad)
++	await economy.reward_for("archived-ticket")
++	check(client.calls == 2,"archived receipt retains existing recovery endpoint")
++	economy.pending = {"item_id":str(Shop.items().keys()[0]),"expected_price":500,"key":"owned-recovery-key"}
++	client.answer.data = {"item_id":economy.pending.item_id,"wallet":wallet(400,5)}
++	await economy.reward_for("ticket-a")
++	for i: int in range(3): await process_frame
++	check(economy.pending.is_empty() and economy.balance() == 400 and client.calls == 3,"combined wallet continues an existing idempotent purchase recovery")
++	client.answer.data = run_value("wait-ticket")
++	await client.wait_for_run("run-a","wait-ticket")
++	check(client.last_path.ends_with("&completion=true") and not client.recent_completion("wait-ticket").is_empty(),"foreground wait negotiates and caches enrichment")
++	var page := ChallengesClient.new()
++	page.client = client
++	page.selected = snapshot()
++	page._scope = page.scope()
++	root.add_child(page)
++	check(ChallengesClient.valid_snapshot(page.selected),"full challenge fixture validates")
++	page.begin_result("challenge-ticket")
++	client.answer.data = pending()
++	await page.poll_result()
++	check(client.last_path.ends_with("?compact=true") and page.result_state == "queued","pending poll negotiates compact representation")
++	check(page.selected.attempts_used == 1 and page.selected.attempts_remaining == 2 and page.selected.server_now == 432001,"compact result updates attempts and live clock")
++	check(page.selected.standings.size() == 2,"compact update retains the loaded standings")
++	page._next_full_result = 0
++	page._next_poll = 0
++	client.answer.data = {"status":"queued","poll_after_ms":1000,"challenge":snapshot()}
++	await page.poll_result()
++	check(not client.last_path.contains("compact") and page._next_full_result > Time.get_ticks_msec(),"periodic full read refreshes opponents and expiry")
++	var terminal: Dictionary = run_value("challenge-ticket")
++	terminal.completion.challenge_result = {"status":"verified","poll_after_ms":0,"failure_code":null,"outcome":{"counted":true},"challenge":snapshot()}
++	client.remember_run(terminal)
++	var count: int = client.calls
++	await page.poll_result()
++	check(page.result_state == "verified" and page.outcome.get("counted",false) and client.calls == count,"authorized terminal challenge data avoids its separate GET")
++	client.invalidate_challenge_completions()
++	check(not client.recent_completion("challenge-ticket").has("challenge_result"),"local safety change invalidates cached challenge views")
++	page.begin_result("old-server-ticket")
++	client._capabilities.erase("challenge_pending_version")
++	client.answer.data = {"status":"queued","poll_after_ms":1000,"challenge":snapshot()}
++	await page.poll_result()
++	check(not client.last_path.contains("compact") and page.result_state == "queued","old server continues with complete snapshots")
++	page._next_poll = 0
++	client.delay = true
++	client.answer.data = {"status":"verified","poll_after_ms":0,"challenge":snapshot(),"outcome":{"counted":true}}
++	var state: Dictionary = {"done":false}
++	poll(page,state)
++	await process_frame
++	client.clear_session()
++	client.player = {"id":"other"}
++	client._access_token = "new-owned-fixture-token"
++	client.release.emit()
++	for i: int in range(4): await process_frame
++	check(state.done and page.result_state == "queued" and client.recent_completion("ticket-a").is_empty(),"late results and receipt cache cannot cross accounts")
++	page.queue_free()
++	economy.queue_free()
++	client.queue_free()
++	await process_frame
++	print("OUTCOME_READ_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_outcome_reads_http.gd
+@@ -0,0 +1,75 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Economy = preload("res://backend/cosmetic_economy.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Tracking extends "res://backend/backend_client.gd":
++	var calls: int = 0
++	func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, key: String = "", authorized: bool = false) -> Dictionary:
++		calls += 1
++		return await super.request_api(path,method,payload,key,authorized)
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var client := Tracking.new()
++	root.add_child(client)
++	check(client.configure(OS.get_environment("BMT_API_URL")) == OK,"configure disposable API")
++	var boot: Dictionary = await client.request_api("/bootstrap")
++	check(boot.ok and client._capabilities.get("run_completion_version") == 1 and client._capabilities.get("challenge_pending_version") == 1,"negotiate both current protocols")
++	var login: Dictionary = await client.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
++	check(login.ok,"authenticate actual development session")
++	var fixture: Dictionary = await client.request_api("/outcome-fixture",HTTPClient.METHOD_GET,{},"",true)
++	check(fixture.ok,"read fixture identities")
++	var ids: Dictionary = fixture.data
++	var terminal: Dictionary = await client.request_api(client.run_read_path("/runs/"+str(ids.run_id)),HTTPClient.METHOD_GET,{},"",true)
++	check(terminal.ok and Client.valid_run(terminal.data) and terminal.data.completion.reward.amount == 50,"decode real terminal receipt")
++	var folder: String = "user://outcome_http_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var economy := Economy.new()
++	economy.client = client
++	economy.records = LocalRecords.new(folder.path_join("records.json"))
++	root.add_child(economy)
++	var count: int = client.calls
++	var reward: Dictionary = await economy.reward_for(str(ids.ticket_id))
++	check(reward.get("status") == "credited" and economy.balance() == 900 and client.calls == count,"real consumer avoids receipt and wallet requests")
++	var challenge := ChallengesClient.new()
++	challenge.client = client
++	challenge.selected = terminal.data.completion.challenge_result.challenge
++	challenge._scope = challenge.scope()
++	root.add_child(challenge)
++	challenge.begin_result(str(ids.ticket_id))
++	count = client.calls
++	await challenge.poll_result()
++	check(challenge.result_state == "verified" and challenge.outcome.get("counted",false) and client.calls == count,"real authorized challenge receipt avoids another result request")
++	client._race_status_cache.clear()
++	var batch: Dictionary = await client.request_api(client.run_read_path("/runs/status?ids="+str(ids.run_id)+"&ids="+str(ids.pending_run)),HTTPClient.METHOD_GET,{},"",true)
++	check(batch.ok and batch.data.items.size() == 2 and batch.data.has("completion_wallet"),"batch shares one account snapshot with pending status")
++	count = client.calls
++	await economy.reward_for(str(ids.ticket_id))
++	check(client.calls == count and economy.balance() == 900,"transport attaches shared batch wallet to the receipt cache")
++	var pending_path: String = "/challenge-results/"+str(ids.pending_ticket)+"?compact=true"
++	var pending: Dictionary = await client.request_api(pending_path,HTTPClient.METHOD_GET,{},"",true)
++	check(pending.ok and pending.data.get("schema") == "bmt-challenge-pending-v1" and not pending.data.has("challenge"),"HTTP pending response omits full snapshot")
++	check(pending.data.challenge_pending.attempts_used == 2 and pending.data.challenge_pending.attempts_remaining == 1,"compact response retains authoritative starts")
++	var old: Dictionary = await client.request_api("/challenge-results/"+str(ids.pending_ticket),HTTPClient.METHOD_GET,{},"",true)
++	check(old.ok and ChallengesClient.valid_snapshot(old.data.get("challenge")),"ordinary client keeps the original complete response")
++	var withdrawn: Dictionary = await client.request_api("/cost-fixture/disable",HTTPClient.METHOD_POST,{},client.new_operation_key(),true)
++	check(withdrawn.ok,"withdraw owned fixture content")
++	pending = await client.request_api(pending_path,HTTPClient.METHOD_GET,{},"",true)
++	check(not pending.ok and pending.status == 404,"compact response enforces current content withdrawal")
++	terminal = await client.request_api(client.run_read_path("/runs/"+str(ids.run_id)),HTTPClient.METHOD_GET,{},"",true)
++	check(terminal.ok and terminal.data.status == "verified" and not terminal.data.completion.has("challenge_result"),"withdrawn optional view never hides durable race and reward")
++	challenge.queue_free()
++	economy.queue_free()
++	client.queue_free()
++	await process_frame
++	print("OUTCOME_HTTP_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/backend/schemas/race-read-v1.schema.json
+@@ -0,0 +1,59 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "https://beatmytrack.invalid/schemas/race-read-v1.schema.json",
++  "title": "Negotiated race completion extensions and compact pending challenge reads",
++  "oneOf": [
++    {"type": "object", "required": ["completion"], "properties": {"completion": {"$ref": "#/$defs/completion"}}},
++    {"type": "object", "required": ["items", "completion_wallet"], "properties": {
++      "items": {"type": "array", "maxItems": 32, "items": {"type": "object"}},
++      "completion_wallet": {"type": "object"}
++    }},
++    {"type": "object", "required": ["schema", "status", "poll_after_ms", "challenge_pending"], "properties": {
++      "schema": {"const": "bmt-challenge-pending-v1"},
++      "status": {"enum": ["upload_pending", "queued", "verifying"]},
++      "poll_after_ms": {"type": "integer", "minimum": 1},
++      "challenge_pending": {"$ref": "#/$defs/pending"}
++    }}
++  ],
++  "$defs": {
++    "reward": {
++      "type": "object", "required": ["status", "amount", "rows"],
++      "properties": {
++        "status": {"enum": ["credited", "unavailable"]},
++        "amount": {"type": "integer", "minimum": 0, "maximum": 2147483647},
++        "rows": {"type": "array", "maxItems": 32, "items": {
++          "type": "object", "required": ["title", "amount", "icon", "eligible", "status"],
++          "properties": {"title": {"type": "string"}, "amount": {"type": "integer", "minimum": 0},
++            "icon": {"type": "string"}, "eligible": {"type": "boolean"}, "status": {"type": "string"}}
++        }}
++      }
++    },
++    "completion": {
++      "type": "object", "required": ["version", "reward"],
++      "properties": {
++        "version": {"const": 1},
++        "reward": {"oneOf": [{"$ref": "#/$defs/reward"}, {"type": "null"}]},
++        "wallet": {"type": "object", "required": ["schema", "balance", "revision", "owned", "prices"]},
++        "challenge_result": {"type": "object", "required": ["status", "outcome", "challenge"]}
++      }
++    },
++    "pending": {
++      "type": "object",
++      "required": ["id", "code", "self_id", "state", "server_now", "ends_at", "remaining_seconds", "attempt_limit", "attempts_used", "attempts_remaining", "rewards"],
++      "properties": {
++        "id": {"type": "string"}, "code": {"type": "string", "pattern": "^[A-F0-9]{16}$"}, "self_id": {"type": "string"},
++        "state": {"enum": ["active", "settling", "cancelled"]},
++        "server_now": {"type": "integer"}, "ends_at": {"type": "integer"}, "remaining_seconds": {"type": "integer", "minimum": 0},
++        "attempt_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 25},
++        "attempts_used": {"type": "integer", "minimum": 0}, "attempts_remaining": {"type": ["integer", "null"], "minimum": 0},
++        "rewards": {"type": "object"},
++        "stages": {"type": "array", "minItems": 2, "maxItems": 5, "items": {
++          "type": "object", "required": ["index", "attempt_limit", "attempts_used", "attempts_remaining"],
++          "properties": {"index": {"type": "integer", "minimum": 0, "maximum": 4},
++            "attempt_limit": {"type": ["integer", "null"]}, "attempts_used": {"type": "integer", "minimum": 0},
++            "attempts_remaining": {"type": ["integer", "null"], "minimum": 0}}
++        }}
++      }
++    }
++  }
++}
+--- /dev/null
++++ b/backend/tests/fixtures/race_read_v1.json
+@@ -0,0 +1,20 @@
++{
++  "completion": {
++    "version": 1,
++    "reward": {"status": "credited", "amount": 50, "rows": [
++      {"title": "Race completed", "amount": 50, "icon": "flag", "eligible": true, "status": "Credited"}
++    ]},
++    "wallet": {"schema": 1, "balance": 900, "revision": 3, "owned": [], "prices": {}}
++  },
++  "pending": {
++    "schema": "bmt-challenge-pending-v1", "status": "queued", "failure_code": null,
++    "outcome": null, "poll_after_ms": 1000,
++    "challenge_pending": {
++      "id": "challenge", "code": "AB12CD34EF56AB78", "self_id": "self", "state": "active",
++      "ends_at": 604800, "server_now": 432001, "remaining_seconds": 172799,
++      "attempt_limit": 3, "attempts_used": 1, "attempts_remaining": 2,
++      "rewards": {"finish": 50, "goal": 100, "finish_earned": false, "goal_earned": false,
++        "eligible": true, "daily_limit": 3, "remaining_today": 3}
++    }
++  }
++}
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -482,3 +482,34 @@
+ for exact rules, correction commands, retention, measured capacity, source
+ manifests, native views, remaining acceptance and connection-budget checks.
+ This change has not been deployed or enabled on a live service.
++
++### Negotiated completion and pending reads
++
++Bootstrap advertises `run_completion_version=1` and `challenge_pending_version=1`.
++New clients request `completion=true` on run status, bounded waits and submission
++recovery. Terminal responses can include exact hot coin receipts and an absolute
++wallet snapshot with its revision. A batch sends its wallet once as
++`completion_wallet`; only single-run reads optionally include a full authorized
++challenge result. Pending runs perform no enrichment reads. Optional enrichment
++failures leave ordinary status readable. Archived receipts use the existing
++independent reward-recovery endpoint; reads never grant coins.
++
++`compact=true` on challenge-result reads returns `bmt-challenge-pending-v1` only
++while the run is pending. It retains current content/block checks, clocks, reward
++availability and attempt budgets, including each series stage. Terminal and
++ordinary requests retain complete snapshots. The client refreshes the full view
++on the first eligible poll after ten seconds and immediately for terminal
++results, with existing retry backoff during outages. It validates compact updates
++against the loaded challenge, rejects stale account replies and invalidates
++cached challenge completions on local safety changes. Wallet revisions prevent
++older race replies from undoing newer purchases. Background achievement refreshes
++remain independent.
++
++The worker also skips the newspaper candidate read only when locked server facts
++prove neither the race nor flying-lap PB can improve. Actual projections still
++decide all possible record announcements. Race validation, rewards, standings,
++ghost persistence and series result-reference semantics retain their existing
++rules. No schema migration is required. Deploy matching API/client versions to
++use the new capabilities; ordinary requests and older servers retain fallbacks.
++See [wire schema](schemas/race-read-v1.schema.json) and
++[implementation evidence](../docs/evidence/race-outcome-optimisations-2026-10-24/report.json).
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,11 @@
++<!-- CUSTOMISATION-CAROUSEL-20261024 -->
++## Customisation carousel and free preview override (2026-10-24)
++2026-10-24 CCP01-CCP04/R01/Q01: Reference-led part tabs, actual selected-part detail camera, horizontal native-photo carousels and bounded end bounce replace the kit/pattern grids. All43 parts/49 designs can preview without purchase; explicit equip retains ownership/confirmation, save authority and delayed-reply/account fences. Gold part overlays and a visible preview hint clear on cancellation/navigation; retained car/camera/wear/paint/reflections, cleanliness and sixteen-photo bounds remain. Focused227headless/248Compatibility/248desktopMobile, clean262/retained1396/ownership9/App141/studio86/parser1098 and pinned import pass. Initial callback/metadata/short-layout/world-binding/detached-layout corrections are retained; no assertion weakened. Native all-category views, captured motion, commands, hashes and task-only checkpoint: docs/CUSTOMISATION_CAROUSEL_2026_10_24.md and docs/evidence/customisation-carousel-2026-10-24/report.json. Reload and owner/device appearance/interaction/detail-camera cost acceptance remain. No device attachment check/test, APK, actual purchase, live mutation, deployment or owner-process restart. Concurrent work preserved.
++<!-- /CUSTOMISATION-CAROUSEL-20261024 -->
++
++## Outcome-dependent read optimisations override (2026-10-24)
++2026-10-24 RCOI01-RCOI03/R01/Q01: Conservative locked race/flying-lap facts skip only newspaper candidate reads. Capability-gated compact pending challenge reads retain current blocks/content, clocks, rewards and all stage budgets; periodic full/terminal refreshes remain. Optional hot completion receipts, one coherent revisioned wallet per batch and authorized single-run challenge views remove repeat reads without granting effects. Missing/archiving receipts and optional failures retain independent recovery; old clients/servers, purchase recovery, erasure/account fences, full trajectory validation, ghost storage, standings and series source references remain. Focused backend9, native19, HTTP15, native confirmation14/second-pass20/coins56/challenges216/series30/App141/parser1098 pass; regression100pass/7skip retains a migration0054 guard failure, with both encountered downgrade cases reproduced against task-start sources. Paired SQLite pending SQL25to20/body2534to529 bytes; terminal4to1 requests/SQL37to34, not production savings. Evidence, hashes and task-only checkpoint: docs/evidence/race-outcome-optimisations-2026-10-24/report.json. Matching API/client/worker rollout, PostgreSQL/load and owner/device acceptance remain; no schema migration, deployment, live mutation, phone/tablet attachment check/device test, APK or owner-process restart. Concurrent work preserved.
++
+ ## Challenge race and retry flow correction (2026-10-24)
+ 2026-10-24 CRF01-CRF04/R01/Q01: Reproduce 3x3 track-switch ticket mismatch and blank verified-retry warning; selected-stage starts now release completed Games, retries pin invitation/account/stage, and start locks cover join/ticket/ghost work. Remove the extra Continue challenge button; standard Continue preserves feedback and exact source creation. Storage recovery, failed-join actions and deferred standings lifetime are guarded. Focused34headless/36Compatibility/36desktopMobile, actions23/29, series30/custom55/App141, shared retry17/results515/challenges216/result293/parser1093 and backend36pass/2skip/46deselected pass. Real HTTP26 multi-track plus ordinary53/source52 pass; original5checks/4fail and initial fixture/callback failures retained. Commands, native views, hashes and scoped patch: docs/CHALLENGE_RACE_FLOWS_2026_10_24.md and docs/evidence/challenge-race-flows-2026-10-24/report.json. Client reload/rebuild and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,10 @@
++2026-10-24 RCOI01-RCOI03/R01/Q01: Conservative locked race/flying-lap facts skip only newspaper candidate reads. Capability-gated compact pending challenge reads retain current blocks/content, clocks, rewards and all stage budgets; periodic full/terminal refreshes remain. Optional hot completion receipts, one coherent revisioned wallet per batch and authorized single-run challenge views remove repeat reads without granting effects. Missing/archiving receipts and optional failures retain independent recovery; old clients/servers, purchase recovery, erasure/account fences, full trajectory validation, ghost storage, standings and series source references remain. Focused backend9, native19, HTTP15, native confirmation14/second-pass20/coins56/challenges216/series30/App141/parser1098 pass; regression100pass/7skip retains a migration0054 guard failure, with both encountered downgrade cases reproduced against task-start sources. Paired SQLite pending SQL25to20/body2534to529 bytes; terminal4to1 requests/SQL37to34, not production savings. Evidence, hashes and task-only checkpoint: docs/evidence/race-outcome-optimisations-2026-10-24/report.json. Matching API/client/worker rollout, PostgreSQL/load and owner/device acceptance remain; no schema migration, deployment, live mutation, phone/tablet attachment check/device test, APK or owner-process restart. Concurrent work preserved.
++
+ 2026-10-24 CRF01-CRF04/R01/Q01: Fixed reproduced 3x3 retained-Game/new-track ticket mismatch; original5checks/4fail becomes34headless/36Compatibility/36desktopMobile. Remove extra Continue challenge; standard Continue releases the completed Game after save-queue admission, and retries pin original invitation/account/stage with join/ticket/ghost locking. Failed-join recovery, stale responses, useful errors and freed standings callbacks are guarded. Actions23/29, series30/custom55/App141/shared retry17/results515/challenges216/result293/parser1093 and backend36pass/2skip/46deselected pass. Actual HTTP26 multi-track plus ordinary53/source52 pass; commands, captures, retained corrections, hashes and scoped patch: docs/CHALLENGE_RACE_FLOWS_2026_10_24.md and docs/evidence/challenge-race-flows-2026-10-24/report.json. Client reload/rebuild and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart. Concurrent work preserved.
++
++<!-- CUSTOMISATION-CAROUSEL-20261024 -->
++2026-10-24 CCP01-CCP04/R01/Q01: Reference-led native part/pattern carousels add snapping/end bounce, larger selected-part views and clear preview/equip states. All43 parts/49 designs preview freely, with explicit ownership-gated equip, exact cancellation and delayed-reply/account fencing. Gold overlays identify the actual fitted part; retained car/camera/wear/paint/reflections, cleanliness and sixteen-photo bounds remain. Focused227headless/248Compatibility/248desktopMobile, clean262/retained1396/ownership9/App141/studio86/parser1098 and pinned import pass. Native all-category views, recorded carousel motion, actual commands, corrections, hashes and task-only checkpoint: docs/CUSTOMISATION_CAROUSEL_2026_10_24.md and docs/evidence/customisation-carousel-2026-10-24/report.json. Reload and owner/device visual/touch/detail-camera cost acceptance remain. No attachment check/device test, APK, actual purchase, live mutation, deployment or owner-process restart. Concurrent work preserved.
++<!-- /CUSTOMISATION-CAROUSEL-20261024 -->
+ 
+ 2026-10-24 GSP01-GSP03/R01/Q01: Hose/mitt picture choices replace plain washing text switches; native customisation/tuning use coordinated charcoal panels, larger model previews, paint swatches, accessible names and consistent touch/focus states. Garage-only framing0.96to0.84 keeps all five cars visible; responsive workbenches and deferred selected-part reveal fix the retained initial three clipping failures without weakening assertions. Focused57headless/86Compatibility/86desktopMobile, tuning61, hose84 per renderer, clean262/retained1396/App141/parser1091 and import pass. Actual native before/after views, exact built-in image_gen prompts, commands, hashes and task-only binary-capable checkpoint: docs/GARAGE_STUDIO_POLISH_2026_10_24.md and docs/evidence/garage-studio-polish-2026-10-24/report.json. Client reload and owner/device appearance/feel/cost acceptance remain. No phone/tablet attachment check or physical-device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+ 
+--- /dev/null
++++ b/game/tests/test_outcome_reads.gd.uid
+@@ -0,0 +1 @@
++uid://dcwoy2c2722k2
+--- /dev/null
++++ b/game/tests/test_outcome_reads_http.gd.uid
+@@ -0,0 +1 @@
++uid://o5i8qkbpvkpc

@@ -1,0 +1,188 @@
+{
+  "task": "Look for more optimisation possibilities",
+  "date": "2026-10-24",
+  "scope": "Review after ROO01-ROO03 implementation. New candidates only; no runtime, schema or contract changes.",
+  "requirement_ids": [
+    "FOP01",
+    "FOP02",
+    "FOP03",
+    "FOP04",
+    "FOP05",
+    "FOP06",
+    "FOP07",
+    "FOP08",
+    "R01",
+    "Q01"
+  ],
+  "recommended_first": [
+    "FOP01",
+    "FOP02",
+    "FOP03",
+    "FOP04",
+    "FOP05"
+  ],
+  "candidates": [
+    {
+      "id": "FOP01",
+      "title": "Avoid work on discovery partitions with nothing due",
+      "priority": "High",
+      "source": [
+        "backend/bmt_backend/discovery_projection.py:279",
+        "backend/bmt_backend/discovery_worker.py:42"
+      ],
+      "evidence": "Three settled idle turns executed 51 statements: 48 SELECTs and 3 partition UPDATEs. Every turn returned false. All partition health timestamps were fresh and audits in the future.",
+      "proposed_change": "Only claim a partition with committed work, bootstrap work, due rank refresh, expiry, source audit or health deadline. Schedule global retention/accounting maintenance separately at bounded deadlines rather than run every empty turn.",
+      "expected_effect": "Fewer repeated reads, empty row locks and checked_at writes. Target statement reduction is not measured by an implemented variant.",
+      "safety": "Preserve current wake/poll latency for new work, the reserved 30-second health turn, 60-second source audit cadence, bounded rank refresh/expiry, privacy erasure, storage accounting and global collection cleanup even when no partition has work. Busy SKIP LOCKED rows must not be called complete.",
+      "validation_needed": "PostgreSQL query plans and competing workers; hot partition fairness; no missed due work; storage/bootstrap/collection cleanup with no ordinary traffic."
+    },
+    {
+      "id": "FOP02",
+      "title": "Run telemetry legacy routing on a bounded cadence after readiness",
+      "priority": "High",
+      "source": [
+        "backend/bmt_backend/product_worker.py:51",
+        "backend/bmt_backend/telemetry_queue.py:139",
+        "backend/bmt_backend/telemetry.py:174"
+      ],
+      "evidence": "Three prepare() calls with no unpartitioned receipts executed 12 SELECTs and no writes: four reads per empty worker turn. Ordinary server and client intake already register new receipts in their admission transaction.",
+      "proposed_change": "Drain continuously while pre-cutover receipts exist; after a confirmed ready state, coalesce empty legacy checks independently of actor/shared/rollup work.",
+      "expected_effect": "Remove four repeated preparation reads from most worker turns after cutover; exact rate depends on actual workload and topology.",
+      "safety": "Retain restart and mixed-version rollout recovery, registration/capacity accounting, ready gating and server receipts at exhausted client credit. Zero rows claimed can mean contention; readiness cannot be inferred from that alone. Do not permanently disable legacy recovery.",
+      "validation_needed": "New late legacy receipt after readiness, restart while backfilling, exhausted credits, contended claims and independent role processes."
+    },
+    {
+      "id": "FOP03",
+      "title": "Reduce clean garage appearance polling while racing",
+      "priority": "High potential client/network value; source-based",
+      "source": [
+        "game/backend/appearance_sync.gd:21",
+        "game/backend/appearance_sync.gd:57",
+        "game/core/app.gd:384"
+      ],
+      "evidence": "A repeating 30-second timer invokes refresh without a race/visible-screen condition. Busy, signed-out and mismatched scopes return early. Sixty opportunities per 30 minutes is arithmetic, not measured traffic.",
+      "proposed_change": "Keep prompt dirty-edit and pending-write recovery, but reduce clean-state polling during a race. Refresh on sign-in, returning to an appearance-dependent view and before actions whose server appearance must match the displayed car.",
+      "expected_effect": "Avoid complete authenticated requests when no visible/competitive state can use their results. No session or mobile savings have been measured.",
+      "safety": "Cross-device changes become visible later during a race. Preserve first adoption, account fences, original pending acknowledgements, save failures, fresh reads before CAS writes and explicit Rivalry sync. Never throttle recovery as if it were a clean no-op.",
+      "validation_needed": "Two-device remote edit while racing, return to each visible car view, all race modes, pending upload/lost reply, process restart, sign-out/in and physical-device lifecycle."
+    },
+    {
+      "id": "FOP04",
+      "title": "Use a read-only fast path for an established wallet",
+      "priority": "Medium; concrete prototype",
+      "source": [
+        "backend/bmt_backend/economy.py:47",
+        "backend/bmt_backend/economy.py:76",
+        "backend/bmt_backend/completion_reads.py:42",
+        "backend/bmt_backend/studio_finance.py:30"
+      ],
+      "evidence": "Current SQLite handler used five SQL statements excluding authentication (four SELECTs and one SQLite serialization UPDATE). A prototype read the eligible owner, wallet balance/revision, owned items and existing opening-ledger marker in one SELECT with an identical payload. Missing opening marker, disabled/deleted owner and missing wallet were detected.",
+      "proposed_change": "Use one coherent SELECT for an established wallet with its opening marker; retain the existing locked initialization/reconciliation fallback for missing wallet or marker.",
+      "expected_effect": "Fewer reads and no exclusive account lock for ordinary established balance reads. PostgreSQL current handler has a locking SELECT rather than SQLite's extra dummy UPDATE, so the SQLite five-to-one count is not a PostgreSQL count.",
+      "safety": "Keep current authentication and eligibility checks, a single-statement balance/revision/ownership snapshot, monotonic client revisions and financial opening reconciliation. Purchases/rewards still require their existing locks and idempotent writes.",
+      "validation_needed": "PostgreSQL purchase-vs-read races, missing/legacy ledger, opening insertion races, disabled/deleted account, stale client reply and durable purchase recovery."
+    },
+    {
+      "id": "FOP05",
+      "title": "Batch race and lap reward-rank reads",
+      "priority": "Medium; small per-race saving with strong local equivalence",
+      "source": [
+        "backend/bmt_backend/economy.py:202",
+        "backend/bmt_backend/reward_ranks.py:30"
+      ],
+      "evidence": "The slower repeat race executed two indexed reward-rank reads. One bounded SELECT prototype matched both current results and an independent rank oracle for 109 pairs / 218 metric results covering all reward tiers, shared ties and boundary ticks.",
+      "proposed_change": "Read the required (metric,node) keys for both candidate times in one query. Keep the existing maximum-earned-tier skip and exact integer threshold arithmetic.",
+      "expected_effect": "Two SQL round trips become one when both metrics require evaluation. Does not halve the entire race cost, and no savings remain when both maximum tiers are already earned.",
+      "safety": "Do not gate this on personal-best improvement: population changes can make a tier newly available on a slower repeat. Keep each metric's own population/root, strictly-faster prefix and submitted candidate time. A combined statement gives one population snapshot; PostgreSQL planning must retain bounded index reads.",
+      "validation_needed": "PostgreSQL EXPLAIN with large counters, concurrent PB/restriction writes, one/both maximum tiers, correction/deletion, BIGINT counts and exact tier boundaries."
+    },
+    {
+      "id": "FOP06",
+      "title": "Avoid the existing-achievement conflict insert in the race path",
+      "priority": "Lower; one statement per eligible accepted race",
+      "source": [
+        "backend/bmt_backend/achievements.py:57",
+        "backend/bmt_backend/achievements.py:146"
+      ],
+      "evidence": "The slower repeat flow attempted INSERT INTO achievement_states ... ON CONFLICT DO NOTHING despite the state already existing, then selected it for update.",
+      "proposed_change": "Under the race worker's existing eligible Player lock, select/lock the existing race state first and conditionally initialize only when absent. Keep other callers' authority and locking semantics explicit.",
+      "expected_effect": "One conflict-insert attempt avoided for an established race state; no WAL reduction measured and conflict-do-nothing is not claimed to insert a row.",
+      "safety": "Do not skip the achievement update on a non-PB: race, distance, clean streak and completion metrics still change. Preserve erasure fencing, accepted creator event policy, lock order and fresh ORM state. In SKIP LOCKED paths, a missing selection can mean a busy existing state; falling back to an insert may block.",
+      "validation_needed": "Concurrent first race/erasure and finalizers, creator accepted events, busy state claims and missing state initialization."
+    },
+    {
+      "id": "FOP07",
+      "title": "Replace PostgreSQL dummy appearance UPDATE with a row lock",
+      "priority": "Lower; PostgreSQL-specific",
+      "source": [
+        "backend/bmt_backend/appearance_routes.py:18",
+        "backend/bmt_backend/rivalry.py:61"
+      ],
+      "evidence": "Both appearance writers use owner_for_write(), which issues Player.id = Player.id UPDATE followed by a Player SELECT. One dummy update was observed even on an exact acknowledged retry in SQLite.",
+      "proposed_change": "Use SELECT FOR UPDATE with the same current eligibility checks on PostgreSQL; retain SQLite's serialization UPDATE.",
+      "expected_effect": "Avoid a PostgreSQL dummy updated row version and its associated trigger/WAL work. This is inferred from the SQL path, not a measured WAL saving. SQLAlchemy already omits an unchanged appearance JSON write on an identical retry.",
+      "safety": "Preserve lock acquisition order relative to ownership/purchases, SQLite serialization, CAS conflict behavior, lost-reply acknowledgment and row-level grant compatibility.",
+      "validation_needed": "Actual PostgreSQL race between both appearance routes, account restriction, ownership grant changes and WAL comparison."
+    },
+    {
+      "id": "FOP08",
+      "title": "Negotiate a lossless packed race-path transport",
+      "priority": "Later protocol project",
+      "source": [
+        "game/backend/backend_client.gd:1057",
+        "backend/bmt_backend/trajectory_verifier.py:1"
+      ],
+      "evidence": "For a retained 2,130-sample proof, exact float64 packing plus base64 and gzip level 6 reduced the path from 40,277 to 29,327 bytes (27.2%). An illustrative envelope containing an unrelated existing packed ghost fell from 88,481 to 76,459 bytes (13.6%). Exact sample roundtrip passed.",
+      "proposed_change": "If real upload volume justifies it, add a negotiated versioned transport that decodes to the same normalized proof using full float64 precision and unchanged sampling. Existing packed ghost transport is already implemented and is not counted as new work.",
+      "expected_effect": "Potential upload/storage reduction; this is not an actual player upload, HTTP measurement, provider bill estimate or mobile CPU benchmark.",
+      "safety": "Preserve original saved outbox bodies/idempotency keys across upgrades, canonical normalization/hash semantics, old-client fallback, rewind/incident/ghost contracts and all verification. Validate byte length/count/domain before bounded decode; reject nonfinite floats and malformed frames.",
+      "validation_needed": "Actual Godot encoder/decoder parity, bounded hostile input, exact retries before/after upgrade, HTTP compression, verifier equality, mobile CPU/memory/battery and representative upload corpus."
+    }
+  ],
+  "not_recommended": [
+    "Skip verification merely because a race does not improve PB or Rivalry rank: rewards, laps, achievements and exact challenge-source contracts still require it.",
+    "Cache current authority/visibility or extend emergency configuration permission leases to save reads.",
+    "Describe existing max-tier skips, packed ghosts, immutable document caches, shared GETs or worker notifications as new optimisations.",
+    "Project SQL counts or synthetic compressed bytes directly into cloud-bill or player-day savings."
+  ],
+  "validation": {
+    "review_probe": {
+      "command": ".tools/backend-venv/Scripts/python.exe docs/evidence/further-optimisation-review-2026-10-24/probe.py",
+      "result": "Passed with exact reward oracle, coherent wallet equality/fallback guards, current SQL counts and lossless float64 roundtrip.",
+      "output": "probe-results.json",
+      "log": "probe-final.log"
+    },
+    "focused_existing_contracts": {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_reward_ranks.py backend/tests/test_discovery_projection.py backend/tests/test_appearance_sync.py backend/tests/test_telemetry_parallel.py -q -k \"sqlite and (exact_tier_boundaries or prefix_queries_are_bounded or maximum_tier_skips or hot_partition_drains or bounded_reconciliation or private_five_car or deferred_work_keeps_credit)\"",
+      "result": "7 passed, 81 deselected, 36 existing warnings in 19.08s",
+      "log": "contracts.log",
+      "purpose": "Validate current safety contracts; these are not implementation tests for unimplemented candidates."
+    },
+    "lint": {
+      "command": ".tools/backend-venv/Scripts/ruff.exe check docs/evidence/further-optimisation-review-2026-10-24/probe.py",
+      "result": "Passed",
+      "log": "lint.log"
+    },
+    "corrections": "Initial review probe failed because the statement counter uppercased SQL but compared a lowercase table token; fixed the counter, preserving the assertion. Initial logs retained. Ruff import/style findings corrected in the review script.",
+    "runtime_changes": "None. Only this review evidence directory was edited.",
+    "limits": [
+      "Disposable SQLite/FakeVerifier fixture, not production load or canonical driving timing",
+      "PostgreSQL planning, contention and WAL effects have not been measured",
+      "No phone/tablet attachment check, physical-device test, APK, purchase, live mutation, deployment or owner-process restart",
+      "Concurrent workspace changes preserved; existing suites were not weakened"
+    ]
+  },
+  "artifacts": [
+    "probe.py",
+    "probe-results.json",
+    "report.json",
+    "repeat-flow-sql.json",
+    "probe-initial.log",
+    "probe-second.log",
+    "probe-final.log",
+    "contracts.log",
+    "lint.log",
+    "checkpoint.patch"
+  ],
+  "checkpoint": "Task-only additive patch for probe.py, probe-results.json and report.json; verification recorded in checkpoint-check.log."
+}

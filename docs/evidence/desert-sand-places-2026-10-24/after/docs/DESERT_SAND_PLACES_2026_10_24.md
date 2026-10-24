@@ -1,0 +1,31 @@
+# Sand at more dune edges — 2026-10-24
+
+DSP01 expands the number of nearby dune-edge emission sites. DSP02 preserves the accepted terrain hue, soft streams and wind-sound synchronization. DSP03/R01/G01/Q01 cover bounds, valid texture roots, bridges/banks, scenery, lifecycle and canonical isolation.
+
+The active source limit is twelve instead of six (96 quads/192 triangles in the existing one-draw MultiMesh). Minimum source separation is five metres instead of eight, and placement updates at seven-metre cells instead of fourteen. All eligible traced-edge candidates are considered; the previous extra 15% random rejection is removed. Existing per-edge seed variation, local burst timing, wind/lift history, shader, opacity, palette, dune guides and ground/bridge exclusion stay exact. The coverage request intentionally changes the site-count/separation budgets; visual and canonical thresholds are retained.
+
+The original selector is retained as an executable control. Across eighty route positions with real prepared ground support, nearby sites within 18 metres rise from 220 to 388 (76.4% more), and distinct readable-range locations from 30 to 53. 78/80 positions have more nearby sites. The track-only control is 241 to 440 with additional sites at all eighty positions. A source-limit-only trial gave only 241 to 273; the closer placement/eligibility rules make the expanded pool useful. The first six-metre-spacing trial reached only 328, below the new 40% coverage guard; the final five-metre spacing passes it. Both initial logs remain.
+
+## Actual checks
+
+Pinned engine 4.7.2.stable.official.ed1daf0bf, desktop RTX 3090. Commands below were executed; logs and hashes are in [report.json](evidence/desert-sand-places-2026-10-24/report.json).
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_places.gd -CommandTimeoutSeconds 240` — 49 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_places.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 300` — 67 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_places.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 300` — 67 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -CommandTimeoutSeconds 180` — 168 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence=res://../docs/evidence/desert-sand-places-2026-10-24/focused' -CommandTimeoutSeconds 300` — 181 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence=res://../docs/evidence/desert-sand-places-2026-10-24/focused' -CommandTimeoutSeconds 300` — 181 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_ambience.gd -CommandTimeoutSeconds 180` — 125 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestBiomes -CommandTimeoutSeconds 180` — 108 checks, 0 failures.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 240` — 1087 scripts, 0 failures.
+
+The new test extends the existing complete wind-sync, texture-edge and full-App regression. It checks the original/current spatial selectors on track-only and actual prepared geometry, source/discovery bounds, exact textured roots, retained sites, canonical state, original deformed prop arrays, cold/cached pyramids and normal App publication. The ordinary 50 km/h moving-camera test uses seeded ambience and identical-frame hidden/visible comparisons. Readable samples are 17/18 Mobile and 18/18 Compatibility; strict 2% contrast is 16/18 and 17/18. Same-camera/same-wind six/twelve-site native views show 11298/11928 changed pixels. All sampled roof pixels remain exact, with hue, low saturation, soft contrast and zero bright specks passing.
+
+[Native preview with sound and before/after views](evidence/desert-sand-places-2026-10-24/preview.html). Sixteen-second recordings and actual JPG frames retain the Game-to-sand wind link through audio loop crossings. The browser check exercises audio play/seek, both renderer selections and both comparison images. No bitmap was generated or edited. Capturing frames/readbacks causes diagnostic hitch messages; these are not FPS measurements.
+
+## Files and limits
+
+Runtime changes are four parameter/selection edits in `game/track/desert_sand_wind.gd`. `game/tests/test_desert_sand_wind.gd` changes only the newly requested capacity and separation expectations; its appearance/occlusion/lifecycle/canonical assertions remain. `game/tests/test_desert_sand_places.gd` adds the spatial control and native comparison. This document, the three status files and evidence helpers complete the slice. The scoped checkpoint uses task-entry runtime/test snapshots; status snapshots are taken immediately before adding this task, preserving concurrent prefixes. The manifest verifies the shader, audio module, edge guides, support exclusion and Game source remain exact.
+
+Discovery still stays below 8192 probes and 512 anchors per placement. The extra source slots and more frequent placement updates increase work; sustained phone/tablet preparation, fragment cost and appearance remain unmeasured. Owner recognition and balance on the affected track remain acceptance. Restart the development client to load this source. No phone/tablet attachment check or physical-device test, APK/export/install, native rebuild, live account/backend mutation or deployment was performed. Existing owner game/editor processes and concurrent work are preserved.

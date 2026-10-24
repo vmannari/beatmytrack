@@ -1,0 +1,1991 @@
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -269,6 +269,7 @@
+             "race_incident_rewards_version": 1,
+             "challenge_discovery_version": 1,
+             "challenge_series_version": 1,
++            "challenge_custom_tracks_version": 1,
+             "world_ranking_version": 1, "world_ranking_launch_week": settings.world_ranking_launch_week,
+             "lightweight_race_proofs": True,
+             "track_lifecycle_version": 1,
+--- a/backend/bmt_backend/challenge_models.py
++++ b/backend/bmt_backend/challenge_models.py
+@@ -33,7 +33,12 @@
+     ends_at: Mapped[int] = mapped_column(Integer)
+     member_count: Mapped[int] = mapped_column(Integer, default=1)
+     attempt_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
++    track_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+     cancelled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
++
++    @property
++    def is_series(self):
++        return self.track_count > 1
+ 
+ 
+ class ChallengeMember(Base):
+@@ -56,7 +61,7 @@
+ 
+ class ChallengeStage(Base):
+     __tablename__ = "challenge_stages"
+-    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal < 3"),)
++    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal < 5", name="ck_challenge_stage_ordinal"),)
+     challenge_id: Mapped[str] = mapped_column(ForeignKey("challenges.id"), primary_key=True)
+     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"))
+@@ -67,7 +72,7 @@
+     __table_args__ = (
+         ForeignKeyConstraint(["challenge_id", "ordinal"], ["challenge_stages.challenge_id", "challenge_stages.ordinal"]),
+         ForeignKeyConstraint(["challenge_id", "player_id"], ["challenge_members.challenge_id", "challenge_members.player_id"]),
+-        CheckConstraint("attempts_used >= 0 AND attempts_used <= 3"),
++        CheckConstraint("attempts_used >= 0", name="ck_challenge_stage_attempts"),
+         Index("ix_challenge_stage_member_run", "run_id"),
+     )
+     challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+--- a/backend/bmt_backend/challenge_series.py
++++ b/backend/bmt_backend/challenge_series.py
+@@ -1,4 +1,4 @@
+-"""Bounded 3x3 stages. One invitation, membership and reward identity."""
++"""Bounded multi-track stages. One invitation, membership and reward identity."""
+ from fastapi import HTTPException
+ from sqlalchemy import select, update
+ 
+@@ -17,7 +17,7 @@
+     from .community import check_creator
+     from .tracks import published_version
+     pinned_stages = stages(session, challenge)
+-    if len(pinned_stages) != 3:
++    if len(pinned_stages) != challenge.track_count:
+         raise HTTPException(404, "Challenge tracks unavailable")
+     for stage in pinned_stages:
+         board = session.get(Board, stage.board_id)
+@@ -64,26 +64,31 @@
+         value["stages"].append({"index": stage.ordinal, "manifest": board.manifest,
+             "entry": track_payload(version, track, session.get(Player, track.owner_id).display_name,
+                                    request.app.state.settings.public_base_url),
+-            "attempt_limit": 3, "attempts_used": own.attempts_used if own else 0,
+-            "attempts_remaining": 3-own.attempts_used if own else 3,
++            "attempt_limit": challenge.attempt_limit, "attempts_used": own.attempts_used if own else 0,
++            "attempts_remaining": (challenge.attempt_limit-(own.attempts_used if own else 0)
++                                   if challenge.attempt_limit is not None else None),
+             "standings": sorted(rows, key=lambda row: (row["ticks"] is None, row["ticks"] or 0, row["id"]))})
+     for row in value["standings"]:
+         row["completed_tracks"] = sum(m.time_ticks is not None for m in all_members if m.player_id == row["id"])
+     # Top-level budget is total starts across the series; each stage retains its own budget.
+     member = session.get(ChallengeMember, (challenge.id, player_id)) if player_id else None
+-    value.update(attempt_limit=9, attempts_used=member.attempts_used if member else 0,
+-                 attempts_remaining=9-member.attempts_used if member else 9, scoring="total_best_time")
++    limit = challenge.attempt_limit * challenge.track_count if challenge.attempt_limit is not None else None
++    used = member.attempts_used if member else 0
++    value.update(attempt_limit=limit, attempts_used=used,
++                 attempts_remaining=limit-used if limit is not None else None, scoring="total_best_time")
+     return value
+ 
+ 
+ def reserve(session, challenge, player_id, ordinal):
+     stage = session.get(ChallengeStage, (challenge.id, ordinal))
+     if stage is None:
+-        raise HTTPException(422, "Choose one of the three tracks")
+-    reserved = session.execute(update(ChallengeStageMember).where(
++        raise HTTPException(422, "Choose one of the challenge tracks")
++    reservation = update(ChallengeStageMember).where(
+         ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.ordinal == ordinal,
+-        ChallengeStageMember.player_id == player_id, ChallengeStageMember.attempts_used < 3)
+-        .values(attempts_used=ChallengeStageMember.attempts_used+1)).rowcount
++        ChallengeStageMember.player_id == player_id)
++    if challenge.attempt_limit is not None:
++        reservation = reservation.where(ChallengeStageMember.attempts_used < challenge.attempt_limit)
++    reserved = session.execute(reservation.values(attempts_used=ChallengeStageMember.attempts_used+1)).rowcount
+     if not reserved:
+         raise HTTPException(409, "No tries remaining on this track")
+     return session.get(Board, stage.board_id), session.get(ChallengeStageMember, (challenge.id, ordinal, player_id))
+@@ -103,7 +108,7 @@
+     session.flush()
+     bests = session.scalars(select(ChallengeStageMember).where(
+         ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.player_id == run.player_id)).all()
+-    if all(row.time_ticks is not None for row in bests) and len(bests) == 3:
++    if all(row.time_ticks is not None for row in bests) and len(bests) == challenge.track_count:
+         member.time_ticks = sum(row.time_ticks for row in bests)
+         member.run_id = run.id
+     session.flush()
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -60,7 +60,7 @@
+     version_id: str = Field(min_length=36, max_length=36)
+     vehicle_id: str = Field(min_length=1, max_length=80)
+     mode: Literal["beat", "group", "3x3"] = "beat"
+-    version_ids: list[str] | None = Field(default=None, min_length=3, max_length=3)
++    version_ids: list[str] | None = Field(default=None, min_length=2, max_length=5)
+     duration_seconds: Literal[86400, 259200, 604800] = 604800
+     attempt_limit: int | None = Field(default=None, strict=True)
+     visibility: Literal["private", "public"] = "private"
+@@ -78,8 +78,9 @@
+                     or self.version_ids[0] != self.version_id or any(len(v) != 36 for v in self.version_ids)
+                     or self.attempt_limit != 3):
+                 raise ValueError("3x3 requires three distinct tracks and three tries per track")
+-        elif self.version_ids is not None:
+-            raise ValueError("Multiple tracks require 3x3")
++        elif self.version_ids is not None and (len(set(self.version_ids)) != len(self.version_ids)
++                or self.version_ids[0] != self.version_id or any(len(v) != 36 for v in self.version_ids)):
++            raise ValueError("Choose two to five distinct tracks, starting with the opening track")
+         return self
+ 
+ 
+@@ -104,7 +105,7 @@
+     version = published_version(session, board.version_id)
+     if session.get(Track, version.track_id).hidden:
+         raise HTTPException(404, "Challenge track unavailable")
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import check_tracks
+         check_tracks(session, challenge)
+     return challenge
+@@ -126,7 +127,7 @@
+     from .community import check_creator, is_blocked
+     board = session.get(Board, challenge.board_id)
+     check_creator(session, player_id, session.get(Track, session.get(TrackVersion, board.version_id).track_id).owner_id)
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import check_tracks
+         check_tracks(session, challenge, player_id)
+     peers = session.scalars(select(ChallengeMember.player_id).where(ChallengeMember.challenge_id == challenge.id)).all()
+@@ -178,7 +179,7 @@
+     check_creator(session, player_id, track.owner_id)
+     if is_blocked(session, player_id, creator.id, mutual=True):
+         raise HTTPException(403, "PLAYER_BLOCKED")
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import check_tracks
+         check_tracks(session, challenge, player_id)
+     rows = standings(session, challenge)
+@@ -191,7 +192,7 @@
+     attempts_used = member.attempts_used if member else 0
+     from .economy import challenge_rewards
+     value = {"id": challenge.id, "code": challenge.code, "mode": challenge.mode, "state": state,
+-            "visibility": challenge.visibility, "capacity": 2 if challenge.mode == "beat" else 20,
++            "track_count": challenge.track_count, "visibility": challenge.visibility, "capacity": 2 if challenge.mode == "beat" else 20,
+             "rewards": challenge_rewards(session, challenge.id, player_id, current),
+             "creator_id": creator.id, "creator": creator.display_name, "self_id": player_id,
+             "joined": any(row["id"] == player_id for row in rows), "vehicle_id": board.vehicle_id,
+@@ -206,7 +207,7 @@
+             "entry": track_payload(version, track, session.get(Player, track.owner_id).display_name,
+                                    request.app.state.settings.public_base_url),
+             "share_url": request.app.state.settings.public_base_url.rstrip("/")+"/c/"+challenge.code}
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import decorate
+         return decorate(session, request, challenge, value, player_id)
+     return value
+@@ -279,11 +280,11 @@
+         # Blob IO/verification released the snapshot. Recheck availability/build.
+         board = prepare_board(session, request, payload.version_id, payload.vehicle_id)
+         source = source_for(session, board, player.id, source.id)
+-    boards = [prepare_board(session, request, v, payload.vehicle_id) for v in payload.version_ids] if payload.mode == "3x3" else []
++    boards = [prepare_board(session, request, v, payload.vehicle_id) for v in payload.version_ids] if payload.version_ids else []
+     if boards:
+         track_ids = [session.get(TrackVersion, b.version_id).track_id for b in boards]
+-        if len(set(track_ids)) != 3:
+-            raise HTTPException(422, "Choose three distinct tracks")
++        if len(set(track_ids)) != len(boards):
++            raise HTTPException(422, "Choose distinct tracks")
+         for track_id in track_ids:
+             track = session.get(Track, track_id)
+             if track.archived:
+@@ -291,8 +292,8 @@
+             check_creator(session, player.id, track.owner_id)
+     challenge = Challenge(code=secrets.token_hex(8).upper(), creator_id=player.id, board_id=board.id,
+         mode=payload.mode, visibility=payload.visibility, target_run_id=source.id if source else None,
+-        target_ticks=source.time_ticks if source and payload.mode == "beat" else None,
+-        attempt_limit=payload.attempt_limit, ends_at=now()+payload.duration_seconds)
++        target_ticks=source.time_ticks if source and payload.mode == "beat" and not boards else None,
++        attempt_limit=payload.attempt_limit, track_count=len(boards) or 1, ends_at=now()+payload.duration_seconds)
+     session.add(challenge)
+     session.flush()
+     session.add(ChallengeMember(challenge_id=challenge.id, player_id=player.id,
+@@ -356,6 +357,8 @@
+     series = request.query_params.get("series") == "1"
+     if not series:
+         query = query.where(Challenge.mode != "3x3")
++    if request.query_params.get("custom_tracks") != "1":
++        query = query.where(or_(Challenge.track_count == 1, Challenge.mode == "3x3"))
+     public = folder in ("discover", "friends")
+     if public:
+         query = query.where(Challenge.visibility == "public", Track.archived.is_(False), Challenge.cancelled.is_(False),
+@@ -408,6 +411,8 @@
+     context = {"folder": folder, "player": player_id, "search": search, "mode": mode, "vehicle": vehicle, "sort": sort}
+     if series:
+         context["series"] = 1
++    if request.query_params.get("custom_tracks") == "1":
++        context["custom_tracks"] = 1
+     if cursor is not None:
+         position = decode_cursor(cursor)
+         if (set(position) != {"at", "id", *context} or type(position["at"]) is not int
+@@ -424,7 +429,7 @@
+         try:
+             items.append(snapshot(session, request, challenge, player_id))
+         except HTTPException as exc:
+-            if challenge.mode != "3x3" or exc.status_code not in (403, 404):
++            if not challenge.is_series or exc.status_code not in (403, 404):
+                 raise
+     last = challenges[limit-1] if len(challenges) > limit else None
+     next_cursor = encode_cursor({"at": last.ends_at if ascending else last.created_at, "id": last.id,
+@@ -454,7 +459,7 @@
+     challenge = available(session, code, lock=True)
+     check_participant_blocks(session, player.id, challenge)
+     compatible(request, session.get(Board, challenge.board_id).manifest)
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import check_tracks
+         check_tracks(session, challenge, player.id, request)
+     if session.get(ChallengeMember, (challenge.id, player.id)) is None:
+@@ -468,7 +473,7 @@
+             raise HTTPException(409, "Challenge is full")
+         session.add(ChallengeMember(challenge_id=challenge.id, player_id=player.id))
+         session.flush()
+-        if challenge.mode == "3x3":
++        if challenge.is_series:
+             from .challenge_series import add_member
+             add_member(session, challenge, player.id)
+     return commit_response(session, player.id, scope, key, {}, snapshot(session, request, challenge, player.id))
+@@ -476,7 +481,7 @@
+ 
+ @router.post("/challenges/{code}/tickets", status_code=201)
+ def ticket(code: str, request: Request, session: DB, player: Auth, key: Key,
+-           stage: int | None = Query(default=None, ge=0, le=2)):
++           stage: int | None = Query(default=None, ge=0, le=4)):
+     real_player(player)
+     scope = "challenge_ticket:"+code+(":"+str(stage) if stage is not None else "")
+     old = replay_response(session, player.id, scope, key, {})
+@@ -492,10 +497,10 @@
+         raise HTTPException(403, "Join this challenge first")
+     if challenge.cancelled or now() >= challenge.ends_at:
+         raise HTTPException(410, "Challenge has ended")
+-    if challenge.mode == "beat" and player.id == challenge.creator_id:
++    if challenge.mode == "beat" and not challenge.is_series and player.id == challenge.creator_id:
+         raise HTTPException(409, "Share this challenge to invite an opponent")
+-    if (challenge.mode == "3x3") != (stage is not None):
+-        raise HTTPException(422, "Choose one of the three tracks" if challenge.mode == "3x3" else "This challenge has one track")
++    if (challenge.is_series) != (stage is not None):
++        raise HTTPException(422, "Choose one of the challenge tracks" if challenge.is_series else "This challenge has one track")
+     stage_member = None
+     if stage is not None:
+         from .challenge_series import reserve
+@@ -536,7 +541,7 @@
+     if member is None or player.disabled or player.is_test_driver:
+         binding.outcome = {"counted": False}
+         return
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         from .challenge_series import accept
+         accept(session, challenge, binding, run, member)
+         return
+@@ -575,16 +580,16 @@
+ 
+ @router.get("/challenges/{code}/ghost")
+ def ghost(code: str, request: Request, session: DB, credentials=Depends(bearer),
+-          stage: int | None = Query(default=None, ge=0, le=2)):
++          stage: int | None = Query(default=None, ge=0, le=4)):
+     challenge = available(session, code)
+     viewer = current_player(request, credentials, session) if credentials else None
+     if viewer:
+         check_participant_blocks(session, viewer.id, challenge)
+     if challenge.cancelled:
+         raise HTTPException(410, "Challenge was cancelled")
+-    if challenge.mode == "3x3":
++    if challenge.is_series:
+         if stage is None:
+-            raise HTTPException(422, "Choose one of the three tracks")
++            raise HTTPException(422, "Choose one of the challenge tracks")
+         from .challenge_models import ChallengeStageMember
+         candidates = session.scalars(select(ChallengeStageMember).join(Player).where(
+             ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.ordinal == stage,
+@@ -624,8 +629,8 @@
+     if old is not None:
+         return old
+     challenge = available(session, code)
+-    if challenge.mode == "3x3":
+-        raise HTTPException(409, "Create a new 3x3 challenge to race again")
++    if challenge.is_series:
++        raise HTTPException(409, "Create a new multi-track challenge to race again")
+     member = session.get(ChallengeMember, (challenge.id, player.id))
+     if member is None or member.time_ticks is None or challenge.cancelled:
+         raise HTTPException(409, "Set a verified time before rematching")
+@@ -642,12 +647,13 @@
+ @preview_router.get("/c/{code}", response_class=HTMLResponse)
+ def preview(code: str, request: Request, session: DB):
+     value = snapshot(session, request, available(session, code))
+-    title = html.escape(" / ".join(stage["entry"]["name"] for stage in value["stages"])) if value["mode"] == "3x3" else html.escape(value["entry"]["name"])
++    title = html.escape(" / ".join(stage["entry"]["name"] for stage in value["stages"])) if value.get("stages") else html.escape(value["entry"]["name"])
+     name = html.escape(value["creator"])
+-    target = "3 tracks - 3 tries each" if value["mode"] == "3x3" else f'{value["target_ms"]/1000:.3f} s' if value["target_ms"] else "Group challenge"
++    target = f'{len(value["stages"])} tracks - lowest total time wins' if value.get("stages") else f'{value["target_ms"]/1000:.3f} s' if value["target_ms"] else "Group challenge"
+     state = "Invitation open" if value["state"] == "active" else value["state"].capitalize()
+     vehicle = html.escape(value["vehicle_id"].replace("_", " ").title())
+-    tries = "3 tries per track" if value["mode"] == "3x3" else f"{value['attempt_limit']} tries per driver" if value["attempt_limit"] is not None else "Unlimited tries"
++    limit = value["stages"][0]["attempt_limit"] if value.get("stages") else value["attempt_limit"]
++    tries = (f"{limit} tries"+(" per track" if value.get("stages") else " per driver")) if limit is not None else "Unlimited tries"
+     return HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} — Beat my track</title>
+ <meta property="og:title" content="{name} challenges you on {title}">
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0063_custom_challenge_tracks.py
+@@ -0,0 +1,54 @@
++"""Allow custom challenges with two to five independently budgeted tracks."""
++from contextlib import contextmanager
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0063_custom_challenge_tracks"
++down_revision = "0062_retire_discovery_cache"
++branch_labels = None
++depends_on = None
++
++
++@contextmanager
++def sqlite_rebuild():
++    # Both stage tables have incoming FKs. Alembic's SQLite table copy needs
++    # FK checks suspended outside a transaction, then checked before re-enabling.
++    if op.get_bind().dialect.name != "sqlite":
++        yield
++        return
++    with op.get_context().autocommit_block():
++        op.execute("PRAGMA foreign_keys=OFF")
++        try:
++            yield
++            if op.get_bind().exec_driver_sql("PRAGMA foreign_key_check").first():
++                raise RuntimeError("Challenge migration broke a foreign key")
++        finally:
++            op.execute("PRAGMA foreign_keys=ON")
++
++
++def replace_check(table, marker, name, expression):
++    checks = sa.inspect(op.get_bind()).get_check_constraints(table)
++    old = next(check for check in checks if marker in check["sqltext"])
++    with op.batch_alter_table(table, naming_convention={"ck": "ck_%(table_name)s_legacy"}) as batch:
++        batch.drop_constraint(old["name"] or f"ck_{table}_legacy", type_="check")
++        batch.create_check_constraint(name, expression)
++
++
++def upgrade():
++    op.add_column("challenges", sa.Column("track_count", sa.Integer(), nullable=False, server_default="1"))
++    op.execute("UPDATE challenges SET track_count=3 WHERE mode='3x3'")
++    with sqlite_rebuild():
++        replace_check("challenge_stages", "ordinal", "ck_challenge_stage_ordinal", "ordinal >= 0 AND ordinal < 5")
++        replace_check("challenge_stage_members", "attempts_used", "ck_challenge_stage_attempts", "attempts_used >= 0")
++
++
++def downgrade():
++    if op.get_bind().scalar(sa.text("SELECT count(*) FROM challenges WHERE track_count>1 AND mode!='3x3'")):
++        raise RuntimeError("Custom multi-track challenges require schema 0063; retain their stages before downgrade")
++    with sqlite_rebuild():
++        replace_check("challenge_stage_members", "attempts_used", "ck_challenge_stage_attempts",
++                      "attempts_used >= 0 AND attempts_used <= 3")
++        replace_check("challenge_stages", "ordinal", "ck_challenge_stage_ordinal", "ordinal >= 0 AND ordinal < 3")
++        with op.batch_alter_table("challenges", naming_convention={"ck": "ck_%(table_name)s_members"}) as batch:
++            batch.drop_column("track_count")
+--- /dev/null
++++ b/backend/tests/test_custom_challenge_tracks.py
+@@ -0,0 +1,123 @@
++"""Custom selections cross creation, authoritative starts, verification and migrations."""
++import json
++import os
++import secrets
++from pathlib import Path
++
++import pytest
++from alembic import command
++from sqlalchemy import select
++from test_challenges import PosedVerifier, join, normal_run
++from test_domains import domain as _domain_fixture
++from test_domains import headers, submit
++from test_rivalry import seed
++
++from bmt_backend.challenge_models import Challenge, ChallengeStage, ChallengeStageMember
++from bmt_backend.migrate import configuration
++from bmt_backend.worker import process_one
++
++custom_domain = _domain_fixture
++
++
++def create(d, versions, **extra):
++    return d.client.post("/v1/challenges", json={"mode":"group", "version_id":versions[0],
++        "version_ids":versions, "vehicle_id":"compact", **extra}, headers=headers(d, "Alice"))
++
++
++@pytest.mark.parametrize("count,limit", [(2,1), (3,3), (4,None), (5,5)])
++def test_custom_counts_budgets_and_verified_totals(custom_domain, count, limit):
++    d = custom_domain
++    d.app.state.verifier = PosedVerifier()
++    versions = seed(d, count)
++    response = create(d, versions, attempt_limit=limit)
++    assert response.status_code == 201, response.text
++    item = response.json()
++    assert item["track_count"] == count and len(item["stages"]) == count
++    assert item["attempt_limit"] == (count*limit if limit else None)
++    code = item["code"]
++    join(d, code)
++    total = 0
++    for index in range(count):
++        issued = d.client.post(f"/v1/challenges/{code}/tickets?stage={index}", headers=headers(d,"Bob"))
++        assert issued.status_code == 201, issued.text
++        ticket = issued.json()
++        assert ticket["version_id"] == versions[index]
++        assert ticket["attempts_remaining"] == (limit-1 if limit else None)
++        submit(d, ticket, "Bob", 20+index)
++        assert process_one(d.app)
++        result = d.client.get(f"/v1/challenge-results/{ticket['ticket_id']}", headers=headers(d,"Bob")).json()
++        assert result["outcome"]["stage_index"] == index
++        own = next(row for row in result["challenge"]["standings"] if row["id"] == d.players["Bob"])
++        total += (20+index)*5
++        assert own["completed_tracks"] == index+1
++        assert own["ticks"] == (total if index == count-1 else None)
++        ghost = d.client.get(f"/v1/challenges/{code}/ghost?stage={index}")
++        assert ghost.status_code == 200, ghost.text
++    if count == 5:
++        export = os.environ.get("BMT_CUSTOM_SERIES_EXPORT")
++        if export:
++            Path(export).write_text(json.dumps(result["challenge"],indent=2)+"\n",encoding="utf-8")
++        # A fifth allowed start remains valid; the sixth is rejected on this track only.
++        for attempt in range(4):
++            key = secrets.token_hex(16)
++            first = d.client.post(f"/v1/challenges/{code}/tickets?stage=4",headers=headers(d,"Bob",key))
++            repeat = d.client.post(f"/v1/challenges/{code}/tickets?stage=4",headers=headers(d,"Bob",key))
++            assert first.status_code == 201 and first.json() == repeat.json()
++        assert d.client.post(f"/v1/challenges/{code}/tickets?stage=4",headers=headers(d,"Bob")).status_code == 409
++        assert d.client.post(f"/v1/challenges/{code}/tickets?stage=3",headers=headers(d,"Bob")).status_code == 201
++    if limit is None:
++        for _ in range(6):
++            assert d.client.post(f"/v1/challenges/{code}/tickets?stage=3",headers=headers(d,"Bob")).status_code == 201
++    assert d.client.post(f"/v1/challenges/{code}/tickets?stage={count}",headers=headers(d,"Bob")).status_code == 422
++    assert d.client.get("/v1/challenges?folder=received&series=1",headers=headers(d,"Bob")).json()["items"] == []
++    assert len(d.client.get("/v1/challenges?folder=received&custom_tracks=1",headers=headers(d,"Bob")).json()["items"]) == 1
++    assert f"{count} tracks" in d.client.get(f"/c/{code}").text
++
++
++def test_custom_rejects_six_duplicates_and_reordered_opening_atomically(custom_domain):
++    d = custom_domain
++    d.app.state.verifier = PosedVerifier()
++    versions = seed(d,6)
++    for bad in [versions, versions[:1], [versions[0]]*5, [versions[1],versions[0]]]:
++        body = {"mode":"group","version_id":versions[0],"version_ids":bad,"vehicle_id":"compact"}
++        assert d.client.post("/v1/challenges",json=body,headers=headers(d,"Alice")).status_code == 422
++    assert create(d, [*versions[:4],"00000000-0000-0000-0000-000000000000"]).status_code == 404
++    with d.factory() as session:
++        assert session.scalars(select(Challenge)).all() == []
++        assert session.scalars(select(ChallengeStage)).all() == []
++
++
++def test_two_person_series_preserves_source_and_creator_can_finish(custom_domain):
++    d = custom_domain
++    d.app.state.verifier = PosedVerifier()
++    versions = seed(d,5)
++    normal_run(d,versions[0],frames=30)
++    item = create(d,versions,mode="beat",attempt_limit=1).json()
++    assert item["capacity"] == 2 and item["stages"][0]["attempts_remaining"] == 0
++    assert item["target_ticks"] is None and item["standings"][0]["ticks"] is None
++    issued = d.client.post(f"/v1/challenges/{item['code']}/tickets?stage=4",headers=headers(d,"Alice"))
++    assert issued.status_code == 201, issued.text
++    assert issued.json()["version_id"] == versions[4]
++    join(d,item["code"])
++    assert d.client.post(f"/v1/challenges/{item['code']}/rematch",json={},headers=headers(d,"Alice")).status_code == 409
++
++
++def test_stage_migration_preserves_existing_series_and_foreign_keys(custom_domain):
++    d = custom_domain
++    d.app.state.verifier = PosedVerifier()
++    versions = seed(d,3)
++    item = create(d,versions,mode="3x3",attempt_limit=3).json()
++    join(d,item["code"])
++    issued = d.client.post(f"/v1/challenges/{item['code']}/tickets?stage=2",headers=headers(d,"Bob"))
++    assert issued.status_code == 201
++    config = configuration(d.app.state.engine)
++    command.downgrade(config,"0062_retire_discovery_cache")
++    command.upgrade(config,"head")
++    value = d.client.get(f"/v1/challenges/{item['code']}/me",headers=headers(d,"Bob")).json()
++    assert value["track_count"] == 3 and value["stages"][2]["attempts_remaining"] == 2
++    with d.factory() as session:
++        assert len(session.scalars(select(ChallengeStageMember)).all()) == 6
++    if not d.postgres:
++        with d.app.state.engine.connect() as connection:
++            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
++            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -57,12 +57,19 @@
+ 	var capabilities: Variant = client.get("_capabilities")
+ 	return capabilities is Dictionary and int(capabilities.get("challenge_series_version",0)) == 1
+ 
++func custom_tracks_supported() -> bool:
++	var capabilities: Variant = client.get("_capabilities")
++	return capabilities is Dictionary and int(capabilities.get("challenge_custom_tracks_version",0)) == 1
++
++static func is_series(value: Dictionary) -> bool:
++	return value.get("stages") is Array and not value.stages.is_empty()
++
+ func race_stage() -> Dictionary:
+-	if selected.get("mode") == "3x3" and selected.get("stages") is Array and selected_stage < selected.stages.size(): return selected.stages[selected_stage]
++	if is_series(selected) and selected.get("stages") is Array and selected_stage < selected.stages.size(): return selected.stages[selected_stage]
+ 	return selected
+ 
+ func select_stage(index: int) -> void:
+-	if index < 0 or index > 2 or selected.get("mode") != "3x3": return
++	if index < 0 or not is_series(selected) or index >= selected.stages.size(): return
+ 	selected_stage = index
+ 	changed.emit()
+ 
+@@ -108,26 +115,38 @@
+ 		if not point is Array or point.size() != 2 or not (point[0] is float or point[0] is int) or not (point[1] is float or point[1] is int) or not is_finite(float(point[0])) or not is_finite(float(point[1])): return false
+ 	if not value.manifest is Dictionary or int(value.manifest.get("laps",0)) != 5 or not value.manifest.get("tick_rate") is float and not value.manifest.get("tick_rate") is int or int(value.manifest.tick_rate) <= 0: return false
+ 	if not value.standings is Array or value.standings.is_empty() or value.standings.size() > 20: return false
+-	if value.mode == "beat" and (not preload("res://backend/backend_client.gd")._whole(value.get("target_ticks"),1,216000) or not preload("res://backend/backend_client.gd")._whole(value.get("target_ms"),1)): return false
++	if value.has("stages") and not is_series(value): return false
++	if value.has("track_count") and (not preload("res://backend/backend_client.gd")._whole(value.track_count,1,5) or value.track_count != (value.stages.size() if is_series(value) else 1)): return false
++	if value.mode == "beat" and not is_series(value) and (not preload("res://backend/backend_client.gd")._whole(value.get("target_ticks"),1,216000) or not preload("res://backend/backend_client.gd")._whole(value.get("target_ms"),1)): return false
+ 	if value.has("attempt_limit") or value.has("attempts_used") or value.has("attempts_remaining"):
+ 		if not value.has_all(["attempt_limit","attempts_used","attempts_remaining"]): return false
+ 		var limit: Variant = value.attempt_limit
+-		if limit != null and (not preload("res://backend/backend_client.gd")._whole(limit,1,9) or int(limit) not in ([9] if value.mode == "3x3" else [1,3,5])): return false
++		var track_count: int = value.stages.size() if is_series(value) else 1
++		if limit != null and (not preload("res://backend/backend_client.gd")._whole(limit,1,25) or int(limit) not in ([9] if value.mode == "3x3" else [track_count,3*track_count,5*track_count])): return false
+ 		if not preload("res://backend/backend_client.gd")._whole(value.attempts_used): return false
+ 		if limit == null:
+ 			if value.attempts_remaining != null: return false
+ 		elif not preload("res://backend/backend_client.gd")._whole(value.attempts_remaining,0,int(limit)) or int(value.attempts_used)+int(value.attempts_remaining) != int(limit): return false
+-	if value.mode == "3x3":
+-		if value.get("scoring") != "total_best_time" or not value.get("stages") is Array or value.stages.size() != 3 or value.get("attempt_limit") != 9: return false
++	if value.mode == "3x3" or is_series(value):
++		if value.get("scoring") != "total_best_time" or not is_series(value) or value.stages.size() < 2 or value.stages.size() > 5: return false
++		if value.mode == "3x3" and (value.stages.size() != 3 or value.get("attempt_limit") != 9): return false
+ 		var versions: Dictionary = {}
+-		for index: int in range(3):
++		var tracks: Dictionary = {}
++		var stage_limit: Variant = value.stages[0].get("attempt_limit") if value.stages[0] is Dictionary else -1
++		if stage_limit == null:
++			if value.get("attempt_limit") != null: return false
++		elif not preload("res://backend/backend_client.gd")._whole(stage_limit,1,5) or int(stage_limit) not in [1,3,5] or value.get("attempt_limit") != int(stage_limit)*value.stages.size(): return false
++		for index: int in range(value.stages.size()):
+ 			var stage: Variant = value.stages[index]
+-			if not stage is Dictionary or not stage.has_all(["index","entry","manifest","standings","attempt_limit","attempts_used","attempts_remaining"]) or stage.index != index or stage.attempt_limit != 3: return false
++			if not stage is Dictionary or not stage.has_all(["index","entry","manifest","standings","attempt_limit","attempts_used","attempts_remaining"]) or stage.index != index or stage.attempt_limit != stage_limit: return false
+ 			var single: Dictionary = value.duplicate(true)
+ 			single.mode = "group"
++			single.capacity = 20
+ 			for field: String in ["entry","manifest","standings","attempt_limit","attempts_used","attempts_remaining"]: single[field] = stage[field]
+ 			single.erase("stages")
+-			if not valid_snapshot(single) or versions.has(str(stage.entry.version_id)): return false
++			single.erase("track_count")
++			if not valid_snapshot(single) or versions.has(str(stage.entry.version_id)) or tracks.has(str(stage.entry.track_id)): return false
++			tracks[str(stage.entry.track_id)] = true
+ 			versions[str(stage.entry.version_id)] = true
+ 			for field: String in ["laps","tick_rate","vehicle_id","rules_key","physics_version","compiler_version","handling_version","config_hash"]:
+ 				if stage.manifest.get(field) != value.manifest.get(field): return false
+@@ -137,8 +156,8 @@
+ 		if not row is Dictionary or not row.has_all(["id","name","ticks","ms","rank","run_id"]) or seen.has(str(row.id)): return false
+ 		if not preload("res://backend/backend_client.gd")._text(row.id) or not preload("res://backend/backend_client.gd")._text(row.name): return false
+ 		if row.ticks == null and (row.ms != null or row.rank != null or row.run_id != null): return false
+-		if value.mode == "3x3":
+-			if not preload("res://backend/backend_client.gd")._whole(row.get("completed_tracks"),0,3): return false
++		if value.mode == "3x3" or is_series(value):
++			if not preload("res://backend/backend_client.gd")._whole(row.get("completed_tracks"),0,value.stages.size()): return false
+ 			var count: int = 0
+ 			var total: int = 0
+ 			for stage: Dictionary in value.stages:
+@@ -150,9 +169,9 @@
+ 							count += 1
+ 							total += int(stage_row.ticks)
+ 				if not found: return false
+-			if int(row.completed_tracks) != count or (row.ticks != null and (count != 3 or int(row.ticks) != total)) or (row.ticks == null and count == 3): return false
++			if int(row.completed_tracks) != count or (row.ticks != null and (count != value.stages.size() or int(row.ticks) != total)) or (row.ticks == null and count == value.stages.size()): return false
+ 		seen[str(row.id)] = true
+-		if row.ticks != null and (not preload("res://backend/backend_client.gd")._whole(row.ticks,1,648000 if value.mode == "3x3" else 216000) or not preload("res://backend/backend_client.gd")._whole(row.rank,1,20) or not preload("res://backend/backend_client.gd")._whole(row.ms,1)): return false
++		if row.ticks != null and (not preload("res://backend/backend_client.gd")._whole(row.ticks,1,216000*value.stages.size() if is_series(value) else 216000) or not preload("res://backend/backend_client.gd")._whole(row.rank,1,20) or not preload("res://backend/backend_client.gd")._whole(row.ms,1)): return false
+ 	if value.joined != seen.has(str(value.self_id)): return false
+ 	if value.has("visibility") and value.visibility not in ["public","private"]: return false
+ 	if value.has("capacity") and (not preload("res://backend/backend_client.gd")._whole(value.capacity,2,20) or int(value.capacity) != (2 if value.mode == "beat" else 20)): return false
+@@ -254,6 +273,7 @@
+ 	var path: String = "/challenges?folder="+requested_folder if client.signed_in() else "/challenges/discover?"
+ 	if not search.is_empty(): path += "&search="+search.uri_encode()
+ 	if series_supported(): path += "&series=1"
++	if custom_tracks_supported(): path += "&custom_tracks=1"
+ 	if mode_filter != "all": path += "&mode="+mode_filter
+ 	if not vehicle_filter.is_empty(): path += "&vehicle="+vehicle_filter.uri_encode()
+ 	if sort_order != "ending": path += "&sort="+sort_order
+@@ -357,7 +377,8 @@
+ func ticket(stage_override: int = -1) -> Dictionary:
+ 	var stage_index: int = selected_stage if stage_override < 0 else stage_override
+ 	if selected.is_empty() or not selected.get("joined",false) or selected.state != "active": return {}
+-	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/tickets"+("?stage="+str(stage_index) if selected.get("mode") == "3x3" else ""),HTTPClient.METHOD_POST)
++	if is_series(selected) and (stage_index < 0 or stage_index >= selected.stages.size()): return {}
++	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/tickets"+("?stage="+str(stage_index) if is_series(selected) else ""),HTTPClient.METHOD_POST)
+ 	if not response.get("ok",false):
+ 		error = friendly(str(response.get("error","")))
+ 		changed.emit()
+@@ -366,7 +387,7 @@
+ 		error = "Race invitation expired. Try again for a fresh start."
+ 		changed.emit()
+ 		return {}
+-	var budget: Dictionary = selected.stages[stage_index] if selected.get("mode") == "3x3" else selected
++	var budget: Dictionary = selected.stages[stage_index] if is_series(selected) else selected
+ 	for field: String in ["attempt_limit","attempts_used","attempts_remaining"]:
+ 		if response.data.has(field): budget[field] = response.data[field]
+ 	return response.data
+@@ -374,7 +395,8 @@
+ func ghost(stage_override: int = -1) -> Dictionary:
+ 	var stage_index: int = selected_stage if stage_override < 0 else stage_override
+ 	if selected.is_empty(): return {}
+-	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/ghost"+("?stage="+str(stage_index) if selected.get("mode") == "3x3" else ""),HTTPClient.METHOD_GET,{},false)
++	if is_series(selected) and (stage_index < 0 or stage_index >= selected.stages.size()): return {}
++	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/ghost"+("?stage="+str(stage_index) if is_series(selected) else ""),HTTPClient.METHOD_GET,{},false)
+ 	if not response.get("ok",false): return {}
+ 	return preload("res://backend/weekly_rivalry_client.gd")._validate_ghost(response.data.get("recording",{}))
+ 
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1769,10 +1769,12 @@
+ 	_telemetry_observe("share_clicked",{"challenge_id":str(value.get("id","")),"reason":"share"})
+ 	var time: String = "%.3f s" % (float(value.target_ms)/1000.0) if value.get("target_ms") != null else "Join my group challenge"
+ 	var text: String = "%s · %s · 5 laps · %s\n%s\nCode: %s" % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
+-	if value.get("mode") == "3x3":
++	if ChallengesClient.is_series(value):
+ 		var names: PackedStringArray = []
+ 		for stage: Dictionary in value.get("stages",[]): names.append(str(stage.entry.name))
+-		text = "3×3 · 3 tracks · 3 tries each · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
++		var limit: Variant = value.stages[0].attempt_limit
++		var tries: String = "Unlimited tries" if limit == null else str(int(limit))+" tries each"
++		text = ("3×3" if value.get("mode") == "3x3" else "Custom challenge")+" · "+str(value.stages.size())+" tracks · "+tries+" · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
+ 	if challenge_links.share(text): return
+ 	var dialog := AcceptDialog.new()
+ 	dialog.title = "Challenge invitation copied"
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -24,6 +24,7 @@
+ var initial_attempt_limit: int = 0
+ var initial_configuration: Dictionary = {}
+ var selected_format: String = "duel"
++var custom_track_count: int = 1
+ var attempt_limit: int = 0
+ var result_context: Dictionary = {}
+ var created_callback: Callable
+@@ -51,7 +52,7 @@
+ var _formats: GridContainer
+ var _format_buttons: Array[FormatCard] = []
+ var _custom_button: Button
+-var _slot_row: HBoxContainer
++var _slot_row: GridContainer
+ var _browser: TrackBrowser
+ var _car_stage: Control
+ var _car_art: CarShowroom
+@@ -75,7 +76,7 @@
+ var _final_actions: BoxContainer
+ 
+ func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
+-func _required_tracks() -> int: return 3 if selected_format == "three" else 1
++func _required_tracks() -> int: return 3 if selected_format == "three" else custom_track_count if selected_format == "custom" else 1
+ func _entry() -> Dictionary: return _chosen_entries[0] if not _chosen_entries.is_empty() else {}
+ func _vehicle_id() -> String: return VehicleCatalog.valid_id(initial_vehicle) if locked_result() else _chosen_car
+ 
+@@ -91,6 +92,7 @@
+ 	attempt_limit = initial_attempt_limit
+ 	mode = int(initial_configuration.get("mode",0))
+ 	selected_format = str(initial_configuration.get("format","duel" if mode == 0 and attempt_limit == 0 else "three" if mode == 1 and attempt_limit == 3 else "group" if mode == 1 and attempt_limit == 0 else "custom"))
++	custom_track_count = clampi(int(initial_configuration.get("track_count",1)),1,5)
+ 	_chosen_car = VehicleCatalog.valid_id(initial_vehicle)
+ 	if initial_configuration.get("tracks") is Array:
+ 		for entry: Dictionary in initial_configuration.tracks: _chosen_entries.append(entry.duplicate(true))
+@@ -128,9 +130,10 @@
+ 	_car_page = _page(body,"ChallengeCarPage")
+ 	_custom_page = _page(body,"ChallengeCustomRulesPage")
+ 	_build_formats()
+-	_slot_row = HBoxContainer.new()
++	_slot_row = GridContainer.new()
+ 	_slot_row.name = "ChallengeTrackSlots"
+-	_slot_row.add_theme_constant_override("separation",12)
++	_slot_row.add_theme_constant_override("h_separation",12)
++	_slot_row.add_theme_constant_override("v_separation",8)
+ 	_track_page.add_child(_slot_row)
+ 	_build_cars()
+ 	_rules_fields = GridContainer.new()
+@@ -234,9 +237,10 @@
+ 	if _slot_row == null: return
+ 	for child: Node in _slot_row.get_children(): _slot_row.remove_child(child); child.queue_free()
+ 	_active_slot = mini(_active_slot,_required_tracks()-1)
+-	_slot_row.visible = _required_tracks() == 3
+-	if _required_tracks() == 3:
+-		for index: int in range(3):
++	_slot_row.visible = _required_tracks() > 1
++	_slot_row.columns = _required_tracks() if size.x >= 720 else mini(2,_required_tracks())
++	if _required_tracks() > 1:
++		for index: int in range(_required_tracks()):
+ 			var title: String = str(_chosen_entries[index].name) if index < _chosen_entries.size() else "Choose track"
+ 			var slot := _button(_slot_row,str(index+1)+"  "+title,func() -> void: _active_slot = index; _refresh_tracks(),"ChallengeTrackSlot_"+str(index))
+ 			slot.tooltip_text = "Choose the track for slot "+str(index+1)
+@@ -359,11 +363,12 @@
+ func _open_rules() -> void:
+ 	if _submitting: return
+ 	_rules_return = _step
+-	_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit,"visibility":adapter.creation_visibility}
++	_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit,"visibility":adapter.creation_visibility,"tracks":custom_track_count}
+ 	for child: Node in _rules_fields.get_children(): _rules_fields.remove_child(child); child.queue_free()
+ 	_rule_choices("Who's racing?",[[0,"One-to-one"],[1,"Group race"]],"mode","ChallengeCustomMode_")
++	_rule_choices("Number of tracks",[[1,"1"],[2,"2"],[3,"3"],[4,"4"],[5,"5"]],"tracks","ChallengeTrackCount_")
+ 	_rule_choices("Challenge duration",[[86400,"24 hours"],[259200,"3 days"],[604800,"7 days"]],"duration","ChallengeDuration_")
+-	_rule_choices("Tries per driver",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
++	_rule_choices("Tries per track",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
+ 	if adapter.discovery_supported(): _rule_choices("Who can join?",[["public","Public"],["private","Invitation only"]],"visibility","ChallengeCustomVisibility_")
+ 	_step = RULES
+ 	_update()
+@@ -405,10 +410,11 @@
+ 	attempt_limit = int(_draft_rules.tries)
+ 	adapter.creation_visibility = str(_draft_rules.visibility)
+ 	selected_format = "custom"
+-	if _chosen_entries.size() > 1: _chosen_entries.resize(1)
++	custom_track_count = int(_draft_rules.tracks)
++	if _chosen_entries.size() > custom_track_count: _chosen_entries.resize(custom_track_count)
+ 	_active_slot = 0
+ 	_draft_rules.clear()
+-	_step = CAR if _rules_return == CAR else TRACKS
++	_step = CAR if _rules_return == CAR and _chosen_entries.size() == _required_tracks() else TRACKS
+ 	if _step == TRACKS: _ensure_browser()
+ 	_refresh_tracks()
+ 	if _step == CAR: _check_source()
+@@ -464,7 +470,7 @@
+ 	if _create_button.disabled: return
+ 	if _step == FORMAT:
+ 		_step = TRACKS
+-		if locked_result() and _required_tracks() == 3: _active_slot = 1
++		if locked_result() and _required_tracks() > 1: _active_slot = 1
+ 		_ensure_browser()
+ 		_refresh_tracks()
+ 	elif _step == TRACKS:
+@@ -520,13 +526,13 @@
+ 	_track_page.visible = _step == TRACKS
+ 	_car_page.visible = _step == CAR
+ 	_custom_page.visible = _step == RULES
+-	_heading.text = "CHOOSE YOUR CHALLENGE" if _step == FORMAT else "CUSTOM CHALLENGE" if _step == RULES else "CHOOSE YOUR CAR" if _step == CAR else "CHOOSE THREE TRACKS" if _required_tracks() == 3 else "CHOOSE YOUR TRACK"
++	_heading.text = "CHOOSE YOUR CHALLENGE" if _step == FORMAT else "CUSTOM CHALLENGE" if _step == RULES else "CHOOSE YOUR CAR" if _step == CAR else "CHOOSE THREE TRACKS" if selected_format == "three" else "CHOOSE YOUR TRACKS" if _required_tracks() > 1 else "CHOOSE YOUR TRACK"
+ 	var current: bool = adapter.scope() == _source_scope
+ 	var verified: bool = _source.get("status") == "verified"
+ 	var ready: bool = _chosen_entries.size() == _required_tracks()
+ 	_create_button.disabled = _submitting or not current or (_step in [TRACKS,CAR] and not ready)
+ 	if _step == CAR:
+-		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or (selected_format == "three" and not adapter.series_supported())
++		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or ((_required_tracks() > 1) and not (adapter.series_supported() if selected_format == "three" else adapter.custom_tracks_supported()))
+ 	var personal_best: bool = _step == CAR and not locked_result() and selected_format != "three" and verified
+ 	_create_button.text = "Next" if _step != CAR else "Create & race" if mode == 1 else "Create & share" if locked_result() else "Use personal best"
+ 	_create_button.icon = MenuIcon.texture("arrow") if _step != CAR or mode == 1 else MenuIcon.texture("share")
+@@ -565,7 +571,7 @@
+ 		_rule_details.text = str(_chosen_entries.size())+" / "+str(_required_tracks())+" tracks selected"
+ 		if _required_tracks() == 1 and not _entry().is_empty(): _rule_details.text = str(_entry().name)
+ 	elif _step == CAR:
+-		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else tries)+" · "+("Lowest total time wins" if selected_format == "three" else "Best time wins")
++		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else ("Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+" tries on each track") if _required_tracks() > 1 else tries)+" · "+("Lowest total time wins" if _required_tracks() > 1 else "Best time wins")
+ 		if adapter.discovery_supported(): _rule_details.text += " · "+("Public" if adapter.creation_visibility == "public" else "Invitation only")
+ 	elif _step == RULES: _rule_details.text = "Choose your rules, then your track and car."
+ 	_tries_note.visible = _step == CAR and attempt_limit > 0
+@@ -577,7 +583,7 @@
+ 		elif _source.get("status") in ["queued","verifying"]: _notice.text = "Verifying result…" if locked_result() else ""
+ 		elif _source.has("error"): _notice.text = str(_source.error)
+ 		elif locked_result() and not verified: _notice.text = "This result was not verified."
+-		if selected_format == "three" and not adapter.series_supported(): _notice.text = "3×3 needs the updated online service."
++		if _required_tracks() > 1 and not (adapter.series_supported() if selected_format == "three" else adapter.custom_tracks_supported()): _notice.text = "Multi-track challenges need the updated online service."
+ 	_retry.visible = _step == CAR and _source.get("status") == "unavailable" and not _checking and not _submitting
+ 	_notice.visible = not _notice.text.is_empty()
+ 	_status.visible = _notice.visible or _retry.visible
+@@ -598,6 +604,7 @@
+ func _layout_cards() -> void:
+ 	if _formats == null: return
+ 	_formats.columns = 3 if size.x >= 720 else 1
++	_slot_row.columns = _required_tracks() if size.x >= 720 else mini(2,_required_tracks())
+ 	_rules_fields.columns = 2 if size.x >= 850 else 1
+ 	_action_layout.vertical = size.x < 850
+ 	_final_actions.vertical = size.x < 560
+@@ -638,7 +645,7 @@
+ 			_update()
+ 			return
+ 	var payload: Dictionary = {"version_id":str(_entry().version_id),"vehicle_id":_vehicle_id(),"mode":"3x3" if selected_format == "three" else "group" if mode == 1 else "beat","duration_seconds":duration}
+-	if selected_format == "three":
++	if _required_tracks() > 1:
+ 		payload.version_ids = []
+ 		for entry: Dictionary in _chosen_entries: payload.version_ids.append(str(entry.version_id))
+ 	if adapter.discovery_supported(): payload.visibility = adapter.creation_visibility
+@@ -664,7 +671,7 @@
+ func _race_to_set() -> void:
+ 	if _step != CAR or locked_result() or _entry().is_empty() or _submitting or adapter.scope() != _source_scope: return
+ 	hide()
+-	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit,{"mode":mode,"format":selected_format,"tracks":_chosen_entries.duplicate(true),"step":CAR})
++	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit,{"mode":mode,"format":selected_format,"tracks":_chosen_entries.duplicate(true),"track_count":custom_track_count,"step":CAR})
+ 
+ func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void: show(); set_process_input(true)
+ func get_ok_button() -> Button: return _create_button
+--- a/game/ui/challenge_ready_dialog.gd
++++ b/game/ui/challenge_ready_dialog.gd
+@@ -44,12 +44,12 @@
+ 	row.add_child(text)
+ 	var group: bool = snapshot.get("mode") != "beat"
+ 	text.add_child(MenuStyle.label("UP TO 20 DRIVERS" if group else "YOU + ONE RIVAL",14,true))
+-	var heading := MenuStyle.label("3×3 CHALLENGE" if snapshot.get("mode") == "3x3" else str(snapshot.entry.name),30)
++	var heading := MenuStyle.label("3×3 CHALLENGE" if snapshot.get("mode") == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(snapshot) else str(snapshot.entry.name),30)
+ 	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	text.add_child(heading)
+-	if snapshot.get("mode") == "3x3":
++	if ChallengesClient.is_series(snapshot):
+ 		for stage: Dictionary in snapshot.get("stages",[]): text.add_child(MenuStyle.label(str(int(stage.index)+1)+"  "+str(stage.entry.name),20))
+-	text.add_child(MenuStyle.label("LOWEST TOTAL TIME WINS" if snapshot.get("mode") == "3x3" else "BEST TIME WINS" if group else "CAN YOU BEAT",13,true))
++	text.add_child(MenuStyle.label("LOWEST TOTAL TIME WINS" if ChallengesClient.is_series(snapshot) else "BEST TIME WINS" if group else "CAN YOU BEAT",13,true))
+ 	var time_value: Variant = snapshot.get("target_ms")
+ 	if time_value == null:
+ 		for driver: Dictionary in snapshot.get("standings",[]):
+@@ -64,8 +64,8 @@
+ 	var seconds: int = int(snapshot.get("ends_at",0))-int(snapshot.get("created_at",0))
+ 	var duration: String = "24 hours" if seconds == 86400 else "3 days" if seconds == 259200 else "7 days"
+ 	var limit: int = 0 if snapshot.get("attempt_limit") == null else int(snapshot.attempt_limit)
+-	if snapshot.get("mode") == "3x3": limit = 3
+-	text.add_child(MenuStyle.label(duration+" · "+("Unlimited tries" if limit == 0 else str(limit)+(" try" if limit == 1 else " tries")+(" per track" if snapshot.get("mode") == "3x3" else " per driver")),16,true))
++	if ChallengesClient.is_series(snapshot): limit = int(snapshot.stages[0].attempt_limit) if snapshot.stages[0].attempt_limit != null else 0
++	text.add_child(MenuStyle.label(duration+" · "+("Unlimited tries" if limit == 0 else str(limit)+(" try" if limit == 1 else " tries")+(" per track" if ChallengesClient.is_series(snapshot) else " per driver")),16,true))
+ 	var route := LapRouteView.new()
+ 	route.miniature = true
+ 	route.custom_minimum_size = Vector2(140,160)
+--- a/game/ui/challenge_race_card.gd
++++ b/game/ui/challenge_race_card.gd
+@@ -51,7 +51,7 @@
+ 	if _route_points.size() > 1:
+ 		draw_polyline(_route_points,Color("08131bcc"),5,true)
+ 		draw_polyline(_route_points,Color("f4eee0"),2,true)
+-	var format: String = "TIME ATTACK" if item.mode == "beat" else "3×3 SERIES" if item.mode == "3x3" else "GROUP RACE"
++	var format: String = "3×3 SERIES" if item.mode == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(item) else "TIME ATTACK" if item.mode == "beat" else "GROUP RACE"
+ 	var badge_width: float = MenuStyle.DISPLAY.get_string_size(format,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+16
+ 	draw_style_box(MenuStyle.box(Color("08151eeb"),0),Rect2(10,10,badge_width,24))
+ 	draw_string(MenuStyle.DISPLAY,Vector2(18,28),format,HORIZONTAL_ALIGNMENT_LEFT,badge_width-12,14,MenuStyle.TEXT)
+@@ -63,7 +63,7 @@
+ 	var target: String = MenuStyle.time_text(float(target_ms)/1000.0) if target_ms != null else "Set the first time"
+ 	draw_string(MenuStyle.DISPLAY,Vector2(14,177),target,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,29 if target_ms != null else 24,MenuStyle.ACCENT)
+ 	var car: String = VehicleCatalog.title(str(item.vehicle_id))
+-	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+("3 tracks" if item.mode == "3x3" else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
++	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+(str(item.stages.size())+" tracks" if ChallengesClient.is_series(item) else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
+ 	draw_string(MenuStyle.BODY,Vector2(14,218),remaining,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,13,MenuStyle.MUTED)
+ 	var remaining_width: float = MenuStyle.BODY.get_string_size(remaining,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x
+ 	if size.x >= 250 and remaining_width+MenuStyle.BODY.get_string_size(reward,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x+36 <= size.x:
+--- a/game/ui/challenges_page.gd
++++ b/game/ui/challenges_page.gd
+@@ -309,20 +309,20 @@
+ 		get_tree().process_frame.connect(scroll.set_deferred.bind("scroll_vertical",inbox_scroll),CONNECT_ONE_SHOT)
+ 
+ func _stage_picker(parent: Control) -> void:
+-	if selected.get("mode") != "3x3": return
+-	parent.add_child(MenuStyle.label("3 TRACKS · 3 TRIES EACH · LOWEST TOTAL TIME WINS",16,true))
++	if not ChallengesClient.is_series(selected): return
++	parent.add_child(MenuStyle.label(str(selected.stages.size())+" TRACKS · LOWEST TOTAL TIME WINS",16,true))
+ 	var choices := VBoxContainer.new()
+ 	choices.add_theme_constant_override("separation",6)
+ 	parent.add_child(choices)
+ 	for stage: Dictionary in selected.stages:
+-		var button := MenuStyle.tab(str(int(stage.index)+1)+"  "+str(stage.entry.name)+"  ·  "+str(stage.attempts_remaining)+" tries left",func() -> void: stage_requested.emit(int(stage.index)),int(stage.index) == selected_stage)
++		var button := MenuStyle.tab(str(int(stage.index)+1)+"  "+str(stage.entry.name)+"  ·  "+("Unlimited tries" if stage.attempts_remaining == null else str(stage.attempts_remaining)+" tries left"),func() -> void: stage_requested.emit(int(stage.index)),int(stage.index) == selected_stage)
+ 		button.name = "ChallengeStage_"+str(int(stage.index))
+ 		button.disabled = busy
+ 		button.custom_minimum_size.y = 52
+ 		choices.add_child(button)
+ 
+ func _stage_data() -> Dictionary:
+-	return selected.stages[selected_stage] if selected.get("mode") == "3x3" else selected
++	return selected.stages[selected_stage] if ChallengesClient.is_series(selected) else selected
+ 
+ func _hub_detail(parent: Control) -> void:
+ 	# Racing owns one selected destination and a pinned start action.
+@@ -388,7 +388,7 @@
+ 	hero.add_child(identity)
+ 	var meta := HBoxContainer.new()
+ 	identity.add_child(meta)
+-	var format := MenuStyle.label("TIME ATTACK" if selected.mode == "beat" else "3×3 SERIES" if selected.mode == "3x3" else "GROUP RACE",15)
++	var format := MenuStyle.label("3×3 SERIES" if selected.mode == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(selected) else "TIME ATTACK" if selected.mode == "beat" else "GROUP RACE",15)
+ 	format.add_theme_color_override("font_color",MenuStyle.ACCENT)
+ 	meta.add_child(format)
+ 	_clock = MenuStyle.label("",15,true)
+@@ -427,7 +427,7 @@
+ 	time_box.add_theme_constant_override("separation",2)
+ 	timing.add_child(time_box)
+ 	var target: Variant = _target_ms(selected)
+-	time_box.add_child(MenuStyle.label("Time to beat" if selected.mode == "beat" else "Leading total" if selected.mode == "3x3" and target != null else "Leading time" if target != null else "3×3 total" if selected.mode == "3x3" else "Group challenge",16,true))
++	time_box.add_child(MenuStyle.label("Leading total" if ChallengesClient.is_series(selected) and target != null else "Combined best time" if ChallengesClient.is_series(selected) else "Time to beat" if selected.mode == "beat" else "Leading time" if target != null else "Group challenge",16,true))
+ 	var clock := MenuStyle.label(MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time",40 if target != null else 28)
+ 	clock.name = "ChallengeTargetTime"
+ 	clock.add_theme_color_override("font_color",MenuStyle.ACCENT)
+@@ -488,7 +488,7 @@
+ 		card.add_child(values)
+ 		var delta: String = "—"
+ 		if row.get("ms") != null and target != null: delta = "%+.3f" % (float(int(row.ms)-int(target))/1000.0)
+-		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else str(int(row.get("completed_tracks",0)))+"/3 tracks" if selected.mode == "3x3" else "—",delta,false,player)
++		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else str(int(row.get("completed_tracks",0)))+"/"+str(selected.stages.size())+" tracks" if ChallengesClient.is_series(selected) else "—",delta,false,player)
+ 	_reward_strip(panel,selected)
+ 	var actions := HBoxContainer.new()
+ 	actions.name = "ChallengeActions"
+@@ -501,15 +501,15 @@
+ 		var report := _action(actions,"…",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,safety_client,"player",{"reported_player_id":str(selected.creator_id),"name":str(selected.creator)}))
+ 		report.name = "ChallengeSafety"
+ 		report.tooltip_text = "Report / block creator"
+-	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" else int(own.ticks) < int(selected.target_ticks))
+-	if folder == "sent" and winning and selected.mode != "3x3": _action(actions,"Rematch",func() -> void: rematch_requested.emit())
++	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" or ChallengesClient.is_series(selected) else int(own.ticks) < int(selected.target_ticks))
++	if folder == "sent" and winning and not ChallengesClient.is_series(selected): _action(actions,"Rematch",func() -> void: rematch_requested.emit())
+ 	if folder == "sent" and str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
+ 		var cancel := _action(actions,"",func() -> void: cancel_requested.emit())
+ 		cancel.icon = MenuIcon.texture("close")
+ 		cancel.tooltip_text = "Cancel challenge"
+ 		cancel.custom_minimum_size.x = 52
+ 	var exhausted: bool = _stage_data().get("attempts_remaining") != null and int(_stage_data().attempts_remaining) <= 0
+-	var creator_target: bool = selected.mode == "beat" and selected.creator_id == selected.self_id
++	var creator_target: bool = selected.mode == "beat" and not ChallengesClient.is_series(selected) and selected.creator_id == selected.self_id
+ 	var full: bool = not selected.joined and selected.standings.size() >= int(selected.get("capacity",2 if selected.mode == "beat" else 20))
+ 	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Full" if full else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
+ 	var race := _action(actions,caption,func() -> void: race_requested.emit(),true)
+@@ -613,7 +613,7 @@
+ 	return {}
+ 
+ func _target_ms(item: Dictionary) -> Variant:
+-	if item.mode == "beat": return item.get("target_ms")
++	if item.mode == "beat" and not ChallengesClient.is_series(item): return item.get("target_ms")
+ 	for row: Dictionary in item.get("standings",[]):
+ 		if row.get("ms") != null: return row.ms
+ 	return null
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -16,6 +16,7 @@
+ 
+ var selection_only: bool = false
+ var selected_versions: PackedStringArray = []
++var _selection_actions: GridContainer
+ 
+ var library: TrackLibrary
+ var records: LocalRecords
+@@ -1186,7 +1187,13 @@
+ 	if not selecting: _show_detail()
+ 
+ func _build_actions() -> void:
+-	var actions := HBoxContainer.new()
++	var actions: Container = GridContainer.new() if selection_only else HBoxContainer.new()
++	if selection_only:
++		_selection_actions = actions as GridContainer
++		_selection_actions.columns = 2 if get_viewport_rect().size.x < 720 else 4
++		_selection_actions.add_theme_constant_override("h_separation",8)
++		_selection_actions.add_theme_constant_override("v_separation",8)
++		resized.connect(func() -> void: _selection_actions.columns = 2 if size.x < 720 else 4)
+ 	actions.name = "PlayActions"
+ 	add_child(actions)
+ 	random_button = MenuStyle.button("Random track",_random)
+@@ -1218,8 +1225,11 @@
+ 	refresh_button.custom_minimum_size = Vector2(48,60)
+ 	actions.add_child(refresh_button)
+ 	for button: Button in [random_button,filters,search]:
+-		button.custom_minimum_size = Vector2(196,60)
+-		button.size_flags_horizontal = Control.SIZE_FILL
++		button.custom_minimum_size = Vector2(0 if selection_only else 196,60)
++		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL if selection_only else Control.SIZE_FILL
++		if selection_only:
++			button.clip_text = true
++			button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	race_button = MenuStyle.button("RACE",func() -> void: race_requested.emit(selected_track),true)
+ 	race_button.name = "LibraryRace"
+ 	race_button.icon = MenuIcon.texture("arrow")
+--- /dev/null
++++ b/game/tests/test_custom_challenge_tracks.gd
+@@ -0,0 +1,194 @@
++extends SceneTree
++## Real five-track API receipt, native creation, stage routing and responsive views.
++var checks: int = 0
++var failures: int = 0
++var receipt: Dictionary = {}
++var output: String = ""
++
++class StubClient extends Node:
++	var player: Dictionary = {"id":"custom-track-fixture"}
++	var _capabilities: Dictionary = {"challenge_series_version":1,"challenge_custom_tracks_version":1}
++	var snapshot: Dictionary = {}
++	var payload: Dictionary = {}
++	var path: String = ""
++	func base_url() -> String: return "http://custom-track-fixture"
++	func server_now() -> int: return 0
++	func signed_in() -> bool: return true
++	func new_operation_key() -> String: return "custom-"+str(Time.get_ticks_usec())
++	func cancel_public_reads(_owner: int) -> void: pass
++	func request_api(value: String, _method: int, body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		path = value
++		payload = body.duplicate(true)
++		if value.begins_with("/challenges/sources?"): return {"ok":true,"data":{"status":"verified","run_id":"opening-best","ms":88900}}
++		if value.contains("/tickets?"): return {"ok":true,"data":{"expires_at":9999999999,"attempt_limit":5,"attempts_used":1,"attempts_remaining":4}}
++		return {"ok":true,"data":snapshot.duplicate(true)}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, detail: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+detail)
++
++func settle() -> void:
++	for frame: int in range(6): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.content_scale_size = Vector2i.ZERO
++	output = ProjectSettings.globalize_path("res://../docs/evidence/custom-challenge-five-tracks-2026-10-24/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var snapshot: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/custom_challenge_five_tracks_v1.json"))
++	check(ChallengesClient.valid_snapshot(snapshot),"native validator accepts actual verified five-track API receipt")
++	var duel: Dictionary = snapshot.duplicate(true)
++	duel.mode = "beat"
++	duel.capacity = 2
++	check(ChallengesClient.valid_snapshot(duel),"two-person custom series retains its two-driver capacity")
++	var unlimited: Dictionary = snapshot.duplicate(true)
++	unlimited.attempt_limit = null
++	unlimited.attempts_remaining = null
++	for stage: Dictionary in unlimited.stages:
++		stage.attempt_limit = null
++		stage.attempts_remaining = null
++	check(ChallengesClient.valid_snapshot(unlimited),"unlimited tries remain valid on all five tracks")
++	for kind: String in ["six","missing","duplicate","budget","sum","count","car"]:
++		var bad: Dictionary = snapshot.duplicate(true)
++		match kind:
++			"six": bad.stages.append(bad.stages[4].duplicate(true))
++			"missing": bad.stages.remove_at(4)
++			"duplicate": bad.stages[4].entry = bad.stages[3].entry
++			"budget": bad.stages[4].attempts_remaining = 6
++			"sum": bad.standings[0].ticks += 1
++			"count": bad.standings[0].completed_tracks = 4
++			"car": bad.stages[4].manifest.vehicle_id = "pickup"
++		check(not ChallengesClient.valid_snapshot(bad),"reject malformed custom receipt: "+kind)
++	var client := StubClient.new()
++	client.snapshot = snapshot
++	root.add_child(client)
++	var cloud: Node = load("res://backend/cloud_tracks.gd").new()
++	cloud.client = client
++	cloud.root_override = "user://custom-tracks-"+TrackLibrary.unique_id()
++	root.add_child(cloud)
++	var adapter := ChallengesClient.new()
++	adapter.client = client
++	adapter.cloud = cloud
++	root.add_child(adapter)
++	adapter.reset()
++	adapter.selected = snapshot.duplicate(true)
++	adapter.select_stage(4)
++	check(adapter.race_stage().entry == snapshot.stages[4].entry,"fifth track is a real selectable race")
++	await adapter.ticket()
++	check(client.path.ends_with("/tickets?stage=4"),"fifth-track ticket pins its own track")
++	await adapter.ghost()
++	check(client.path.ends_with("/ghost?stage=4"),"fifth-track ghost uses its own stage")
++	adapter.select_stage(5)
++	check(adapter.selected_stage == 4,"sixth-stage selection is rejected")
++	adapter.reset()
++	var page := ChallengeCreate.new()
++	page.adapter = adapter
++	page.records = LocalRecords.new(cloud.root_override.path_join("records.json"))
++	for stage: Dictionary in snapshot.stages: page.entries.append(stage.entry.duplicate(true))
++	root.size = Vector2i(1280,720)
++	root.add_child(page)
++	MenuStyle.fill(page)
++	await settle()
++	page._open_rules()
++	(page.find_child("ChallengeTrackCount_5",true,false) as Button).pressed.emit()
++	page._back()
++	check(page.custom_track_count == 1,"Back cancels the track-count draft")
++	page._open_rules()
++	(page.find_child("ChallengeCustomMode_1",true,false) as Button).pressed.emit()
++	(page.find_child("ChallengeTrackCount_5",true,false) as Button).pressed.emit()
++	(page.find_child("ChallengeTries_5",true,false) as Button).pressed.emit()
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(390,844)]:
++		root.size = dimensions
++		await settle()
++		var scroll: ScrollContainer = page.find_child("ChallengeCreationScroll",true,false)
++		check(scroll.get_h_scroll_bar().max_value <= scroll.size.x+1,"custom rules fit "+str(dimensions))
++		await capture("rules-"+str(dimensions.x)+"x"+str(dimensions.y))
++	page._advance()
++	check(page._required_tracks() == 5 and page._slot_row.get_child_count() == 5,"custom selection provides exactly five slots")
++	for index: int in range(5):
++		page._select_track(page.entries[index])
++		if index == 0:
++			page._select_track(page.entries[0])
++			check(page._chosen_entries.size() == 1,"duplicate cannot fill the next track slot")
++		check(page.get_ok_button().disabled == (index < 4),"Next requires all selected tracks: "+str(index+1))
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(390,844)]:
++		root.size = dimensions
++		await settle()
++		var scroll: ScrollContainer = page.find_child("ChallengeCreationScroll",true,false)
++		check(scroll.get_h_scroll_bar().max_value <= scroll.size.x+1,"five track slots fit "+str(dimensions))
++		for slot: Control in page._slot_row.get_children():
++			check(slot.size.y >= 52 and slot.get_global_rect().end.x <= root.size.x+1,"track slot remains touchable inside viewport at "+str(dimensions)+": "+str(slot.get_global_rect()))
++		await capture("tracks-"+str(dimensions.x)+"x"+str(dimensions.y))
++	root.size = Vector2i(1280,720)
++	page._advance()
++	await settle()
++	check(not page.get_ok_button().disabled,"five-track creation is enabled by the advertised API capability")
++	client._capabilities.erase("challenge_custom_tracks_version")
++	page._update()
++	check(page.get_ok_button().disabled,"older API cannot accept an unsupported custom series")
++	client._capabilities.challenge_custom_tracks_version = 1
++	page._update()
++	page.race_to_set_requested.connect(func(entry: Dictionary, car: String, duration: int, limit: int, configuration: Dictionary) -> void: receipt = {"entry":entry,"car":car,"duration":duration,"limit":limit,"configuration":configuration})
++	page._race_to_set()
++	check(receipt.configuration.track_count == 5 and receipt.configuration.tracks.size() == 5,"source drive retains the five-track configuration")
++	page.show()
++	await page._create()
++	check(client.payload.version_ids.size() == 5 and client.payload.version_ids[4] == snapshot.stages[4].entry.version_id,"creation submits every selected track in order")
++	var finished := ChallengeCreate.new()
++	finished.adapter = adapter
++	finished.entries = page.entries
++	finished.records = page.records
++	finished.initial_configuration = receipt.configuration
++	finished.initial_vehicle = receipt.car
++	finished.initial_ticket = "exact-opening-ticket"
++	finished.result_context = {"entry":receipt.entry,"scope":adapter.scope(),"total":88.9}
++	root.add_child(finished)
++	MenuStyle.fill(finished)
++	await settle()
++	check(finished._required_tracks() == 5 and finished._chosen_entries.size() == 5,"completed source drive restores all five chosen tracks")
++	var opening: Dictionary = finished._entry().duplicate(true)
++	finished._active_slot = 0
++	finished._select_track(finished.entries[4])
++	check(finished._entry() == opening,"exact finished opening track remains fixed")
++	finished.queue_free()
++	page.queue_free()
++	await settle()
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(390,844)]:
++		root.size = dimensions
++		var detail := ChallengesPage.new()
++		detail.selected = snapshot.duplicate(true)
++		detail.selected_stage = 4
++		detail.signed_in = true
++		root.add_child(detail)
++		MenuStyle.fill(detail)
++		await settle()
++		check(detail.find_child("ChallengeStage_4",true,false) != null,"detail exposes fifth track at "+str(dimensions))
++		await capture("detail-"+str(dimensions.x)+"x"+str(dimensions.y))
++		detail.queue_free()
++		await settle()
++		var ready := preload("res://ui/challenge_ready_dialog.gd").new()
++		ready.snapshot = snapshot.duplicate(true)
++		root.add_child(ready)
++		preload("res://ui/popup_style.gd").watch(ready)
++		ready.popup_centered(Vector2i(mini(700,dimensions.x-32),mini(600,dimensions.y-32)))
++		await settle()
++		check(ready.size.x <= dimensions.x and ready.size.y <= dimensions.y,"five-track invitation fits "+str(dimensions))
++		check(ready.find_children("*","Label",true,false).any(func(label: Label) -> bool: return label.text == "CUSTOM CHALLENGE"),"custom invitation keeps its own format title")
++		await capture("invitation-"+str(dimensions.x)+"x"+str(dimensions.y))
++		ready.queue_free()
++		await settle()
++	adapter.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await process_frame
++	print("CUSTOM_CHALLENGE_TRACKS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
+--- /dev/null
++++ b/game/tests/fixtures/custom_challenge_five_tracks_v1.json
+@@ -0,0 +1,617 @@
++{
++  "id": "8733dc59-9a4e-4d2e-a31c-f7fc6615e6d6",
++  "code": "B99E5379ACF156EA",
++  "mode": "group",
++  "state": "active",
++  "track_count": 5,
++  "visibility": "private",
++  "capacity": 20,
++  "rewards": {
++    "finish": 50,
++    "goal": 100,
++    "finish_earned": true,
++    "goal_earned": false,
++    "eligible": true,
++    "daily_limit": 3,
++    "remaining_today": 2
++  },
++  "creator_id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++  "creator": "Alice",
++  "self_id": "b485a47d-f106-4f6c-9143-730868cec964",
++  "joined": true,
++  "vehicle_id": "compact",
++  "created_at": 1792840624,
++  "ends_at": 1793445424,
++  "server_now": 1792840624,
++  "remaining_seconds": 604800,
++  "manifest": {
++    "engine_version": "test-engine",
++    "verifier_version": "canonical-verifier-1",
++    "rules_key": "rules-v10",
++    "physics_version": "physics-test",
++    "compiler_version": "compiler-test",
++    "track_schema": "creator-track-v5",
++    "replay_schema": "bmt-replay-v1",
++    "tick_rate": 120,
++    "laps": 5,
++    "track_content_hash": "oval",
++    "vehicle_id": "compact",
++    "handling_version": "handling-test",
++    "config_hash": "abc"
++  },
++  "attempt_limit": 25,
++  "attempts_used": 5,
++  "attempts_remaining": 20,
++  "target_ticks": null,
++  "target_ms": null,
++  "target_id": null,
++  "standings": [
++    {
++      "id": "b485a47d-f106-4f6c-9143-730868cec964",
++      "name": "Bob",
++      "country_code": "",
++      "ticks": 550,
++      "run_id": "7a3f59a5-525e-4536-bad0-d0b631ce4b45",
++      "ms": 4583,
++      "rank": 1,
++      "completed_tracks": 5
++    },
++    {
++      "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++      "name": "Alice",
++      "country_code": "",
++      "ticks": null,
++      "run_id": null,
++      "ms": null,
++      "rank": null,
++      "completed_tracks": 0
++    }
++  ],
++  "entry": {
++    "theme": "pine",
++    "points": [
++      [
++        0,
++        0
++      ],
++      [
++        10,
++        0
++      ],
++      [
++        10,
++        10
++      ],
++      [
++        0,
++        10
++      ]
++    ],
++    "track_id": "ec78aef8-3200-4205-8612-dbb377940a89",
++    "authoring_id": null,
++    "version_id": "ceaa4ad9-d2c5-40d9-ae56-3cad1d37b10c",
++    "version": 1,
++    "name": "Circuit 0",
++    "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++    "creator": "Creator",
++    "redacted_track_hash": null,
++    "canonical_track_hash": null,
++    "state": "published",
++    "hidden": false,
++    "content_hash": "a1b1e4670c52c7f375cf1b20ac930e67cfa01aa45b11492088abaf9d23c7c5a1",
++    "created_at": 1792840623,
++    "published_at": null,
++    "rating_count": 10,
++    "rating_average": 4.1,
++    "share_url": "http://localhost:8080/t/ceaa4ad9-d2c5-40d9-ae56-3cad1d37b10c",
++    "manifest": {
++      "engine_version": "test-engine",
++      "verifier_version": "canonical-verifier-1",
++      "rules_key": "rules-v10",
++      "physics_version": "physics-test",
++      "compiler_version": "compiler-test",
++      "track_schema": "creator-track-v5",
++      "replay_schema": "bmt-replay-v1",
++      "tick_rate": 120,
++      "laps": 5,
++      "max_frames": 216000,
++      "vehicles": {
++        "compact": {
++          "handling_version": "handling-test",
++          "config_hash": "abc"
++        }
++      },
++      "track_content_hash": "oval",
++      "route_length": 220.0
++    }
++  },
++  "share_url": "http://localhost:8080/c/B99E5379ACF156EA",
++  "stages": [
++    {
++      "index": 0,
++      "manifest": {
++        "engine_version": "test-engine",
++        "verifier_version": "canonical-verifier-1",
++        "rules_key": "rules-v10",
++        "physics_version": "physics-test",
++        "compiler_version": "compiler-test",
++        "track_schema": "creator-track-v5",
++        "replay_schema": "bmt-replay-v1",
++        "tick_rate": 120,
++        "laps": 5,
++        "track_content_hash": "oval",
++        "vehicle_id": "compact",
++        "handling_version": "handling-test",
++        "config_hash": "abc"
++      },
++      "entry": {
++        "theme": "pine",
++        "points": [
++          [
++            0,
++            0
++          ],
++          [
++            10,
++            0
++          ],
++          [
++            10,
++            10
++          ],
++          [
++            0,
++            10
++          ]
++        ],
++        "track_id": "ec78aef8-3200-4205-8612-dbb377940a89",
++        "authoring_id": null,
++        "version_id": "ceaa4ad9-d2c5-40d9-ae56-3cad1d37b10c",
++        "version": 1,
++        "name": "Circuit 0",
++        "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++        "creator": "Creator",
++        "redacted_track_hash": null,
++        "canonical_track_hash": null,
++        "state": "published",
++        "hidden": false,
++        "content_hash": "a1b1e4670c52c7f375cf1b20ac930e67cfa01aa45b11492088abaf9d23c7c5a1",
++        "created_at": 1792840623,
++        "published_at": null,
++        "rating_count": 10,
++        "rating_average": 4.1,
++        "share_url": "http://localhost:8080/t/ceaa4ad9-d2c5-40d9-ae56-3cad1d37b10c",
++        "manifest": {
++          "engine_version": "test-engine",
++          "verifier_version": "canonical-verifier-1",
++          "rules_key": "rules-v10",
++          "physics_version": "physics-test",
++          "compiler_version": "compiler-test",
++          "track_schema": "creator-track-v5",
++          "replay_schema": "bmt-replay-v1",
++          "tick_rate": 120,
++          "laps": 5,
++          "max_frames": 216000,
++          "vehicles": {
++            "compact": {
++              "handling_version": "handling-test",
++              "config_hash": "abc"
++            }
++          },
++          "track_content_hash": "oval",
++          "route_length": 220.0
++        }
++      },
++      "attempt_limit": 5,
++      "attempts_used": 1,
++      "attempts_remaining": 4,
++      "standings": [
++        {
++          "id": "b485a47d-f106-4f6c-9143-730868cec964",
++          "name": "Bob",
++          "ticks": 100,
++          "run_id": "13429765-dd0a-4f90-ae99-7284eb2baf94",
++          "ms": 833,
++          "rank": 1
++        },
++        {
++          "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++          "name": "Alice",
++          "ticks": null,
++          "run_id": null,
++          "ms": null,
++          "rank": null
++        }
++      ]
++    },
++    {
++      "index": 1,
++      "manifest": {
++        "engine_version": "test-engine",
++        "verifier_version": "canonical-verifier-1",
++        "rules_key": "rules-v10",
++        "physics_version": "physics-test",
++        "compiler_version": "compiler-test",
++        "track_schema": "creator-track-v5",
++        "replay_schema": "bmt-replay-v1",
++        "tick_rate": 120,
++        "laps": 5,
++        "track_content_hash": "oval",
++        "vehicle_id": "compact",
++        "handling_version": "handling-test",
++        "config_hash": "abc"
++      },
++      "entry": {
++        "theme": "pine",
++        "points": [
++          [
++            0,
++            0
++          ],
++          [
++            10,
++            0
++          ],
++          [
++            10,
++            10
++          ],
++          [
++            0,
++            10
++          ]
++        ],
++        "track_id": "1865cbe2-33e5-4634-9429-4586de300e06",
++        "authoring_id": null,
++        "version_id": "e505724b-82bb-4a9c-ae6c-431a747999d2",
++        "version": 1,
++        "name": "Circuit 1",
++        "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++        "creator": "Creator",
++        "redacted_track_hash": null,
++        "canonical_track_hash": null,
++        "state": "published",
++        "hidden": false,
++        "content_hash": "e9e30c4be10333dbe253f463ffd056dd6e579a9daf02fb03523dcb0045524603",
++        "created_at": 1792840623,
++        "published_at": null,
++        "rating_count": 10,
++        "rating_average": 4.1,
++        "share_url": "http://localhost:8080/t/e505724b-82bb-4a9c-ae6c-431a747999d2",
++        "manifest": {
++          "engine_version": "test-engine",
++          "verifier_version": "canonical-verifier-1",
++          "rules_key": "rules-v10",
++          "physics_version": "physics-test",
++          "compiler_version": "compiler-test",
++          "track_schema": "creator-track-v5",
++          "replay_schema": "bmt-replay-v1",
++          "tick_rate": 120,
++          "laps": 5,
++          "max_frames": 216000,
++          "vehicles": {
++            "compact": {
++              "handling_version": "handling-test",
++              "config_hash": "abc"
++            }
++          },
++          "track_content_hash": "oval",
++          "route_length": 220.0
++        }
++      },
++      "attempt_limit": 5,
++      "attempts_used": 1,
++      "attempts_remaining": 4,
++      "standings": [
++        {
++          "id": "b485a47d-f106-4f6c-9143-730868cec964",
++          "name": "Bob",
++          "ticks": 105,
++          "run_id": "7842ff1c-3342-401c-8e51-346980fe6ea9",
++          "ms": 875,
++          "rank": 1
++        },
++        {
++          "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++          "name": "Alice",
++          "ticks": null,
++          "run_id": null,
++          "ms": null,
++          "rank": null
++        }
++      ]
++    },
++    {
++      "index": 2,
++      "manifest": {
++        "engine_version": "test-engine",
++        "verifier_version": "canonical-verifier-1",
++        "rules_key": "rules-v10",
++        "physics_version": "physics-test",
++        "compiler_version": "compiler-test",
++        "track_schema": "creator-track-v5",
++        "replay_schema": "bmt-replay-v1",
++        "tick_rate": 120,
++        "laps": 5,
++        "track_content_hash": "oval",
++        "vehicle_id": "compact",
++        "handling_version": "handling-test",
++        "config_hash": "abc"
++      },
++      "entry": {
++        "theme": "pine",
++        "points": [
++          [
++            0,
++            0
++          ],
++          [
++            10,
++            0
++          ],
++          [
++            10,
++            10
++          ],
++          [
++            0,
++            10
++          ]
++        ],
++        "track_id": "6f3ac0b5-7993-493f-a5f4-0eed7ac16796",
++        "authoring_id": null,
++        "version_id": "6e7803b1-a118-44f5-b491-ae764a3a3c72",
++        "version": 1,
++        "name": "Circuit 2",
++        "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++        "creator": "Creator",
++        "redacted_track_hash": null,
++        "canonical_track_hash": null,
++        "state": "published",
++        "hidden": false,
++        "content_hash": "74b1be45b46f3bb8ad3576fe80b30e1937b181237c67187d101f000570746165",
++        "created_at": 1792840623,
++        "published_at": null,
++        "rating_count": 10,
++        "rating_average": 4.1,
++        "share_url": "http://localhost:8080/t/6e7803b1-a118-44f5-b491-ae764a3a3c72",
++        "manifest": {
++          "engine_version": "test-engine",
++          "verifier_version": "canonical-verifier-1",
++          "rules_key": "rules-v10",
++          "physics_version": "physics-test",
++          "compiler_version": "compiler-test",
++          "track_schema": "creator-track-v5",
++          "replay_schema": "bmt-replay-v1",
++          "tick_rate": 120,
++          "laps": 5,
++          "max_frames": 216000,
++          "vehicles": {
++            "compact": {
++              "handling_version": "handling-test",
++              "config_hash": "abc"
++            }
++          },
++          "track_content_hash": "oval",
++          "route_length": 220.0
++        }
++      },
++      "attempt_limit": 5,
++      "attempts_used": 1,
++      "attempts_remaining": 4,
++      "standings": [
++        {
++          "id": "b485a47d-f106-4f6c-9143-730868cec964",
++          "name": "Bob",
++          "ticks": 110,
++          "run_id": "ba07e357-2a41-40a4-8dfe-ecf166bdecad",
++          "ms": 917,
++          "rank": 1
++        },
++        {
++          "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++          "name": "Alice",
++          "ticks": null,
++          "run_id": null,
++          "ms": null,
++          "rank": null
++        }
++      ]
++    },
++    {
++      "index": 3,
++      "manifest": {
++        "engine_version": "test-engine",
++        "verifier_version": "canonical-verifier-1",
++        "rules_key": "rules-v10",
++        "physics_version": "physics-test",
++        "compiler_version": "compiler-test",
++        "track_schema": "creator-track-v5",
++        "replay_schema": "bmt-replay-v1",
++        "tick_rate": 120,
++        "laps": 5,
++        "track_content_hash": "oval",
++        "vehicle_id": "compact",
++        "handling_version": "handling-test",
++        "config_hash": "abc"
++      },
++      "entry": {
++        "theme": "pine",
++        "points": [
++          [
++            0,
++            0
++          ],
++          [
++            10,
++            0
++          ],
++          [
++            10,
++            10
++          ],
++          [
++            0,
++            10
++          ]
++        ],
++        "track_id": "d981c3bc-c819-42d6-be9d-697cacb585ae",
++        "authoring_id": null,
++        "version_id": "6bcddeb1-3518-4cba-8f4c-acd366439a51",
++        "version": 1,
++        "name": "Circuit 3",
++        "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++        "creator": "Creator",
++        "redacted_track_hash": null,
++        "canonical_track_hash": null,
++        "state": "published",
++        "hidden": false,
++        "content_hash": "4781604dede6846ec414c884eaa97df88eb31241889d83df945ec01110e77cb8",
++        "created_at": 1792840623,
++        "published_at": null,
++        "rating_count": 10,
++        "rating_average": 4.1,
++        "share_url": "http://localhost:8080/t/6bcddeb1-3518-4cba-8f4c-acd366439a51",
++        "manifest": {
++          "engine_version": "test-engine",
++          "verifier_version": "canonical-verifier-1",
++          "rules_key": "rules-v10",
++          "physics_version": "physics-test",
++          "compiler_version": "compiler-test",
++          "track_schema": "creator-track-v5",
++          "replay_schema": "bmt-replay-v1",
++          "tick_rate": 120,
++          "laps": 5,
++          "max_frames": 216000,
++          "vehicles": {
++            "compact": {
++              "handling_version": "handling-test",
++              "config_hash": "abc"
++            }
++          },
++          "track_content_hash": "oval",
++          "route_length": 220.0
++        }
++      },
++      "attempt_limit": 5,
++      "attempts_used": 1,
++      "attempts_remaining": 4,
++      "standings": [
++        {
++          "id": "b485a47d-f106-4f6c-9143-730868cec964",
++          "name": "Bob",
++          "ticks": 115,
++          "run_id": "0f923a65-aab4-4b0e-a49c-b3c095d103de",
++          "ms": 958,
++          "rank": 1
++        },
++        {
++          "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++          "name": "Alice",
++          "ticks": null,
++          "run_id": null,
++          "ms": null,
++          "rank": null
++        }
++      ]
++    },
++    {
++      "index": 4,
++      "manifest": {
++        "engine_version": "test-engine",
++        "verifier_version": "canonical-verifier-1",
++        "rules_key": "rules-v10",
++        "physics_version": "physics-test",
++        "compiler_version": "compiler-test",
++        "track_schema": "creator-track-v5",
++        "replay_schema": "bmt-replay-v1",
++        "tick_rate": 120,
++        "laps": 5,
++        "track_content_hash": "oval",
++        "vehicle_id": "compact",
++        "handling_version": "handling-test",
++        "config_hash": "abc"
++      },
++      "entry": {
++        "theme": "pine",
++        "points": [
++          [
++            0,
++            0
++          ],
++          [
++            10,
++            0
++          ],
++          [
++            10,
++            10
++          ],
++          [
++            0,
++            10
++          ]
++        ],
++        "track_id": "47d40ceb-ae0a-4be3-9b62-8800878fb174",
++        "authoring_id": null,
++        "version_id": "1dae533e-a093-43c1-9b65-07a2077d480e",
++        "version": 1,
++        "name": "Circuit 4",
++        "creator_id": "a3ad1731-0a27-4eb3-8a2b-04174c35f0fd",
++        "creator": "Creator",
++        "redacted_track_hash": null,
++        "canonical_track_hash": null,
++        "state": "published",
++        "hidden": false,
++        "content_hash": "2a90cb2e4ffe9fb714c1009dcafd47a06b4b97992000eaa3c4eb73c32397252b",
++        "created_at": 1792840623,
++        "published_at": null,
++        "rating_count": 10,
++        "rating_average": 4.1,
++        "share_url": "http://localhost:8080/t/1dae533e-a093-43c1-9b65-07a2077d480e",
++        "manifest": {
++          "engine_version": "test-engine",
++          "verifier_version": "canonical-verifier-1",
++          "rules_key": "rules-v10",
++          "physics_version": "physics-test",
++          "compiler_version": "compiler-test",
++          "track_schema": "creator-track-v5",
++          "replay_schema": "bmt-replay-v1",
++          "tick_rate": 120,
++          "laps": 5,
++          "max_frames": 216000,
++          "vehicles": {
++            "compact": {
++              "handling_version": "handling-test",
++              "config_hash": "abc"
++            }
++          },
++          "track_content_hash": "oval",
++          "route_length": 220.0
++        }
++      },
++      "attempt_limit": 5,
++      "attempts_used": 1,
++      "attempts_remaining": 4,
++      "standings": [
++        {
++          "id": "b485a47d-f106-4f6c-9143-730868cec964",
++          "name": "Bob",
++          "ticks": 120,
++          "run_id": "7a3f59a5-525e-4536-bad0-d0b631ce4b45",
++          "ms": 1000,
++          "rank": 1
++        },
++        {
++          "id": "e0df0504-91df-4a36-9f40-dec087122f6d",
++          "name": "Alice",
++          "ticks": null,
++          "run_id": null,
++          "ms": null,
++          "rank": null
++        }
++      ]
++    }
++  ],
++  "scoring": "total_best_time"
++}
+--- a/docs/schemas/challenge-create-v1.schema.json
++++ b/docs/schemas/challenge-create-v1.schema.json
+@@ -76,8 +76,8 @@
+         "array",
+         "null"
+       ],
+-      "minItems": 3,
+-      "maxItems": 3,
++      "minItems": 2,
++      "maxItems": 5,
+       "uniqueItems": true,
+       "items": {
+         "type": "string",
+@@ -119,17 +119,12 @@
+         ],
+         "properties": {
+           "version_ids": {
+-            "type": "array"
++            "type": "array",
++            "minItems": 3,
++            "maxItems": 3
+           },
+           "attempt_limit": {
+             "const": 3
+-          }
+-        }
+-      },
+-      "else": {
+-        "properties": {
+-          "version_ids": {
+-            "type": "null"
+           }
+         }
+       }
+--- a/docs/schemas/challenge-v1.schema.json
++++ b/docs/schemas/challenge-v1.schema.json
+@@ -214,7 +214,7 @@
+               "null"
+             ],
+             "minimum": 1,
+-            "maximum": 648000
++            "maximum": 1080000
+           },
+           "ms": {
+             "type": [
+@@ -240,7 +240,7 @@
+           "completed_tracks": {
+             "type": "integer",
+             "minimum": 0,
+-            "maximum": 3
++            "maximum": 5
+           }
+         }
+       }
+@@ -249,9 +249,17 @@
+       "enum": [
+         null,
+         1,
++        2,
+         3,
++        4,
+         5,
+-        9
++        6,
++        9,
++        10,
++        12,
++        15,
++        20,
++        25
+       ]
+     },
+     "attempts_used": {
+@@ -270,8 +278,8 @@
+     },
+     "stages": {
+       "type": "array",
+-      "minItems": 3,
+-      "maxItems": 3,
++      "minItems": 2,
++      "maxItems": 5,
+       "items": {
+         "type": "object",
+         "required": [
+@@ -287,7 +295,7 @@
+           "index": {
+             "type": "integer",
+             "minimum": 0,
+-            "maximum": 2
++            "maximum": 4
+           },
+           "entry": {
+             "$ref": "#/properties/entry"
+@@ -299,20 +307,32 @@
+             "$ref": "#/$defs/stageStandings"
+           },
+           "attempt_limit": {
+-            "const": 3
++            "enum": [
++              null,
++              1,
++              3,
++              5
++            ]
+           },
+           "attempts_used": {
+             "type": "integer",
++            "minimum": 0
++          },
++          "attempts_remaining": {
++            "type": [
++              "integer",
++              "null"
++            ],
+             "minimum": 0,
+-            "maximum": 3
+-          },
+-          "attempts_remaining": {
+-            "type": "integer",
+-            "minimum": 0,
+-            "maximum": 3
+-          }
+-        }
+-      }
++            "maximum": 5
++          }
++        }
++      }
++    },
++    "track_count": {
++      "type": "integer",
++      "minimum": 1,
++      "maximum": 5
+     }
+   },
+   "$defs": {
+@@ -395,8 +415,34 @@
+         "properties": {
+           "attempt_limit": {
+             "const": 9
+-          }
+-        }
++          },
++          "stages": {
++            "minItems": 3,
++            "maxItems": 3,
++            "items": {
++              "properties": {
++                "attempt_limit": {
++                  "const": 3
++                }
++              }
++            }
++          }
++        }
++      }
++    },
++    {
++      "if": {
++        "required": [
++          "stages"
++        ]
++      },
++      "then": {
++        "required": [
++          "scoring",
++          "attempt_limit",
++          "attempts_used",
++          "attempts_remaining"
++        ]
+       },
+       "else": {
+         "properties": {
+@@ -411,11 +457,6 @@
+           "standings": {
+             "$ref": "#/$defs/stageStandings"
+           }
+-        },
+-        "not": {
+-          "required": [
+-            "stages"
+-          ]
+         }
+       }
+     }

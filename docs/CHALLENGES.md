@@ -5,19 +5,36 @@ Reviewed 2026-10-24 against the [client](../game/backend/challenges_client.gd),
 [challenge API](../backend/bmt_backend/challenges.py) and
 [series service](../backend/bmt_backend/challenge_series.py).
 
-Creation is **format → tracks → car**. One-to-one and Group race pin one track;
+Menu creation is **format → tracks → car**. One-to-one and Group race pin one track;
 3×3 pins three distinct tracks and one car, with three starts per stage and best-only
-summed standings. Custom rules retain the supported duration/attempt/visibility
-choices. The separate Find & play browser discovers challenges. Car selection uses
+summed standings. Custom rules allow **one to five distinct tracks**, with the
+supported one-to-one/group, duration, tries-per-track and visibility choices.
+Multi-track custom challenges use the lowest sum of each track's verified best;
+a total appears only after every track is finished. The exact opening result stays
+fixed when a setup drive returns to creation. The separate Find & play browser discovers challenges. Car selection uses
 the actual five Garage models, saved cosmetics and the retained showroom transition.
 See [the current flow and artwork](CHALLENGE_PAGE.md).
+
+Challenge results have **Race again** and the standard **Continue** action; the
+extra Continue challenge button has been removed. Race again on the normal summary
+retries that same challenge track with a fresh server-issued start. Continue opens
+challenge feedback and releases the finished game after its result enters the local
+save queue. Selecting a track there starts that selected track with its own ticket,
+ghost and independent try budget. A setup race still returns to creation with its
+exact finished ticket/time and chosen rules. Ordinary online races retain **Create
+challenge**, which opens a dedicated single-race setup: One-to-one or Group race,
+24 hours/3 days/7 days, and Unlimited/1/3/5 tries per driver. Its track, car and exact
+finished ticket are fixed; Create & share is the sole final action and Back restores
+the same results. See the [results setup validation](RESULTS_CHALLENGE_SETUP_2026_10_24.md)
+and [race flow investigation](CHALLENGE_RACE_FLOWS_2026_10_24.md).
 
 For ordinary one-track formats, Use personal best resolves the owned verified result
 for the selected track/car. A source drive is available when a target is needed.
 Group Create & race can start unseeded. Creation from race results instead pins that
 **exact completed ticket**, including a finish slower than the PB; pending/failed
-verification never substitutes a PB or requires a replacement race. In a 3×3
-invitation that exact finish is stage one. Canonical five-lap tickets, account/block
+verification never substitutes a PB or requires a replacement race. A setup drive
+for a menu-created multi-track invitation can still seed its opening stage.
+Canonical five-lap tickets, account/block
 fences, attempt reservations, normal results first and explicit sharing remain.
 
 The 3×3 capability requires migration **0058_challenge_series** plus matching API,
@@ -25,6 +42,12 @@ worker and client. The latest recorded release is schema57, so the local series
 implementation is not a claim that the retained service supports it. Actual series
 checks and rollout limits are in the
 [format/series report](evidence/challenge-format-series-2026-10-23/report.json).
+Custom multi-track creation additionally requires migration
+**0063_custom_challenge_tracks**, matching API/worker/client, and the advertised
+`challenge_custom_tracks_version: 1` capability. Legacy lists exclude custom series
+unless the client requests `custom_tracks=1`. Native views, commands, test results
+and acceptance limits are in the
+[five-track report](evidence/custom-challenge-five-tracks-2026-10-24/report.json).
 The original 0020/0021 contracts below are historical prerequisites, not sufficient
 instructions for deploying the current artifact.
 

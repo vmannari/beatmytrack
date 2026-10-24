@@ -1,6 +1,6 @@
 # Security fixes: SEC06, SEC07, SEC03, SEC08 and SEC04
 
-The five requested findings from [the review](SECURITY_REVIEW_2026_10_24.md) are fixed in source, client behavior, migration and deployment templates. **These changes have not been deployed.** Existing game/editor processes, PC backend containers and cloud services were left running unchanged. No device, APK, purchase, provider sign-in or production account was used.
+The five requested findings from [the review](SECURITY_REVIEW_2026_10_24.md) are fixed in source, client behavior, migration and deployment templates. **The later [24October cloud deployment](SECURITY_DEPLOYMENT_2026_10_24.md) activates the backend fixes; PC/client rollout remains pending.** This report records the implementation checkpoint before that deployment. Existing game/editor processes, PC backend containers and cloud services were left running unchanged. No device, APK, purchase, provider sign-in or production account was used.
 
 | Finding | Result |
 | --- | --- |

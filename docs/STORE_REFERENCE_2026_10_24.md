@@ -1,5 +1,37 @@
 # Store reference layout — 2026-10-24
 
+## Vertical scrolling follow-up
+
+SSP01/SSP02: The later owner request applies one quieter scrollbar treatment
+throughout menu and race HUD themes: a muted 4-unit thumb inside a 24-unit native
+lane, with 10-unit clearance on either side and inset ends. Hover and dragging
+increase the thumb contrast. Achievement and Rivalry overrides now inherit the
+shared treatment; their existing content gutters remain. Horizontal bars use
+the same spacing. Native captures, pixel/drag checks, remaining acceptance and
+the task-only checkpoint are in `evidence/scrollbar-style-2026-10-24/report.json`.
+
+SSC01/SSC02: Store now uses the shared `vertical_swipe_scroll.gd` container,
+explicit automatic vertical overflow and focus following. Touch swipes and mouse
+drags scroll the offers; wheel/trackpad scrolling and native scrollbars remain.
+Keyboard focus reveals offscreen actions, and a drag over checkout does not
+activate it. The existing menu navigation and recovery footer stay fixed.
+
+The extended `game/tests/test_store_reference.gd` adds twelve fixture offer cards
+to exercise a larger catalogue at 1280x720 and 960x540. These extra cards are test
+data only. Corrected task-original reproduction: 131 checks, 11 failures; final:
+131 headless and 144 each on Windows Compatibility and Mobile, all assertions
+passing. Store telemetry (15) and cache/account (9) checks also pass. Commands,
+native captures, source hashes and the scoped checkpoint are under
+`evidence/store-scrolling-2026-10-24/`.
+
+The first added gesture fixture targeted an offscreen publishing button; the
+corrected fixture asserts that its starting checkout is visible. Both initial
+logs remain. Sandbox certificate-store diagnostics remain; Compatibility also
+reported four ObjectDB instances and one resource at shutdown. No clean-shutdown
+claim is made for that run. No phone/tablet attachment check or physical-device
+test, APK, real purchase, live mutation, deployment or owner-process restart was
+performed. Client reload and owner/device interaction acceptance remain.
+
 The owner's supplied Store example guides the actual Godot page: a larger
 permanent ad-free offer, a monthly alternative, a separate publishing section,
 account status and a quiet recovery footer. Existing workshop art, fonts, menu

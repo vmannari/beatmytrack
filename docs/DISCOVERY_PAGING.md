@@ -1,5 +1,17 @@
 # Current discovery protocol and loaded-card browsing
 
+<!-- DAILY-TRACK-SELECTION-20261024 -->
+Free Race starts with up to 100 daily picks, targeting 60 ranked / 20 fresh / 20
+rotating discoveries, then continues through the rest of the ranked catalogue
+as the player scrolls. Curated tracks are excluded from that continuation by
+logical track ID. Ratings,
+verified unique players, repeated racing, capped race volume and freshness feed
+the score. Search and explicit filters still query the full catalogue. Matching
+migrations0064/0067 with the intervening chain, API/discovery-worker/client rollout
+and owner/device acceptance remain. See [ranking policy](DAILY_TRACK_SELECTION_2026_10_24.md)
+and [continuation implementation and evidence](FREE_RACE_CONTINUATION_2026_10_24.md).
+<!-- /DAILY-TRACK-SELECTION-20261024 -->
+
 Reviewed 2026-10-24. The game uses **protocol 3**, negotiated through bootstrap
 `discovery_paging_version`. Reads use `POST /v1/discovery/v3/tracks` and Random uses
 `POST /v1/discovery/v3/random`. The retired protocol routes explicitly return HTTP

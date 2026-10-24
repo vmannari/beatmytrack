@@ -8,7 +8,13 @@ Ordinary time lookups are quiet and keep layout stable. Use personal best uses t
 verified selected track/car source, while post-race creation retains its exact ticket.
 The carousel's end animation moves the whole card row.
 
-The cel-shaded 3D v3 illustrations and redesigned v4 3x3 poster below are current;
+Find & play includes Discover, Friends, Joined and **Created**. Created opens the
+existing Your challenges page to view and manage your own challenges; the same
+tabs let you return directly to Discover, Friends or Joined. It remains available
+after leaving the post-creation page. Navigation and native views are recorded in
+[the 2026-10-24 check](evidence/find-play-created-2026-10-24/report.json).
+
+The cel-shaded 3D v3 illustrations and corrected v6 3x3 starting-line poster below are current;
 the later-listed native-diagram replacement is superseded. The 3×3 format requires
 the matching schema0058/API/worker rollout and service capability. See
 [challenge contracts and rollout status](CHALLENGES.md),
@@ -21,6 +27,39 @@ and [restored Garage evidence](evidence/challenge-garage-restored-2026-10-23/rep
 The records below retain the exact behavior, assets and tests at each stage.
 Statements about large car illustrations, a separate abstract studio or a two-column
 creation sheet describe earlier revisions.
+
+---
+
+# Cars before properly checkered starting lines - 2026-10-24
+
+TSL01-TSL03 corrects the v5 picture's reversed start-line relationship. All three
+cars now wait on the approach side with visible road ahead of their front bumpers
+before the starting band. Each band has several rows of alternating black/white
+squares, including opposite colours between neighboring rows, and follows the
+road's perspective. No stripe remains behind or beneath the cars.
+
+The forest/desert/winter scenes, rear-quarter poses, three-lens boards and
+cel-shaded style remain. The first draft's close bands are retained; the final
+edit moves them farther ahead so the car-to-line relationship is clear. Only
+the 3x3 resource path changes at runtime. Built-in image_gen prompts and hashes:
+[three-by-three-start-line-v6.json](../game/assets/menu/challenges/three-by-three-start-line-v6.json).
+[Native previews, checks and remaining acceptance](evidence/three-by-three-start-line-2026-10-24/report.json).
+
+---
+
+# Corrected 3x3 car poses - 2026-10-24
+
+TCP01-TCP03 corrects the diagonally posed cars in the v4 picture. Each scene now
+shows the car from behind, facing along its starting straight, with straight wheels,
+grounded tyres and a transverse start stripe behind the rear wheels. The forest,
+desert and winter scenes, three-lens boards and cel-shaded 3D style remain. A second
+edit restores the desert's sandy road and removes unwanted road centre dashes from
+the first pose draft. The original pictures and draft are retained for comparison.
+
+Only the 3x3 poster reference changes at runtime; layout and challenge behavior are
+preserved. Built-in image_gen prompts, input/output paths and hashes are recorded
+in [three-by-three-pose-v5.json](../game/assets/menu/challenges/three-by-three-pose-v5.json).
+[Native previews, actual checks and remaining acceptance](evidence/three-by-three-pose-2026-10-24/report.json).
 
 ---
 

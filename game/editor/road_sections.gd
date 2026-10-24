@@ -68,6 +68,23 @@ static func _split_indices(arrays: Array, indices: PackedInt32Array, indexed: bo
 	var result: Array = []
 	for first: int in range(0,indices.size(),UPLOAD_VERTICES):
 		var part: Array = []; part.resize(Mesh.ARRAY_MAX)
+		if not indexed:
+			# Spatial groups usually contain long contiguous triangle runs. Copy
+			# their packed attributes in bulk rather than dispatching per vertex.
+			var last: int = mini(first+UPLOAD_VERTICES,indices.size())
+			for channel: int in range(Mesh.ARRAY_MAX):
+				if channel == Mesh.ARRAY_INDEX or arrays[channel] == null: continue
+				var stream: Variant = arrays[channel].slice(0,0)
+				var stride: int = arrays[channel].size()/arrays[Mesh.ARRAY_VERTEX].size()
+				var cursor: int = first
+				while cursor < last:
+					var end: int = cursor+1
+					while end < last and indices[end] == indices[end-1]+1: end += 1
+					stream.append_array(arrays[channel].slice(indices[cursor]*stride,(indices[end-1]+1)*stride))
+					cursor = end
+				part[channel] = stream
+			result.append(part)
+			continue
 		var remap: Dictionary = {}
 		var selected := PackedInt32Array()
 		var mapped := PackedInt32Array()

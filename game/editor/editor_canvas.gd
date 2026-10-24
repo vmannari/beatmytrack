@@ -47,6 +47,15 @@ func _prepared(key: String, source: Array, build: Callable) -> Variant:
 	preparation_counts[key] = int(preparation_counts.get(key,0))+1
 	return value
 
+func cache_bytes() -> int:
+	var total: int = 0
+	for entry: Dictionary in _prepared_geometry.values(): total += int(entry.bytes)
+	for entry: Dictionary in _spline_preview_cache: total += int(entry.bytes)
+	return total
+
+func trim_cache() -> void:
+	_prepared_geometry.clear(); _spline_preview_cache.clear()
+
 func prepared_joins() -> Array:
 	return _prepared("joins",[document.pieces],RoadPieces.joins.bind(document.pieces))
 
@@ -98,8 +107,16 @@ var fitted: bool = false
 var fit_pending_native: bool = false
 var native_preview: NativeTrack
 var visual_preview: NativeTrack
-var _gesture_document: Dictionary = {}
-var _gesture_ghost: Dictionary = {}
+var gesture = preload("res://editor/editor_gesture.gd").new()
+var _gesture_document: Dictionary:
+	get: return gesture.before
+var _gesture_absent: Array[String]:
+	get: return gesture.absent
+var _gesture_ghost: Dictionary:
+	get: return gesture.ghost
+var _navigation_only: bool:
+	get: return gesture.phase == gesture.Phase.NAVIGATION
+	set(value): gesture.phase = gesture.Phase.NAVIGATION if value else gesture.Phase.IDLE
 var _run_edge_hint: bool = false
 
 func _ready() -> void:
@@ -184,9 +201,10 @@ func cancel_gesture() -> void:
 	start_drag = false
 	pending_start_flip = false
 	bump_end_drag = -1
+	_navigation_only = false
+	gesture.clear()
 
 func _gui_input(event: InputEvent) -> void:
-	if preparing: return
 	if document.is_empty(): return
 	if event is InputEventKey: return
 	# Menus/text fields use Godot mouse emulation; this canvas handles every
@@ -219,6 +237,7 @@ func _gui_input(event: InputEvent) -> void:
 			if touches.size() == 1: _begin(event.position, event.index)
 			else:
 				_rollback_navigation_edit()
+				_navigation_only = true
 				pending_road_tap = false
 				pending_piece_accept = false
 				pending_start_flip = false
@@ -276,14 +295,16 @@ func _gui_input(event: InputEvent) -> void:
 func _rollback_navigation_edit() -> void:
 	bump_end_drag = -1
 	if not changed_in_gesture: return
-	if not _gesture_document.is_empty() and document != _gesture_document:
-		document.clear()
-		document.merge(_gesture_document.duplicate(true),true)
+	if gesture.rollback(document):
 		document_changed.emit()
 		edit_cancelled.emit()
 	ghost = _gesture_ghost.duplicate(true)
 	changed_in_gesture = false
 	selection_changed.emit()
+
+func _start_edit() -> void:
+	gesture.capture(document,mode)
+	edit_started.emit()
 
 func _begin(point: Vector2, pointer: int) -> void:
 	fit_pending_native = false
@@ -292,8 +313,10 @@ func _begin(point: Vector2, pointer: int) -> void:
 	press_position = point
 	pointer_origin = to_world(point)
 	changed_in_gesture = false
-	_gesture_document = document.duplicate(true)
-	_gesture_ghost = ghost.duplicate(true)
+	gesture.begin(ghost,preparing)
+	if _navigation_only:
+		panning = true; dragging = false
+		return
 	_run_edge_hint = false
 	bump_end_drag = -1
 	if mode == "objects" and selected_object >= 0 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
@@ -365,10 +388,12 @@ func _begin(point: Vector2, pointer: int) -> void:
 			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
 				selected_object = i
 				break
-		if selected_object < 0 and native_preview != null and document.objects.size() < 96:
+		if selected_object < 0 and native_preview != null and document.objects.size() < preload("res://editor/creator_limits.gd").MAX_OBJECTS:
 			for object: Dictionary in native_preview.metadata.get("scenery_objects",[]):
 				if CreatorObjects.contains(object,to_world(point)) or to_screen(Vector2(object.position[0],object.position[1])).distance_to(point) < 24:
-					edit_started.emit()
+					var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+					if not admission.is_empty(): hint_changed.emit(admission); break
+					_start_edit()
 					if not document.has("hidden_scenery"): document["hidden_scenery"] = []
 					document.hidden_scenery.append(CreatorScenery.key(object))
 					document.objects.append(object.duplicate(true))
@@ -385,11 +410,14 @@ func _begin(point: Vector2, pointer: int) -> void:
 	queue_redraw()
 
 func _move(point: Vector2) -> void:
+	if _navigation_only:
+		pan += point-previous_pointer; previous_pointer = point; queue_redraw()
+		return
 	if bump_end_drag >= 0:
 		if press_position.distance_to(point) < 3.0 and not changed_in_gesture: return
 		var changed: Dictionary = SpeedBumpEdit.move_end(bump_before_drag,bump_end_drag,to_world(point))
 		if changed == document.objects[selected_object]: return
-		if not changed_in_gesture: edit_started.emit(); changed_in_gesture = true
+		if not changed_in_gesture: _start_edit(); changed_in_gesture = true
 		document.objects[selected_object] = changed
 		document_changed.emit()
 		queue_redraw()
@@ -406,7 +434,7 @@ func _move(point: Vector2) -> void:
 		if press_position.distance_to(point) < 3 and not changed_in_gesture: return
 		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
 		if pose.is_empty() or pose == document.get("start_line",{}): return
-		if not changed_in_gesture: edit_started.emit()
+		if not changed_in_gesture: _start_edit()
 		changed_in_gesture = true
 		document["start_line"] = pose
 		document_changed.emit()
@@ -453,7 +481,7 @@ func _move(point: Vector2) -> void:
 	if dragging:
 		var position: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
 		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
-			edit_started.emit()
+			_start_edit()
 			changed_in_gesture = true
 		if changed_in_gesture and selected_object >= 0 and document.objects[selected_object].position != [position.x,position.y]:
 			document.objects[selected_object].position = [position.x,position.y]
@@ -473,7 +501,7 @@ func _place(point: Vector2) -> void:
 		if pose.is_empty():
 			hint_changed.emit("Place the start line on a road.")
 			return
-		edit_started.emit()
+		_start_edit()
 		document["start_line"] = pose
 		mode = "road"
 		document_changed.emit()
@@ -482,7 +510,7 @@ func _place(point: Vector2) -> void:
 		queue_redraw()
 		return
 	if mode == "start":
-		edit_started.emit()
+		_start_edit()
 		var heading: float = 0.0
 		if native_preview != null:
 			var nearest_route: float = INF
@@ -514,8 +542,9 @@ func _place(point: Vector2) -> void:
 			hint_changed.emit("Tap the end of the free wall line." if free_run else "Tap the end of the run. Barriers follow the nearest road edge.")
 		else:
 			run_preview = _object_run(run_start,position)
+			run_preview = preload("res://editor/creator_limits.gd").take(document.objects,run_preview,str(document.theme))
 			if not run_preview.is_empty():
-				edit_started.emit()
+				_start_edit()
 				document.objects.append_array(run_preview)
 				document_changed.emit()
 				edit_finished.emit()
@@ -525,14 +554,16 @@ func _place(point: Vector2) -> void:
 		queue_redraw()
 		return
 	if mode == "place":
-		if document.objects.size() >= 96:
-			hint_changed.emit("Use up to 96 objects. Select one to move or remove it.")
+		if document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS:
+			hint_changed.emit("Use up to %d objects. Select one to move or remove it." % preload("res://editor/creator_limits.gd").MAX_OBJECTS)
 			return
-		edit_started.emit()
 		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
 		if stamp_scale != 1.0: object["scale"]=stamp_scale
 		if stamp_kind == "speed_bump": object["span"] = stamp_span
 		if stamp_kind == "container": object["color"] = stamp_container_color
+		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+		if not admission.is_empty(): hint_changed.emit(admission); return
+		_start_edit()
 		document.objects.append(object)
 		selected_object = document.objects.size()-1
 		selected = -1
@@ -544,6 +575,9 @@ func _place(point: Vector2) -> void:
 
 func _end(pointer: int) -> void:
 	if pointer != active_pointer: return
+	if _navigation_only:
+		gesture.clear(); panning = false; active_pointer = -99
+		return
 	if pending_paint_accept:
 		pending_paint_accept = false
 		confirm_paint()
@@ -556,8 +590,9 @@ func _end(pointer: int) -> void:
 		dragging = false
 		confirm_piece()
 	if drawing_run:
+		run_preview = preload("res://editor/creator_limits.gd").take(document.objects,run_preview,str(document.theme))
 		if not run_preview.is_empty():
-			edit_started.emit()
+			_start_edit()
 			document.objects.append_array(run_preview)
 			document_changed.emit()
 			edit_finished.emit()
@@ -591,6 +626,7 @@ func _end(pointer: int) -> void:
 		active_pointer = int(touches.keys()[0])
 		previous_pointer = touches[active_pointer]
 		panning = true
+	gesture.clear()
 	queue_redraw()
 
 func _notification(what: int) -> void:
@@ -710,7 +746,7 @@ func confirm_piece() -> void:
 			return
 		if document.pieces.size() >= RoadPieces.MAX_PIECES: return
 		if not _valid_bridge_edit(ghost,-1): return
-		edit_started.emit()
+		_start_edit()
 		document.pieces.append(ghost.duplicate(true))
 		ghost.clear()
 		selected_piece = -1
@@ -786,7 +822,12 @@ func _begin_road(point: Vector2) -> void:
 	queue_redraw()
 
 func _attached_end(piece: Dictionary) -> int:
-	return RoadPieces.attached_end(piece,document.pieces,selected_piece if ghost.is_empty() else -1)
+	var others: Array = document.pieces.duplicate()
+	if ghost.is_empty() and selected_piece >= 0 and selected_piece < others.size(): others.remove_at(selected_piece)
+	var topology: Dictionary = _prepared("endpoints",[others],RoadPieces.prepare_endpoints.bind(others))
+	# The topology cache already owns the immutable neighbour snapshot. Use its
+	# revision here rather than deep-copying every neighbour for each trial pose.
+	return _prepared("attachment",[piece,int(preparation_counts.get("endpoints",0))],RoadPieces.attached_end.bind(piece,others,-1,topology))
 
 func editing_spline() -> bool:
 	if mode != "road": return false
@@ -834,7 +875,7 @@ func _move_spline(point: Vector2) -> void:
 		hint_changed.emit("Keep spline points inside the map and at least 2 m apart.")
 		return
 	if not _valid_bridge_edit(trial,selected_piece): return
-	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+	if ghost.is_empty() and not changed_in_gesture: _start_edit()
 	changed_in_gesture = true
 	if ghost.is_empty():
 		document.pieces[selected_piece] = trial
@@ -881,7 +922,7 @@ func _move_road(point: Vector2) -> void:
 			hint_changed.emit("Keep the section inside the map and within its size limits.")
 			return
 		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
-		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+		if ghost.is_empty() and not changed_in_gesture: _start_edit()
 		changed_in_gesture = true
 		if ghost.is_empty():
 			document.pieces[selected_piece] = trial
@@ -891,16 +932,13 @@ func _move_road(point: Vector2) -> void:
 		queue_redraw()
 		return
 	if geometry_drag != "":
-		var increased: Dictionary = piece_before_drag.duplicate(true)
-		increased[geometry_drag] = geometry_origin+1.0
-		if piece.kind == "s_bend" and geometry_drag == "radius": increased.height = RoadPieces.height(piece_before_drag)
-		increased = anchored_change(piece_before_drag,increased,geometry_drag)
-		var axis: Vector2 = _geometry_anchor(increased,geometry_drag)-_geometry_anchor(piece_before_drag,geometry_drag)
+		var control: Dictionary = _handle_geometry(piece_before_drag,true)[geometry_drag]
+		var axis: Vector2 = control.increased-control.anchor
 		var delta: float = (to_world(point)-pointer_origin).dot(axis)/maxf(0.01,axis.length_squared())
 		if piece.kind == "curve" and geometry_drag == "angle":
 			var side: float = -1.0 if piece.flip else 1.0
 			var center: Vector2 = Vector2(piece_before_drag.position[0],piece_before_drag.position[1])+Vector2(0,side*float(piece_before_drag.radius)).rotated(deg_to_rad(float(piece_before_drag.heading)))
-			var anchor: Vector2 = _geometry_anchor(piece_before_drag,"angle")
+			var anchor: Vector2 = control.anchor
 			delta = rad_to_deg((anchor-center).angle_to(anchor+to_world(point)-pointer_origin-center))/( -0.8 if _attached_end(piece_before_drag) == 1 else 0.8)*side
 		var trial: Dictionary = piece_before_drag.duplicate(true)
 		trial[geometry_drag] = snappedf(geometry_origin+delta,0.01 if geometry_drag == "curvature" else 0.5)
@@ -914,7 +952,7 @@ func _move_road(point: Vector2) -> void:
 		trial = anchored_change(piece_before_drag,trial,geometry_drag)
 		if not RoadPieces.validate(trial).is_empty(): return
 		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
-		if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+		if ghost.is_empty() and not changed_in_gesture: _start_edit()
 		changed_in_gesture = true
 		if ghost.is_empty(): document.pieces[selected_piece] = trial
 		else: ghost = trial
@@ -929,7 +967,7 @@ func _move_road(point: Vector2) -> void:
 		hint_changed.emit("Keep the whole section inside the map.")
 		return
 	if moved == piece or not _valid_bridge_edit(moved,selected_piece): return
-	if ghost.is_empty() and not changed_in_gesture: edit_started.emit()
+	if ghost.is_empty() and not changed_in_gesture: _start_edit()
 	changed_in_gesture = true
 	if not ghost.is_empty():
 		ghost = moved
@@ -957,10 +995,11 @@ func _spline_preview(piece: Dictionary) -> Dictionary:
 		if entry.piece == piece: return entry
 	var contours: Array[PackedVector2Array] = RoadEdges.section_contours([piece],0)
 	var entry: Dictionary = {"piece":piece.duplicate(true),"contours":contours,"surface":SplineBorders.surface(contours)}
-	var bytes: int = var_to_bytes(entry).size()
+	var bytes: int = var_to_bytes(entry).size()+64
+	entry["bytes"] = bytes
 	var total: int = bytes
-	for old: Dictionary in _spline_preview_cache: total += var_to_bytes(old).size()
-	while not _spline_preview_cache.is_empty() and (_spline_preview_cache.size() >= 4 or total > CANVAS_CACHE_BUDGET): total -= var_to_bytes(_spline_preview_cache.pop_front()).size()
+	for old: Dictionary in _spline_preview_cache: total += int(old.bytes)
+	while not _spline_preview_cache.is_empty() and (_spline_preview_cache.size() >= 4 or total > CANVAS_CACHE_BUDGET): total -= int(_spline_preview_cache.pop_front().bytes)
 	if bytes <= CANVAS_CACHE_BUDGET: _spline_preview_cache.append(entry)
 	return entry
 
@@ -1017,14 +1056,12 @@ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> vo
 			for axis: Vector2 in [Vector2.RIGHT,Vector2.DOWN]:
 				_draw_handle_arrow(line[endpoint],axis,7,Color("163541"))
 	if piece.kind == "spline": _draw_spline_controls(piece)
+	var layout: Dictionary = geometry_controls(piece)
+	var handle_geometry: Dictionary = _handle_geometry(piece)
 	for key: String in geometry_keys(piece):
-		var handle: Vector2 = to_screen(_geometry_handle(piece,key))
-		if piece.kind == "bridge": draw_line(to_screen(_geometry_anchor(piece,key)),handle,Color("b9faff"),1.5,true)
-		var increased: Dictionary = piece.duplicate(true)
-		increased[key] = (RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0)))+1.0
-		if piece.kind == "s_bend" and key == "radius": increased.height = RoadPieces.height(piece)
-		increased = anchored_change(piece,increased,key)
-		var axis: Vector2 = (to_screen(_geometry_anchor(increased,key))-to_screen(_geometry_anchor(piece,key))).normalized()
+		var handle: Vector2 = layout[key]
+		if piece.kind == "bridge": draw_line(to_screen(handle_geometry[key].anchor),handle,Color("b9faff"),1.5,true)
+		var axis: Vector2 = (to_screen(handle_geometry[key].increased)-to_screen(handle_geometry[key].anchor)).normalized()
 		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
 		if piece.kind != "bridge": continue
 		var caption: String = geometry_caption(piece,key)
@@ -1100,19 +1137,8 @@ func piece_accept_rect(piece: Dictionary) -> Rect2:
 	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
 
 func geometry_keys(piece: Dictionary) -> Array[String]:
-	if piece.kind == "spline": return []
-	if piece.kind == "straight": return ["width"]
-	if piece.kind == "taper": return ["width","narrow_width","length"]
-	if piece.kind == "curve": return ["width","curvature","angle"]
-	if piece.kind == "s_bend": return ["width","radius","height"]
-	if piece.kind == "hairpin": return ["width","radius","length"]
-	var keys: Array[String] = ["width"]
-	if piece.kind != "s_bend": keys.push_front("length")
-	if piece.kind not in ["straight","bridge"]: keys.append("radius")
-	if piece.kind == "s_bend": keys.append("height")
-	if piece.kind == "curve": keys.append("angle")
-	keys.append("heading")
-	return keys
+	return preload("res://editor/road_piece_catalog.gd").handles(str(piece.kind))
+
 
 func geometry_caption(piece: Dictionary, key: String) -> String:
 	var title: String = "Rotate" if key == "heading" else "Narrow width" if key == "narrow_width" else "Straight" if key == "length" and piece.kind not in ["straight","taper","bridge"] else key.capitalize()
@@ -1123,27 +1149,45 @@ func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
 	return to_world(geometry_controls(piece)[key])
 
 func geometry_controls(piece: Dictionary) -> Dictionary:
+	var geometry: Dictionary = _handle_geometry(piece)
+	return _prepared("handle_layout",[piece,geometry,size,pan,scale_factor()],_layout_geometry_controls.bind(piece,geometry))
+
+func _handle_geometry(piece: Dictionary, gesture_origin: bool = false) -> Dictionary:
+	return _prepared("drag_handle_geometry" if gesture_origin else "handle_geometry",[piece,_attached_end(piece)],_build_handle_geometry.bind(piece))
+
+func _build_handle_geometry(piece: Dictionary) -> Dictionary:
+	var result: Dictionary = {}
+	for key: String in geometry_keys(piece):
+		var increased: Dictionary = piece.duplicate(true)
+		increased[key] = (RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0)))+1.0
+		if piece.kind == "s_bend" and key == "radius": increased.height = RoadPieces.height(piece)
+		increased = anchored_change(piece,increased,key)
+		result[key] = {"anchor":_geometry_anchor(piece,key),"increased":_geometry_anchor(increased,key)}
+	return result
+
+func _layout_geometry_controls(piece: Dictionary, geometry: Dictionary) -> Dictionary:
 	var controls: Dictionary = {}
+	var accept: Rect2 = piece_accept_rect(piece).grow(20)
 	if piece.kind != "bridge":
 		var occupied: Array[Vector2] = [to_screen(Vector2(piece.position[0],piece.position[1])),to_screen(RoadPieces.end_pose(piece).position)]
 		for key: String in geometry_keys(piece):
-			var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
+			var anchor: Vector2 = to_screen(geometry[key].anchor)
 			var candidate: Vector2 = anchor
 			if key != "width":
 				for step: int in range(97):
 					candidate = anchor+Vector2.LEFT.rotated(float(step%8)*TAU/8.0)*float((step+7)/8)*12.0
-					var clear: bool = not piece_accept_rect(piece).grow(20).has_point(candidate)
+					var clear: bool = not accept.has_point(candidate)
 					for other: Vector2 in occupied:
 						if candidate.distance_to(other) < 48: clear = false; break
 					if clear: break
 			controls[key] = candidate
 			occupied.append(candidate)
 		return controls
-	var blocked: Array[Rect2] = [piece_accept_rect(piece).grow(20)]
+	var blocked: Array[Rect2] = [accept]
 	for endpoint: Vector2 in [Vector2(piece.position[0],piece.position[1]),Vector2(RoadPieces.end_pose(piece).position)]:
 		blocked.append(Rect2(to_screen(endpoint)-Vector2(40,40),Vector2(80,80)))
 	for key: String in geometry_keys(piece):
-		var anchor: Vector2 = to_screen(_geometry_anchor(piece,key))
+		var anchor: Vector2 = to_screen(geometry[key].anchor)
 		var candidate: Vector2 = anchor
 		for step: int in range(81):
 			var ring: int = (step+7)/8
@@ -1216,6 +1260,12 @@ func cycle_piece() -> void:
 	queue_redraw()
 
 func _valid_bridge_edit(piece: Dictionary, index: int) -> bool:
+	# Ordinary roads cannot introduce a bridge constraint into a bridge-free
+	# document. Keep the complete validator for every actual bridge dependency.
+	if piece.kind != "bridge":
+		var others: Array = document.pieces.duplicate()
+		if ghost.is_empty() and index >= 0 and index < others.size(): others.remove_at(index)
+		if not _prepared("has_bridges",[others],func() -> bool: return others.any(func(item: Dictionary) -> bool: return item.kind == "bridge")): return true
 	var pieces: Array = document.pieces.duplicate(true)
 	if index >= 0 and ghost.is_empty(): pieces[index] = piece
 	else: pieces.append(piece)
@@ -1242,14 +1292,16 @@ func _object_run(start: Vector2, finish: Vector2) -> Array:
 		var result: Array = RoadPieces.barrier_run(document,start,finish,stamp_kind,stamp_scale,paths)
 		if result.is_empty() and not _run_edge_hint:
 			_run_edge_hint = true
-			hint_changed.emit("Object limit reached. Remove an object to continue." if document.objects.size() >= 96 else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")
+			var candidate: Dictionary = {"kind":stamp_kind,"position":[start.x,start.y],"rotation":stamp_rotation}
+			var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[candidate],str(document.theme))
+			hint_changed.emit(admission if not admission.is_empty() else "Road edge needs a road section, layout or painted road line. Choose Line for a free run.")
 		return result
 	return _path_run(PackedVector2Array([start,finish]))
 
 func _path_run(path: PackedVector2Array) -> Array:
 	if not _stamp_available(): return []
 	var fitted: PackedVector2Array = ObjectRuns.smooth(path) if run_shape == "curve" else path
-	return ObjectRuns.build(fitted,stamp_kind,stamp_scale,96-document.objects.size())
+	return preload("res://editor/creator_limits.gd").take(document.objects,ObjectRuns.build(fitted,stamp_kind,stamp_scale,preload("res://editor/creator_limits.gd").remaining(document.objects,stamp_kind)),str(document.theme))
 
 func _stamp_available() -> bool:
 	var biome: String = str(document.get("theme","pine"))
@@ -1274,7 +1326,7 @@ func connect_nearby() -> void:
 	if result.is_empty():
 		hint_changed.emit("Move an open end within 8 m of another open end, then Connect.")
 		return
-	edit_started.emit()
+	_start_edit()
 	document.pieces[selected_piece] = result
 	document_changed.emit()
 	edit_finished.emit()
@@ -1292,7 +1344,7 @@ func choose_start_line() -> void:
 
 func flip_start_line() -> void:
 	if not document.has("start_line"): return
-	edit_started.emit()
+	_start_edit()
 	document.start_line.heading = fposmod(float(document.start_line.heading)+180.0,360.0)
 	document_changed.emit()
 	edit_finished.emit()
@@ -1340,7 +1392,7 @@ func confirm_paint() -> void:
 	if document.paint.size() >= 256:
 		hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
 		return
-	edit_started.emit()
+	_start_edit()
 	document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0,"mode":paint_mode})
 	paint_points.clear()
 	paint_handle = -1

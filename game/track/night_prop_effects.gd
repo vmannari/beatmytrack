@@ -169,7 +169,7 @@ func sync_barrels(nodes: Array, state: VehicleState) -> void:
 		if int(source.light)>=0 and int(source.light)<warm_lights.size():
 			var light_index: int=int(source.light)
 			warm_lights[light_index].position=fuel+Vector3.UP*0.29*scale
-			warm_lights[light_index].visible=float(profile.energy)>0.0001
+			preload("res://track/night_light_budget.gd").set_available(warm_lights[light_index],float(profile.energy)>0.0001)
 			warm_lights[light_index].set_meta("fuel_energy",profile.energy); _publish_light(light_index)
 	if changed:
 		for effect: String in ["Flames","Embers","Smoke"]:

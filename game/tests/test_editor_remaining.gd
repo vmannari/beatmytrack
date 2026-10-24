@@ -73,7 +73,7 @@ func persistence() -> void:
 		for index: int in range(512): points.append([-100.0+index*0.39,-100.0+stroke_index*6.0])
 		doc.paint.append({"surface":2,"width":2.0,"shape":"round","points":points})
 	check(TrackDocument.validate(doc,false).is_empty(),"maximum supported painted map is valid")
-	check(JSON.stringify(doc,"\t",true).to_utf8_buffer().size() > TrackDocument.MAX_BYTES,"maximum fixture exercises the former pretty-JSON failure")
+	check(JSON.stringify(doc,"\t",true).to_utf8_buffer().size() > 524288,"maximum fixture exercises the former 512 KiB pretty-JSON failure")
 	var storage := TrackLibrary.new(evidence+"/drafts")
 	var started: int = Time.get_ticks_usec(); check(storage.save_document(doc) == OK,"maximum supported map saves as bounded compact JSON"); metric("maximum_paint_save",started)
 	check(storage.load_document(doc.id) == JSON.parse_string(JSON.stringify(doc,"",true)),"maximum map round trips exactly")
@@ -140,13 +140,13 @@ func actual_editor() -> void:
 	app.document = circuit(); app.canvas = null; app._show_screen("create")
 	var deadline: int = Time.get_ticks_msec()+30000
 	var maximum: float = 0.0
-	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
+	while (app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.get("id",""))) or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
 		var frame: int = Time.get_ticks_usec(); await process_frame; maximum = maxf(maximum,(Time.get_ticks_usec()-frame)/1000.0)
 	check(app.editor_preview_thread == null and not app.editor_world._building,"actual initial editor preparation settles")
 	metrics.append({"operation":"maximum_initial_editor_frame_interval","ms":maximum})
 	app.canvas.active_pointer = 0; app.document.name = "Gesture revision"
 	var started: int = Time.get_ticks_usec(); check(app._save_draft(true) == OK,"gesture save queues the immutable revision"); metric("actual_gesture_save_handler",started)
-	check(app.editor_writes.pending.size() == 1,"gesture save defers disk work out of its handler")
+	check(app.editor_commits.unsettled() and app.editor_writes.pending.is_empty(),"gesture save defers analysis and disk work out of its handler")
 	app.canvas.active_pointer = -99
 	check(app._save_track_now(),"explicit Save drains the required pending WIP before acknowledging the original")
 	check(storage.load_document(app.document.id).name == "Gesture revision" and storage.load_wip(app.document.id).name == "Gesture revision","both durable boundaries contain the acknowledged revision")

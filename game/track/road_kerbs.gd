@@ -13,17 +13,22 @@ var cell_size: float = 0.5
 var grid := Vector2i.ZERO
 
 
-func build(track: NativeTrack) -> void:
+func build(track: NativeTrack, paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> void:
 	triangles.clear()
 	buckets.clear()
 	extent = track.half_extent
 	cell_size = track.cell_size
 	grid = Vector2i(track.grid_width,track.grid_height)
 	var document: Dictionary = track.metadata.get("creator_document",{})
-	blocked = exclusion_mask(track,document.get("paint",[]))
-	var segments: Array[Dictionary] = creator_segments(document)
+	blocked = paint_exclusion.duplicate() if paint_exclusion.size() == track.cells.size() else exclusion_mask(track,document.get("paint",[]),cancelled)
+	if blocked.size() != track.cells.size(): return
+	for index: int in range(track.cells.size()):
+		if index % 256 == 0 and _cancelled(cancelled): return
+		if track.cells[index] in [4,7]: blocked[index] = 1
+	var segments: Array[Dictionary] = creator_segments(document,"",false,cancelled)
 	var first: int = 0
 	while first < segments.size():
+		if _cancelled(cancelled): return
 		var last: int = first
 		while last+1 < segments.size():
 			var a: Dictionary = segments[last]
@@ -33,6 +38,7 @@ func build(track: NativeTrack) -> void:
 		var origin: float = segments[first].start
 		var length: float = float(segments[last].end)-origin
 		for i: int in range(first,last+1):
+			if i % 32 == 0 and _cancelled(cancelled): return
 			var segment: Dictionary = segments[i]
 			_strip(segment.a,segment.b,segment.outer_a,segment.outer_b,float(segment.start)-origin,float(segment.end)-origin,length)
 		first = last+1
@@ -48,6 +54,7 @@ func build(track: NativeTrack) -> void:
 	selected.resize(track.cells.size())
 	var indices: Array[Vector2i] = []
 	for y: int in range(grid.y):
+		if _cancelled(cancelled): return
 		for x: int in range(grid.x):
 			if track.cells[y*grid.x+x] != 5 or blocked[y*grid.x+x] != 0: continue
 			var near_road: bool = false
@@ -82,13 +89,14 @@ func _native_vertex_height(node: Vector2i, selected: PackedByteArray) -> float:
 
 
 
-static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false) -> Array[Dictionary]:
+static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if document.get("surface","asphalt") == "dirt": return result
 	var pieces: Array = document.get("pieces",[])
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	var outlines: Array[Dictionary] = []
 	for index: int in range(pieces.size()):
+		if _cancelled(cancelled): return []
 		if pieces[index].kind == "bridge": continue
 		var polygons: Array[PackedVector2Array] = []
 		if pieces[index].kind == "spline":
@@ -102,6 +110,7 @@ static func creator_segments(document: Dictionary, selected_kind: String = "", p
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
 		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
+		if _cancelled(cancelled): return []
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
 		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
 		var border_contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if presentation else RoadEdges.section_contours(pieces,index,-0.20,topology)
@@ -109,6 +118,7 @@ static func creator_segments(document: Dictionary, selected_kind: String = "", p
 			var hole: bool = pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
 			var distance: float = 0.0
 			for edge: int in range(polygon.size()):
+				if edge % 32 == 0 and _cancelled(cancelled): return []
 				var a: Vector2 = polygon[edge]
 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
 				if RoadEdges._on_join_cut(a,b,cuts) or (presentation and RoadEdges._on_join_cap(a,b,cuts)): continue
@@ -120,6 +130,7 @@ static func creator_segments(document: Dictionary, selected_kind: String = "", p
 					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
 				for step: int in range(steps):
+					if step % 32 == 0 and _cancelled(cancelled): return []
 					var p: Vector2 = a.lerp(b,float(step)/steps)
 					var q: Vector2 = a.lerp(b,float(step+1)/steps)
 					var np: Vector2 = na.lerp(nb,float(step)/steps)
@@ -181,34 +192,48 @@ func height_at(point: Vector2) -> float:
 	return height
 
 
-static func exclusion_mask(track: NativeTrack, paint: Array) -> PackedByteArray:
+static func exclusion_mask(track: NativeTrack, paint: Array, cancelled: Callable = Callable()) -> PackedByteArray:
 	var mask := PackedByteArray()
 	mask.resize(track.cells.size())
 	for index: int in range(track.cells.size()):
+		if index % 256 == 0 and _cancelled(cancelled): return PackedByteArray()
 		if track.cells[index] in [4,7]: mask[index] = 1
+	var visited: Dictionary = {}
 	for authored: Dictionary in paint:
+		if _cancelled(cancelled): return PackedByteArray()
 		var stroke: Dictionary = SurfacePaint.prepared(authored)
 		if stroke.get("protect_road",false): continue
 		if stroke.get("mode","") == "area":
 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
 			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,track.half_extent,track.cell_size,Vector2i(track.grid_width,track.grid_height))
 			for y: int in range(bounds.position.y,bounds.end.y):
+				if _cancelled(cancelled): return PackedByteArray()
 				for x: int in range(bounds.position.x,bounds.end.x):
+					if mask[y*track.grid_width+x] != 0: continue
 					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
 					if Geometry2D.is_point_in_polygon(point,polygon): mask[y*track.grid_width+x] = 1
 			continue
 		var radius: float = float(stroke.width)*0.5
 		for index: int in range(stroke.points.size()):
+			if _cancelled(cancelled): return PackedByteArray()
 			var p: Array = stroke.points[index]
 			var q: Array = stroke.points[maxi(0,index-1)]
 			var a := Vector2(p[0],p[1])
 			var b := Vector2(q[0],q[1])
+			var key: Array = [a,b,radius,stroke.shape]
+			if visited.has(key): continue
+			visited[key] = true
 			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
 			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
 			for y: int in range(maxi(0,floori((track.half_extent.y-hi.y)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-lo.y)/track.cell_size))):
+				if _cancelled(cancelled): return PackedByteArray()
 				for x: int in range(maxi(0,floori((lo.x+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((hi.x+track.half_extent.x)/track.cell_size))):
+					if mask[y*track.grid_width+x] != 0: continue
 					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
 					if hit: mask[y*track.grid_width+x] = 1
 	return mask
+
+static func _cancelled(cancelled: Callable) -> bool:
+	return cancelled.is_valid() and bool(cancelled.call())

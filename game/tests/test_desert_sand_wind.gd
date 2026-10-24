@@ -3,9 +3,11 @@ extends SceneTree
 const FX = preload("res://track/desert_sand_wind.gd")
 var checks: int = 0
 var failures: int = 0
-var out: String = "res://../docs/evidence/desert-sand-grains-2026-10-22/"
+var out: String = "res://../docs/evidence/desert-sand-gameplay-2026-10-23/focused/"
 
 func _initialize() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence="): out = argument.trim_prefix("--evidence=").trim_suffix("/") + "/"
 	run.call_deferred()
 
 func check(ok: bool, label: String) -> void:
@@ -39,7 +41,7 @@ func run() -> void:
 	root.add_child(fx)
 	fx.configure(track)
 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
-	check(fx.grains.multimesh.instance_count == 1152 and fx.sources.size() > 0 and fx.sources.size() <= 6, "sparse patches within the bounded grain pool")
+	check(fx.plumes.multimesh.instance_count == 48 and fx.sources.size() > 0 and fx.sources.size() <= 6, "sparse patches within the bounded fine-powder pool")
 	for source: Vector2 in fx.sources:
 		check(track.cell_at(source) in [1, 2] and not track.has_overhead_bridge(source, false), "source is loose sand with no bridge overhead")
 		for other: Vector2 in fx.sources:
@@ -72,7 +74,7 @@ func run() -> void:
 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, true)
 	check(fx.intensity == 0.0, "finish fades sand away")
 	fx.reset()
-	check(fx.intensity == 0.0 and fx.sources.is_empty() and fx.grains.multimesh.visible_instance_count == 0, "retry clears all local wind state")
+	check(fx.intensity == 0.0 and fx.sources.is_empty() and fx.plumes.multimesh.visible_instance_count == 0, "retry clears all local wind state")
 	track.metadata.theme = "pine"
 	fx.configure(track)
 	check(not fx.enabled and not fx.visible, "other biomes disable sand")
@@ -85,11 +87,25 @@ func run() -> void:
 	root.add_child(game)
 	game.set_physics_process(false)
 	game.set_process(false)
+	var ready_frames: int = 0
+	while game.desert_sand_wind == null and ready_frames < 600:
+		await process_frame
+		ready_frames += 1
+		game.set_physics_process(false)
+		game.set_process(false)
+	check(game.desert_sand_wind != null, "cooperative race build reaches weather installation")
+	if game.desert_sand_wind == null:
+		game.queue_free()
+		await process_frame
+		quit(1)
+		return
 	game.race_cues.hide()
 	game.paused = true
 	fx = game.desert_sand_wind
 	check(fx != null and fx.get_parent() == game.get_node("World"), "actual Desert race owns the effect")
 	check(fx.relief == game.track_ground.desert_relief, "wind shares prepared visual ground support")
+	check(not fx.anchor_heights.is_empty(), "real race powder starts on prepared exposed bank crests")
+	check(fx.source_samples > 0 and fx.source_samples <= 8192 and fx.anchor_heights.size() <= 512, "crest discovery stays within its fixed work and anchor bounds")
 	var simulation: Array = game.sim.state.snapshot().duplicate(true)
 	fx.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 	for i: int in range(240): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
@@ -120,6 +136,8 @@ func capture(game: Node, fx: DesertSandWind) -> void:
 	game.paused = false
 	game.call("_process", 0.0)
 	camera.follow(focus, Vector2.ZERO, 0.0, 0.0, true)
+	var gameplay_transform: Transform3D = camera.transform
+	var gameplay_size: float = camera.size
 	for i: int in range(4): await draw(game, fx)
 	fx.hide()
 	for i: int in range(3): await draw(game, fx)
@@ -143,13 +161,23 @@ func capture(game: Node, fx: DesertSandWind) -> void:
 			peak_time = fx.elapsed
 			peak_image = current
 		quiet = mini(quiet, changed)
-	check(peak > 100 and peak < 1280 * 720 / 100, "visible individual grains occupy less than one percent of the race view")
+	check(peak >= 2000 and peak < 1280 * 720 * 0.08, "soft local powder is visible while most of the driving view stays clear")
 	check(quiet < peak * 0.35, "independent bursts leave quiet intervals even in steady strong wind")
-	check(peak_image.save_png(out + "gust.png") == OK, "peak grain screenshot")
+	check(peak_image.save_png(out + "gust.png") == OK, "peak powder screenshot")
+	print("SAND_PLUME_PIXELS: peak=", peak, " quiet=", quiet, " seconds=", peak_time)
+	fx.intensity = FX.ORDINARY_STRENGTH
+	fx.elapsed = peak_time
+	fx.present(0.000001, focus, 0.0, false, false)
+	for i: int in range(3): await draw(game, fx)
+	var calm: Image = root.get_texture().get_image()
+	var calm_pixels: int = pixel_changes(baseline, calm)
+	check(calm_pixels >= 600, "ordinary calm wind has readable powder at the normal driving zoom")
+	check(calm.save_png(out + "calm.png") == OK, "ordinary wind screenshot")
+	print("SAND_CALM_PIXELS: ", calm_pixels)
 	var receipt := FileAccess.open(out + "timeline.json", FileAccess.WRITE)
-	receipt.store_string(JSON.stringify({"peak_pixels": peak, "quiet_pixels": quiet, "peak_seconds": peak_time, "sources": fx.sources, "samples": timeline}, "\t"))
+	receipt.store_string(JSON.stringify({"peak_pixels": peak, "quiet_pixels": quiet, "calm_pixels": calm_pixels, "peak_seconds": peak_time, "sources": fx.sources, "samples": timeline}, "\t"))
 	receipt.close()
-	print("SAND_GRAIN_PIXELS: peak=", peak, " quiet=", quiet, " seconds=", peak_time)
+	fx.intensity = 0.95
 	fx.elapsed = peak_time
 	fx.present(0.000001, focus, 1.0, false, false)
 	await occlusion(game, fx, focus)
@@ -177,15 +205,19 @@ func capture(game: Node, fx: DesertSandWind) -> void:
 	for i: int in range(3): await draw(game, fx)
 	check(pixel_changes(detail_base, root.get_texture().get_image()) > 100, "detail camera shows the patch that actually emitted")
 	check(root.get_texture().get_image().save_png(out + "detail.png") == OK, "closer overhead sand view")
+	await palette_probe(game, fx)
 	var frames: Array[String] = []
-	root.size = Vector2i(960, 540)
+	camera.transform = gameplay_transform
+	camera.size = gameplay_size
+	fx.elapsed = peak_time - 0.5
+	fx.present(0.000001, focus, 1.0, false, false)
 	for i: int in range(3): await draw(game, fx)
 	for frame: int in range(90):
-		fx.present(1.0 / 15.0, focus, 1.0, false, false)
+		fx.present(1.0 / 15.0, focus, 1.0 if frame < 45 else 0.0, false, false)
 		await draw(game, fx)
 		frames.append("data:image/jpeg;base64," + Marshalls.raw_to_base64(root.get_texture().get_image().save_jpg_to_buffer(0.94)))
 	var preview := FileAccess.open(out + "motion.html", FileAccess.WRITE)
-	preview.store_string("<!doctype html><meta charset='utf-8'><title>Desert sand grains</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:960px;margin:32px auto}img{width:100%}button{padding:10px}</style><p>Desert sand grains - actual Godot detail frames, steady strong wind</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;view.src=frames[0];toggle.onclick=()=>{playing=!playing;toggle.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/15)</script>")
+	preview.store_string("<!doctype html><meta charset='utf-8'><title>Desert sand reference revision</title><style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1280px;margin:32px auto}img{width:100%}button{padding:10px}</style><p>Desert sand - actual Godot frames at the normal driving zoom; gust then ordinary wind</p><img id='view'><button id='toggle'>Pause</button><script>const frames=" + JSON.stringify(frames) + ";let frame=0,playing=true;view.src=frames[0];toggle.onclick=()=>{playing=!playing;toggle.textContent=playing?'Pause':'Play'};setInterval(()=>{if(playing){frame=(frame+1)%frames.length;view.src=frames[frame]}},1000/15)</script>")
 	preview.close()
 
 func pixel_changes(before: Image, after: Image) -> int:
@@ -195,11 +227,74 @@ func pixel_changes(before: Image, after: Image) -> int:
 			if before.get_pixel(x, y) != after.get_pixel(x, y): count += 1
 	return count
 
+func palette_probe(game: Node, fx: DesertSandWind) -> void:
+	# Neutral ground under the actual Desert light isolates powder colour from
+	# the already warm dune artwork. Only this disposable fixture is changed.
+	var original_ground: Node3D = game.track_ground
+	var original_car: Node3D = game.car
+	var sun_veil: Node3D = game.cloud_shadow
+	var veil_was_visible: bool = sun_veil != null and sun_veil.visible
+	if sun_veil != null: sun_veil.hide()
+	original_ground.hide()
+	original_car.hide()
+	var floor_node := MeshInstance3D.new()
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(400, 400)
+	floor_node.mesh = mesh
+	floor_node.position.y = -0.02
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.22, 0.22, 0.22)
+	floor_node.material_override = mat
+	game.get_node("World").add_child(floor_node)
+	fx.hide()
+	for i: int in range(3): await draw(game, fx)
+	var base: Image = root.get_texture().get_image()
+	fx.show()
+	for i: int in range(3): await draw(game, fx)
+	var powder: Image = root.get_texture().get_image()
+	var pixels: int = 0
+	var colour := Color(0, 0, 0, 0)
+	var saturation: float = 0.0
+	var bright_specks: int = 0
+	var contrast: Array[float] = []
+	for y: int in range(720):
+		for x: int in range(1280):
+			var before: Color = base.get_pixel(x, y)
+			var after: Color = powder.get_pixel(x, y)
+			var delta: float = maxf(absf(after.r - before.r), maxf(absf(after.g - before.g), absf(after.b - before.b)))
+			if delta < 0.008: continue
+			pixels += 1
+			colour += after
+			saturation += after.s
+			contrast.append(delta)
+			if after.r > 0.88 and after.s > 0.35: bright_specks += 1
+	contrast.sort()
+	var p99: float = contrast[mini(contrast.size() - 1, floori(contrast.size() * 0.99))] if not contrast.is_empty() else 1.0
+	var mean_saturation: float = saturation / maxi(1, pixels)
+	# Compare the requested warm terrain hue while retaining the accepted
+	# mutedness, soft-contrast and bright-core limits.
+	var mean_colour: Color = colour / maxi(1, pixels)
+	var hue_error: float = absf(wrapf(mean_colour.h - TrackTheme.DESERT[2].h, -0.5, 0.5))
+	check(pixels > 1000 and mean_saturation < 0.16 and hue_error < 0.04, "actual powder shares the warm terrain hue without saturated cores")
+	check(bright_specks == 0 and p99 < 0.20, "soft powder contains no bright yellow specks or hard opaque cores")
+	check(powder.save_png(out + "palette.png") == OK, "native muted-powder palette fixture")
+	var receipt := FileAccess.open(out + "palette.json", FileAccess.WRITE)
+	receipt.store_string(JSON.stringify({"pixels": pixels, "mean_saturation": mean_saturation, "mean_rgb": mean_colour, "terrain_hue_error": hue_error, "bright_specks": bright_specks, "contrast_p99": p99}, "\t"))
+	receipt.close()
+	print("SAND_PALETTE: ", pixels, " pixels saturation=", mean_saturation, " bright=", bright_specks, " contrast_p99=", p99)
+	floor_node.queue_free()
+	original_ground.show()
+	original_car.show()
+	if sun_veil != null: sun_veil.visible = veil_was_visible
+	await process_frame
+
 func draw(game: Node, fx: DesertSandWind) -> void:
 	# The desktop OS may focus the chat during capture. A pause menu contains
 	# a frozen world screenshot, which cannot measure the current effect.
 	game.paused = false
 	game.hud.pause_menu.hide()
+	game.hud.message_label.hide()
 	fx.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 	await RenderingServer.frame_post_draw
 

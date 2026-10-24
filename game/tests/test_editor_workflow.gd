@@ -55,7 +55,10 @@ func run() -> void:
 	await _all_preview_handles()
 	await _attached_editing()
 	app.queue_free()
-	await process_frame
+	GameSoundtrack.instance().queue_free()
+	for i: int in range(3): await process_frame
+	# Let the mixer release stopped Ogg decoder playbacks before tree exit.
+	await create_timer(0.25).timeout
 	_finish()
 
 
@@ -100,6 +103,7 @@ func _blank_and_connect() -> void:
 	check(doc.pieces.size() == 1 and canvas.ghost.is_empty(), "confirming the ghost commits one road section")
 	check(canvas.selected_piece == -1 and _button(app.get("root_ui"),"Straight") != null and _button(app.get("root_ui"),"Curve") != null,"confirming a section immediately returns to the road palette for the next placement")
 	check((app.get("history") as Array).size() == 1, "confirmed placement creates exactly one undo entry")
+	await _wait_preview()
 	var stored: Dictionary = (app.get("library") as TrackLibrary).load_wip(doc.id)
 	check(stored == doc, "a placed open road is saved as an editable draft")
 	canvas.choose_piece("curve")
@@ -308,14 +312,15 @@ func _move_start_tangent() -> void:
 	doc.pieces = [curve]
 	await _show_document(doc)
 	var canvas: EditorCanvas = app.get("canvas")
-	var route_before: Array = doc.points.duplicate(true)
-	app.call("_move_practice_start")
+	var pieces_before: Array = doc.pieces.duplicate(true)
+	canvas.choose_start_line()
 	var position: Vector2 = canvas.to_screen(Vector2(7,3))
 	_touch(canvas,73,position,true)
 	_touch(canvas,73,position,false)
-	check(doc.has("practice_start") and Vector2(doc.practice_start.position[0],doc.practice_start.position[1]) == Vector2(7,3),"Move start commits the tapped road location")
-	check(absf(wrapf(float(doc.practice_start.heading)-45.0,-180.0,180.0)) < 3.0,"start placed halfway round a quarter-circle faces its nearest tangent, not the last nearby sample")
-	check(doc.points == route_before,"moving the practice start preserves the separate lap route")
+	var centerline_midpoint := Vector2(10.0/sqrt(2.0),10.0-10.0/sqrt(2.0))
+	check(doc.has("start_line") and Vector2(doc.start_line.position[0],doc.start_line.position[1]).distance_to(centerline_midpoint) < 0.05,"Start line projects the tap onto the curve centerline")
+	check(absf(wrapf(float(doc.start_line.heading)-45.0,-180.0,180.0)) < 3.0,"start placed halfway round a quarter-circle faces its nearest tangent, not the last nearby sample")
+	check(doc.pieces == pieces_before,"placing the start line preserves authored road pieces")
 
 
 func _practice_spawn_checks() -> void:
@@ -393,6 +398,7 @@ func _objects_and_issues() -> void:
 	app.call("_build_editor_tools")
 	await _capture("objects")
 	var library: TrackLibrary = app.get("library")
+	await _wait_preview()
 	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc)), "section roads and barrier runs persist together in the actual JSON contract")
 	while app.get("editor_preview_thread") != null: await process_frame
 	var native: NativeTrack = TrackCompiler.compile(doc)
@@ -688,7 +694,7 @@ func _attached_editing() -> void:
 
 func _wait_preview() -> void:
 	var deadline: int = Time.get_ticks_msec()+15000
-	while app.get("editor_preview_thread") != null and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.get("id",""))) or app.get("editor_preview_thread") != null) and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.get("editor_preview_thread") == null,"background collision validation finishes within deadline")
 
 func _wait_practice() -> void:

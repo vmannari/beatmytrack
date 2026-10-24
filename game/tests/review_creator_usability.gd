@@ -53,7 +53,10 @@ func run() -> void:
 	for p: Vector2 in canvas.native_preview.route:
 		if canvas.native_preview.cell_at(p) != 0: off_road += 1
 	observe("unconfigured_lap",{"open_ends":RoadPieces.joins(doc.pieces).size(),"lap_samples_off_asphalt":off_road,"samples":canvas.native_preview.route.size(),"test_enabled":not (app.get("test_button") as Button).disabled,"share_enabled":not (app.get("share_button") as Button).disabled,"issues":(app.get("editor_issues") as Array).size()})
-	app.call("_route_from_roads")
+	var generated: Dictionary = RoadPieces.route_from_pieces(app.document)
+	if generated.ok:
+		for key: String in ["points","widths","corners","route_override"]: app.document[key] = generated.document[key]
+		app._commit_selection()
 	var ready: Dictionary = (app.get("document") as Dictionary).duplicate(true)
 	canvas.selected_piece = 0
 	app.call("_change_piece","width",2.0)

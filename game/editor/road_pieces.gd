@@ -3,7 +3,8 @@ extends RefCounted
 ## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
 ## Road pieces are geometry; race routing is an explicit, separate operation.
 
-const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge", "spline"]
+const CATALOG = preload("res://editor/road_piece_catalog.gd")
+const KINDS: Array[String] = CATALOG.KINDS
 const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
 const S_END_LENGTH: float = 2.0
 const MAX_PIECES: int = 96
@@ -13,8 +14,9 @@ const JOIN_ANGLE: float = 2.0
 
 
 static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
+	if kind not in KINDS: return {}
 	var piece: Dictionary = {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
-		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 0.0 if kind in ["hairpin","curve"] else S_END_LENGTH, "radius":12.0 if kind == "hairpin" else 16.0,
+		"length":CATALOG.DESCRIPTORS[kind].length, "radius":CATALOG.DESCRIPTORS[kind].radius,
 		"width":clampf(width,6.0,20.0), "flip":false}
 	if kind == "taper":
 		piece.length = 28.0
@@ -201,9 +203,9 @@ static func _partner(pieces: Array, index: int, endpoint: int, exclude: int = -1
 	return _matches(prepare_endpoints(pieces),index,endpoint,exclude)
 
 
-static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1) -> int:
+static func attached_end(piece: Dictionary, pieces: Array, exclude: int = -1, prepared: Dictionary = {}) -> int:
 	var attached: Array[bool] = [false,false]
-	var topology: Dictionary = prepare_endpoints(pieces)
+	var topology: Dictionary = prepare_endpoints(pieces) if prepared.is_empty() else prepared
 	for endpoint: int in [0,1]:
 		var position: Vector2 = _pose(piece,endpoint).position
 		for index: int in range(pieces.size()):
@@ -360,7 +362,7 @@ static func _number(value: Variant) -> bool:
 static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, kind: String = "barrier", scale: float = 1.0, prepared: Variant = null) -> Array:
 	var result: Array = []
 	if kind not in CreatorObjects.KINDS: return result
-	var capacity: int = maxi(0,96-document.objects.size())
+	var capacity: int = preload("res://editor/creator_limits.gd").remaining(document.objects,kind)
 	if capacity == 0: return result
 	var candidates: Array = prepared if prepared is Array else prepare_run(document)
 	if candidates.is_empty(): return result
@@ -385,14 +387,14 @@ static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, k
 	if kind in ["tyre_stack","tyre_wall"]: scale = 1.0
 	dimensions *= scale
 	if path.get("spline",false) and kind in ObjectRuns.CONTINUOUS:
-		return ObjectRuns.build(RoadsideBoundary.run(path,begin,delta,side,dimensions.y*0.5+0.8,dimensions.x),kind,scale,capacity)
+		return preload("res://editor/creator_limits.gd").take(document.objects,ObjectRuns.build(RoadsideBoundary.run(path,begin,delta,side,dimensions.y*0.5+0.8,dimensions.x),kind,scale,capacity),str(document.theme))
 	if absf(delta) < 0.01:
 		var center: Vector2 = Vector2(anchor.point)+Vector2(-tangent.y,tangent.x)*side*(float(anchor.width)*0.5+dimensions.y*0.5+0.8)
 		if center.abs().x <= 110.0 and center.abs().y <= 110.0:
 			var object: Dictionary = {"kind":kind,"position":[center.x,center.y],"rotation":fposmod(rad_to_deg(tangent.angle()),360.0)}
 			if scale != 1.0: object["scale"] = scale
 			result.append(object)
-		return result
+		return preload("res://editor/creator_limits.gd").take(document.objects,result,str(document.theme))
 	var offset_points := PackedVector2Array()
 	var edge_points: PackedVector2Array = _offset_edge(path,side,dimensions.y*0.5+0.8)
 	var count: int = maxi(1,ceili(absf(delta)/0.75))
@@ -400,7 +402,7 @@ static func barrier_run(document: Dictionary, start: Vector2, finish: Vector2, k
 		var sample: Dictionary = _at(path,begin+delta*float(i)/count)
 		var index: int = sample.index
 		offset_points.append(edge_points[index].lerp(edge_points[(index+1)%edge_points.size()],float(sample.blend)))
-	return ObjectRuns.build(offset_points,kind,scale,capacity)
+	return preload("res://editor/creator_limits.gd").take(document.objects,ObjectRuns.build(offset_points,kind,scale,capacity),str(document.theme))
 
 
 static func prepare_run(document: Dictionary) -> Array[Dictionary]:

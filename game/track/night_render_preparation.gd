@@ -2,7 +2,7 @@ extends RefCounted
 ## Night's local-light presence selects GLES shader variants at draw time.
 ## Prepare all four presence combinations under the existing loading cover.
 const MAX_ITEMS: int = 1024
-const MAX_LIGHTS: int = 64
+const MAX_LIGHTS: int = 256 # Legal authored lamps + prop/vehicle lights fit fully.
 const CONTEXTS: int = 4
 
 static func begin(world: Node3D, camera: Camera3D) -> Dictionary:

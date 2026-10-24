@@ -33,7 +33,7 @@ func metric(label: String, began: int) -> void:
 
 func settle() -> void:
 	var deadline: int = Time.get_ticks_msec()+30000
-	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.get("id",""))) or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.editor_preview_thread == null and not app.editor_world._building,"editor finishes latest preparation")
 	for node: Node in app.find_children("*","Window",true,false):
 		if node is Window: node.hide(); node.queue_free()
@@ -149,6 +149,9 @@ func same_triangles(before: Dictionary, after: Dictionary) -> bool:
 	print("EDITOR_TRIANGLE_TOLERANCE maximum_position_m=",maximum_position," maximum_normal_distance=",maximum_normal)
 	return true
 
+func lamp_state(lamp: OmniLight3D) -> Array:
+	return [lamp.global_transform,lamp.light_color,lamp.light_energy,lamp.omni_range,lamp.omni_attenuation,lamp.shadow_enabled,lamp.light_cull_mask]
+
 func compare_props(theme_id: String) -> void:
 	var track: NativeTrack = props_fixture(theme_id)
 	var old := NativeTrackVisual.new(); old.theme_id = theme_id; old.colors = TrackTheme.palette(theme_id)
@@ -171,6 +174,28 @@ func compare_props(theme_id: String) -> void:
 	ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; ambient.environment.ambient_light_energy = 0.45
 	ambient.environment.background_mode = Environment.BG_COLOR; ambient.environment.background_color = Color("45535a")
 	stage.add_child(ambient)
+	# Compare the same cosmetic time. The racing root is externally ticked;
+	# editor effects normally advance themselves while the fixture waits.
+	for node: Node in stage.find_children("*","Node",true,false):
+		if node is NightPropEffects:
+			node.externally_ticked = true; node.elapsed = 0.0; node._publish()
+	# The Mobile renderer can sum otherwise identical separately-created light
+	# RIDs in a different order (the identical-originals control reproduces six
+	# one-channel differences). Verify the actual lights, then render both
+	# geometry trees under one fixed rig; retain the zero-difference assertion.
+	var original_lamps: Array = old.find_children("*","OmniLight3D",true,false)
+	var fresh_lamps: Array = fresh.find_children("*","OmniLight3D",true,false)
+	var original_states: Array = []; var fresh_states: Array = []
+	for lamp: OmniLight3D in original_lamps: original_states.append(lamp_state(lamp))
+	for lamp: OmniLight3D in fresh_lamps: fresh_states.append(lamp_state(lamp))
+	original_states.sort_custom(func(a: Array,b: Array) -> bool: return var_to_str(a) < var_to_str(b))
+	fresh_states.sort_custom(func(a: Array,b: Array) -> bool: return var_to_str(a) < var_to_str(b))
+	check(original_states == fresh_states,theme_id+" authored light poses and values remain exact")
+	for lamp: OmniLight3D in original_lamps:
+		var shared: OmniLight3D = lamp.duplicate()
+		stage.add_child(shared); shared.global_transform = lamp.global_transform
+		lamp.hide()
+	for lamp: OmniLight3D in fresh_lamps: lamp.hide()
 	if DisplayServer.get_name() != "headless":
 		fresh.hide(); old.show()
 		for frame: int in range(6): await RenderingServer.frame_post_draw

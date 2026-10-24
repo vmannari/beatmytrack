@@ -37,7 +37,7 @@ static func draw(owner: Node, receiving: SubViewport, source: Node) -> int:
 	viewport.size = Vector2i(128,128)
 	viewport.own_world_3d = true
 	viewport.msaa_3d = receiving.msaa_3d
-	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	owner.add_child(viewport)
 	var stage := Node3D.new(); viewport.add_child(stage)
 	var ambient := WorldEnvironment.new(); ambient.environment = Environment.new()
@@ -48,12 +48,15 @@ static func draw(owner: Node, receiving: SubViewport, source: Node) -> int:
 	var sun: DirectionalLight3D = owner.sunlight.duplicate() if owner is EditorWorld else DirectionalLight3D.new()
 	if not owner is EditorWorld: sun.rotation_degrees = Vector3(-58,-35,0); sun.shadow_enabled = true
 	stage.add_child(sun)
-	var light := OmniLight3D.new(); light.position = Vector3(0,4,0); light.omni_range = 32.0; stage.add_child(light)
+	# Match the editor light rig. An unconditional omni previously compiled
+	# unused point-light variants even in daylight biomes.
 	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.size = 32.0; camera.position = Vector3(0,32,0); camera.rotation.x = -PI/2.0
 	stage.add_child(camera); camera.current = true
 	var seen: Dictionary = {}
 	var count: int = 0
+	var submissions: Array[Node] = []
+	var batch_times: Array[float] = []
 	for node: Node in source.find_children("*","GeometryInstance3D",true,false):
 		var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
 		if mesh == null: continue
@@ -78,12 +81,30 @@ static func draw(owner: Node, receiving: SubViewport, source: Node) -> int:
 		item.material_override = material; item.cast_shadow = node.cast_shadow
 		item.scale = Vector3.ONE*scale
 		item.position = Vector3((count%8)*3.5-12.25,0,(count/8)*3.5-12.25)-aabb.get_center()*scale
-		stage.add_child(item); count += 1
+		stage.add_child(item); submissions.append(item); count += 1
+		if submissions.size() >= 4:
+			var started: int = Time.get_ticks_usec()
+			if not await _draw_batch(owner,viewport): return 0
+			batch_times.append((Time.get_ticks_usec()-started)/1000.0)
+			for submitted: Node in submissions: submitted.free()
+			submissions.clear()
 		if count >= 64: break
-	# At least one submitted draw is required for Compatibility. Two completed
-	# frames also let Mobile's scene-surface detection see the actual instances.
-	for frame: int in range(2):
-		await RenderingServer.frame_post_draw
-		if not owner.is_inside_tree(): return 0
+	if not submissions.is_empty():
+		var started: int = Time.get_ticks_usec()
+		if not await _draw_batch(owner,viewport): return 0
+		batch_times.append((Time.get_ticks_usec()-started)/1000.0)
+	if owner is EditorWorld:
+		owner.preparation_metrics["pipeline_batches_ms"] = batch_times
+		owner.preparation_metrics["pipeline_combinations"] = count
 	viewport.free()
 	return count
+
+static func _draw_batch(owner: Node, viewport: SubViewport) -> bool:
+	# Four combinations per submission instead of up to 64 cold pipelines at
+	# once. Driver compilation of a single pipeline is separately measurable.
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	for frame: int in range(2):
+		await RenderingServer.frame_post_draw
+		if not owner.is_inside_tree(): return false
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	return true

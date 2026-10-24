@@ -79,6 +79,9 @@ func reuse_from(root: Node3D, previous: RefCounted) -> void:
 
 func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 	if sliced and not _current_node(node): return
+	var installer: Node = node
+	while installer != null and not installer is NativeTrackVisual: installer = installer.get_parent()
+	var race_install: bool = sliced and installer != null and installer.preserve_relief_surfaces
 	if node is Node3D and node.has_meta("prop_origin"):
 		# Movable props remain rigid; their presenter owns subsequent support.
 		if not node.has_meta("desert_road_relief"):
@@ -120,9 +123,16 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 			var to_world: Transform3D = inverse*node.global_transform
 			var material: ShaderMaterial = node.material_override as ShaderMaterial
 			var refine: bool = material != null and not node.is_in_group("race_bridge_rendering")
+			# A tiny non-refining prop needs bounded work, not a worker and two
+			# frame waits per mesh. Large/refining race surfaces remain off-thread.
+			var small_race_mesh: bool = race_install and not refine
+			var vertex_count: int = 0
+			if small_race_mesh:
+				for surface: int in range(node.mesh.get_surface_count()): vertex_count += node.mesh.surface_get_array_len(surface)
+				small_race_mesh = vertex_count <= 384
 			# Refine terrain/skirts across their interior so an unchanged large
 			# source triangle cannot remain as a flat lid over the recessed road.
-			if sliced:
+			if sliced and not small_race_mesh:
 				# Snapshot streams on main; subdivision and normal sampling use
 				# plain arrays on a private worker. Publish GPU resources on main.
 				var streams: Array = []
@@ -135,11 +145,16 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 				var key: String = hash.finish().hex_encode()
 				if _reusable_meshes.has(key):
 					node.mesh = _reusable_meshes[key]
+					_refresh_spatial_ranges(node)
 					for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
 					return
 				var worker = get_script().new()
 				worker.track = track; worker.field = field; worker.bounds = bounds
-				var job = preload("res://editor/work_job.gd").start(worker.prepare_uploads.bind(streams,to_world,refine),node.get_tree())
+				# Race installation retains the original surface/index streams and
+				# draw count. CPU deformation still runs off-thread. A large original
+				# surface remains one indivisible upload; editor uploads stay split.
+				var split_surfaces: bool = installer == null or not installer.preserve_relief_surfaces
+				var job = preload("res://editor/work_job.gd").start(worker.prepare_uploads.bind(streams,to_world,refine,split_surfaces),node.get_tree())
 				while not job.done:
 					await node.get_tree().process_frame
 					if not is_instance_valid(node) or not node.is_inside_tree(): job.cancel(); return
@@ -148,8 +163,6 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 				if not job.result is Array or job.result.is_empty(): return
 				var prepared: Array = job.result
 				var mesh := ArrayMesh.new()
-				var installer: Node = node
-				while installer != null and not installer is NativeTrackVisual: installer = installer.get_parent()
 				for upload: Dictionary in prepared:
 					if not _current_node(node): return
 					if installer != null and not await installer._budget_install(upload.arrays[Mesh.ARRAY_VERTEX].size()): return
@@ -158,8 +171,25 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 				mesh.set_meta("desert_road_relief",VERSION)
 				mesh.set_meta("editor_relief_source",key); node.mesh = mesh
 			else: node.mesh = deform(node.mesh,to_world,refine)
-		if sliced and node.is_inside_tree(): await node.get_tree().process_frame
+		_refresh_spatial_ranges(node)
+		if sliced and node.is_inside_tree():
+			if race_install: await installer._yield_build()
+			else: await node.get_tree().process_frame
 	for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
+
+func _refresh_spatial_ranges(node: MeshInstance3D) -> void:
+	if not node.has_meta("spatial_object_ends"): return
+	var ends: PackedInt32Array = node.get_meta("spatial_object_ends")
+	var count: int = 0
+	for surface: int in range(node.mesh.get_surface_count()):
+		var corners: int = node.mesh.surface_get_array_index_len(surface)
+		count += corners if corners > 0 else node.mesh.surface_get_array_len(surface)
+	if not ends.is_empty() and ends[-1] == count: return
+	# Subdivision inserts triangles into the ordered prop stream. Its old object
+	# boundaries no longer describe that stream. Keep the complete assembly in
+	# one draw, preserving every face and its ordering instead of using stale IDs.
+	node.set_meta("spatial_object_ends", PackedInt32Array([count]))
+	node.set_meta("spatial_object_centres", PackedVector3Array([node.mesh.get_aabb().get_center()]))
 
 func _current_node(node: Node) -> bool:
 	if not is_instance_valid(node) or not node.is_inside_tree(): return false
@@ -207,12 +237,13 @@ func prepare_arrays(cancelled: Callable, streams: Array, transform: Transform3D,
 	_samples.clear()
 	return result
 
-func prepare_uploads(cancelled: Callable, streams: Array, transform: Transform3D, refine: bool) -> Array:
+func prepare_uploads(cancelled: Callable, streams: Array, transform: Transform3D, refine: bool, split_surfaces: bool = true) -> Array:
 	var prepared: Array = prepare_arrays(cancelled,streams,transform,refine)
 	var result: Array = []
 	for surface: int in range(prepared.size()):
 		if cancelled.call(): return []
-		for arrays: Array in preload("res://editor/road_sections.gd").split(prepared[surface]): result.append({"arrays":arrays,"surface":surface})
+		var uploads: Array = preload("res://editor/road_sections.gd").split(prepared[surface]) if split_surfaces else [prepared[surface]]
+		for arrays: Array in uploads: result.append({"arrays":arrays,"surface":surface})
 	return result
 
 func _triangle(tool: SurfaceTool, triangle: Array, inverse: Transform3D, refine: bool, depth: int) -> void:

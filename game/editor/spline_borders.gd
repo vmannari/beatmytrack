@@ -103,11 +103,14 @@ static func rounded(source: PackedVector2Array, _cuts: Array[Dictionary]) -> Pac
 		if absf(incoming.angle_to(outgoing)) > 0.25: corners.append(i)
 	var replacements: Dictionary = {}
 	var skipped: Dictionary = {}
-	for index: int in corners:
+	for corner_index: int in range(corners.size()):
+		var index: int = corners[corner_index]
 		var trim: float = 1.4
-		for other: int in corners:
-			if other == index: continue
-			trim = minf(trim,absf(wrapf(distances[other]-distances[index],-length*0.5,length*0.5))*0.4)
+		# Perimeter order means the nearest other corner is adjacent in this
+		# circular list. Preserve the original wrapped-distance arithmetic.
+		if corners.size() > 1:
+			for other: int in [corners[posmod(corner_index-1,corners.size())],corners[(corner_index+1)%corners.size()]]:
+				trim = minf(trim,absf(wrapf(distances[other]-distances[index],-length*0.5,length*0.5))*0.4)
 		var center: Vector2 = polygon[index]
 		var a: Vector2 = perimeter_point(polygon,posmod(index-1,polygon.size()),center,-1,trim)
 		var b: Vector2 = perimeter_point(polygon,(index+1)%polygon.size(),center,1,trim)
@@ -117,8 +120,12 @@ static func rounded(source: PackedVector2Array, _cuts: Array[Dictionary]) -> Pac
 			var t: float = float(sample)/steps
 			curve.append(a*(1.0-t)*(1.0-t)+center*2.0*t*(1.0-t)+b*t*t)
 		replacements[index] = curve
-		for i: int in range(polygon.size()):
-			if i != index and absf(wrapf(distances[i]-distances[index],-length*0.5,length*0.5)) < trim: skipped[i] = true
+		# Trims cannot pass the adjacent corner. Walk only the local vertices.
+		for direction: int in [-1,1]:
+			for step: int in range(1,polygon.size()):
+				var i: int = posmod(index+direction*step,polygon.size())
+				if absf(wrapf(distances[i]-distances[index],-length*0.5,length*0.5)) >= trim: break
+				skipped[i] = true
 	var result := PackedVector2Array()
 	for i: int in range(polygon.size()):
 		if replacements.has(i): result.append_array(replacements[i])

@@ -33,8 +33,8 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 		var front: float = bridge.visual_height_at(point+axle,state.route_index,layer)
 		var rear: float = bridge.visual_height_at(point-axle,state.route_index,layer)
 		if not state.track_elevated:
-			front += TrackHazards.ramp_height(point+axle,track.hazard_objects)
-			rear += TrackHazards.ramp_height(point-axle,track.hazard_objects)
+			front += track.ramp_height(point+axle)
+			rear += track.ramp_height(point-axle)
 			front += SpeedBumps.height(point+axle,track.speed_bump_objects)
 			rear += SpeedBumps.height(point-axle,track.speed_bump_objects)
 		support = (front+rear)*0.5

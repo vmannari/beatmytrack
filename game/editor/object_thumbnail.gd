@@ -17,6 +17,9 @@ var _kind: String
 var _biome: String
 var _color: String
 
+static func trim_cache() -> void:
+	_images.clear(); _sizes.clear(); cache_bytes = 0
+
 func _visible() -> bool:
 	if not is_visible_in_tree() or not get_global_rect().intersects(get_viewport_rect()): return false
 	var parent: Node = get_parent()

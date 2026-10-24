@@ -215,7 +215,7 @@ static func fair_contour(source: PackedVector2Array, cuts: Array[Dictionary]) ->
 		result[i] += displacement.limit_length(0.25)*weight
 	return result
 
-static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callable()) -> Array[Dictionary]:
+static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callable(), section_cache: RefCounted = null, update: Dictionary = {}) -> Array[Dictionary]:
 	var pieces: Array = document.get("pieces",[])
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	var outlines: Array[Dictionary] = []
@@ -238,6 +238,19 @@ static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callab
 		if yield_budget.is_valid() and not await yield_budget.call(): return []
 		if pieces[index].kind in ["bridge","spline"]: continue
 		var shape: Dictionary = build(pieces,index,-0.2,topology)
+		var cache_key: String = ""
+		if section_cache != null:
+			var bounds: Rect2 = preload("res://editor/road_update.gd").piece_bounds(pieces[index]).grow(float(pieces[index].width)+2.0)
+			var neighbours: Array = []
+			for outline: Dictionary in outlines:
+				if bounds.intersects(outline.bounds): neighbours.append([outline.polygon,outline.hole,pieces[outline.index]])
+			cache_key = "kerb/"+preload("res://editor/road_sections.gd").digest(["segments",pieces[index],shape,neighbours])
+			var cached: Variant = section_cache.read(cache_key)
+			if cached is Array:
+				for source: Dictionary in cached:
+					var segment: Dictionary = source.duplicate(); segment.piece = index; segments.append(segment)
+				continue
+		var first_segment: int = segments.size()
 		var cuts: Array[Dictionary] = shape.cuts
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
 		for polygon: PackedVector2Array in shape.contours:
@@ -269,6 +282,7 @@ static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callab
 					var curved: bool = RoadEdges._inner_bend_distance(middle,points) >= 0
 					if RoadEdges._on_join_plane(a,b,cuts) or not curved: continue
 					segments.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
+		if section_cache != null: section_cache.write(cache_key,segments.slice(first_segment))
 	# Splines keep exactly the same swept contours, curvature classification
 	# and bounded kerb offsets used by their solitary/canonical renderer.
 	var has_spline: bool = false
@@ -291,8 +305,20 @@ static func kerb_triangles(document: Dictionary, yield_budget: Callable = Callab
 		if length < 2.0 and pieces[int(segments[first].piece)].kind != "spline":
 			first = last+1
 			continue # Omit isolated decorative kerb slivers at offset inflections.
+		if update.has("tiles"):
+			var bounds := Rect2(segments[first].a,Vector2.ZERO)
+			for i: int in range(first,last+1):
+				for name: String in ["a","b","outer_a","outer_b"]: bounds = bounds.expand(segments[i][name])
+			if not preload("res://editor/road_update.gd").intersects(bounds,update.tiles): first = last+1; continue
+		var cache_key: String = ""
+		if section_cache != null:
+			cache_key = "kerb/"+preload("res://editor/road_sections.gd").digest(["triangles",segments.slice(first,last+1)])
+			var cached: Variant = section_cache.read(cache_key)
+			if cached is Array: visual.triangles.append_array(cached); first = last+1; continue
+		var first_triangle: int = visual.triangles.size()
 		for i: int in range(first,last+1):
 			var segment: Dictionary = segments[i]
 			visual._strip(segment.a,segment.b,segment.outer_a,segment.outer_b,segment.start-origin,segment.end-origin,length)
+		if section_cache != null: section_cache.write(cache_key,visual.triangles.slice(first_triangle))
 		first = last+1
 	return visual.triangles

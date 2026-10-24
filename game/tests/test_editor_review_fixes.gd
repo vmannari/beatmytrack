@@ -86,7 +86,7 @@ func autosaves() -> void:
 	app.document.objects = [{"kind":"container","position":[0.0,0.0],"rotation":0.0}]
 	app.canvas = null; app._show_screen("create")
 	var deadline: int = Time.get_ticks_msec()+30000
-	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
+	while (app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.get("id",""))) or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.editor_preview_thread == null and not app.editor_world._building,"initial editor settles")
 	check(app._save_track_now(),"baseline original and WIP are durable")
 	close_notices(app)
@@ -94,6 +94,7 @@ func autosaves() -> void:
 		if app.screen != "create": app._show_screen("create")
 		app.canvas.active_pointer = 0; app.document.objects[0].position = [2.0,0.0]
 		check(app._save_draft(true) == OK,scenario+" move queues")
+		app.editor_commits.flush(); app._apply_editor_commits()
 		var release := Semaphore.new()
 		if scenario != "queued":
 			var started := Semaphore.new()
@@ -103,6 +104,7 @@ func autosaves() -> void:
 			started.wait()
 		app.document.objects[0].position = [0.0,0.0]
 		check(app._save_draft(true) == OK,scenario+" return queues desired final state")
+		app.editor_commits.flush(); app._apply_editor_commits()
 		check(app.editor_writes.pending.size() == 1 and app.editor_writes.pending[0].document.objects[0].position == [0.0,0.0],scenario+" obsolete queued state is superseded")
 		app.canvas.active_pointer = -99
 		if scenario != "queued": release.post()

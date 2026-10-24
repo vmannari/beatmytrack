@@ -3,6 +3,18 @@ extends RefCounted
 const BUDGET: int = 16 * 1024 * 1024
 const LIMIT: int = 3
 
+static func copy_track(source: NativeTrack) -> NativeTrack:
+	# Resource duplication follows storage flags. NativeTrack also owns script
+	# fields and mutable contact helpers; copy those explicitly for practice.
+	var result := NativeTrack.new()
+	var snapshot: Dictionary = fields(source).duplicate(true)
+	for name: String in snapshot:
+		if name in ["kerbs","snow_banks"]:
+			var contact: RoadKerbs = result.get(name)
+			for field: String in snapshot[name]: contact.set(field,snapshot[name][field])
+		else: result.set(name,snapshot[name])
+	return result
+
 static func geometry(document: Dictionary) -> Dictionary:
 	var key: Dictionary = document.duplicate(true)
 	for field: String in ["id","name","creator"]: key.erase(field)
@@ -54,7 +66,7 @@ static func remember(document: Dictionary, track: NativeTrack, cache: Dictionary
 	cache["prepared"] = entries; cache["prepared_bytes"] = total+size
 
 static func trim_auxiliary(cache: Dictionary) -> void:
-	var keys: Array[String] = ["key","cells","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image","winter_marker_key","winter_markers"]
+	var keys: Array[String] = ["key","cells","paint_exclusion","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image","winter_marker_key","winter_markers"]
 	var values: Array = []
 	var bytes: int = 0
 	for key: String in keys:

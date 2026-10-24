@@ -6,7 +6,7 @@ const WIDTH: float = 1.25
 const CONTACT_BUCKET: float = 0.5
 var _contact_buckets: Dictionary = {}
 
-func build(track: NativeTrack) -> void:
+func build(track: NativeTrack, _paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> void:
 	triangles.clear()
 	buckets.clear()
 	_contact_buckets.clear()
@@ -20,6 +20,7 @@ func build(track: NativeTrack) -> void:
 	var edges: Array[Dictionary] = []
 	var starts: Dictionary = {}
 	for y: int in range(grid.y):
+		if _cancelled(cancelled): return
 		for x: int in range(grid.x):
 			if track.cells[y*grid.x+x] != 0: continue
 			var nodes: Array[Vector2i] = [Vector2i(x,y),Vector2i(x+1,y),Vector2i(x+1,y+1),Vector2i(x,y+1)]
@@ -33,10 +34,12 @@ func build(track: NativeTrack) -> void:
 	var visited := PackedByteArray()
 	visited.resize(edges.size())
 	for first: int in range(edges.size()):
+		if _cancelled(cancelled): return
 		if visited[first] != 0: continue
 		var polygon := PackedVector2Array()
 		var current: int = first
 		while current >= 0 and visited[current] == 0:
+			if polygon.size() % 128 == 0 and _cancelled(cancelled): return
 			visited[current] = 1
 			var edge: Dictionary = edges[current]
 			polygon.append(Vector2(edge.a.x*cell_size-extent.x,extent.y-edge.a.y*cell_size))

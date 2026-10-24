@@ -9,7 +9,7 @@ static var guard := Mutex.new()
 static var section_entries: Dictionary = {}
 static var section_bytes: int = 0
 static var section_counts: Dictionary = {}
-const SECTION_LIMITS: Dictionary = {"clip":512,"polygon":512,"piece":256,"normalize":256,"relief":256}
+const SECTION_LIMITS: Dictionary = {"clip":512,"polygon":512,"piece":256,"normalize":256,"relief":256,"kerb":256}
 
 static func section_read(key: String) -> Variant:
 	guard.lock()
@@ -23,13 +23,16 @@ static func section_write(key: String, value: Variant) -> void:
 	var size: int = var_to_bytes(value).size()+key.length()*2+256
 	guard.lock()
 	if section_entries.has(key): _erase_section(key)
-	# Keep room for final arrays as well as immutable intermediate sections.
-	if size <= BUDGET/2:
+	# Final packets/GPU entries and intermediate work share one hard budget.
+	# A live planning scene retains neither final packet nor idle GPU entry,
+	# so use that available space instead of thrashing at an arbitrary half.
+	var allowance: int = maxi(0,BUDGET-bytes-gpu_bytes)
+	if size <= mini(BUDGET/2,allowance):
 		var role: String = key.get_slice("/",0)
 		while int(section_counts.get(role,0)) >= int(SECTION_LIMITS.get(role,256)):
 			for victim: String in section_entries:
 				if victim.begins_with(role+"/"): _erase_section(victim); break
-		while not section_entries.is_empty() and section_bytes+size > BUDGET/2: _evict_section()
+		while not section_entries.is_empty() and section_bytes+size > allowance: _evict_section()
 		section_entries[key] = {"value":value,"bytes":size}; section_bytes += size
 		section_counts[role] = int(section_counts.get(role,0))+1
 	_trim_sections()
@@ -43,7 +46,7 @@ static func _erase_section(key: String) -> void:
 static func _evict_section() -> void:
 	# Thousands of tiny clipping fragments must not evict reusable road pieces
 	# and finished tile streams on the scalar fallback path.
-	for role: String in ["clip","polygon","normalize","relief","piece"]:
+	for role: String in ["clip","polygon","normalize","relief","kerb","piece"]:
 		if int(section_counts.get(role,0)) == 0: continue
 		for key: String in section_entries:
 			if key.begins_with(role+"/"): _erase_section(key); return
@@ -63,9 +66,10 @@ static func key_for(track: NativeTrack) -> String:
 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(var_to_bytes(geometry))
 	return digest.finish().hex_encode()
 
-static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable()) -> Dictionary:
+static func prepare(track: NativeTrack, force: bool = false, cached_only: bool = false, cancelled: Callable = Callable(), planning: bool = false, update: Dictionary = {}) -> Dictionary:
+	if cancelled.is_valid() and cancelled.call(): return {}
 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): return {}
-	var key: String = key_for(track)
+	var key: String = ("planning-2/" if planning else "")+key_for(track)
 	guard.lock()
 	for entry: Dictionary in entries:
 		if entry.key == key:
@@ -73,7 +77,7 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 	var uploaded: bool = gpu_keys.has(key)
 	guard.unlock()
 	if cached_only or (uploaded and not force): return {"key":key,"parts":[],"metadata":{}}
-	var stored: Dictionary = NativeTrackVisual.ROAD_DISK_CACHE.read_arrays(disk_key_for(track),key)
+	var stored: Dictionary = {} if planning else NativeTrackVisual.ROAD_DISK_CACHE.read_arrays(disk_key_for(track),key)
 	if not stored.is_empty(): return stored
 	var builder := NativeTrackVisual.new()
 	builder.name = "RoadCPUBuilder"
@@ -81,6 +85,8 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 	builder.colors = TrackTheme.palette(builder.theme_id)
 	builder.cache_road_meshes = false; builder.persist_road_meshes = false
 	builder._capture_road_arrays = true
+	builder.planning_roads = planning and preload("res://editor/road_update.gd").reduced_verge(track)
+	builder.editor_road_update = update
 	builder.road_sections = load("res://editor/road_sections.gd").new()
 	if cancelled.is_valid(): builder.build_current = func() -> bool: return not cancelled.call()
 	builder._build_creator_roads(track)
@@ -108,12 +114,17 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 		if builder.has_meta(name): metadata[name] = builder.get_meta(name)
 	var parts: Array = []
 	for part: Dictionary in builder._prepared_road_parts:
-		for arrays: Array in load("res://editor/road_sections.gd").split(part.arrays,16.0 if builder.theme_id == "night_city" else 32.0):
+		var sections: Array = [part.arrays] if planning and part.has("tile") and builder.theme_id != "night_city" else load("res://editor/road_sections.gd").split(part.arrays,16.0 if builder.theme_id == "night_city" else 32.0)
+		for arrays: Array in sections:
+			var tile: Vector2i = preload("res://editor/road_update.gd").tile_of(arrays)
+			if update.has("tiles") and not update.tiles.has(tile): continue
 			var section: Dictionary = part.duplicate()
 			section.arrays = arrays
+			section.tile = tile
 			section.mesh_key = load("res://editor/road_sections.gd").digest([part.role,arrays,part.get("relief_version","")])
 			parts.append(section)
 	var packet: Dictionary = {"key":key,"parts":parts,"metadata":metadata,"section_hits":builder.road_sections.hits,"section_misses":builder.road_sections.misses,"reused":builder.road_sections.reused.duplicate(),"rebuilt":builder.road_sections.rebuilt.duplicate()}
+	if update.has("tiles"): packet["dirty_tiles"] = update.tiles
 	var size: int = 0
 	for part: Dictionary in packet.parts:
 		var arrays: Array = part.arrays
@@ -121,7 +132,10 @@ static func prepare(track: NativeTrack, force: bool = false, cached_only: bool =
 		if arrays[Mesh.ARRAY_INDEX] != null: size += arrays[Mesh.ARRAY_INDEX].size()*4
 	builder.free()
 	guard.lock()
-	if size <= BUDGET-gpu_bytes:
+	# Planning packets are installed immediately. Retaining another full packet
+	# would evict the intermediate pieces and tile streams needed by the next
+	# local edit; the active editor already owns the uploaded result.
+	if not planning and not update.has("tiles") and size <= BUDGET-gpu_bytes:
 		while not entries.is_empty() and (entries.size() >= 8 or bytes+size+gpu_bytes > BUDGET): bytes -= int(entries.pop_front().bytes)
 		entries.append({"key":key,"packet":packet,"bytes":size}); bytes += size
 	_trim_sections()
@@ -153,6 +167,26 @@ static func account_gpu(cache: Array) -> void:
 	_trim_sections()
 	guard.unlock()
 
+static func residency() -> Dictionary:
+	guard.lock()
+	var result: Dictionary = {"packets":bytes,"sections":section_bytes,"gpu":gpu_bytes}
+	guard.unlock()
+	return result
+
+static func trim_retained() -> void:
+	guard.lock()
+	entries.clear(); bytes = 0
+	section_entries.clear(); section_counts.clear(); section_bytes = 0
+	guard.unlock()
+
+static func reserve_sections() -> void:
+	guard.lock()
+	# A completed/cancelled race can leave a large final CPU packet even when
+	# its GPU entry is absent. Reserve intermediate work space from both LRUs.
+	while not entries.is_empty() and bytes+gpu_bytes > BUDGET/2: bytes -= int(entries.pop_front().bytes)
+	_trim_sections()
+	guard.unlock()
+
 static func unpack_intermediate(arrays: Array, decode_normals: bool) -> Array:
 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
 	if native != null:
@@ -177,7 +211,17 @@ static func unpack_intermediate(arrays: Array, decode_normals: bool) -> Array:
 	return result
 
 static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
-	return with_winter_cover(prepare(track,true,false,cancelled),track,cancelled)
+	var packet: Dictionary = with_winter_cover(prepare(track,true,false,cancelled),track,cancelled).duplicate()
+	var disk: GDScript = preload("res://track/road_mesh_disk_cache.gd")
+	var receipt: Dictionary = disk.stage_arrays(disk_key_for(track),packet,cancelled)
+	if cancelled.is_valid() and cancelled.call():
+		disk.discard_arrays(receipt)
+		return {}
+	packet.receipt = receipt
+	return packet
+
+static func run_editor(cancelled: Callable, track: NativeTrack, previous: NativeTrack = null) -> Dictionary:
+	return with_winter_cover(prepare(track,true,false,cancelled,true,preload("res://editor/road_update.gd").plan(previous,track)),track,cancelled)
 
 static func with_winter_cover(packet: Dictionary, track: NativeTrack, cancelled: Callable) -> Dictionary:
 	if track.metadata.get("theme","pine") != "winter" or (cancelled.is_valid() and cancelled.call()): return packet

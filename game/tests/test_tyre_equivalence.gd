@@ -1,6 +1,9 @@
 extends SceneTree
 ## Frozen pre-optimization solver, exact whole-state comparison across contacts.
 func _initialize() -> void:
+	run.call_deferred()
+
+func run() -> void:
 	var reference = load("res://tests/legacy_tyres_reference.gd")
 	var config: HandlingConfig = load("res://resources/balanced.tres")
 	var random := RandomNumberGenerator.new()

@@ -25,7 +25,7 @@ func settle(label: String, began: int) -> void:
 	while Time.get_ticks_msec()<deadline:
 		var preview: NativeTrack = app.canvas.native_preview
 		var exact_document: bool = preview != null and preview.metadata.get("creator_document",{}) == app.document
-		if exact_document and not app.canvas.preparing and app.editor_preview_thread == null and not app.editor_world._building and not app.editor_writes.unsettled(app.library,str(app.document.id)): break
+		if not app.editor_commits.unsettled() and exact_document and not app.canvas.preparing and app.editor_preview_thread == null and not app.editor_world._building and not app.editor_writes.unsettled(app.library,str(app.document.id)): break
 		var frame: int = Time.get_ticks_usec()
 		await process_frame
 		slowest = maxf(slowest,(Time.get_ticks_usec()-frame)/1000.0)
@@ -123,10 +123,16 @@ func supersession() -> void:
 	check(app.editor_world.visual_cache_bytes <= EditorWorld.VISUAL_CACHE_BUDGET,"visual history retains its byte bound")
 	check(app.editor_raster_cache.get("auxiliary_bytes",0) <= 8*1024*1024,"auxiliary preparation retains its byte bound")
 	var previous: NativeTrackVisual = app.editor_world.visual
+	var previous_ground: Array = []
+	for child: Node in previous.get_children():
+		if child.get_meta("editor_layer","") == "terrain": previous_ground.append(child.get_instance_id())
 	app.call("_choose_object","rock")
 	app.canvas._place(app.canvas.to_screen(Vector2(-20,-26)))
 	await settle("solid_on_road",Time.get_ticks_usec()); exact("solid on road")
-	check(app.editor_world.visual != previous,"solid replacing a real road cell rebuilds affected ground")
+	var current_ground: Array = []
+	for child: Node in app.editor_world.visual.get_children():
+		if child.get_meta("editor_layer","") == "terrain": current_ground.append(child.get_instance_id())
+	check(not current_ground.is_empty() and current_ground != previous_ground,"solid replacing a real road cell rebuilds affected ground")
 	await reference("solid-on-road")
 	# Leave while a fresh Desert road/relief worker owns a candidate scene.
 	app.canvas = null; app.editor_view.clear(); app.document = fixture("desert")

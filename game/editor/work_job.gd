@@ -33,5 +33,5 @@ static func reap() -> void:
 
 static func finish() -> void:
 	for job in pending: job.cancel()
-	for job in pending: job.thread.wait_to_finish(); job.thread = null; job._work = Callable(); job.done = true
+	for job in pending: job.result = job.thread.wait_to_finish(); job.thread = null; job._work = Callable(); job.done = true
 	pending.clear(); tree = null

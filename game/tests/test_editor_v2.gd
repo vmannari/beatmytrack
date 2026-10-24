@@ -102,11 +102,15 @@ func _ui(doc: Dictionary) -> void:
 	app.set("library",TrackLibrary.new(folder))
 	(app.get("records") as LocalRecords).path = folder+"/records.json"
 	root.add_child(app)
+	while not app.startup_complete: await process_frame
 	app.set("document",doc.duplicate(true))
 	app.call("_show_screen","create")
 	await process_frame
 	await process_frame
 	var canvas: EditorCanvas = app.get("canvas")
+	var ready_deadline: int = Time.get_ticks_msec()+15000
+	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or canvas.preparing) and Time.get_ticks_msec()<ready_deadline: await process_frame
+	check(not canvas.preparing and app.editor_preview_thread == null,"editor preparation finishes before touch placement checks")
 	app.call("_editor_category","waypoints")
 	var down := InputEventScreenTouch.new()
 	down.pressed = true; down.position = canvas.to_screen(Vector2(-35,-25)); down.index = 1
@@ -140,7 +144,7 @@ func _ui(doc: Dictionary) -> void:
 	down.pressed = false; canvas._gui_input(down)
 	check((app.get("document") as Dictionary).objects.size() == count+1,"single touch stamps one object on release")
 	app.call("_rotate_object")
-	check((app.get("document") as Dictionary).objects[-1].rotation == 45,"selected object rotates 45 degrees")
+	check((app.get("document") as Dictionary).objects[-1].rotation == 22.5,"selected object rotates 22.5 degrees")
 	app.call("_duplicate_object")
 	check((app.get("document") as Dictionary).objects.size() == count+2,"copy adds an independently positioned object")
 	app.call("_delete_selection")

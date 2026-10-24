@@ -7,6 +7,7 @@ const ROAD_OFFSET: float = 0.365 # Marking centre to outside of rounded asphalt 
 const MAX_DETAILS: int = 2048
 const DETAIL_GRID: float = 0.34
 var detail_count: int = 0
+var details_enabled: bool = true
 var _cells_emitted: Dictionary = {}
 var _points := PackedVector2Array()
 var _across := PackedFloat32Array()
@@ -64,7 +65,7 @@ func _emit_vertex(tool: SurfaceTool, point: Vector2, uv: Vector2) -> void:
 	if normal.y < 0.0: normal = -normal
 	for i: int in range(3):
 		tool.set_uv(Vector2(0,_across[i])); tool.set_normal(normal); tool.set_color(Color.WHITE); tool.add_vertex(vertices[i])
-	if detail_count < MAX_DETAILS: _details(tool,normal)
+	if details_enabled and detail_count < MAX_DETAILS: _details(tool,normal)
 	_points.clear(); _across.clear(); _heights.clear()
 
 func _details(tool: SurfaceTool, normal: Vector3) -> void:

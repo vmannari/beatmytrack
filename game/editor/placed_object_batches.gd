@@ -9,6 +9,7 @@ var individuals: Dictionary = {}
 var models: Dictionary = {}
 var active_models: Dictionary = {}
 var model_bytes: int = 0
+var active_model_bytes: int = 0
 var sources: Array = []
 var tyre_origins := PackedVector2Array()
 var shadow_model: Dictionary = {}
@@ -50,6 +51,11 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 				var single := NativeTrack.new()
 				single.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
 				await node._build_placed_objects(single)
+				# The outer spatial shadow groups already include this object.
+				# Single-object builders also emit a contact shadow (notably the
+				# burning barrel); retaining both darkens its rendered pixels.
+				for child: Node in node.get_children():
+					if child.is_in_group("contact_lighting"): child.free()
 				entry = {"source":object,"node":node}
 				pending_nodes.append(node)
 			separate[index] = entry
@@ -158,7 +164,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 		var nodes: Array = old.get("nodes",[])
 		if old.is_empty():
 			for part: Dictionary in entry.model.parts:
-				var node := MultiMeshInstance3D.new()
+				var node: MultiMeshInstance3D = preload("res://track/tyre_batches.gd").new() if key == "tyres" else MultiMeshInstance3D.new()
 				node.name = part.name
 				node.multimesh = MultiMesh.new()
 				node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
@@ -180,7 +186,9 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 			if resized: node.multimesh.instance_count = entry.poses.size()
 			for index: int in range(entry.poses.size()):
 				if not resized and old.poses[index] == entry.poses[index]: continue
-				node.multimesh.set_instance_transform(index,entry.poses[index])
+				if node.has_method("set_pose"): node.set_pose(index,entry.poses[index])
+				else: node.multimesh.set_instance_transform(index,entry.poses[index])
+			if node.has_method("flush"): node.flush()
 		groups[key] = {"nodes":nodes,"poses":entry.poses,"model":entry.model}
 	for index: int in individuals:
 		if separate.has(index) and separate[index].node == individuals[index].node: continue
@@ -199,6 +207,8 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 	kit._tyre_spins.clear()
 	sources = objects
 	active_models = next_models
+	active_model_bytes = 0
+	for model: Dictionary in active_models.values(): active_model_bytes += int(model.bytes)
 	tyre_origins = tyres
 	updates += 1
 	ground_key = track.content_hash
@@ -230,7 +240,12 @@ func _model(kit: NativeTrackVisual, object: Dictionary, key: String) -> Dictiona
 			pose = child.transform*child.multimesh.get_instance_transform(0)
 		else: continue
 		for surface: int in range(mesh.get_surface_count()):
-			bytes += mesh.surface_get_array_len(surface)*64+mesh.surface_get_array_index_len(surface)*4
+			if mesh is ArrayMesh:
+				bytes += mesh.surface_get_array_len(surface)*64+mesh.surface_get_array_index_len(surface)*4
+			else:
+				var arrays: Array = mesh.surface_get_arrays(surface)
+				bytes += arrays[Mesh.ARRAY_VERTEX].size()*64
+				if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*4
 		var baked: bool = child is MeshInstance3D
 		if baked and child.has_meta("editor_prop_hidden"):
 			bytes += child.get_meta("editor_prop_hidden").size()*16
@@ -259,30 +274,37 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: 
 		if desired[key].get("baked",false): signature[key] = desired[key].sources
 	if signature != baked_signature:
 		baked_signature = signature.duplicate(true)
+		var previous_plan: Dictionary = baked_plan
 		baked_plan = {}
-		for role: String in ["opaque","ink","opaque:egypt","opaque:night"]:
+		var roles: Dictionary = {}
+		for key: String in signature: roles[key.rsplit(":",true,2)[0]] = true
+		for role: String in roles:
 			var parts: Array = []
 			for key: String in signature:
-				if not key.begins_with(role+":"): continue
-				if role == "opaque" and (key.begins_with("opaque:egypt:") or key.begins_with("opaque:night:")): continue
+				if key.rsplit(":",true,2)[0] != role: continue
 				var entry: Dictionary = desired[key]
 				for index: int in range(entry.components.size()):
 					parts.append({"arrays":entry.components[index],"hidden":entry.hidden[index],"bounds":entry.bounds[index],"source":entry.sources[index],"material":entry.material,"chunk":key,"cluster":parts.size()})
 			# Overlapping opaque surfaces must keep the original triangle order.
 			# Shared vertices additionally need their original joined normals.
 			var shared: Dictionary = {}
+			var spatial = preload("res://editor/spatial_bounds.gd").new(4.0)
+			var parents: Array[int] = []
+			for part: Dictionary in parts:
+				var box: AABB = part.bounds
+				spatial.add(Rect2(Vector2(box.position.x,box.position.z),Vector2(box.size.x,box.size.z)).grow(0.00001))
+				parents.append(parents.size())
 			for a: int in range(parts.size()):
 				if sliced and kit._menu_yield_due():
 					await kit.get_tree().process_frame; kit._slice_started = Time.get_ticks_usec()
 					if not current.call(): baked_signature = {}; return
-				for b: int in range(a+1,parts.size()):
-					if not AABB(parts[a].bounds).grow(0.00001).intersects(parts[b].bounds): continue
-					var from: int = parts[b].cluster
-					var into: int = parts[a].cluster
-					if from != into:
-						for part: Dictionary in parts:
-							if part.cluster == from: part.cluster = into
+				for b: int in spatial.query(spatial.bounds[a]):
+					if b <= a or not AABB(parts[a].bounds).grow(0.00001).intersects(parts[b].bounds): continue
+					var into: int = _cluster_root(parents,a)
+					var from: int = _cluster_root(parents,b)
+					parents[maxi(into,from)] = mini(into,from)
 					if _shared_vertex(parts[a],parts[b]): shared[parts[a].source] = true
+			for index: int in range(parts.size()): parts[index].cluster = _cluster_root(parents,index)
 			var clusters: Dictionary = {}
 			for part: Dictionary in parts:
 				var key: int = part.cluster
@@ -291,6 +313,18 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: 
 			for cluster: Array in clusters.values():
 				var connected: bool = cluster.size() > 1
 				var key: String = role+":joined:"+cluster[0].source if connected else cluster[0].chunk
+				var cluster_sources: Array = []
+				for part: Dictionary in cluster: cluster_sources.append(part.source)
+				# Independent clusters may share one four-prop upload batch. Reuse
+				# each unchanged pruned component without retaining a stale partial batch.
+				var reuse_key: String = "cluster:"+str(cluster_sources)
+				if previous_plan.has(reuse_key):
+					var prepared: Dictionary = previous_plan[reuse_key]
+					if not baked_plan.has(key): baked_plan[key] = {"baked":true,"components":[],"sources":[],"material":cluster[0].material,"poses":[]}
+					baked_plan[key].components.append_array(prepared.components)
+					baked_plan[key].sources.append_array(cluster_sources)
+					baked_plan[reuse_key] = prepared
+					continue
 				if not baked_plan.has(key): baked_plan[key] = {"baked":true,"components":[],"sources":[],"material":cluster[0].material,"poses":[]}
 				var components: Array = []; var removals: Array = []
 				var regenerate: bool = false
@@ -308,8 +342,17 @@ func _prepare_baked_groups(desired: Dictionary, kit: NativeTrackVisual, sliced: 
 					else: baked_plan[key].components.append(_joined_arrays(components,removals))
 				else:
 					for index: int in range(components.size()): baked_plan[key].components.append(PropGeometry.prune(components[index],removals[index]))
+				var prepared_components: Array = baked_plan[key].components.slice(baked_plan[key].components.size()-(1 if regenerate else components.size()))
+				baked_plan[reuse_key] = {"components":prepared_components}
 	for key: String in signature: desired.erase(key)
-	for key: String in baked_plan: desired[key] = baked_plan[key]
+	for key: String in baked_plan:
+		if not key.begins_with("cluster:"): desired[key] = baked_plan[key]
+
+static func _cluster_root(parents: Array[int], index: int) -> int:
+	while parents[index] != index:
+		parents[index] = parents[parents[index]]
+		index = parents[index]
+	return index
 
 func _shared_vertex(first: Dictionary, second: Dictionary) -> bool:
 	var key: String = first.source+"\n"+second.source

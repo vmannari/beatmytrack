@@ -3,16 +3,20 @@ extends RefCounted
 const SECTIONS = preload("res://editor/road_sections.gd")
 
 static func prepare(visual: NativeTrackVisual, track: NativeTrack, index: int, ctx: Dictionary) -> Dictionary:
-	var bounds := Rect2()
-	var found: bool = false
-	for outline: Dictionary in ctx.outlines:
-		if outline.index != index: continue
-		bounds = bounds.merge(outline.bounds) if found else outline.bounds; found = true
-	if not found: return await visual._prepare_road_piece(track,index,ctx)
+	if not ctx.has("outline_index"):
+		var spatial = preload("res://editor/spatial_bounds.gd").new()
+		var by_piece: Dictionary = {}
+		for outline: Dictionary in ctx.outlines:
+			spatial.add(outline.bounds)
+			by_piece[outline.index] = by_piece[outline.index].merge(outline.bounds) if by_piece.has(outline.index) else outline.bounds
+		ctx["outline_index"] = spatial
+		ctx["outline_bounds"] = by_piece
+	if not ctx.outline_bounds.has(index): return await visual._prepare_road_piece(track,index,ctx)
 	# Covers shoulders, deposits, normal queries, fringes and crossing blends.
-	bounds = bounds.grow(12.0)
+	var bounds: Rect2 = ctx.outline_bounds[index].grow(12.0)
 	var neighbours: Array = []
-	for outline: Dictionary in ctx.outlines:
+	for candidate: int in ctx.outline_index.query(bounds):
+		var outline: Dictionary = ctx.outlines[candidate]
 		if bounds.intersects(outline.bounds):
 			neighbours.append([outline.polygon,outline.bounds,outline.hole,outline.index == index,ctx.pieces[outline.index],ctx.phases.get(outline.index,{})])
 	var piece: Dictionary = ctx.pieces[index]

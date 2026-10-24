@@ -44,14 +44,15 @@ var editor_winter_cover: Dictionary = {}
 
 static func read(path: String) -> NativeTrack:
 	var data: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
-	if not data is Dictionary or data.get("schema", "") not in ["surface-grid-v1", "surface-grid-v2"]:
+	if not data is Dictionary or not data.get("schema") is String or data.schema != "surface-grid-v2":
 		push_error("Invalid native track: " + path)
 		return null
 	return from_data(data, FileAccess.get_sha256(path))
 
 
-static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:
-	# Trusted native data only. Creator imports are validated and compiled first.
+static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array(), paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> NativeTrack:
+	# Trusted current native data only. Older imports are never upgraded.
+	if not data.get("schema") is String or data.schema != "surface-grid-v2": return null
 	var track := NativeTrack.new()
 	track.metadata = data
 	track.tyre_origins = LooseTyres.positions(data.get("creator_document",{}))
@@ -89,8 +90,10 @@ static func from_data(data: Dictionary, hash_value: String, prepared_cells: Pack
 	if not data.bridges.is_empty():
 		track.bridge_axis = Vector2(data.bridges[0].axis[0], data.bridges[0].axis[1])
 		track.bridge_height = float(data.bridges[0].height)
-	track.kerbs.build(track)
-	track.snow_banks.build(track)
+	track.kerbs.build(track,paint_exclusion,cancelled)
+	if cancelled.is_valid() and cancelled.call(): return null
+	track.snow_banks.build(track,PackedByteArray(),cancelled)
+	if cancelled.is_valid() and cancelled.call(): return null
 	return track
 
 
@@ -264,7 +267,7 @@ func tire_pickup(state: VehicleState) -> float:
 func tire_fluids(state: VehicleState) -> Vector2:
 	if state.track_elevated or state.jump_height > 0.0: return Vector2.ZERO
 	var coating := Vector2(0.0, 1.0 if cell_at(state.position) in [3,6] else 0.0)
-	for object: Dictionary in hazard_objects:
+	for object: Dictionary in _creator_query().query("fluids",state.position):
 		if object.kind not in ["oil","puddle"]: continue
 		if not CreatorObjects.contains(object,state.position): continue
 		if object.kind == "oil": coating.x = 1.0
@@ -318,7 +321,7 @@ func collision_elevated_at(point: Vector2, route_index: int, radius: float, prev
 
 func surface_factors(state: VehicleState) -> Vector2:
 	var base: Vector2 = _native_surface_factors(state)
-	var effects: Vector2 = TrackHazards.factors(state,hazard_objects)
+	var effects: Vector2 = TrackHazards.factors(state,_creator_query().query("fluids",state.position))
 	return Vector2(base.x*effects.x,base.y+effects.y)
 
 
@@ -561,6 +564,13 @@ func _support_plane(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	return result
 
 
+func _tyre_contact_grid() -> Dictionary:
+	# This certificate is valid only for the exact grid-only ground query below.
+	# Custom subclasses keep their original callable, including any extra solids.
+	if get_script().resource_path != "res://track/native_track.gd": return {}
+	return {"cells":cells,"extent":half_extent,"width":grid_width,"height":grid_height,"step":cell_size}
+
+
 func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 	# XY is the outward normal; Z is summed squared cell penetration. The latter
 	# stays positive even where opposing cell normals cancel (inside a solid).
@@ -607,15 +617,43 @@ func _contact(point: Vector2, radius: float, elevated: bool) -> Vector3:
 
 func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
 	LooseTyres.step(state,tyre_origins,_contact,from,config,step_seconds)
-	LightProps.step(state,hazard_objects,_contact,from,step_seconds,config.mass,config.collision_radius)
+	LightProps.step(state,_creator_query().groups.soft,_contact,from,step_seconds,config.mass,config.collision_radius)
 
 
 func launch_jump(state: VehicleState, previous: Vector2) -> void:
-	TrackHazards.launch(state,previous,hazard_objects)
+	TrackHazards.launch(state,previous,_creator_query().query("ramps",state.position,previous))
 
 
 func step_speed_bumps(state: VehicleState, previous: Vector2, heading: float, velocity: Vector2, config: HandlingConfig, seconds: float) -> void:
-	SpeedBumps.advance(state,previous,heading,velocity,config,speed_bump_objects,seconds)
+	var work: RefCounted = _creator_query()
+	var nearby: Array = work.query("bumps",state.position,previous,config.wheelbase+config.track_width)
+	SpeedBumps.advance(state,previous,heading,velocity,config,nearby,seconds,not work.groups.bumps.is_empty())
+
+## A step has no callbacks or source mutations. Validate once, retain exact source
+## order and global bump presence, and revalidate public edits at the next scope.
+func begin_creator_queries() -> void:
+	_creator_query().scope_depth += 1
+
+func end_creator_queries() -> void:
+	var work: RefCounted = get_meta(&"creator_queries")
+	work.scope_depth -= 1
+	assert(work.scope_depth >= 0)
+
+func _creator_query() -> RefCounted:
+	var work: RefCounted = get_meta(&"creator_queries") if has_meta(&"creator_queries") else null
+	if work == null:
+		work = preload("res://vehicle/creator_queries.gd").new(); work.prepare(hazard_objects,speed_bump_objects)
+		set_meta(&"creator_queries",work)
+	elif work.scope_depth == 0:
+		work.validations += 1
+		if hazard_objects != work.source or speed_bump_objects != work.bumps_source: work.prepare(hazard_objects,speed_bump_objects)
+	return work
+
+func ramp_height(point: Vector2) -> float:
+	return TrackHazards.ramp_height(point,_creator_query().query("ramps",point))
+
+func ramp_pitch(point: Vector2, forward: Vector2) -> float:
+	return TrackHazards.ramp_pitch(point,forward,_creator_query().query("ramps",point))
 
 
 func kerb_heights(state: VehicleState, config: HandlingConfig) -> Vector4:

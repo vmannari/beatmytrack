@@ -181,9 +181,14 @@ func editor_roundtrip(capture: bool) -> void:
 	app.set("library",TrackLibrary.new(folder))
 	app.set("records",LocalRecords.new(folder+"/records.json"))
 	root.add_child(app); await process_frame
+	var startup_deadline: int = Time.get_ticks_msec()+15000
+	while not app.startup_complete and Time.get_ticks_msec()<startup_deadline: await process_frame
+	check(app.startup_complete,"app startup finishes before the editor round trip")
 	var doc: Dictionary = document(); doc.objects = []
 	app.set("document",doc); app.call("_show_screen","create")
 	await process_frame; await process_frame
+	var editor_deadline: int = Time.get_ticks_msec()+20000
+	while (not is_instance_valid(app.canvas) or app.canvas.preparing or app.editor_world._building) and Time.get_ticks_msec()<editor_deadline: await process_frame
 	app.call("_editor_category","objects")
 	var browser: ObjectBrowser = app.get("object_browser")
 	var canvas: EditorCanvas = app.get("canvas")

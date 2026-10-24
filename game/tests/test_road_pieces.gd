@@ -212,7 +212,8 @@ func _barriers() -> void:
 	var turned: bool = false
 	for object: Dictionary in bends: turned = turned or absf(float(object.rotation)) > 10.0
 	check(turned,"barrier rotations follow local road tangent")
-	doc.objects.resize(94)
+	for i: int in range(preload("res://editor/creator_limits.gd").MAX_OBJECTS-2):
+		doc.objects.append({"kind":"tyre_stack","position":[0.0,0.0],"rotation":0.0})
 	check(RoadPieces.barrier_run(doc,Vector2(0,-8),Vector2(38,20)).size() <= 2,"barrier runs respect the remaining object budget")
 
 
@@ -309,29 +310,40 @@ func _roadside_visuals() -> void:
 			var matched: bool = true
 			var kerb_vertices: int = 0
 			var asphalt_detail_materials: int = 0
+			var asphalt_rim: bool = false
+			var rendered_kerbs := PackedVector3Array()
+			var kerb_lift: float = preload("res://track/road_surface_height.gd").RISE
 			var worn_marking_materials: int = 0
 			for node: Node in visual.get_children():
 				var mesh: MeshInstance3D = node as MeshInstance3D
-				var material: ShaderMaterial = mesh.material_override as ShaderMaterial
+				var applied: ShaderMaterial = mesh.material_override as ShaderMaterial
+				var material: ShaderMaterial = applied.get_meta("surface_dynamic_material",applied)
 				var arrays: Array = mesh.mesh.surface_get_arrays(0)
 				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-				if material.shader.resource_path == "res://track/creator_road.gdshader" and material.get_shader_parameter("asphalt_surface"):
+				if material.get_shader_parameter("asphalt_surface") == true:
 					asphalt_detail_materials += 1
 					var road_mask: Texture2D = material.get_shader_parameter("road_mask")
 					matched = matched and road_mask != null and road_mask.get_width() == track.grid_width and road_mask.get_height() == track.grid_height
-				if material.shader.resource_path == "res://track/creator_road.gdshader" and material.get_shader_parameter("road_marking"):
+				if material.get_shader_parameter("road_marking") == true:
 					worn_marking_materials += 1
 				if material.shader.resource_path != "res://track/kerb.gdshader":
-					for normal: Vector3 in normals: upward = upward and normal.distance_to(Vector3.UP) < 0.0001
+					# Raised asphalt and fitted Grass verges have real bevels.
+					# Keep the strict up-normal invariant for genuinely flat roles.
+					var shaped: bool = material.get_shader_parameter("raised_road_edge") == true or material.get_shader_parameter("grass_shoulder") == true
+					for normal: Vector3 in normals:
+						upward = upward and normal.is_finite() and absf(normal.length()-1.0) < 0.001
+						if not shaped: upward = upward and normal.distance_to(Vector3.UP) < 0.0001
+						if material.get_shader_parameter("asphalt_surface") == true: asphalt_rim = asphalt_rim or absf(normal.y) < 0.98
 					continue
 				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 				kerb_vertices += vertices.size()
+				rendered_kerbs.append_array(vertices)
 				for normal: Vector3 in normals:
 					matched = matched and normal.y > 0.0 and absf(normal.length()-1.0) < 0.001
 					sloped = sloped or normal.y < 0.98
 				for vertex: Vector3 in vertices:
 					raised = raised or vertex.y > 0.11
-					matched = matched and vertex.y >= 0.0179 and vertex.y <= 0.1181
+					matched = matched and vertex.y >= 0.0179+kerb_lift and vertex.y <= 0.1181+kerb_lift
 				for coordinate: Vector2 in arrays[Mesh.ARRAY_TEX_UV]:
 					bounded_runs = bounded_runs and coordinate.y > 0.0 and coordinate.x >= -0.0001 and coordinate.x <= coordinate.y+0.0001
 			# UV arc lengths retain the physical untapered midline contract.
@@ -362,13 +374,26 @@ func _roadside_visuals() -> void:
 				previous_end = end
 				previous_u = high
 			check(closed_seams,"raised kerb bevel/crown endpoints meet without cracks, including taper")
-			check(asphalt_detail_materials == 2,"creator asphalt has separate solid and UV-controlled edge-fringe materials")
+			check(asphalt_detail_materials > 0 and asphalt_rim,"creator solid asphalt retains its actual raised bevel geometry and masked surface role")
 			check(worn_marking_materials == 1,"creator road edge markings use one shared worn-pigment material")
-			check(upward,"flat road/grass/sand/paint triangles retain upward normals")
+			check(upward,"flat surface roles retain upward normals; raised road/verge normals remain finite unit vectors")
 			check(raised and sloped,"kerbs have a raised crown and real bevel normals")
 			check(bounded_runs,"kerb coordinates restart per run and stay within complete-block length")
 			check(measured and not segments.is_empty(),"kerb UVs measure physical midline metres at radius %s mirrored %s" % [radius,flipped])
-			check(matched and kerb_vertices == track.kerbs.triangles.size()*3,"rendered kerb triangles match bounded canonical geometry")
+			var expected_kerbs := PackedVector3Array()
+			for triangle: Dictionary in track.kerbs.triangles:
+				for i: int in range(3): expected_kerbs.append(Vector3(triangle.points[i].x,0.018+kerb_lift+triangle.heights[i],-triangle.points[i].y))
+			var exact: bool = rendered_kerbs.size() == expected_kerbs.size()
+			if exact:
+				for first: int in range(0,expected_kerbs.size(),3):
+					var used: Array[int] = []
+					for i: int in range(3):
+						var found: int = -1
+						for j: int in range(3):
+							if j not in used and rendered_kerbs[first+i].distance_to(expected_kerbs[first+j]) < 0.00001: found = j; break
+						exact = exact and found >= 0
+						used.append(found)
+			check(matched and exact and kerb_vertices == track.kerbs.triangles.size()*3,"every rendered kerb vertex matches canonical geometry plus the cosmetic asphalt lift")
 			check(track.cells == original,"roadside presentation preserves collision/surface cells")
 			visual.free()
 

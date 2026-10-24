@@ -79,6 +79,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	var cells := PackedInt32Array()
 	cells.resize(grid.x * grid.y)
 	cells.fill(1)
+	var paint_exclusion := PackedByteArray()
 	if base != null: cells = base.cells.duplicate()
 	var terrain_objects: Array = []
 	for object: Dictionary in document.objects:
@@ -86,6 +87,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	var raster_key: Array = [document.base_track,base.content_hash if base != null else "",grid,extent,cell_size,document.layout,document.pieces,document.surface,document.paint,terrain_objects]
 	if raster_key == preview_cache.get("key",[]):
 		cells = preview_cache.cells.duplicate()
+		paint_exclusion = preview_cache.get("paint_exclusion",PackedByteArray()).duplicate()
 	else:
 		var road_mask: PackedInt32Array = cells.duplicate()
 		_stamp_objects(document,cells,grid,extent,cell_size,true)
@@ -95,11 +97,12 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 			if section.bridge: continue
 			var section_widths: PackedFloat32Array = section.widths
 			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
-		_paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
+		paint_exclusion = _paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
 		if _cancelled(cancelled): return null
 		if preview_cache.get("enabled",false):
 			preview_cache.key = raster_key.duplicate(true)
 			preview_cache.cells = cells.duplicate()
+			preview_cache.paint_exclusion = paint_exclusion.duplicate()
 	var scenery_cells: PackedInt32Array = cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	var deck := PackedInt32Array()
@@ -161,7 +164,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	data.provenance["base_track"] = document.base_track
 	data.provenance["base_hash"] = base.content_hash if base != null else ""
 	if _cancelled(cancelled): return null
-	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck)
+	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck,paint_exclusion,cancelled)
 	if _cancelled(cancelled): return null
 	if preview_cache.get("enabled",false):
 		PREPARED.remember(document,compiled,preview_cache); PREPARED.trim_auxiliary(preview_cache)
@@ -183,8 +186,10 @@ static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: 
 				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
 
 
-static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
-	if strokes.is_empty(): return
+static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> PackedByteArray:
+	var exclusion := PackedByteArray()
+	exclusion.resize(cells.size())
+	if strokes.is_empty(): return exclusion
 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
 	if native != null:
 		var prepared: Array = []
@@ -192,42 +197,62 @@ static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, exte
 			var stroke: Dictionary = authored.duplicate(true)
 			stroke.points = SurfacePaint.contour(authored.points,str(authored.get("mode","free")))
 			prepared.append(stroke)
-		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size},Geometry2D,cancelled)
-		if _cancelled(cancelled): return
+		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size,"exclusion":exclusion},Geometry2D,cancelled)
+		if _cancelled(cancelled): return PackedByteArray()
 		if result.has("cells"):
 			cells.resize(0); cells.append_array(result.cells)
 			road_mask.resize(0); road_mask.append_array(result.mask)
-			return
+			# Older native libraries still paint exactly; derive their missing mask
+			# in the cancellable kerb fallback rather than publishing a partial one.
+			return result.get("exclusion",PackedByteArray())
+	var previous: Dictionary = {}
 	for authored: Dictionary in strokes:
-		if _cancelled(cancelled): return
+		if _cancelled(cancelled): return PackedByteArray()
+		if authored == previous: continue
+		previous = authored
 		var stroke: Dictionary = SurfacePaint.prepared(authored)
 		if stroke.get("mode","") == "area":
 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
 			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
 			for y: int in range(bounds.position.y,bounds.end.y):
+				if _cancelled(cancelled): return PackedByteArray()
 				for x: int in range(bounds.position.x,bounds.end.x):
+					var at: int = y*grid.x+x
+					if cells[at] == int(stroke.surface) and road_mask[at] == (0 if int(stroke.surface) == 0 else 1) and (stroke.get("protect_road",false) or exclusion[at] != 0): continue
 					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
-					if Geometry2D.is_point_in_polygon(point,polygon) and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
-						cells[y*grid.x+x] = int(stroke.surface)
-						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
+					if Geometry2D.is_point_in_polygon(point,polygon):
+						if not stroke.get("protect_road",false): exclusion[at] = 1
+						if not (stroke.get("protect_road",false) and road_mask[at] in [0,2]):
+							cells[at] = int(stroke.surface)
+							road_mask[at] = 0 if int(stroke.surface) == 0 else 1
 			continue
 		var radius: float = float(stroke.width)*0.5
+		var visited: Dictionary = {}
 		for i: int in range(stroke.points.size()):
-			if i % 32 == 0 and _cancelled(cancelled): return
+			if i % 32 == 0 and _cancelled(cancelled): return PackedByteArray()
 			var p: Array = stroke.points[i]
 			var q: Array = stroke.points[maxi(0,i-1)]
 			var a := Vector2(p[0],p[1])
 			var b := Vector2(q[0],q[1])
+			var key: Array = [a,b]
+			if visited.has(key): continue
+			visited[key] = true
 			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
 			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
 			for y: int in range(maxi(0,floori((extent.y-hi.y)/cell_size)),mini(grid.y,ceili((extent.y-lo.y)/cell_size))):
+				if _cancelled(cancelled): return PackedByteArray()
 				for x: int in range(maxi(0,floori((lo.x+extent.x)/cell_size)),mini(grid.x,ceili((hi.x+extent.x)/cell_size))):
+					var at: int = y*grid.x+x
+					if cells[at] == int(stroke.surface) and road_mask[at] == (0 if int(stroke.surface) == 0 else 1) and (stroke.get("protect_road",false) or exclusion[at] != 0): continue
 					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
-					if hit and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
-						cells[y*grid.x+x] = int(stroke.surface)
-						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
+					if hit:
+						if not stroke.get("protect_road",false): exclusion[at] = 1
+						if not (stroke.get("protect_road",false) and road_mask[at] in [0,2]):
+							cells[at] = int(stroke.surface)
+							road_mask[at] = 0 if int(stroke.surface) == 0 else 1
+	return exclusion
 
 
 static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:

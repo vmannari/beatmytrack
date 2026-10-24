@@ -7,6 +7,7 @@ signal span_chosen(span: float)
 signal container_color_chosen(color: String)
 signal select_requested
 signal populate_requested
+signal rotation_requested
 var category: String = "All"
 var biome: String = "pine"
 var current: String = "tree"
@@ -26,6 +27,8 @@ var page_size: int = 6
 var _tile_key: Array = []
 var _detail_key: Array = []
 var _styled_category: String = ""
+var rotation_button: Button
+var stamp_rotation: float = 0.0
 
 func _ready() -> void:
 	name = "ObjectBrowser"
@@ -41,6 +44,12 @@ func _ready() -> void:
 			category = value; page = 0; _tiles())
 		button.name = "Category_"+value
 		categories.add_child(button)
+	rotation_button = _button("",func() -> void: rotation_requested.emit())
+	rotation_button.name = "ObjectRotation"
+	rotation_button.tooltip_text = "16 orientations or Free rotation"
+	rotation_button.custom_minimum_size = Vector2(76,44)
+	top.add_child(rotation_button)
+	set_stamp_rotation(stamp_rotation)
 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
 	populate.name = "PopulateObjects"
 	populate.custom_minimum_size = Vector2(100,44)
@@ -92,6 +101,10 @@ func _scroll_row(parent: Node) -> HBoxContainer:
 
 func _button(text: String, action: Callable) -> Button:
 	return EditorStyle.button(text,action)
+
+func set_stamp_rotation(value: float) -> void:
+	stamp_rotation = value
+	if is_instance_valid(rotation_button): rotation_button.text = preload("res://editor/object_rotation.gd").angle_text(value)
 
 func _clear(row: Node) -> void:
 	for child: Node in row.get_children():

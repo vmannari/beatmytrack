@@ -23,6 +23,9 @@ func build(parent: Node3D) -> void:
 		for i: int in range(pieces.size()):
 			if pieces[i].kind == "bridge": bridge_phases.append(phases.get(i,{}))
 	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases,ROAD_HEIGHT.is_asphalt(track))
+	# Empty native decks are common in the editor. The packed-array scan is
+	# bounded native work; avoid visiting every empty grid cell twice below.
+	if not roles.has(0) and not roles.has(4): return
 	var palette: Array[Color] = TrackTheme.palette(str(track.metadata.get("theme", "pine")))
 	var fascia := SurfaceTool.new()
 	fascia.begin(Mesh.PRIMITIVE_TRIANGLES)

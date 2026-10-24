@@ -18,12 +18,18 @@ void vertex() {
 }
 vec4 combustion(vec3 p) {
 	float h=p.y+0.5;
+	if(h<=0.0 || h>=1.0) return vec4(0.0);
 	vec3 flow=p*mix(vec3(0.115,0.145,0.115),vec3(0.23,0.145,0.23),source_spill)+vec3(source_seed*0.73,-elapsed*0.115,source_seed*0.39);
 	vec3 coarse=texture(flow_noise,flow).rgb;
-	float fine=texture(flow_noise,flow*3.17+vec3(0.17,-elapsed*0.057,0.31)).a;
 	vec2 centre=(coarse.gb-0.5)*(0.17+0.25*h);
 	float radius=length((p.xz-centre)*2.0);
 	float envelope=0.84*pow(max(0.0,1.0-h),0.80)+0.025;
+	// Density is monotone in fine noise. Its maximum (fine=1) proves
+	// empty samples before the second 3D fetch and colour/heat evaluation.
+	float maximum_body=envelope*mix(1.0,0.60+coarse.g*0.72,source_spill)-radius+(coarse.r-0.5)*0.72+0.26;
+	float maximum_ground=min(0.9-radius,(coarse.r-0.30)*1.7+0.24-h*0.70);
+	if(mix(maximum_body,maximum_ground,source_spill)<=0.025) return vec4(0.0);
+	float fine=texture(flow_noise,flow*3.17+vec3(0.17,-elapsed*0.057,0.31)).a;
 	// Spilled fuel breaks into lower, irregular burning patches across the floor.
 	envelope*=mix(1.0,0.42+coarse.g*0.72+fine*0.18,source_spill);
 	float turbulence=(coarse.r-0.5)*0.72+(fine-0.5)*0.52;
@@ -59,9 +65,13 @@ void fragment() {
 		float until_opaque=dot((world_to_volume*vec4(opaque,1.0)).xyz-origin,ray);
 		length_inside=max(0.0,min(length_inside,until_opaque));
 	}
+	if(length_inside<=0.0) discard;
 	float step_length=length_inside/32.0;
 	vec3 sum=vec3(0.0); float coverage=0.0;
 	for(int i=0;i<32;i++) {
+		// At most 0.05% residual transmittance remains. Keep the same
+		// 32-step sample positions and optical-depth scale for visible fire.
+		if(coverage>=0.9995) break;
 		vec4 sample_fire=combustion(origin+ray*(float(i)+0.5)*step_length);
 		float amount=1.0-exp(-sample_fire.a*step_length*9.0);
 		sum+=(1.0-coverage)*sample_fire.rgb*amount;

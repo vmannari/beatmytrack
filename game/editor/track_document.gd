@@ -5,7 +5,8 @@ extends RefCounted
 const SCHEMA: String = "creator-track-v5"
 const THEMES: Array[String] = TrackTheme.IDS
 const MAX_POINTS: int = 96
-const MAX_BYTES: int = 524288
+const CAPACITY = preload("res://editor/creator_limits.gd")
+const MAX_BYTES: int = CAPACITY.MAX_DOCUMENT_BYTES
 const MAX_COORD: float = 120.0
 const KEYS: Array[String] = ["schema", "id", "name", "creator", "theme", "width", "surface", "points", "widths", "corners", "objects", "layout", "paint", "base_track", "route_override", "pieces", "practice_start", "start_line", "hidden_scenery", "automatic_scenery"]
 
@@ -41,11 +42,11 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 	var errors: Array[String] = []
 	if not data is Dictionary:
 		return ["Choose a creator track JSON file."]
+	if not data.get("schema") is String or data.schema != SCHEMA:
+		return ["Unsupported track format. Import a current creator-track-v5 file."]
 	for key: Variant in data:
 		if not key is String or key not in KEYS:
 			return ["This file contains unsupported track data."]
-	if data.get("schema") != SCHEMA:
-		errors.append("This track format is not supported.")
 	if data.has("automatic_scenery") and not data.automatic_scenery is bool:
 		return ["Automatic scenery must be on or off."]
 	if data.has("hidden_scenery"):
@@ -88,7 +89,7 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 			errors.append("Use a creator name of 1 to 40 characters.")
 		elif _has_control(creator):
 			errors.append("The creator name cannot contain control characters.")
-	if not data.get("theme") is String or (data.theme not in THEMES and data.theme != "coast"):
+	if not data.get("theme") is String or data.theme not in THEMES:
 		errors.append("Choose Grass, Desert, Night, Winter or Storm.")
 	if data.get("surface") not in ["asphalt", "dirt"]:
 		errors.append("Choose asphalt or dirt for the road.")
@@ -115,8 +116,8 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 				return ["Node widths must be between 6 and 20 metres."]
 		for value: Variant in data.corners:
 			if value not in ["smooth", "sharp"]: return ["Choose a smooth or sharp corner."]
-		if not data.get("objects") is Array or data.objects.size() > 96:
-			return ["Use up to 96 placed objects."]
+		if not data.get("objects") is Array or data.objects.size() > CAPACITY.MAX_OBJECTS:
+			return ["Use up to %d placed objects." % CAPACITY.MAX_OBJECTS]
 		for object: Variant in data.objects:
 			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0)+(1 if object.has("span") else 0)+(1 if object.has("color") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
 				return ["Choose an object from the built-in palette."]
@@ -138,6 +139,8 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 				if not _number(value) or absf(float(value)) > 110.0: return ["Keep objects inside the editing area."]
 			if not _number(object.get("rotation")) or float(object.rotation) < 0 or float(object.rotation) >= 360:
 				return ["Object rotation must be between 0 and 359 degrees."]
+		var capacity_error: String = CAPACITY.error(data.objects,str(data.theme))
+		if not capacity_error.is_empty(): return [capacity_error]
 	if not data.get("route_override") is bool or not data.get("base_track") is String:
 		return ["Choose a built-in base and route mode."]
 	if data.base_track != "" and BuiltinTracks.metadata(data.base_track).is_empty():

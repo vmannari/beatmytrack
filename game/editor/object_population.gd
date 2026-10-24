@@ -7,7 +7,7 @@ extends RefCounted
 const CELL: float = 2.0
 const MASK_ERROR: float = 3.0 # Conservative raster/sample uncertainty.
 const CLEARANCE: float = 4.0
-const MAX_OBJECTS: int = 96
+const MAX_OBJECTS: int = preload("res://editor/creator_limits.gd").MAX_OBJECTS
 const BIN: float = 12.0
 const NATURE: Array[String] = ["tree", "broadleaf", "rock", "boulder"]
 const ROADSIDE: Array[String] = ["shed", "hut", "car_wreck", "container", "parked_car", "barrel", "crate"]
@@ -155,7 +155,7 @@ func generate(seed_value: int, density: float, roadside_reach: float) -> Array:
 			largest = maxf(largest,reach)
 	sample_usec = Time.get_ticks_usec()-began
 	# Use the same numerical representation as the saved authoring JSON.
-	return JSON.parse_string(JSON.stringify(result))
+	return preload("res://editor/creator_limits.gd").take(source.objects,JSON.parse_string(JSON.stringify(result)),str(source.theme))
 
 static func radius(object: Dictionary) -> float:
 	var reach: float = CreatorObjects.size_of(object).length()*0.5

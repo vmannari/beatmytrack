@@ -119,14 +119,18 @@ func run() -> void:
 	var app: Node = load("res://core/app.tscn").instantiate()
 	app.set("library",TrackLibrary.new(folder)); app.set("records",LocalRecords.new(folder+"/records.json"))
 	root.add_child(app); await process_frame
+	var startup_deadline: int = Time.get_ticks_msec()+15000
+	while not app.startup_complete and Time.get_ticks_msec()<startup_deadline: await process_frame
+	check(app.startup_complete,"actual app startup finishes before opening the editor")
 	app.set("document",scenery_doc); app.call("_show_screen","create")
 	await process_frame; await process_frame
 	var preview_deadline: int = Time.get_ticks_msec()+15000
-	while app.editor_preview_thread != null and Time.get_ticks_msec()<preview_deadline: await process_frame
+	while (not is_instance_valid(app.canvas) or app.editor_preview_thread != null or app.canvas.preparing or app.editor_world._building) and Time.get_ticks_msec()<preview_deadline: await process_frame
 	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"scenery selection waits for actual collision/scenery preparation")
 	var canvas: EditorCanvas = app.get("canvas")
 	canvas.mode="objects"; canvas._begin(canvas.to_screen(point),-1); canvas._end(-1)
 	check(canvas.selected_object>=0 and scenery_doc.hidden_scenery.has(CreatorScenery.key(tree)),"scenery tree can be selected and adopted into document")
+	if canvas.selected_object < 0: app.queue_free(); quit(1); return
 	app.call("_scale_object",0.5)
 	check(scenery_doc.objects[canvas.selected_object].scale==1.5,"size control changes selected tree")
 	app.call("_delete_selection")

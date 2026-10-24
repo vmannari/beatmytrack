@@ -12,6 +12,10 @@ signal notice(message: String)
 signal share_requested(entry: Dictionary)
 signal rivalry_requested
 signal challenges_requested
+signal entry_chosen(entry: Dictionary)
+
+var selection_only: bool = false
+var selected_versions: PackedStringArray = []
 
 var library: TrackLibrary
 var records: LocalRecords
@@ -272,15 +276,8 @@ func _render_list(reconcile: bool = false) -> void:
 	var end: int = mini(_page_total()+_list_column_offset,first+(ceili(track_list.size.y/_list_stride.y)+3)*_list_columns)
 	var paged: bool = cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0
 	if paged:
-		# Request the nearest missing visible page. Its completion reconciles this
-		# window again, so a wide grid can span pages without draining the catalog.
-		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns
-		var desired: int = visible_first
-		for index: int in range(visible_first,end):
-			if cloud.discovery_pages.entry_at(index-_list_column_offset).is_empty():
-				desired = index
-				break
-		if not page_preview and cloud.discovery_pages.error.is_empty(): cloud.discovery_pages.request_visible.call_deferred(maxi(0,desired-_list_column_offset))
+		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns-_list_column_offset
+		_prefetch_tracks(visible_first,ceili(track_list.size.y/_list_stride.y)*_list_columns)
 	elif cloud != null and not page_preview and end >= matches.size() and track_list.scroll_vertical > 0:
 		cloud.load_more()
 	if first == _list_start and not reconcile: return
@@ -299,16 +296,19 @@ func _render_list(reconcile: bool = false) -> void:
 		var tile: Control
 		if retained.has(index):
 			tile = retained[index]
-			if reconcile: (tile as TrackTile).update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),false)
+			if reconcile: (tile as TrackTile).update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),selection_only and str(entry.get("version_id","")) in selected_versions)
 		elif entry.is_empty():
-			tile = MenuStyle.label("Loading tracks..." if paged and cloud.discovery_pages.error.is_empty() else "Refresh to retry",16,true)
-			if paged and cloud.discovery_pages.has_method("unavailable_slot") and cloud.discovery_pages.unavailable_slot(index-_list_column_offset):
-				(tile as Label).text = "Track no longer available"
+			# A partial leading row keeps retained cards in their original columns
+			# after cache eviction. No unloaded track receives a card or a label.
+			if index >= _list_column_offset: continue
+			tile = Control.new()
+			tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			tile.set_meta("catalog_index",index)
 			list_grid.add_child(tile)
 		else:
 			var card := TrackTile.new()
 			card.entry = entry
+			card.selected = selection_only and str(entry.get("version_id","")) in selected_versions
 			card.favorite = entry.id in records.settings.get("favorites",[])
 			card.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
 			card.name = "ListTrack_"+str(entry.id)
@@ -332,10 +332,16 @@ func _render_list(reconcile: bool = false) -> void:
 		list_grid.add_child(empty)
 
 func _list_entry(index: int, paged: bool) -> Dictionary:
-	if paged:
-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index-_list_column_offset) if index >= _list_column_offset else {}
-		return {} if metadata.is_empty() else cloud.entry_from_metadata(metadata)
-	return matches[index] if index >= 0 and index < matches.size() else {}
+	var card_index: int = index-_list_column_offset if paged else index
+	return matches[card_index] if card_index >= 0 and card_index < matches.size() else {}
+
+func _prefetch_tracks(first: int, visible_count: int) -> void:
+	if page_preview or cloud == null or not cloud.paged_discovery_available() or not is_instance_valid(cloud.discovery_pages): return
+	var window: Node = cloud.discovery_pages
+	if window.total < 0 or not window.error.is_empty(): return
+	var index: int = clampi(first,0,maxi(0,matches.size()-1))
+	var network_index: int = int(matches[index].get("discovery_index",index)) if not matches.is_empty() else 0
+	window.request_visible.call_deferred(network_index,maxi(1,visible_count))
 
 func _focus_list_card(card: TrackTile) -> void:
 	var top: int = int(int(card.get_meta("catalog_index"))/_list_columns)*int(_list_stride.y)
@@ -423,12 +429,6 @@ func _enable_gallery_input() -> void:
 	gallery.set_process_input(enabled and not list_open)
 	track_list.set_process_input(enabled and list_open)
 
-func _compact_button(text: String, action: Callable) -> Button:
-	var button: Button = MenuStyle.button(text,action)
-	button.custom_minimum_size.y = 48
-	button.add_theme_font_size_override("font_size",20)
-	return button
-
 func _load_catalog() -> void:
 	if not is_inside_tree(): return
 	if page_preview:
@@ -513,8 +513,8 @@ func _sync_cloud_catalog() -> bool:
 	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
 	if cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages): current.append([cloud.discovery_pages.total,cloud.discovery_pages.generation,cloud.discovery_pages.loading])
 	if current == _cloud_catalog_state: return false
-	_sync_discovery_window()
 	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+	_sync_discovery_window()
 	_cloud_catalog_state = current.duplicate(true)
 	return true
 
@@ -523,7 +523,7 @@ var _window_shift: int = 0
 var _list_column_offset: int = 0
 
 func _sync_discovery_window() -> void:
-	if cloud == null or not cloud.has_method("indexed_discovery_available") or not cloud.indexed_discovery_available():
+	if cloud == null or not cloud.paged_discovery_available():
 		_window_generation = -1
 		_window_shift = 0
 		_list_column_offset = 0
@@ -537,8 +537,20 @@ func _sync_discovery_window() -> void:
 		gallery.call("_stop_snap")
 		gallery.scroll_horizontal = 0
 		track_list.scroll_vertical = 0
-	var shift: int = int(window.coordinate_shift)-_window_shift
-	_window_shift = int(window.coordinate_shift)
+		return
+	if window.total < 0: return
+	# Presentation contains actual cards only. Cursor slots can have gaps after
+	# authority filtering, and the leading reload page is never a visible row.
+	var shift: int = 0
+	var incoming: Array = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
+	var positions: Dictionary = {}
+	for index: int in range(incoming.size()): positions[str(incoming[index].version_id)] = index
+	for index: int in range(matches.size()):
+		var version: String = str(matches[index].get("version_id",""))
+		if positions.has(version):
+			shift = int(positions[version])-index
+			break
+	_window_shift += shift
 	if shift != 0:
 		var new_offset: int = posmod(-_window_shift,_list_columns)
 		var list_shift: int = shift+new_offset-_list_column_offset
@@ -574,6 +586,7 @@ func _selected_is_available() -> bool:
 	return selected_track.metadata.has("cloud_version") and catalog.entries.any(func(entry: Dictionary) -> bool: return str(entry.id) == selected_track.identity)
 
 func _random_on_open() -> void:
+	if selection_only: return
 	var focus_id: String = str(state.get("focus_track",""))
 	if not focus_id.is_empty():
 		for entry: Dictionary in matches:
@@ -595,7 +608,7 @@ func _reveal_track(identity: String) -> void:
 	for index: int in range(matches.size()):
 		if str(matches[index].id) != identity: continue
 		gallery.call("_stop_snap")
-		gallery.scroll_horizontal = int(matches[index].get("discovery_index",index))*tile_stride
+		gallery.scroll_horizontal = index*tile_stride
 		_render_tiles(true)
 		return
 
@@ -634,7 +647,7 @@ func _refresh() -> void:
 	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
 	if cloud != null: count_label.text += " · "+str(cloud.status)
 	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
-	if cloud != null and cloud.has_method("indexed_discovery_available") and cloud.indexed_discovery_available():
+	if cloud != null and cloud.has_method("paged_discovery_available") and cloud.paged_discovery_available():
 		count_label.text = cloud.status
 		count_label.tooltip_text = "Loaded track cards. Scroll to browse more; Refresh updates the ordering."
 	random_button.disabled = matches.is_empty() or loading
@@ -649,9 +662,8 @@ func _refresh() -> void:
 func _render_tiles(reconcile: bool = false) -> void:
 	if not is_instance_valid(grid): return
 	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0:
-		_render_paged_tiles(reconcile)
-		return
-	if not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
+		if not list_open: _prefetch_tracks(int(gallery.scroll_horizontal/tile_stride),ceili(gallery.size.x/maxf(1.0,tile_stride)))
+	elif not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
 		cloud.load_more()
 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
 	_warm_visible_comparisons(first)
@@ -723,7 +735,10 @@ func _random() -> void:
 			return
 		var public_entry: Dictionary = cloud.entry_from_metadata(metadata)
 		gallery.call("_stop_snap")
-		gallery.scroll_horizontal = int(metadata.discovery_index)*tile_stride
+		for index: int in range(matches.size()):
+			if str(matches[index].get("version_id","")) == str(metadata.version_id):
+				gallery.scroll_horizontal = index*tile_stride
+				break
 		_render_tiles(true)
 		_select(public_entry)
 		return
@@ -734,7 +749,7 @@ func _random() -> void:
 	_select(entry)
 
 func _page_total() -> int:
-	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0: return int(cloud.discovery_pages.total)
+	# Remote totals/cursor windows describe fetch coordinates, never empty cards.
 	return matches.size()
 
 func telemetry_exposures() -> Array[Dictionary]:
@@ -748,56 +763,8 @@ func telemetry_exposures() -> Array[Dictionary]:
 		if not child is TrackTile or not child.is_visible_in_tree(): continue
 		var card: Rect2 = child.get_global_rect()
 		if card.get_area() <= 0 or viewport.intersection(card).get_area() < card.get_area()*0.5: continue
-		result.append({"entry":child.entry,"position":int(child.get_meta("catalog_index",0))})
+		result.append({"entry":child.entry,"position":int(child.entry.get("discovery_index",child.get_meta("catalog_index",0)))})
 	return result
-
-func _render_paged_tiles(reconcile: bool) -> void:
-	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
-	if not list_open and not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
-	_warm_visible_comparisons(first)
-	if first == _tile_start and not reconcile: return
-	_tile_start = first
-	var end: int = mini(_page_total(),first+12)
-	var retained: Dictionary = {}
-	for child: Node in grid.get_children():
-		var index: int = int(child.get_meta("catalog_index",-1))
-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index) if index >= 0 else {}
-		if not child.has_meta("catalog_index") or index < first or index >= end or (not child is TrackTile and not metadata.is_empty()) or (child is TrackTile and str(child.entry.get("version_id","")) != str(metadata.get("version_id",""))):
-			grid.remove_child(child)
-			child.queue_free()
-		else: retained[index] = child
-	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
-	for index: int in range(first,end):
-		if retained.has(index):
-			if retained[index] is TrackTile and reconcile:
-				var current_entry: Dictionary = cloud.entry_from_metadata(cloud.discovery_pages.entry_at(index))
-				retained[index].update_entry(current_entry,current_entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(current_entry.id),0)),current_entry.id == preview_entry.get("id",selected_track.identity))
-			grid.move_child(retained[index],index-first)
-			continue
-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index)
-		if metadata.is_empty():
-			var pending: Label = MenuStyle.label("Unavailable" if cloud.discovery_pages.pages.has(index/20) else "Loading tracks…",16,true)
-			pending.custom_minimum_size = Vector2(tile_stride-12,140)
-			pending.set_meta("catalog_index",index)
-			grid.add_child(pending)
-			grid.move_child(pending,index-first)
-			continue
-		var entry: Dictionary = cloud.entry_from_metadata(metadata)
-		var tile := TrackTile.new()
-		tile.set_meta("catalog_index",index)
-		tile.compact = true
-		tile.entry = entry
-		tile.favorite = entry.id in records.settings.get("favorites",[])
-		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
-		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
-		tile.name = "Track_"+str(entry.id)
-		tile.pressed.connect(_select_tile.bind(tile))
-		tile.focus_entered.connect(_focus_tile.bind(tile))
-		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
-		grid.add_child(tile)
-		grid.move_child(tile,index-first)
-		tile.custom_minimum_size = Vector2(tile_stride-12,140)
-		tile.size_flags_horizontal = Control.SIZE_FILL
 
 func _warm_visible_comparisons(first: int) -> void:
 	if list_open or page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
@@ -805,7 +772,7 @@ func _warm_visible_comparisons(first: int) -> void:
 	var versions: PackedStringArray = []
 	var visible: int = maxi(1,ceili(gallery.size.x/maxf(1.0,tile_stride)))
 	for index: int in range(first,mini(_page_total(),first+visible+2)):
-		var entry: Dictionary = cloud.discovery_pages.entry_at(index) if cloud.paged_discovery_available() else matches[index] if index < matches.size() else {}
+		var entry: Dictionary = matches[index] if index < matches.size() else {}
 		if not entry.is_empty() and entry.has("version_id"):
 			if _comparison_selection == _comparison_selection_key(selected_track) and str(entry.version_id) == str(selected_track.metadata.get("cloud_version","")): continue
 			entries.append(entry)
@@ -816,6 +783,9 @@ func _warm_visible_comparisons(first: int) -> void:
 	discovery.prime_comparisons(cloud.client,entries,VehicleCatalog.selected)
 
 func _select(entry: Dictionary) -> void:
+	if selection_only:
+		if not str(entry.get("version_id","" )).is_empty(): entry_chosen.emit(entry.duplicate(true))
+		return
 	if str(state.get("pinned_version","")) != str(entry.get("version_id","")): state.erase("pinned_version")
 	var from_list: bool = list_open
 	_open_track_view()
@@ -952,6 +922,7 @@ static func _resolve_track(directory: String, entry: Dictionary, cancelled: Call
 	return {"track":null if draft.is_empty() else TrackCompiler.compile(draft,{},cancelled),"draft":draft}
 
 func _process(_delta: float) -> void:
+	if selection_only: return
 	_poll_preparation_hint()
 	if _resolve_job == null or not _resolve_job.done: return
 	var result: Dictionary = _resolve_job.result
@@ -1275,6 +1246,7 @@ func _heading(parent: Control, caption: String, icon: String) -> HBoxContainer:
 	return row
 
 func _show_detail(preview_snapshot: Dictionary = {}) -> void:
+	if selection_only: return
 	if list_open: return
 	if selected_track.metadata.get("metadata_only",false) and preview_snapshot.is_empty():
 		if preview_entry.is_empty(): preview_entry = selected_track.metadata.cloud_entry.duplicate(true)
@@ -1529,6 +1501,7 @@ func _favorite_id(id: String) -> void:
 	if id == selected_track.identity: _show_hero(str(selected_track.metadata.get("title",selected_track.metadata.get("name",selected_track.identity))).to_upper(),str(selected_track.metadata.get("theme","pine")))
 
 func _build_mode_rail(parent: Control) -> void:
+	if selection_only: return
 	var rail := RaceModeRail.new()
 	rail.mode_requested.connect(func(mode: String) -> void:
 		if mode == "rivalry": rivalry_requested.emit()

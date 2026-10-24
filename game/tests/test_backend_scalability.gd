@@ -29,16 +29,16 @@ func run() -> void:
 	client.configure("http://127.0.0.1:9")
 	client.player = {"id":"scalability-fixture"}
 	var controls: Array = [[127,255,0,5,2],[-127,0,255],[0,128,0,255]]
-	var packed: Dictionary = Client._pack_replay(controls,[])
+	var packed: Dictionary = preload("res://tests/fixtures/replay_wire_reference.gd").pack(controls,[])
 	var bytes: PackedByteArray = Marshalls.base64_to_raw(packed.controls)
 	check(bytes == PackedByteArray([5,254,255,0,5,2,3,0,0,255,0,0,4,127,128,0,255,0]),"packed codec retains channels, widths and launch")
-	check(Client._pack_replay([[0.5,255,0]],[]).is_empty(),"fractional controls rejected")
-	check(Client._pack_replay(controls,[],false).frames == controls,"unadvertised protocol retains canonical legacy frames")
+	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack([[0.5,255,0]],[]).is_empty(),"fractional controls rejected")
+	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack(controls,[],false).frames == controls,"unadvertised protocol retains canonical legacy frames")
 	var large: Array = []
 	for index: int in range(216000): large.append([index%255-127,255,index%13,0])
 	var before: int = frames_seen
 	var started: int = Time.get_ticks_msec()
-	var encoded: Variant = await client._background(Client._pack_replay.bind(large,[]))
+	var encoded: Variant = await client._background(preload("res://tests/fixtures/replay_wire_reference.gd").pack.bind(large,[]))
 	check(encoded is Dictionary and encoded.frame_count == 216000,"maximum replay retains every canonical tick")
 	check(frames_seen > before+1,"maximum replay packing yields rendering frames")
 	var cloud := Cloud.new()
@@ -56,10 +56,10 @@ func run() -> void:
 	check(await cloud.queue_run_async({"ticket_id":"proof-fixture","_race_proof":proof},controls),"sparse movement proof persists with the completed result")
 	var proof_job: Dictionary = cloud.upload_job("proof-fixture")
 	var proof_saved: Variant = Cloud._load_replay(cloud.outbox_path().get_base_dir().path_join("runs").path_join(proof_job.replay),proof_job.replay_hash)
-	var proof_wire: Dictionary = Client._pack_replay(proof_saved.frames,[],true,proof_saved.race_proof)
+	var proof_wire: Dictionary = preload("res://tests/fixtures/replay_wire_reference.gd").pack(proof_saved.frames,[],true,proof_saved.race_proof)
 	check(proof_wire.get("race_proof",{}) == proof,"saved movement evidence survives the durable round trip after restoring integer wire fields")
 	check(proof_wire.race_proof.samples[0][0] is int and proof_wire.race_proof.samples[0][6] is int,"restored float ticks and layer markers regain integer wire types")
-	check(Client._pack_replay(proof_saved.frames,[],false,proof_saved.race_proof).race_proof == proof_wire.race_proof,"legacy wire fallback retains the same movement evidence")
+	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack(proof_saved.frames,[],false,proof_saved.race_proof).race_proof == proof_wire.race_proof,"legacy wire fallback retains the same movement evidence")
 	client.remember_run({"ticket_id":"proof-fixture","status":"queued"})
 	await create_timer(0.3).timeout
 	check(client.recent_run("proof-fixture").is_empty(),"pending result cache cannot hide a newly verified finish for three seconds")

@@ -304,11 +304,11 @@ func _test_independent(editor: ControlLayoutEditor) -> void:
 
 func _test_migration() -> void:
 	var legacy: Dictionary = {"version":1,"steering_type":"buttons"}
-	for key: String in ControlLayout.LEGACY_KEYS:
+	for key: String in ["buttons","horizontal","joystick","accelerator","brake"]:
 		legacy[key] = {"x":0.05 if key == "buttons" else 0.7,"y":0.8,"scale":1.1,"opacity":0.55}
 	var original: Dictionary = legacy.duplicate(true)
-	check(ControlLayout.valid(legacy), "existing v1 layout remains valid")
-	var converted: Dictionary = ControlLayout.from_settings({"control_layout":legacy})
+	check(not ControlLayout.valid(legacy), "live controls accept only current layouts")
+	var converted: Dictionary = preload("res://persistence/save_upgrades.gd").upgrade_layout(legacy)
 	check(converted.version == 2 and ControlLayout.valid(converted) and legacy == original, "v1 conversion is valid and leaves saved source intact")
 	var directory: String = "user://control_migration_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
@@ -317,7 +317,7 @@ func _test_migration() -> void:
 	check(store.save_records() == OK, "existing v1 layout can still be saved")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
-	check(reloaded.settings.control_layout.version == 1 and ControlLayout.from_settings(reloaded.settings).version == 2, "loading v1 supplies independent controls without rewriting the source")
+	check(reloaded.settings.control_layout.version == 2 and ControlLayout.from_settings(reloaded.settings).version == 2, "loading supplies only current independent controls after the save upgrade")
 	reloaded.settings.control_layout = converted.duplicate(true)
 	check(reloaded.save_records() == OK, "converted v2 layout saves atomically")
 	reloaded.load_records()

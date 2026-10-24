@@ -1,8 +1,10 @@
 extends Node
 ## Authenticated rivalry adapter. All points and results come from the server.
 signal changed
+var circuit_mode: bool = false
 var client: Node
 var appearance_provider: Callable
+var appearance_sync: Callable
 var _synced_appearance: String = ""
 var model := WeeklyRivalry.new()
 var busy: bool = false
@@ -46,7 +48,7 @@ func _safety_changed() -> void:
 	if client.signed_in() and not busy: refresh.call_deferred()
 
 func _cache_scope() -> String:
-	return scope()+"/"+VehicleSimulation.PHYSICS_VERSION+"/"+RaceRules.KEY+"/"+TrackCompiler.VERSION+"/"+JSON.stringify(HandlingSelection.config().snapshot(),"",true).sha256_text()
+	return scope()+"/"+VehicleSimulation.PHYSICS_VERSION+"/"+RaceRules.KEY+"/"+TrackCompiler.VERSION+"/"+JSON.stringify(VehicleCatalog.config(vehicle()).snapshot(),"",true).sha256_text()
 
 func _configure_cache() -> void:
 	snapshot_cache.max_entries = 1
@@ -60,7 +62,7 @@ func _restore_snapshot() -> void:
 	var saved: Dictionary = snapshot_cache.read("current")
 	var value: Variant = saved.get("snapshot")
 	if not value is Dictionary or not valid_snapshot(value) or value.get("state") == "not_joined": return
-	if str(value.get("self_id","")) != str(client.player.get("id","")) or str(value.get("vehicle_id","")) != VehicleCatalog.selected or bool(value.get("test_population",false)) != test_population: return
+	if str(value.get("self_id","")) != str(client.player.get("id","")) or str(value.get("vehicle_id","")) != vehicle() or bool(value.get("test_population",false)) != test_population: return
 	var age: int = maxi(0,int(Time.get_unix_time_from_system())-int(saved.get("received_at",0)))
 	var remaining: int = maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0))-age)
 	if value.state == "active" and remaining == 0: return
@@ -77,14 +79,18 @@ func _remember_snapshot(value: Dictionary) -> void:
 	else:
 		snapshot_cache.remember("current",{"snapshot":value,"received_at":int(Time.get_unix_time_from_system())})
 
-func scope() -> String:
-	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+VehicleCatalog.selected+("/test" if test_population else "/real")
+func vehicle() -> String:
+	return "compact" if circuit_mode else VehicleCatalog.selected
 
-func set_test_population(enabled: bool) -> void:
-	if enabled == test_population: return
-	test_population = enabled
+func set_circuit_mode(enabled: bool) -> void:
+	if circuit_mode == enabled and (not enabled or not test_population): return
+	circuit_mode = enabled
+	if enabled: test_population = false
 	reset()
 	changed.emit()
+
+func scope() -> String:
+	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/"+vehicle()+("/test" if test_population else "/real")
 
 func reset() -> void:
 	_generation += 1
@@ -147,8 +153,11 @@ func has_snapshot() -> bool:
 	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
 
 func _sync_appearance() -> void:
+	if appearance_sync.is_valid():
+		await appearance_sync.call()
+		return
 	if not appearance_provider.is_valid() or not client.signed_in(): return
-	var value: Variant = appearance_provider.call(VehicleCatalog.selected)
+	var value: Variant = appearance_provider.call(vehicle())
 	if not value is Dictionary or not value.has_all(["vehicle_id","livery","customisation"]): return
 	if not VehicleLivery.valid(value.livery) or not VehicleCustomisation.valid(value.customisation): return
 	var original: String = scope()
@@ -181,7 +190,7 @@ func refresh(force: bool = true) -> void:
 	request_scope = original
 	await _sync_appearance()
 	if generation != _generation or original != scope(): return
-	await _fetch("/rivalry/current?vehicle_id="+VehicleCatalog.selected.uri_encode()+("&test_population=true" if test_population else ""))
+	await _fetch("/rivalry/current?vehicle_id="+vehicle().uri_encode()+("&test_population=true" if test_population else ""))
 
 func join() -> void:
 	if busy: return
@@ -191,7 +200,7 @@ func join() -> void:
 	request_scope = original
 	await _sync_appearance()
 	if generation != _generation or original != scope(): return
-	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
+	await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":vehicle(),"test_population":test_population,"automatic_test_drivers":test_population})
 
 func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
 	busy = true
@@ -396,7 +405,7 @@ func continue_week() -> void:
 		cached_snapshot = false
 		# Join targets the actual current UTC week even on an older backend with
 		# several unreviewed finales. Keep the finale visible until it succeeds.
-		await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":VehicleCatalog.selected,"test_population":test_population,"automatic_test_drivers":test_population})
+		await _fetch("/rivalry/join",HTTPClient.METHOD_POST,{"vehicle_id":vehicle(),"test_population":test_population,"automatic_test_drivers":test_population})
 	else:
 		busy = false
 		request_scope = ""

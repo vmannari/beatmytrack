@@ -1,64 +1,83 @@
 class_name ChallengeCreate
 extends VBoxContainer
-## A result stays bound to its completed ticket while verification finishes.
-signal race_to_set_requested(entry: Dictionary, vehicle_id: String, duration_seconds: int, attempt_limit: int)
+## Format -> tracks -> car, with authoritative completed results and supported rules.
+signal race_to_set_requested(entry: Dictionary, vehicle_id: String, duration_seconds: int, attempt_limit: int, configuration: Dictionary)
 signal confirmed
 signal canceled
+const FORMAT := 0
+const TRACKS := 1
+const CAR := 2
+const RULES := 3
+const FORMAT_TITLES: Dictionary = {"duel":"One-to-one","group":"Group race","three":"3×3","custom":"Custom challenge"}
+const FormatCard = preload("res://ui/challenge_format_card.gd")
+const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v3.png","group":"res://assets/menu/challenges/group-race-v3.png","three":"res://assets/menu/challenges/three-by-three-v4.png"}
 var adapter: ChallengesClient
 var entries: Array[Dictionary] = []
+var library: TrackLibrary
+var records: LocalRecords
+var selected_track: NativeTrack
+var browser_state: Dictionary = {}
 var initial_version: String = ""
 var initial_vehicle: String = ""
 var initial_ticket: String = ""
 var initial_duration: int = 604800
 var initial_attempt_limit: int = 0
+var initial_configuration: Dictionary = {}
+var selected_format: String = "duel"
 var attempt_limit: int = 0
-var _attempt_buttons: Array[Button] = []
-var _track_art: TextureRect
-var _track_creator: Label
-var _preview_biome: Label
-var _time_caption: Label
-var _target_panel: PanelContainer
-var _status: HBoxContainer
-var _preview_art: TextureRect
-var _preview_route: LapRouteView
-var _preview_title: Label
-var _preview_creator: Label
-var _car_art: TextureRect
-var _summary_car: Label
-var _summary_time: Label
-var _summary_tries: Label
-var _summary_duration: Label
-var _summary_audience: Label
-var _tries_note: Label
 var result_context: Dictionary = {}
 var created_callback: Callable
+var start_after_create: bool = false
 var mode: int = 0
 var duration: int = 604800
-var _track: OptionButton
-var _vehicle: OptionButton
+var _step: int = FORMAT
+var _rules_return: int = FORMAT
+var _draft_rules: Dictionary = {}
+var _source_scope: String = ""
 var _source: Dictionary = {}
-var _notice: Label
-var _race: Button
-var _create_button: Button
-var _retry: Button
-var _time: Label
 var _serial: int = 0
 var _checking: bool = false
 var _submitting: bool = false
 var _next_check: int = 0
-var _search: LineEdit
-var _search_timer: Timer
-var _search_serial: int = 0
-var _base_entries: Array[Dictionary] = []
-var _searching: bool = false
-var _mode_buttons: Array[Button] = []
-var _duration_buttons: Array[Button] = []
-var _panel: PanelContainer
+var _chosen_entries: Array[Dictionary] = []
+var _active_slot: int = 0
+var _chosen_car: String = "compact"
+var _heading: Label
+var _format_page: VBoxContainer
+var _track_page: VBoxContainer
+var _car_page: VBoxContainer
+var _custom_page: VBoxContainer
+var _rules_fields: GridContainer
+var _formats: GridContainer
+var _format_buttons: Array[FormatCard] = []
+var _custom_button: Button
+var _slot_row: HBoxContainer
+var _browser: TrackBrowser
+var _car_stage: Control
+var _car_art: CarShowroom
+var _car_models: Dictionary = {}
+var _car_scroll: ScrollContainer
+var _car_cards: Array[Button] = []
+var _time: Label
+var _summary_time: Label
+var _notice: Label
+var _status: HBoxContainer
+var _retry: Button
+var _race: Button
+var _share: Button
+var _create_button: Button
 var _close_button: Button
-var _source_scope: String = ""
-var _visibility: OptionButton
+var _rule_title: Label
+var _rule_details: Label
+var _tries_note: Label
+var _rules_button: Button
+var _action_layout: BoxContainer
+var _final_actions: BoxContainer
 
 func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
+func _required_tracks() -> int: return 3 if selected_format == "three" else 1
+func _entry() -> Dictionary: return _chosen_entries[0] if not _chosen_entries.is_empty() else {}
+func _vehicle_id() -> String: return VehicleCatalog.valid_id(initial_vehicle) if locked_result() else _chosen_car
 
 func _ready() -> void:
 	name = "ChallengeCreate"
@@ -66,542 +85,562 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation",12)
+	add_theme_constant_override("separation",10)
 	_source_scope = str(result_context.get("scope",adapter.scope()))
 	duration = initial_duration
 	attempt_limit = initial_attempt_limit
-	_base_entries = entries.duplicate(true)
-	var columns := HBoxContainer.new()
-	columns.name = "ChallengeCreateColumns"
-	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	columns.add_theme_constant_override("separation",20)
-	add_child(columns)
-	var settings := VBoxContainer.new()
-	settings.name = "ChallengeCreateSettings"
-	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	settings.size_flags_stretch_ratio = 1.45
-	settings.add_theme_constant_override("separation",10)
-	columns.add_child(settings)
+	mode = int(initial_configuration.get("mode",0))
+	selected_format = str(initial_configuration.get("format","duel" if mode == 0 and attempt_limit == 0 else "three" if mode == 1 and attempt_limit == 3 else "group" if mode == 1 and attempt_limit == 0 else "custom"))
+	_chosen_car = VehicleCatalog.valid_id(initial_vehicle)
+	if initial_configuration.get("tracks") is Array:
+		for entry: Dictionary in initial_configuration.tracks: _chosen_entries.append(entry.duplicate(true))
+	if locked_result():
+		var opening: Dictionary = result_context.get("entry",{})
+		if opening.is_empty():
+			for entry: Dictionary in entries:
+				if str(entry.get("version_id","")) == initial_version: opening = entry
+		if not opening.is_empty():
+			if _chosen_entries.is_empty(): _chosen_entries.append(opening.duplicate(true))
+			else: _chosen_entries[0] = opening.duplicate(true)
+	_step = CAR if int(initial_configuration.get("step",FORMAT)) == CAR and not _chosen_entries.is_empty() else FORMAT
 	var header := HBoxContainer.new()
 	header.name = "ChallengeCreateHeader"
-	header.custom_minimum_size.y = 52
-	header.add_theme_constant_override("separation",14)
-	settings.add_child(header)
-	_close_button = MenuStyle.button("Back",close)
-	_close_button.name = "CloseChallengeCreate"
-	_close_button.custom_minimum_size = Vector2(90,52)
-	_close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
-	header.add_child(_close_button)
-	var glyph := _icon("target",36)
-	glyph.modulate = MenuStyle.ACCENT
-	header.add_child(glyph)
-	header.add_child(MenuStyle.label("CREATE CHALLENGE",34))
+	add_child(header)
+	_heading = MenuStyle.label("CHOOSE YOUR CHALLENGE",36)
+	_heading.name = "ChallengeCreateTitle"
+	_heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	header.add_child(_heading)
+	_close_button = _button(header,"Back",_back,"CloseChallengeCreate")
+	# Reserve the same padding as hover/pressed so the caption stays fully visible.
+	_close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT))
 	var scroll := ScrollContainer.new()
-	scroll.name = "ChallengeSettingsScroll"
+	scroll.name = "ChallengeCreationScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	settings.add_child(scroll)
-	var fields := VBoxContainer.new()
-	fields.name = "ChallengeCreateFields"
-	fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	fields.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	fields.add_theme_constant_override("separation",4)
-	scroll.add_child(fields)
-	var track_row := _field(fields,"TRACK","compass")
-	_track_art = _icon("tracks")
-	_track_art.name = "ChallengeTrackThumbnail"
-	_track_art.custom_minimum_size = Vector2(90,56)
-	_track_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	track_row.add_child(_track_art)
-	if locked_result():
-		var identity := VBoxContainer.new()
-		identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		track_row.add_child(identity)
-		var track_title := MenuStyle.label(str(_entry().get("name","")),24)
-		track_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		identity.add_child(track_title)
-		_track_creator = MenuStyle.label("",16,true)
-		_track_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		identity.add_child(_track_creator)
-	else:
-		var choices := VBoxContainer.new()
-		choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		track_row.add_child(choices)
-		_track = OptionButton.new()
-		_track.name = "ChallengeTrackChoice"
-		_track.custom_minimum_size.y = 52
-		_track.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_track.add_theme_font_override("font",MenuStyle.DISPLAY)
-		_track.add_theme_font_size_override("font_size",23)
-		_track.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		_track.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
-		choices.add_theme_constant_override("separation",0)
-		choices.add_child(_track)
-		_track_creator = MenuStyle.label("",16,true)
-		_track_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		choices.add_child(_track_creator)
-		for index: int in range(entries.size()):
-			_track.add_item(str(entries[index].name),index)
-			if str(entries[index].version_id) == initial_version: _track.select(index)
-		_search = LineEdit.new()
-		_search.placeholder_text = "Find a track or creator"
-		_search.max_length = 80
-		_search.custom_minimum_size.y = 48
-		_search.hide()
-		choices.add_child(_search)
-		var find := MenuStyle.button("Change track",func() -> void:
-			_search.visible = not _search.visible
-			if _search.visible: _search.grab_focus())
-		find.name = "ChallengeChangeTrack"
-		find.add_theme_font_size_override("font_size",19)
-		_outline(find)
-		find.tooltip_text = "Find a track or creator"
-		find.custom_minimum_size = Vector2(52,52)
-		track_row.add_child(find)
-		_search_timer = Timer.new()
-		_search_timer.wait_time = 0.35
-		_search_timer.one_shot = true
-		_search_timer.timeout.connect(_find_tracks)
-		add_child(_search_timer)
-		_search.text_changed.connect(func(_text: String) -> void:
-			_search_serial += 1
-			_serial += 1
-			_searching = true
-			_update()
-			_search_timer.start())
-		_track.item_selected.connect(func(_i: int) -> void: _check_source())
-	if adapter.discovery_supported():
-		var audience := _field(fields,"WHO CAN JOIN","friends")
-		_visibility = OptionButton.new()
-		_visibility.name = "ChallengeVisibility"
-		_visibility.custom_minimum_size.y = 52
-		_visibility.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_visibility.add_item("Public · listed in Discover")
-		_visibility.add_item("Private · invitation link only")
-		_visibility.select(0 if adapter.creation_visibility == "public" else 1)
-		_visibility.item_selected.connect(func(index: int) -> void: adapter.creation_visibility = "public" if index == 0 else "private"; _refresh_preview())
-		audience.add_child(_visibility)
-	var modes := _field(fields,"CHALLENGE\nTYPE","friends")
-	for index: int in range(2):
-		var choice := _segment(modes,["Beat my time","Group challenge"][index],_choose_mode.bind(index))
-		_choice_content(choice,["Beat my time","Group challenge"][index],["Set a time to beat","Compare with friends"][index],["clock","friends"][index])
-		choice.name = ["ChallengeBeat","ChallengeGroup"][index]
-		_mode_buttons.append(choice)
-	var car := _field(fields,"CAR","car")
-	_car_art = TextureRect.new()
-	_car_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_car_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_car_art.custom_minimum_size = Vector2(90,52)
-	car.add_child(_car_art)
-	if locked_result():
-		car.add_child(MenuStyle.label(VehicleCatalog.title(initial_vehicle),22))
-	else:
-		_vehicle = OptionButton.new()
-		_vehicle.custom_minimum_size.y = 52
-		_vehicle.name = "ChallengeCarChoice"
-		_vehicle.add_theme_font_override("font",MenuStyle.DISPLAY)
-		_vehicle.add_theme_font_size_override("font_size",22)
-		_vehicle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		_outline(_vehicle)
-		_vehicle.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		car.add_child(_vehicle)
-		for title: String in VehicleCatalog.NAMES: _vehicle.add_item(title)
-		_vehicle.select(VehicleCatalog.IDS.find(VehicleCatalog.valid_id(initial_vehicle)))
-		_vehicle.item_selected.connect(func(_i: int) -> void: _check_source())
-	var target := _field(fields,"TARGET TIME","target")
-	_target_panel = PanelContainer.new()
-	_target_panel.name = "ChallengeTargetChoice"
-	_target_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_target_panel.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.ACCENT,4))
-	target.add_child(_target_panel)
-	var target_content := HBoxContainer.new()
-	target_content.alignment = BoxContainer.ALIGNMENT_CENTER
-	_target_panel.add_child(target_content)
-	var target_icon := _icon("clock",26)
-	target_icon.modulate = MenuStyle.INK
-	target_content.add_child(target_icon)
-	var time_box := VBoxContainer.new()
-	time_box.add_theme_constant_override("separation",0)
-	target_content.add_child(time_box)
-	_time_caption = MenuStyle.label("",18)
-	_time_caption.add_theme_font_override("font",MenuStyle.DISPLAY)
-	_time_caption.add_theme_color_override("font_color",MenuStyle.INK)
-	time_box.add_child(_time_caption)
-	_time = MenuStyle.label("",24)
-	_time.name = "ChallengeFinishedTime"
-	_time.add_theme_color_override("font_color",MenuStyle.INK)
-	time_box.add_child(_time)
-	var tries := _field(fields,"NUMBER OF\nTRIES","restart")
-	tries.tooltip_text = "Each started race uses one try, including abandoned races. Upload retries do not use another."
-	for value: int in [1,3,5,0]:
-		var choice := _segment(tries,"Unlimited" if value == 0 else str(value),_choose_attempt_limit.bind(value))
-		choice.name = "ChallengeTries_"+str(value)
-		choice.tooltip_text = tries.tooltip_text
-		_attempt_buttons.append(choice)
-	_tries_note = MenuStyle.label("Each started race uses a try, including restarts and abandoned races.",15,true)
-	_tries_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_tries_note.hide()
-	fields.add_child(_tries_note)
-	var help := MenuStyle.button("",func() -> void: _tries_note.visible = not _tries_note.visible)
-	help.icon = MenuIcon.texture("help")
-	help.tooltip_text = "How tries are counted"
-	help.custom_minimum_size = Vector2(52,52)
-	var tries_label: HBoxContainer = tries.get_parent().get_child(0)
-	help.custom_minimum_size = Vector2(52,52)
-	help.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
-	tries_label.add_child(help)
-	var durations := _field(fields,"DURATION","clock")
-	for index: int in range(3):
-		var seconds: int = [86400,259200,604800][index]
-		var choice := _segment(durations,["24 hours","3 days","7 days"][index],_choose_duration.bind(seconds))
-		choice.name = "ChallengeDuration_"+str(seconds)
-		_duration_buttons.append(choice)
-	_panel = PanelContainer.new()
-	_panel.name = "ChallengeCreatePanel"
-	_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_panel.add_theme_stylebox_override("panel",MenuStyle.card(10))
-	columns.add_child(_panel)
-	var preview := VBoxContainer.new()
-	preview.add_theme_constant_override("separation",12)
-	_panel.add_child(preview)
-	var hero := PanelContainer.new()
-	hero.name = "ChallengeFinishedRace"
-	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	hero.custom_minimum_size.y = 110
-	hero.clip_contents = true
-	hero.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),0))
-	preview.add_child(hero)
-	_preview_art = TextureRect.new()
-	_preview_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_preview_art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	hero.add_child(_preview_art)
-	var overlay := VBoxContainer.new()
-	overlay.add_theme_constant_override("separation",12)
-	hero.add_child(overlay)
-	var top := HBoxContainer.new()
-	top.add_theme_constant_override("separation",8)
-	overlay.add_child(top)
-	var badge := PanelContainer.new()
-	badge.custom_minimum_size.x = 220
-	badge.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	badge.add_theme_stylebox_override("panel",MenuStyle.box(Color("081720ee"),10))
-	top.add_child(badge)
-	var identity := VBoxContainer.new()
-	identity.add_theme_constant_override("separation",0)
-	badge.add_child(identity)
-	_preview_title = MenuStyle.label("",28)
-	_preview_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	identity.add_child(_preview_title)
-	_preview_creator = MenuStyle.label("",16,true)
-	_preview_creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	identity.add_child(_preview_creator)
-	var hero_space := Control.new()
-	hero_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(hero_space)
-	var biome := PanelContainer.new()
-	biome.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	biome.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632ee"),10))
-	top.add_child(biome)
-	_preview_biome = MenuStyle.label("",18)
-	biome.add_child(_preview_biome)
-	_preview_route = LapRouteView.new()
-	_preview_route.name = "ChallengeFinishedRoute"
-	_preview_route.miniature = true
-	_preview_route.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	overlay.add_child(_preview_route)
-	var summary := PanelContainer.new()
-	summary.name = "ChallengePreviewSummary"
-	_outline(summary)
-	preview.add_child(summary)
-	var summary_rows := VBoxContainer.new()
-	summary_rows.add_theme_constant_override("separation",0)
-	summary.add_child(summary_rows)
-	_summary_car = _summary(summary_rows,"Car","car")
-	_summary_time = _summary(summary_rows,"Target time","clock")
-	_summary_tries = _summary(summary_rows,"Number of tries","restart")
-	_summary_duration = _summary(summary_rows,"Duration","clock")
-	if adapter.discovery_supported(): _summary_audience = _summary(summary_rows,"Who can join","friends")
+	add_child(scroll)
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.add_child(body)
+	_format_page = _page(body,"ChallengeFormatPage")
+	_track_page = _page(body,"ChallengeTrackPage")
+	_car_page = _page(body,"ChallengeCarPage")
+	_custom_page = _page(body,"ChallengeCustomRulesPage")
+	_build_formats()
+	_slot_row = HBoxContainer.new()
+	_slot_row.name = "ChallengeTrackSlots"
+	_slot_row.add_theme_constant_override("separation",12)
+	_track_page.add_child(_slot_row)
+	_build_cars()
+	_rules_fields = GridContainer.new()
+	_rules_fields.name = "ChallengeRulesFields"
+	_rules_fields.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_rules_fields.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_rules_fields.add_theme_constant_override("h_separation",20)
+	_rules_fields.add_theme_constant_override("v_separation",16)
+	_custom_page.add_child(_rules_fields)
+	var note := MenuStyle.label("Best time wins. Each start uses a try, including restarts.",16,true)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_custom_page.add_child(note)
 	_status = HBoxContainer.new()
 	add_child(_status)
-	_notice = MenuStyle.label("",17,true)
+	_notice = MenuStyle.label("",16,true)
 	_notice.name = "ChallengeSourceStatus"
-	_notice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_notice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status.add_child(_notice)
-	_retry = MenuStyle.button("Retry",_check_source)
-	_retry.name = "RetryChallengeSource"
-	_retry.custom_minimum_size.y = 52
-	_status.add_child(_retry)
-	var actions := HBoxContainer.new()
-	actions.name = "ChallengeCreateActions"
-	add_child(actions)
-	var cancel := MenuStyle.button("Cancel",close)
-	cancel.custom_minimum_size = Vector2(180,56)
-	_outline(cancel)
-	actions.add_child(cancel)
-	var space := Control.new()
-	space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	actions.add_child(space)
-	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
-	_race.name = "RaceToSetChallenge"
-	_race.custom_minimum_size = Vector2(310,56)
-	actions.add_child(_race)
-	_create_button = MenuStyle.button("Create challenge" if adapter.discovery_supported() else "Create & share",func() -> void: confirmed.emit(),true)
-	_create_button.icon = MenuIcon.texture("target" if adapter.discovery_supported() else "share")
-	_create_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
-	_create_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
-	_create_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
-	_create_button.name = "ConfirmChallengeCreate"
-	_create_button.custom_minimum_size = Vector2(310,56)
-	actions.add_child(_create_button)
+	_retry = _button(_status,"Retry",_check_source,"RetryChallengeSource")
+	_build_actions()
 	confirmed.connect(_create)
-	_check_source()
+	resized.connect(_layout_cards)
+	_layout_cards.call_deferred()
+	if _step == CAR or locked_result(): _check_source()
+	_refresh_tracks()
+	_update()
 
-func _icon(glyph: String, extent: int = 24) -> TextureRect:
-	var icon := TextureRect.new()
-	icon.texture = MenuIcon.texture(glyph)
-	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.custom_minimum_size = Vector2(extent,extent)
-	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return icon
+func _page(parent: Control, identity: String) -> VBoxContainer:
+	var page := VBoxContainer.new()
+	page.name = identity
+	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	page.add_theme_constant_override("separation",12)
+	parent.add_child(page)
+	return page
 
-func _outline(control: Control) -> void:
-	var style := MenuStyle.box(Color("102632"),8)
-	style.border_color = MenuStyle.BORDER
-	style.set_border_width_all(1)
-	control.add_theme_stylebox_override("panel" if control is PanelContainer else "normal",style)
-
-func _field(parent: Control, caption: String, glyph: String) -> HBoxContainer:
-	var panel := PanelContainer.new()
-	panel.name = "ChallengeField_"+caption.replace("\n","").replace(" ","")
-	panel.custom_minimum_size.y = 68
-	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1e2bf2"),8))
-	parent.add_child(panel)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation",12)
-	panel.add_child(row)
-	var title := HBoxContainer.new()
-	title.custom_minimum_size.x = 168
-	title.add_theme_constant_override("separation",10)
-	row.add_child(title)
-	title.add_child(_icon(glyph))
-	var label := MenuStyle.label(caption,17,true)
-	label.add_theme_font_override("font",MenuStyle.DISPLAY)
-	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	title.add_child(label)
-	var choices := HBoxContainer.new()
-	choices.name = "ChallengeChoices_"+caption.replace("\n","").replace(" ","")
-	choices.add_theme_constant_override("separation",8)
-	choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(choices)
-	return choices
-
-func _choice_content(button: Button, caption: String, detail: String, glyph: String) -> void:
-	button.text = caption
-	for state: String in ["font_color","font_focus_color","font_hover_color","font_pressed_color","font_disabled_color"]:
-		button.add_theme_color_override(state,Color.TRANSPARENT)
-	var center := CenterContainer.new()
-	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	MenuStyle.fill(center)
-	button.add_child(center)
-	var group := HBoxContainer.new()
-	group.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	group.add_theme_constant_override("separation",10)
-	center.add_child(group)
-	group.add_child(_icon(glyph,26))
-	var text := VBoxContainer.new()
-	text.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	text.add_theme_constant_override("separation",0)
-	group.add_child(text)
-	var title := MenuStyle.label(caption,21)
-	title.add_theme_font_override("font",MenuStyle.DISPLAY)
-	text.add_child(title)
-	var subtitle := MenuStyle.label(detail,14,true)
-	subtitle.add_theme_font_override("font",MenuStyle.DISPLAY)
-	text.add_child(subtitle)
-	button.set_meta("choice_title",title)
-	button.set_meta("choice_detail",subtitle)
-	button.set_meta("choice_icon",group.get_child(0))
-	button.custom_minimum_size.x = maxf(button.custom_minimum_size.x,group.get_combined_minimum_size().x+16)
-
-func _segment(parent: Control, caption: String, action: Callable) -> Button:
-	var button := MenuStyle.button(caption,action)
-	button.add_theme_font_size_override("font_size",20)
+func _button(parent: Control, caption: String, action: Callable, identity: String, primary: bool = false) -> Button:
+	var button := MenuStyle.button(caption,action,primary)
+	button.name = identity
 	button.custom_minimum_size.y = 52
-	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	button.add_theme_font_size_override("font_size",21)
 	parent.add_child(button)
 	return button
 
-func _summary(parent: Control, caption: String, glyph: String) -> Label:
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel",MenuStyle.box(Color("172c3866") if parent.get_child_count()%2 == 0 else Color.TRANSPARENT,6))
-	parent.add_child(panel)
-	var row := HBoxContainer.new()
-	row.custom_minimum_size.y = 28
-	row.add_theme_constant_override("separation",12)
-	panel.add_child(row)
-	row.add_child(_icon(glyph,22))
-	var label := MenuStyle.label(caption,17,true)
-	label.add_theme_font_override("font",MenuStyle.DISPLAY)
-	label.custom_minimum_size.x = 148
-	row.add_child(label)
-	var value := MenuStyle.label("",18)
-	value.add_theme_font_override("font",MenuStyle.DISPLAY)
-	value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	value.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	value.name = "ChallengeSummary_"+caption.replace(" ","")
-	row.add_child(value)
-	return value
+func _build_formats() -> void:
+	_formats = GridContainer.new()
+	_formats.name = "ChallengeFormats"
+	_formats.columns = 3
+	_formats.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_formats.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_formats.add_theme_constant_override("h_separation",16)
+	_formats.add_theme_constant_override("v_separation",12)
+	_format_page.add_child(_formats)
+	for key: String in ["duel","group","three"]:
+		var card := FormatCard.new()
+		card.format_id = key
+		card.caption = FORMAT_TITLES[key]
+		card.description = {"duel":PackedStringArray(["One rival. Your time to beat."]),"group":PackedStringArray(["Get the crew on the same grid."]),"three":PackedStringArray(["Three tracks. Three tries on each."])}[key]
+		card.audience = "You + one rival" if key == "duel" else "Up to 20 drivers"
+		card.tries = "3 tracks · 3 tries each" if key == "three" else "1 track · Unlimited tries"
+		card.scenery = load(POSTERS[key]) as Texture2D
+		card.name = "ChallengeFormat_"+key
+		card.pressed.connect(_choose_format.bind(key))
+		_formats.add_child(card)
+		_format_buttons.append(card)
+	_custom_button = _button(_format_page,"Create custom challenge  ›",_open_rules,"ChallengeCreateCustom")
+	_custom_button.size_flags_horizontal = Control.SIZE_SHRINK_END
+	_custom_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,6))
 
-func _choose_attempt_limit(value: int) -> void:
-	attempt_limit = value
-	_update()
-
-func _refresh_preview() -> void:
-	if _preview_art == null: return
-	var entry: Dictionary = _entry()
-	_preview_art.texture = TrackTile.scenery_texture(str(entry.get("theme","pine")))
-	_preview_art.modulate = Color(0.94,0.97,1.0)
-	_track_art.texture = _preview_art.texture
-	_track_creator.text = "By "+str(entry.get("creator","")) if not entry.get("creator","").is_empty() else ""
-	_preview_biome.text = TrackTheme.title(str(entry.get("theme","pine")))
-	_preview_title.text = str(entry.get("name","Choose a track"))
-	_preview_creator.text = _track_creator.text
-	_preview_route.route.clear()
-	for point: Array in entry.get("points",[]): _preview_route.route.append(Vector2(point[0],point[1]))
-	_preview_route._fit()
-	_car_art.texture = VehicleCatalog.artwork(_vehicle_id())
-	_summary_car.text = VehicleCatalog.title(_vehicle_id())
-	var total: float = float(result_context.get("total",0.0)) if locked_result() else 0.0
-	if _source.get("status") == "verified": total = float(_source.get("ms",0))/1000.0
-	_time.text = MenuStyle.time_text(total) if total > 0.0 else "?"
-	_time_caption.text = "Use this finish" if locked_result() and mode == 0 else "Use my best time" if mode == 0 else "No target"
-	_time.visible = mode == 0
-	_time_caption.text = "Fastest time wins" if mode == 1 else _time_caption.text
-	_summary_time.text = ("This finish" if locked_result() else "My best")+" ("+_time.text+")" if mode == 0 else "Fastest time wins"
-	if _summary_audience != null: _summary_audience.text = "Public (Discover)" if adapter.creation_visibility == "public" else "Private (invitation link)"
-	_summary_tries.text = "Unlimited" if attempt_limit == 0 else str(attempt_limit)
-	_summary_duration.text = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
-
-func _entry() -> Dictionary:
-	if locked_result():
-		if result_context.get("entry") is Dictionary: return result_context.entry
+func _ensure_browser() -> void:
+	if _browser != null: return
+	var live: bool = library != null and records != null and adapter.client.has_method("request_discovery")
+	if library == null: library = TrackLibrary.new(adapter.cloud.cache_root().path_join("challenge-picker"))
+	if records == null: records = LocalRecords.new(adapter.cloud.cache_root().path_join("challenge-picker-records.json"))
+	_browser = TrackBrowser.new()
+	_browser.name = "ChallengeTrackBrowser"
+	_browser.selection_only = true
+	_browser.library = library
+	_browser.records = records
+	_browser.selected_track = selected_track if selected_track != null else NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	_browser.state = browser_state.duplicate(true)
+	_browser.state.erase("random_on_open")
+	_browser.state.erase("focus_track")
+	_browser.catalog = TrackCatalog.new(library)
+	_browser.catalog.indexed_revision = library.revision
+	if live: _browser.cloud = adapter.cloud
+	else:
 		for entry: Dictionary in entries:
-			if str(entry.get("version_id","")) == initial_version: return entry
-		return {}
-	return entries[_track.selected] if _track != null and _track.selected >= 0 and _track.selected < entries.size() else {}
+			var metadata: Dictionary = entry.duplicate(true)
+			metadata.id = "cloud_"+str(entry.get("track_id",entry.version_id))
+			metadata.source = "cloud"
+			metadata.read_only = true
+			_browser.catalog.entries.append(metadata)
+	_browser.entry_chosen.connect(_select_track)
+	_browser.notice.connect(_show_notice)
+	_track_page.add_child(_browser)
+	_refresh_tracks()
 
-func _vehicle_id() -> String:
-	return initial_vehicle if locked_result() else VehicleCatalog.IDS[_vehicle.selected]
-
-func _choose_mode(index: int) -> void:
-	mode = index
+func _refresh_tracks() -> void:
+	if _slot_row == null: return
+	for child: Node in _slot_row.get_children(): _slot_row.remove_child(child); child.queue_free()
+	_active_slot = mini(_active_slot,_required_tracks()-1)
+	_slot_row.visible = _required_tracks() == 3
+	if _required_tracks() == 3:
+		for index: int in range(3):
+			var title: String = str(_chosen_entries[index].name) if index < _chosen_entries.size() else "Choose track"
+			var slot := _button(_slot_row,str(index+1)+"  "+title,func() -> void: _active_slot = index; _refresh_tracks(),"ChallengeTrackSlot_"+str(index))
+			slot.tooltip_text = "Choose the track for slot "+str(index+1)
+			slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			slot.clip_text = true
+			slot.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			var style := MenuStyle.box(Color("10232fe8"),10)
+			style.set_corner_radius_all(0)
+			style.border_color = MenuStyle.ACCENT if index == _active_slot else MenuStyle.BORDER
+			style.border_width_bottom = 3 if index == _active_slot else 1
+			slot.add_theme_stylebox_override("normal",style)
+			slot.add_theme_color_override("font_color",MenuStyle.ACCENT if index == _active_slot else MenuStyle.TEXT)
+	if _browser != null:
+		_browser.selected_versions.clear()
+		for entry: Dictionary in _chosen_entries: _browser.selected_versions.append(str(entry.version_id))
+		_browser._render_list(true)
 	_update()
 
-func _choose_duration(seconds: int) -> void:
-	duration = seconds
-	_update()
-
-func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void:
-	show()
-	set_process_input(true)
-
-func get_ok_button() -> Button: return _create_button
-
-func close() -> void:
+func _select_track(entry: Dictionary) -> void:
 	if _submitting: return
-	_serial += 1
-	_search_serial += 1
-	hide()
-	set_process_input(false)
-	canceled.emit()
+	if locked_result() and _active_slot == 0: _show_notice("The opening track is fixed to your finished race."); return
+	for index: int in range(_chosen_entries.size()):
+		if index != _active_slot and str(_chosen_entries[index].get("track_id",_chosen_entries[index].version_id)) == str(entry.get("track_id",entry.version_id)):
+			_show_notice("Choose a different track for each slot.")
+			return
+	if _active_slot < _chosen_entries.size(): _chosen_entries[_active_slot] = entry.duplicate(true)
+	else: _chosen_entries.append(entry.duplicate(true))
+	if _chosen_entries.size() < _required_tracks(): _active_slot = _chosen_entries.size()
+	_source.clear()
+	_refresh_tracks()
 
-func _input(event: InputEvent) -> void:
-	if visible and event.is_action_pressed("ui_cancel"):
-		close()
-		get_viewport().set_input_as_handled()
+func _build_cars() -> void:
+	_car_stage = Control.new()
+	_car_stage.name = "ChallengeCarHero"
+	_car_stage.custom_minimum_size.y = 180
+	_car_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_car_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_car_page.add_child(_car_stage)
+	_car_scroll = preload("res://ui/track_carousel.gd").new()
+	_car_scroll.name = "ChallengeCarCarousel"
+	_car_scroll.custom_minimum_size.y = 140
+	_car_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+	_car_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_car_scroll.follow_focus = false
+	_car_scroll.resized.connect(_layout_car_cards)
+	_car_page.add_child(_car_scroll)
+	# The shared carousel animates its inner row, beneath the scroll-owned strip.
+	var strip := Control.new()
+	strip.name = "ChallengeCarStrip"
+	strip.custom_minimum_size.y = 140
+	strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_car_scroll.add_child(strip)
+	var cards := HBoxContainer.new()
+	cards.name = "ChallengeCarRow"
+	cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cards.add_theme_constant_override("separation",12)
+	strip.add_child(cards)
+	for id: String in VehicleCatalog.IDS:
+		var card := _button(cards,"",_select_car.bind(id),"ChallengeCar_"+id)
+		card.tooltip_text = VehicleCatalog.title(id)
+		card.custom_minimum_size = Vector2(216,140)
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.clip_contents = true
+		var content := VBoxContainer.new()
+		content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		content.add_theme_constant_override("separation",0)
+		MenuStyle.fill(content)
+		card.add_child(content)
+		var art := Control.new()
+		art.name = "ChallengeCarModelSlot_"+id
+		art.custom_minimum_size.y = 100
+		art.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		content.add_child(art)
+		var title := MenuStyle.label(VehicleCatalog.title(id),21)
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		content.add_child(title)
+		_car_cards.append(card)
+
+func _car_model(id: String) -> CarShowroom:
+	var model := CarShowroom.new()
+	model.name = "ChallengeCarModel_"+id
+	model.vehicle_id = id
+	model.read_only = true
+	model.garage_mode = true
+	model.framing_scale = 0.84
+	var settings: Dictionary = records.settings if records != null else {}
+	model.livery = VehicleLivery.for_car(settings,id)
+	model.customisation = VehicleCustomisation.for_car(settings,id)
+	model.condition = VehicleCondition.read(records,id)
+	return model
+
+func _update_car_models() -> void:
+	# Prepare menu worlds only on the car step; unchanged source checks reuse them.
+	if _step != CAR: return
+	var id: String = _vehicle_id()
+	if _car_art == null:
+		_car_art = _car_model(id)
+		_car_art.framing_scale = 0.96
+		_car_stage.add_child(_car_art)
+		MenuStyle.fill(_car_art)
+	elif _car_art.vehicle_id != id:
+		var settings: Dictionary = records.settings if records != null else {}
+		_car_art.replace_car(id,VehicleLivery.for_car(settings,id),VehicleCondition.read(records,id),VehicleCustomisation.for_car(settings,id))
+	if locked_result() or not _car_models.is_empty(): return
+	for index: int in range(_car_cards.size()):
+		var car_id: String = VehicleCatalog.IDS[index]
+		var slot: Control = _car_cards[index].find_child("ChallengeCarModelSlot_"+car_id,true,false)
+		var model: CarShowroom = _car_model(car_id)
+		slot.add_child(model)
+		MenuStyle.fill(model)
+		_car_models[car_id] = model
+
+func _select_car(id: String) -> void:
+	if locked_result() or _submitting: return
+	_chosen_car = VehicleCatalog.valid_id(id)
+	_check_source()
+
+func _open_rules() -> void:
+	if _submitting: return
+	_rules_return = _step
+	_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit,"visibility":adapter.creation_visibility}
+	for child: Node in _rules_fields.get_children(): _rules_fields.remove_child(child); child.queue_free()
+	_rule_choices("Who's racing?",[[0,"One-to-one"],[1,"Group race"]],"mode","ChallengeCustomMode_")
+	_rule_choices("Challenge duration",[[86400,"24 hours"],[259200,"3 days"],[604800,"7 days"]],"duration","ChallengeDuration_")
+	_rule_choices("Tries per driver",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
+	if adapter.discovery_supported(): _rule_choices("Who can join?",[["public","Public"],["private","Invitation only"]],"visibility","ChallengeCustomVisibility_")
+	_step = RULES
+	_update()
+
+func _rule_choices(caption: String, values: Array, key: String, prefix: String) -> void:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel.add_theme_stylebox_override("panel",MenuStyle.card(20))
+	_rules_fields.add_child(panel)
+	var fields := VBoxContainer.new()
+	fields.add_theme_constant_override("separation",16)
+	fields.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	panel.add_child(fields)
+	fields.add_child(MenuStyle.label(caption,26))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation",8)
+	fields.add_child(row)
+	for value: Array in values:
+		var button := _button(row,str(value[1]),func() -> void: pass,prefix+str(value[0]))
+		button.set_meta("rule_value",value[0])
+		button.custom_minimum_size.y = 56
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.pressed.connect(func() -> void:
+			_draft_rules[key] = value[0]
+			for peer: Node in row.get_children(): _selection(peer as Button,peer.get_meta("rule_value") == _draft_rules[key]))
+		_selection(button,_draft_rules[key] == value[0])
+
+func _dismiss_rules() -> void:
+	if _step != RULES: return
+	_draft_rules.clear()
+	_step = _rules_return
+	_update()
+
+func _commit_rules() -> void:
+	if adapter.scope() != _source_scope or _submitting: return
+	mode = int(_draft_rules.mode)
+	duration = int(_draft_rules.duration)
+	attempt_limit = int(_draft_rules.tries)
+	adapter.creation_visibility = str(_draft_rules.visibility)
+	selected_format = "custom"
+	if _chosen_entries.size() > 1: _chosen_entries.resize(1)
+	_active_slot = 0
+	_draft_rules.clear()
+	_step = CAR if _rules_return == CAR else TRACKS
+	if _step == TRACKS: _ensure_browser()
+	_refresh_tracks()
+	if _step == CAR: _check_source()
+
+func _build_actions() -> void:
+	var panel := PanelContainer.new()
+	panel.name = "ChallengeCreateActions"
+	panel.add_theme_stylebox_override("panel",MenuStyle.card(14))
+	add_child(panel)
+	_action_layout = BoxContainer.new()
+	_action_layout.add_theme_constant_override("separation",16)
+	panel.add_child(_action_layout)
+	var summary := HBoxContainer.new()
+	summary.name = "ChallengeRuleSummary"
+	summary.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	summary.add_theme_constant_override("separation",12)
+	_action_layout.add_child(summary)
+	var copy := VBoxContainer.new()
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	copy.add_theme_constant_override("separation",3)
+	summary.add_child(copy)
+	_rule_title = MenuStyle.label("",13,true)
+	copy.add_child(_rule_title)
+	_rule_details = MenuStyle.label("",17)
+	_rule_details.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	copy.add_child(_rule_details)
+	_tries_note = MenuStyle.label("Each start uses a try, including restarts.",12,true)
+	_tries_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	copy.add_child(_tries_note)
+	var source_time := HBoxContainer.new()
+	source_time.name = "ChallengeTimeSource"
+	source_time.custom_minimum_size.y = 24
+	source_time.add_theme_constant_override("separation",12)
+	copy.add_child(source_time)
+	_summary_time = MenuStyle.label("",16,true)
+	source_time.add_child(_summary_time)
+	_time = MenuStyle.label("",20)
+	_time.name = "ChallengeFinishedTime"
+	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	source_time.add_child(_time)
+	_rules_button = _button(summary,"Edit rules  ›",_open_rules,"ChallengeAdjustRules")
+	_rules_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,4))
+	var actions := BoxContainer.new()
+	_final_actions = actions
+	actions.add_theme_constant_override("separation",12)
+	_action_layout.add_child(actions)
+	_race = _button(actions,"Race to set a time",_race_to_set,"RaceToSetChallenge",true)
+	_share = _button(actions,"Create & share",func() -> void: _create(false),"ChallengeCreateAndShare")
+	_create_button = _button(actions,"Next",_advance,"ConfirmChallengeCreate",true)
+	for button: Button in [_race,_share,_create_button]: button.custom_minimum_size = Vector2(210,60)
+
+func _advance() -> void:
+	if _create_button.disabled: return
+	if _step == FORMAT:
+		_step = TRACKS
+		if locked_result() and _required_tracks() == 3: _active_slot = 1
+		_ensure_browser()
+		_refresh_tracks()
+	elif _step == TRACKS:
+		_step = CAR
+		_check_source()
+	elif _step == RULES: _commit_rules()
+	else: _create(mode == 1)
+	_update()
+
+func _back() -> void:
+	if _submitting: return
+	if _step == RULES: _dismiss_rules()
+	elif _step == CAR: _step = TRACKS; _ensure_browser(); _update()
+	elif _step == TRACKS: _step = FORMAT; _update()
+	else: close()
+
+func _choose_format(key: String) -> void:
+	if _submitting or not FORMAT_TITLES.has(key): return
+	if key == "custom": _open_rules(); return
+	selected_format = key
+	mode = 0 if key == "duel" else 1
+	attempt_limit = 3 if key == "three" else 0
+	if _chosen_entries.size() > _required_tracks(): _chosen_entries.resize(_required_tracks())
+	_active_slot = mini(_active_slot,_required_tracks()-1)
+	_refresh_tracks()
+
+func _choose_mode(index: int) -> void: mode = index; selected_format = "custom"; _update()
+func _choose_duration(seconds: int) -> void: duration = seconds; selected_format = "custom"; _update()
+func _choose_attempt_limit(value: int) -> void: attempt_limit = value; selected_format = "custom"; _update()
 
 func _check_source() -> void:
 	_serial += 1
 	var serial: int = _serial
-	_source = {}
+	_source.clear()
 	_checking = false
-	var entry: Dictionary = _entry()
-	if entry.is_empty():
-		_update()
-		return
+	if _entry().is_empty() or (selected_format == "three" and not locked_result()): _update(); return
 	if adapter.scope() != _source_scope:
-		_next_check = Time.get_ticks_msec()+3000
 		_source = {"status":"unavailable","error":"Sign in again to create this challenge."}
 		_update()
 		return
 	_checking = true
-	_next_check = Time.get_ticks_msec()+3000
 	_update()
-	var ticket: String = initial_ticket if locked_result() else ""
-	var value: Dictionary = await adapter.source(str(entry.version_id),_vehicle_id(),ticket)
+	var source: Dictionary = await adapter.source(str(_entry().version_id),_vehicle_id(),initial_ticket if locked_result() else "")
 	if not is_instance_valid(self) or serial != _serial: return
 	_checking = false
-	_source = value
+	_source = source
 	_next_check = Time.get_ticks_msec()+3000
 	_update()
 
 func _update() -> void:
 	if _create_button == null: return
+	_format_page.visible = _step == FORMAT
+	_track_page.visible = _step == TRACKS
+	_car_page.visible = _step == CAR
+	_custom_page.visible = _step == RULES
+	_heading.text = "CHOOSE YOUR CHALLENGE" if _step == FORMAT else "CUSTOM CHALLENGE" if _step == RULES else "CHOOSE YOUR CAR" if _step == CAR else "CHOOSE THREE TRACKS" if _required_tracks() == 3 else "CHOOSE YOUR TRACK"
+	var current: bool = adapter.scope() == _source_scope
 	var verified: bool = _source.get("status") == "verified"
-	var has_entry: bool = not _entry().is_empty()
-	var pending: bool = _source.get("status") in ["not_set","queued","verifying"]
-	_create_button.disabled = _checking or _searching or _submitting or not has_entry or (not verified and (locked_result() or mode == 0)) or adapter.scope() != _source_scope
-	_race.visible = not locked_result() and mode == 0 and has_entry and _source.get("status") == "not_set" and not _checking
-	_create_button.visible = not _race.visible
-	_race.disabled = _submitting or _searching
+	var ready: bool = _chosen_entries.size() == _required_tracks()
+	_create_button.disabled = _submitting or not current or (_step in [TRACKS,CAR] and not ready)
+	if _step == CAR:
+		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or (selected_format == "three" and not adapter.series_supported())
+	var personal_best: bool = _step == CAR and not locked_result() and selected_format != "three" and verified
+	_create_button.text = "Next" if _step != CAR else "Create & race" if mode == 1 else "Create & share" if locked_result() else "Use personal best"
+	_create_button.icon = MenuIcon.texture("arrow") if _step != CAR or mode == 1 else MenuIcon.texture("share")
+	_create_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+	_create_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
+	_race.visible = _step == CAR and not locked_result() and mode == 0 and ready
+	_race.text = "Race again" if verified else "Race to set a time"
+	_race.disabled = _submitting or not current or _checking
+	_create_button.visible = true
+	_share.visible = _step == CAR and mode == 1
+	_share.text = "Use personal best" if personal_best or (_checking and not locked_result()) else "Create & share"
+	_share.disabled = _create_button.disabled or (_checking and not locked_result())
 	_close_button.disabled = _submitting
-	if _visibility != null: _visibility.disabled = _submitting
-	_retry.visible = _source.get("status") == "unavailable" and not _checking and not _submitting
-	_notice.text = "Creating…" if _submitting else "Finding tracks…" if _searching else "Verifying result…" if locked_result() and (_checking or pending) else "Checking time…" if _checking else str(_source.get("error","")) if _source.has("error") else "This result was not verified." if locked_result() and not verified else "Choose a published track." if not has_entry else ""
+	_rules_button.visible = _step == CAR and selected_format != "three"
+	_rules_button.disabled = _submitting
+	_custom_button.disabled = _submitting
+	var total: float = float(result_context.get("total",0.0)) if locked_result() else 0.0
+	if verified: total = float(_source.get("ms",0))/1000.0
+	_time.text = MenuStyle.time_text(total) if total > 0 else ""
+	_time.visible = _step == CAR and not _time.text.is_empty()
+	_summary_time.text = "Your exact finish time" if locked_result() else "Personal best" if personal_best or mode == 0 else "Fastest time wins"
+	_summary_time.visible = _time.visible
+	_summary_time.get_parent().visible = _step == CAR and (locked_result() or selected_format != "three")
+	_update_car_models()
+	_car_scroll.visible = not locked_result()
+	for index: int in range(_car_cards.size()): _selection(_car_cards[index],VehicleCatalog.IDS[index] == _vehicle_id())
+	for card: FormatCard in _format_buttons:
+		card.chosen = selected_format == card.format_id
+		card.disabled = _submitting
+		card.refresh()
+	_rule_title.text = "CUSTOM CHALLENGE" if _step == RULES else FORMAT_TITLES[selected_format].to_upper()
+	var days: String = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
+	var tries: String = "Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+(" try" if attempt_limit == 1 else " tries")+" per driver"
+	_rule_details.text = {"duel":"One rival. Your time to beat.  ·  Unlimited tries","group":"One track. The whole crew.  ·  Unlimited tries","three":"Three tracks. Three tries on each.  ·  Lowest total time wins","custom":"Your format, your rules."}[selected_format]
+	if _step == TRACKS:
+		_rule_details.text = str(_chosen_entries.size())+" / "+str(_required_tracks())+" tracks selected"
+		if _required_tracks() == 1 and not _entry().is_empty(): _rule_details.text = str(_entry().name)
+	elif _step == CAR:
+		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else tries)+" · "+("Lowest total time wins" if selected_format == "three" else "Best time wins")
+		if adapter.discovery_supported(): _rule_details.text += " · "+("Public" if adapter.creation_visibility == "public" else "Invitation only")
+	elif _step == RULES: _rule_details.text = "Choose your rules, then your track and car."
+	_tries_note.visible = _step == CAR and attempt_limit > 0
+	_notice.text = ""
+	if not current: _notice.text = "Sign in again to create this challenge."
+	elif _submitting: _notice.text = "Creating…"
+	elif _step == CAR:
+		if _checking: _notice.text = "Verifying result…" if locked_result() else ""
+		elif _source.get("status") in ["queued","verifying"]: _notice.text = "Verifying result…" if locked_result() else ""
+		elif _source.has("error"): _notice.text = str(_source.error)
+		elif locked_result() and not verified: _notice.text = "This result was not verified."
+		if selected_format == "three" and not adapter.series_supported(): _notice.text = "3×3 needs the updated online service."
+	_retry.visible = _step == CAR and _source.get("status") == "unavailable" and not _checking and not _submitting
 	_notice.visible = not _notice.text.is_empty()
 	_status.visible = _notice.visible or _retry.visible
-	_refresh_preview()
-	if _track != null: _track.disabled = _submitting
-	if _vehicle != null: _vehicle.disabled = _submitting
-	if _search != null: _search.editable = not _submitting
-	for index: int in range(_attempt_buttons.size()): _selection(_attempt_buttons[index],[1,3,5,0][index] == attempt_limit)
-	for index: int in range(_mode_buttons.size()): _selection(_mode_buttons[index],index == mode)
-	for index: int in range(_duration_buttons.size()): _selection(_duration_buttons[index],[86400,259200,604800][index] == duration)
+
+func _show_notice(message: String) -> void:
+	_notice.text = message
+	_notice.show()
+	_status.show()
 
 func _selection(button: Button, chosen: bool) -> void:
-	var style := MenuStyle.box(MenuStyle.ACCENT if chosen else Color("152c3b"),10)
-	style.border_color = MenuStyle.ACCENT if chosen else Color("2b4657")
-	style.set_border_width_all(1)
+	var style := MenuStyle.box(Color("172d3b"),8)
+	style.border_color = MenuStyle.ACCENT if chosen else MenuStyle.BORDER
+	style.set_border_width_all(2 if chosen else 1)
 	button.add_theme_stylebox_override("normal",style)
-	for key: String in ["font_color","font_focus_color","font_hover_color"]: button.add_theme_color_override(key,Color.TRANSPARENT if button.has_meta("choice_title") else MenuStyle.INK if chosen else MenuStyle.TEXT)
-	if button.has_meta("choice_title"):
-		(button.get_meta("choice_title") as Label).add_theme_color_override("font_color",MenuStyle.INK if chosen else MenuStyle.TEXT)
-		(button.get_meta("choice_detail") as Label).add_theme_color_override("font_color",MenuStyle.INK if chosen else MenuStyle.MUTED)
-		(button.get_meta("choice_icon") as TextureRect).modulate = MenuStyle.INK if chosen else MenuStyle.TEXT
+	button.add_theme_color_override("font_color",MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
 	button.disabled = _submitting
 
-func _create() -> void:
-	if _create_button.disabled: return
+func _layout_cards() -> void:
+	if _formats == null: return
+	_formats.columns = 3 if size.x >= 720 else 1
+	_rules_fields.columns = 2 if size.x >= 850 else 1
+	_action_layout.vertical = size.x < 850
+	_final_actions.vertical = size.x < 560
+	for button: Button in [_race,_share,_create_button]: button.custom_minimum_size.x = 180 if size.x < 1100 else 210
+	_layout_car_cards()
+
+func _layout_car_cards() -> void:
+	if _car_scroll == null or _car_scroll.size.x <= 0: return
+	var slots: int = clampi(floori((_car_scroll.size.x+12.0)/228.0),1,VehicleCatalog.IDS.size())
+	var stride: float = (_car_scroll.size.x+12.0)/slots
+	var usable: int = floori(_car_scroll.size.x)-12*(slots-1)
+	var width: int = floori(float(usable)/slots)
+	var remainder: int = usable-width*slots
+	_car_scroll.call("_stop_snap")
+	_car_scroll.set("snap_stride",roundi(stride))
+	var total_width: int = 12*maxi(0,_car_cards.size()-1)
+	for index: int in range(_car_cards.size()):
+		var card_width: int = width+(1 if index%slots < remainder else 0)
+		_car_cards[index].custom_minimum_size.x = card_width
+		total_width += card_width
+	var strip: Control = _car_scroll.get_child(0)
+	strip.custom_minimum_size.x = total_width
+	(strip.get_child(0) as Control).size = Vector2(total_width,140)
+
+func _create(and_race: bool = false) -> void:
+	if _step != CAR or _create_button.disabled or _submitting: return
+	start_after_create = and_race and mode == 1
 	_submitting = true
 	_update()
 	if adapter.discovery_supported() and adapter.creation_visibility == "public":
 		if not await preload("res://ui/community_safety_ui.gd").ensure_terms(self,adapter.client):
 			_submitting = false
 			_update()
-			_notice.text = "Accept the public sharing rules to list this challenge."
-			_notice.show()
+			_show_notice("Accept the public sharing rules to list this challenge.")
 			return
 		if adapter.scope() != _source_scope:
 			_submitting = false
 			_update()
 			return
-	var entry: Dictionary = _entry()
-	var payload: Dictionary = {"version_id":str(entry.version_id),"vehicle_id":_vehicle_id(),"mode":"group" if mode == 1 else "beat","duration_seconds":duration}
+	var payload: Dictionary = {"version_id":str(_entry().version_id),"vehicle_id":_vehicle_id(),"mode":"3x3" if selected_format == "three" else "group" if mode == 1 else "beat","duration_seconds":duration}
+	if selected_format == "three":
+		payload.version_ids = []
+		for entry: Dictionary in _chosen_entries: payload.version_ids.append(str(entry.version_id))
 	if adapter.discovery_supported(): payload.visibility = adapter.creation_visibility
 	if attempt_limit > 0: payload.attempt_limit = attempt_limit
 	if locked_result():
@@ -611,7 +650,7 @@ func _create() -> void:
 			_update()
 			return
 		payload.source_ticket_id = initial_ticket
-	elif _source.get("status") == "verified" and mode == 0: payload.source_run_id = str(_source.run_id)
+	elif not and_race and selected_format != "three" and _source.get("status") == "verified": payload.source_run_id = str(_source.run_id)
 	await adapter.create_challenge(payload)
 	if not is_instance_valid(self): return
 	_submitting = false
@@ -620,58 +659,31 @@ func _create() -> void:
 		if created_callback.is_valid(): created_callback.call()
 	else:
 		_update()
-		_notice.text = adapter.error
-		_notice.show()
-		_status.show()
+		_show_notice(adapter.error)
 
 func _race_to_set() -> void:
-	if locked_result() or _entry().is_empty(): return
+	if _step != CAR or locked_result() or _entry().is_empty() or _submitting or adapter.scope() != _source_scope: return
 	hide()
-	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit)
+	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit,{"mode":mode,"format":selected_format,"tracks":_chosen_entries.duplicate(true),"step":CAR})
 
-func _find_tracks() -> void:
-	if locked_result(): return
-	var serial: int = _search_serial
-	var query: String = _search.text.strip_edges()
-	_searching = true
-	_update()
-	var results: Array[Dictionary] = []
-	if query.is_empty(): results = _base_entries.duplicate(true)
-	else:
-		var payload: Dictionary = preload("res://backend/discovery_pages.gd").payload({"search":query,"section":"all"})
-		var response: Dictionary = await adapter.client.request_discovery(payload,get_instance_id())
-		if not is_instance_valid(self) or serial != _search_serial or adapter.scope() != _source_scope: return
-		if not response.ok:
-			_searching = false
-			_update()
-			_notice.text = "Track search is busy. Retry or narrow your search." if int(response.get("status",0)) in [429,503] else "Could not search tracks. Retry when connected."
-			_notice.show()
-			return
-		if not response.get("ok",false) or not response.data.get("items") is Array:
-			_searching = false
-			_checking = false
-			entries.clear()
-			_track.clear()
-			_source = {"status":"unavailable","error":"Could not find tracks. Try again."}
-			_update()
-			return
-		for entry: Variant in response.data.items:
-			if entry is Dictionary and adapter.cloud._valid_entry(entry): results.append(entry)
-	if serial != _search_serial: return
-	entries = results
-	_track.clear()
-	for index: int in range(entries.size()): _track.add_item(str(entries[index].name),index)
-	if not entries.is_empty(): _track.select(0)
-	_searching = false
-	_checking = false
-	_check_source()
-	if entries.is_empty():
-		_notice.text = "No matching tracks."
-		_notice.show()
+func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void: show(); set_process_input(true)
+func get_ok_button() -> Button: return _create_button
+func close() -> void:
+	if _submitting: return
+	_serial += 1
+	hide()
+	set_process_input(false)
+	canceled.emit()
+
+func _input(event: InputEvent) -> void:
+	if _browser != null and ((_browser.filter_dialog != null and _browser.filter_dialog.visible) or (_browser.search_dialog != null and _browser.search_dialog.visible)): return
+	if visible and event.is_action_pressed("ui_cancel"):
+		_back()
+		get_viewport().set_input_as_handled()
 
 func _process(_delta: float) -> void:
-	if visible and not _checking and not _submitting and (locked_result() and _source.get("status") in ["not_set","queued","verifying","unavailable"] or _source.get("status") in ["queued","verifying"]):
-		if Time.get_ticks_msec() >= _next_check: _check_source()
+	if visible and not _checking and not _submitting and (locked_result() or _step == CAR) and _source.get("status") in ["not_set","queued","verifying","unavailable"]:
+		if (locked_result() or _source.get("status") != "not_set") and Time.get_ticks_msec() >= _next_check: _check_source()
 
 func _exit_tree() -> void:
 	if adapter != null: adapter.client.cancel_public_reads(get_instance_id())

@@ -49,6 +49,7 @@ var event_kind: String = ""
 var event_elapsed: float = 0.0
 var event_length: float = 0.0
 var results_improvement: float = 0.0
+var windows_output := WindowsAudioOutput.new()
 
 
 static func instance() -> GameSoundtrack:
@@ -60,6 +61,7 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	# Headless verifier/tests have no output device; do not allocate decoder playbacks there.
 	output_enabled = DisplayServer.get_name() != "headless"
+	if output_enabled: windows_output.configure()
 	menu_player = _player("MenuScore", "Music")
 	menu_player.stream = _menu_loop()
 	menu_player.volume_db = -80.0
@@ -192,6 +194,7 @@ func notify_collision(owner: Node, strength: float) -> void:
 
 
 func _process(delta: float) -> void:
+	windows_output.sync_output()
 	if app_suspended: return
 	if race_owner != null and race_owner.get_ref() == null: show_menu()
 	if blocked: return
@@ -355,3 +358,4 @@ func _exit_tree() -> void:
 	if event_player != null:
 		event_player.stop()
 		event_player.stream = null
+	windows_output.close()

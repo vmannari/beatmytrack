@@ -14,6 +14,10 @@ static func update(showroom: CarShowroom, service: Node) -> void:
 	var featured: Array[Dictionary] = []
 	var collection: Array[Dictionary] = []
 	var choices: Array = service.featured()
+	var world: Dictionary = showroom.get_meta("world_ranking_honors",{})
+	for honor: Array in [["season_titles","Season champion"],["weeks_no1","World No. 1"],["weeks_top100","World Top 100"]]:
+		if int(world.get(honor[0],0)) > 0:
+			earned.append({"id":"world_"+str(honor[0]),"title":str(honor[1]),"tier":1,"prestige":true})
 	for index: int in range(AchievementProgress.catalog().families.size()):
 		var f: Dictionary = AchievementProgress.catalog().families[index]
 		var level: int = AchievementProgress.tier(f,service.source(f))
@@ -22,7 +26,7 @@ static func update(showroom: CarShowroom, service: Node) -> void:
 		if level == 0: continue
 		if f.id in choices: featured.append(item)
 		if f.prestige or (level >= 3 and f.id in ["races","clean","tracks"]): earned.append(item)
-	var signature: String = JSON.stringify([collection,featured])
+	var signature: String = JSON.stringify([collection,featured,world])
 	if wall.get_meta("achievement_signature","") == signature: return
 	wall.set_meta("achievement_signature",signature)
 	var old: Node = wall.get_node_or_null("EarnedAchievements")

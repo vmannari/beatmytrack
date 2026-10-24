@@ -84,6 +84,20 @@ func run() -> void:
 	online._development_key = key
 	await online.sign_in_developer()
 	check(online.client.signed_in() and online.player_name() == "Beat my track", "actual server authenticates developer")
+	while app.screen == "restoring": await process_frame
+	check(app.screen == "account" and online.needs_country(),"first sign-in stays only for the missing country")
+	var country_restart: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
+	country_restart.records = LocalRecords.new(folder.path_join("records.json"))
+	country_restart.library = TrackLibrary.new(folder)
+	root.add_child(country_restart)
+	while not country_restart.startup_complete: await process_frame
+	check(country_restart.online.client.signed_in() and country_restart.screen == "account" and country_restart.online.needs_country(),"restart remembers sign-in while still requiring the first country")
+	check(not country_restart.root_ui.find_child("GoogleSignIn",true,false).visible,"missing-country startup does not ask the player to sign in again")
+	await capture("missing-country-startup")
+	country_restart.queue_free()
+	await process_frame
+	await online.save_country("")
+	check(app.screen == "account" and online.needs_country(),"invalid country cannot dismiss unfinished setup")
 	var country_choice: Button = app.root_ui.find_child("PlayerCountryPicker",true,false)
 	check(country_choice != null and country_choice.visible,"signed-in account exposes country selection")
 	country_choice._open()
@@ -92,7 +106,12 @@ func run() -> void:
 	country_choice._choose(0)
 	await online.save_country(country_choice.country_code)
 	check(online.client.player.country_code == "FI" and online.player_name() == "Beat my track","country saves through real HTTP without renaming developer")
+	while app.screen == "restoring": await process_frame
+	check(app.screen == "rivalry","saving the first country opens the menu without signed-in confirmation")
 	await capture("country-developer")
+	app._open_account()
+	while online.busy: await process_frame
+	check(app.screen == "account" and not app._account_setup_pending,"explicit account management stays accessible after sign-in")
 	await online.refresh_options()
 	check(online.client.signed_in() and online.player_name() == "Beat my track", "account refresh checks authenticated profile")
 	check(online.client.player.country_code == "FI","refresh preserves saved country")
@@ -176,14 +195,18 @@ func run() -> void:
 	after_logout.queue_free()
 	await process_frame
 	await online.sign_out()
+	while app.screen == "restoring": await process_frame
 	check(not online.client.signed_in() and online.client.player.is_empty(), "sign out clears session")
 	await online.sign_in_developer()
+	while app.screen == "restoring": await process_frame
 	check(online.client.player.id == player_id, "repeated development sign-in reuses the account")
 	check(app.records.path == developer_records_path and app.records.settings.track_ratings.profile_test == 5, "switching back restores developer data")
 	await online.sign_out()
+	while app.screen == "restoring": await process_frame
 	online.open_browser = open_fixture_browser
 	await online.sign_in_google()
 	check(online.client.signed_in() and online.needs_username(), "Google authenticates before name selection")
+	while app.screen == "restoring": await process_frame
 	check(app.records.path != developer_records_path and app.records.settings.get("track_ratings",{}).is_empty(), "Google player cannot inherit developer ratings")
 	check(app.library.load_wip(owned_document.id).is_empty() and app.document.is_empty(), "Google player cannot inherit developer draft or editor state")
 	check(app.root_ui.find_child("PlayerUsername", true, false).visible, "only new authenticated players see name field")
@@ -204,14 +227,21 @@ func run() -> void:
 	app.root_ui.find_child("PlayerCountryPicker",true,false).set_country("JP")
 	await onboarding_panel._save_name()
 	check(online.player_name() == "Chosen racer" and not online.needs_username(), "profile saves chosen name after Google authentication")
+	while app.screen == "restoring": await process_frame
+	check(app.screen == "rivalry","saving a new Google name and country enters the menu directly")
 	check(online.client.player.country_code == "JP","name and country persist together during onboarding")
 	check(online.client.player.id != player_id, "Google identity is independent of developer")
 	await capture("google-player-960")
 	await online.sign_out()
+	while app.screen == "restoring": await process_frame
 	await online.sign_in_google()
 	check(online.player_name() == "Chosen racer" and not online.needs_username(), "returning Google player skips name selection")
 	check(online.client.player.country_code == "JP","returning Google player retains country")
+	while app.screen == "restoring": await process_frame
+	check(app.screen == "rivalry" and app.root_ui.find_child("PlayerCountryPicker",true,false) == null,"returning Google sign-in skips country and signed-in windows")
+	await capture("returning-google-menu")
 	await online.sign_out()
+	while app.screen == "restoring": await process_frame
 	browser_mode = "cancel"
 	await online.sign_in_google()
 	check(not online.client.signed_in() and not online.busy, "cancelled Google login stays signed out")

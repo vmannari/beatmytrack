@@ -179,9 +179,11 @@ func _finished_sheet_tests(sample: Dictionary) -> void:
 		root.add_child(sheet)
 		MenuStyle.fill(sheet)
 		sheet.popup_centered()
+		sheet._advance()
+		sheet._advance()
 		while sheet._checking: await process_frame
 		await process_frame
-		check(sheet.locked_result() and sheet._track == null and sheet._vehicle == null and sheet._search == null,"post-race sheet has no track/car/search selectors")
+		check(sheet.locked_result() and not sheet._car_scroll.is_visible_in_tree() and sheet._chosen_entries[0] == sample.entry,"post-race step pins the exact track and car")
 		check(not sheet._race.visible and sheet.get_ok_button().disabled,"missing service retains the finished result without offering a rerace")
 		check(sheet._time.text == MenuStyle.time_text(88.110),"post-race sheet immediately displays the exact finish instead of a PB")
 		check("ticket_id="+ticket in client.last_path,"source request always identifies the completed ticket")
@@ -191,11 +193,11 @@ func _finished_sheet_tests(sample: Dictionary) -> void:
 		client.answer = {"ok":true,"data":{"status":"verified","run_id":"finished","ms":88110}}
 		await sheet._check_source()
 		check(not sheet.get_ok_button().disabled and sheet._time.text == MenuStyle.time_text(88.110),"verification enables creation for this completed race")
-		var rect: Rect2 = sheet._panel.get_global_rect()
+		var rect: Rect2 = sheet._car_page.get_global_rect()
 		check(rect.position.x >= 0 and rect.position.y >= 0 and rect.end.x <= root.get_visible_rect().size.x+1 and rect.end.y <= root.get_visible_rect().size.y+1,"custom sheet stays within the viewport")
 		check(sheet.get_parent() == root,"creation is an embedded menu control")
 		sheet._choose_attempt_limit(3)
-		check(sheet._summary_tries.text == "3","summary reflects selected tries")
+		check("3 tries per driver" in sheet._rule_details.text,"summary reflects selected tries")
 		await _capture("finished-page",dimensions)
 		client.answer = {"ok":false,"error":"NETWORK_ERROR"}
 		await sheet._create()
@@ -212,7 +214,7 @@ func _finished_sheet_tests(sample: Dictionary) -> void:
 	await process_frame
 
 func _page_tests() -> void:
-	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720),Vector2i(1440,900)]:
 		root.size = dimensions
 		await process_frame
 		var folder: String = "user://challenge_menu_"+TrackLibrary.unique_id()
@@ -231,6 +233,7 @@ func _page_tests() -> void:
 		app.challenges.selected = fixture()
 		app.challenges.busy = true # Isolate presentation from external services.
 		app._open_challenges()
+		(app.content.find_child("ChallengeFindAndPlay",true,false) as Button).pressed.emit()
 		app.challenges.busy = false
 		app._challenges()
 		await process_frame
@@ -249,6 +252,9 @@ func _page_tests() -> void:
 		await process_frame
 		await process_frame
 		page = app.root_ui.find_child("ChallengesPage",true,false)
+		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
+		await process_frame
+		await process_frame
 		var scroll: ScrollContainer = page.find_child("ChallengeStandingsScroll",true,false)
 		check(scroll.get_v_scroll_bar().max_value > scroll.size.y,"twenty-driver standings scroll within the detail panel")
 		check((page.find_child("ChallengeDriver_self",true,false) as PanelContainer).get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player row uses the established yellow highlight")
@@ -276,26 +282,55 @@ func _page_tests() -> void:
 		await process_frame
 		await process_frame
 		_bounds(create,"ChallengeCreateActions",dimensions)
-		_bounds(create,"ChallengeCreatePanel",dimensions)
-		var choices_scroll: ScrollContainer = create.find_child("ChallengeSettingsScroll",true,false)
-		check(choices_scroll.get_v_scroll_bar().max_value <= choices_scroll.size.y+1,"all default setting rows are immediately visible")
-		var aligned_x: float = -1.0
-		for caption: String in ["TRACK","CHALLENGETYPE","CAR","TARGETTIME","NUMBEROFTRIES","DURATION"]:
-			var choices: Control = create.find_child("ChallengeChoices_"+caption,true,false)
-			if aligned_x < 0.0: aligned_x = choices.global_position.x
-			check(absf(choices.global_position.x-aligned_x) <= 1.0,"creation control column aligns: "+caption)
-		var summary_x: float = create._summary_car.global_position.x
-		for value: Label in [create._summary_time,create._summary_tries,create._summary_duration]:
-			check(absf(value.global_position.x-summary_x) <= 1.0,"preview values share one left edge")
-		var header: Control = create.find_child("ChallengeCreateHeader",true,false)
-		check(absf(header.global_position.y-create._panel.global_position.y) <= 1.0,"preview starts alongside the heading")
-		check(absf(choices_scroll.get_global_rect().end.y-create._panel.get_global_rect().end.y) <= 1.0,"settings and preview share a bottom edge")
+		check(not create._track_page.is_visible_in_tree(),"format page has no premature track hero")
+		check(create._formats.get_child_count() == 3,"three approved challenge formats precede track selection")
+		for card: Button in create._format_buttons:
+			check(card.size.x >= 180 and card.size.y >= 190,"each format remains a substantial touch target")
+		check(not create._track_page.is_visible_in_tree() and not create._car_page.is_visible_in_tree(),"format selection precedes track and car pages")
+		var actions: Control = create.find_child("ChallengeCreateActions",true,false)
+		check(actions.get_global_rect().position.y >= create._formats.get_global_rect().end.y,"primary actions follow the format posters")
+		check(create._custom_button.is_visible_in_tree(),"custom challenge is a separate subtle action")
 		create._choose_mode(1)
 		check(create._summary_time.text == "Fastest time wins" and not create._time.visible,"group preview has no timed target")
 		await _capture("menu-create-group",dimensions)
-		create._choose_mode(0)
+		create._choose_format("duel")
 		await process_frame
 		await _capture("menu-create",dimensions)
+		app.online.client._capabilities["challenge_series_version"] = 1
+		create._choose_format("three")
+		create._advance()
+		for index: int in range(3):
+			var track_choice: Dictionary = fixture().entry.duplicate(true)
+			track_choice.version_id = "00000000-0000-0000-0000-00000000000"+str(index+1)
+			track_choice.track_id = "10000000-0000-0000-0000-00000000000"+str(index+1)
+			track_choice.name = ["Forest Run","Dune Runner","Winter Loop"][index]
+			track_choice.theme = ["pine","desert","winter"][index]
+			create._select_track(track_choice)
+		create.entries = create._chosen_entries.duplicate(true)
+		create._refresh_tracks()
+		# Seed the real browser catalog for the offline native capture.
+		create._browser.catalog.entries.clear()
+		for metadata: Dictionary in create._chosen_entries:
+			create._browser.catalog.entries.append(app.cloud.entry_from_metadata(metadata))
+		if app.cloud.changed.is_connected(create._browser._cloud_changed): app.cloud.changed.disconnect(create._browser._cloud_changed)
+		create._browser.cloud = null
+		create._browser._refresh()
+		await process_frame
+		await process_frame
+		check(create._step == 1 and create._chosen_entries.size() == 3,"integrated 3×3 keeps three independently selected tracks")
+		await _capture("menu-three-tracks",dimensions)
+		create._advance()
+		await process_frame
+		await process_frame
+		check(create._step == ChallengeCreate.CAR and create._car_page.is_visible_in_tree(),"track confirmation opens the final car page in the real shell")
+		await _capture("menu-car-selection",dimensions)
+		app.online.client._capabilities["challenge_discovery_version"] = 1
+		create._open_rules()
+		await process_frame
+		await process_frame
+		check(create._custom_page.is_visible_in_tree(),"custom rules use the real full menu page")
+		await _capture("menu-custom-rules",dimensions)
+		create._dismiss_rules()
 		create.close()
 		await process_frame
 		check(app.screen == "challenges","Cancel returns to Challenges")
@@ -317,6 +352,27 @@ func _page_tests() -> void:
 		_bounds(page,"ChallengeActions",dimensions)
 		await _capture("result",dimensions)
 		app.challenge_result_view = false
+		app.challenge_seed = {"version_id":fixture().entry.version_id,"vehicle_id":"compact","ticket_id":"seed-exact-ticket","duration_seconds":86400,"attempt_limit":3,"configuration":{"mode":1,"format":"three"},"finished":{"entry":fixture().entry,"vehicle_id":"compact","ticket_id":"seed-exact-ticket","total":88.110,"laps":5,"scope":app.challenges.scope()}}
+		app._results_continue(null,null)
+		await process_frame
+		await process_frame
+		var returned: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+		check(returned != null and returned.selected_format == "three" and returned.mode == 1,"normal-results Continue restores the chosen group card")
+		check(returned.duration == 86400 and returned.attempt_limit == 3,"normal-results Continue restores duration and tries")
+		check(returned.locked_result() and returned.initial_ticket == "seed-exact-ticket" and returned._time.text == MenuStyle.time_text(88.110),"normal-results Continue keeps the exact source ticket and time")
+		check(app.challenge_seed.is_empty(),"the race-first configuration is consumed once")
+		returned.close()
+		app.challenges.selected = fixture()
+		app._show_challenge_ready()
+		await process_frame
+		await process_frame
+		var ready: AcceptDialog = app.root_ui.find_child("ChallengeReadyDialog",true,false)
+		check(ready != null and ready.visible,"successful creation has an explicit invitation preview")
+		app.challenges.selected.entry.name = "Later selection"
+		check(ready.snapshot.entry.name == "Forest Run","invitation preview freezes the created challenge")
+		ready.custom_action.emit(&"view")
+		await process_frame
+		check(not is_instance_valid(ready),"My challenges dismisses the preview without opening system sharing")
 		app._show_screen("tracks")
 		check(app.root_ui.find_child("Mode_target",true,false) != null,"Free Race keeps the shared challenge entry point")
 		app.queue_free()

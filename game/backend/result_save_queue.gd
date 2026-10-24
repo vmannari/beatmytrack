@@ -1,4 +1,5 @@
 extends Node
+const EVIDENCE = preload("res://race/attempt_evidence.gd")
 ## Completed recordings belong to this service, independently of race/menu nodes.
 signal changed
 signal saved(ticket_id: String)
@@ -16,11 +17,11 @@ func frames_held() -> int:
 
 func can_start_attempt() -> bool:
 	# Reserve room for one maximum recording; ordinary offline racing is unaffected.
-	return jobs.size() < MAX_JOBS and frames_held() <= MAX_FRAMES-216000
+	return jobs.size() < MAX_JOBS and frames_held() <= MAX_FRAMES-EVIDENCE.MAX_INPUTS
 
 func enqueue(ticket: Dictionary, frames: Array, publish: String, rewinds: Array) -> bool:
 	var id: String = str(ticket.get("ticket_id",""))
-	if id.is_empty() or frames.is_empty() or frames.size() > 216000: return false
+	if id.is_empty() or frames.is_empty() or frames.size() > EVIDENCE.MAX_INPUTS: return false
 	if jobs.has(id): return jobs[id].frames == frames and jobs[id].rewinds == rewinds
 	if jobs.size() >= MAX_JOBS or frames_held()+frames.size() > MAX_FRAMES: return false
 	# Canonical input frames are immutable once recorded. Copy the outer list so

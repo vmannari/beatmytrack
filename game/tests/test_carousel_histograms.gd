@@ -134,7 +134,7 @@ func run() -> void:
 	check(service.paths.size() == before,"same visible window does not poll or restart its preload")
 	browser._select(cloud.entries[42])
 	await wait_frames()
-	check(cloud.downloads == 0 and not browser.selecting and browser.selected_track.metadata.get("metadata_only",false) and browser.selected_track.cells.is_empty() and browser._resolve_thread == null,"selecting a cloud card performs no document download or geometry compilation")
+	check(cloud.downloads == 0 and not browser.selecting and browser.selected_track.metadata.get("metadata_only",false) and browser.selected_track.cells.is_empty() and browser._resolve_job == null,"selecting a cloud card performs no document download or geometry compilation")
 	var chart: TrackDistribution = browser.find_child("RaceDistribution",true,false)
 	check(chart != null and chart.is_visible_in_tree() and chart.snapshot.bins.size() == 16 and browser._detail_state[1] == "preview:window-version-42","distant histogram displays before document download or geometry compilation")
 	check((browser.hero.find_child("HeroTrackTitle",true,false) as Label).text == "WINDOW 42","metadata histogram belongs to the newly selected hero")
@@ -171,7 +171,7 @@ func paged_window(packet: Dictionary) -> void:
 	client.configure("http://127.0.0.1:18181")
 	client._access_token = "fictional-access"
 	client.player = {"id":"fictional-player"}
-	client._capabilities = {"discovery_paging_version":2}
+	client._capabilities = {"discovery_paging_version":3}
 	var cloud := RealCloud.new()
 	cloud.client = client
 	cloud.root_override = folder.path_join("paged-cloud")
@@ -198,6 +198,11 @@ func paged_window(packet: Dictionary) -> void:
 	await wait_frames(40)
 	var entry: Dictionary = cloud.discovery_pages.entry_at(40)
 	check(not entry.is_empty(),"distant page metadata arrives at its actual carousel index")
+	# Cursor lists expose their loaded end. Repeat the scroll once this card
+	# exists, as a driver continuing to swipe does after the reserve arrives.
+	browser.gallery.scroll_horizontal = int(browser.tile_stride*40)
+	browser._render_tiles(true)
+	await wait_frames(12)
 	check(client.comparison_paths.any(func(path: String) -> bool: return path.contains(str(entry.get("version_id","missing"))) and path.contains("results-comparison")),"real paged carousel warms farther histograms when page metadata arrives")
 	check(cloud.discovery_pages.pages.size() <= 15 and cloud.entries.size() <= 300,"comparison warming does not drain the 5000-track catalog")
 	var before: int = client.comparison_paths.size()

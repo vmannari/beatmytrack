@@ -7,10 +7,11 @@ var output: String
 
 class SlowRecords extends LocalRecords:
 	var delay_ms: int = 0
-	func save_records() -> Error:
+	func save_vehicle_conditions(value: Dictionary, _background: bool = false) -> Error:
 		if delay_ms > 0:
 			OS.delay_msec(delay_ms)
 			delay_ms = 0
+		settings.vehicle_conditions = value.duplicate(true)
 		return OK
 
 class LateCallback extends Node:
@@ -37,6 +38,7 @@ func run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
 	var game: Node = load("res://core/game.tscn").instantiate()
 	var records := SlowRecords.new()
+	records.path = output.path_join("disposable-records.json")
 	game.preference_records = records
 	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
 	game.production_mode = true

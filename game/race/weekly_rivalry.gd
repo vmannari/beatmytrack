@@ -7,6 +7,7 @@ var points_policy: Array[int] = [30,26,23,20,18,16,14,12,10,8,6,4,2,1,1,1,1,1,1,
 const NAMES: Array[String] = ["Mika","Alex","You","Janne","Sophie","Elias","Nora","Leo","Aino","Oscar","Emil","Sara","Luca","Iris"]
 var week: int = 27
 var completed: bool = false
+var world_circuit: Dictionary = {}
 var scope: String = ""
 var tracks: Array[Dictionary] = []
 var recordings: Dictionary = {}
@@ -38,6 +39,7 @@ func _init(use_sample: bool = false) -> void:
 func apply_snapshot(value: Dictionary) -> void:
 	sample = false
 	test_population = bool(value.get("test_population",false))
+	world_circuit = value.get("world_circuit",{}) if value.get("world_circuit") is Dictionary else {}
 	status = str(value.get("state","not_joined"))
 	week = int(value.get("week",0))
 	group_id = str(value.get("group_id",""))

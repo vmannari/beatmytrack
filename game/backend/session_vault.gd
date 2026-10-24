@@ -11,7 +11,12 @@ func _init() -> void:
 		adapter = ClassDB.instantiate("BmtSecureSession")
 
 func available() -> bool:
-	return is_instance_valid(adapter) and adapter.has_method("sealSession") and adapter.has_method("openSession")
+	if not is_instance_valid(adapter): return false
+	# Android JNISingleton methods are registered separately from Object methods.
+	# Object.has_method alone hides a working Keystore and disables persistence.
+	if adapter.has_method("has_java_method"):
+		return bool(adapter.call("has_java_method","sealSession")) and bool(adapter.call("has_java_method","openSession"))
+	return adapter.has_method("sealSession") and adapter.has_method("openSession")
 
 func seal(text: String, context: String) -> String:
 	if not available(): return ""

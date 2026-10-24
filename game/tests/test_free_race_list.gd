@@ -16,16 +16,13 @@ class ListClient extends Paging.PagedClient:
 	func request_api(path: String, method: int = HTTPClient.METHOD_GET, body: Dictionary = {}, key: String = "", authenticated: bool = false) -> Dictionary:
 		comparison_reads += 1
 		return await super.request_api(path,method,body,key,authenticated)
-	func metadata(number: int, index: int) -> Dictionary:
-		var value: Dictionary = super.metadata(number,index)
+	func metadata(number: int) -> Dictionary:
+		var value: Dictionary = super.metadata(number)
 		value.theme = ["pine","desert","winter","storm","night_city"][number%5]
 		return value
 	func request_discovery(body: Dictionary, owner: int, random_choice: bool = false) -> Dictionary:
-		var value: Dictionary = await super.request_discovery(body,owner,random_choice)
-		if not str(body.get("search","")).is_empty() or body.has("ids"): return value
-		value.data.total = track_total
-		value.data.items = value.data.items.filter(func(entry: Dictionary) -> bool: return entry.discovery_index < track_total)
-		return value
+		catalog_size = track_total
+		return await super.request_discovery(body,owner,random_choice)
 
 func _initialize() -> void: run.call_deferred()
 func check(ok: bool, label: String) -> void:
@@ -185,7 +182,7 @@ func run() -> void:
 	while not app.startup_complete: await process_frame
 	client = ListClient.new()
 	client.configure("http://127.0.0.1:1")
-	client._capabilities = {"discovery_paging_version":2}
+	client._capabilities = {"discovery_paging_version":3}
 	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
 	client.hash_value = JSON.stringify(client.document).sha256_text()
 	root.add_child(client)
@@ -318,14 +315,15 @@ func run() -> void:
 	await settle()
 	browser._close_track_view()
 	await settle()
-	# Reach distant pages without creating thousands of cards or loading documents.
+	# A large remote catalogue exposes only loaded cards and preloads its next
+	# pages when the player approaches that loaded end.
 	client.track_total = 5000
 	await app.cloud.query_discovery({"sort":"name"},[],[],true)
 	await settle()
-	browser.track_list.scroll_vertical = int(4250/browser._list_columns)*int(browser._list_stride.y)
+	browser.track_list.scroll_vertical = ceili(browser.list_content.custom_minimum_size.y)
 	await settle()
 	check(browser.list_open and browser.list_grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"deep list scrolling hydrates every visible card")
-	check(int(browser.list_grid.get_child(0).get_meta("catalog_index")) > 4200 and browser.list_grid.get_child_count() <= 60,"5000-track list keeps a bounded distant window")
+	check(int(browser.list_grid.get_child(0).get_meta("catalog_index")) > 0 and browser.list_grid.get_child_count() <= 60 and browser._page_total() == browser.matches.size() and browser._page_total() < 5000,"5000-track list keeps controls and scroll coordinates bounded by actual loaded cards")
 	check(app.cloud.discovery_pages.pages.size() <= 15 and client.requests.size() < 30,"scrolling fetches nearby pages within the existing cache bound")
 	await capture("deep-list")
 	await first_visible_detail_return()
@@ -334,6 +332,7 @@ func run() -> void:
 	var requests_before: int = client.requests.size()
 	app.cloud.discovery_pages.pages.clear()
 	app.cloud.discovery_pages.error = "Could not load tracks. Retry when connected."
+	app.cloud._discovery_changed()
 	browser._refresh()
 	await frames(24)
 	check(client.requests.size() == requests_before,"failed list pages wait for explicit refresh without repeated reads")
@@ -343,6 +342,7 @@ func run() -> void:
 	browser.state.theme = "coast"
 	app.cloud.discovery_pages.total = 0
 	app.cloud.discovery_pages.pages.clear()
+	app.cloud._discovery_changed()
 	browser._refresh()
 	await frames()
 	check(browser.list_open and browser.list_grid.find_child("TrackListEmptyState",true,false) != null,"empty result uses list space and keeps navigation available")

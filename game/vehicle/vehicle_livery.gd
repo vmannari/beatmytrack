@@ -1,6 +1,6 @@
 class_name VehicleLivery
 extends RefCounted
-## Local cosmetics. Version one colour pairs migrate without changing their paint.
+## Current local cosmetic data. File upgrades live at the persistence boundary.
 const VERSION: int = 2
 const SLOTS: Array[String] = ["body", "accent", "detail"]
 const SURFACES: Array[String] = ["hood", "roof"]
@@ -25,14 +25,11 @@ static func _number(value: Variant, low: float, high: float) -> bool:
 
 static func valid(value: Variant) -> bool:
 	if not value is Dictionary: return false
-	if not _number(value.get("version"),1,VERSION): return false
-	var legacy: bool = value.get("version") == 1
-	if (value.get("version") != 1 and value.get("version") != VERSION) or value.size() != (2 if legacy else 4): return false
+	if value.get("version") != VERSION or value.size() != 4: return false
 	var colors: Variant = value.get("colors")
-	if not colors is Dictionary or colors.size() != (2 if legacy else SLOTS.size()): return false
-	for slot: String in (["body", "accent"] if legacy else SLOTS):
+	if not colors is Dictionary or colors.size() != SLOTS.size(): return false
+	for slot: String in SLOTS:
 		if not _color(colors.get(slot)): return false
-	if legacy: return true
 	if not value.get("pattern") is String: return false
 	if value.pattern != "plain" and LiveryCatalog.pattern_index(value.pattern) < 0: return false
 	var stickers: Variant = value.get("stickers")
@@ -47,14 +44,9 @@ static func valid(value: Variant) -> bool:
 
 static func normalize(value: Dictionary, id: String) -> Dictionary:
 	if not valid(value): return defaults(id)
-	if value.version == VERSION:
-		var current: Dictionary = value.duplicate(true)
-		current.version = VERSION
-		return current
-	var result: Dictionary = defaults(id)
-	result.colors.body = value.colors.body
-	result.colors.accent = value.colors.accent
-	return result
+	var current: Dictionary = value.duplicate(true)
+	current.version = VERSION
+	return current
 
 static func for_car(settings: Dictionary, id: String) -> Dictionary:
 	var value: Variant = settings.get("vehicle_liveries", {}).get(id, {})

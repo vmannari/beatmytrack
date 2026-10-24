@@ -8,7 +8,7 @@ func run() -> void:
 	var client := PagedClient.new()
 	root.add_child(client)
 	client.configure("http://127.0.0.1:1")
-	client._capabilities = {"discovery_paging_version":2}
+	client._capabilities = {"discovery_paging_version":3}
 	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
 	client.hash_value = JSON.stringify(client.document).sha256_text()
 	var cloud := Cloud.new()
@@ -17,6 +17,10 @@ func run() -> void:
 	root.add_child(cloud)
 	cloud.load_cached()
 	var app: Node = load("res://core/app.gd").new()
+	app.online = preload("res://backend/account_controller.gd").new()
+	app.online.client.free()
+	app.online.client = client
+	app.add_child(app.online)
 	app.cloud = cloud
 	app.records = LocalRecords.new(folder.path_join("records.json"))
 	client.hold_once = true
@@ -57,8 +61,8 @@ func run() -> void:
 	client.hold_once = true
 	var before: int = client.requests.size()
 	reopened.query_discovery({})
-	check(reopened.discovery_pages.total == 5000 and reopened.discovery_pages.loading,"restart restores the original total while fetching a fresh page")
-	check(JSON.stringify(reopened.discovery_pages.entry_at(0)) == JSON.stringify(JSON.parse_string(JSON.stringify(first))),"restart exposes every cached metadata value immediately after its JSON round trip")
+	check(reopened.discovery_pages.total == 40 and reopened.discovery_pages.loading,"restart restores the cached local extent while fetching a fresh page")
+	check(JSON.parse_string(JSON.stringify(reopened.discovery_pages.entry_at(0))) == JSON.parse_string(JSON.stringify(first)),"restart exposes every cached metadata value immediately after its JSON round trip")
 	check(not client.requests[-1].has("cursor"),"restart never reuses the cached server cursor")
 	reopened.query_discovery({})
 	check(client.requests.size() == before+1,"duplicate startup requests are coalesced even with cached cards")

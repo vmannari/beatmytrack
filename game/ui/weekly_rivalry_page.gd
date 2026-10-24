@@ -9,6 +9,9 @@ signal free_race_requested
 signal challenges_requested
 signal join_requested
 signal refresh_requested
+signal circuit_requested
+signal car_rivalry_requested
+var circuit_mode: bool = false
 signal continue_requested
 signal share_requested
 signal retry_requested
@@ -59,7 +62,7 @@ func _ready() -> void:
 
 func _content_key() -> PackedByteArray:
 	var loading_view: bool = model.tracks.is_empty() and signed_in and error.is_empty() and (busy or model.received_msec == 0)
-	return var_to_bytes([section,selected if section in ["detail","result"] else -1,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,_track_projection(true),model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
+	return var_to_bytes([circuit_mode,model.world_circuit,section,selected if section in ["detail","result"] else -1,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,_track_projection(true),model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
 
 func _track_projection(scores: bool) -> Array:
 	var values: Array = []
@@ -147,6 +150,8 @@ func _update_scores() -> void:
 		view.rank.add_theme_color_override("font_color",MenuStyle.ACCENT if gap.own.get("rank")==1 else MenuStyle.TEXT)
 	var progress: Label = find_child("RivalryTrackProgress",true,false) as Label
 	if progress != null: progress.text = "%d / 5 COMPLETED" % completed
+	var circuit: Label = find_child("WorldCircuitProgress",true,false) as Label
+	if circuit != null: circuit.text = "CIRCUIT %d/5 · 3 FREE RESUMES" % completed
 
 func _update_status() -> void:
 	var state: Array = [busy,background_refresh,error,model.status,model.completed]
@@ -217,7 +222,17 @@ func _build_content() -> void:
 	identity.add_theme_constant_override("separation",4)
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(identity)
-	var heading := MenuStyle.label("WEEKLY RIVALRY",30 if awards else 38)
+	if signed_in and preload("res://backend/world_ranking_client.gd").supported(safety_client):
+		var world: Control = preload("res://ui/world_ranking_summary.gd").new()
+		world.client = safety_client
+		header.add_child(world)
+		var circuit: Button = MenuStyle.button("Car Rivalry" if circuit_mode else "Compact Circuit",func() -> void:
+			if circuit_mode: car_rivalry_requested.emit()
+			else: circuit_requested.emit())
+		circuit.name = "WorldCircuitEntry"
+		circuit.disabled = not circuit_mode and not preload("res://backend/world_ranking_client.gd").circuit_open(safety_client)
+		world.add_child(circuit)
+	var heading := MenuStyle.label("COMPACT CIRCUIT" if circuit_mode else "WEEKLY RIVALRY",30 if awards else 38)
 	heading.add_theme_color_override("font_shadow_color",Color("061320"))
 	heading.add_theme_constant_override("shadow_offset_y",2)
 	identity.add_child(heading)
@@ -240,6 +255,11 @@ func _build_content() -> void:
 	clock_label = MenuStyle.label(model.countdown(),20)
 	clock_label.name = "RivalryCountdown"
 	context.add_child(clock_label)
+	if not model.world_circuit.is_empty():
+		var completed_tracks: int = int(model.self_row(model.standing()).get("completed",0))
+		var circuit_progress: Label = MenuStyle.label("CIRCUIT %d/5 · 3 FREE RESUMES" % completed_tracks,16,true)
+		circuit_progress.name = "WorldCircuitProgress"
+		identity.add_child(circuit_progress)
 	var timer := Timer.new()
 	timer.wait_time = 1.0
 	timer.autostart = true
@@ -359,28 +379,6 @@ func apply_track_preview(document: Dictionary) -> void:
 	detail_route.race_route = route
 	detail_route.show_race_markers = true
 	detail_route._fit()
-
-func _table_row(parent: Control, row: Dictionary, value: String, compact: bool = false) -> void:
-	var panel := PanelContainer.new()
-	panel.name = "Driver_"+str(row.id)
-	var style := MenuStyle.box(Color("ffd34820") if row.id == WeeklyRivalry.SELF else Color("0b1c2799"),8)
-	if row.id == WeeklyRivalry.SELF:
-		style.border_color = MenuStyle.ACCENT
-		style.set_border_width_all(1)
-	panel.add_theme_stylebox_override("panel",style)
-	parent.add_child(panel)
-	var line := HBoxContainer.new()
-	line.add_theme_constant_override("separation",10)
-	panel.add_child(line)
-	var color: Color = MenuStyle.ACCENT if row.id == WeeklyRivalry.SELF else MenuStyle.TEXT
-	var place := _copy(line,rank_text(row),19,color)
-	place.custom_minimum_size.x = 34
-	line.add_child(PlayerCountry.flag(str(row.get("country_code","")),24))
-	var driver := _copy(line,str(row.name),18 if not compact else 16,color)
-	driver.autowrap_mode = TextServer.AUTOWRAP_OFF
-	driver.clip_text = true
-	driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_copy(line,value,18 if not compact else 16,color)
 
 func _loading(parent: Control) -> void:
 	parent.name = "RivalryLoading"
@@ -869,6 +867,7 @@ func _result(parent: Control) -> void:
 
 func _finale(parent: Control) -> void:
 	var ceremony := preload("res://ui/weekly_rivalry_finale.gd").new()
+	ceremony.ranking_client = safety_client
 	ceremony.model = model
 	ceremony.busy = busy
 	ceremony.error = error

@@ -172,6 +172,7 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	car_motion.tween_callback(_exchange_pedestals)
 	car_motion.tween_method(incoming_reveal.set_visibility,0.0,1.0,CAR_REVEAL_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	car_motion.tween_callback(finish_car_transition)
+	if read_only: set_process(true)
 
 func apply_customisation(value: Dictionary) -> void:
 	if vehicle_id != "compact" or not VehicleCustomisation.valid(value): return
@@ -225,6 +226,7 @@ func _exchange_pedestals() -> void:
 func finish_car_transition() -> void:
 	if car_motion != null: car_motion.kill()
 	car_motion = null
+	if read_only: set_process(false)
 	if incoming_reveal != null: incoming_reveal.restore()
 	if outgoing_reveal != null: outgoing_reveal.restore()
 	incoming_reveal = null
@@ -258,6 +260,7 @@ func _update_roof() -> void:
 	if is_instance_valid(roof): roof.visible = camera.position.y < GarageEnvironment.ROOF_CUTAWAY_HEIGHT
 
 func _reflection_visibility() -> void:
+	if read_only and not is_visible_in_tree(): finish_car_transition()
 	if reflections != null: reflections.set_visible(is_visible_in_tree())
 	invalidate_render()
 
@@ -535,6 +538,9 @@ func _process(delta: float) -> void:
 		washing = false
 		return
 	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running())
+	if read_only:
+		if animated or _render_dirty: _request_render()
+		return
 	if is_instance_valid(record_station):
 		var music: GameSoundtrack = GameSoundtrack.instance()
 		var bus: int = AudioServer.get_bus_index("Music")

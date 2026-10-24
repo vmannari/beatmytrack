@@ -43,7 +43,7 @@ func run() -> void:
 	var favorites: Array = []
 	for i: int in range(5000):
 		var entry: Dictionary = {"id":"creator_track_%d"%i,"name":"Circuit %d"%i,"creator":"Mira" if i%2 == 0 else "Alex",
-			"theme":"pine" if i%3 == 0 else "coast","source":"saved","points":doc.points}
+			"theme":"pine" if i%3 == 0 else "winter","source":"saved","points":doc.points}
 		catalog.entries.append(entry)
 		if i%10 == 0: favorites.append(entry.id)
 	var started: int = Time.get_ticks_usec()

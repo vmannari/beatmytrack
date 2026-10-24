@@ -1,6 +1,6 @@
 extends Node
-## V3 cursor windows. Coordinates cover cached pages and one adjacent placeholder,
-## never the estimated size of the remote catalogue. Eviction rebases coordinates.
+## V3 cursor windows reserve adjacent cursor coordinates for bounded refetches.
+## Presentation uses actual entries only. Eviction rebases fetch coordinates.
 signal changed
 var client: Node
 var query: Dictionary = {}
@@ -14,11 +14,14 @@ var pages: Dictionary = {}
 var loading: bool = false
 var error: String = ""
 var desired_index: int = 0
+var _visible_count: int = 0
 var locate_version: String = ""
 var last_used: int = 0
 var cache_directory: String = ""
 var coordinate_shift: int = 0
 var has_more: bool = false
+var retry_at_msec: int = 0
+var failure_count: int = 0
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 const PAGE_SIZE: int = 20
 const MAX_PAGES: int = 13
@@ -27,7 +30,7 @@ func scope() -> String:
 	return str(client.base_url())+"/"+str(client.player.get("id",""))+"/discovery-v3"
 
 static func payload(filters: Dictionary, favorites: Array = [], raced: Array = []) -> Dictionary:
-	return preload("res://backend/discovery_pages.gd").payload(filters,favorites,raced)
+	return preload("res://backend/discovery_filters.gd").payload(filters,favorites,raced)
 
 func windowed() -> bool:
 	return true
@@ -35,6 +38,11 @@ func windowed() -> bool:
 func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
 	var body: Dictionary = payload(filters,favorites,raced)
 	var key: String = JSON.stringify(body)
+	var same_query: bool = key == query_key and origin == scope()
+	if same_query and Time.get_ticks_msec() < retry_at_msec: return
+	if not same_query:
+		retry_at_msec = 0
+		failure_count = 0
 	if not fresh and key == query_key and origin == scope():
 		if loading: return
 		if total >= 0 and error.is_empty() and Time.get_ticks_msec()-last_used < 60000:
@@ -64,11 +72,12 @@ func _reset_window() -> void:
 	loading = false
 	error = ""
 	desired_index = 0
+	_visible_count = 0
 	coordinate_shift = 0
 	has_more = false
 
 func _fetch(page_number: int, _fresh: bool = false) -> void:
-	if loading or query.is_empty(): return
+	if loading or query.is_empty() or Time.get_ticks_msec() < retry_at_msec: return
 	var body: Dictionary = {}
 	var numbers: Array = pages.keys()
 	if not cursor.is_empty():
@@ -88,22 +97,26 @@ func _fetch(page_number: int, _fresh: bool = false) -> void:
 	if serial != generation or origin != scope(): return
 	loading = false
 	if not result.ok:
-		error = _error_message(result)
+		_failed(result)
 		changed.emit()
 		return
 	var data: Dictionary = result.data
 	if not _valid_page(data):
+		_failed({"status":0})
 		error = "Could not load this track page. Refresh to retry."
 		changed.emit()
 		return
 	if cursor.is_empty(): pages.clear()
 	_install(page_number,data)
 	error = ""
+	retry_at_msec = 0
+	failure_count = 0
 	locate_version = ""
 	last_used = Time.get_ticks_msec()
 	if page_number == 0 and data.get("previous_cursor") == null:
 		snapshot_cache.remember(query_key,data)
 	changed.emit()
+	if _visible_count > 0: _prefetch_visible.call_deferred(serial)
 
 func _install(number: int, data: Dictionary) -> void:
 	cursor = str(data.page_cursor)
@@ -155,9 +168,19 @@ func _error_message(result: Dictionary) -> String:
 	if status == 429 or status == 503: return "Track search is busy. Retry or narrow your filters."
 	return "Could not load tracks. Retry when connected."
 
-func request_visible(index: int) -> void:
+func _failed(result: Dictionary) -> void:
+	error = _error_message(result)
+	failure_count = mini(6,failure_count+1)
+	var delay_seconds: int = maxi(int(result.get("retry_after",0)),mini(30,1 << (failure_count-1)))
+	retry_at_msec = Time.get_ticks_msec()+delay_seconds*1000+randi_range(0,250)
+
+func request_visible(index: int, visible_count: int = 0) -> void:
 	desired_index = clampi(index,0,maxi(0,total-1))
-	if loading or total < 0: return
+	_visible_count = clampi(visible_count,0,PAGE_SIZE*3)
+	if loading or total < 0 or not error.is_empty(): return
+	if _visible_count > 0:
+		_prefetch_visible(generation)
+		return
 	var number: int = desired_index/PAGE_SIZE
 	if not pages.has(number):
 		_fetch(number)
@@ -167,6 +190,16 @@ func request_visible(index: int) -> void:
 	var low: int = int(pages.keys().min())
 	if number == high and desired_index%PAGE_SIZE >= 8 and not str(pages[high].next).is_empty(): _fetch(high+1)
 	elif number == low and low > 0 and desired_index%PAGE_SIZE < 3 and not str(pages[low].previous).is_empty(): _fetch(low-1)
+
+func _prefetch_visible(serial: int) -> void:
+	if serial != generation or _visible_count <= 0 or loading or total < 0 or not error.is_empty() or pages.is_empty(): return
+	var low: int = int(pages.keys().min())
+	var high: int = int(pages.keys().max())
+	var reserve: int = clampi(_visible_count*2,PAGE_SIZE,PAGE_SIZE*3)
+	# Keep two viewports ahead, including when a wide grid fills several pages.
+	# Completion revisits the latest demand; there is only one owned HTTP read.
+	if desired_index < low*PAGE_SIZE+reserve and not str(pages[low].previous).is_empty(): _fetch(low-1)
+	elif desired_index+_visible_count+reserve >= (high+1)*PAGE_SIZE and not str(pages[high].next).is_empty(): _fetch(high+1)
 
 func entries() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -190,19 +223,21 @@ func status_text() -> String:
 	return "%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
 
 func random_entry(exclude: String) -> Dictionary:
-	if loading: return {}
+	if loading or Time.get_ticks_msec() < retry_at_msec: return {}
 	var serial: int = generation
 	var body: Dictionary = {"cursor":cursor} if not cursor.is_empty() else {"query":query.duplicate(true)}
 	body.exclude = exclude.trim_prefix("cloud_")
 	var response: Dictionary = await client.request_discovery(body,get_instance_id(),true)
 	if serial != generation or origin != scope(): return {}
 	if not response.ok:
-		error = _error_message(response)
+		_failed(response)
 		changed.emit()
 		return {}
 	if not response.data.get("items") is Array or response.data.items.is_empty(): return {}
 	var chosen: Dictionary = response.data.items[0]
 	if str(chosen.get("version_id","")).length() != 36: return {}
+	retry_at_msec = 0
+	failure_count = 0
 	generation += 1
 	client.cancel_public_reads(get_instance_id())
 	_reset_window()

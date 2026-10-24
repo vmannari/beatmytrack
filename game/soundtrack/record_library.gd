@@ -37,29 +37,8 @@ static func stream(item: Dictionary) -> AudioStream:
 	var path: String = asset(item)
 	return null if path.is_empty() else AudioLoop.prepare(load(path) as AudioStream)
 
-# Read old settings safely, then discard the retired import metadata in LocalRecords.
-# Old copied files are never loaded or deleted; there is no import/decode/remove API.
-static func legacy_id(value: Variant) -> bool:
-	if not value is String or value.length()!=64: return false
-	for character: String in value:
-		if character not in "0123456789abcdef": return false
-	return true
-
 static func valid_id(value: Variant) -> bool:
-	return value is String and (not entry(value).is_empty() or legacy_id(value))
-
-static func valid_collection(value: Variant) -> bool:
-	if not value is Array or value.size()>12: return false
-	var ids: Dictionary = {}
-	for item: Variant in value:
-		if not item is Dictionary or item.size()!=3 or not legacy_id(item.get("id")) or ids.has(item.id): return false
-		if item.get("format") not in ["mp3","ogg","wav"]: return false
-		var title: Variant = item.get("title")
-		if not title is String or title.strip_edges().is_empty() or title.length()>64: return false
-		for character: String in title:
-			if character.unicode_at(0)<32: return false
-		ids[item.id] = true
-	return true
+	return value is String and not entry(value).is_empty()
 
 static func palette(id: String) -> Array[Color]:
 	var item: Dictionary = entry(id)

@@ -11,6 +11,9 @@ func _ready() -> void:
 		var active: bool = item[2] == selected
 		var available: bool = item[2] in ["rivalry","free","challenges"]
 		var button := MenuStyle.button("",func() -> void: mode_requested.emit(item[2]),active)
+		# Navigation commits on DOWN: a refresh or the end of the page slide may
+		# replace this rail before UP. The rail is outside content swipe gestures.
+		button.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
 		button.icon = preload("res://ui/race_mode_icons.gd").texture(item[0])
 		button.expand_icon = true
 		button.add_theme_constant_override("icon_max_width",38)

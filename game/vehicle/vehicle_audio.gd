@@ -294,6 +294,7 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
 		levels.kerb_roll = 0.0
 		(layers.kerb_roll as AudioStreamPlayer).volume_linear = 0.0
 	if track==null or theme=="desert" or state.track_elevated or state.jump_height>0.0 or state.roll_ticks>0:
+		_layer("kerb_roll",0.0,1.0,VehicleSimulation.STEP,true)
 		kerb_touching = false
 		return
 	var current: float = surface_model.kerb
@@ -308,11 +309,18 @@ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector
 			crossed = maxf(crossed,surface_model.kerb_at(previous.lerp(state.position,weight),lerp_angle(from_heading,state.heading,weight),track))
 	if crossed>0.0 and speed>.5:
 		pending_kerb = maxf(pending_kerb,crossed)
+		# Begin the continuous tyre/body contact on this real physics tick too.
+		# Render-side holds still bridge swept crossings and sparse presentation.
+		_layer("kerb_roll",_kerb_gain(speed,crossed),clampf(sqrt(speed/18.0),.65,1.35),VehicleSimulation.STEP,false)
 		if not kerb_touching and kerb_cooldown==0.0:
 			_event("chassis",lerpf(.15,.36,smoothstep(.5,24.0,speed))*(.65+.35*sqrt(crossed)),.78)
 			kerb_count += 1
 			kerb_cooldown = .08
 	kerb_touching = current>0.0
+	if crossed==0.0 or speed<=.5: _layer("kerb_roll",0.0,1.0,VehicleSimulation.STEP,true)
+
+func _kerb_gain(speed: float, contact: float) -> float:
+	return 1.5*smoothstep(.35,3.0,speed)*(.25+smoothstep(.4,22.0,speed)*.35)*sqrt(contact)
 
 func _ensure_snow() -> void:
 	if layers.has("snow"): return
@@ -517,7 +525,7 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	if not grounded or speed<=.5 or desert: kerb_hold = 0.0
 	# Keep tyre/body character across speeds. Extreme resampling made
 	# slow kerbs sound like separate knocks and fast kerbs like a thin buzz.
-	_layer("kerb_roll",1.5*movement*(.25+rolling*.35)*sqrt(held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
+	_layer("kerb_roll",_kerb_gain(speed,held_kerb) if kerb_hold>0.0 else 0.0,clampf(sqrt(speed/18.0),.65,1.35),dt,not grounded or kerb_hold==0.0)
 	pending_kerb = 0.0
 	var sand_contact: bool = surface_model.sand>0.0
 	# Modest speed-driven spectral motion; pedal/acceleration change intensity.

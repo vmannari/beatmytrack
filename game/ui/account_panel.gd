@@ -133,8 +133,6 @@ func _save_name() -> void:
 		account.changed.emit()
 		return
 	await account.save_username(username.text,country_picker.country_code)
-	if account.client.signed_in() and not account.needs_username():
-		continue_requested.emit()
 
 func _confirm_deletion() -> void:
 	if account.busy or not account.client.signed_in(): return
@@ -167,7 +165,7 @@ func _update() -> void:
 	var signed_in: bool = account.client.signed_in()
 	var onboarding: bool = account.needs_username()
 	var waiting: bool = account.waiting_for_google
-	title.text = "Choose your name" if onboarding else ("You're signed in" if signed_in else "Sign in")
+	title.text = "Sign in" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
 	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Your racing profile. Your next personal best.")
 	username.visible = onboarding
 	username.editable = not account.busy

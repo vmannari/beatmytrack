@@ -58,6 +58,7 @@ func run() -> void:
 	touch(canvas,location,true); touch(canvas,location,false)
 	check(doc.has("start_line") and Vector2(doc.start_line.position[0],doc.start_line.position[1]).distance_to(Vector2(0,-18))<0.01,"placed start snaps onto the road centreline")
 	check(canvas.mode == "road","placement returns to Track")
+	app.call("_flush_editor_writes")
 	check(doc.points == RoadPieces.route_from_pieces(doc).document.points,"route generates without a waypoints menu or extra action")
 	for invalid: Variant in [{}, {"position":[0,0],"heading":360}, {"position":[111,0],"heading":0}, {"position":[0,0],"heading":NAN}]:
 		var bad: Dictionary = doc.duplicate(true)
@@ -75,6 +76,7 @@ func run() -> void:
 	touch(canvas,flip,true); touch(canvas,flip,false)
 	check(is_equal_approx(float(doc.start_line.heading),180.0),"one tap on start arrow reverses direction")
 	check(app.get("history").size() == history+1,"direction reversal is one undo step")
+	app.call("_flush_editor_writes")
 	var reversed: NativeTrack = TrackCompiler.compile(doc)
 	check((reversed.route[1]-reversed.route[0]).x<0 and reversed.finish_forward.x<0,"compiled route and timing gate face reversed direction")
 	check(reversed.cells == original.cells,"direction reversal preserves physical roads")
@@ -115,6 +117,7 @@ func run() -> void:
 	canvas._end(-1)
 	check(Vector2(canvas.document.start_line.position[0],canvas.document.start_line.position[1]).distance_to(Vector2(12,-18))<0.01,"dragging the line moves its position")
 	check(is_equal_approx(float(canvas.document.start_line.heading),180.0),"dragging preserves reversed direction")
+	app.call("_flush_editor_writes")
 	check(TrackCompiler.compile(canvas.document).finish_center.distance_to(Vector2(12,-18))<0.2,"moved line updates actual finish")
 	app.call("_flush_editor_writes")
 	var saved: Dictionary = app.get("library").load_wip(doc.id)

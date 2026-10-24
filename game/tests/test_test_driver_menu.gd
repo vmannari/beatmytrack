@@ -32,8 +32,9 @@ func run() -> void:
 	adapter.client = load("res://backend/backend_client.gd").new()
 	adapter.add_child(adapter.client)
 	var real_scope: String = adapter.scope()
-	adapter.set_test_population(true)
-	check(adapter.scope() != real_scope and adapter.model.tracks.is_empty(),"switching population fences old views")
+	adapter.test_population = true
+	adapter.set_circuit_mode(true)
+	check(adapter.scope() == real_scope and not adapter.test_population and adapter.model.tracks.is_empty(),"official Circuit mode fences the development population")
 	adapter.free()
 	app = load("res://core/app.tscn").instantiate()
 	var folder: String = "user://test_driver_menu_"+TrackLibrary.unique_id()

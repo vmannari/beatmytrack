@@ -5,6 +5,11 @@ var failures: int = 0
 var capture: bool = false
 var app: Node
 
+class VerifiedRewards extends Node:
+	signal changed
+	func authenticated() -> bool: return true
+	func balance() -> int: return 250
+
 class StandingsClient extends Node:
 	var own: Variant = {"rank":2,"time_ticks":120}
 	var tests_available: bool = false
@@ -71,7 +76,7 @@ func run() -> void:
 		var doc: Dictionary = TrackDocument.create_default()
 		doc.id = "results_fixture_"+str(i)
 		doc.name = ["Harbor Loop","Pine Ridge","Storm Run"][i]
-		doc.theme = ["coast","pine","storm"][i]
+		doc.theme = ["winter","pine","storm"][i]
 		check(library.save_document(doc) == OK,"save isolated recommendation track")
 	app = load("res://core/app.tscn").instantiate()
 	app.set("library",library)
@@ -81,6 +86,18 @@ func run() -> void:
 	# This local recommendation fixture must not inherit the owner's public cloud cache.
 	app.cloud.root_override = directory.path_join("cloud")
 	app.cloud.load_cached()
+	# Current menus recommend immutable publications, not private local drafts.
+	# Seed an isolated retained cloud index and its exact document bytes.
+	for index: int in range(3):
+		var published: Dictionary = library.load_document("results_fixture_"+str(index))
+		var content: String = JSON.stringify(published)
+		var content_hash: String = content.sha256_text()
+		var version: String = "00000000-0000-4000-8000-"+str(index+1).pad_zeros(12)
+		check(app.cloud._write(app.cloud.cache_root().path_join(content_hash+".json"),published),"cache exact published recommendation fixture")
+		app.cloud.entries.append({"track_id":version,"version_id":version,"content_hash":content_hash,
+			"name":published.name,"creator":"Results fixture","creator_id":"results-fixture-owner",
+			"state":"published","theme":published.theme,"points":published.points,"rating_average":null,"rating_count":0})
+	check(app.cloud._write(app.cloud._index_path(),{"entries":app.cloud.entries}),"retain the isolated publication index across menu entry")
 	# Signed-in storage topology: empty private library, existing circuits shared.
 	app.library = TrackLibrary.new(directory.path_join("private_tracks"))
 	app.track_catalog = null
@@ -297,7 +314,18 @@ func run() -> void:
 	# Show both rated and unrated recommendation states in the isolated UI fixture.
 	single_catalog.add_local("results_fixture_0")
 	store.settings.track_ratings[str(single_catalog.entries[0].id)] = 4
+	# The current product animates acknowledged account receipts. Guest races
+	# do not mint coins, so supply an explicit verified receipt for this UI test.
+	var actual_economy: Node = app.cosmetic_economy
+	var verified_rewards := VerifiedRewards.new()
+	root.add_child(verified_rewards)
+	app.cosmetic_economy = verified_rewards
+	panel.set_meta("coin_receipt",{"status":"credited","amount":250,"rows":[
+		{"title":"Race finished","icon":"flag","amount":50,"eligible":true,"status":"Credited"},
+		{"title":"Clean race","icon":"trophy","amount":200,"eligible":true,"status":"Credited"},
+		{"title":"Personal best","icon":"timer","amount":0,"eligible":false,"status":"Ineligible"}]})
 	panel.next_button.pressed.emit()
+	app.cosmetic_economy = actual_economy
 	var animated_page: RaceComplete = (app.get("root_ui") as Node).find_child("RaceComplete",true,false)
 	animated_page.reward_reveal.pause()
 	await settle()
@@ -312,8 +340,8 @@ func run() -> void:
 	var page: Control = (app.get("root_ui") as Node).find_child("RaceComplete",true,false)
 	check(page != null and page.visible and not panel.visible,"Continue opens Race Complete")
 	check(app.get("game") == game,"Continue preserves completed race without starting another")
-	check((page as RaceComplete).recommendations.size() == 3,"Race Complete recommends real local tracks")
-	check((page as RaceComplete).recommendations.all(func(item: Dictionary) -> bool: return item.entry.source == "builtin" or (item.entry.get("read_only",false) and item.entry.library_directory == library.directory)), "cold results catalog recommends shared circuits from original directory")
+	check((page as RaceComplete).recommendations.size() == 3,"Race Complete recommends all three retained publications")
+	check((page as RaceComplete).recommendations.all(func(item: Dictionary) -> bool: return item.entry.source == "cloud" and item.entry.get("read_only",false) and FileAccess.file_exists(item.entry.cache_path)), "cold results catalog recommends immutable circuits with exact retained documents")
 	var rating_row: TrackRating = page.find_child("TrackRating",true,false)
 	check(rating_row.value() == 4,"standings show stored personal rating")
 	rating_row.stars[2].pressed.emit()
@@ -341,7 +369,9 @@ func run() -> void:
 	(page.find_child("ChooseTrack",true,false) as Button).pressed.emit()
 	await settle()
 	check(app.get("game") == null and app.get("screen") == "tracks","placeholder track action returns to selection")
-	await app.call("_start_race",track,false)
+	track.metadata.cloud_version = "isolated-results-fixture"
+	await app.call("_start_race",track,false,true)
+	track.metadata.erase("cloud_version")
 	(app.get("game") as Node).set_physics_process(false)
 	app.call("_results")
 	await settle()
@@ -357,10 +387,11 @@ func run() -> void:
 	check(complete_page.recommendations.any(func(item: Dictionary) -> bool: return item.entry.get("read_only",false)), "results reuse shared circuits after opening Play")
 	var recommended_id: String = complete_page.recommendations[maxi(0, shared_index)].entry.id
 	complete_page.race_button.pressed.emit()
-	for frame: int in range(600):
+	var launch_deadline: int = Time.get_ticks_msec()+15000
+	while Time.get_ticks_msec() < launch_deadline:
 		await process_frame
 		var launched: Node = app.get("game")
-		if launched != null and (launched.get("native_track") as NativeTrack).identity == recommended_id: break
+		if launched != null and (launched.get("native_track") as NativeTrack).identity == recommended_id and bool(launched.get("preparation_complete")): break
 	await settle()
 	var recommended_game: Node = app.get("game")
 	recommended_game.set_physics_process(false)
@@ -420,9 +451,9 @@ func test_histogram_tails() -> void:
 	fixture.free()
 
 func test_completion_distributions() -> void:
-	var distribution: Dictionary = RaceComplete._local_distribution([10.0001,10.0004],10.0004)
+	var distribution: Dictionary = preload("res://tests/fixtures/local_distribution_reference.gd").distribution([10.0001,10.0004],10.0004)
 	check(distribution.bins[0] == 2 and distribution.player_bin == 0, "equal displayed times share a histogram bin")
-	check(RaceComplete._local_distribution([],0).is_empty(), "no invented histogram for missing local samples")
+	check(preload("res://tests/fixtures/local_distribution_reference.gd").distribution([],0).is_empty(), "no invented histogram for missing local samples")
 	var source := RaceResults.new()
 	source.laps = [20.0,17.0,18.0]
 	source.clean = true

@@ -140,6 +140,11 @@ func _ready() -> void:
 	var summary: Label = MenuStyle.label("%d points" % int(driver.get("points",0)),18,true)
 	if driver.get("rank") != null: summary.text = "#%d  ·  " % int(driver.rank)+summary.text
 	car_column.add_child(summary)
+	if preload("res://backend/world_ranking_client.gd").supported(client):
+		var world: Control = preload("res://ui/world_ranking_summary.gd").new()
+		world.client = client
+		world.player_id = player_id()
+		car_column.add_child(world)
 	var track_column := VBoxContainer.new()
 	track_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	columns.add_child(track_column)

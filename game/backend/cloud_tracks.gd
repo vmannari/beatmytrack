@@ -14,17 +14,10 @@ var run_connection_failed: bool = false
 var last_error: String = ""
 var root_override: String = ""
 var catalog_url: String = ""
-var next_cursor: String = ""
 var last_refresh_msec: int = -60000
-var _search_serial: int = 0
-var _search_filters: Dictionary = {}
-var _search_cursor: String = ""
-var _search_loading: bool = false
-var _snapshot_entries: Array[Dictionary] = []
 var _catalog_serial: int = 0
 const MAX_CATALOG_ENTRIES: int = 1000
 var discovery_pages: Node
-var _discovery_protocol: int = 0
 var _discovery_filters: Dictionary = {}
 var _discovery_favorites: Array = []
 var _discovery_raced: Array = []
@@ -170,9 +163,7 @@ func cache_root() -> String:
 func _index_path() -> String:
 	# Filtered v3 results can reveal personal favourites/history. Keep the
 	# lightweight reopening index under the same account boundary as cursors.
-	if indexed_discovery_available():
-		return cache_root().path_join("index-v3-"+str(client.player.get("id","")).sha256_text()+".json")
-	return cache_root().path_join("index.json")
+	return cache_root().path_join("index-v3-"+str(client.player.get("id","")).sha256_text()+".json")
 
 func _read(path: String) -> Dictionary:
 	var started: int = Time.get_ticks_usec()
@@ -216,13 +207,7 @@ func load_cached() -> void:
 		client.cancel_public_reads(discovery_pages.get_instance_id())
 	_publication_pin.clear()
 	_catalog_serial += 1
-	_search_serial += 1
 	catalog_url = str(client.base_url())
-	next_cursor = ""
-	_search_cursor = ""
-	_search_filters.clear()
-	_search_loading = false
-	_snapshot_entries.clear()
 	last_refresh_msec = -60000
 	entries.clear()
 	var cached: Variant = _read(_index_path()).get("entries",[])
@@ -241,105 +226,6 @@ func _valid_entry(item: Dictionary) -> bool:
 	var version: String = str(item.get("version_id",""))
 	var hash_value: String = str(item.get("content_hash",""))
 	return version.length() == 36 and version.replace("-","").is_valid_hex_number(false) and hash_value.length() == 64 and hash_value.is_valid_hex_number(false) and item.get("points") is Array
-
-func refresh(force: bool = false) -> void:
-	if paged_discovery_available():
-		await query_discovery(_discovery_filters,_discovery_favorites,_discovery_raced,force)
-		return
-	if refreshing: return
-	if not force and Time.get_ticks_msec()-last_refresh_msec < 60000: return
-	last_refresh_msec = Time.get_ticks_msec()
-	if catalog_url != str(client.base_url()): load_cached()
-	refreshing = true
-	var serial: int = _catalog_serial
-	status = "Refreshing cloud tracks…"
-	changed.emit()
-	var collected: Array[Dictionary] = entries.duplicate(true)
-	if next_cursor.is_empty(): _snapshot_entries.clear()
-	for page: int in range(1):
-		var response: Dictionary = await client.request_api("/tracks?limit=20"+("&cursor="+next_cursor.uri_encode() if not next_cursor.is_empty() else ""))
-		if serial != _catalog_serial or catalog_url != str(client.base_url()): break
-		if not response.ok:
-			status = "Cloud unavailable · showing cached tracks · Refresh to retry"
-			break
-		var valid: bool = response.data.get("items") is Array
-		if valid:
-			for item: Variant in response.data.items:
-				if not item is Dictionary or not _valid_entry(item):
-					valid = false
-					break
-				collected = collected.filter(func(old: Dictionary) -> bool: return old.track_id != item.track_id)
-				collected.append(item)
-				while collected.size() > MAX_CATALOG_ENTRIES: collected.pop_front()
-		if not valid:
-			status = "Invalid cloud catalog · keeping cached tracks"
-			break
-		for item: Dictionary in response.data.items:
-			_snapshot_entries = _snapshot_entries.filter(func(old: Dictionary) -> bool: return old.track_id != item.track_id)
-			_snapshot_entries.append(item)
-			while _snapshot_entries.size() > MAX_CATALOG_ENTRIES: _snapshot_entries.pop_front()
-		entries = collected
-		while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
-		var cursor: Variant = response.data.get("next_cursor")
-		next_cursor = "" if cursor == null else str(cursor)
-		if not _write(_index_path(),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
-		changed.emit() # Keep usable progress if a later page fails.
-		if next_cursor.is_empty():
-			entries = _snapshot_entries.duplicate(true)
-			status = "Cloud catalog up to date · tracks download when selected"
-			if not _write(_index_path(),{"entries":entries}): status = "Cloud loaded · catalog could not be cached"
-			break
-		status = "Cloud tracks loaded · more will load on the next refresh"
-	refreshing = false
-	if serial != _catalog_serial or catalog_url != str(client.base_url()):
-		refresh.call_deferred(true)
-		return
-	_remember_aliases()
-	changed.emit()
-
-func load_more() -> void:
-	if paged_discovery_available():
-		_ensure_discovery_pages()
-		var numbers: Array = discovery_pages.pages.keys()
-		var page: int = 0 if numbers.is_empty() else int(numbers.max())+1
-		if page*20 < int(discovery_pages.total): await discovery_pages._fetch(page)
-		return
-	if refreshing or _search_loading: return
-	if not _search_filters.is_empty():
-		if not _search_cursor.is_empty(): search(_search_filters,true)
-	elif not next_cursor.is_empty(): refresh(true)
-
-func search(filters: Dictionary, append: bool = false) -> void:
-	if paged_discovery_available():
-		if append: await load_more()
-		else: await query_discovery(filters,_discovery_favorites,_discovery_raced)
-		return
-	_search_loading = true
-	_search_filters = filters.duplicate(true)
-	if not append: _search_cursor = ""
-	_search_serial += 1
-	var serial: int = _search_serial
-	var query: String = str(filters.get("search",""))
-	var kind: String = ["search","q","creator"][clampi(int(filters.get("search_kind",0)),0,2)]
-	var path: String = "/tracks?limit=20&"+kind+"="+query.uri_encode()
-	if append: path += "&cursor="+_search_cursor.uri_encode()
-	var theme: String = str(filters.get("theme","all"))
-	if theme != "all": path += "&theme="+theme.uri_encode()
-	path += "&minimum_rating="+str(float(filters.get("minimum_rating",0.0)))
-	var response: Dictionary = await client.request_public(path,get_instance_id())
-	if serial != _search_serial: return
-	_search_loading = false
-	if not response.ok or not response.data.get("items") is Array: return
-	for item: Variant in response.data.items:
-		if not item is Dictionary or not _valid_entry(item): return
-	for item: Dictionary in response.data.items:
-		entries = entries.filter(func(old: Dictionary) -> bool: return old.track_id != item.track_id)
-		entries.append(item)
-	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
-	_search_cursor = "" if response.data.get("next_cursor") == null else str(response.data.next_cursor)
-	_write(_index_path(),{"entries":entries})
-	status = "Cloud matches loaded"+(" · narrow your search for more" if response.data.get("next_cursor") != null else "")
-	changed.emit()
 
 func _safety_changed() -> void:
 	load_cached()
@@ -492,13 +378,7 @@ func remember_publication(metadata: Dictionary) -> bool:
 	# An older paginated snapshot cannot contain this newly committed revision.
 	# Fence outstanding reads and start the next refresh at the newest page.
 	_catalog_serial += 1
-	next_cursor = ""
-	_snapshot_entries.clear()
 	last_refresh_msec = -60000
-	_search_serial += 1
-	_search_filters.clear()
-	_search_cursor = ""
-	_search_loading = false
 	entries = entries.filter(func(old: Dictionary) -> bool: return str(old.track_id) != str(metadata.track_id))
 	entries.append(metadata.duplicate(true))
 	while entries.size() > MAX_CATALOG_ENTRIES: entries.pop_front()
@@ -508,32 +388,16 @@ func remember_publication(metadata: Dictionary) -> bool:
 	return true
 
 func paged_discovery_available() -> bool:
-	return client != null and int(client.get("_capabilities").get("discovery_paging_version",0)) >= 2
-
-func indexed_discovery_available() -> bool:
 	return client != null and int(client.get("_capabilities").get("discovery_paging_version",0)) >= 3
-
-func _ensure_discovery_pages() -> void:
-	var protocol: int = 3 if indexed_discovery_available() else 2
-	if is_instance_valid(discovery_pages):
-		if _discovery_protocol == protocol: return
-		client.cancel_public_reads(discovery_pages.get_instance_id())
-		discovery_pages.generation += 1
-		remove_child(discovery_pages)
-		discovery_pages.queue_free()
-	_discovery_protocol = protocol
-	discovery_pages = preload("res://backend/discovery_windows.gd").new() if protocol == 3 else preload("res://backend/discovery_pages.gd").new()
-	discovery_pages.client = client
-	discovery_pages.cache_directory = cache_root().path_join("discovery")
-	add_child(discovery_pages)
-	discovery_pages.changed.connect(_discovery_changed)
 
 func query_discovery(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
 	_discovery_filters = filters.duplicate(true)
 	_discovery_favorites = favorites.duplicate()
 	_discovery_raced = raced.duplicate()
 	if not paged_discovery_available():
-		await search(filters)
+		status = "This game update needs a matching server update to load online tracks."
+		refreshing = false
+		changed.emit()
 		return
 	_ensure_discovery_pages()
 	discovery_pages.cache_directory = cache_root().path_join("discovery")
@@ -551,7 +415,7 @@ func _discovery_changed() -> void:
 		else: entries.append(_publication_pin)
 	refreshing = discovery_pages.loading
 	status = discovery_pages.error if not discovery_pages.error.is_empty() else ("Loading tracks…" if refreshing else "%d tracks" % maxi(0,int(discovery_pages.total)))
-	if indexed_discovery_available() and discovery_pages.error.is_empty() and not refreshing: status = discovery_pages.status_text()
+	if discovery_pages.error.is_empty() and not refreshing: status = discovery_pages.status_text()
 	if not refreshing and discovery_pages.total >= 0:
 		# Persist only the first page for fast reopening; distant pages are reloadable.
 		if discovery_pages.pages.has(0): _write(_index_path(),{"entries":discovery_pages.pages[0].items})
@@ -734,7 +598,7 @@ static func _queue_run_io(ticket_data: Dictionary, frames: Array, _publish_versi
 		return _replay_integrity(directory.path_join(name+".replay.json"),replay_hash)
 	var saved: bool = _write_file(directory.path_join(name+".replay.json"),recording)
 	if saved:
-		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at})
+		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at,"submission_schema":"bmt-trajectory-v1"})
 	return saved
 
 func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
@@ -962,6 +826,19 @@ func retry_upload(ticket_id: String) -> bool:
 func _submit_saved(job: Dictionary, path: String) -> Dictionary:
 	var origin: String = str(client.base_url())
 	var owner: String = str(client.player.get("id",""))
+	# A pre-update job may have been accepted with an older wire envelope.
+	# Recover its ticket first; changing its retry body would break idempotency.
+	if not job.has("submission_schema"):
+		if int(client._capabilities.get("submission_recovery_version",0)) < 1:
+			return {"ok":false,"status":0,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+		var recovered: Dictionary = await client.request_api("/run-tickets/"+str(job.ticket).uri_encode()+"/submission",HTTPClient.METHOD_GET,{},"",true)
+		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if not recovered.ok: return recovered
+		if not Client.valid_response("/run-tickets/"+str(job.ticket)+"/submission",HTTPClient.METHOD_GET,recovered.get("data")):
+			return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
+		if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
+		job.submission_schema = "bmt-trajectory-v1"
+		if not _save_pending_job(path,job): return {"ok":false,"status":0,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 	var preparation: int = Time.get_ticks_usec()
 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
 	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
@@ -1127,3 +1004,25 @@ func _pause_flush(request_scope: String, response: Dictionary) -> void:
 	# A rate limit applies to the account, so stop the whole batch rather than
 	# sending every remaining saved job into the same exhausted budget.
 	_flush_deadlines[request_scope] = Time.get_ticks_msec()+maxi(60,int(response.get("retry_after",0)))*1000
+
+func refresh(force: bool = false) -> void:
+	await query_discovery(_discovery_filters,_discovery_favorites,_discovery_raced,force)
+
+func load_more() -> void:
+	if not paged_discovery_available(): return
+	_ensure_discovery_pages()
+	var numbers: Array = discovery_pages.pages.keys()
+	var page: int = 0 if numbers.is_empty() else int(numbers.max())+1
+	if page*20 < int(discovery_pages.total): await discovery_pages._fetch(page)
+
+func search(filters: Dictionary, append: bool = false) -> void:
+	if append: await load_more()
+	else: await query_discovery(filters,_discovery_favorites,_discovery_raced)
+
+func _ensure_discovery_pages() -> void:
+	if is_instance_valid(discovery_pages): return
+	discovery_pages = preload("res://backend/discovery_windows.gd").new()
+	discovery_pages.client = client
+	discovery_pages.cache_directory = cache_root().path_join("discovery")
+	add_child(discovery_pages)
+	discovery_pages.changed.connect(_discovery_changed)

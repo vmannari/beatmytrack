@@ -6,15 +6,16 @@ const CELLS: int = GRID * GRID * GRID
 
 static func read(records: LocalRecords, id: String) -> Dictionary:
 	if records == null: return {}
+	records._conditions()
 	return records.settings.get("vehicle_conditions", {}).get(id, {}).duplicate(true)
 
-static func save(records: LocalRecords, id: String, value: Dictionary) -> Error:
+static func save(records: LocalRecords, id: String, value: Dictionary, background: bool = false) -> Error:
 	if records == null: return OK
-	if read(records, id) == value: return OK
+	if read(records, id) == value:
+		return OK if background else records.save_vehicle_conditions(records.settings.get("vehicle_conditions",{}))
 	var collection: Dictionary = records.settings.get("vehicle_conditions", {}).duplicate(true)
 	collection[id] = value.duplicate(true)
-	records.settings.vehicle_conditions = collection
-	return records.save_records()
+	return records.save_vehicle_conditions(collection,background)
 
 static func valid_collection(value: Variant) -> bool:
 	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false

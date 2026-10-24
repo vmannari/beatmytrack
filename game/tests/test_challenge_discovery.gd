@@ -45,6 +45,7 @@ func settle() -> void:
 
 func capture(label: String) -> void:
 	if DisplayServer.get_name() != "headless":
+		await settle()
 		check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
 
 func bounds(node: Control, detail: String) -> void:
@@ -100,7 +101,7 @@ func adapters() -> void:
 	adapter.selected = sample()
 	var calls: int = client.paths.size()
 	await adapter.refresh()
-	check(client.paths.size() == calls and adapter.error.contains("updated online service"),"older services get actionable discovery availability")
+	check(client.paths.size() == calls and adapter.error.contains("updated online service") and not adapter.error.contains("Created"),"older services get actionable racing availability without creation navigation")
 	check(not adapter.selected.is_empty(),"older services retain a directly opened private invitation")
 	adapter.queue_free()
 	cloud.queue_free()
@@ -130,13 +131,24 @@ func run() -> void:
 		app.challenges.selected = sample()
 		app.challenges.busy = true
 		app._open_challenges()
+		(app.content.find_child("ChallengeFindAndPlay",true,false) as Button).pressed.emit()
 		app.challenges.busy = false
 		app._challenges()
 		await settle()
 		var page: ChallengesPage = app.root_ui.find_child("ChallengesPage",true,false)
-		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeTab_sent","ChallengeSearch","ChallengeActions"]:
+		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeSearch","ChallengeActions"]:
 			bounds(page.find_child(identity,true,false),identity)
 		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text != "Enter code"),"discovery has no code-entry action")
+		check(page.find_child("ChallengeTab_sent",true,false) == null,"racing navigation has no Created management tab")
+		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),"Find & play excludes creation and management actions")
+		var filters_row: Control = page.find_child("ChallengeFilters",true,false)
+		check(not filters_row.visible,"filters leave room for racing until requested")
+		(page.find_child("ChallengeToggleFilters",true,false) as Button).pressed.emit()
+		check(filters_row.visible,"filters reveal the existing format/car/sort choices")
+		await capture("filters-%dx%d" % [dimensions.x,dimensions.y])
+		(page.find_child("ChallengeToggleFilters",true,false) as Button).pressed.emit()
+		check(not filters_row.visible,"filters collapse without changing the selected race")
+		check(page.find_child("ChallengeRaceGrid",true,false) != null,"races use the new scenic gallery")
 		check((page.find_child("ChallengeRace",true,false) as Button).text == "Join & race","public race joins directly")
 		check(page.find_child("ChallengeRewards",true,false) != null,"both concrete reward goals appear")
 		check(page._reward_caption(sample()) == "Up to 150 Coins","card reward matches server amounts")
@@ -152,6 +164,20 @@ func run() -> void:
 		await settle()
 		bounds(page.find_child("ChallengeRewards",true,false),"reward goals after scroll")
 		await capture("rewards-%dx%d" % [dimensions.x,dimensions.y])
+		var gallery: ScrollContainer = page.find_child("ChallengeInboxScroll",true,false)
+		gallery.scroll_vertical = 16
+		await settle()
+		var saved_scroll: int = gallery.scroll_vertical
+		page._search.text = "Unsent search"
+		page._search.grab_focus()
+		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
+		app._challenges()
+		await settle()
+		page = app.root_ui.find_child("ChallengesPage",true,false)
+		check((page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab == 1,"refresh retains the selected race's standings view")
+		check((page.find_child("ChallengeInboxScroll",true,false) as ScrollContainer).scroll_vertical == saved_scroll,"refresh retains the gallery position")
+		check(page._search.text == "Unsent search" and page._search.has_focus(),"background replies preserve an unsent search and its focus")
+		await capture("standings-%dx%d" % [dimensions.x,dimensions.y])
 		app.challenges.selected.rewards.finish_earned = true
 		app.challenges.selected.rewards.goal_earned = true
 		app.challenges.selected.joined = true
@@ -179,8 +205,11 @@ func run() -> void:
 		create._checking = false
 		create._update()
 		await settle()
-		check(create.find_child("ChallengeVisibility",true,false) != null,"creator explicitly chooses public or private")
-		bounds(create.find_child("ChallengeVisibility",true,false),"public/private choice")
+		create._open_rules()
+		await settle()
+		check(create._custom_page.find_child("ChallengeCustomVisibility_public",true,false) != null and create._custom_page.find_child("ChallengeCustomVisibility_private",true,false) != null,"creator explicitly chooses public or private in optional rules")
+		bounds(create._custom_page.find_child("ChallengeCustomVisibility_public",true,false),"public/private choice")
+		create._dismiss_rules()
 		bounds(create.find_child("ChallengeCreateActions",true,false),"creation actions")
 		await capture("create-%dx%d" % [dimensions.x,dimensions.y])
 		create.close()

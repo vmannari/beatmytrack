@@ -172,7 +172,7 @@ func _opening() -> void:
 		message.visible = not window.dialog_text.is_empty()
 	header.text = window.title if window.title not in ["","Alert!","Please Confirm..."] else "Please confirm" if window is ConfirmationDialog else "Please note"
 	var title: String = header.text.to_lower()
-	var icon: String = "folder" if window is FileDialog or title.contains("import") else "delete" if title.contains("delete") or title.contains("discard") else "person" if title.contains("country") else "trophy" if title.contains("scores") else "star" if title.contains("rate") else "publish" if title.contains("uploads") else "target" if title.contains("challenge") else "edit" if forms else "help" if window is ConfirmationDialog else "check"
+	var icon: String = "folder" if window is FileDialog or title.contains("import") else "delete" if title.contains("delete") or title.contains("discard") else "person" if title.contains("country") else "trophy" if (title.contains("scores") or title.contains("ranking")) else "star" if title.contains("rate") else "publish" if title.contains("uploads") else "target" if title.contains("challenge") else "edit" if forms else "help" if window is ConfirmationDialog else "check"
 	symbol.texture = MenuIcon.texture(icon,true)
 	_style_actions()
 	if not is_instance_valid(shade_layer):

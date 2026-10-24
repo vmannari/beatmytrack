@@ -94,13 +94,13 @@ func add_shared_tracks() -> void:
 			known[entry.id] = true
 
 static func local_metadata(data: Dictionary) -> Dictionary:
-	if data.get("schema") != TrackDocument.SCHEMA: return {}
+	if not data.get("schema") is String or data.schema != TrackDocument.SCHEMA: return {}
 	if data.get("base_track","") != "" and str(data.base_track) not in BuiltinTracks.ids(): return {}
 	if not TrackDocument.valid_id(data.get("id")): return {}
 	for field: String in ["name","creator"]:
 		var value: Variant = data.get(field,"Unknown creator")
 		if not value is String or value.strip_edges().is_empty() or value.length() > 40 or TrackDocument._has_control(value): return {}
-	if data.get("theme") not in TrackDocument.THEMES and data.get("theme") != "coast": return {}
+	if data.get("theme") not in TrackDocument.THEMES: return {}
 	var points: Variant = data.get("points")
 	if not points is Array or points.size() < 4 or points.size() > TrackDocument.MAX_POINTS: return {}
 	for point: Variant in points:

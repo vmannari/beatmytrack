@@ -19,6 +19,7 @@ var persistence_error: bool = false
 var _public_reads: Array[HTTPRequest] = []
 var _telemetry_requests: Array[HTTPRequest] = []
 var _telemetry_epoch: int = 1
+var _configuration_epoch: int = 1
 var _rotation_locks: Array[RefCounted] = []
 var _read_cache: Dictionary = {}
 var _encoding_threads: Array[Thread] = []
@@ -29,7 +30,6 @@ var _capabilities: Dictionary = {}
 var _server_sample: int = 0
 var _server_sample_msec: int = 0
 var _disable_gzip: bool = false
-var _disable_packed: bool = false
 var _refresh_request_id: String = ""
 var resume_recovery: Node
 var session_vault: RefCounted = preload("res://backend/session_vault.gd").new()
@@ -41,6 +41,7 @@ var _delete_access_token: String = ""
 var _pending_network_context: Dictionary = {}
 var safety: Node
 var news: Node
+var game_configuration: Node
 
 func _vault_context() -> String:
 	return "bmt-session-v1/"+_base_url+"/"+ProjectSettings.globalize_path(session_path)
@@ -132,10 +133,10 @@ func request_public(path: String, owner_id: int) -> Dictionary:
 	return _checked(await _send(path,HTTPClient.METHOD_GET,{},false,"",PackedStringArray(),owner_id),path,HTTPClient.METHOD_GET)
 
 func request_discovery(payload: Dictionary, owner_id: int, random_choice: bool = false) -> Dictionary:
-	var path: String = "/discovery/random" if random_choice else "/discovery/tracks"
-	if int(_capabilities.get("discovery_paging_version",0)) >= 3:
-		path = "/discovery/v3/random" if random_choice else "/discovery/v3/tracks"
-		if not payload.has("cursor") and not payload.has("query"): payload = {"query":payload.duplicate(true)}
+	if int(_capabilities.get("discovery_paging_version",0)) < 3:
+		return _failure("DISCOVERY_SERVER_UPDATE_REQUIRED",426)
+	var path: String = "/discovery/v3/random" if random_choice else "/discovery/v3/tracks"
+	if not payload.has("cursor") and not payload.has("query"): payload = {"query":payload.duplicate(true)}
 	if signed_in() or payload.get("section",payload.get("query",{}).get("section","all")) == "saved": return await request_api(path,HTTPClient.METHOD_POST,payload,"",true)
 	return _checked(await _send(path,HTTPClient.METHOD_POST,payload,false,"",PackedStringArray(),owner_id),path,HTTPClient.METHOD_POST)
 
@@ -148,6 +149,24 @@ func auth_busy() -> bool:
 func telemetry_supported() -> bool:
 	var capability: Variant = _capabilities.get("product_telemetry",{})
 	return _delete_request_id.is_empty() and analytics_opt_in and bool(player.get("analytics_enabled",true)) and signed_in() and capability is Dictionary and bool(capability.get("enabled",false)) and int(capability.get("schema_version",0)) == 1
+
+func game_configuration_supported() -> bool:
+	return _delete_request_id.is_empty() and int(_capabilities.get("game_configuration_version",0)) == 1
+
+func cancel_configuration() -> void:
+	var epoch: int = _configuration_epoch
+	_configuration_epoch += 1
+	cancel_public_reads(-epoch)
+
+func request_configuration(path: String, assign: bool = false) -> Dictionary:
+	if not game_configuration_supported() or _busy or _refresh_busy: return _failure("CONFIGURATION_DEFERRED")
+	if not (path.begins_with("/game-config") or (assign and path.begins_with("/experiments/assignments?"))): return _failure("INVALID_PATH")
+	var epoch: int = _configuration_epoch
+	var scope: String = _network_scope()
+	var method: HTTPClient.Method = HTTPClient.METHOD_POST if assign else HTTPClient.METHOD_GET
+	var response: Dictionary = await _send(path,method,{},signed_in(),"",PackedStringArray(),-epoch)
+	if epoch != _configuration_epoch or scope != _network_scope(): return _failure("ACCOUNT_CHANGED")
+	return response
 
 func cancel_telemetry() -> void:
 	_telemetry_epoch += 1
@@ -206,7 +225,6 @@ func configure(base_url: String) -> Error:
 	_capabilities.clear()
 	_server_sample = 0
 	_disable_gzip = false
-	_disable_packed = false
 	var url: String = base_url.trim_suffix("/")
 	if url.is_empty():
 		clear_session()
@@ -668,6 +686,7 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	# A menu request may finish encoding after the player starts loading a race.
 	# Its owner cancellation fence prevents starting network work after that point.
 	if path == "/telemetry/batches" and owner_id != 0 and owner_id != _telemetry_epoch: return _failure("CANCELLED")
+	if owner_id < 0 and -owner_id != _configuration_epoch: return _failure("CANCELLED")
 	if packet.compressed: headers.append("Content-Encoding: gzip")
 	if metrics.collect: metrics.request_body_bytes = packet.body.size()
 	var request: HTTPRequest = _take_request()
@@ -675,6 +694,9 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	var run_wait: bool = path.begins_with("/runs/") and path.get_slice("?",0).ends_with("/wait")
 	request.timeout = 5.0 if run_wait else 10.0 if path == "/telemetry/batches" else 2.0 if "/ghosts/" in path else 30.0
 	request.body_size_limit = 16384 if path == "/telemetry/batches" else MAX_RESPONSE_BYTES
+	if owner_id < 0:
+		request.timeout = 3.0
+		request.body_size_limit = 65536
 	request.max_redirects = 0 # Never forward credentials to a redirect target.
 	profile_start = Time.get_ticks_usec()
 	var start: Error = request.request_raw(_base_url+"/v1"+path,headers,method,packet.body)
@@ -683,7 +705,7 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 		var failed: Dictionary = _failure("REQUEST_START_FAILED")
 		failed.not_delivered = true
 		return failed
-	if owner_id != 0 and (method == HTTPClient.METHOD_GET or path.begins_with("/discovery/")):
+	if owner_id != 0 and (method == HTTPClient.METHOD_GET or path.begins_with("/discovery/") or owner_id < 0):
 		request.set_meta("owner_id",owner_id)
 		_public_reads.append(request)
 	if path == "/telemetry/batches": _telemetry_requests.append(request)
@@ -717,7 +739,8 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 		var cached: Dictionary = _read_cache[cache_key].data.duplicate(true)
 		if server_time > 0 and cached.has("server_now"):
 			cached.server_now = server_time
-			cached.remaining_seconds = maxi(0,int(cached.ends_at)-server_time)
+			if cached.has("ends_at"): cached.remaining_seconds = maxi(0,int(cached.ends_at)-server_time)
+			if path.begins_with("/game-config"): cached.expires_at = server_time+7*86400
 		return {"ok":true,"status":200,"data":cached,"body":str(_read_cache[cache_key].get("body","")),"error":"","not_modified":true}
 	var bytes: PackedByteArray = completed[3]
 	var cacheable: bool = method == HTTPClient.METHOD_GET and status == 200 and not tag.is_empty() and bytes.size() <= 524288
@@ -910,6 +933,7 @@ func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET
 	return response
 
 static func _race_ticket_path(path: String) -> bool:
+	path = path.get_slice("?",0)
 	return path == "/run-tickets" or ((path.begins_with("/rivalry/") or path.begins_with("/challenges/")) and path.get_slice_count("/") == 4 and path.ends_with("/tickets"))
 
 static func _independent_auth_request(path: String, method: HTTPClient.Method) -> bool:
@@ -961,94 +985,54 @@ func logout() -> Dictionary:
 func race_ticket(version_id: String, vehicle_id: String, key: String, purpose: String = "race") -> Dictionary:
 	return await request_api("/run-tickets",HTTPClient.METHOD_POST,{"version_id":version_id,"vehicle_id":vehicle_id,"purpose":purpose},key,true)
 
-static func _pack_replay(frames: Array, rewinds: Array, compact: bool = true, race_proof: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
-	# Godot's JSON parser returns floats, including integers restored from the outbox.
-	# Preserve the strict wire schema without accepting fractional/corrupt controls.
-	var packed: Array = []
-	for frame: Variant in frames:
-		if not frame is Array or frame.size() not in [3, 4, 5]: return {}
-		var values: Array[int] = []
-		for value: Variant in frame:
-			if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)): return {}
-			values.append(int(value))
-		packed.append(values)
-	var replay: Dictionary = {"schema":"bmt-replay-v1","frames":packed}
-	if not race_proof.is_empty():
-		if race_proof.get("schema","") != "bmt-race-proof-v1" or not race_proof.get("samples") is Array: return {}
-		var samples: Array = []
-		for row: Variant in race_proof.samples:
-			if not row is Array or row.size() != 8: return {}
-			for value: Variant in row:
-				if not (value is int or value is float) or not is_finite(float(value)): return {}
-			if float(row[0]) != float(int(row[0])) or float(row[6]) != float(int(row[6])): return {}
-			var sample: Array = row.duplicate()
-			sample[0] = int(row[0]); sample[6] = int(row[6])
-			samples.append(sample)
-		replay.race_proof = {"schema":"bmt-race-proof-v1","samples":samples}
-		var incidents: Variant = race_proof.get("incidents")
-		if include_incidents and incidents is Dictionary and incidents.size() == 4 and incidents.get("schema") == "bmt-race-incidents-v1" and _whole(incidents.get("ticks"),1,216000) and _whole(incidents.get("collision_count"),0,216000) and incidents.get("off_track") is bool:
-			replay.race_proof.incidents = {"schema":"bmt-race-incidents-v1","ticks":int(incidents.ticks),"collision_count":int(incidents.collision_count),"off_track":incidents.off_track}
-	if not rewinds.is_empty():
-		replay.schema = "bmt-replay-v2"
-		replay.rewinds = []
-		for source: Dictionary in rewinds:
-			var event: Dictionary = {"receipt_id":str(source.get("receipt_id",""))}
-			for field: String in ["input_offset","from_tick","to_tick"]:
-				var value: Variant = source.get(field)
-				if not (value is int or value is float) or not is_finite(float(value)) or float(value) != float(int(value)): return {}
-				event[field] = int(value)
-			replay.rewinds.append(event)
-
-	var controls := PackedByteArray()
-	controls.resize(packed.size()*6)
-	for index: int in range(packed.size()):
-		var frame: Array = packed[index]
-		if frame[0] < -127 or frame[0] > 127 or frame[1] < 0 or frame[1] > 255 or frame[2] < 0 or frame[2] > 255 or (frame.size() >= 4 and (frame[3] < 0 or frame[3] > 255)) or (frame.size() == 5 and (index != 0 or frame[4] not in [1,2])): return {}
-		controls[index*6] = frame.size()
-		controls[index*6+1] = int(frame[0])+127
-		controls[index*6+2] = int(frame[1])
-		controls[index*6+3] = int(frame[2])
-		controls[index*6+4] = int(frame[3]) if frame.size() >= 4 else 0
-		controls[index*6+5] = int(frame[4]) if frame.size() == 5 else 0
-	if not compact: return replay
-	var wire: Dictionary = {"schema":"bmt-packed-input-v1","replay_schema":replay.schema,"frame_count":packed.size(),"controls":Marshalls.raw_to_base64(controls)}
-	if replay.has("rewinds"): wire.rewinds = replay.rewinds
-	if replay.has("race_proof"): wire.race_proof = replay.race_proof
-	return wire
+static func _normalize_proof(proof: Dictionary, include_incidents: bool) -> Dictionary:
+	if proof.get("schema","") != "bmt-race-proof-v1" or not proof.get("samples") is Array: return {}
+	var samples: Array = []
+	for row: Variant in proof.samples:
+		if not row is Array or row.size() != 8: return {}
+		for value: Variant in row:
+			if not (value is int or value is float) or not is_finite(float(value)): return {}
+		if not _whole(row[0],0,216000) or not _whole(row[6],0,1): return {}
+		var sample: Array = row.duplicate()
+		sample[0] = int(row[0]); sample[6] = int(row[6])
+		samples.append(sample)
+	var result: Dictionary = {"schema":"bmt-race-proof-v1","samples":samples}
+	var incidents: Variant = proof.get("incidents")
+	if include_incidents and incidents is Dictionary and incidents.size() == 4 and incidents.get("schema") == "bmt-race-incidents-v1" and _whole(incidents.get("ticks"),1,216000) and _whole(incidents.get("collision_count"),0,216000) and incidents.get("off_track") is bool:
+		result.incidents = {"schema":"bmt-race-incidents-v1","ticks":int(incidents.ticks),"collision_count":int(incidents.collision_count),"off_track":incidents.off_track}
+	return result
 
 static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
 	# Normalize the small movement record without encoding/scanning control frames.
-	var normalized: Dictionary = _pack_replay([[0,0,0]],[],false,proof,include_incidents)
-	if normalized.is_empty() or not normalized.has("race_proof"): return {}
+	if not _whole(count,1,216000): return {}
+	var normalized: Dictionary = _normalize_proof(proof,include_incidents)
+	if normalized.is_empty(): return {}
 	var events: Array = []
-	for source: Dictionary in rewinds:
+	if rewinds.size() > 3: return {}
+	for source: Variant in rewinds:
+		if not source is Dictionary or not source.get("receipt_id") is String or str(source.receipt_id).is_empty(): return {}
+		for field: String in ["input_offset","from_tick","to_tick"]:
+			if not _whole(source.get(field),0,216000): return {}
 		events.append({"receipt_id":str(source.receipt_id),"input_offset":int(source.input_offset),"from_tick":int(source.from_tick),"to_tick":int(source.to_tick)})
 	var path: Array = []
-	for row: Array in normalized.race_proof.samples: path.append([row[0],row[1],row[2],row[6]])
+	for row: Array in normalized.samples: path.append([row[0],row[1],row[2],row[6]])
 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
-	if normalized.race_proof.has("incidents"): result.race_proof.incidents = normalized.race_proof.incidents
+	if normalized.has("incidents"): result.race_proof.incidents = normalized.incidents
 	if not ghost.is_empty(): result.ghost = ghost
 	return result
 
 func submit_run(ticket_id: String, frames: Array, key: String, rewinds: Array = [], race_proof: Dictionary = {}, ghost: Dictionary = {}) -> Dictionary:
+	if not bool(_capabilities.get("trajectory_verification",false)):
+		return _failure("SUBMISSION_SERVER_UPDATE_REQUIRED")
 	var generation: int = _session_generation
 	var origin: String = _base_url
-	var compact: bool = not _disable_packed and _capabilities.get("replay_wire_schema","") == "bmt-packed-input-v1"
-	var trajectory: bool = bool(_capabilities.get("trajectory_verification",false)) and not race_proof.is_empty()
 	var include_incidents: bool = int(_capabilities.get("race_incident_rewards_version",0)) == 1
 	var preparation: int = Time.get_ticks_usec()
-	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost,include_incidents) if trajectory else _pack_replay.bind(frames,rewinds,compact,race_proof,include_incidents))
+	var replay: Variant = await _background(_pack_trajectory.bind(frames.size(),race_proof,rewinds,ghost,include_incidents))
 	if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
 	note_request_preparation(key,Time.get_ticks_usec()-preparation)
 	if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
-	var response: Dictionary = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
-	if not trajectory and compact and int(response.status) == 422 and (str(response.error).to_lower().contains("replay envelope") or str(response.error) in ["INVALID_PACKED_REPLAY","UNSUPPORTED_REPLAY_SCHEMA"]):
-		_disable_packed = true
-		replay = await _background(_pack_replay.bind(frames,rewinds,false,race_proof,include_incidents))
-		if generation != _session_generation or origin != _base_url: return _failure("ACCOUNT_CHANGED")
-		if not replay is Dictionary or replay.is_empty(): return _failure("INVALID_REPLAY",422)
-		response = await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
-	return response
+	return await request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":ticket_id,"replay":replay},key,true)
 
 static func _whole(value: Variant, minimum: int = 0, maximum: int = 9007199254740991) -> bool:
 	return (value is int or value is float) and is_finite(float(value)) and float(value) >= minimum and float(value) <= maximum and float(value) == float(int(value))
@@ -1068,6 +1052,8 @@ static func valid_wallet(data: Variant) -> bool:
 static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
 	if not data is Dictionary: return false
 	var endpoint: String = path.get_slice("?",0)
+	if endpoint == "/me/appearances":
+		return preload("res://persistence/appearance_state.gd").valid_car(data) if method == HTTPClient.METHOD_PUT else data.size() == 1 and preload("res://persistence/appearance_state.gd").valid_collection(data.get("appearances"))
 	if endpoint == "/economy": return preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data)
 	if endpoint == "/economy/purchases":
 		return _text(data.get("item_id")) and _whole(data.get("charged")) and preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data.get("wallet"))
@@ -1098,6 +1084,8 @@ static func valid_response(path: String, method: HTTPClient.Method, data: Varian
 		if data.get("status") == "pending": return true
 		return _text(data.get("access_token")) and _text(data.get("refresh_token")) and data.get("player") is Dictionary and _text(data.player.get("id"))
 	if endpoint == "/me": return _text(data.get("id"))
+	if endpoint.begins_with("/run-tickets/") and endpoint.ends_with("/submission"):
+		return data.has("run") and (data.run == null or (valid_run(data.run) and str(data.run.get("ticket_id","")) == endpoint.get_slice("/",2)))
 	if endpoint == "/runs/status":
 		if not data.get("items") is Array or data.items.size() > 32: return false
 		for item: Variant in data.items:

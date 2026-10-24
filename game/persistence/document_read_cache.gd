@@ -6,6 +6,12 @@ static var entries: Dictionary = {}
 static var bytes: int = 0
 static var guard := Mutex.new()
 
+static func trim_cache() -> bool:
+	if not guard.try_lock(): return false
+	entries.clear(); bytes = 0
+	guard.unlock()
+	return true
+
 static func get_value(path: String, digest: String, summary: bool = false) -> Dictionary:
 	var key: String = ("summary:" if summary else "document:")+path
 	guard.lock()

@@ -52,8 +52,9 @@ func _run() -> void:
 		check(image.has_mipmaps(),"filtered artwork "+item.id)
 	check(LiveryCatalog.mask_order.size() <= 4,"expanded artwork keeps the four-mask cache bound")
 	var legacy: Dictionary = {"version":1,"colors":{"body":"9a3e50","accent":"e4b74c"}}
-	check(VehicleLivery.valid(legacy),"legacy save accepted")
-	var migrated: Dictionary = VehicleLivery.for_car({"vehicle_liveries":{"compact":legacy}},"compact")
+	check(not VehicleLivery.valid(legacy),"live paint accepts only current livery data")
+	var upgraded_save: Dictionary = LocalRecords._normalize({"schema":2,"records":{},"settings":{"vehicle_liveries":{"compact":legacy}}})
+	var migrated: Dictionary = VehicleLivery.for_car(upgraded_save.settings,"compact")
 	check(migrated.version == 2 and migrated.colors.body == "9a3e50" and migrated.colors.accent == "e4b74c" and migrated.pattern == "plain","legacy pigments retained")
 	for field: String in ["id","x","size","rotation"]:
 		var malformed: Dictionary = VehicleLivery.defaults("compact")

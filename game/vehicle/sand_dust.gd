@@ -809,17 +809,26 @@ func _sample_bank_push(state: VehicleState, at: Vector2, height: float, embedded
 func cloud_emitters() -> Array[GPUParticles3D]:
 	return dust_emitters+tyre_emitters+deck_dust_emitters+deck_tyre_emitters+snow_push+snow_impacts
 
-func configure_snow_surface(visual: Node3D) -> void:
+func configure_snow_surface(visual: Node3D, sliced: bool = false, current: Callable = Callable()) -> void:
 	# Sparse half-metre heights baked once from the visible bank mesh, including
 	# clumps and bridge tapers. Debris uses constant-time lookup, never a terrain
 	# raycast or per-frame triangle search. Canonical contact geometry is untouched.
 	_bank_visual_heights.clear()
+	var visited: int = 0
+	var slice_started: int = Time.get_ticks_usec() if sliced else 0
 	for node: Node in visual.get_children():
 		if not node is MeshInstance3D or not node.material_override is ShaderMaterial: continue
 		if not _is_snow_bank_material(node.material_override): continue
 		for surface: int in range(node.mesh.get_surface_count()):
 			var arrays: Array = node.mesh.surface_get_arrays(surface)
 			for vertex: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
+				if sliced and visited % 256 == 0:
+					if not is_inside_tree() or (current.is_valid() and not current.call()): return
+					if Time.get_ticks_usec()-slice_started >= 4000:
+						await get_tree().process_frame
+						if not is_inside_tree() or (current.is_valid() and not current.call()): return
+						slice_started = Time.get_ticks_usec()
+				visited += 1
 				var point: Vector3 = node.global_transform*vertex
 				var key := Vector2i(roundi(point.x*2.0),roundi(-point.z*2.0))
 				_bank_visual_heights[key] = maxf(float(_bank_visual_heights.get(key,-INF)),point.y)

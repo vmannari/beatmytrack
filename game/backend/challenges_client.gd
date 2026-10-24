@@ -27,6 +27,7 @@ var _busy_serial: int = 0
 var _folder_refresh_pending: bool = false
 var next_cursor: String = ""
 var result_code: String = ""
+var selected_stage: int = 0
 
 func _ready() -> void:
 	if is_instance_valid(client) and client.has_signal("run_completed"): client.run_completed.connect(poll_result)
@@ -52,7 +53,21 @@ func discovery_supported() -> bool:
 	var capabilities: Variant = client.get("_capabilities")
 	return capabilities is Dictionary and int(capabilities.get("challenge_discovery_version",0)) == 1
 
+func series_supported() -> bool:
+	var capabilities: Variant = client.get("_capabilities")
+	return capabilities is Dictionary and int(capabilities.get("challenge_series_version",0)) == 1
+
+func race_stage() -> Dictionary:
+	if selected.get("mode") == "3x3" and selected.get("stages") is Array and selected_stage < selected.stages.size(): return selected.stages[selected_stage]
+	return selected
+
+func select_stage(index: int) -> void:
+	if index < 0 or index > 2 or selected.get("mode") != "3x3": return
+	selected_stage = index
+	changed.emit()
+
 func reset() -> void:
+	selected_stage = 0
 	_generation += 1
 	_selection_serial += 1
 	_busy_serial += 1
@@ -84,7 +99,7 @@ static func valid_snapshot(value: Variant) -> bool:
 	for field: String in ["id","code","creator_id","creator","share_url"]:
 		if not preload("res://backend/backend_client.gd")._text(value.get(field)): return false
 	if not value.self_id is String: return false
-	if code_from(str(value.code)) != value.code or value.mode not in ["beat","group"] or value.state not in ["active","settling","complete","cancelled"] or value.vehicle_id not in VehicleCatalog.IDS or not value.joined is bool: return false
+	if code_from(str(value.code)) != value.code or value.mode not in ["beat","group","3x3"] or value.state not in ["active","settling","complete","cancelled"] or value.vehicle_id not in VehicleCatalog.IDS or not value.joined is bool: return false
 	if not value.entry is Dictionary or not value.entry.has_all(["name","version_id","track_id","content_hash","points"]): return false
 	for field: String in ["name","version_id","track_id","content_hash"]:
 		if not preload("res://backend/backend_client.gd")._text(value.entry.get(field)): return false
@@ -97,18 +112,47 @@ static func valid_snapshot(value: Variant) -> bool:
 	if value.has("attempt_limit") or value.has("attempts_used") or value.has("attempts_remaining"):
 		if not value.has_all(["attempt_limit","attempts_used","attempts_remaining"]): return false
 		var limit: Variant = value.attempt_limit
-		if limit != null and (not preload("res://backend/backend_client.gd")._whole(limit,1,5) or int(limit) not in [1,3,5]): return false
+		if limit != null and (not preload("res://backend/backend_client.gd")._whole(limit,1,9) or int(limit) not in ([9] if value.mode == "3x3" else [1,3,5])): return false
 		if not preload("res://backend/backend_client.gd")._whole(value.attempts_used): return false
 		if limit == null:
 			if value.attempts_remaining != null: return false
 		elif not preload("res://backend/backend_client.gd")._whole(value.attempts_remaining,0,int(limit)) or int(value.attempts_used)+int(value.attempts_remaining) != int(limit): return false
+	if value.mode == "3x3":
+		if value.get("scoring") != "total_best_time" or not value.get("stages") is Array or value.stages.size() != 3 or value.get("attempt_limit") != 9: return false
+		var versions: Dictionary = {}
+		for index: int in range(3):
+			var stage: Variant = value.stages[index]
+			if not stage is Dictionary or not stage.has_all(["index","entry","manifest","standings","attempt_limit","attempts_used","attempts_remaining"]) or stage.index != index or stage.attempt_limit != 3: return false
+			var single: Dictionary = value.duplicate(true)
+			single.mode = "group"
+			for field: String in ["entry","manifest","standings","attempt_limit","attempts_used","attempts_remaining"]: single[field] = stage[field]
+			single.erase("stages")
+			if not valid_snapshot(single) or versions.has(str(stage.entry.version_id)): return false
+			versions[str(stage.entry.version_id)] = true
+			for field: String in ["laps","tick_rate","vehicle_id","rules_key","physics_version","compiler_version","handling_version","config_hash"]:
+				if stage.manifest.get(field) != value.manifest.get(field): return false
+		if value.entry != value.stages[0].entry: return false
 	var seen: Dictionary = {}
 	for row: Variant in value.standings:
 		if not row is Dictionary or not row.has_all(["id","name","ticks","ms","rank","run_id"]) or seen.has(str(row.id)): return false
 		if not preload("res://backend/backend_client.gd")._text(row.id) or not preload("res://backend/backend_client.gd")._text(row.name): return false
 		if row.ticks == null and (row.ms != null or row.rank != null or row.run_id != null): return false
+		if value.mode == "3x3":
+			if not preload("res://backend/backend_client.gd")._whole(row.get("completed_tracks"),0,3): return false
+			var count: int = 0
+			var total: int = 0
+			for stage: Dictionary in value.stages:
+				var found: bool = false
+				for stage_row: Dictionary in stage.standings:
+					if str(stage_row.id) == str(row.id):
+						found = true
+						if stage_row.ticks != null:
+							count += 1
+							total += int(stage_row.ticks)
+				if not found: return false
+			if int(row.completed_tracks) != count or (row.ticks != null and (count != 3 or int(row.ticks) != total)) or (row.ticks == null and count == 3): return false
 		seen[str(row.id)] = true
-		if row.ticks != null and (not preload("res://backend/backend_client.gd")._whole(row.ticks,1,216000) or not preload("res://backend/backend_client.gd")._whole(row.rank,1,20) or not preload("res://backend/backend_client.gd")._whole(row.ms,1)): return false
+		if row.ticks != null and (not preload("res://backend/backend_client.gd")._whole(row.ticks,1,648000 if value.mode == "3x3" else 216000) or not preload("res://backend/backend_client.gd")._whole(row.rank,1,20) or not preload("res://backend/backend_client.gd")._whole(row.ms,1)): return false
 	if value.joined != seen.has(str(value.self_id)): return false
 	if value.has("visibility") and value.visibility not in ["public","private"]: return false
 	if value.has("capacity") and (not preload("res://backend/backend_client.gd")._whole(value.capacity,2,20) or int(value.capacity) != (2 if value.mode == "beat" else 20)): return false
@@ -165,7 +209,7 @@ func select_folder(value: String) -> void:
 	else: refresh()
 
 func set_filters(query: String, mode: String, vehicle: String, order: String) -> void:
-	if mode not in ["all","beat","group"] or order not in ["ending","newest"] or (not vehicle.is_empty() and vehicle not in VehicleCatalog.IDS): return
+	if mode not in ["all","beat","group","3x3"] or order not in ["ending","newest"] or (not vehicle.is_empty() and vehicle not in VehicleCatalog.IDS): return
 	if _scope != scope(): reset()
 	search = query.strip_edges().left(80)
 	mode_filter = mode
@@ -198,7 +242,7 @@ func refresh(append: bool = false) -> void:
 	var capabilities: Variant = client.get("_capabilities")
 	if folder in ["discover","friends"] and capabilities is Dictionary and not discovery_supported():
 		items.clear()
-		error = "Challenge discovery needs the updated online service. Joined and Created are still available."
+		error = "Challenge discovery needs the updated online service. Your joined races are still available."
 		changed.emit()
 		return
 	busy = true
@@ -209,6 +253,7 @@ func refresh(append: bool = false) -> void:
 	var requested_filters: Array = [search,mode_filter,vehicle_filter,sort_order]
 	var path: String = "/challenges?folder="+requested_folder if client.signed_in() else "/challenges/discover?"
 	if not search.is_empty(): path += "&search="+search.uri_encode()
+	if series_supported(): path += "&series=1"
 	if mode_filter != "all": path += "&mode="+mode_filter
 	if not vehicle_filter.is_empty(): path += "&vehicle="+vehicle_filter.uri_encode()
 	if sort_order != "ending": path += "&sort="+sort_order
@@ -265,6 +310,7 @@ func open(value: String) -> void:
 	if serial != _selection_serial: return
 	busy = false
 	if response.get("ok",false) and valid_snapshot(response.data):
+		if str(selected.get("code","")) != str(response.data.code): selected_stage = 0
 		selected = response.data
 		error = ""
 	else: error = friendly(str(response.get("error","")))
@@ -298,7 +344,9 @@ func _mutate(path: String, payload: Dictionary = {}) -> void:
 	if generation != _generation or serial != _busy_serial or _scope != scope(): return
 	if _refresh_pending_folder(): return
 	busy = false
-	if response.get("ok",false) and valid_snapshot(response.data): selected = response.data
+	if response.get("ok",false) and valid_snapshot(response.data):
+		if str(selected.get("code","")) != str(response.data.code): selected_stage = 0
+		selected = response.data
 	else: error = friendly(str(response.get("error","")))
 	changed.emit()
 
@@ -306,9 +354,10 @@ func source(version: String, vehicle: String, ticket_id: String = "") -> Diction
 	var response: Dictionary = await _request("/challenges/sources?version_id="+version.uri_encode()+"&vehicle_id="+vehicle.uri_encode()+("&ticket_id="+ticket_id.uri_encode() if not ticket_id.is_empty() else ""))
 	return response.data if response.get("ok",false) else {"status":"unavailable","error":friendly(str(response.get("error","")))}
 
-func ticket() -> Dictionary:
+func ticket(stage_override: int = -1) -> Dictionary:
+	var stage_index: int = selected_stage if stage_override < 0 else stage_override
 	if selected.is_empty() or not selected.get("joined",false) or selected.state != "active": return {}
-	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/tickets",HTTPClient.METHOD_POST)
+	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/tickets"+("?stage="+str(stage_index) if selected.get("mode") == "3x3" else ""),HTTPClient.METHOD_POST)
 	if not response.get("ok",false):
 		error = friendly(str(response.get("error","")))
 		changed.emit()
@@ -317,13 +366,15 @@ func ticket() -> Dictionary:
 		error = "Race invitation expired. Try again for a fresh start."
 		changed.emit()
 		return {}
+	var budget: Dictionary = selected.stages[stage_index] if selected.get("mode") == "3x3" else selected
 	for field: String in ["attempt_limit","attempts_used","attempts_remaining"]:
-		if response.data.has(field): selected[field] = response.data[field]
+		if response.data.has(field): budget[field] = response.data[field]
 	return response.data
 
-func ghost() -> Dictionary:
+func ghost(stage_override: int = -1) -> Dictionary:
+	var stage_index: int = selected_stage if stage_override < 0 else stage_override
 	if selected.is_empty(): return {}
-	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/ghost",HTTPClient.METHOD_GET,{},false)
+	var response: Dictionary = await _request("/challenges/"+str(selected.code)+"/ghost"+("?stage="+str(stage_index) if selected.get("mode") == "3x3" else ""),HTTPClient.METHOD_GET,{},false)
 	if not response.get("ok",false): return {}
 	return preload("res://backend/weekly_rivalry_client.gd")._validate_ghost(response.data.get("recording",{}))
 

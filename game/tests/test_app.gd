@@ -340,11 +340,12 @@ func _check_input_and_history() -> void:
 	# Gesture autosaves use the existing ordered background writer. Observe its
 	# completed disk result without forcing the shipping write to be synchronous.
 	var save_deadline: int = Time.get_ticks_msec()+5000
-	while (app.editor_writes.thread != null or not app.editor_writes.pending.is_empty()) and Time.get_ticks_msec() < save_deadline:
+	while (app.editor_commits.unsettled() or app.editor_writes.thread != null or not app.editor_writes.pending.is_empty()) and Time.get_ticks_msec() < save_deadline:
 		await process_frame
+	changed = (app.get("document") as Dictionary).duplicate(true)
 	check(library.load_wip(changed.id) == changed, "completed valid mouse edit autosaves to the isolated library")
 	var expected_preview: NativeTrack = TrackCompiler.compile(changed)
-	while app.get("editor_preview_thread") != null: await process_frame
+	while app.editor_commits.unsettled() or app.get("editor_preview_thread") != null: await process_frame
 	check(canvas.native_preview != null and canvas.native_preview.content_hash == expected_preview.content_hash and canvas.native_preview.cells == expected_preview.cells, "released editor drag refreshes the exact compiled native preview")
 	_button(app.get("root_ui"), "Undo").pressed.emit()
 	await process_frame
@@ -643,7 +644,7 @@ func _capture_editor_themes() -> void:
 	if capture_directory.is_empty():
 		return
 	var original: Dictionary = (app.get("document") as Dictionary).duplicate(true)
-	for theme: String in ["pine", "coast", "desert"]:
+	for theme: String in ["pine", "winter", "desert"]:
 		app.call("_set_document_value", "theme", theme)
 		await process_frame
 		await process_frame

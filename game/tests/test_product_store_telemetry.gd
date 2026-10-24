@@ -74,7 +74,7 @@ func run() -> void:
 	check(compact_exposed.size() < 5,"offscreen compact-store cards are excluded from offers")
 	scroll.scroll_vertical = 100000
 	await settled()
-	check("ad_free_forever" in store.telemetry_exposures(),"scrolling establishes an actually visible last offer")
+	check("creator_slots_10" in store.telemetry_exposures(),"scrolling establishes an actually visible last publishing offer")
 	root.size = Vector2i(1280,720)
 	root.content_scale_size = Vector2i(1280,720)
 	await settled()

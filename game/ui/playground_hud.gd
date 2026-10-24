@@ -15,6 +15,7 @@ signal edit_here_requested
 
 var production_mode: bool = false
 var editor_test: bool = false
+var free_drive_mode: bool = false
 var map_ready: bool = false
 var community_client: Node
 var map_track: NativeTrack
@@ -148,13 +149,15 @@ func _ready() -> void:
 		var practice := HBoxContainer.new()
 		practice.position = Vector2(24, 20)
 		root.add_child(practice)
-		practice_status = _label("Practice (untimed)", 20)
+		practice_status = _label("Parking hall · Free drive" if free_drive_mode else "Practice (untimed)", 20)
 		practice.add_child(practice_status)
-		_button(top, "Restart", func() -> void: restart_requested.emit())
+		_button(top, "Reset car" if free_drive_mode else "Restart", func() -> void: restart_requested.emit())
 		top.get_child(top.get_child_count() - 1).name = "PracticeRestart"
-		_button(top, "Edit here", func() -> void: edit_here_requested.emit())
+		_button(top, "Garage" if free_drive_mode else "Edit here", func() -> void:
+			if free_drive_mode: exit_requested.emit()
+			else: edit_here_requested.emit())
 		var edit_button := top.get_child(top.get_child_count() - 1) as Button
-		edit_button.name = "EditHere"
+		edit_button.name = "ReturnToGarage" if free_drive_mode else "EditHere"
 		edit_button.custom_minimum_size.x = 124
 		var accent := RaceHUDStyle.panel(true)
 		accent.bg_color = RaceHUDStyle.GOLD
@@ -191,16 +194,22 @@ func _ready() -> void:
 	panel.offset_right = 114
 	panel.offset_top = -156
 	panel.offset_bottom = -42
+	if free_drive_mode:
+		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+		panel.offset_left = 24
+		panel.offset_right = 188
+		panel.offset_top = 62
+		panel.offset_bottom = 164
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	panel.visible = not editor_test
+	panel.visible = not editor_test or free_drive_mode
 	root.add_child(panel)
 	instrument = HUDFrame.attach(panel,"speed")
 	var info := VBoxContainer.new()
 	info.add_theme_constant_override("separation", 0)
 	panel.add_child(info)
 	info.alignment = BoxContainer.ALIGNMENT_END
-	speed_label = _label("0", 44)
+	speed_label = _label("0", 36 if free_drive_mode else 44)
 	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info.add_child(speed_label)
 	var units := _label("km/h", 18)

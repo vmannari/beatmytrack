@@ -30,8 +30,16 @@ var biome_environment: Environment
 var initial_track: NativeTrack
 var production_mode: bool = false
 var editor_test: bool = false
+var free_drive_mode: bool = false
 var attempt_practice: bool = false
 var countdown_ticks: int = 0
+var cooperative_preparation: bool = false
+var preparation_complete: bool = false
+var preparation_current: Callable
+var _preparation_cancelled: bool = false
+var _preparation_backgrounded: bool = false
+var _ground_preparation_job: RefCounted
+var preparation_costs: Dictionary = {}
 var countdown_label: Label
 var race_cues: Control
 var finish_sim: VehicleSimulation
@@ -39,6 +47,7 @@ var finish_ticks: int = 0
 var rating_records: LocalRecords
 var cloud_rating: Node
 var preference_records: LocalRecords
+var attempt_evidence: RefCounted = preload("res://race/attempt_evidence.gd").new()
 var online_frames: Array = []
 var online_rewinds: Array = []
 var race_proof = preload("res://backend/race_proof.gd").new()
@@ -142,6 +151,7 @@ var effects_prepared: bool = false
 var effect_preparation_counts: Dictionary = {}
 var night_preparation: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
 var hitch_diagnostics_enabled: bool = true
+var hitch_diagnostics_detailed: bool = OS.is_debug_build()
 var hitch_diagnostics: Node
 var profile_skip_telemetry: bool = false
 var _render_viewport: Viewport
@@ -197,7 +207,9 @@ func _ready() -> void:
 		native_track = initial_track
 		yard = native_track
 	var world: Node3D = $World
-	_build_ground(world)
+	countdown_ticks = 360 if production_mode and not editor_test else 0
+	await _build_ground(world)
+	if not _preparation_is_current(): return
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-58, -35, 0)
 	light.light_color = Color("fff1d8")
@@ -217,9 +229,13 @@ func _ready() -> void:
 	world.add_child(environment)
 	biome_light = light
 	biome_environment = environment.environment
+	var preparation_mark: int = Time.get_ticks_usec() if profile_enabled else 0
 	_update_weather()
+	if profile_enabled: preparation_costs.weather_us = Time.get_ticks_usec()-preparation_mark
+	if not await _preparation_checkpoint(): return
 	checkpoint_marker = CheckpointMarker.new()
 	world.add_child(checkpoint_marker)
+	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	car.simple_model = preference_records != null and bool(preference_records.settings.get("simple_car_models",false))
@@ -227,6 +243,7 @@ func _ready() -> void:
 		car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
 		car.customisation = VehicleCustomisation.for_car(preference_records.settings, vehicle_id)
 	world.add_child(car)
+	if profile_enabled: preparation_costs.car_us = Time.get_ticks_usec()-preparation_mark
 	# Weather is created before the car during startup; bind its real footprint
 	# as soon as the presentation node exists.
 	if winter_snow_wind != null: winter_snow_wind.car_visual = car
@@ -236,8 +253,12 @@ func _ready() -> void:
 		personal_ghost.configure(car,false)
 	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
+	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	car_weathering.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine", handling)
 	car_weathering.restore(VehicleCondition.read(preference_records, vehicle_id))
+	if profile_enabled: preparation_costs.weathering_us = Time.get_ticks_usec()-preparation_mark
+	if not await _preparation_checkpoint(): return
+	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	trails = SkidTrails.new()
 	trails.wheelbase = handling.wheelbase
 	trails.track_width = handling.track_width
@@ -249,10 +270,13 @@ func _ready() -> void:
 	world.add_child(sand_dust)
 	sand_dust.prepare_track(native_track)
 	if native_track != null and native_track.metadata.get("theme", "pine") == "winter":
-		sand_dust.configure_snow_surface(track_ground)
+		await sand_dust.configure_snow_surface(track_ground,cooperative_preparation,_preparation_is_current)
+		if not _preparation_is_current(): return
 	vehicle_audio = VehicleAudio.new()
 	add_child(vehicle_audio)
 	vehicle_audio.configure(vehicle_id,handling,car)
+	if profile_enabled: preparation_costs.effects_audio_wall_us = Time.get_ticks_usec()-preparation_mark
+	if not await _preparation_checkpoint(): return
 	camera = FollowCamera.new()
 	if preference_records != null:
 		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
@@ -264,6 +288,7 @@ func _ready() -> void:
 	hud = PlaygroundHUD.new()
 	hud.production_mode = production_mode
 	hud.editor_test = editor_test
+	hud.free_drive_mode = free_drive_mode
 	hud.community_client = resume_client
 	hud.config = handling
 	hud.driver = driver
@@ -312,10 +337,15 @@ func _ready() -> void:
 	resume_credits.client = resume_client
 	resume_credits.show_ads = OS.is_debug_build() and preference_records != null and bool(preference_records.settings.get("development_show_ads", false))
 	add_child(resume_credits)
+	if not await _preparation_checkpoint(): return
 	restart()
+	preparation_complete = true
+	if _preparation_backgrounded and not paused: toggle_pause(false)
+	if "--race-hitch-detail" in OS.get_cmdline_user_args(): hitch_diagnostics_detailed = true
 	if hitch_diagnostics_enabled:
 		hitch_diagnostics = preload("res://diagnostics/race_hitch_monitor.gd").new()
 		hitch_diagnostics.game = self
+		hitch_diagnostics.detailed = hitch_diagnostics_detailed
 		add_child(hitch_diagnostics)
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
@@ -334,7 +364,7 @@ func _physics_process(_delta: float) -> void:
 	if profile_enabled: profile_physics_total_us += Time.get_ticks_usec() - started
 
 func _advance_physics(_delta: float) -> void:
-	if sim == null or paused:
+	if not preparation_complete or sim == null or paused:
 		return
 	if finish_sim != null:
 		_advance_finish()
@@ -366,8 +396,14 @@ func _advance_physics(_delta: float) -> void:
 		frame.launch_start = 2 if launch_early else 1
 		LaunchStart.initialize(sim.state,frame.launch_start)
 		if not rewind_history.entries.is_empty() and int(rewind_history.entries[0].tick) == 0:
-			rewind_history.entries[0].state = RewindHistory.properties(sim.state)
-	if production_mode and (not editor_test or not practice_validation.finished) and online_frames.size() < 216000: online_frames.append(frame.packed())
+			rewind_history.entries[0].state = RewindHistory.pack_state(sim.state)
+	if production_mode and not free_drive_mode and not attempt_evidence.overflow and (not editor_test or not practice_validation.finished):
+		attempt_evidence.append_input(online_frames,frame)
+		if attempt_evidence.overflow:
+			race_proof.overflow = true
+			ghost_run.overflow = true
+			if editor_test: practice_validation_eligible = false
+			hud.message_label.text = "Recording limit reached. Restart for a validated result, or keep driving locally."
 	vehicle_audio.begin_physics_feedback()
 	var incoming_contact_velocity: Vector2 = sim.state.velocity
 	sim.step(frame, yard)
@@ -486,7 +522,13 @@ func _process(delta: float) -> void:
 	if profile_enabled: profile_process_total_us += Time.get_ticks_usec() - started
 
 func _present_frame(delta: float) -> void:
-	if sim == null:
+	if not preparation_complete or sim == null: return
+	if native_track != null: native_track.begin_creator_queries()
+	_present_frame_scoped(delta)
+	if native_track != null: native_track.end_creator_queries()
+
+func _present_frame_scoped(delta: float) -> void:
+	if not preparation_complete or sim == null:
 		return
 	_present_drift_haptics(delta)
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
@@ -525,7 +567,7 @@ func _present_frame(delta: float) -> void:
 	if profile_enabled: profile_weathering_us += Time.get_ticks_usec() - weathering_start
 	condition_save_elapsed += delta
 	if condition_save_elapsed >= 5.0:
-		_save_condition()
+		_save_condition(true)
 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
 	var audio_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0,shared_contacts)
@@ -540,11 +582,11 @@ func _present_frame(delta: float) -> void:
 		var rear: float = bridge_presentation.visual_height_at(point - axle, presented.state.route_index,1 if presented.state.track_elevated else 0)
 		car.position.y = (front + rear) * 0.5
 		car.rotation.x = atan2(front - rear, handling.wheelbase)
-		car.position.y += presented.state.jump_height if presented.state.jump_height > 0.0 else (0.0 if presented.state.track_elevated else TrackHazards.ramp_height(point,native_track.hazard_objects))
+		car.position.y += presented.state.jump_height if presented.state.jump_height > 0.0 else (0.0 if presented.state.track_elevated else native_track.ramp_height(point))
 		if presented.state.jump_height > 0.0: car.rotation.x = VehicleSimulation.BRIDGE_FLIGHT.pitch(presented.state)
 		elif not presented.state.track_elevated:
 			car.position.y -= water_depth
-			car.rotation.x += TrackHazards.ramp_pitch(point,axle.normalized(),native_track.hazard_objects)
+			car.rotation.x += native_track.ramp_pitch(point,axle.normalized())
 	car.rotation.z = 0.0
 	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0,true)
 	var body_rumble: float = 0.0
@@ -615,6 +657,7 @@ func restart() -> void:
 	if is_instance_valid(rewind_panel): return
 	drift_haptics.reset()
 	online_frames.clear()
+	attempt_evidence = preload("res://race/attempt_evidence.gd").new()
 	launch_early = false
 	launch_countdown_seen = false
 	countdown_label.modulate.a = 1.0
@@ -688,6 +731,7 @@ func restart() -> void:
 	previous_heading = sim.state.heading
 	trails.clear()
 	camera.follow(sim.state.position, Vector2.ZERO, sim.state.heading, 0.0, true)
+	if track_ground != null and track_ground.has_node("NightLightBudget"): track_ground.get_node("NightLightBudget").update_camera(camera)
 	impact_cracks.clear_effect()
 	hud.touch.enabled = true
 	hud.message_label.text = "" if editor_test else "Brake before the circle. Lift and countersteer. F5: handling test tracks."
@@ -726,10 +770,11 @@ func _close_handling_menu() -> void:
 	resume_after_handling = false
 
 
-func toggle_pause() -> void:
+func toggle_pause(capture: bool = true) -> void:
+	if not preparation_complete: return
 	if is_instance_valid(rewind_panel): return
 	if production_mode and not editor_test and track_session.finished: return
-	if not paused: hud.pause_menu.capture_race()
+	if not paused and capture: hud.pause_menu.capture_race()
 	paused = not paused
 	if sand_dust != null: sand_dust.set_water_paused(paused)
 	hud.pause_menu.visible = paused
@@ -760,6 +805,7 @@ func _save_recording() -> void:
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if not preparation_complete: return
 	if not event.is_pressed() or event.is_echo():
 		return
 	if production_mode and not editor_test and track_session.finished and event.is_action_pressed("restart"):
@@ -868,6 +914,7 @@ func set_camera_speed_zoom_strength(value: float, save_preference: bool = true) 
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not preparation_complete: return
 	if finish_sim == null or paused or finish_ticks < 30: return
 	if finish_rating_pending and finish_ticks < 90: return
 	var continue_pressed: bool = (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed)
@@ -891,13 +938,27 @@ func _build_ground(world: Node3D) -> void:
 	_refresh_render_scale()
 	if native_track != null:
 		var visual := NativeTrackVisual.new()
+		world.add_child(visual)
+		visual.profile_build = profile_enabled
+		visual.preserve_relief_surfaces = true
 		visual.race_road_packet = prepared_road_packet
 		prepared_road_packet = {}
 		visual.cache_race_world = production_mode and not editor_test
-		bridge_presentation = BridgePresentation.new(native_track)
+		if cooperative_preparation:
+			_ground_preparation_job = preload("res://editor/work_job.gd").start(preload("res://race/race_ground_preparation.gd").run.bind(native_track),get_tree())
+			while not _ground_preparation_job.done:
+				await get_tree().process_frame
+				if not _preparation_is_current(): _ground_preparation_job.cancel(); return
+			if not _preparation_is_current(): return
+			var prepared_ground: Dictionary = _ground_preparation_job.result if _ground_preparation_job.result is Dictionary else {}
+			bridge_presentation = prepared_ground.get("bridge")
+			if not prepared_ground.get("winter_cover",{}).is_empty(): native_track.editor_winter_cover = prepared_ground.winter_cover
+			_ground_preparation_job = null
+		if bridge_presentation == null: bridge_presentation = BridgePresentation.new(native_track)
 		sim.prepare_ground(native_track,bridge_presentation)
-		world.add_child(visual)
-		visual.build(native_track, bridge_presentation)
+		visual.build_current = _preparation_is_current
+		await visual.build(native_track, bridge_presentation, cooperative_preparation)
+		if not _preparation_is_current() or not visual.world_built: return
 		track_ground = visual
 	else:
 		bridge_presentation = null
@@ -905,6 +966,21 @@ func _build_ground(world: Node3D) -> void:
 		world.add_child(visual)
 		visual.build(yard)
 		track_ground = visual
+
+
+func _preparation_is_current() -> bool:
+	return is_inside_tree() and not is_queued_for_deletion() and not _preparation_cancelled and (not preparation_current.is_valid() or preparation_current.call())
+
+
+func cancel_preparation() -> void:
+	_preparation_cancelled = true
+	if _ground_preparation_job != null: _ground_preparation_job.cancel()
+
+
+func _preparation_checkpoint() -> bool:
+	if not _preparation_is_current(): return false
+	if cooperative_preparation: await get_tree().process_frame
+	return _preparation_is_current()
 
 
 func _refresh_render_scale() -> void:
@@ -930,16 +1006,17 @@ static func render_scale_for(theme: String, base_scale: float, mobile: bool, pix
 	return scale
 
 
-func _save_condition() -> void:
+func _save_condition(background: bool = false) -> void:
 	var started: int = Time.get_ticks_usec() if profile_enabled else 0
 	condition_save_elapsed = 0.0
 	if preference_records != null and car != null:
 		condition_save_count += 1
-		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot())
+		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot(),background)
 		if error != OK: push_warning("Local car condition save failed: " + error_string(error))
 	if profile_enabled: profile_condition_us += Time.get_ticks_usec() - started
 
 func _exit_tree() -> void:
+	cancel_preparation()
 	_save_condition()
 	if is_instance_valid(cloud_rating): cloud_rating.abandon()
 	GameSoundtrack.instance().leave_race(self)
@@ -953,20 +1030,27 @@ func _exit_tree() -> void:
 
 
 func cycle_track() -> void:
+	preparation_complete = false
 	track_index = (track_index + 1) % (TRACK_NAMES.size() + 1)
 	track_ground.queue_free()
 	native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json") if track_index < TRACK_NAMES.size() else null
 	yard = native_track if native_track != null else PlaygroundData.new()
-	_build_ground($World)
+	await _build_ground($World)
+	if not _preparation_is_current(): return
 	_update_weather()
 	restart()
+	preparation_complete = true
+	if _preparation_backgrounded and not paused: toggle_pause(false)
 
 
 func _notification(what: int) -> void:
-	if sim != null and what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
+	if what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]: _preparation_backgrounded = false
+	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
+		_preparation_backgrounded = true
+		if not preparation_complete or sim == null: return
 		_save_condition()
 		if not paused:
-			toggle_pause()
+			toggle_pause(process_mode != Node.PROCESS_MODE_DISABLED)
 
 
 func _capture_frame() -> void:
@@ -1137,6 +1221,9 @@ func cancel_rewind() -> void:
 
 func confirm_rewind() -> void:
 	if not is_instance_valid(rewind_panel) or resume_credits.busy or rewind_selected >= rewind_choices.size(): return
+	if not attempt_evidence.can_resume(online_frames,race_proof):
+		rewind_panel.status.text = "This attempt exceeds the recording limit. Restart to use a resume credit."
+		return
 	var target: Dictionary = rewind_choices[rewind_selected]
 	var from_tick: int = int(rewind_origin.state.tick)
 	rewind_panel.set_busy(true)

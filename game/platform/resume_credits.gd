@@ -23,7 +23,15 @@ func _exit_tree() -> void:
 
 func _ready() -> void:
 	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
+	ad_adapter.presented.connect(_rewarded_presented)
 	add_child(ad_adapter)
+
+func _remote_config() -> Node:
+	return client.get("game_configuration") if client != null and "game_configuration" in client else null
+
+func _rewarded_presented() -> void:
+	var configuration: Node = _remote_config()
+	if configuration != null: configuration.rewarded_presented.emit()
 
 func begin(ticket: String = "") -> void:
 	if is_instance_valid(client) and is_instance_valid(client.get("resume_recovery")):
@@ -48,7 +56,8 @@ func _guest_data() -> Dictionary:
 
 func refresh() -> Dictionary:
 	if client != null and client.signed_in():
-		var response: Dictionary = await client.request_api("/resumes",HTTPClient.METHOD_GET,{},"",true)
+		var endpoint: String = "/resumes"+("?ticket_id="+ticket_id.uri_encode() if not ticket_id.is_empty() else "")
+		var response: Dictionary = await client.request_api(endpoint,HTTPClient.METHOD_GET,{},"",true)
 		if not response.ok: return response
 		wallet = response.data
 	else:
@@ -71,6 +80,10 @@ func consume(from_tick: int, to_tick: int, input_offset: int) -> Dictionary:
 			busy = false
 			return checked
 		if not bool(wallet.get("free_rewinds",false)) and int(wallet.get("balance",0)) == 0 and int(wallet.get("free",0)) == 0:
+			var configuration: Node = _remote_config()
+			if configuration != null and not await configuration.rewarded_permission():
+				busy = false
+				return {"ok":false,"error":"Rewarded ads are temporarily unavailable. No resume used."}
 			if not bool(wallet.get("ad_preview_available", false)):
 				busy = false
 				return {"ok":false,"error":"Test-ad resumes are not enabled on this backend."}

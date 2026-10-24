@@ -5,6 +5,12 @@ static var entries: Dictionary = {}
 static var bytes: int = 0
 static var guard := Mutex.new()
 
+static func trim_cache() -> bool:
+	if not guard.try_lock(): return false
+	entries.clear(); bytes = 0
+	guard.unlock()
+	return true
+
 static func prepared(document: Dictionary) -> Dictionary:
 	var buffer: PackedByteArray = var_to_bytes(document)
 	var digest := HashingContext.new(); digest.start(HashingContext.HASH_SHA256); digest.update(buffer)

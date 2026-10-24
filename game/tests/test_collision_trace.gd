@@ -17,6 +17,8 @@ func _initialize() -> void:
 
 func run() -> void:
 	var audio := ObservedAudio.new()
+	audio.use_windows_impacts = false # This fixture checks the traced Godot fallback.
+	audio.output_enabled = true # Exercise playback explicitly despite headless output suppression.
 	root.add_child(audio)
 	audio.configure("compact",VehicleCatalog.config("compact"))
 	var state := VehicleState.new()

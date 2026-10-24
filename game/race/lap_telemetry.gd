@@ -3,6 +3,8 @@ extends RefCounted
 ## Presentation-only observations; never read by simulation or record validation.
 ## Sample dictionaries are extensible with input/event channels in a later schema.
 const MAX_SAMPLES: int = 2048
+const MAX_EVENTS: int = preload("res://race/attempt_evidence.gd").MAX_INCIDENTS
+var events_truncated: bool = false
 var completed: Array[Dictionary] = []
 var samples: Array[Dictionary] = []
 var stride: int = 6
@@ -25,6 +27,9 @@ func observe_incidents(session: TrackSession, track: NativeTrack, state: Vehicle
 	was_off_track = off_track
 
 func _add_event(kind: String, session: TrackSession, position: Vector2) -> void:
+	if events.size() >= MAX_EVENTS:
+		events_truncated = true
+		return
 	events.append({"kind":kind, "position":position, "elapsed":session.elapsed_ticks / float(session.tick_rate) - lap_start})
 
 static func fully_off_track(track: NativeTrack, state: VehicleState, config: HandlingConfig) -> bool:
@@ -48,8 +53,9 @@ func observe(session: TrackSession, track: NativeTrack, position: Vector2, speed
 	if ended:
 		var duration: float = session.lap_start_time - lap_start
 		samples.append(_point(index, session.lap_start_time, duration, track.finish_center, 1.0, speed, valid))
-		completed.append({"index":index,"time":session.lap_times[index],"duration":duration,"valid":valid,"samples":samples,"events":events})
+		completed.append({"index":index,"time":session.lap_times[index],"duration":duration,"valid":valid,"samples":samples,"events":events,"events_truncated":events_truncated})
 		events = []
+		events_truncated = false
 		lap_start = session.lap_start_time
 		samples = [_point(index + 1, lap_start, 0.0, track.finish_center, 0.0, speed, not practice)]
 		stride = 6

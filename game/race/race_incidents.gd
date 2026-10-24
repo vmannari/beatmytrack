@@ -6,6 +6,8 @@ static func build(session: TrackSession, telemetry: LapTelemetry, state: Vehicle
 	var off_track: bool = false
 	for lap: Dictionary in telemetry.completed:
 		if not lap.get("valid",false) or lap.get("samples",[]).is_empty(): return {}
+		# Missing observations cannot prove an incident-free bonus.
+		if lap.get("events_truncated",false): off_track = true
 		for event: Dictionary in lap.get("events",[]):
 			if event.get("kind") == "collision": collisions = maxi(collisions,1)
 			else: off_track = true

@@ -118,7 +118,7 @@ func _test_reversal_and_ownership(control: TouchControls) -> void:
 	control.release_all()
 	press(control,1,originals[3].get_center())
 	drag(control,1,originals[2].get_center())
-	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"sliding a captured pedal cannot activate its neighbour")
+	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 255,"sliding from gas to brake transfers input in the same event")
 	press(control,2,originals[2].get_center())
 	check(control.driver.sample().brake == 255 and control.driver.sample().throttle == 0,"neighbour button stays independently reachable")
 	control.release_all()

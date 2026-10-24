@@ -94,7 +94,7 @@ func safe_shape(doc: Variant) -> bool:
 	if not doc.get("layout") is Dictionary or (not doc.layout.is_empty() and not route_shape(doc.layout)): return false
 	for key: String in ["pieces","paint","objects"]:
 		if not doc.get(key) is Array: return false
-	if doc.pieces.size() > 96 or doc.objects.size() > 96 or doc.paint.size() > 256: return false
+	if doc.pieces.size() > 96 or doc.objects.size() > preload("res://editor/creator_limits.gd").MAX_OBJECTS or doc.paint.size() > 256: return false
 	for piece: Variant in doc.pieces:
 		if not piece is Dictionary or not piece.get("kind") is String or not pair(piece.get("position")) or not piece.get("flip") is bool: return false
 		for key: String in ["heading","length","radius","width"]:
@@ -127,7 +127,7 @@ func compile_track(doc: Dictionary) -> Dictionary:
 
 func _compile_track_uncached(doc: Dictionary) -> Dictionary:
 	if not safe_shape(doc): return {"error":"Malformed creator document structure"}
-	if JSON.stringify(doc).to_utf8_buffer().size() > TrackDocument.MAX_BYTES: return {"error":"Creator document exceeds 512 KiB"}
+	if JSON.stringify(doc).to_utf8_buffer().size() > TrackDocument.MAX_BYTES: return {"error":"Creator document exceeds 1 MiB"}
 	var errors: Array[String] = TrackDocument.validate(doc)
 	if not errors.is_empty(): return {"error":errors[0]}
 	if doc.base_track != "" or not doc.has("start_line"): return {"error":"Published tracks need original connected road pieces and a placed start line"}

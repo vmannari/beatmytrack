@@ -13,7 +13,9 @@ class CursorClient extends Client:
 	var starts: Dictionary = {}
 	var hold_once: bool = false
 	var busy_once: bool = false
+	var busy_retry_after: int = 0
 	var missing_card: int = -1
+	var catalog_size: int = 5000
 	func metadata(number: int) -> Dictionary:
 		return {"track_id":"fixture-track-"+str(number),"version_id":"00000000-0000-4000-8000-"+str(number+1).pad_zeros(12),"content_hash":hash_value,"name":"Course %04d" % number,"creator":"Discovery Fixture","creator_id":"fixture-owner","theme":"pine","points":document.points,"rating_average":null,"rating_count":0,"verified_finishers":0,"published_at":5000-number}
 	func request_discovery(body: Dictionary, _owner: int, random_choice: bool = false) -> Dictionary:
@@ -21,7 +23,7 @@ class CursorClient extends Client:
 		if busy_once:
 			busy_once = false
 			await get_tree().process_frame
-			return {"ok":false,"status":503,"data":{"detail":"DISCOVERY_QUERY_BUDGET"},"error":"busy"}
+			return {"ok":false,"status":503,"data":{"detail":"DISCOVERY_QUERY_BUDGET"},"error":"busy","retry_after":busy_retry_after}
 		var view: int
 		var offset: int = 0
 		if body.has("cursor"):
@@ -31,7 +33,7 @@ class CursorClient extends Client:
 			view = views.size()+1
 			var numbers: Array[int] = []
 			var q: Dictionary = body.get("query",{})
-			for number: int in range(5000):
+			for number: int in range(catalog_size):
 				if not str(q.get("search","")).is_empty() and not ("Course %04d" % number).contains(str(q.search)): continue
 				if q.has("ids") and "fixture-track-"+str(number) not in q.ids: continue
 				numbers.append(number)
@@ -73,7 +75,8 @@ func capture(label: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	await create_timer(0.2).timeout
 	await RenderingServer.frame_post_draw
-	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-indexed-2026-10-22")
+	var folder: String = OS.get_environment("BMT_DISCOVERY_EVIDENCE_DIR")
+	if folder.is_empty(): folder = ProjectSettings.globalize_path("res://../docs/evidence/discovery-indexed-2026-10-22")
 	check(root.get_texture().get_image().save_png(folder.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"native capture "+label)
 
 func run() -> void:
@@ -99,10 +102,11 @@ func run() -> void:
 	check(cloud.entries.size() == 19 and pages.unavailable_slot(19) and not pages.unavailable_slot(20),"a removed card is a settled unavailable slot rather than an unfinished fetch")
 	client.missing_card = -1
 	await pages._fetch(0)
-	for index: int in range(35):
+	for index: int in range(249):
 		var high: int = int(pages.pages.keys().max())
 		await pages._fetch(high+1)
 		check(pages.pages.size() <= 13 and cloud.entries.size() <= 260 and pages.total <= 300,"forward browsing bounds cards and physical scroll coordinates")
+	check(pages.entries()[-1].track_id == "fixture-track-4999" and not pages.has_more,"all five thousand tracks remain reachable through bounded cursor pages")
 	check(pages.coordinate_shift < 0,"long browsing rebases coordinates")
 	var low: int = int(pages.pages.keys().min())
 	var previous: String = str(pages.pages[low].previous)
@@ -116,8 +120,16 @@ func run() -> void:
 	check(not chosen.is_empty() and chosen.track_id == "fixture-track-4347" and pages.entries()[0].track_id == chosen.track_id,"Random opens a bounded window at the exact chosen revision")
 	var before: Array = pages.entries().duplicate(true)
 	client.busy_once = true
+	client.busy_retry_after = 5
+	var failed_request_started: int = Time.get_ticks_msec()
 	await pages._fetch(int(pages.pages.keys().max())+1)
 	check(not pages.error.is_empty() and pages.entries() == before,"budget exhaustion retains cards and shows a retry state")
+	check(pages.retry_at_msec >= failed_request_started+5000,"the server Retry-After is the minimum retry delay")
+	var failed_request_count: int = client.requests.size()
+	pages.request_visible(int(pages.pages.keys().max())*20+10)
+	await cloud.query_discovery({"sort":"name"},[],[],true)
+	check(client.requests.size() == failed_request_count,"failed prefetch and immediate manual refresh respect the retry deadline")
+	pages.retry_at_msec = 0 # Advance the local test clock past the retry deadline.
 	await cloud.query_discovery({"sort":"name"},[],[],true)
 	client.hold_once = true
 	pages._fetch(1)
@@ -167,16 +179,16 @@ func run() -> void:
 		while pages.loading: await process_frame
 		var high: int = int(pages.pages.keys().max())
 		var old_offset: int = browser._list_column_offset
-		var old_shift: int = pages.coordinate_shift
 		var anchor_index: int = maxi(0,(high-1)*20+5)
 		var anchor_item: Dictionary = pages.entry_at(anchor_index)
+		anchor_index = browser.matches.find_custom(func(item: Dictionary) -> bool: return item.version_id == anchor_item.version_id)
 		browser.track_list.scroll_vertical = int((anchor_index+old_offset)/browser._list_columns)*int(browser._list_stride.y)
 		var old_y: int = browser.track_list.scroll_vertical
 		await pages._fetch(high+1)
-		var movement: int = pages.coordinate_shift-old_shift
+		var new_index: int = browser.matches.find_custom(func(item: Dictionary) -> bool: return item.version_id == anchor_item.version_id)
+		var movement: int = new_index-anchor_index
 		if movement != 0:
-			var new_index: int = anchor_index+movement
-			check(pages.entry_at(new_index).get("track_id","") == anchor_item.get("track_id","missing"),"eviction retains the exact visible card")
+			check(new_index >= 0 and browser.matches[new_index].get("track_id","") == anchor_item.get("track_id","missing"),"eviction retains the exact visible card")
 			check(posmod(anchor_index+old_offset,browser._list_columns) == posmod(new_index+browser._list_column_offset,browser._list_columns),"eviction preserves the card column")
 			var expected_y: int = old_y+int((movement+browser._list_column_offset-old_offset)/browser._list_columns)*int(browser._list_stride.y)
 			check(browser.track_list.scroll_vertical == expected_y,"eviction preserves the card screen row")

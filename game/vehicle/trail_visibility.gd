@@ -56,6 +56,9 @@ func record(index: int, colors: PackedColorArray, custom: PackedColorArray) -> v
 		for item: int in range(1,PAGE_SIZE): _bounds[page] = _bounds[page].merge(_transforms[page*PAGE_SIZE+item]*_mesh_bounds)
 	_all_bounds = _all_bounds.merge(box) if _has_bounds else box
 	_has_bounds = true
+	# Keep ring-order GPU values current as each mark arrives. View changes can
+	# then copy whole contiguous pages without re-encoding every visible mark.
+	_pack(index,colors,custom)
 	# One resource and one draw: no additional batches or altered ring ordering.
 	var slot: int = _offsets[page]+index%PAGE_SIZE if _packed and _offsets[page] >= 0 else (-1 if _packed else index)
 	if slot >= 0:
@@ -76,6 +79,7 @@ func present(camera: Camera3D, colors: PackedColorArray, custom: PackedColorArra
 			_valid[page] = true
 			_all_bounds = _all_bounds.merge(box) if _has_bounds else box
 			_has_bounds = true
+			_pack(index,colors,custom)
 	var pose: Transform3D = camera.global_transform
 	var projection: Projection = camera.get_camera_projection()
 	# One metre of conservative padding covers a half-metre camera refresh
@@ -107,14 +111,19 @@ func present(camera: Camera3D, colors: PackedColorArray, custom: PackedColorArra
 	if selection == full and not _packed: return
 	_offsets.fill(-1)
 	var drawn: int = 0
+	var draw_buffer := PackedFloat32Array()
 	for page: int in range(_bounds.size()):
 		if selection & (1 << page) == 0: continue
 		_offsets[page] = drawn
-		for index: int in range(page*PAGE_SIZE,mini((page+1)*PAGE_SIZE,retained_count)):
-			_pack(drawn,index,colors,custom)
-			drawn += 1
+		var end: int = mini((page+1)*PAGE_SIZE,retained_count)
+		draw_buffer.append_array(_buffer.slice(page*PAGE_SIZE*20,end*20))
+		drawn += end-page*PAGE_SIZE
 	# Unused slots are zero-area and never included in visible_instance_count.
-	instances.buffer = _buffer
+	# Keep a separate submitted view: renderer ownership must not make the next
+	# ring write copy the entire buffer. Native packed-array copies also avoid
+	# hundreds of thousands of script assignments on late-lap view changes.
+	draw_buffer.resize(instances.instance_count*20)
+	instances.buffer = draw_buffer
 	instances.visible_instance_count = drawn
 	instances.custom_aabb = _all_bounds.grow(0.005)
 	_packed = selection != full
@@ -126,8 +135,8 @@ func _update_count() -> void:
 	var count: int = _offsets[last]+(retained_count-1)%PAGE_SIZE+1
 	if instances.visible_instance_count != count: instances.visible_instance_count = count
 
-func _pack(slot: int, index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
-	var at: int = slot*20
+func _pack(index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
+	var at: int = index*20
 	var pose: Transform3D = _transforms[index]
 	_buffer[at] = pose.basis.x.x; _buffer[at+1] = pose.basis.y.x; _buffer[at+2] = pose.basis.z.x; _buffer[at+3] = pose.origin.x
 	_buffer[at+4] = pose.basis.x.y; _buffer[at+5] = pose.basis.y.y; _buffer[at+6] = pose.basis.z.y; _buffer[at+7] = pose.origin.y

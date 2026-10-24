@@ -3,6 +3,7 @@ extends Control
 ## Car discovery and selected-car tools share one local showroom.
 signal vehicle_selected(index: int)
 signal race_requested
+signal free_drive_requested
 signal circuit_requested
 signal save_failed
 signal account_requested
@@ -362,6 +363,14 @@ func _place_menu_panel(panel: Control, destination: Rect2, direction: String) ->
 
 func _present_menu_layout() -> void:
 	if size.x <= 0 or main.size.x <= 0: return
+	# Reserve the carousel and action row on short landscape windows too.
+	# The parent may already exceed its viewport because of our minimum height.
+	var available_height: float = get_viewport_rect().end.y-global_position.y-16.0
+	var preview_height: float = clampf(available_height-224.0,160.0,250.0) if section == "cars" else 250.0
+	if not is_equal_approx(_preview_slot.custom_minimum_size.y,preview_height):
+		_preview_slot.custom_minimum_size.y = preview_height
+		preview.custom_minimum_size.y = preview_height
+		_sync_menu_minimums()
 	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
 	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
 	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
@@ -661,7 +670,7 @@ func refresh_selection() -> void:
 	if _selected_vehicle_id == VehicleCatalog.selected:
 		# A retained page can outlive a race. Refresh changed thumbnail cosmetics
 		# even when the confirmed car did not change; meshes/worlds stay intact.
-		_refresh_thumbnails()
+		refresh_cosmetics()
 		return
 	_finish_tools()
 	vehicle_id = VehicleCatalog.selected
@@ -670,6 +679,25 @@ func refresh_selection() -> void:
 	_replace_showroom_car()
 	_show_section("cars")
 	_update_cards()
+
+func refresh_cosmetics() -> void:
+	if not is_instance_valid(showroom): return
+	_refresh_thumbnails()
+	# Do not interrupt an uncommitted colour picker or sticker gesture.
+	if draft != _livery_saved: return
+	var paint: Dictionary = VehicleLivery.for_car(records.settings,vehicle_id)
+	if draft != paint:
+		draft = paint
+		_livery_saved = paint.duplicate(true)
+		showroom.apply_livery(paint)
+		_update_pickers()
+	var parts: Dictionary = VehicleCustomisation.for_car(records.settings,vehicle_id)
+	if kit_draft != parts:
+		kit_draft = parts
+		showroom.apply_customisation(parts)
+		if is_instance_valid(kit_cards):
+			for index: int in range(kit_cards.get_child_count()):
+				(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
 
 func _show_section(next: String) -> void:
 	if next == "car": next = "customise"
@@ -726,6 +754,7 @@ func _show_section(next: String) -> void:
 		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
 		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
 		actions.add_child(select_button)
+		_add_test_drive_action()
 		_start_menu_move()
 		return
 	if section not in ["customise","tuning","records","news","achievements"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
@@ -733,6 +762,7 @@ func _show_section(next: String) -> void:
 	back.name = "GarageBack"
 	back.custom_minimum_size = Vector2(240, 60)
 	actions.add_child(back)
+	if section in ["customise","tuning","care"]: _add_test_drive_action()
 	if _customisation_locked:
 		_build_wash_requirement()
 	elif section == "customise":
@@ -751,6 +781,15 @@ func _show_section(next: String) -> void:
 		_achievement_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		actions.add_child(_achievement_button)
 		_achievements_changed()
+		if achievements != null and preload("res://backend/world_ranking_client.gd").supported(achievements.client) and achievements.client.signed_in():
+			var world: Control = preload("res://ui/world_ranking_summary.gd").new()
+			world.client = achievements.client
+			world.show_honors = true
+			world.honors_loaded.connect(func(career: Dictionary) -> void:
+				showroom.set_meta("world_ranking_honors_scope",str(achievements.client.base_url())+"/"+str(achievements.client.player.get("id","")))
+				showroom.set_meta("world_ranking_honors",career)
+				preload("res://ui/achievement_display.gd").update(showroom,achievements))
+			tools.add_child(world)
 	elif section == "achievements":
 		if achievements != null:
 			var album := preload("res://ui/achievements_menu.gd").new()
@@ -776,6 +815,20 @@ func _show_section(next: String) -> void:
 	else:
 		tools.add_child(MenuStyle.label("Coming later", 18, true))
 	_start_menu_move()
+
+func _add_test_drive_action() -> void:
+	var button := MenuStyle.button("Test drive", _request_free_drive)
+	button.name = "GarageTestDrive"
+	button.tooltip_text = "Drive freely in the 120 × 72 m P1 parking hall"
+	button.custom_minimum_size = Vector2(180,60)
+	actions.add_child(button)
+
+func _request_free_drive() -> void:
+	if not is_visible_in_tree() or _menu_motion != null or section not in ["cars","customise","tuning","care"]: return
+	_finish_tools()
+	_selected_vehicle_id = vehicle_id
+	vehicle_selected.emit(VehicleCatalog.IDS.find(vehicle_id))
+	free_drive_requested.emit()
 
 func _build_wash_requirement() -> void:
 	var title: Label = MenuStyle.label("WASH REQUIRED",26)
@@ -1251,6 +1304,8 @@ func _exit_tree() -> void:
 
 func _achievements_changed() -> void:
 	if achievements == null or showroom == null: return
+	var world_scope: String = "" if achievements.client == null else str(achievements.client.base_url())+"/"+str(achievements.client.player.get("id",""))
+	if showroom.get_meta("world_ranking_honors_scope","") != world_scope: showroom.set_meta("world_ranking_honors",{})
 	preload("res://ui/achievement_display.gd").update(showroom,achievements)
 	if is_instance_valid(_achievement_button):
 		var earned: int = 0

@@ -305,4 +305,4 @@ func incident_checks() -> void:
 	var legacy: Dictionary = Client._pack_trajectory(6000,proof,[])
 	check(modern.race_proof.incidents == incidents,"capable server receives incidents alongside trajectory")
 	check(not legacy.race_proof.has("incidents") and legacy.race_proof.samples == modern.race_proof.samples,"older server receives original unchanged trajectory")
-	check(Client._pack_replay([[0,0,0]],[],false,proof,true).race_proof.incidents == incidents,"legacy replay envelope can carry normalized incidents")
+	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack([[0,0,0]],[],false,proof,true).race_proof.incidents == incidents,"legacy replay envelope can carry normalized incidents")

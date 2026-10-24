@@ -4,6 +4,7 @@ var checks: int = 0
 var failures: int = 0
 var selection: String = ""
 var races: int = 0
+var capture_output: String = ""
 
 func _initialize() -> void: call_deferred("run")
 
@@ -39,6 +40,11 @@ func remove_page(page: ChallengesPage) -> void:
 	page.queue_free()
 	await process_frame
 
+func capture_state(label: String) -> void:
+	if capture_output.is_empty() or DisplayServer.get_name() == "headless": return
+	await RenderingServer.frame_post_draw
+	check(root.get_texture().get_image().save_png(capture_output.path_join(label+".png")) == OK,"capture "+label)
+
 func bounds(page: ChallengesPage, name: String) -> void:
 	var node: Control = page.find_child(name,true,false)
 	var rectangle: Rect2 = node.get_global_rect()
@@ -46,6 +52,10 @@ func bounds(page: ChallengesPage, name: String) -> void:
 	check(rectangle.position.x >= -1 and rectangle.position.y >= -1 and rectangle.end.x <= viewport.end.x+1 and rectangle.end.y <= viewport.end.y+1,name+" fits "+str(viewport.size))
 
 func run() -> void:
+	capture_output = OS.get_environment("BMT_CHALLENGE_BROWSER_STATES_OUTPUT")
+	if not capture_output.is_empty():
+		capture_output = capture_output.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
+		DirAccess.make_dir_recursive_absolute(capture_output)
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
 		root.size = dimensions
 		var value: Dictionary = fixture()
@@ -58,7 +68,13 @@ func run() -> void:
 		check(own.get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player standing retains yellow highlight")
 		var row: HBoxContainer = own.get_child(0)
 		check((row.get_child(2) as Label).text == "01:39.250" and (row.get_child(3) as Label).text == "+1.000","standings give comparable times and signed gaps")
-		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions","ChallengeStandingsHeader"]: bounds(page,name)
+		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
+		var views: TabContainer = page.find_child("ChallengeRaceViews",true,false)
+		views.current_tab = 1
+		await settle()
+		bounds(page,"ChallengeStandingsHeader")
+		views.current_tab = 0
+		await settle()
 		var race: Button = page.find_child("ChallengeRace",true,false)
 		check(not race.disabled and race.text == "Race","joined recipient can race")
 		var card: Button = page.find_child("ChallengeCard_"+str(value.code),true,false)
@@ -84,11 +100,14 @@ func run() -> void:
 		value = fixture(true)
 		page = page_for(value)
 		await settle()
+		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
+		await settle()
 		var scroll: ScrollContainer = page.find_child("ChallengeStandingsScroll",true,false)
 		check(scroll.get_v_scroll_bar().max_value > scroll.size.y,"all twenty drivers remain scrollable")
 		scroll.scroll_vertical = int(scroll.get_v_scroll_bar().max_value)
 		await settle()
 		check(page.find_child("ChallengeDriver_driver_19",true,false).get_global_rect().intersects(scroll.get_global_rect()),"final group driver is reachable")
+		if dimensions == Vector2i(1280,720): await capture_state("group-final-driver")
 		await remove_page(page)
 	var value: Dictionary = fixture(true)
 	for row: Dictionary in value.standings:
@@ -127,6 +146,7 @@ func run() -> void:
 	page = page_for(value)
 	await settle()
 	for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
+	await capture_state("long-track-and-driver-names")
 	await remove_page(page)
 	for state: String in ["complete","cancelled","settling","exhausted","creator","busy","guest","unjoined"]:
 		value = fixture()
@@ -152,5 +172,48 @@ func run() -> void:
 	var labels: Array[Node] = page.find_children("*","Label",true,false)
 	check(labels.any(func(node: Node) -> bool: return node.text == "Finding challenges…"),"initial refresh does not claim an empty inbox")
 	await remove_page(page)
+	# Recovery and winning/owner selections cannot reopen creation from racing.
+	for scenario: String in ["empty","filtered","error","friends","won","owner"]:
+		var browse := ChallengesPage.new()
+		browse.signed_in = scenario != "friends"
+		if scenario == "filtered": browse.search = "No matching track"
+		if scenario == "error": browse.error = "Could not connect. Try again."
+		if scenario == "friends": browse.folder = "friends"
+		if scenario in ["won","owner"]:
+			browse.selected = fixture()
+			browse.items.assign([browse.selected])
+			if scenario == "won":
+				browse.selected.standings[1].ticks = 11000
+				browse.selected.standings[1].ms = 91667
+			else: browse.selected.creator_id = "self"
+		root.add_child(browse)
+		MenuStyle.fill(browse)
+		await settle()
+		await capture_state(scenario)
+		check(browse.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),scenario+" keeps racing separate from creation")
+		check(browse.find_child("ChallengeTab_sent",true,false) == null,scenario+" excludes Created")
+		if scenario == "filtered":
+			var intent: Array = []
+			browse.filters_requested.connect(func(query: String, mode: String, car: String, order: String) -> void: intent.assign([query,mode,car,order]))
+			var reset: Button
+			for button: Button in browse.find_children("*","Button",true,false):
+				if button.text == "Clear filters": reset = button
+			reset.pressed.emit()
+			check(intent == ["","all","","ending"],"no-match recovery clears the complete filter scope")
+		if scenario == "friends":
+			check(browse.find_children("*","Button",true,false).any(func(button: Button) -> bool: return button.text == "Sign in"),"private racing offers the existing sign-in action")
+		await remove_page(browse)
+	var manage := ChallengesPage.new()
+	manage.folder = "sent"
+	manage.signed_in = true
+	manage.selected = fixture()
+	manage.selected.creator_id = "self"
+	root.add_child(manage)
+	MenuStyle.fill(manage)
+	await settle()
+	check(manage.find_child("ChallengeTab_sent",true,false) != null,"explicit creation management retains Created")
+	check(manage.find_children("*","Button",true,false).any(func(button: Button) -> bool: return button.tooltip_text == "Cancel challenge"),"owner retains cancellation in creation management")
+	await capture_state("owner-management")
+	await remove_page(manage)
 	print("CHALLENGE TAB: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)

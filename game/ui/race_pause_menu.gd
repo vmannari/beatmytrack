@@ -80,15 +80,15 @@ func _clear(title: String) -> void:
 
 func show_main() -> void:
 	_clear("PAUSED")
-	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
-	_row("Restart","Start this race again","restart",func() -> void: hud.restart_requested.emit())
+	_row("Resume","Continue driving" if hud.free_drive_mode else "Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
+	_row("Restart","Return the car to the hall entrance" if hud.free_drive_mode else "Start this race again","restart",func() -> void: hud.restart_requested.emit())
 	_row("Settings","Camera, sound and controls","gear",_settings)
 	if hud.map_track != null and hud.map_track.metadata.has("cloud_version") and is_instance_valid(hud.community_client):
 		_row("Report track","Send a private content report","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"report",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
 		_row("Track creator","Report or block this player","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"player",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
 	_row("Help","Driving tips and controls","help",_help)
 	column.add_child(HSeparator.new())
-	_row("Quit","Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))
+	_row("Quit","Return to garage" if hud.free_drive_mode else "Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))
 
 func _row(title: String, subtitle: String, icon: String, action: Callable, accent: Color = Color("91a8b8")) -> Button:
 	var button := Button.new()
@@ -147,6 +147,8 @@ func _help() -> void:
 	_clear("DRIVING HELP")
 	var text := MenuStyle.label("Steer with the on-screen controls or A / D and the arrow keys.\n\nUse the accelerator to drive and the brake to slow down or reverse. Keyboard: W / S and Space.\n\nPass every checkpoint in order. If you miss one, return to it to continue your lap.\n\nPress C to cycle camera views. Esc opens and closes this menu. Restart begins a fresh attempt.",20)
 	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	if hud.free_drive_mode:
+		text.text = "Drive freely with the on-screen controls or W / A / S / D and the arrow keys. Brake to slow down or reverse; Space applies the handbrake.\n\nExplore the parking bays, slalom and open turning area. The long marked lane is for acceleration and braking. There is no timer or lap target.\n\nReset car returns to the entrance. Press C to cycle cameras and Esc to pause. Garage returns to your car."
 	column.add_child(text)
 	_row("Back","Return to pause menu","arrow",show_main)
 

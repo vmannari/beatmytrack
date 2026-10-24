@@ -551,13 +551,21 @@ func _delay_job(job: Dictionary, seconds: int, failed: bool = false) -> void:
 	job.erase("retry_at")
 	_retry_deadlines[str(job.upload_key)] = Time.get_ticks_msec()+int(job.retry_delay)*1000
 
-func prepare_test(document: Dictionary) -> Dictionary:
+func prepare_test(document: Dictionary, prepared: NativeTrack = null) -> Dictionary:
 	# Editing, guest/offline testing and saved lap capture have no network path.
-	if not TrackDocument.validate(document).is_empty() or TrackCompiler.compile(document) == null:
+	# A preview-only fallback route is never a publication test. A caller may
+	# reuse only a complete compile of this exact document and compiler version.
+	if prepared != null and not prepared_test_matches(document,prepared):
+		last_error = "This draft changed. Wait for its preview before testing."
+		return {}
+	if not TrackDocument.validate(document).is_empty() or (prepared == null and TrackCompiler.compile(document) == null):
 		last_error = "Repair this track before completing a publication test lap."
 		return {}
 	last_error = ""
 	return document.duplicate(true)
+
+static func prepared_test_matches(document: Dictionary, prepared: NativeTrack) -> bool:
+	return prepared != null and prepared.metadata.get("creator_document",{}) == document and prepared.content_hash == TrackCompiler.document_hash(document,str(prepared.metadata.get("provenance",{}).get("base_hash","")))
 
 func request_publish(document: Dictionary) -> bool:
 	var action_key: String = _path(document)

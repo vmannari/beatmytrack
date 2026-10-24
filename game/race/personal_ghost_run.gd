@@ -2,7 +2,7 @@ class_name PersonalGhostRun
 extends RefCounted
 ## Presentation samples only; never inputs to canonical driving or race rules.
 const STRIDE: int = 6 # 20 Hz, interpolated at display rate.
-const MAX_TICKS: int = 216000
+const MAX_TICKS: int = preload("res://race/attempt_evidence.gd").MAX_INPUTS
 const MODES: Array[String] = ["off", "lap", "race"]
 const TITLES: Array[String] = ["Off", "Personal best lap", "Personal best race"]
 const DESCRIPTIONS: Array[String] = [
@@ -15,6 +15,7 @@ var lap_ends: Array[float] = []
 var overflow: bool = false
 
 func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bridge: BridgeElevation, handling: HandlingConfig, force: bool = false) -> void:
+	if overflow: return
 	if state.tick > MAX_TICKS:
 		overflow = true
 		return
@@ -32,8 +33,8 @@ func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bri
 	if state.jump_height > 0.0:
 		pitch = preload("res://vehicle/bridge_flight.gd").pitch(state)
 	elif not state.track_elevated:
-		height += TrackHazards.ramp_height(point, track.hazard_objects) - track.water_depth(point)
-		pitch += TrackHazards.ramp_pitch(point, axle.normalized(), track.hazard_objects)
+		height += track.ramp_height(point) - track.water_depth(point)
+		pitch += track.ramp_pitch(point,axle.normalized())
 	if state.jump_height == 0.0:
 		height += state.kerb_offset.x
 		pitch += state.kerb_offset.y
@@ -42,7 +43,8 @@ func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bri
 func branch(tick: int) -> void:
 	while not poses.is_empty() and int(poses[-1][0]) > tick: poses.pop_back()
 	while not lap_ends.is_empty() and lap_ends[-1] > tick: lap_ends.pop_back()
-	overflow = tick > MAX_TICKS
+	# An incomplete recording stays ineligible after a branch.
+	overflow = overflow or tick > MAX_TICKS
 
 func recording(mode: String) -> Dictionary:
 	if overflow or lap_ends.size() != RaceRules.LAPS or poses.is_empty(): return {}

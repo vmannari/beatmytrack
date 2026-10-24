@@ -64,7 +64,9 @@ func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vecto
 		var a: Vector2 = outline[index]
 		var b: Vector2 = outline[index+1]
 		var steps: int = maxi(1,ceili(a.distance_to(b)/maxf(.10,track.cell_size*.5)))
-		for step: int in range(steps+1):
+		# The next edge owns this edge's endpoint. Counting it twice exhausts
+		# the bounded budget on detailed bodies before their full perimeter.
+		for step: int in range(steps):
 			count += 1
 			if count>MAX_PROBES: break
 			var local: Vector2 = a.lerp(b,float(step)/steps)

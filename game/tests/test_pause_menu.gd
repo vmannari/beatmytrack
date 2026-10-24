@@ -29,6 +29,8 @@ func run() -> void:
 	for emitter: GPUParticles3D in game.sand_dust.dust_emitters:
 		check(emitter.speed_scale == 0.0,"dust particles freeze")
 	var path: String = ProjectSettings.globalize_path("res://../docs/evidence/pause-menu")
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("evidence="): path = ProjectSettings.globalize_path(argument.trim_prefix("evidence="))
 	DirAccess.make_dir_recursive_absolute(path)
 	var first: Image = root.get_texture().get_image()
 	check(first.save_png(path+"/1280x720.png") == OK,"capture saved")

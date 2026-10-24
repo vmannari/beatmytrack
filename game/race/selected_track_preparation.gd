@@ -7,11 +7,14 @@ static var cleanup_tree: SceneTree
 
 static func start(track: NativeTrack, entry: Dictionary, document: Dictionary, owner_tree: SceneTree) -> RefCounted:
 	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document),owner_tree)
+	ensure_cleanup(owner_tree)
+	return job
+
+static func ensure_cleanup(owner_tree: SceneTree) -> void:
 	if cleanup_tree == null:
 		cleanup_tree = owner_tree
 		owner_tree.process_frame.connect(reap_discarded)
 		owner_tree.root.tree_exiting.connect(finish)
-	return job
 
 static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary) -> Dictionary:
 	var track: NativeTrack = selected
@@ -20,9 +23,7 @@ static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, d
 	if track == null or cancelled.call(): return {}
 	var receipt: Dictionary = {}
 	var disk_key: Array = ROADS.disk_key_for(track)
-	var disk_path: String = DISK.directory.path_join(DISK.identity(disk_key)+".res")
-	var has_disk: bool = not DISK.directory.is_empty() and FileAccess.file_exists(disk_path) and FileAccess.file_exists(disk_path+".sha256")
-	var packet: Dictionary = {} if has_disk else ROADS.prepare(track,false,false,cancelled)
+	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
 	packet = ROADS.with_winter_cover(packet,track,cancelled)
 	if cancelled.call(): return {}
 	receipt = DISK.stage_arrays(disk_key,packet,cancelled)
@@ -41,7 +42,8 @@ static func download(owner: WeakRef, generation: int, cloud: Node, entry: Dictio
 	var app: Node = owner.get_ref()
 	app.call("_begin_selected_geometry",generation,entry,document)
 
-static func cancel(job: RefCounted) -> void:
+static func cancel(job: RefCounted, owner_tree: SceneTree = null) -> void:
+	if owner_tree != null: ensure_cleanup(owner_tree)
 	if job == null: return
 	job.cancel()
 	if job.done:

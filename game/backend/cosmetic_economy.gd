@@ -17,9 +17,7 @@ var _epoch: int = 0
 var _timer: Timer
 
 func _ready() -> void:
-	if not records.settings.has("cosmetic_legacy"):
-		records.settings.cosmetic_legacy = Shop.legacy(records.settings)
-		if records.save_records() != OK: status = "Could not save cosmetic ownership."
+	_remember_legacy()
 	if client != null: client.identity_changed.connect(sync_identity)
 	sync_identity()
 	_timer = Timer.new()
@@ -28,6 +26,18 @@ func _ready() -> void:
 		if not pending.is_empty() and not busy: refresh())
 	add_child(_timer)
 	_timer.start()
+
+func bind_records(value: LocalRecords) -> void:
+	if records == value: return
+	records = value
+	_remember_legacy()
+	scope = ""
+	sync_identity()
+
+func _remember_legacy() -> void:
+	if not records.settings.has("cosmetic_legacy"):
+		records.settings.cosmetic_legacy = Shop.legacy(records.settings)
+		if records.save_records() != OK: status = "Could not save cosmetic ownership."
 
 func authenticated() -> bool:
 	return client != null and client.signed_in()
@@ -69,7 +79,10 @@ func _guest() -> Dictionary:
 	return records.settings.get("guest_coins",{"version":1,"balance":0,"owned":[],"sequence":0}).duplicate(true)
 
 func owns(id: String) -> bool:
-	if Shop.free_item(id) or id in records.settings.get("cosmetic_legacy",[]): return true
+	if Shop.free_item(id): return true
+	# Local historical selections remain available offline. Signed-in ownership
+	# comes from the account ledger, including server-grandfathered selections.
+	if not authenticated() and id in records.settings.get("cosmetic_legacy",[]): return true
 	return id in (wallet.get("owned",[]) if authenticated() else _guest().owned)
 
 func price(id: String) -> int:

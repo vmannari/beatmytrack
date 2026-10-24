@@ -15,7 +15,9 @@ const SESSION_GAP_MSEC: int = 1800000
 const EVENT_NAMES: Array[String] = ["app_first_open","session_started","session_foregrounded","session_backgrounded","session_heartbeat","collection_summary","menu_ready","track_exposed","track_selected","car_exposed","car_selected","race_attempt","race_started","race_finished","race_abandoned","race_retried","publish_requested","challenge_opened","challenge_joined","challenge_created","share_clicked","store_opened","offer_exposed","purchase_requested"]
 const STORE_PRODUCTS: Array[String] = ["creator_slot_1","creator_slots_5","creator_slots_10","ad_free_month","ad_free_forever"]
 const NUMBER_PROPERTIES: Array[String] = ["foreground_ms","position","dropped_events","rejected_events","persistence_failures"]
+const CONFIG_NAMES: Array[String] = ["config_applied","config_rejected","experiment_exposed","ad_policy_decision"]
 var client: Node
+var configuration: Node
 var storage_path: String = ""
 var enabled: bool = true
 var queue: Array[Dictionary] = []
@@ -207,7 +209,10 @@ func observe(name: String, properties: Dictionary = {}, once_key: String = "") -
 		if not published_version is String or _uuid_pattern.search(published_version) == null: return false
 	if name in QUALITY_NAMES and (client == null or not client.has_method("quality_supported") or not client.quality_supported()): return false
 	if name in QUALITY_NAMES and not _allowed and _event_ids.size() <= 32: return false # Reserve identifiers for product/race observations.
-	if not enabled or not _foreground or (name not in EVENT_NAMES and name not in QUALITY_NAMES and name not in NETWORK_NAMES) or client == null or not client.telemetry_supported() or _scope == "guest": return false
+	if not enabled or not _foreground or (name not in EVENT_NAMES and name not in QUALITY_NAMES and name not in NETWORK_NAMES and name not in CONFIG_NAMES) or client == null or not client.telemetry_supported() or _scope == "guest": return false
+	if configuration != null and name not in CONFIG_NAMES and name not in QUALITY_NAMES and name not in NETWORK_NAMES and name != "collection_summary":
+		properties = properties.duplicate(true)
+		properties.merge(configuration.event_context(name),true)
 	if name in ["offer_exposed","purchase_requested"] and properties.get("product_id","") not in STORE_PRODUCTS: return false
 	# Never call the operating-system random provider during a live race.
 	# An unusually long attempt can exhaust the bounded preallocated pool; report
@@ -223,6 +228,7 @@ func observe(name: String, properties: Dictionary = {}, once_key: String = "") -
 		if _deduplicated.size() >= 1000: return false
 		_deduplicated[key] = true
 	var safe: Dictionary = _safe_properties(name,properties)
+	if name in CONFIG_NAMES and safe.is_empty(): return false
 	if name in NETWORK_NAMES and safe.is_empty(): return false
 	return _enqueue(name,safe)
 
@@ -267,6 +273,26 @@ func _enqueue(name: String, safe: Dictionary, identifier: String = "") -> bool:
 	return true
 
 func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
+	if name in CONFIG_NAMES:
+		var config: Dictionary = {}
+		if not _bounded_integer(properties.get("config_generation",-1),0,2147483647): return {}
+		var resolution: Variant = properties.get("config_resolution","")
+		if not resolution is String or _scope_pattern.search(resolution) == null: return {}
+		config.config_generation = int(properties.config_generation)
+		config.config_resolution = resolution
+		if properties.get("config_group","") in ["ads","menu","store"]: config.config_group = properties.config_group
+		if properties.has("experiment_id"):
+			if not properties.experiment_id is String or _uuid_pattern.search(properties.experiment_id) == null: return {}
+			if not properties.get("variant") is String or RegEx.create_from_string("^[a-z][a-z0-9_-]{0,23}$").search(properties.variant) == null: return {}
+			if not _bounded_integer(properties.get("experiment_revision",-1),0,2147483647): return {}
+			config.experiment_id = properties.experiment_id
+			config.variant = properties.variant
+			config.experiment_revision = int(properties.experiment_revision)
+		if name == "experiment_exposed" and not config.has("experiment_id"): return {}
+		if name == "ad_policy_decision":
+			if properties.get("ad_outcome","") not in ["shown","suppressed","unavailable","error"]: return {}
+			config.ad_outcome = properties.ad_outcome
+		return config
 	if name in NETWORK_NAMES: return preload("res://backend/network_health.gd").normalize(name,properties)
 	if name == "race_statistics": return _safe_race_statistics(properties)
 	var allowed: Array[String] = []
@@ -299,6 +325,8 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 		elif key == "product_id" and value in STORE_PRODUCTS: safe[key] = value
 		elif key in NUMBER_PROPERTIES and (value is int or value is float) and is_finite(float(value)) and float(value) >= 0 and float(value) <= (1000 if key == "position" else 86400000 if key == "foreground_ms" else 1000000):
 			safe[key] = int(value)
+	if name not in QUALITY_NAMES and name != "collection_summary" and properties.has("config_generation") and properties.has("config_resolution"):
+		safe.merge(_safe_properties("config_applied",properties),true)
 	return safe
 
 static func _bounded_integer(value: Variant, minimum: int, maximum: int) -> bool:
@@ -583,10 +611,10 @@ func _finish_thread(completed: Variant = null) -> void:
 			var restored: Array[Dictionary] = []
 			var saved_queue: Array = result.queue if result.get("queue") is Array else []
 			for entry: Variant in saved_queue:
-				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES or entry.event.get("name","") in NETWORK_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
+				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES or entry.event.get("name","") in NETWORK_NAMES or entry.event.get("name","") in CONFIG_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
 					var original: Dictionary = entry.event
 					entry.event = {"id":str(original.id),"name":str(original.name),"occurred_at":_saved_integer(original.get("occurred_at",0)),"session_id":str(original.session_id),"seq":_saved_integer(original.get("seq",0)),"monotonic_ms":_saved_integer(original.get("monotonic_ms",0)),"properties":_safe_properties(str(original.name),original.properties)}
-					if (original.name == "race_statistics" or original.name in NETWORK_NAMES) and entry.event.properties.is_empty(): continue
+					if (original.name == "race_statistics" or original.name in NETWORK_NAMES or original.name in CONFIG_NAMES) and entry.event.properties.is_empty(): continue
 					restored.append(entry)
 					_persisted_ids[str(entry.event.id)] = true
 					if restored.size() >= MAX_EVENTS: break

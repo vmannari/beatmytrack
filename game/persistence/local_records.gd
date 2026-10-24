@@ -2,6 +2,7 @@
 extends RefCounted
 ## Local, unverified PBs. Persistence and recovery stay outside canonical physics.
 signal achievement_progress_committed
+signal appearance_committed
 
 const SCHEMA: int = 2
 const MAX_BYTES: int = 4194304
@@ -12,6 +13,9 @@ var records: Dictionary = {}
 var settings: Dictionary = {}
 var _committed_records: Dictionary = {}
 var _committed_settings: Dictionary = {}
+var _condition_store: Node
+var _condition_revision: int = -1
+var _condition_committed_revision: int = -1
 
 
 func _init(file_path: String = "user://local_records.json") -> void:
@@ -19,6 +23,10 @@ func _init(file_path: String = "user://local_records.json") -> void:
 
 
 func load_records() -> void:
+	if is_instance_valid(_condition_store): _condition_store.flush(); _condition_store.release(self)
+	_condition_store = null
+	_condition_revision = -1
+	_condition_committed_revision = -1
 	records = {}
 	settings = {}
 	_committed_records = {}
@@ -30,8 +38,39 @@ func load_records() -> void:
 			continue
 		records = document.records
 		settings = document.settings
-		_remember_committed()
-		return
+		break
+	# A small sidecar overrides legacy embedded cosmetics, including when the
+	# PB file does not yet exist. Old files remain intact until a normal commit.
+	_remember_committed()
+	_conditions()
+
+
+func _conditions() -> Node:
+	var condition_path: String = ProjectSettings.globalize_path(path+".conditions.json").simplify_path()
+	if not is_instance_valid(_condition_store) or _condition_store.path != condition_path:
+		if is_instance_valid(_condition_store): _condition_store.flush(); _condition_store.release(self)
+		_condition_store = preload("res://persistence/condition_store.gd").acquire(condition_path,settings.get("vehicle_conditions",{}),weakref(self))
+		_condition_revision = -1
+		_condition_committed_revision = -1
+	_sync_conditions()
+	return _condition_store
+
+
+func _sync_conditions() -> void:
+	if _condition_revision != _condition_store.revision and (not _condition_store.current.is_empty() or settings.has("vehicle_conditions")):
+		settings.vehicle_conditions = _condition_store.current.duplicate(true)
+	_condition_revision = _condition_store.revision
+	if _condition_committed_revision != _condition_store.committed_revision and (not _condition_store.committed.is_empty() or _committed_settings.has("vehicle_conditions")):
+		_committed_settings.vehicle_conditions = _condition_store.committed.duplicate(true)
+	_condition_committed_revision = _condition_store.committed_revision
+
+
+func save_vehicle_conditions(value: Dictionary, background: bool = false) -> Error:
+	var store: Node = _conditions()
+	var error: Error = store.stage(value)
+	if error == OK and not background: error = store.flush()
+	_sync_conditions()
+	return error
 
 
 func key_for(track: NativeTrack, handling: HandlingConfig) -> String:
@@ -68,6 +107,16 @@ func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps
 
 
 func save_records() -> Error:
+	if settings.has("vehicle_conditions") and not VehicleCondition.valid_collection(settings.vehicle_conditions): return _failed(ERR_INVALID_DATA)
+	if is_instance_valid(_condition_store):
+		# A caller may still deliberately update the legacy settings API. Keep
+		# that valid change, without allowing invalid values to be overwritten.
+		if _condition_revision == _condition_store.revision and settings.get("vehicle_conditions",{}) != _condition_store.current:
+			_condition_store.stage(settings.get("vehicle_conditions",{}))
+		var condition_error: Error = _condition_store.flush()
+		if condition_error != OK: return _failed(condition_error)
+		_condition_revision = -1
+		_sync_conditions()
 	var document: Dictionary = _normalize({"schema":SCHEMA,"records":records,"settings":settings})
 	if document.is_empty():
 		return _failed(ERR_INVALID_DATA)
@@ -103,8 +152,10 @@ func save_records() -> Error:
 	records = document.records
 	settings = document.settings
 	var awards_changed: bool = settings.get("achievements",{}).get("unlocked",{}) != _committed_settings.get("achievements",{}).get("unlocked",{})
+	var appearance_changed: bool = settings.get("vehicle_liveries",{}) != _committed_settings.get("vehicle_liveries",{}) or settings.get("vehicle_customisation",{}) != _committed_settings.get("vehicle_customisation",{})
 	_remember_committed()
 	if awards_changed: achievement_progress_committed.emit()
+	if appearance_changed: appearance_committed.emit()
 	return OK
 
 
@@ -112,6 +163,7 @@ func _failed(error: Error) -> Error:
 	# A result is visible as a saved PB only after its commit succeeds.
 	records = _committed_records.duplicate(true)
 	settings = _committed_settings.duplicate(true)
+	_condition_revision = -1
 	return error
 
 
@@ -136,9 +188,10 @@ static func _read_document(file_path: String) -> Dictionary:
 
 
 static func _normalize(data: Variant) -> Dictionary:
+	data = preload("res://persistence/save_upgrades.gd").prepare(data)
 	if not data is Dictionary or data.size() != 3 or not _number(data.get("schema")):
 		return {}
-	if float(data.schema) != 1.0 and float(data.schema) != float(SCHEMA):
+	if float(data.schema) != float(SCHEMA):
 		return {}
 	if not data.get("records") is Dictionary or not data.get("settings") is Dictionary:
 		return {}
@@ -158,12 +211,12 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not preload("res://persistence/cosmetic_catalog.gd").valid_owned(preferences[field]): return {}
 		elif field == "music_record":
 			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
-		elif field == "music_records":
-			if not preload("res://soundtrack/record_library.gd").valid_collection(preferences[field]): return {}
 		elif field == "vehicle_conditions":
 			if not VehicleCondition.valid_collection(preferences[field]): return {}
 		elif field == "vehicle_liveries":
 			if not VehicleLivery.valid_collection(preferences[field]): return {}
+		elif field == "vehicle_appearance_sync":
+			if not preload("res://persistence/appearance_state.gd").valid(preferences[field]): return {}
 		elif field == "vehicle_customisation":
 			if not VehicleCustomisation.valid_collection(preferences[field]): return {}
 		elif field == "camera_mode":
@@ -209,15 +262,10 @@ static func _normalize(data: Variant) -> Dictionary:
 		var entry: Variant = data.records[key]
 		if not entry is Dictionary or entry.size() != 2:
 			return {}
-		var race: Variant = entry.get("race_ms") if data.schema == SCHEMA else entry.get("race")
-		var flying: Variant = entry.get("flying_ms") if data.schema == SCHEMA else entry.get("flying")
+		var race: Variant = entry.get("race_ms")
+		var flying: Variant = entry.get("flying_ms")
 		if not _number(race) or not _number(flying):
 			return {}
-		if data.schema == 1:
-			if not _positive_seconds(float(race)) or not _positive_seconds(float(flying)):
-				return {}
-			race = roundi(float(race)*1000.0)
-			flying = roundi(float(flying)*1000.0)
 		if float(race) != floorf(float(race)) or float(flying) != floorf(float(flying)):
 			return {}
 		if float(race) < 1.0 or float(race) > MAX_TIME_MS or float(flying) < 1.0 or float(flying) > float(race):
@@ -229,9 +277,6 @@ static func _normalize(data: Variant) -> Dictionary:
 	if normalized_preferences.has("guest_coins"):
 		for field: String in ["version","balance","sequence"]:
 			normalized_preferences.guest_coins[field] = int(normalized_preferences.guest_coins[field])
-	normalized_preferences.erase("music_records")
-	if normalized_preferences.has("music_record"):
-		normalized_preferences.music_record = preload("res://soundtrack/record_library.gd").selected(normalized_preferences).id
 	return {"schema":SCHEMA,"records":normalized,"settings":normalized_preferences}
 
 

@@ -64,18 +64,33 @@ func run() -> void:
 			await create_timer(0.15).timeout
 		check(prior_status.get("status") == "verified","a real recorded faster PB is verified before the slower source race")
 		app._clear_challenge_game()
+		app._create_challenge_dialog(str(metadata.version_id),"compact")
+		var best_form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+		best_form._advance()
+		best_form._select_track(metadata)
+		best_form._advance()
+		while best_form._checking: await process_frame
+		check(best_form.get_ok_button().text == "Use personal best" and not best_form.get_ok_button().disabled,"one-to-one offers the actual verified personal best without racing again")
+		best_form.get_ok_button().pressed.emit()
+		while app.challenges.busy or (is_instance_valid(best_form) and best_form._submitting): await process_frame
+		check(app.challenges.selected.target_ticks == fixture.time_ticks and app.challenges.selected.standings[0].run_id == prior_status.run_id and app.game == null,"personal-best duel creates directly with the exact canonical source and no race")
+		for popup: Node in app.root_ui.get_children():
+			if popup is AcceptDialog: popup.queue_free()
 	if seed_flow:
 		app.cloud.entries.assign([metadata])
 		app._open_challenges()
 		while app.challenges.busy: await process_frame
 		app._create_challenge_dialog(str(metadata.version_id),"compact")
 		var draft: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+		draft._advance()
+		draft._select_track(metadata)
+		draft._advance()
 		while draft._checking: await process_frame
 		check(draft.get_ok_button().disabled and draft._race.visible,"new creator is offered a race instead of an invented target")
 		draft._choose_duration(86400)
 		draft._choose_attempt_limit(3)
 		draft._race.pressed.emit()
-		while app.game == null: await process_frame
+		while app.game == null or not app.game.preparation_complete: await process_frame
 	else: await app._start_race(track,false)
 	check(app.game != null and not app.rivalry_racing and not app.challenge_racing,"source run uses normal race mode")
 	if app.game == null:
@@ -103,11 +118,13 @@ func run() -> void:
 	check(source.get("status") == "verified","canonical worker verifies the source run")
 	if not seed_flow: (summary.find_child("CreateResultChallenge",true,false) as Button).pressed.emit()
 	var form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
+	if form._step == ChallengeCreate.FORMAT: form._advance()
+	if form._step == ChallengeCreate.TRACKS: form._advance()
 	var wait_started: int = Time.get_ticks_msec()
 	while is_instance_valid(form) and (form._checking or form._source.get("status") != "verified") and Time.get_ticks_msec()-wait_started < 12000:
 		await process_frame
 	check(form != null and not form.get_ok_button().disabled,"creation form preselects the just-finished verified time")
-	check(form.locked_result() and form._track == null and form._vehicle == null and form._search == null and not form._race.visible,"finished-race creation is fixed and contains no rerace or unrelated selectors")
+	check(form.locked_result() and not form._car_scroll.is_visible_in_tree() and form._chosen_entries[0].version_id == metadata.version_id and not form._race.visible,"finished-race creation is fixed and contains no rerace or unrelated selectors")
 	check(app.screen == "challenge_create" and app.root_ui.find_child("MenuHeader",true,false) != null,"creation occupies the main menu under its original navigation")
 	if not seed_flow:
 		var saved_summary: RaceResults = app._challenge_return_ui.find_child("RaceResults",true,false)
@@ -115,6 +132,8 @@ func run() -> void:
 		check(app.root_ui.find_child("RaceResults",true,false) == saved_summary,"Cancel restores the same completed summary without reracing or recording twice")
 		(saved_summary.find_child("CreateResultChallenge",true,false) as Button).pressed.emit()
 		form = app.root_ui.find_child("ChallengeCreate",true,false)
+		form._advance()
+		form._advance()
 		while form._checking: await process_frame
 		form._choose_attempt_limit(3)
 	await capture("create",app)
@@ -197,19 +216,44 @@ func run() -> void:
 	check(int(app.challenges.selected.target_ticks) == int(fixture.time_ticks),"rematch target equals the recipient's canonically verified time")
 	app._create_challenge_dialog(str(metadata.version_id),"compact")
 	var group_form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
-	group_form._choose_mode(1)
-	group_form._search.text = str(metadata.name)
-	group_form._search_timer.stop()
-	await group_form._find_tracks()
+	group_form._choose_format("group")
+	group_form._advance()
+	var search: Node = group_form._browser.search_dialog
+	search.open_for(group_form._browser.state,group_form._browser.find_child("RaceSearch",true,false))
+	search.edit.text = str(metadata.name)
+	search.draft.search = str(metadata.name)
+	search.search_delay.stop()
+	await search._search_global()
+	check(not search.matches.is_empty() and str(search.matches[0].version_id) == str(metadata.version_id),"creation searches the global catalog through the shared Free Race control")
+	if search.matches.is_empty():
+		print("SEARCH_ERROR: ",search.server_pages.error if is_instance_valid(search.server_pages) else "No search receiver")
+		quit(1)
+		return
+	if not search.matches.is_empty(): (search.results.get_child(0) as Button).pressed.emit()
+	group_form._advance()
 	while group_form._checking: await process_frame
-	check(not group_form.entries.is_empty() and str(group_form.entries[0].version_id) == str(metadata.version_id),"creation searches the global published catalog")
 	check(not group_form.get_ok_button().disabled,"group creation works independently of a target time")
-	group_form.confirmed.emit()
+	var group_best: String = str(group_form._source.get("run_id",""))
+	check(group_form._share.text == "Use personal best" and not group_form._share.disabled and not group_best.is_empty(),"group creation offers the actual verified personal best")
+	group_form._share.pressed.emit()
+	while app.challenges.busy or (is_instance_valid(group_form) and group_form._submitting): await process_frame
+	check(app.challenges.selected.mode == "group" and app.challenges.selected.target_ticks == null and app.challenges.selected.standings[0].run_id == group_best and app.game == null,"group personal-best choice seeds its exact verified standing without starting a race")
+	await capture("group-personal-best",app)
+	for popup: Node in app.root_ui.get_children():
+		if popup is AcceptDialog: popup.queue_free()
+	app._create_challenge_dialog(str(metadata.version_id),"compact")
+	group_form = app.root_ui.find_child("ChallengeCreate",true,false)
+	group_form._choose_format("group")
+	group_form._advance()
+	group_form._select_track(metadata)
+	group_form._advance()
+	while group_form._checking: await process_frame
+	group_form.get_ok_button().pressed.emit()
 	while app.challenges.busy or (is_instance_valid(group_form) and group_form._submitting): await process_frame
 	check(app.challenges.selected.mode == "group" and app.challenges.selected.target_ticks == null and app.challenges.selected.standings[0].ticks == null,"new group has no invented target or historical attempt score")
 	for popup: Node in app.root_ui.get_children():
 		if popup is AcceptDialog: popup.queue_free()
-	await app._start_challenge_race()
+	while app.game == null or not app.game.preparation_complete: await process_frame
 	check(app.game != null and app.challenge_racing,"group creator can start a verified group attempt")
 	_drive(app.game,fixture.replay.frames)
 	app._results()

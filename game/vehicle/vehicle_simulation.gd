@@ -38,6 +38,12 @@ func prepare_ground(ground: PlaygroundData, elevation: BridgeElevation = null) -
 
 
 func step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
+	if ground is NativeTrack: ground.begin_creator_queries()
+	_step(frame,ground)
+	if ground is NativeTrack: ground.end_creator_queries()
+
+
+func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if ground != _prepared_ground: prepare_ground(ground)
 	state.collision_impulse = Vector2.ZERO
 	state.scrape_strength = 0.0

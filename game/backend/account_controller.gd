@@ -69,6 +69,12 @@ func google_available() -> bool:
 func needs_username() -> bool:
 	return client.signed_in() and bool(client.player.get("needs_username", false))
 
+func needs_country() -> bool:
+	return client.signed_in() and PlayerCountry.valid_code(str(client.player.get("country_code",""))).is_empty()
+
+func profile_ready() -> bool:
+	return client.signed_in() and not needs_username() and not needs_country()
+
 func _signed_in_message() -> String:
 	return "Choose the name other racers will see." if needs_username() else "Signed in as " + player_name() + "."
 

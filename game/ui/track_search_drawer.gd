@@ -252,7 +252,7 @@ func clear_search() -> void:
 
 func refresh_results() -> void:
 	matches = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
-	if is_instance_valid(server_pages) and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_pages.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
+	if is_instance_valid(server_pages) and server_pages.query_key == JSON.stringify(preload("res://backend/discovery_filters.gd").payload(draft,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]))):
 		matches.clear()
 		if server_pages.total >= 0:
 			for metadata: Dictionary in server_pages.entries(): matches.append(cloud.entry_from_metadata(metadata))
@@ -392,15 +392,8 @@ func _queue_search() -> void:
 
 func _search_global() -> void:
 	if cloud == null or not visible or not cloud.paged_discovery_available(): return
-	var use_index: bool = cloud.has_method("indexed_discovery_available") and cloud.indexed_discovery_available()
-	if is_instance_valid(server_pages) and server_pages.has_method("windowed") != use_index:
-		cloud.client.cancel_public_reads(server_pages.get_instance_id())
-		server_pages.generation += 1
-		remove_child(server_pages)
-		server_pages.queue_free()
-		server_pages = null
 	if not is_instance_valid(server_pages):
-		server_pages = preload("res://backend/discovery_windows.gd").new() if use_index else preload("res://backend/discovery_pages.gd").new()
+		server_pages = preload("res://backend/discovery_windows.gd").new()
 		server_pages.client = cloud.client
 		add_child(server_pages)
 		server_pages.changed.connect(func() -> void:

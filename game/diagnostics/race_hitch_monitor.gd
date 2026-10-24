@@ -14,7 +14,15 @@ var persist_enabled: bool = true
 var console_enabled: bool = true
 var events: Array[Dictionary] = []
 var history: Array[Dictionary] = []
-var latest: Dictionary = {}
+var detailed: bool = OS.is_debug_build()
+var _latest: Dictionary = {}
+var latest: Dictionary:
+	get: return _latest if detailed or _compact_count == 0 else _compact_row((_compact_cursor + HISTORY_FRAMES - 1) % HISTORY_FRAMES)
+	set(value): _latest = value
+const COMPACT_FIELDS: int = 8
+var _compact: PackedInt64Array = PackedInt64Array()
+var _compact_cursor: int = 0
+var _compact_count: int = 0
 var header: Dictionary = {}
 var log_path: String = ""
 var dropped_events: int = 0
@@ -60,7 +68,8 @@ func _ready() -> void:
 	anchor.monitor = self
 	anchor.process_priority = -1000000
 	add_child(anchor)
-	game.profile_enabled = true
+	if detailed: game.profile_enabled = true
+	_compact.resize(HISTORY_FRAMES * COMPACT_FIELDS)
 	_previous.resize(FIELDS.size())
 	_previous.fill(0)
 	_started_usec = Time.get_ticks_usec()
@@ -69,7 +78,8 @@ func _ready() -> void:
 	log_path = directory.path_join("race-" + token + ".json")
 	var track: NativeTrack = game.get("native_track")
 	header = {"schema": 1, "engine": Engine.get_version_info().string, "os": OS.get_name(), "os_version": OS.get_version(), "model": OS.get_model_name(), "renderer": RenderingServer.get_current_rendering_method(), "adapter": RenderingServer.get_video_adapter_name(), "debug_build": OS.is_debug_build(), "track_id": track.identity if track != null else "playground", "track_hash": track.content_hash if track != null else "", "biome": str(track.metadata.get("theme", "pine")) if track != null else "pine", "car": str(game.get("vehicle_id")), "practice": bool(game.get("editor_test")) or bool(game.get("attempt_practice")), "physics": VehicleSimulation.PHYSICS_VERSION, "rules": RaceRules.KEY, "track_kit": NativeTrackVisual.VERSION, "threshold_ms": THRESHOLD_US / 1000, "history_frames": HISTORY_FRAMES, "stage_note": "Nested timings overlap; engine monitors may be delayed/debug-only; draw_boundary_ms is wall time between render signals, not GPU time. Previous draw and current callbacks share one interval."}
-	_collect_render_items(game.get_node_or_null("World"))
+	if detailed: _collect_render_items(game.get_node_or_null("World"))
+	header.detail = "full" if detailed else "compact"
 	header.render_items = _render_descriptors
 	header.render_items_truncated = _render_truncated
 	header.schema = 2
@@ -77,8 +87,9 @@ func _ready() -> void:
 	RenderingServer.frame_post_draw.connect(_post_draw)
 
 func _pre_draw() -> void:
-	_sample_render_context(Time.get_ticks_usec())
-	_sample_bridge_context()
+	if detailed:
+		_sample_render_context(Time.get_ticks_usec())
+		_sample_bridge_context()
 	_draw_start_usec = Time.get_ticks_usec()
 
 func _post_draw() -> void:
@@ -92,6 +103,14 @@ func _process(_delta: float) -> void:
 	var now: int = Time.get_ticks_usec()
 	var frame_us: int = now - _last_usec if _last_usec > 0 else 0
 	var blocked: bool = not _foreground or bool(game.get("paused")) or game.get("finish_sim") != null
+	if not detailed:
+		_observe_compact(now,frame_us,blocked)
+		_was_blocked = blocked
+		_last_usec = now
+		if _revision > _saved_revision and now >= _next_write_usec: flush_async()
+		observed_frames += 1
+		observer_total_us += Time.get_ticks_usec() - started
+		return
 	var sections: Dictionary = {}
 	for index: int in range(FIELDS.size()):
 		var value: int = int(game.get("profile_" + FIELDS[index] + "_us"))
@@ -134,6 +153,35 @@ func _process(_delta: float) -> void:
 	if _revision > _saved_revision and now >= _next_write_usec: flush_async()
 	observed_frames += 1
 	observer_total_us += Time.get_ticks_usec() - started
+
+# Packed fixed storage on ordinary release frames. Dictionaries are materialised
+# only for a hitch/its after-window, or an explicit inspector read of latest.
+func _compact_row(index: int) -> Dictionary:
+	var offset: int = index * COMPACT_FIELDS
+	return {"wall_ms":_compact[offset]/1000.0,"frame_ms":_compact[offset+1]/1000.0,"tick":_compact[offset+2],"countdown_ticks":_compact[offset+3],"callbacks_ms":_compact[offset+4]/1000.0,"draw_boundary_ms":_compact[offset+5]/1000.0,"blocked":bool(_compact[offset+6]),"proof_frames":_compact[offset+7]}
+
+func _observe_compact(now: int, frame_us: int, blocked: bool) -> void:
+	var hitch: bool = frame_us >= THRESHOLD_US and _last_usec > 0 and not blocked and not _was_blocked
+	var pending: bool = false
+	for event: Dictionary in events:
+		if event.after.size() < AFTER_FRAMES: pending = true; break
+	if hitch:
+		history.clear()
+		for index: int in range(_compact_count):
+			history.append(_compact_row((_compact_cursor-_compact_count+index+HISTORY_FRAMES)%HISTORY_FRAMES))
+	var offset: int = _compact_cursor * COMPACT_FIELDS
+	_compact[offset] = now-_started_usec
+	_compact[offset+1] = frame_us
+	_compact[offset+2] = game.sim.state.tick
+	_compact[offset+3] = game.countdown_ticks
+	_compact[offset+4] = now-_idle_start_usec if _idle_start_usec > 0 else 0
+	_compact[offset+5] = _draw_us if _draw_count != _last_draw_count else -1000
+	_compact[offset+6] = int(blocked)
+	_compact[offset+7] = game.online_frames.size()
+	_last_draw_count = _draw_count
+	if hitch or pending: observe(_compact_row(_compact_cursor),hitch)
+	_compact_cursor = (_compact_cursor+1)%HISTORY_FRAMES
+	_compact_count = mini(HISTORY_FRAMES,_compact_count+1)
 
 static func _emitter_mask(emitters: Array) -> int:
 	var bits: int = 0
@@ -350,11 +398,13 @@ func _notification(what: int) -> void:
 		_foreground = false
 		_last_usec = 0
 		history.clear()
+		_compact_count = 0
 		flush_async()
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]:
 		_foreground = true
 		_last_usec = 0
 		history.clear()
+		_compact_count = 0
 
 func _exit_tree() -> void:
 	RenderingServer.frame_pre_draw.disconnect(_pre_draw)

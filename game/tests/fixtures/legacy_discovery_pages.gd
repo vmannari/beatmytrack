@@ -14,6 +14,7 @@ var pages: Dictionary = {}
 var loading: bool = false
 var error: String = ""
 var desired_index: int = 0
+var _visible_count: int = 0
 var locate_version: String = ""
 var last_used: int = 0
 var cache_directory: String = ""
@@ -63,6 +64,7 @@ func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh:
 	loading = false
 	error = ""
 	desired_index = 0
+	_visible_count = 0
 	_initial_refresh = true
 	snapshot_cache.max_entries = 3
 	snapshot_cache.max_age_seconds = 86400
@@ -118,6 +120,9 @@ func _fetch(page_number: int, fresh: bool = false) -> void:
 	last_used = Time.get_ticks_msec()
 	changed.emit()
 	# A fast swipe can change the requested page while the HTTP read is pending.
+	if _visible_count > 0:
+		_prefetch_visible.call_deferred(serial)
+		return
 	var wanted: int = maxi(0,desired_index/PAGE_SIZE)
 	if wanted != effective_page and wanted*PAGE_SIZE < total and not pages.has(wanted): _fetch.call_deferred(wanted)
 
@@ -139,14 +144,30 @@ func _valid_page(data: Dictionary, page_number: int) -> bool:
 		seen[index] = true
 	return true
 
-func request_visible(index: int) -> void:
+func request_visible(index: int, visible_count: int = 0) -> void:
 	desired_index = maxi(0,index)
+	_visible_count = clampi(visible_count,0,PAGE_SIZE*3)
 	if loading or total < 0 or desired_index >= total: return
+	if _visible_count > 0:
+		_prefetch_visible(generation)
+		return
 	var number: int = desired_index/PAGE_SIZE
 	if not pages.has(number): _fetch(number); return
 	pages[number].used = Time.get_ticks_msec()
 	# One-page prefetch; never drain the whole community catalog.
 	if desired_index%PAGE_SIZE >= 8 and (number+1)*PAGE_SIZE < total and not pages.has(number+1): _fetch(number+1)
+
+func _prefetch_visible(serial: int) -> void:
+	if serial != generation or _visible_count <= 0 or loading or total < 0 or not error.is_empty(): return
+	var reserve: int = clampi(_visible_count*2,PAGE_SIZE,PAGE_SIZE*3)
+	var first: int = maxi(0,desired_index-reserve)/PAGE_SIZE
+	var last: int = mini(total-1,desired_index+_visible_count+reserve)/PAGE_SIZE
+	for number: int in range(first,last+1):
+		if pages.has(number): pages[number].used = Time.get_ticks_msec()
+	for number: int in range(first,last+1):
+		if not pages.has(number):
+			_fetch(number)
+			return
 
 func entries() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []

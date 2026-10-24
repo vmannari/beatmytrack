@@ -19,11 +19,13 @@ var enabled: bool = true:
 		if not enabled: release_all()
 var layout: Dictionary = {}:
 	set(value):
-		layout = ControlLayout.upgrade(value) if not value.is_empty() else {}
+		layout = value.duplicate(true) if not value.is_empty() else {}
 		release_all()
 		queue_redraw()
 var owners: Dictionary = {}
 var touch_origins: Dictionary = {}
+# Include fingers that began outside a button, so drags can enter its hit area.
+var fingers_down: Dictionary = {}
 var safe_override := Rect2()
 var analog_value: float = 0.0
 var thumb: Control
@@ -46,6 +48,7 @@ func release_all() -> void:
 		for finger: Variant in owners: driver.release_touch(int(finger))
 	owners.clear()
 	touch_origins.clear()
+	fingers_down.clear()
 	analog_value = 0.0
 	pedal_value = 0.0
 	steering_finger = -1
@@ -296,9 +299,14 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		if not event.pressed or event.canceled:
 			_release_finger(event.index)
+			fingers_down.erase(event.index)
 		elif enabled and is_visible_in_tree():
+			fingers_down[event.index] = true
 			var local: Vector2 = get_global_transform_with_canvas().affine_inverse()*event.position
 			var action: StringName = action_at(local)
+			if not analog_controls() or action == &"handbrake":
+				_update_button(event.index,local)
+				return
 			if action != &"":
 				if analog_controls() and action != &"handbrake":
 					var steering: bool = action in [&"steer_left",&"steer_right"]
@@ -313,11 +321,44 @@ func _input(event: InputEvent) -> void:
 				_update_finger(event.index,local)
 				if action in [&"steer_left", &"steer_right"]:
 					SteeringHaptics.press(haptic_strength)
-	elif event is InputEventScreenDrag and enabled and is_visible_in_tree() and driver.touches.has(event.index):
+	elif event is InputEventScreenDrag and enabled and is_visible_in_tree():
+		if not fingers_down.has(event.index) and not driver.touches.has(event.index): return
+		var local: Vector2 = get_global_transform_with_canvas().affine_inverse()*event.position
+		var action: StringName = owners.get(event.index,driver.touches.get(event.index,&""))
+		if not analog_controls() or action not in [&"steer_left",&"steer_right",&"accelerate",&"brake"]:
+			_update_button(event.index,local)
+			return
 		# Diagnostic/platform adapters may seed a touch directly through DriverInput.
 		if not owners.has(event.index): owners[event.index] = driver.touches[event.index]
-		if not touch_origins.has(event.index): touch_origins[event.index] = get_global_transform_with_canvas().affine_inverse()*event.position
-		_update_finger(event.index,get_global_transform_with_canvas().affine_inverse()*event.position)
+		if not touch_origins.has(event.index): touch_origins[event.index] = local
+		_update_finger(event.index,local)
+
+func _update_button(finger: int, point: Vector2) -> void:
+	var action: StringName = action_at(point)
+	var previous: StringName = owners.get(finger,&"")
+	# Relative axes keep their first-contact origin and capture until release.
+	if analog_controls() and action != &"" and action != &"handbrake":
+		_release_finger(finger)
+		return
+	if action == &"":
+		# Keep the existing small edge tolerance, but a different button wins
+		# immediately whenever the finger enters its actual or padded hit area.
+		if previous != &"":
+			var index: int = ACTIONS.find(previous)
+			var target: Rect2 = touch_zones()[index]
+			if target.grow(28).has_point(point):
+				var strength: float = 1.0
+				if not layout.is_empty() and index in [2,3]:
+					strength = clampf((target.end.y+28-point.y)/28.0,0.0,1.0)
+				driver.set_touch(finger,previous,strength)
+				return
+		_release_finger(finger)
+		return
+	owners[finger] = action
+	touch_origins[finger] = point
+	driver.set_touch(finger,action)
+	if action != previous and action in [&"steer_left",&"steer_right"]:
+		SteeringHaptics.press(haptic_strength)
 
 func _update_finger(finger: int, point: Vector2) -> void:
 	var action: StringName = owners[finger]
@@ -333,22 +374,7 @@ func _update_finger(finger: int, point: Vector2) -> void:
 		pedal_value = TouchSteering.axis(origin.y-point.y,rect.size.y*TouchSteering.FULL_TRAVEL_RATIO)
 		driver.set_touch(finger,&"accelerate" if pedal_value >= 0 else &"brake",absf(pedal_value))
 		return
-	var index: int = ACTIONS.find(action)
-	var target: Rect2 = touch_zones()[index]
-	# Small excursions retain ownership; crossing to a different pedal never transfers it.
-	var held: bool = target.grow(28).has_point(point)
-	var next: StringName = action_at(point)
-	if action in [&"steer_left",&"steer_right"]:
-		if next in [&"steer_left",&"steer_right"]:
-			action = next
-			owners[finger] = action
-			held = true
-	if next != &"" and next != action: held = false
-	# The whole expanded pedal target is a full press; fade only beyond its lower edge.
-	var strength: float = 1.0
-	if not layout.is_empty() and index in [2,3]:
-		strength = clampf((target.end.y+28-point.y)/28.0,0.0,1.0)
-	driver.set_touch(finger,action,strength if held else 0.0)
+	_update_button(finger,point)
 
 
 func _touch_pressed(action: StringName) -> bool:
@@ -372,7 +398,7 @@ func _process(_delta: float) -> void:
 		thumb.visible = analog_controls()
 		pedal_thumb.visible = thumb.visible
 		if thumb.visible:
-			if driver != null and driver.touches.is_empty():
+			if driver != null and driver.touches.is_empty() and not owners.is_empty():
 				release_all()
 			var steering: Rect2 = group_rects()[layout.steering_type]
 			var pedal: Rect2 = group_rects().accelerator

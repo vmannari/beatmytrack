@@ -18,8 +18,8 @@ static func contacts(point: Vector2, heading: float, config: HandlingConfig, obj
 	return Vector4(height(point+forward-right,objects),height(point+forward+right,objects),
 		height(point-forward-right,objects),height(point-forward+right,objects))
 
-static func advance(state: VehicleState, previous: Vector2, previous_heading: float, previous_velocity: Vector2, config: HandlingConfig, objects: Array, seconds: float) -> void:
-	if objects.is_empty():
+static func advance(state: VehicleState, previous: Vector2, previous_heading: float, previous_velocity: Vector2, config: HandlingConfig, objects: Array, seconds: float, has_distant_bumps: bool = false) -> void:
+	if objects.is_empty() and not has_distant_bumps:
 		state.bump_transfer = Vector2.ZERO
 		return
 	var acceleration: float = (state.velocity-previous_velocity).dot(state.forward())/seconds

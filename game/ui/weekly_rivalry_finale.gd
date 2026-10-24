@@ -1,4 +1,5 @@
 extends VBoxContainer
+var ranking_client: Node
 ## Championship awards with verified facts and unchanged detail/continue actions.
 signal track_requested(index: int)
 signal continue_requested
@@ -75,6 +76,11 @@ func _ready() -> void:
 	columns.add_child(right)
 	_build_standings(right)
 	_build_highlights(right)
+	if not model.world_circuit.is_empty() and is_instance_valid(ranking_client):
+		var world: Control = preload("res://ui/world_ranking_week_summary.gd").new()
+		world.client = ranking_client
+		world.week_start = int(model.world_circuit.get("week_start",0))
+		right.add_child(world)
 	actions = HBoxContainer.new()
 	actions.name = "RivalryFinaleActions"
 	actions.add_theme_constant_override("separation",14)

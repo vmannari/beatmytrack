@@ -28,6 +28,7 @@ func show_resource(wallet: Dictionary, used: int) -> void:
 	race_remaining = maxi(0,3-used)
 	tooltip_text = "Race rewind limit reached" if race_remaining == 0 else ("Rewind up to 10 seconds · %d banked" % banked if banked > 0 else "Rewind up to 10 seconds · ad resume")
 	if free_rewinds and race_remaining > 0: tooltip_text = "Ad-free rewind · %d remaining this race" % race_remaining
+	if bool(wallet.get("circuit_free",false)) and race_remaining > 0: tooltip_text = "Free Circuit rewind · %d remaining this race" % race_remaining
 	queue_redraw()
 
 func _draw() -> void:

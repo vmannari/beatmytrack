@@ -44,6 +44,23 @@ def test_retired_transport_configuration_is_rejected():
     assert Settings().transport_profile == "compact"
 
 
+def test_unaccepted_saved_inputs_keep_original_body_and_retry_identity(domain):
+    version, _ = public_course(domain)
+    issued = ticket(domain, version, "Alice")
+    lookup = f"/v1/run-tickets/{issued['ticket_id']}/submission"
+    assert domain.client.get(lookup, headers=headers(domain, "Alice")).json() == {"run": None}
+    body = {"ticket_id": issued["ticket_id"], "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
+    original_key = "retained-input-operation"
+    response = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Alice", original_key))
+    assert response.status_code == 202, response.text
+    accepted = response.json()
+    repeated = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Alice", original_key))
+    assert repeated.status_code == 202 and repeated.json()["run_id"] == accepted["run_id"]
+    assert domain.client.get(lookup, headers=headers(domain, "Alice")).json()["run"]["run_id"] == accepted["run_id"]
+    with domain.factory() as db:
+        assert db.scalar(select(func.count()).select_from(Run).where(Run.ticket_id == issued["ticket_id"])) == 1
+
+
 def test_shared_studio_credentials_are_explicit_and_nonproduction(auth_app, auth_client):
     assert not Settings().studio_legacy_keys_enabled
     for values in ({"studio_legacy_keys_enabled": True}, {"admin_owner_key": "o" * 40},

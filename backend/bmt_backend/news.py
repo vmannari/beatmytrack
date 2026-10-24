@@ -78,11 +78,18 @@ def emit(session, player_id, key, kind, version_id, *, board_id=None, actor_id=N
     session.execute(statement.on_conflict_do_nothing(index_elements=["player_id", "event_key"]))
 
 
-def capture_verified(session, run, board, version, track, player):
+def capture_verified(session, run, board, version, track, player, *, previous=None):
     """Called in the accepted-result transaction. Never fans out to friends/racers."""
     if (player.is_test_driver or player.disabled or player.deleted_at is not None
             or board.manifest.get("test_population") or board.manifest.get("purpose")
             or version.state != "published" or track.hidden or track.archived):
+        return
+    # Worker facts precede PB triggers under the same Player/Run locks. A
+    # conservative negative gate saves the candidate read; possible winners
+    # still use the actual projections below, including first flying laps.
+    if (previous is not None and previous[0] and previous[1]
+            and run.time_ticks >= previous[0] and len(run.lap_ticks) == 5
+            and min(run.lap_ticks[1:]) >= previous[1]):
         return
     candidates = session.execute(select(literal("race"), PersonalBest.time_ticks).where(
         PersonalBest.board_id == board.id, PersonalBest.player_id == player.id, PersonalBest.run_id == run.id)

@@ -157,6 +157,15 @@ def report(request: Request, role: Access, window: Window):
             .where(StudioCoinEntry.created_at >= first, StudioCoinEntry.created_at < until)
             .group_by(StudioCoinEntry.kind)
         ).all()
+        from .object_models import CoinArchiveMetric
+        archived_coins = db.execute(select(CoinArchiveMetric.kind, func.sum(CoinArchiveMetric.amount),
+            func.sum(CoinArchiveMetric.count)).where(CoinArchiveMetric.at >= first, CoinArchiveMetric.at < until)
+            .group_by(CoinArchiveMetric.kind)).all()
+        merged_coins = {}
+        for kind, amount, count in [*coins, *archived_coins]:
+            previous = merged_coins.get(kind, (0, 0))
+            merged_coins[kind] = previous[0]+amount, previous[1]+count
+        coins = [(kind, amount, count) for kind, (amount, count) in sorted(merged_coins.items())]
         return {
             "role": role,
             "as_of": now(),

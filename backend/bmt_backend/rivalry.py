@@ -577,7 +577,8 @@ def acknowledge(group_id: str, request: Request, session: DB, player: Auth, key:
 
 
 @router.get("/rivalry/{group_id}/tracks/{slot}/ghosts/{driver_id}")
-def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: BoardDB, player: Auth):
+def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: BoardDB, player: Auth,
+          metadata: bool = False, expected_run_id: str = "", encoding: str = "json"):
     from .community import check_creator
     check_creator(session, player.id, driver_id)
     group, _ = require_member(session, group_id, player.id, request)
@@ -589,9 +590,10 @@ def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: B
     run = session.get(Run, best.run_id) if best else None
     if run is None or not run.ghost_hash:
         raise HTTPException(404, "Rival ghost unavailable")
-    run_id, ghost_hash = run.id, run.ghost_hash
+    run_id, ghost_hash, owner_id = run.id, run.ghost_hash, run.player_id
     session.commit()
-    return {"run_id": run_id, "recording": request.app.state.blobs.get_json(ghost_hash)}
+    from .ghost_http import recording_response
+    return recording_response(request, run_id, ghost_hash, owner_id, metadata=metadata, expected_run_id=expected_run_id, encoding=encoding)
 
 
 def conditional_snapshot(request, value):

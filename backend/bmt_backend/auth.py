@@ -16,6 +16,7 @@ from .countries import COUNTRY_CODES
 from .db import get_session
 from .identity_models import Identity, LoginChallenge, Player, SessionFamily, SessionToken, now
 from .middleware import ParsedJSONRoute
+from .name_moderation import require_allowed_names, validate_name
 from .security import bearer, current_player, development_session_disabled, digest
 from .usernames import DEVELOPER_NAME, DEVELOPER_NAME_KEY, username_key
 
@@ -37,7 +38,7 @@ class ProfileBody(StrictBody):
             raise ValueError("Use a visible name without control characters")
         if len(username_key(name)) > Player.__table__.c.username_key.type.length:
             raise ValueError("Name expands beyond the supported comparison length")
-        return name
+        return validate_name(name)
 
 
 class GoogleLogin(StrictBody):
@@ -234,6 +235,9 @@ def google_login(body: GoogleLogin, request: Request, session: Session = Depends
 
 
 def complete_google_login(subject: str, display_name: str | None, request: Request, session: Session):
+    # Browser handoffs can have been saved before the current name policy.
+    if display_name is not None:
+        require_allowed_names(display_name)
     identity = session.scalar(
         select(Identity).where(Identity.provider == "google", Identity.subject == subject)
     )

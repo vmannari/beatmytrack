@@ -53,6 +53,18 @@ def test_retained_test_population_has_separate_runtime_secret(tmp_path):
         staging.environment(c, "api")
 
 
+def test_api_and_private_studio_explicitly_select_the_bounded_http_entrypoint(tmp_path):
+    c = config()
+    c["admin_enabled"] = True
+    commands = staging.deployment_commands(c, "fixture-image", tmp_path)
+    for role, factory in (("api", "create_app"), ("admin", "create_admin_app")):
+        assert "--command=python" in commands[role]
+        args = next(v for v in commands[role] if v.startswith("--args="))
+        assert args.startswith("--args=-m,bmt_backend.http_server,bmt_backend.app:" + factory + ",")
+        assert "--no-proxy-headers" in args
+    assert not any("bmt_backend.http_server" in v for v in commands["worker"])
+
+
 class Runner:
     def __init__(self, c):
         self.c, self.n = c, staging.names(c)

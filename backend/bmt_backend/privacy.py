@@ -342,6 +342,12 @@ def cleanup_one(app):
 
 
 def finish_cleanup(app, session, job, *, final=True):
+    from .object_models import ArchiveKey
+    archive_key = session.get(ArchiveKey, job.player_id)
+    if archive_key is not None:
+        session.delete(archive_key)
+        session.commit()
+        return True
     # Extend the final cleanup without changing the persisted v1 stage indices.
     from .discovery_erasure import erase_private as erase_discovery
     if not erase_discovery(session, job.player_id):

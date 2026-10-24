@@ -33,7 +33,12 @@ class Challenge(Base):
     ends_at: Mapped[int] = mapped_column(Integer)
     member_count: Mapped[int] = mapped_column(Integer, default=1)
     attempt_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    track_count: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     cancelled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+    @property
+    def is_series(self):
+        return self.track_count > 1
 
 
 class ChallengeMember(Base):
@@ -56,7 +61,7 @@ class ChallengeTicket(Base):
 
 class ChallengeStage(Base):
     __tablename__ = "challenge_stages"
-    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal < 3"),)
+    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal < 5", name="ck_challenge_stage_ordinal"),)
     challenge_id: Mapped[str] = mapped_column(ForeignKey("challenges.id"), primary_key=True)
     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"))
@@ -67,7 +72,7 @@ class ChallengeStageMember(Base):
     __table_args__ = (
         ForeignKeyConstraint(["challenge_id", "ordinal"], ["challenge_stages.challenge_id", "challenge_stages.ordinal"]),
         ForeignKeyConstraint(["challenge_id", "player_id"], ["challenge_members.challenge_id", "challenge_members.player_id"]),
-        CheckConstraint("attempts_used >= 0 AND attempts_used <= 3"),
+        CheckConstraint("attempts_used >= 0", name="ck_challenge_stage_attempts"),
         Index("ix_challenge_stage_member_run", "run_id"),
     )
     challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)

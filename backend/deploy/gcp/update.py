@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import staging
@@ -133,7 +133,8 @@ class Updater:
         for kind, command in targets:
             self.check_source()
             print("Updating " + kind, flush=True)
-            s.call("run", command, "update", s.n[kind], "--region=" + self.config["region"], "--image=" + image)
+            http = staging.http_command("create_admin_app" if kind == "admin" else "create_app") if kind in ("api", "admin") else []
+            s.call("run", command, "update", s.n[kind], "--region=" + self.config["region"], "--image=" + image, *http)
             self.receipt[kind + "_updated"] = True
             self.save()
         for job in ([s.n["smoke"], catalog] if catalog_exists else [s.n["smoke"]]):

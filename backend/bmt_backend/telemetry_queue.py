@@ -1,5 +1,6 @@
 """Telemetry v2: short append/admission transactions, independent SQL owners."""
 import hashlib
+import time
 from collections import Counter, defaultdict
 
 from fastapi import HTTPException
@@ -136,7 +137,7 @@ def register_ids(session, ids, *, capacity=None):
         register(session, rows, capacity=capacity)
 
 
-def prepare(factory, limit=500):
+def prepare(factory, limit=500, *, readiness=False):
     """Bounded routing of pre-cutover or explicit fixture receipts."""
     with factory() as session:
         control = activate(session)
@@ -150,7 +151,23 @@ def prepare(factory, limit=500):
         control.ready = session.scalar(select(ProductEvent.id).where(ProductEvent.partition_id.is_(None),
             ProductEvent.processed_at.is_(None)).limit(1)) is None
         session.commit()
-        return len(rows)
+        return (len(rows), control.ready) if readiness else len(rows)
+
+
+class PreparationSchedule:
+    """Process-local empty-check coalescing; never retires legacy recovery."""
+    def __init__(self, interval=5.0):
+        self.interval = interval
+        self.next_at = 0.0
+
+    def step(self, factory, limit=500, *, tick=None):
+        tick = time.monotonic() if tick is None else tick
+        if tick < self.next_at:
+            return 0
+        count, ready = prepare(factory, limit, readiness=True)
+        # A contended/credit-blocked queue is not ready just because we took no rows.
+        self.next_at = tick + (self.interval if ready else 0)
+        return count
 
 
 def lock_actor(session, player_id):

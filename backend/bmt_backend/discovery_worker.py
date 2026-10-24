@@ -9,7 +9,8 @@ from dataclasses import replace
 
 from .config import Settings
 from .db import make_engine, make_session_factory
-from .discovery_projection import health, repair_track, step
+from .discovery_daily import step as daily_step
+from .discovery_projection import DiscoveryMaintenance, health, repair_track, step
 
 
 def main():
@@ -25,6 +26,8 @@ def main():
     factory = make_session_factory(engine)
     idle = 0
     report_at = 0.0
+    daily_at = 0.0
+    maintenance = DiscoveryMaintenance()
     try:
         if args.repair_track:
             import uuid
@@ -34,7 +37,11 @@ def main():
             return
         while not stop.is_set():
             try:
-                worked = step(factory)
+                worked = step(factory, maintenance=maintenance)
+                if time.monotonic() >= daily_at:
+                    daily_work = daily_step(factory)
+                    daily_at = time.monotonic() + (0.01 if daily_work else 30)
+                    worked = daily_work or worked
                 if time.monotonic() >= report_at:
                     logging.getLogger("bmt.discovery").info("discovery_projection_health %s",json.dumps(health(factory)))
                     report_at = time.monotonic()+60

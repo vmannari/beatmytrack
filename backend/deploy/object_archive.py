@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import io
 import os
 import re
@@ -17,10 +18,28 @@ from bmt_backend.storage import MAX_STORED_BLOB_BYTES, decode_blob_json, sync_di
 
 def object_digest(relative):
     parts = relative.parts
+    if len(parts) == 3 and parts[0] == "packs":
+        if not re.fullmatch(r"[0-9a-f]{2}", parts[1]) or not re.fullmatch(r"[0-9a-f]{64}\.pack", parts[2]) or not parts[2].startswith(parts[1]):
+            raise ValueError("Invalid immutable pack path")
+        return parts[2][:64]
     if (len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{2}", parts[0])
             or not re.fullmatch(r"[0-9a-f]{64}\.json", parts[1]) or not parts[1].startswith(parts[0])):
         raise ValueError("Invalid content-addressed object path")
     return parts[1][:64]
+
+
+def valid_directory(relative):
+    return ((len(relative.parts) == 1 and (relative.parts[0] == "packs" or re.fullmatch(r"[0-9a-f]{2}", relative.parts[0])))
+            or (len(relative.parts) == 2 and relative.parts[0] == "packs" and re.fullmatch(r"[0-9a-f]{2}", relative.parts[1])))
+
+
+def validate_payload(relative, body):
+    key = object_digest(relative)
+    if relative.parts[0] == "packs":
+        if not body.startswith(b"BMTPACK1") or hashlib.sha256(body).hexdigest() != key:
+            raise ValueError("Immutable pack integrity failure")
+    else:
+        decode_blob_json(body, key)
 
 
 def require_empty(root: Path) -> None:
@@ -64,17 +83,17 @@ def archive(root: Path) -> None:
                     raise ValueError("Only regular object files and directories can be backed up")
                 relative = source.relative_to(root)
                 if source.is_dir():
-                    if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", name):
+                    if not valid_directory(relative):
                         raise ValueError("Invalid object shard")
                     output.add(source, arcname=relative.as_posix(), recursive=False)
                 else:
-                    key = object_digest(relative)
+                    object_digest(relative)
                     with source.open("rb") as stream:
                         body = stream.read(MAX_STORED_BLOB_BYTES + 1)
                         entry = output.gettarinfo(fileobj=stream, arcname=relative.as_posix())
                     if not entry.isfile():
                         raise ValueError("Object must be a regular file")
-                    decode_blob_json(body, key)
+                    validate_payload(relative, body)
                     # Verify and archive the same bounded bytes, rather than
                     # reopening a file after its integrity check.
                     entry.size = len(body)
@@ -96,6 +115,22 @@ def archive_objects(store) -> None:
                 output.addfile(entry, io.BytesIO(payload))
             if cursor is None:
                 break
+        from bmt_backend.pack_io import PackIO
+        if not hasattr(store, "prefix") or not hasattr(store, "_request"):
+            return
+        packs = PackIO(store, 8*1024*1024)
+        cursor = None
+        while True:
+            rows, cursor = packs.list(cursor)
+            for row in rows:
+                body = packs.get(row["digest"], 0, row["bytes"])
+                relative = PurePosixPath(packs.key(row["digest"]))
+                validate_payload(relative, body)
+                entry = tarfile.TarInfo(relative.as_posix())
+                entry.size = len(body)
+                output.addfile(entry, io.BytesIO(body))
+            if cursor is None:
+                break
 
 
 def restore(root: Path) -> None:
@@ -110,11 +145,11 @@ def restore(root: Path) -> None:
                 raise ValueError("Archive links and special files are forbidden")
             destination = root.joinpath(*relative.parts)
             if member.isdir():
-                if len(relative.parts) != 1 or not re.fullmatch(r"[0-9a-f]{2}", relative.parts[0]):
+                if not valid_directory(relative):
                     raise ValueError("Invalid object shard")
                 destination.mkdir(parents=True, exist_ok=True)
             else:
-                key = object_digest(relative)
+                object_digest(relative)
                 if not 0 <= member.size <= MAX_STORED_BLOB_BYTES:
                     raise ValueError("Stored object exceeds limit")
                 payload = source.extractfile(member)
@@ -124,7 +159,7 @@ def restore(root: Path) -> None:
                     body = payload.read(MAX_STORED_BLOB_BYTES + 1)
                 if len(body) != member.size:
                     raise ValueError("Truncated object archive")
-                decode_blob_json(body, key)
+                validate_payload(relative, body)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 # Exclusive create rejects duplicate file entries and never overwrites.
                 with destination.open("xb") as output:

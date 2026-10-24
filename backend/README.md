@@ -6,6 +6,10 @@ Game Configuration is implemented locally in the app, gameplay API and private S
 Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../docs/SECURITY_FIXES_2026_10_24.md).
 <!-- /SECURITY-FIXES-20261024 -->
 
+<!-- SEC09-SEC10-FIXES-20261024 -->
+SEC09/SEC10 source fixes use `python -m bmt_backend.http_server` for bounded pre-ASGI headers/idle connections and share the reviewed provisioning/startup PostgreSQL grant policy. Existing cloud command overrides need the matching updater. Current schema0065 also quotes its reserved `offset` constraint identifier. Validated locally; no rollout performed. See [implementation, tests and rollout limits](../docs/SEC09_SEC10_FIXES_2026_10_24.md).
+<!-- /SEC09-SEC10-FIXES-20261024 -->
+
 # Beat my track backend
 
 ## Current setup and release status — reviewed 2026-10-24
@@ -374,6 +378,15 @@ Studio expansion local checkpoint: [scope and validation](../docs/STUDIO_EXPANSI
 
 ## Public-content safety
 
+Public naming writes use a bundled local profanity filter for signup/profile
+names, publication/revision names (including the downloadable document), and
+the source names used by new challenge titles. Rejections return HTTP 422 with
+`NAME_NOT_ALLOWED: Please choose another name.` Existing exact receipts remain
+recoverable; queued publication checks names again before committing. See
+[policy, coverage, validation and rollout](../docs/LOCAL_NAME_FILTER_2026_10_24.md).
+The package includes its dictionaries and license; no runtime service call or
+new database migration is required.
+
 Migration `0036_community_safety` records versioned publication-rules acceptance, private account blocks and explicit reported-player case targets. The matching game provides Report track / Report player, block/unblock, report status and appeals in Settings → Privacy → Community safety. Fresh publication and legacy upload paths require the current acceptance before storing user content. Blocks cover discovery, downloads, new race/challenge interactions and cached game presentation; quarantined tracks lose public documents and pinned Rivalry artwork/text while historical scores remain. The Backend Studio owner is responsible for daily case review and the existing audited content/account actions. See the [operating assignment, flows, tests and rollout limits](../docs/PUBLIC_CONTENT_SAFETY.md). Applying migrations or deploying a matching client/service remains a separate release action.
 
 ## Account privacy and erasure journal
@@ -478,3 +491,47 @@ See [implementation and rollout](../docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23
 for exact rules, correction commands, retention, measured capacity, source
 manifests, native views, remaining acceptance and connection-budget checks.
 This change has not been deployed or enabled on a live service.
+
+### Negotiated completion and pending reads
+
+Bootstrap advertises `run_completion_version=1` and `challenge_pending_version=1`.
+New clients request `completion=true` on run status, bounded waits and submission
+recovery. Terminal responses can include exact hot coin receipts and an absolute
+wallet snapshot with its revision. A batch sends its wallet once as
+`completion_wallet`; only single-run reads optionally include a full authorized
+challenge result. Pending runs perform no enrichment reads. Optional enrichment
+failures leave ordinary status readable. Archived receipts use the existing
+independent reward-recovery endpoint; reads never grant coins.
+
+`compact=true` on challenge-result reads returns `bmt-challenge-pending-v1` only
+while the run is pending. It retains current content/block checks, clocks, reward
+availability and attempt budgets, including each series stage. Terminal and
+ordinary requests retain complete snapshots. The client refreshes the full view
+on the first eligible poll after ten seconds and immediately for terminal
+results, with existing retry backoff during outages. It validates compact updates
+against the loaded challenge, rejects stale account replies and invalidates
+cached challenge completions on local safety changes. Wallet revisions prevent
+older race replies from undoing newer purchases. Background achievement refreshes
+remain independent.
+
+The worker also skips the newspaper candidate read only when locked server facts
+prove neither the race nor flying-lap PB can improve. Actual projections still
+decide all possible record announcements. Race validation, rewards, standings,
+ghost persistence and series result-reference semantics retain their existing
+rules. No schema migration is required. Deploy matching API/client versions to
+use the new capabilities; ordinary requests and older servers retain fallbacks.
+See [wire schema](schemas/race-read-v1.schema.json) and
+[implementation evidence](../docs/evidence/race-outcome-optimisations-2026-10-24/report.json).
+
+
+### Native upload and idle-work optimisation (HIO01-HIO04, 2026-10-24)
+
+Bootstrap advertises `race_path_wire_version: 1`. A trajectory may carry `bmt-packed-path-v1` instead of `bmt-race-path-v1`: `count`, base64 `data`, and optional unchanged `incidents`. Each little-endian 21-byte record is uint32 tick, Float64 x/y and one metadata byte (bit 0 layer, bits 1/2 indicate integer x/y; other bits zero). The bounded API decoder checks count (2-36012), exact lengths, finite coordinates, tick/layer domain and exact integer flags before normalization and the existing replay hash/idempotency/storage boundary. Original JSON number identity, signed zero, gates, sampling, rewind receipts, incidents, ghosts, five laps, rewards and verification remain. Server storage retains the same normalized proof; this saves upload bytes, not proof-storage bytes.
+
+New native outbox jobs pin `wire_options` before the first send, including the incident-report option. Retrying or queueing the same ticket never replaces those options, the saved recording or operation key. Older jobs keep their original encoder. A newly negotiated packed job refreshes bootstrap and defers with a transient 503 if its required reader is unavailable. Roll out the API decoder before a client uses it, and retain that decoder/support declaration for already queued packed jobs during rollback. An older server without the capability receives ordinary JSON from new jobs.
+
+Clean Garage polling yields while a Game is retained. Dirty edits, pending acknowledgements, first synchronization and failures continue their existing prompt/bounded recovery. Returning to a menu or foreground refreshes stale state; explicit Rivalry sync and GET-before-CAS semantics remain. Established wallet GETs read eligible owner, balance/revision, ownership and opening-ledger provenance in one coherent statement. Missing wallets/opening facts retain locked initialization/reconciliation. Purchases/reward writes retain their original locks and idempotency; client revisions remain monotonic.
+
+The discovery worker uses process-local five-second schedules for empty global bootstrap, accounting and cleanup checks, draining nonempty bounded batches without that delay. It claims only partitions with work or due rank/expiry/audit/health checks, preserving 30-second health turns and 60-second source-audit cadence. Global cleanup also runs when no partition is due. Deadlines advance after commit; diagnostic direct `step()` calls retain complete maintenance by default. Telemetry's process-local preparation schedule waits five seconds only after a confirmed ready queue; busy/credit-blocked legacy receipts are not called empty, server routing still works at exhausted client credit, and each process restart checks immediately. Existing worker resource limits and roles remain.
+
+Evidence and limits: `docs/evidence/scale-optimisations-2026-10-24/report.json`. Local fixture byte/query/CPU changes do not establish production bill savings. PostgreSQL contention/plans, representative load and physical-device CPU/battery remain unverified; no migration or deployment was performed.

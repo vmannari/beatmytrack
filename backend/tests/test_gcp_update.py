@@ -97,4 +97,7 @@ def test_backup_and_queue_precede_migration(tmp_path, monkeypatch, backup_succes
         queue = next(i for i, event in enumerate(events) if event[0] == "remote-check" and "queue_depth" in event[1])
         migration = next(i for i, event in enumerate(events) if event[:4] == ("run", "jobs", "update", "migrate"))
         assert backup < queue < migration
+        api = next(event for event in events if event[:4] == ("run", "services", "update", "api"))
+        assert "--command=python" in api
+        assert any(v.startswith("--args=-m,bmt_backend.http_server,bmt_backend.app:create_app,") for v in api)
         assert json.loads((tmp_path / "update-receipt.json").read_text())["completed"] is True

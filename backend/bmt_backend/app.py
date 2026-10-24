@@ -83,6 +83,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
                 await run_in_threadpool(adapter.manifest)
             yield
         finally:
+            application.state.http_costs.flush()
             await run_in_threadpool(application.state.studio_reporting.close)
             await run_in_threadpool(application.state.run_signals.close)
             try:
@@ -112,6 +113,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.engine._bmt_run_signals = app.state.run_signals
     app.state.identity_budgets = IdentityBudgets(app.state.session_factory)
     app.state.blobs = make_blob_store(settings, app.state.session_factory)
+    app.state.session_factory.configure(info={"cost_archive_blobs": app.state.blobs, "cost_archive_days": settings.cost_archive_days})
     from .erasure_journal import make_journal
     app.state.erasure_journal = make_journal(settings)
     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
@@ -120,8 +122,12 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.readiness = ReadinessProbe(app)
     app.state.worker_heartbeat_memory = __import__("collections").OrderedDict()
     app.state.worker_heartbeat_lock = __import__("threading").RLock()
+    from .http_costs import HttpCostCounters
+    app.state.http_costs = HttpCostCounters(settings)
+    from .immutable_payloads import ImmutablePayloadCache
+    app.state.immutable_payloads = ImmutablePayloadCache()
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3)
-    app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory)
+    app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory, http_costs=app.state.http_costs)
     from .workloads import administration_enabled
     if administration_enabled(settings):
         app.include_router(admin.router)
@@ -183,8 +189,10 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, _error):
         # Pydantic error details contain input values, including authentication credentials.
+        from .name_moderation import REJECTION
+        detail = REJECTION if any(error["type"] == "inappropriate_name" for error in _error.errors()) else "INVALID_INPUT"
         return JSONResponse(
-            {"detail": "INVALID_INPUT", "request_id": request.state.request_id}, status_code=422
+            {"detail": detail, "request_id": request.state.request_id}, status_code=422
         )
 
     @app.exception_handler(SQLAlchemyError)
@@ -265,16 +273,24 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "rewind_policy": "rewind-1",
             "verification": "trajectory-v1",
             "trajectory_verification": True,
+            "race_path_wire_version": 1,
             "submission_recovery_version": 1,
+            "run_completion_version": 1,
+            "challenge_pending_version": 1,
             "race_incident_rewards_version": 1,
             "challenge_discovery_version": 1,
             "challenge_series_version": 1,
+            "challenge_custom_tracks_version": 1,
             "world_ranking_version": 1, "world_ranking_launch_week": settings.world_ranking_launch_week,
             "lightweight_race_proofs": True,
             "track_lifecycle_version": 1,
             "discovery_paging_version": 3,
+            "discovery_preview_version": 1,
+            "discovery_daily_version": 1,
             "max_request_bytes": settings.max_body_bytes,
             "upload_encodings": ["identity", "gzip"],
+            "ghost_identity_version": 1,
+            "ghost_wire_version": 1,
             "replay_wire_schema": "bmt-packed-input-v1",
             "batch_run_status": True,
             "run_wait_ms": 2000,

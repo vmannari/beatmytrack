@@ -2,6 +2,7 @@
 from sqlalchemy import delete, select, tuple_
 
 from .discovery_models import (
+    DiscoveryActivity,
     DiscoveryBoundary,
     DiscoveryChange,
     DiscoveryCollection,
@@ -47,6 +48,16 @@ def erase_private(db, player_id, limit=100):
             db.delete(collection)
         return False
     db.execute(delete(DiscoveryGuard).where(DiscoveryGuard.scope == actor))
+    activity_rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.player_id == player_id).limit(limit)))
+    if activity_rows:
+        from .discovery_activity import remove
+
+        list(db.scalars(select(DiscoveryPartition).where(DiscoveryPartition.id.in_({r.partition for r in activity_rows}))
+            .order_by(DiscoveryPartition.id).with_for_update()))
+        activity_rows = list(db.scalars(select(DiscoveryActivity).where(DiscoveryActivity.id.in_([r.id for r in activity_rows]))
+            .execution_options(populate_existing=True)))
+        remove(db, activity_rows)
+        return False
     # Lock affected partitions in the same order as all projection writers.
     drivers = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.player_id == player_id).limit(limit)))
     if drivers:

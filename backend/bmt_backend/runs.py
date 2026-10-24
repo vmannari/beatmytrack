@@ -289,7 +289,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
 
 
 @router.get("/run-tickets/{ticket_id}/submission")
-def recover_submission(ticket_id: str, session: DB, player: Auth) -> dict:
+def recover_submission(ticket_id: str, request: Request, session: DB, player: Auth, completion: bool = False) -> dict:
     """Read an already accepted ticket without replacing its immutable replay."""
     if len(ticket_id) != 36:
         raise HTTPException(404, "Run ticket not found")
@@ -302,30 +302,39 @@ def recover_submission(ticket_id: str, session: DB, player: Auth) -> dict:
         return {"run": None}
     from .rivalry_models import RivalryTicket
     binding = session.get(RivalryTicket, ticket.id)
+    from .completion_reads import single
     return {"run": {**run_payload(run), "outcome": binding.outcome if binding else None,
-                    "slot": binding.slot if binding else None}}
+                    "slot": binding.slot if binding else None,
+                    **(single(session, run, player.id, request) if completion else {})}}
 
 
 @router.get("/runs/status")
-def run_statuses(session: DB, player: Auth, ids: list[str] = Query(max_length=32)) -> dict:
+def run_statuses(session: DB, player: Auth, ids: list[str] = Query(max_length=32), completion: bool = False) -> dict:
     from .rivalry_models import RivalryTicket
     rows = session.execute(select(Run, RivalryTicket.outcome, RivalryTicket.slot)
         .outerjoin(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
         .where(Run.player_id == player.id, Run.id.in_(ids))).all()
-    return {"items": [{**run_payload(run), "outcome": outcome, "slot": slot} for run, outcome, slot in rows], "poll_after_ms": 2500}
+    from .completion_reads import enrich
+    values, wallet = enrich(session, [row[0] for row in rows], player.id) if completion else ({}, None)
+    return {"items": [{**run_payload(run), "outcome": outcome, "slot": slot,
+                       **({"completion": values[run.id]} if run.id in values else {})}
+                      for run, outcome, slot in rows], "poll_after_ms": 2500,
+            **({"completion_wallet": wallet} if wallet is not None else {})}
 
 
 @router.get("/runs/{run_id}")
-def get_run(run_id: str, session: DB, player: Auth) -> dict:
+def get_run(run_id: str, request: Request, session: DB, player: Auth, completion: bool = False) -> dict:
     run = session.scalar(select(Run).where(Run.id == run_id, Run.player_id == player.id))
     if run is None:
         raise HTTPException(404, "Run not found")
     from .rivalry_models import RivalryTicket
     binding = session.get(RivalryTicket, run.ticket_id)
-    return {**run_payload(run), "outcome": binding.outcome if binding else None, "slot": binding.slot if binding else None}
+    from .completion_reads import single
+    return {**run_payload(run), "outcome": binding.outcome if binding else None, "slot": binding.slot if binding else None,
+            **(single(session, run, player.id, request) if completion else {})}
 
 
-def waiting_run_snapshot(request, run_id, player_id, credentials):
+def waiting_run_snapshot(request, run_id, player_id, credentials, completion=False):
     """One short, fresh read; no connection/transaction survives the return."""
     from .identity_models import SessionFamily, SessionToken
     from .rivalry_models import RivalryTicket
@@ -350,12 +359,14 @@ def waiting_run_snapshot(request, run_id, player_id, credentials):
         from .security import development_session_disabled
         if owner.disabled or owner.deleted_at is not None or development_session_disabled(request, session, owner):
             raise HTTPException(401, "INVALID_SESSION")
-        return {**run_payload(run), "outcome": outcome, "slot": slot}
+        from .completion_reads import single
+        return {**run_payload(run), "outcome": outcome, "slot": slot,
+                **(single(session, run, player_id, request) if completion else {})}
 
 
 @router.get("/runs/{run_id}/wait")
 async def wait_run(run_id: str, request: Request, session: DB, player: Auth,
-                   credentials=Depends(bearer), timeout_ms: int = Query(2000, ge=0, le=2000)):
+                   credentials=Depends(bearer), timeout_ms: int = Query(2000, ge=0, le=2000), completion: bool = False):
     """Bounded foreground completion; ordinary status polling remains available."""
     from .run_signals import TERMINAL
     if len(run_id) != 36:
@@ -369,7 +380,7 @@ async def wait_run(run_id: str, request: Request, session: DB, player: Auth,
         while True:
             if watch:
                 watch.event.clear()  # Register before reading so commit cannot be lost.
-            value = await run_in_threadpool(waiting_run_snapshot, request, run_id, player_id, credentials)
+            value = await run_in_threadpool(waiting_run_snapshot, request, run_id, player_id, credentials, completion)
             remaining = deadline - time.monotonic()
             if not watch or value["status"] in TERMINAL or remaining <= 0 or signals.stopped:
                 return value

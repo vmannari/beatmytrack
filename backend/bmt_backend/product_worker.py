@@ -14,7 +14,7 @@ from .db import make_engine, make_session_factory
 from .product_analytics import project_pending
 from .telemetry_models import ProductEvent
 from .telemetry_processing import actor_once, maintenance, publish, record_failure, retry_stage, shared_once
-from .telemetry_queue import fold_one, prepare
+from .telemetry_queue import PreparationSchedule, fold_one
 
 
 def pending_exists(factory):
@@ -44,11 +44,12 @@ def main():
             return
         roles = ("actor", "shared", "rollup") if args.stage == "all" else (args.stage,)
         turn, idle_wait, summary_at, maintenance_at = 0, .05, 0.0, 0.0
+        preparation = PreparationSchedule()
         while not stop.is_set():
             role = roles[turn % len(roles)]
             turn += 1
             try:
-                prepare(factory, settings.telemetry_processor_batch)
+                preparation.step(factory, settings.telemetry_processor_batch)
                 if role == "actor":
                     worked = retry_stage(actor_once, factory, settings.telemetry_processor_batch,
                         fact_days=settings.telemetry_fact_days)

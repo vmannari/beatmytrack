@@ -2,7 +2,6 @@
 
 import asyncio
 import hashlib
-import json
 import logging
 import threading
 import time
@@ -133,8 +132,10 @@ class ParsedJSONRoute(APIRoute):
 
 
 class RequestBoundary:
-    def __init__(self, app, settings, session_factory):
+    def __init__(self, app, settings, session_factory, http_costs=None):
         self.app, self.settings, self.session_factory = app, settings, session_factory
+        from .http_costs import HttpCostCounters
+        self.http_costs = http_costs or HttpCostCounters(settings)
         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
         # A telemetry tree is capped at 64 KiB on the wire. Allow independent
         # requests while retaining a fixed live-tree bound and, where possible,
@@ -627,8 +628,7 @@ class RequestBoundary:
             if scope.get("state", {}).pop("discovery_search_admitted", False):
                 self.discovery_expensive.release()
             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
-            log.info(
-                json.dumps(
+            self.http_costs.observe(
                     {
                         "event": "http_request",
                         "request_id": request_id,
@@ -640,5 +640,4 @@ class RequestBoundary:
                         "request_decoded_bytes":decoded_bytes,
                         "response_wire_bytes":response_bytes,
                     }
-                )
             )

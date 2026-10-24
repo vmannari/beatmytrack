@@ -48,7 +48,7 @@ def main() -> None:
     config.chmod(0o600)
     override = evidence / "override.yaml"
     override_content = (
-        'services:\n  api:\n    command: [uvicorn, "bmt_backend.app:create_app", --factory, '
+        'services:\n  api:\n    command: [python, -m, bmt_backend.http_server, "bmt_backend.app:create_app", --factory, '
         '--host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log]\n'
     )
     if args.full_image:

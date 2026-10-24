@@ -16,6 +16,6 @@ class Query(BaseModel):
     raced_ids: list[Annotated[str, Field(max_length=80)]] = Field(default_factory=list, max_length=50000)
     ids: list[Annotated[str, Field(max_length=80)]] | None = Field(None, max_length=50000)
     section: str = Field("all", pattern="^(all|favorites|saved)$")
-    feed: str = Field("recommended", pattern="^(recommended|new|popular|rated|trending)$")
+    feed: str = Field("recommended", pattern="^(recommended|daily|new|popular|rated|trending)$")
     sort: str = Field("recommended", pattern="^(recommended|name|creator|score|plays|new)$")
 

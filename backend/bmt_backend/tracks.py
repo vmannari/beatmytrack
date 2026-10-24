@@ -15,6 +15,7 @@ from .cursors import decode_cursor, encode_cursor
 from .db import get_session
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
+from .name_moderation import validate_name, validate_track_document
 from .security import bearer, current_player
 from .storage import canonical_json
 from .track_models import (
@@ -36,6 +37,13 @@ Auth = Annotated[Player, Depends(current_player)]
 Key = Annotated[str, Header(alias="Idempotency-Key")]
 
 
+def clean_track_name(name: str) -> str:
+    name = name.strip()
+    if not name or any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError("Track name must be nonempty and contain no control characters")
+    return name
+
+
 class TrackContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=80)
@@ -44,10 +52,12 @@ class TrackContent(BaseModel):
     @field_validator("name")
     @classmethod
     def clean_name(cls, name: str) -> str:
-        name = name.strip()
-        if not name or any(ord(char) < 32 or ord(char) == 127 for char in name):
-            raise ValueError("Track name must be nonempty and contain no control characters")
-        return name
+        return validate_name(clean_track_name(name))
+
+    @field_validator("document")
+    @classmethod
+    def clean_document_name(cls, document: dict) -> dict:
+        return validate_track_document(document)
 
 
 class Vote(BaseModel):
@@ -281,8 +291,9 @@ def public_document(version_id: str, request: Request, session: DB, credentials=
         return Response(status_code=304, headers=headers)
     content_hash = version.content_hash
     session.commit()
-    document = request.app.state.blobs.get_json(content_hash)
-    return Response(canonical_json(document), media_type="application/json", headers=headers)
+    body = request.app.state.immutable_payloads.get(("track", content_hash),
+        lambda: canonical_json(request.app.state.blobs.get_json(content_hash)))
+    return Response(body, media_type="application/json", headers=headers)
 
 
 @router.get("/track-versions/{version_id}/rating")

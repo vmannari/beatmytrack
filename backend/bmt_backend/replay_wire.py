@@ -8,6 +8,11 @@ MAX_FRAMES = 216000
 
 
 def unpack_replay(value):
+    if value.get("schema") == "bmt-trajectory-v1":
+        from .path_wire import unpack_path
+        if type(value.get("race_proof")) is dict:
+            return {**value, "race_proof": unpack_path(value["race_proof"])}
+        return value
     if value.get("schema") != "bmt-packed-input-v1":
         return value
     count, controls = value.get("frame_count"), value.get("controls")

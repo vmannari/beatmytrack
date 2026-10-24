@@ -256,13 +256,14 @@ class PinnedBlobStore:
     GC locks the same hash and rechecks references. The pin outlives bounded API
     transactions and verifier leases; a process crash cannot leak a permanent pin.
     """
-    def __init__(self, store, factory, lease_seconds=600):
+    def __init__(self, store, factory, lease_seconds=600, *, track_gc=False):
         self.store, self.factory, self.lease_seconds = store, factory, lease_seconds
+        self.track_gc = track_gc
 
     def __getattr__(self, name):
         return getattr(self.store, name)
 
-    def _pin(self, digest):
+    def _pin(self, digest, *, publish=False):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -273,6 +274,10 @@ class PinnedBlobStore:
             statement = insert(ObjectPin).values(digest=digest, expires_at=now()+self.lease_seconds)
             session.execute(statement.on_conflict_do_update(index_elements=[ObjectPin.digest],
                 set_={"expires_at":statement.excluded.expires_at}))
+            if publish and self.track_gc:
+                from .object_models import ObjectGarbageCandidate
+                session.execute(insert(ObjectGarbageCandidate).values(digest=digest, due_at=now()+86400)
+                    .on_conflict_do_nothing(index_elements=[ObjectGarbageCandidate.digest]))
             session.commit()
 
     def put_json(self, data):
@@ -280,14 +285,53 @@ class PinnedBlobStore:
         if len(body) > 8*1024*1024:
             raise ValueError("Object exceeds limit")
         key = hashlib.sha256(body).hexdigest()
-        self._pin(key)
+        self._pin(key, publish=True)
         return self.store.put_json(data)
 
     def get_json(self, digest):
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError("Invalid object digest")
         self._pin(digest)
-        return self.store.get_json(digest)
+        try:
+            return self.store.get_json(digest)
+        except OSError:
+            # Turning off new packing writes must not strand previously accepted
+            # pending/packed objects during rollback or a local restore.
+            if hasattr(self.store, "io"):
+                raise
+            body = self._packed_bytes(digest)
+            if body is None:
+                raise
+            return decode_blob_json(body, digest)
+
+    def _packed_bytes(self, digest, session=None):
+        from contextlib import nullcontext
+
+        from .object_models import PackedObject
+        from .pack_io import PackIO
+        with nullcontext(session) if session is not None else self.factory() as db:
+            row = db.get(PackedObject, digest)
+            location = (row.pending, row.pack_digest, row.offset, row.length) if row else None
+        if location is None:
+            return None
+        pending, pack, offset, length = location
+        return pending if pending is not None else PackIO(self.store, MAX_BLOB_BYTES).get(pack, offset, length)
+
+    def get_json_in_session(self, session, digest):
+        """Cold archive caller owns a live manifest, avoiding a nested DB pool wait.
+
+        Retry manifests outlive the entire accepted key window; ordinary reads
+        must continue using the publication/read pin above.
+        """
+        if hasattr(self.store, "get_json_in_session"):
+            return self.store.get_json_in_session(session, digest)
+        try:
+            return self.store.get_json(digest)
+        except OSError:
+            body = self._packed_bytes(digest, session)
+            if body is None:
+                raise
+            return decode_blob_json(body, digest)
 
     def release_probe_pin(self, digest: str) -> None:
         """Remove only the caller's ephemeral readiness-object pin after IO."""
@@ -310,4 +354,7 @@ def make_blob_store(settings, factory):
         store = GCSBlobStore(settings)
     else:
         store = LocalBlobStore(settings.object_dir)
-    return PinnedBlobStore(store, factory, max(600,settings.job_lease_seconds+60))
+    if settings.object_packing_enabled:
+        from .packed_storage import PackedBlobStore
+        store = PackedBlobStore(store, factory, settings)
+    return PinnedBlobStore(store, factory, max(600,settings.job_lease_seconds+60), track_gc=settings.object_packing_enabled)

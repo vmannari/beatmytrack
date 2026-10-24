@@ -465,6 +465,7 @@ class Preview(BaseModel):
     races: int = Field(default=0, ge=0, le=100)
     active_seconds: int = Field(default=0, ge=0, le=86400)
     session_seconds: int = Field(default=0, ge=0, le=86400)
+    session_races: int = Field(default=0, ge=0, le=100)
     shown: int = Field(default=0, ge=0, le=100)
     rewarded_elapsed: int | None = Field(default=None, ge=0, le=86400)
 
@@ -495,6 +496,8 @@ def preview(body: Preview, request: Request, role: Access):
             reasons.append("Automatic advertising disabled")
         if not due:
             reasons.append("Due thresholds not met")
+        if body.session_races == 0:
+            reasons.append("Complete the first race of this session")
         if body.session_seconds < policy["ads.first_delay_seconds"]:
             reasons.append("First-ad delay")
         if body.races < policy["ads.min_races"] or body.active_seconds < policy["ads.min_seconds"]:

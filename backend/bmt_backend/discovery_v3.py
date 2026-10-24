@@ -8,6 +8,7 @@ import secrets
 import time
 import uuid
 from contextlib import contextmanager
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,7 @@ from .discovery_models import (
     DiscoveryBoundary,
     DiscoveryChange,
     DiscoveryCollection,
+    DiscoveryDay,
     DiscoveryHead,
     DiscoveryMember,
     DiscoveryPartition,
@@ -45,6 +47,7 @@ PAGE = 20
 QUERY_SECONDS = 1.5
 RANDOM_SMALL = 256
 RANDOM_TRIALS = 4096
+CONTINUATION_FIELDS = [("recommendation_score", True), ("track_id", True)]
 
 
 class PageRequest(BaseModel):
@@ -53,6 +56,8 @@ class PageRequest(BaseModel):
     cursor: str = Field("", max_length=400)
     exclude: str = Field("", max_length=80)
     locate_version: str = Field("", max_length=36)
+    preview_cache: bool = False
+    known_previews: list[Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]] = Field(default_factory=list, max_length=32)
 
 
 
@@ -206,8 +211,24 @@ def new_session(db, request, actor, player, query, stamp, anchor, deadline):
     values["owner"] = player.id if player and query.section == "saved" else ""
     values["favorites_present"] = query.ids is not None
     values["frozen_blocks"] = bool(blocks)
+    if (query.feed == "daily" and not query.search.strip() and query.section == "all"
+            and query.sort == "recommended" and query.theme == "all" and not query.minimum_rating
+            and not query.age_days and query.race_count == "any" and query.race_history == "any"
+            and query.ids is None):
+        # Publish once per UTC day; yesterday is a bounded rollover fallback
+        # while today's background scan finishes. Never build inside HTTP.
+        daily = db.scalar(select(DiscoveryDay).where(DiscoveryDay.day.in_([stamp // 86400, stamp // 86400 - 1]),
+            DiscoveryDay.published_at > 0).order_by(DiscoveryDay.day.desc()).limit(1))
+        if daily is None:
+            raise HTTPException(503, "DISCOVERY_DAILY_PREPARING", headers={"Retry-After": "2"})
+        if not anchor or any(item["version_id"] == anchor for item in daily.items):
+            values["daily_day"] = daily.day
+        else:
+            values["feed"] = "recommended" # Direct links may target a track outside today's picks.
+    elif query.feed == "daily":
+        values["feed"] = "recommended" # Search and filters reach the whole catalogue.
     identity = str(uuid.uuid5(uuid.NAMESPACE_URL, digest([actor, query.model_dump(),
-        [p.epoch for p in partitions], stamp // 20, anchor, blocks])))
+        [p.epoch for p in partitions], stamp // 20, anchor, blocks, values.get("daily_day")])))
     existing = db.get(DiscoverySession, identity)
     if existing and existing.expires_at > stamp:
         return existing, boundary(db, existing, {}, 0, anchor=anchor or None)
@@ -364,6 +385,8 @@ def hydrate(db, request, rows, player):
 
 
 def page(db, request, view, start, player, deadline):
+    if "daily_day" in view.query:
+        return daily_page(db, request, view, start, player, deadline)
     order, fields = ordering(view.query)
     positions, phase = dict(start.positions), start.phase
     anchor = None
@@ -417,6 +440,15 @@ def page(db, request, view, start, player, deadline):
 
 
 def choose(db, request, view, player, exclude, deadline):
+    if "daily_day" in view.query:
+        rows = daily_rows(db, view, player)
+        eligible = [r for r in rows if r["track_id"] != exclude] or rows
+        selected = [secrets.choice(eligible)] if eligible else []
+        check_deadline(db, deadline)
+        items = list(hydrate(db, request, selected, player).values())
+        if selected and not items:
+            raise HTTPException(503, "DISCOVERY_VISIBILITY_CHANGED", headers={"Retry-After": "1"})
+        return {"schema": "bmt-discovery-random-v3", "items": items, "complete": True}
     _, fields = ordering(view.query)
     check_deadline(db, deadline)
     small = fetch(db, view, player, fields, limit=RANDOM_SMALL + 1, extra=(E.track_id != exclude,))
@@ -458,6 +490,68 @@ def choose(db, request, view, player, exclude, deadline):
     return {"schema": "bmt-discovery-random-v3", "items": items, "complete": True}
 
 
+def daily_rows(db, view, player):
+    daily = db.get(DiscoveryDay, view.query["daily_day"])
+    if daily is None or not daily.published_at:
+        raise HTTPException(410, "DISCOVERY_CURSOR_EXPIRED")
+    rows = [{**item, "position": i} for i, item in enumerate(daily.items)]
+    # Cheap current authority checks over at most 100 IDs; no global sort/scan.
+    statement = (select(TrackVersion.id).join(Track, Track.id == TrackVersion.track_id)
+        .join(Player, Player.id == Track.owner_id).where(
+            TrackVersion.id.in_([r["version_id"] for r in rows]), TrackVersion.state == "published",
+            Track.hidden.is_(False), Player.disabled.is_(False), Player.deleted_at.is_(None),
+            Player.is_test_driver.is_(False)))
+    if player:
+        statement = statement.where(~Track.owner_id.in_(blocked_ids(db, player.id)))
+    if view.query.get("frozen_blocks"):
+        statement = statement.where(~Track.owner_id.in_(select(DiscoveryMember.track_id).where(
+            DiscoveryMember.collection_id == view.collection_id, DiscoveryMember.kind == "block")))
+    allowed = set(db.scalars(statement))
+    return [r for r in rows if r["version_id"] in allowed]
+
+
+def daily_page(db, request, view, start, player, deadline):
+    check_deadline(db, deadline)
+    after = start.positions.get("daily", -1)
+    positions = dict(start.positions)
+    phase = start.phase
+    available = daily_rows(db, view, player) if phase == 0 else []
+    if start.anchor_version:
+        anchor = next((r for r in available if r["version_id"] == start.anchor_version), None)
+        if anchor is None:
+            raise HTTPException(409, "DISCOVERY_ANCHOR_UNAVAILABLE", headers={"Retry-After": "1"})
+        after = anchor["position"] - 1
+    rows = [r for r in available if r["position"] > after][:PAGE + 1]
+    if len(rows) <= PAGE:
+        # Continue in the same frozen view, excluding every curated track ID
+        # even if its current revision/visibility changed. No catalogue vector
+        # or application-side sort is constructed for the remaining tracks.
+        daily = db.get(DiscoveryDay, view.query["daily_day"])
+        if daily is None or not daily.published_at:
+            raise HTTPException(410, "DISCOVERY_CURSOR_EXPIRED")
+        excluded = [item["track_id"] for item in daily.items]
+        check_deadline(db, deadline)
+        rows.extend(fetch(db, view, player, CONTINUATION_FIELDS, positions.get("continuation"),
+            limit=PAGE + 1 - len(rows), extra=(~E.track_id.in_(excluded),)))
+    has_more = len(rows) > PAGE
+    rows = rows[:PAGE]
+    for row in rows:
+        if "position" in row:
+            positions["daily"] = row["position"]
+        else:
+            positions["continuation"] = key(row, CONTINUATION_FIELDS)
+            phase = 1
+    payloads = hydrate(db, request, rows, player)
+    items = [payloads[r["version_id"]] for r in rows if r["version_id"] in payloads]
+    check_deadline(db, deadline)
+    next_page = boundary(db, view, positions, phase, previous=start.id) if has_more else None
+    previous = db.get(DiscoveryBoundary, start.previous_id) if start.previous_id else None
+    return {"schema": "bmt-discovery-page-v3", "items": items, "total": None, "has_more": has_more,
+        "next_cursor": token(view, next_page) if next_page else None,
+        "previous_cursor": token(view, previous) if previous else None, "page_cursor": token(view, start),
+        "expires_in": max(0, view.expires_at - now()), "anchored": bool(start.anchor_version)}
+
+
 def handle(body, request, db, credentials, random_choice):
     player = current_player(request, credentials, db) if credentials else None
     actor, stamp = scope(request, player), now()
@@ -491,6 +585,9 @@ def handle(body, request, db, credentials, random_choice):
                 db, request, view, start, player, deadline)
             check_deadline(db, deadline)
             db.commit()
+            if body.preview_cache:
+                from .preview_wire import compact_previews
+                result = compact_previews(result, body.known_previews)
             return result
     except BaseException as error:
         failure = error

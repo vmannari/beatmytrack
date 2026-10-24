@@ -158,6 +158,7 @@ class Run(Base):
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), index=True)
     replay_hash: Mapped[str] = mapped_column(String(64))
     ghost_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reward_archive_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="queued")
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     finished_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -215,12 +216,15 @@ class Rating(Base):
 
 class IdempotencyRecord(Base):
     __tablename__ = "domain_idempotency"
+    __table_args__ = (Index("ix_domain_idempotency_archive_key", "archive_key",
+                           postgresql_where=text("archive_key <> ''"), sqlite_where=text("archive_key <> ''")),)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
     scope: Mapped[str] = mapped_column(String(128), primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     request_hash: Mapped[str] = mapped_column(String(64))
     response: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[int] = mapped_column(Integer, default=now)
+    archive_key: Mapped[str] = mapped_column(String(80), default="", server_default="")
 
 
 class QueuePlayer(Base):
@@ -297,7 +301,8 @@ def replay_response(session: Session, player_id: str, scope: str, key: str, body
             raise HTTPException(422, "IDEMPOTENCY_CLOCK_AHEAD")
     record = session.get(IdempotencyRecord, (player_id, scope, key))
     if record is None:
-        return None
+        from .cost_archives import cold_response
+        return cold_response(session, player_id, scope, key, body)
     if record.request_hash != digest(body):
         raise HTTPException(409, "Idempotency-Key already used for different content")
     if record.response.get("retired"):
@@ -308,9 +313,11 @@ def replay_response(session: Session, player_id: str, scope: str, key: str, body
 def commit_response(
     session: Session, player_id: str, scope: str, key: str, body: object, response: dict
 ) -> dict:
+    from .cost_archives import retry_key
     session.add(
         IdempotencyRecord(
-            player_id=player_id, scope=scope, key=key, request_hash=digest(body), response=response
+            player_id=player_id, scope=scope, key=key, request_hash=digest(body), response=response,
+            archive_key=retry_key(player_id, scope, key)
         )
     )
     try:

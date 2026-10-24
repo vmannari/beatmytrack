@@ -18,6 +18,7 @@ from .commerce import consume_publication_slot, lock_entitlements
 from .db import get_session
 from .identity_models import Identity, Player
 from .middleware import ParsedJSONRoute
+from .name_moderation import REJECTION, require_allowed_names, require_allowed_track_names
 from .publication_models import PublicationIntent, PublicationUpload
 from .publication_storage import reserve_upload
 from .queueing import admit, check_capacity, record_claim
@@ -36,7 +37,7 @@ from .track_models import (
     now,
     replay_response,
 )
-from .tracks import TrackContent, discovery_projection, track_payload
+from .tracks import TrackContent, clean_track_name, discovery_projection, track_payload
 from .trajectory_verifier import validate_envelope
 from .verifier import MAX_TRACK_BYTES, VerificationError, VerifierStopping
 from .worker_lifecycle import aborting, stopping
@@ -62,7 +63,9 @@ class PublishDocument(BaseModel):
     @field_validator("name")
     @classmethod
     def clean_name(cls, value):
-        return TrackContent.clean_name(value)
+        # Policy checks follow the exact existing-receipt lookup. A new policy
+        # must not strand an already acknowledged operation's saved retry body.
+        return clean_track_name(value)
 
 
 def payload(intent):
@@ -104,6 +107,7 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
         if existing.request_hash != request_hash:
             raise HTTPException(409, "Idempotency-Key already used for different content")
         return payload(existing)
+    require_allowed_track_names(body.name, body.document, player.display_name)
     from .community import require_terms
     require_terms(session, player.id)
     # Fresh operations retain the standard versioned format/expiry contract.
@@ -325,6 +329,8 @@ def process_one(app):
                     intent.receipt = _commit_publication(app, session, intent, manifest, result, document)
             except HTTPException as exc:
                 failure, detail = str(exc.detail), str(exc.detail)
+                if detail == REJECTION:
+                    failure = "name_not_allowed"
         intent.failure_code, intent.detail, intent.lease_token = failure, detail, None
         if failure == "validator_unavailable" and intent.attempts < app.state.settings.max_job_attempts:
             intent.status, intent.lease_until = "queued", now() + min(60, 2 ** min(intent.attempts, 6))
@@ -339,6 +345,9 @@ def _commit_publication(app, session, intent, manifest, result, document):
     owner = session.get(Player, intent.player_id)
     if owner.disabled or owner.deleted_at is not None or owner.is_test_driver:
         raise HTTPException(403, "PUBLICATION_OWNER_UNAVAILABLE")
+    require_allowed_track_names(intent.name, document, owner.display_name)
+    if isinstance(document.get("creator"), str):
+        require_allowed_names(document["creator"])
     entitlement = lock_entitlements(session, intent.player_id)
     track = session.scalar(select(Track).where(Track.owner_id == intent.player_id,
         Track.authoring_id == intent.authoring_id).with_for_update())

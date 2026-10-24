@@ -38,4 +38,4 @@ RUN test -n "$GODOT_SHA256" \
 ENV HOME=/tmp/bmt BMT_GODOT_BIN=/usr/local/bin/godot BMT_GAME_PROJECT=/opt/bmt/game BMT_OBJECT_DIR=/var/lib/bmt/objects
 USER 10001:10001
 EXPOSE 8080
-CMD ["uvicorn", "bmt_backend.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-access-log", "--limit-concurrency", "24", "--timeout-keep-alive", "5"]
+CMD ["python", "-m", "bmt_backend.http_server", "bmt_backend.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers", "--no-access-log", "--limit-concurrency", "24", "--timeout-keep-alive", "5"]

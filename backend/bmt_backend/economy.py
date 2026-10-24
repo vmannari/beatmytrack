@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, update
 
@@ -64,8 +64,28 @@ def wallet_payload(session, wallet):
             "prices": PRICES}
 
 
+def established_wallet(session, player_id):
+    """One coherent read; missing financial provenance uses locked recovery."""
+    from .studio_platform_models import StudioCoinEntry
+    from .track_models import digest
+    opening = digest({"player": player_id, "reference": "opening"})
+    rows = session.execute(select(CoinWallet.balance, CoinWallet.revision, CosmeticUnlock.item_id, StudioCoinEntry.id)
+        .select_from(CoinWallet).join(Player, Player.id == CoinWallet.player_id)
+        .outerjoin(CosmeticUnlock, CosmeticUnlock.player_id == CoinWallet.player_id)
+        .outerjoin(StudioCoinEntry, StudioCoinEntry.id == opening)
+        .where(CoinWallet.player_id == player_id, Player.disabled.is_(False), Player.deleted_at.is_(None))
+        .order_by(CosmeticUnlock.item_id)).all()
+    if not rows or rows[0][3] is None:
+        return None
+    return {"schema": 1, "balance": rows[0][0], "revision": rows[0][1],
+            "owned": [row[2] for row in rows if row[2] is not None], "prices": PRICES}
+
+
 @router.get("/economy")
 def balance(session: DB, player: Auth):
+    value = established_wallet(session, player.id)
+    if value is not None:
+        return value
     value = wallet_payload(session, locked_wallet(session, player.id))
     session.commit()
     return value
@@ -106,12 +126,26 @@ def purchase(body: BuyCosmetic, session: DB, player: Auth, key: Key):
 
 
 @router.get("/economy/rewards/{ticket_id}")
-def reward(ticket_id: str, session: DB, player: Auth):
+def reward(ticket_id: str, request: Request, session: DB, player: Auth):
     ticket = session.get(RunTicket, ticket_id)
     if ticket is None or ticket.player_id != player.id:
         raise HTTPException(404, "RACE_NOT_FOUND")
     run = session.scalar(select(Run).where(Run.ticket_id == ticket_id))
     receipt = session.get(CoinReward, run.id) if run else None
+    if receipt is None and run is not None and run.reward_archive_hash:
+        from .cost_archives import decrypt
+        from .object_models import ArchiveKey
+        key = session.get(ArchiveKey, player.id)
+        if key is None:
+            raise HTTPException(503, "REWARD_ARCHIVE_UNAVAILABLE")
+        secret, run_id, archived = key.secret, run.id, run.reward_archive_hash
+        session.commit()
+        body = request.app.state.blobs.get_json(archived)
+        stored = body.get("records", {}).get(run_id)
+        if stored is None:
+            raise OSError("Archived reward is missing")
+        value = decrypt(secret, run_id, stored)
+        return {"status": "credited", "amount": value["amount"], "rows": value["rows"]}
     status = "credited" if receipt else "unavailable" if run and run.status in ("verified", "rejected", "failed") else "pending"
     return {"status": status, "amount": receipt.amount if receipt else 0, "rows": receipt.rows if receipt else []}
 
@@ -127,7 +161,7 @@ def accept_verified(session, run, previous, *, incident_free=False, acceptance=N
     """Caller holds Player and commits the award in the verification transaction."""
     board = acceptance.board if acceptance else session.get(Board, run.board_id)
     player = session.get(Player, run.player_id)
-    if (run.status != "verified" or board.manifest.get("purpose") == "creator_test"
+    if (run.status != "verified" or run.reward_archive_hash or board.manifest.get("purpose") == "creator_test"
             or player.is_test_driver or (acceptance.reward if acceptance else session.get(CoinReward, run.id)) is not None):
         return
     if acceptance:

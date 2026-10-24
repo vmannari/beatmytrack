@@ -76,13 +76,14 @@ class GCSBlobStore:
         base = ORIGIN + ("/upload" if upload else "") + "/storage/v1/b/" + self.bucket + "/o"
         return base + ("/" + quote(key, safe="") if key else "")
 
-    def _request(self, method, key="", *, query=None, body=None, upload=False, limit=METADATA_LIMIT):
+    def _request(self, method, key="", *, query=None, body=None, upload=False, limit=METADATA_LIMIT, extra_headers=None):
         url = self._url(key, upload=upload)
         for attempt in range(2):
             headers = self._headers(method, url, refresh=attempt == 1)
             if body is not None:
                 # Store gzip bytes without contentEncoding metadata: avoid provider transcoding.
                 headers["Content-Type"] = "application/gzip"
+            headers.update(extra_headers or {})
             try:
                 with self.transport(method, url, params=query or {}, data=body, headers=headers,
                         stream=True, timeout=(3, 10), allow_redirects=False) as response:
@@ -154,6 +155,7 @@ class GCSBlobStore:
                     or type(cursor["token"]) is not str or not cursor["token"] or len(cursor["token"]) > 4096))):
             raise ValueError("Invalid object cursor/limit")
         query = {"prefix": self.prefix, "maxResults": str(limit),
+            "endOffset": self.prefix+"g",  # Ordinary keys use hex shards; packs have their own backup listing.
             "fields": "items(name,size,updated),nextPageToken"}
         if cursor:
             query["pageToken"] = cursor["token"]

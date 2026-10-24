@@ -24,6 +24,7 @@ class CosmeticUnlock(Base):
 
 class CoinReward(Base):
     __tablename__ = "coin_rewards"
+    __table_args__ = (Index("ix_coin_reward_archive", "created_at", "run_id"),)
     # Durable operation identity survives ordinary verified-run retention.
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), index=True)

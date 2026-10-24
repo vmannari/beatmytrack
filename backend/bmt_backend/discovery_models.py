@@ -32,7 +32,10 @@ class DiscoveryHead(Base):
     epoch: Mapped[int] = mapped_column(BigInteger, default=0)
     popularity: Mapped[int] = mapped_column(BigInteger, default=0)
     due_at: Mapped[int] = mapped_column(BigInteger, default=0)
-    __table_args__ = (UniqueConstraint("partition", "slot"), Index("ix_discovery_head_due", "partition", "due_at"))
+    activity_races: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    activity_replays: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    __table_args__ = (UniqueConstraint("partition", "slot"), Index("ix_discovery_head_due", "partition", "due_at"),
+        Index("ix_discovery_head_track", "partition", "track_id"))
 
 
 class DiscoveryEntry(Base):
@@ -58,6 +61,7 @@ class DiscoveryEntry(Base):
     rating_count: Mapped[int] = mapped_column(BigInteger)
     rated: Mapped[bool] = mapped_column(Boolean)
     score: Mapped[int] = mapped_column(BigInteger)
+    recommendation_score: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     finishers: Mapped[int] = mapped_column(BigInteger)
     popularity: Mapped[int] = mapped_column(BigInteger)
     __table_args__ = (
@@ -67,6 +71,7 @@ class DiscoveryEntry(Base):
         Index("ix_discovery_entry_name", "partition", "name_key", "track_id"),
         Index("ix_discovery_entry_creator", "partition", "creator_key", "name_key", "track_id"),
         Index("ix_discovery_entry_score", "partition", "rated", "score", "published_at", "track_id"),
+        Index("ix_discovery_entry_recommended", "partition", "recommendation_score", "track_id"),
         Index("ix_discovery_entry_plays", "partition", "finishers", "published_at", "track_id"),
         Index("ix_discovery_entry_popular", "partition", "popularity", "published_at", "track_id"),
         Index("ix_discovery_entry_retired", "retired_at", "track_id", "epoch"),
@@ -110,6 +115,33 @@ class DiscoveryOwnerJob(Base):
     player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     cursor: Mapped[str] = mapped_column(String(36), default="")
     phase: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DiscoveryActivity(Base):
+    """At most five verified finishes per driver/track/UTC day; seven days."""
+    __tablename__ = "discovery_activity"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    track_id: Mapped[str] = mapped_column(String(36))
+    player_id: Mapped[str] = mapped_column(String(36))
+    partition: Mapped[int] = mapped_column(Integer)
+    day: Mapped[int] = mapped_column(BigInteger)
+    races: Mapped[int] = mapped_column(Integer)
+    counted: Mapped[bool] = mapped_column(Boolean)
+    __table_args__ = (UniqueConstraint("track_id", "player_id", "day"),
+        Index("ix_discovery_activity_expire", "partition", "day", "id"),
+        Index("ix_discovery_activity_player", "player_id", "partition", "id"))
+
+
+class DiscoveryDay(Base):
+    """One resumable, bounded candidate pool and immutable selection per UTC day."""
+    __tablename__ = "discovery_days"
+    day: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    policy: Mapped[str] = mapped_column(String(40))
+    shard: Mapped[int] = mapped_column(Integer, default=0)
+    cursor: Mapped[str] = mapped_column(String(36), default="")
+    pools: Mapped[dict] = mapped_column(JSON, default=dict)
+    items: Mapped[list] = mapped_column(JSON, default=list)
+    published_at: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class DiscoveryBootstrap(Base):

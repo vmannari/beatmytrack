@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beatmytrack.invalid/schemas/race-read-v1.schema.json",
+  "title": "Negotiated race completion extensions and compact pending challenge reads",
+  "oneOf": [
+    {"type": "object", "required": ["completion"], "properties": {"completion": {"$ref": "#/$defs/completion"}}},
+    {"type": "object", "required": ["items", "completion_wallet"], "properties": {
+      "items": {"type": "array", "maxItems": 32, "items": {"type": "object"}},
+      "completion_wallet": {"type": "object"}
+    }},
+    {"type": "object", "required": ["schema", "status", "poll_after_ms", "challenge_pending"], "properties": {
+      "schema": {"const": "bmt-challenge-pending-v1"},
+      "status": {"enum": ["upload_pending", "queued", "verifying"]},
+      "poll_after_ms": {"type": "integer", "minimum": 1},
+      "challenge_pending": {"$ref": "#/$defs/pending"}
+    }}
+  ],
+  "$defs": {
+    "reward": {
+      "type": "object", "required": ["status", "amount", "rows"],
+      "properties": {
+        "status": {"enum": ["credited", "unavailable"]},
+        "amount": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        "rows": {"type": "array", "maxItems": 32, "items": {
+          "type": "object", "required": ["title", "amount", "icon", "eligible", "status"],
+          "properties": {"title": {"type": "string"}, "amount": {"type": "integer", "minimum": 0},
+            "icon": {"type": "string"}, "eligible": {"type": "boolean"}, "status": {"type": "string"}}
+        }}
+      }
+    },
+    "completion": {
+      "type": "object", "required": ["version", "reward"],
+      "properties": {
+        "version": {"const": 1},
+        "reward": {"oneOf": [{"$ref": "#/$defs/reward"}, {"type": "null"}]},
+        "wallet": {"type": "object", "required": ["schema", "balance", "revision", "owned", "prices"]},
+        "challenge_result": {"type": "object", "required": ["status", "outcome", "challenge"]}
+      }
+    },
+    "pending": {
+      "type": "object",
+      "required": ["id", "code", "self_id", "state", "server_now", "ends_at", "remaining_seconds", "attempt_limit", "attempts_used", "attempts_remaining", "rewards"],
+      "properties": {
+        "id": {"type": "string"}, "code": {"type": "string", "pattern": "^[A-F0-9]{16}$"}, "self_id": {"type": "string"},
+        "state": {"enum": ["active", "settling", "cancelled"]},
+        "server_now": {"type": "integer"}, "ends_at": {"type": "integer"}, "remaining_seconds": {"type": "integer", "minimum": 0},
+        "attempt_limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 25},
+        "attempts_used": {"type": "integer", "minimum": 0}, "attempts_remaining": {"type": ["integer", "null"], "minimum": 0},
+        "rewards": {"type": "object"},
+        "stages": {"type": "array", "minItems": 2, "maxItems": 5, "items": {
+          "type": "object", "required": ["index", "attempt_limit", "attempts_used", "attempts_remaining"],
+          "properties": {"index": {"type": "integer", "minimum": 0, "maximum": 4},
+            "attempt_limit": {"type": ["integer", "null"]}, "attempts_used": {"type": "integer", "minimum": 0},
+            "attempts_remaining": {"type": ["integer", "null"], "minimum": 0}}
+        }}
+      }
+    }
+  }
+}

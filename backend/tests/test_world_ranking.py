@@ -391,7 +391,7 @@ def test_upgrade_preserves_previous_schema_rows(ranking_domain):
     import json
 
     from alembic import command
-    from sqlalchemy import MetaData
+    from sqlalchemy import MetaData, inspect
 
     from bmt_backend.migrate import configuration, upgrade
     app = ranking_domain.app
@@ -400,17 +400,21 @@ def test_upgrade_preserves_previous_schema_rows(ranking_domain):
     command.downgrade(configuration(app.state.engine),"0058_challenge_series")
     metadata = MetaData()
     metadata.reflect(bind=app.state.engine)
-    def fingerprints():
+    retired_caches = {"discovery_budget", "discovery_snapshots"}
+    assert retired_caches <= set(metadata.tables)
+    def fingerprints(*, retiring=False):
         result = {}
         with app.state.engine.connect() as db:
             for name, table in metadata.tables.items():
                 if name == "alembic_version": continue
+                if retiring and name in retired_caches: continue
                 rows = sorted(json.dumps(dict(row),sort_keys=True,default=str) for row in db.execute(select(table)).mappings())
                 result[name] = (len(rows),hashlib.sha256("\n".join(rows).encode()).hexdigest())
         return result
-    before = fingerprints()
+    before = fingerprints(retiring=True)
     upgrade(app.state.engine)
-    assert fingerprints() == before
+    assert retired_caches.isdisjoint(inspect(app.state.engine).get_table_names())
+    assert fingerprints(retiring=True) == before
     assert len(before) >= 90
 
 

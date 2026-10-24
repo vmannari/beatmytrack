@@ -97,6 +97,20 @@ def test_audience_overlap_and_preview_has_no_assignments(configured):
         assert db.scalar(select(func.count()).select_from(StudioAssignment)) == 0
 
 
+def test_cumulative_ad_preview_requires_current_session_race(configured):
+    _, client, _, _ = configured
+    settings = {"ads.permitted": True, "ads.interstitial_enabled": True,
+                "ads.races": 7, "ads.active_seconds": 120}
+    for races, seconds in [(7, 0), (0, 120)]:
+        body = {"settings": settings, "races": races, "active_seconds": seconds}
+        before = checked(client.post("/v1/admin/game-config/preview", headers=ANALYST, json=body))
+        assert before["ad_decision"]["due"] and not before["ad_decision"]["eligible"]
+        assert "Complete the first race of this session" in before["ad_decision"]["reasons"]
+        after = checked(client.post("/v1/admin/game-config/preview", headers=ANALYST,
+                                    json={**body, "session_races": 1}))
+        assert after["ad_decision"]["eligible"]
+
+
 def test_rollout_internal_hold_advance_and_restrictive_restore(configured):
     _, client, player, auth = configured
     row = draft(client, {**deepcopy(DEFAULTS), "ads.permitted": True, "ads.interstitial_enabled": True})

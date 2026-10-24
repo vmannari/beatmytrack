@@ -300,13 +300,16 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
             factory = pg_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
             statement = factory(PersonalBest).values(**values)
             # A slower or tied result cannot replace the existing PB or its retained ghost.
-            session.execute(
-                statement.on_conflict_do_update(
-                    index_elements=["board_id", "player_id"],
-                    set_={key: values[key] for key in ("run_id", "time_ticks", "achieved_at")},
-                    where=PersonalBest.time_ticks > values["time_ticks"],
+            # Acceptance captured the previous PB under the same Player lock.
+            # Slower/tied races still earn rewards, without another PB conflict probe.
+            if not coin_previous[0] or run.time_ticks < coin_previous[0]:
+                session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["board_id", "player_id"],
+                        set_={key: values[key] for key in ("run_id", "time_ticks", "achieved_at")},
+                        where=PersonalBest.time_ticks > values["time_ticks"],
+                    )
                 )
-            )
             award_coins(session, run, coin_previous, incident_free=result.get("incident_free") is True,
                         acceptance=acceptance)
         board = acceptance.board if acceptance else session.get(Board, run.board_id)
@@ -314,7 +317,7 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
         track = acceptance.track if acceptance else session.get(Track, version.track_id)
         if not creator_test:
             from .news import capture_verified
-            capture_verified(session, run, board, version, track, player)
+            capture_verified(session, run, board, version, track, player, previous=coin_previous)
         if track.owner_id == run.player_id:
             session.execute(
                 update(TrackVersion)
@@ -349,10 +352,10 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
 def process_background(app, *, reserved=False):
     """Rotate bounded roles, including when the first class never empties."""
     from .achievements import drive_idle
+    from .game_config import activate_schedules
     from .histogram_snapshots import refresh_one
     from .lap_bests import backfill_one
     from .news import process_requested
-    from .game_config import activate_schedules
     roles = [lambda: drive_idle(app, force=reserved), lambda: process_requested(app)]
     if time.monotonic() >= getattr(app.state, "config_schedule_check", 0):
         app.state.config_schedule_check = time.monotonic() + 15

@@ -68,12 +68,13 @@ def validate(config, *, apply=False, now=None):
     ranking_launch = config.get("world_ranking_launch_week", 0)
     if type(ranking_launch) is not int or ranking_launch < 0 or (ranking_launch and (ranking_launch-345600) % 604800):
         raise ValueError("World Ranking launch requires a UTC Monday")
-    worker_connections = 4 + int(config.get("telemetry_enabled", False)) + int(bool(ranking_launch))
+    if type(config.get("cost_optimisation", False)) is not bool or type(config.get("api_instance_billing", False)) is not bool:
+        raise ValueError("Cost and billing choices must be explicit booleans")
+    worker_connections = 4 + int(config.get("telemetry_enabled", False)) + int(bool(ranking_launch)) + int(config.get("cost_optimisation", False))
     if type(config.get("admin_enabled", False)) is not bool:
         raise ValueError("admin_enabled must be a boolean")
-    if config.get("admin_enabled"):
-        if not config.get("studio_staff_audiences") or not config.get("studio_staff_subjects"):
-            raise ValueError("Private Studio requires named MFA staff and explicit audiences")
+    if config.get("admin_enabled") and (not config.get("studio_staff_audiences") or not config.get("studio_staff_subjects")):
+        raise ValueError("Private Studio requires named MFA staff and explicit audiences")
     budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * worker_connections + 2 * int(config.get("admin_enabled", False))) + 6 + 10
     if budget > 40:
         raise ValueError("Replica/rollout pools exceed the 40-connection staging budget")
@@ -136,6 +137,9 @@ def environment(config, role, public_url="https://staging.invalid"):
         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
+    if config.get("cost_optimisation") is True:
+        result.update(BMT_OBJECT_PACKING_ENABLED="true", BMT_RETENTION_DAYS="7", BMT_COST_ARCHIVE_DAYS="7",
+            BMT_COST_ARCHIVE_BATCH="500", BMT_HTTP_SUCCESS_SAMPLE_PER_MILLE="10", BMT_HTTP_METRICS_INTERVAL_SECONDS="60")
     if role == "admin":
         result["BMT_STUDIO_STAFF_AUDIENCES"] = ",".join(config.get("studio_staff_audiences", []))
         result["BMT_STUDIO_STAFF_SUBJECTS"] = json.dumps(config.get("studio_staff_subjects", {}))
@@ -162,6 +166,11 @@ def command(config, *args):
     return [*config["gcloud"], "--project=" + config["project"], *args, "--quiet"]
 
 
+def http_command(factory="create_app"):
+    return ["--command=python", "--args=-m,bmt_backend.http_server,bmt_backend.app:" + factory
+            + ",--factory,--host,0.0.0.0,--port,8080,--no-proxy-headers,--no-access-log,--limit-concurrency,24,--timeout-keep-alive,5"]
+
+
 def deployment_commands(config, image, directory):
     n = names(config)
     region, project = config["region"], config["project"]
@@ -176,13 +185,14 @@ def deployment_commands(config, image, directory):
         return ["--image=" + image, "--region=" + region, "--service-account=" + account(identity),
             "--set-cloudsql-instances=" + sql, "--set-secrets=" + bindings,
             "--env-vars-file=" + str(directory / (role + "-env.json")), "--labels=" + label,
-            "--cpu=1", "--memory=" + ("1024Mi" if role == "api" else "768Mi")]
+            "--cpu=1", "--memory=" + ("1024Mi" if role == "api" or (role == "worker" and config.get("cost_optimisation") is True) else "768Mi")]
     job = ["--command=python", "--tasks=1", "--parallelism=1", "--max-retries=0", "--task-timeout=300s"]
     result = {
         "migrate": command(config, "run", "jobs", "deploy", n["migrate"], *common("migrate", "migrator", "admin_secret"),
             *job, "--args=-m,bmt_backend.cloud_setup"),
         "migrate_execute": command(config, "run", "jobs", "execute", n["migrate"], "--region=" + region, "--wait"),
         "api": command(config, "run", "deploy", n["api"], *common("api", "runtime", "app_secret"),
+            *http_command(),
             "--port=8080", "--concurrency=16", "--min=" + str(config.get("api_min", 0)), "--max=" + str(config["api_max"]),
             "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
@@ -193,10 +203,12 @@ def deployment_commands(config, image, directory):
             *job, "--args=-m,bmt_backend.cloud_smoke"),
         "smoke_execute": command(config, "run", "jobs", "execute", n["smoke"], "--region=" + region, "--wait"),
     }
+    if config.get("api_instance_billing") is True:
+        result["api"].append("--no-cpu-throttling")
 
     if config.get("admin_enabled"):
         result["admin"] = command(config, "run", "deploy", n["admin"], *common("admin", "staff_runtime", "staff_secret"),
-            "--command=uvicorn", "--args=bmt_backend.app:create_admin_app,--factory,--host,0.0.0.0,--port,8080,--no-proxy-headers,--no-access-log,--limit-concurrency,24,--timeout-keep-alive,5",
+            *http_command("create_admin_app"),
             "--port=8080", "--concurrency=8", "--min=0", "--max=1", "--timeout=60s", "--ingress=all", "--no-allow-unauthenticated")
     return result
 

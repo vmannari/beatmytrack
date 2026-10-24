@@ -103,6 +103,16 @@ class Settings:
     allow_sync_track_validation: bool = False
     local_drafts_only: bool = True
     object_backend: str = "local"
+    object_packing_enabled: bool = False
+    object_pack_records: int = 128
+    object_pack_bytes: int = 6 * 1024 * 1024
+    object_pending_bytes_per_partition: int = 64 * 1024 * 1024
+    object_pending_records_per_partition: int = 8192
+    object_pack_flush_seconds: int = 5
+    http_success_sample_per_mille: int = 10
+    http_metrics_interval_seconds: int = 60
+    cost_archive_days: int = 7
+    cost_archive_batch: int = 500
     gcs_bucket: str = ""
     gcs_prefix: str = "bmt/v1"
     s3_endpoint: str = ""
@@ -114,6 +124,15 @@ class Settings:
     s3_prefix: str = "bmt/v1"
 
     def __post_init__(self):
+        if (not 1 <= self.object_pack_records <= 128 or not 65536 <= self.object_pack_bytes <= 8*1024*1024
+                or not self.object_pack_bytes <= self.object_pending_bytes_per_partition <= 128*1024*1024
+                or not 1 <= self.object_pending_records_per_partition <= 16384
+                or not 1 <= self.object_pack_flush_seconds <= 30):
+            raise ValueError("Invalid bounded object packing policy")
+        if not 0 <= self.http_success_sample_per_mille <= 1000 or not 1 <= self.http_metrics_interval_seconds <= 300:
+            raise ValueError("Invalid bounded HTTP observability policy")
+        if not 7 <= self.cost_archive_days <= 90 or not 1 <= self.cost_archive_batch <= 1000:
+            raise ValueError("Invalid exact cost-archive policy")
         if self.workload_role not in ("api", "admin", "worker", "migrator", "operator"):
             raise ValueError("Invalid workload role")
         if self.environment == "production":

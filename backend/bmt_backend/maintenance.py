@@ -9,7 +9,7 @@ from .challenge_models import Challenge, ChallengeMember, ChallengeStageMember, 
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, SessionToken, now
-from .object_models import ObjectPin
+from .object_models import ArchiveChunk, ObjectGarbageCandidate, ObjectPin
 from .publication_models import PublicationIntent, PublicationUpload
 from .publication_storage import retire_evidence, retired_candidates
 from .resume_models import ResumeRace, ResumeReceipt
@@ -28,7 +28,7 @@ from .world_ranking_models import Circuit, RankingArchive
 
 
 def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool = False, online: bool = False,
-           object_cursor: dict | None = None, scan_limit: int = 1000) -> dict:
+           object_cursor: dict | None = None, scan_limit: int = 1000, scan_objects: bool = True) -> dict:
     """Prune superseded/failed attempts while retaining PB ghosts, proofs and all tracks.
 
     Online cleanup requires the DB-pinned storage adapter; dry-run is the default.
@@ -40,7 +40,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
     cursor = object_cursor
     if type(scan_limit) is not int or not 1 <= scan_limit <= 1000:
         raise ValueError("Invalid retention cursor or scan limit")
-    if local:
+    if local and scan_objects:
         blobs.validate_object_cursor(cursor)
         # Stream the manifest before taking any DB connections or row locks.
         cursor = blobs.prepare_object_scan(cursor)
@@ -48,6 +48,9 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
     from .resumes import expire_unsettled
     expire_unsettled(factory, cutoff, apply=apply)
     archived = archive_closed_weeks(factory, days, apply=apply)
+    # Packed location scans use a short independent connection; never nest that
+    # connection inside the retention transaction's foreground pin locks.
+    rows, next_cursor = (blobs.list_objects(cursor, scan_limit, True) if local else blobs.list_objects(cursor, scan_limit)) if scan_objects else ([], None)
     with factory() as session:
         if online and apply:
             maintenance = session.scalar(select(OperationState).where(OperationState.id == "object-maintenance").with_for_update())
@@ -82,7 +85,6 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         races.update(session.scalars(select(ResumeRace.id).where(~ResumeRace.id.in_(unsettled), ResumeRace.expires_at < cutoff,
             ResumeRace.ticket_id.is_(None)).order_by(ResumeRace.expires_at, ResumeRace.id).limit(1000)))
         receipts = set(session.scalars(select(ResumeReceipt.id).where(ResumeReceipt.race_id.in_(races))))
-        rows, next_cursor = blobs.list_objects(cursor, scan_limit, True) if local else blobs.list_objects(cursor, scan_limit)
         temporary_files, temporary_bytes = 0, 0
         for row in rows:
             if "temporary" in row:
@@ -95,6 +97,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         hashes = [row["digest"] for row in eligible]
         keep = [] if online else [~Run.id.in_(run_ids)]
         referenced = set(session.scalars(union_all(
+            select(ArchiveChunk.digest).where(ArchiveChunk.digest.in_(hashes)),
             select(RankingArchive.digest).where(RankingArchive.digest.in_(hashes)),
             select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes)),
             select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes),
@@ -124,6 +127,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 # Newly-pruned run objects are collected in a later committed batch.
                 key = row["digest"]
                 if (session.scalar(select(TrackVersion.id).where(TrackVersion.content_hash==key).limit(1))
+                        or session.scalar(select(ArchiveChunk.digest).where(ArchiveChunk.digest==key).limit(1))
                         or session.scalar(select(RankingArchive.snapshot_id).where(RankingArchive.digest==key).limit(1))
                         or session.scalar(select(Run.id).where(or_(Run.replay_hash==key,Run.ghost_hash==key)).limit(1))
                         or session.scalar(select(PublicationIntent.id).where(PublicationIntent.evidence_retired.is_(False),
@@ -133,7 +137,10 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 if session.scalar(select(PublicationUpload.player_id).where(PublicationUpload.evidence_retired.is_(False),
                         or_(PublicationUpload.content_hash==key, PublicationUpload.replay_hash==key)).limit(1)):
                     continue
-                blobs.delete(key)
+                if hasattr(blobs.store, "delete_in_session"):
+                    blobs.store.delete_in_session(session, key)
+                else:
+                    blobs.delete(key)
                 safe.append(row)
             orphaned = safe
         result = {"runs": len(run_ids), "tickets": len(tickets), "resume_races": len(races),
@@ -143,6 +150,14 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                   "archived_weeks": archived, "objects_inspected":objects_inspected, "object_scan_limit": scan_limit,
                   "objects_deferred": next_cursor is not None, "next_object_cursor": next_cursor}
         if apply:
+            if getattr(blobs, "track_gc", False):
+                from .packed_storage import insert
+                hashes = {key for run in candidates for key in (run.replay_hash, run.ghost_hash) if key}
+                hashes.update(key for row in [*retired_intents, *retired_uploads] for key in (row.content_hash, row.replay_hash) if key)
+                if hashes:
+                    session.execute(insert(session)(ObjectGarbageCandidate).values(
+                        [{"digest": key, "due_at": now()} for key in sorted(hashes)])
+                        .on_conflict_do_nothing(index_elements=[ObjectGarbageCandidate.digest]))
             session.execute(delete(ResumeReceipt).where(ResumeReceipt.race_id.in_(races)))
             session.execute(delete(ResumeRace).where(ResumeRace.id.in_(races)))
             session.execute(delete(Run).where(Run.id.in_(run_ids)))
@@ -237,7 +252,8 @@ def cleanup(factory, *, batch_limit=1000) -> dict:
             session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.player_id==player,
                 IdempotencyRecord.scope==scope,IdempotencyRecord.key==key))
         result["expired_retry_keys"] = len(keys)
-        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400).limit(batch_limit)).all()
+        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400,
+            ~select(ObjectGarbageCandidate.digest).where(ObjectGarbageCandidate.digest == ObjectPin.digest).exists()).limit(batch_limit)).all()
         session.execute(delete(ObjectPin).where(ObjectPin.digest.in_(expired_pins),ObjectPin.expires_at < current-86400))
         result["expired_object_pins"] = len(expired_pins)
         # A skipped owner is busy, not absent. Keep the CLI backlog signal true

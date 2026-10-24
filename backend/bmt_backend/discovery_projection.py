@@ -10,14 +10,18 @@ from sqlalchemy import and_, case, delete, exists, func, or_, select, text, tupl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from . import discovery_activity as activity
 from . import discovery_retention as retention
+from .discovery_daily import score as recommendation_score
 from .discovery_models import (
     LIFETIME,
     WINDOW,
+    DiscoveryActivity,
     DiscoveryBootstrap,
     DiscoveryBoundary,
     DiscoveryChange,
     DiscoveryCollection,
+    DiscoveryDay,
     DiscoveryDriver,
     DiscoveryEntry,
     DiscoveryGuard,
@@ -34,6 +38,19 @@ from .track_models import Board, Run, Track, TrackVersion, now
 
 BATCH = 128
 RANK_INTERVAL = 60
+
+
+class DiscoveryMaintenance:
+    """Keep empty global scans off busy turns; drain bounded backlogs promptly."""
+    def __init__(self, interval=5.0):
+        self.interval = interval
+        self.next_at = {}
+
+    def due(self, name, tick):
+        return tick >= self.next_at.get(name, 0)
+
+    def committed(self, name, tick, worked):
+        self.next_at[name] = tick + (0 if worked else self.interval)
 
 
 def insert(db, model):
@@ -110,7 +127,7 @@ def source_rows(db, track_ids):
         .join(TrackVersion, TrackVersion.id == latest).where(Track.id.in_(track_ids))))
 
 
-def entry_values(track, version, player, popularity):
+def entry_values(track, version, player, popularity, *, stamp, races=0, replays=0):
     # Same five-observation, 3.5-star prior; deterministic 18-decimal key.
     # The result is at most 5e18, within signed BIGINT, without float cursors.
     score = ((2 * version.rating_sum + 35) * 10**18 // (2 * version.rating_count + 10))
@@ -121,7 +138,11 @@ def entry_values(track, version, player, popularity):
         "published_at": version.published_at or 0, "created_at": version.created_at,
         "rating_sum": version.rating_sum, "rating_count": version.rating_count,
         "rated": version.rating_count > 0, "score": score, "finishers": version.verified_finishers,
-        "popularity": popularity}
+        "popularity": popularity,
+        "recommendation_score": recommendation_score(rating_sum=version.rating_sum,
+            rating_count=version.rating_count, recent_players=popularity,
+            lifetime_players=version.verified_finishers, races=races, replays=replays,
+            created_at=track.created_at, stamp=stamp // 86400 * 86400)}
 
 
 def publish(db, shard, track_ids, stamp):
@@ -142,7 +163,8 @@ def publish(db, shard, track_ids, stamp):
                 epoch=0, popularity=0, due_at=0)
             db.add(current_head)
         old = old_entries.get(track_id)
-        values = entry_values(*source, current_head.popularity) if source else None
+        values = entry_values(*source, current_head.popularity, stamp=stamp,
+            races=current_head.activity_races or 0, replays=current_head.activity_replays or 0) if source else None
         if values is None:
             values = {c.name: getattr(old, c.name) for c in DiscoveryEntry.__table__.columns
                 if c.name not in ("track_id", "epoch", "partition", "until", "retired_at")} if old else None
@@ -216,7 +238,7 @@ def owner_job(db, shard, stamp):
             job.cursor = tracks[-1]
         else:
             job.phase, job.cursor = 1, ""
-    else:
+    elif job.phase == 1:
         player = db.get(Player, job.player_id)
         rows = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.player_id == job.player_id,
             DiscoveryDriver.partition == shard.id, DiscoveryDriver.track_id > job.cursor)
@@ -230,7 +252,9 @@ def owner_job(db, shard, stamp):
         if rows:
             job.cursor = rows[-1].track_id
         else:
-            db.delete(job)
+            job.phase, job.cursor = 2, ""
+    else:
+        activity.owner_page(db, job, stamp, BATCH)
     return changed, deltas
 
 
@@ -265,12 +289,26 @@ def cleanup(db, stamp):
     return removed
 
 
-def step(factory, *, clock=None):
+def step(factory, *, clock=None, maintenance=None, tick=None):
     stamp = now() if clock is None else clock
-    bootstrap_work = backfill_runs(factory, stamp)
+    tick = time.monotonic() if tick is None else tick
+    bootstrap_due = maintenance is None or maintenance.due("bootstrap", tick)
+    storage_due = maintenance is None or maintenance.due("storage", tick)
+    cleanup_due = maintenance is None or maintenance.due("cleanup", tick)
+    bootstrap_work = backfill_runs(factory, stamp) if bootstrap_due else False
+    if maintenance is not None and bootstrap_due:
+        maintenance.committed("bootstrap", tick, bootstrap_work)
     with factory() as db:
         budget(db)
-        storage_work = retention.backfill(db)
+        storage_work = retention.backfill(db) if storage_due else 0
+
+        def commit(removed):
+            db.commit()
+            if maintenance is not None:
+                if storage_due:
+                    maintenance.committed("storage", tick, storage_work)
+                if cleanup_due:
+                    maintenance.committed("cleanup", tick, removed)
         # Prefer partitions with committed work. Uniformly rotating through all
         # empty partitions throttles a single popular track by sixteen. Idle
         # partitions still get a reserved health/reconciliation turn every 30s.
@@ -282,13 +320,18 @@ def step(factory, *, clock=None):
             DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp))
         expired = exists(select(DiscoveryDriver.track_id).where(DiscoveryDriver.partition == DiscoveryPartition.id,
             DiscoveryDriver.expires_at < stamp))
-        priority = case((or_(pending, owners, due, expired, DiscoveryPartition.ready.is_(False),
-            DiscoveryPartition.checked_at < time.time_ns()-30_000_000_000), 0), else_=1)
-        shard = db.scalar(select(DiscoveryPartition).order_by(priority, DiscoveryPartition.checked_at,
+        old_activity = exists(select(DiscoveryActivity.id).where(DiscoveryActivity.partition == DiscoveryPartition.id,
+            DiscoveryActivity.day < stamp // 86400 - 6))
+        urgent = or_(pending, owners, due, expired, old_activity, DiscoveryPartition.ready.is_(False),
+            DiscoveryPartition.checked_at < time.time_ns()-30_000_000_000)
+        priority = case((urgent, 0), else_=1)
+        shard = db.scalar(select(DiscoveryPartition).where(or_(urgent, DiscoveryPartition.audit_at <= stamp))
+            .order_by(priority, DiscoveryPartition.checked_at,
             DiscoveryPartition.id).with_for_update(skip_locked=True).limit(1))
         if shard is None:
-            db.commit()
-            return bool(bootstrap_work or storage_work)
+            removed = cleanup(db, stamp) if cleanup_due else 0
+            commit(removed)
+            return bool(bootstrap_work or storage_work or removed)
         shard.checked_at = time.time_ns()
         force = set()
         if not shard.ready:
@@ -355,11 +398,13 @@ def step(factory, *, clock=None):
             DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp).order_by(DiscoveryHead.due_at,
                 DiscoveryHead.track_id).limit(BATCH)))
         changed = publish(db, shard, force | due, stamp)
+        activity.collect(db, shard, events, stamp)
+        expired_activity = activity.expire(db, shard.id, stamp, BATCH)
         for event in events:
             event.processed_at = stamp
-        removed = cleanup(db, stamp)
-        db.commit()
-        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed)
+        removed = cleanup(db, stamp) if cleanup_due else 0
+        commit(removed)
+        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed or expired_activity)
 
 
 def settle_for_diagnostics(factory, *, clock=None, maximum=10000):
@@ -431,7 +476,13 @@ def health(factory):
         ):
             oldest = db.scalar(select(column).where(column < stamp - grace).order_by(column).limit(1))
             cleanup_age[name] = max(0, stamp - grace - oldest) if oldest is not None else 0
+        daily = db.execute(select(DiscoveryDay.day, DiscoveryDay.policy, DiscoveryDay.shard, DiscoveryDay.published_at)
+            .order_by(DiscoveryDay.day.desc()).limit(1)).first()
+        daily_health = None if daily is None else {"day": daily.day, "policy": daily.policy,
+            "building_partition": daily.shard, "published_at": daily.published_at,
+            "age_days": max(0, stamp // 86400 - daily.day)}
         return {"population_backfill_ready":bool(bootstrap and bootstrap.ready),"partitions":values,
+                "daily_selection": daily_health,
                 "cleanup_oldest_age_seconds": cleanup_age,
                 "storage_backfill_ready": bool(db.scalar(select(DiscoveryStorageBootstrap.ready)
                     .where(DiscoveryStorageBootstrap.id == 1))),

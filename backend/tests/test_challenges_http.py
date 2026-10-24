@@ -24,6 +24,12 @@ def prepare(app):
     # The shared native Free Race search uses the v3 projection/daemon contract.
     from bmt_backend.discovery_projection import settle_for_diagnostics
     settle_for_diagnostics(app.state.session_factory)
+    from bmt_backend.discovery_daily import step
+    for _ in range(100):
+        if not step(app.state.session_factory):
+            break
+    else:
+        raise AssertionError("Challenge fixture daily catalogue did not settle")
     app.state.identity_verifier = FixtureIdentity()
 
 

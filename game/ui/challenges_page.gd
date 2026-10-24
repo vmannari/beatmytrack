@@ -73,17 +73,17 @@ func _ready() -> void:
 		back.tooltip_text = "Back to Challenges"
 		back.custom_minimum_size.x = 52
 		back.disabled = false
-	var title := MenuStyle.label("CHALLENGES" if landing_view else "CHALLENGE RESULTS" if result_view else "YOUR CHALLENGES" if folder == "sent" else "FIND & PLAY",34)
+	var title := MenuStyle.label("CHALLENGE RESULTS" if result_view else "CHALLENGES" if landing_view else "YOUR CHALLENGES" if folder == "sent" else "FIND & PLAY",34)
 	title.name = "ChallengeBrowseTitle"
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
-	if result_view:
+	if result_view and selected.is_empty():
 		_action(header,"Back to Challenges",func() -> void: back_requested.emit())
-	elif landing_view:
+	if landing_view and not result_view:
 		_landing(main)
 		return
-	else:
+	elif not result_view:
 		if folder == "sent": _action(header,"Create another",_request_creation)
 		var refresh := _action(header,"",func() -> void: refresh_requested.emit())
 		refresh.name = "ChallengeRefresh"
@@ -112,7 +112,7 @@ func _browser_controls(parent: Control) -> void:
 	row.name = "ChallengeBrowseNavigation"
 	row.add_theme_constant_override("separation",8)
 	parent.add_child(row)
-	var folders: Array = ["sent"] if folder == "sent" else ["discover","friends","received"]
+	var folders: Array = ["discover","friends","received","sent"]
 	for id: String in folders:
 		var caption: String = {"discover":"Discover","friends":"Friends","received":"Joined","sent":"Created"}[id]
 		var tab := MenuStyle.tab(caption,func() -> void: folder_requested.emit(id),folder == id)
@@ -309,20 +309,20 @@ func _inbox(parent: Control) -> void:
 		get_tree().process_frame.connect(scroll.set_deferred.bind("scroll_vertical",inbox_scroll),CONNECT_ONE_SHOT)
 
 func _stage_picker(parent: Control) -> void:
-	if selected.get("mode") != "3x3": return
-	parent.add_child(MenuStyle.label("3 TRACKS · 3 TRIES EACH · LOWEST TOTAL TIME WINS",16,true))
+	if not ChallengesClient.is_series(selected): return
+	parent.add_child(MenuStyle.label(str(selected.stages.size())+" TRACKS · LOWEST TOTAL TIME WINS",16,true))
 	var choices := VBoxContainer.new()
 	choices.add_theme_constant_override("separation",6)
 	parent.add_child(choices)
 	for stage: Dictionary in selected.stages:
-		var button := MenuStyle.tab(str(int(stage.index)+1)+"  "+str(stage.entry.name)+"  ·  "+str(stage.attempts_remaining)+" tries left",func() -> void: stage_requested.emit(int(stage.index)),int(stage.index) == selected_stage)
+		var button := MenuStyle.tab(str(int(stage.index)+1)+"  "+str(stage.entry.name)+"  ·  "+("Unlimited tries" if stage.attempts_remaining == null else str(stage.attempts_remaining)+" tries left"),func() -> void: stage_requested.emit(int(stage.index)),int(stage.index) == selected_stage)
 		button.name = "ChallengeStage_"+str(int(stage.index))
 		button.disabled = busy
 		button.custom_minimum_size.y = 52
 		choices.add_child(button)
 
 func _stage_data() -> Dictionary:
-	return selected.stages[selected_stage] if selected.get("mode") == "3x3" else selected
+	return selected.stages[selected_stage] if ChallengesClient.is_series(selected) else selected
 
 func _hub_detail(parent: Control) -> void:
 	# Racing owns one selected destination and a pinned start action.
@@ -388,7 +388,7 @@ func _hub_detail(parent: Control) -> void:
 	hero.add_child(identity)
 	var meta := HBoxContainer.new()
 	identity.add_child(meta)
-	var format := MenuStyle.label("TIME ATTACK" if selected.mode == "beat" else "3×3 SERIES" if selected.mode == "3x3" else "GROUP RACE",15)
+	var format := MenuStyle.label("3×3 SERIES" if selected.mode == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(selected) else "TIME ATTACK" if selected.mode == "beat" else "GROUP RACE",15)
 	format.add_theme_color_override("font_color",MenuStyle.ACCENT)
 	meta.add_child(format)
 	_clock = MenuStyle.label("",15,true)
@@ -427,7 +427,7 @@ func _hub_detail(parent: Control) -> void:
 	time_box.add_theme_constant_override("separation",2)
 	timing.add_child(time_box)
 	var target: Variant = _target_ms(selected)
-	time_box.add_child(MenuStyle.label("Time to beat" if selected.mode == "beat" else "Leading total" if selected.mode == "3x3" and target != null else "Leading time" if target != null else "3×3 total" if selected.mode == "3x3" else "Group challenge",16,true))
+	time_box.add_child(MenuStyle.label("Leading total" if ChallengesClient.is_series(selected) and target != null else "Combined best time" if ChallengesClient.is_series(selected) else "Time to beat" if selected.mode == "beat" else "Leading time" if target != null else "Group challenge",16,true))
 	var clock := MenuStyle.label(MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time",40 if target != null else 28)
 	clock.name = "ChallengeTargetTime"
 	clock.add_theme_color_override("font_color",MenuStyle.ACCENT)
@@ -488,7 +488,7 @@ func _hub_detail(parent: Control) -> void:
 		card.add_child(values)
 		var delta: String = "—"
 		if row.get("ms") != null and target != null: delta = "%+.3f" % (float(int(row.ms)-int(target))/1000.0)
-		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else str(int(row.get("completed_tracks",0)))+"/3 tracks" if selected.mode == "3x3" else "—",delta,false,player)
+		_standing_values(values,str(row.rank) if row.rank != null else "—",str(row.name),MenuStyle.time_text(float(row.ms)/1000.0) if row.ms != null else str(int(row.get("completed_tracks",0)))+"/"+str(selected.stages.size())+" tracks" if ChallengesClient.is_series(selected) else "—",delta,false,player)
 	_reward_strip(panel,selected)
 	var actions := HBoxContainer.new()
 	actions.name = "ChallengeActions"
@@ -501,15 +501,15 @@ func _hub_detail(parent: Control) -> void:
 		var report := _action(actions,"…",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,safety_client,"player",{"reported_player_id":str(selected.creator_id),"name":str(selected.creator)}))
 		report.name = "ChallengeSafety"
 		report.tooltip_text = "Report / block creator"
-	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" else int(own.ticks) < int(selected.target_ticks))
-	if folder == "sent" and winning and selected.mode != "3x3": _action(actions,"Rematch",func() -> void: rematch_requested.emit())
+	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" or ChallengesClient.is_series(selected) else int(own.ticks) < int(selected.target_ticks))
+	if folder == "sent" and winning and not ChallengesClient.is_series(selected): _action(actions,"Rematch",func() -> void: rematch_requested.emit())
 	if folder == "sent" and str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
 		var cancel := _action(actions,"",func() -> void: cancel_requested.emit())
 		cancel.icon = MenuIcon.texture("close")
 		cancel.tooltip_text = "Cancel challenge"
 		cancel.custom_minimum_size.x = 52
 	var exhausted: bool = _stage_data().get("attempts_remaining") != null and int(_stage_data().attempts_remaining) <= 0
-	var creator_target: bool = selected.mode == "beat" and selected.creator_id == selected.self_id
+	var creator_target: bool = selected.mode == "beat" and not ChallengesClient.is_series(selected) and selected.creator_id == selected.self_id
 	var full: bool = not selected.joined and selected.standings.size() >= int(selected.get("capacity",2 if selected.mode == "beat" else 20))
 	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Full" if full else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
 	var race := _action(actions,caption,func() -> void: race_requested.emit(),true)
@@ -613,7 +613,7 @@ func _own_standing() -> Dictionary:
 	return {}
 
 func _target_ms(item: Dictionary) -> Variant:
-	if item.mode == "beat": return item.get("target_ms")
+	if item.mode == "beat" and not ChallengesClient.is_series(item): return item.get("target_ms")
 	for row: Dictionary in item.get("standings",[]):
 		if row.get("ms") != null: return row.ms
 	return null
@@ -626,119 +626,20 @@ func _remaining_text(item: Dictionary) -> String:
 	return "%dd %02dh left" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%dh %02dm left" % [remaining/3600,(remaining%3600)/60]
 
 func _detail(parent: Control) -> void:
-	var column := _panel(parent)
-	_stage_picker(column)
-	column.name = "ChallengeDetail"
-	var heading := MenuStyle.label(str(_stage_data().entry.name),30)
-	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	column.add_child(heading)
-	var line := HBoxContainer.new()
-	column.add_child(line)
-	var creator := MenuStyle.label(str(selected.creator),17,true)
-	creator.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	line.add_child(creator)
-	_clock = MenuStyle.label("",16,true)
-	line.add_child(_clock)
-	_update_clock()
-	var timer := Timer.new()
-	timer.wait_time = 1.0
-	timer.autostart = true
-	timer.timeout.connect(_update_clock)
-	add_child(timer)
-	var preview := PanelContainer.new()
-	preview.name = "ChallengeTrackPreview"
-	preview.custom_minimum_size.y = 132
-	preview.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720"),0))
-	column.add_child(preview)
-	var art := TextureRect.new()
-	art.texture = TrackTile.scenery_texture(str(_stage_data().entry.get("theme","pine")))
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	preview.add_child(art)
-	var overlay := HBoxContainer.new()
-	preview.add_child(overlay)
-	var route := LapRouteView.new()
-	route.name = "ChallengeRoute"
-	route.miniature = true
-	route.custom_minimum_size.x = 130
-	route.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	for point: Array in _stage_data().entry.points: route.route.append(Vector2(point[0],point[1]))
-	overlay.add_child(route)
-	var time_box := VBoxContainer.new()
-	time_box.custom_minimum_size.x = 170
-	time_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	overlay.add_child(time_box)
-	var target: Variant = selected.get("target_ms")
-	if target == null and not selected.standings.is_empty(): target = selected.standings[0].ms
-	var clock := MenuStyle.label("%.3f" % (float(target)/1000.0) if target != null else "—",46)
-	clock.name = "ChallengeTargetTime"
-	clock.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	time_box.add_child(clock)
-	time_box.add_child(MenuStyle.label("Target time" if selected.mode == "beat" else "Leading time",16))
-	column.add_child(MenuStyle.label("5 laps · "+VehicleCatalog.title(str(selected.vehicle_id)),16,true))
-	var exhausted: bool = _stage_data().get("attempts_remaining") != null and int(_stage_data().attempts_remaining) <= 0
-	if _stage_data().get("attempt_limit") != null:
-		column.add_child(MenuStyle.label("No tries remaining" if exhausted else "%d of %d tries remaining" % [int(_stage_data().attempts_remaining),int(_stage_data().attempt_limit)],16,true))
-	if result_view:
-		var feedback: String = "Verifying"
-		if result_state == "verified" and outcome.get("counted",false):
-			feedback = "Target beaten" if outcome.get("beaten",false) and selected.mode == "beat" else "Time verified"
-			if outcome.get("gap_ms") != null: feedback += "  %+.3f s" % (float(outcome.gap_ms)/1000.0)
-		elif result_state in ["rejected","expired"]: feedback = "Not counted"
-		elif result_state == "verified": feedback = "Not counted"
-		var status := MenuStyle.label(feedback,23)
-		status.name = "ChallengeResultFeedback"
-		column.add_child(status)
-		if selected.has("rewards"):
-			var progress := MenuStyle.label("Reward progress: "+_reward_caption(selected),18,true)
-			progress.name = "ChallengeRewardProgress"
-			column.add_child(progress)
-	var scroll := ScrollContainer.new()
-	scroll.name = "ChallengeStandingsScroll"
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(scroll)
-	var gutter := MarginContainer.new()
-	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	gutter.add_theme_constant_override("margin_right",16)
-	scroll.add_child(gutter)
-	var table := VBoxContainer.new()
-	table.add_theme_constant_override("separation",4)
-	gutter.add_child(table)
-	for row: Dictionary in selected.standings:
-		var card := PanelContainer.new()
-		var own: bool = str(row.id) == str(selected.self_id)
-		card.name = "ChallengeDriver_"+str(row.id)
-		card.add_theme_stylebox_override("panel",MenuStyle.box(MenuStyle.ACCENT if own else Color("172b38"),8))
-		table.add_child(card)
-		var values := HBoxContainer.new()
-		card.add_child(values)
-		for index: int in range(3):
-			var text: String = str(int(row.rank)) if index == 0 and row.rank != null else "—" if index == 0 else str(row.name) if index == 1 else "%.3f" % (float(row.ms)/1000.0) if row.ms != null else str(int(row.get("completed_tracks",0)))+"/3 tracks" if selected.mode == "3x3" else "—"
-			var label := MenuStyle.label(text,19)
-			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			label.add_theme_color_override("font_color",MenuStyle.INK if own else MenuStyle.TEXT)
-			if index == 1: label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			else: label.custom_minimum_size.x = 24 if index == 0 else 70
-			values.add_child(label)
-	var actions := HBoxContainer.new()
-	actions.name = "ChallengeActions"
-	actions.add_theme_constant_override("separation",8)
-	column.add_child(actions)
-	_action(actions,"Share",func() -> void: share_requested.emit())
-	var own: Dictionary = {}
-	for row: Dictionary in selected.standings:
-		if row.id == selected.self_id: own = row
-	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" else int(own.ticks) < int(selected.target_ticks))
-	if winning and selected.mode != "3x3": _action(actions,"Rematch",func() -> void: rematch_requested.emit())
-	if str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
-		var cancel := _action(actions,"×",func() -> void: cancel_requested.emit())
-		cancel.tooltip_text = "Cancel challenge"
-		cancel.custom_minimum_size.x = 52
-	var race := _action(actions,"Race again" if result_view else "Race" if selected.joined else "Join & race" if signed_in else "Try track",func() -> void: race_requested.emit(),true)
-	race.name = "ChallengeRace"
-	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	race.disabled = busy or exhausted or selected.state != "active" or (selected.mode == "beat" and selected.creator_id == selected.self_id)
+	var results := preload("res://ui/challenge_result_view.gd").new()
+	results.snapshot = selected
+	results.outcome = outcome
+	results.result_state = result_state
+	results.selected_stage = selected_stage
+	results.busy = busy
+	results.signed_in = signed_in
+	results.race_requested.connect(func() -> void: race_requested.emit())
+	results.share_requested.connect(func() -> void: share_requested.emit())
+	results.rematch_requested.connect(func() -> void: rematch_requested.emit())
+	results.cancel_requested.connect(func() -> void: cancel_requested.emit())
+	results.back_requested.connect(func() -> void: back_requested.emit())
+	results.stage_requested.connect(func(index: int) -> void: stage_requested.emit(index))
+	parent.add_child(results)
 
 func _update_clock() -> void:
 	if _clock == null: return

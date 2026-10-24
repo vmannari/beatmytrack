@@ -11,6 +11,8 @@ const BORDER := Color("344e5d")
 const POSITIVE := Color("66dfbb")
 const POPUP_BORDER := Color("5c7d8a")
 const POPUP_DIM := Color(0,0.015,0.025,0.58)
+const SCROLLBAR_LANE: int = 24
+const SCROLLBAR_THUMB: int = 4
 const DISPLAY: Font = preload("res://assets/fonts/BarlowCondensed-SemiBold.ttf")
 const BODY: Font = preload("res://assets/fonts/Barlow-Regular.ttf")
 static var _theme: Theme
@@ -68,8 +70,38 @@ static func theme() -> Theme:
 	value.set_stylebox("fill", "ProgressBar", box(ACCENT,0))
 	value.set_constant("separation", "HBoxContainer", 12)
 	value.set_constant("separation", "VBoxContainer", 12)
+	style_scrollbars(value)
 	_theme = value
 	return value
+
+static func style_scrollbars(value: Theme) -> void:
+	# A narrow painted thumb sits inside a wider native drag target. Insetting
+	# the drawing leaves space on both sides without wrapping/reparenting lists.
+	var empty_icon := ImageTexture.create_from_image(Image.create(1,1,false,Image.FORMAT_RGBA8))
+	var inset: float = (SCROLLBAR_LANE-SCROLLBAR_THUMB)*0.5
+	for axis: String in ["VScrollBar","HScrollBar"]:
+		var vertical: bool = axis == "VScrollBar"
+		var rail := StyleBoxEmpty.new()
+		rail.set_content_margin(SIDE_LEFT,SCROLLBAR_LANE*0.5 if vertical else 0)
+		rail.set_content_margin(SIDE_RIGHT,SCROLLBAR_LANE*0.5 if vertical else 0)
+		rail.set_content_margin(SIDE_TOP,0 if vertical else SCROLLBAR_LANE*0.5)
+		rail.set_content_margin(SIDE_BOTTOM,0 if vertical else SCROLLBAR_LANE*0.5)
+		value.set_stylebox("scroll",axis,rail)
+		value.set_stylebox("scroll_focus",axis,StyleBoxEmpty.new())
+		for state: String in ["grabber","grabber_highlight","grabber_pressed"]:
+			var thumb: StyleBoxFlat = box(Color(0.56,0.68,0.74,0.32 if state == "grabber" else 0.52 if state == "grabber_highlight" else 0.72),0)
+			thumb.set_corner_radius_all(2)
+			thumb.content_margin_left = SCROLLBAR_LANE*0.5 if vertical else 16
+			thumb.content_margin_right = SCROLLBAR_LANE*0.5 if vertical else 16
+			thumb.content_margin_top = 16 if vertical else SCROLLBAR_LANE*0.5
+			thumb.content_margin_bottom = 16 if vertical else SCROLLBAR_LANE*0.5
+			thumb.expand_margin_left = -inset if vertical else -4
+			thumb.expand_margin_right = -inset if vertical else -4
+			thumb.expand_margin_top = -4 if vertical else -inset
+			thumb.expand_margin_bottom = -4 if vertical else -inset
+			value.set_stylebox(state,axis,thumb)
+		for icon: String in ["increment","increment_highlight","increment_pressed","decrement","decrement_highlight","decrement_pressed"]:
+			value.set_icon(icon,axis,empty_icon)
 
 static func card(padding: int = 20) -> StyleBoxFlat:
 	var style := box(Color(0.035,0.095,0.13,0.95),padding)
@@ -119,6 +151,14 @@ static func fill(node: Control) -> void:
 static func tab(text: String, action: Callable, selected: bool = false) -> Button:
 	var node: Button = button(text,action)
 	var normal := box(Color(1,1,1,0.07) if selected else Color.TRANSPARENT,16)
+	if selected:
+		normal.bg_color = Color("29343be8")
+		normal.border_color = Color("64737c80")
+		normal.set_border_width_all(1)
+		normal.border_width_bottom = 2
+		normal.shadow_color = Color("00000035")
+		normal.shadow_size = 3
+		normal.shadow_offset = Vector2(0,2)
 	node.add_theme_stylebox_override("normal",normal)
 	node.add_theme_stylebox_override("hover",box(Color(1,1,1,0.07),16))
 	node.add_theme_color_override("font_color",ACCENT if selected else MUTED)

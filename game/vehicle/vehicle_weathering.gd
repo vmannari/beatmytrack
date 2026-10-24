@@ -7,6 +7,10 @@ const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "f
 const SLOW_RATE: float = 1.0 / 20.0
 const SCRUB_RATE: float = 1.15
 const SCRUB_RADIUS: float = 0.60
+const HOSE_RADIUS: float = 1.08
+const HOSE_DEPTH: float = 0.24
+const HOSE_FILM_RATE: float = 1.60
+const HOSE_GRIME_RATE: float = 0.025
 const MAX_SCRUB_RESISTANCE: float = 0.40
 const GRIME_AGE_SECONDS: float = 900.0
 const GRIME_AGE_STEP: float = GRIME_AGE_SECONDS / 255.0
@@ -324,9 +328,13 @@ func _upload_wash_masks(bytes: PackedByteArray, slow_bytes: PackedByteArray) -> 
 	slow_wash_texture.update(slow_wash_image)
 	wash_mask_uploads += 2
 
-func wash(point: Vector3, seconds: float) -> void:
+func wash(point: Vector3, seconds: float, tool: String = "mitt", surface_normal: Vector3 = Vector3.ZERO) -> void:
 	if wash_image == null or seconds <= 0.0 or not is_finite(seconds): return
-	var radius: float = SCRUB_RADIUS
+	if tool not in ["mitt", "hose"] or not point.is_finite(): return
+	var radius: float = HOSE_RADIUS if tool == "hose" else SCRUB_RADIUS
+	var primary_rate: float = HOSE_GRIME_RATE if tool == "hose" else SCRUB_RATE
+	var film_rate: float = HOSE_FILM_RATE if tool == "hose" else SCRUB_RATE
+	var normal: Vector3 = surface_normal.normalized() if tool == "hose" and surface_normal.is_finite() else Vector3.ZERO
 	var grid: int = VehicleCondition.GRID
 	var bytes: PackedByteArray = _wash_bytes if _wash_depth > 0 else wash_image.get_data()
 	var slow_bytes: PackedByteArray = _slow_wash_bytes if _wash_depth > 0 else slow_wash_image.get_data()
@@ -338,13 +346,16 @@ func wash(point: Vector3, seconds: float) -> void:
 			for x: int in range(int(lower.x), int(upper.x) + 1):
 				var centre: Vector3 = bounds.position + Vector3(float(x), float(y), float(z)) / float(grid - 1) * bounds.size
 				var distance: float = centre.distance_to(point)
+				if normal != Vector3.ZERO:
+					var offset: Vector3 = centre-point
+					var depth: float = offset.dot(normal)
+					distance = sqrt((offset-normal*depth).length_squared()+pow(depth*radius/HOSE_DEPTH,2.0))
 				if distance >= radius: continue
 				touched = true
 				var index: int = y * grid * grid + z * grid + x
 				var resistance: float = 1.0 + MAX_SCRUB_RESISTANCE * float(grime_age[index]) / 255.0
-				var progress: float = 255.0 * seconds * SCRUB_RATE * (1.0 - distance / radius) / resistance
-				var primary_work: float = _scrub_fraction[index] + progress
-				var slow_work: float = _slow_scrub_fraction[index] + progress
+				var primary_work: float = _scrub_fraction[index] + 255.0 * seconds * primary_rate * (1.0 - distance / radius) / resistance
+				var slow_work: float = _slow_scrub_fraction[index] + 255.0 * seconds * film_rate * (1.0 - distance / radius) / resistance
 				var primary_steps: int = floori(primary_work)
 				var slow_steps: int = floori(slow_work)
 				bytes[index] = mini(255, bytes[index] + primary_steps)

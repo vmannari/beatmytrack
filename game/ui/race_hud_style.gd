@@ -40,4 +40,5 @@ static func theme() -> Theme:
 		value.set_color("font_pressed_color", type, INK)
 	value.set_stylebox("panel", "PopupMenu", panel())
 	value.set_color("font_color", "PopupMenu", TEXT)
+	MenuStyle.style_scrollbars(value)
 	return value

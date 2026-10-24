@@ -16,6 +16,7 @@ var clean: bool
 var saved: bool
 var editor: bool
 var challenge_available: bool = false
+var challenge_active: bool = false
 var result: RaceResultData
 var selected_lap: int = 0
 var map: LapRouteView
@@ -263,7 +264,7 @@ func _actions() -> void:
 	retry.name = "RetryRace"
 	retry.add_theme_stylebox_override("normal",_panel_style(8))
 	row.add_child(retry)
-	if challenge_available:
+	if challenge_available and not challenge_active:
 		var challenge := MenuStyle.button("CREATE CHALLENGE",func() -> void: challenge_requested.emit())
 		challenge.name = "CreateResultChallenge"
 		challenge.size_flags_horizontal = Control.SIZE_EXPAND_FILL

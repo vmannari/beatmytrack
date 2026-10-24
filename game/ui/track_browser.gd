@@ -16,6 +16,7 @@ signal entry_chosen(entry: Dictionary)
 
 var selection_only: bool = false
 var selected_versions: PackedStringArray = []
+var _selection_actions: GridContainer
 
 var library: TrackLibrary
 var records: LocalRecords
@@ -29,7 +30,6 @@ var grid: GridContainer
 var detail: VBoxContainer
 var count_label: Label
 var random_button: Button
-var refresh_button: Button
 var discovery := TrackDiscoveryProvider.new()
 var race_button: Button
 var loading: bool = true
@@ -652,7 +652,6 @@ func _refresh() -> void:
 		count_label.tooltip_text = "Loaded track cards. Scroll to browse more; Refresh updates the ordering."
 	random_button.disabled = matches.is_empty() or loading
 	var filter_count: int = FilterDrawer.active_count(state)
-	if is_instance_valid(refresh_button): refresh_button.disabled = cloud == null or cloud.refreshing
 	filter_button.text = "Filters"+(" - %d" % filter_count if filter_count > 0 else "")
 	filter_button.add_theme_color_override("font_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
 	filter_button.add_theme_color_override("icon_normal_color",MenuStyle.ACCENT if filter_count > 0 else MenuStyle.TEXT)
@@ -1186,7 +1185,13 @@ func _discovery_changed() -> void:
 	if not selecting: _show_detail()
 
 func _build_actions() -> void:
-	var actions := HBoxContainer.new()
+	var actions: Container = GridContainer.new() if selection_only else HBoxContainer.new()
+	if selection_only:
+		_selection_actions = actions as GridContainer
+		_selection_actions.columns = 2 if get_viewport_rect().size.x < 720 else 4
+		_selection_actions.add_theme_constant_override("h_separation",8)
+		_selection_actions.add_theme_constant_override("v_separation",8)
+		resized.connect(func() -> void: _selection_actions.columns = 2 if size.x < 720 else 4)
 	actions.name = "PlayActions"
 	add_child(actions)
 	random_button = MenuStyle.button("Random track",_random)
@@ -1210,16 +1215,12 @@ func _build_actions() -> void:
 	search.name = "RaceSearch"
 	search.icon = MenuIcon.texture("search")
 	actions.add_child(search)
-	refresh_button = MenuStyle.button("",func() -> void:
-		if cloud != null: cloud.query_discovery(state,records.settings.get("favorites",[]),records.settings.get("raced_tracks",[]),true))
-	refresh_button.name = "RefreshTracks"
-	refresh_button.icon = MenuIcon.texture("restart")
-	refresh_button.tooltip_text = "Refresh this list with the latest published tracks"
-	refresh_button.custom_minimum_size = Vector2(48,60)
-	actions.add_child(refresh_button)
 	for button: Button in [random_button,filters,search]:
-		button.custom_minimum_size = Vector2(196,60)
-		button.size_flags_horizontal = Control.SIZE_FILL
+		button.custom_minimum_size = Vector2(0 if selection_only else 196,60)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL if selection_only else Control.SIZE_FILL
+		if selection_only:
+			button.clip_text = true
+			button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	race_button = MenuStyle.button("RACE",func() -> void: race_requested.emit(selected_track),true)
 	race_button.name = "LibraryRace"
 	race_button.icon = MenuIcon.texture("arrow")

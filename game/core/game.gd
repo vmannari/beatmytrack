@@ -553,7 +553,7 @@ func _present_frame_scoped(delta: float) -> void:
 	var weight: float = Engine.get_physics_interpolation_fraction() if not paused else 1.0
 	if not paused and finish_sim == null: weight = rewind_return.interpolation(weight)
 	var point: Vector2 = previous_position.lerp(presented.state.position, weight)
-	if desert_sand_wind != null: desert_sand_wind.present(delta, point, desert_ambience.strength, paused, finish_sim != null)
+	if desert_sand_wind != null: desert_sand_wind.present(delta, point, desert_ambience.strength, paused, finish_sim != null, desert_ambience.sand_lift)
 	if winter_snow_wind != null: winter_snow_wind.present(delta, point, winter_wind.strength, paused, finish_sim != null)
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
 	_present_personal_ghost(weight)
@@ -1160,6 +1160,7 @@ func set_contact_lighting_enabled(enabled: bool) -> void:
 
 
 func open_rewind() -> void:
+	if bool(get_meta("tutorial_lesson",false)): return
 	if hud != null and hud.pause_menu.visible: return
 	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3 or rewind_return.remaining > 0: return
 	rewind_choices = rewind_history.choices(sim.state.tick)

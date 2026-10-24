@@ -44,12 +44,12 @@ func _ready() -> void:
 	row.add_child(text)
 	var group: bool = snapshot.get("mode") != "beat"
 	text.add_child(MenuStyle.label("UP TO 20 DRIVERS" if group else "YOU + ONE RIVAL",14,true))
-	var heading := MenuStyle.label("3×3 CHALLENGE" if snapshot.get("mode") == "3x3" else str(snapshot.entry.name),30)
+	var heading := MenuStyle.label("3×3 CHALLENGE" if snapshot.get("mode") == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(snapshot) else str(snapshot.entry.name),30)
 	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	text.add_child(heading)
-	if snapshot.get("mode") == "3x3":
+	if ChallengesClient.is_series(snapshot):
 		for stage: Dictionary in snapshot.get("stages",[]): text.add_child(MenuStyle.label(str(int(stage.index)+1)+"  "+str(stage.entry.name),20))
-	text.add_child(MenuStyle.label("LOWEST TOTAL TIME WINS" if snapshot.get("mode") == "3x3" else "BEST TIME WINS" if group else "CAN YOU BEAT",13,true))
+	text.add_child(MenuStyle.label("LOWEST TOTAL TIME WINS" if ChallengesClient.is_series(snapshot) else "BEST TIME WINS" if group else "CAN YOU BEAT",13,true))
 	var time_value: Variant = snapshot.get("target_ms")
 	if time_value == null:
 		for driver: Dictionary in snapshot.get("standings",[]):
@@ -64,8 +64,8 @@ func _ready() -> void:
 	var seconds: int = int(snapshot.get("ends_at",0))-int(snapshot.get("created_at",0))
 	var duration: String = "24 hours" if seconds == 86400 else "3 days" if seconds == 259200 else "7 days"
 	var limit: int = 0 if snapshot.get("attempt_limit") == null else int(snapshot.attempt_limit)
-	if snapshot.get("mode") == "3x3": limit = 3
-	text.add_child(MenuStyle.label(duration+" · "+("Unlimited tries" if limit == 0 else str(limit)+(" try" if limit == 1 else " tries")+(" per track" if snapshot.get("mode") == "3x3" else " per driver")),16,true))
+	if ChallengesClient.is_series(snapshot): limit = int(snapshot.stages[0].attempt_limit) if snapshot.stages[0].attempt_limit != null else 0
+	text.add_child(MenuStyle.label(duration+" · "+("Unlimited tries" if limit == 0 else str(limit)+(" try" if limit == 1 else " tries")+(" per track" if ChallengesClient.is_series(snapshot) else " per driver")),16,true))
 	var route := LapRouteView.new()
 	route.miniature = true
 	route.custom_minimum_size = Vector2(140,160)

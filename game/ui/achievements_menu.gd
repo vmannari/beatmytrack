@@ -16,7 +16,6 @@ var _sheet_content_scroll: ScrollContainer
 var _sheet_content_padding: MarginContainer
 var _sheet_kind: String = ""
 const TIER_NAMES: Array[String] = ["Locked","Bronze","Silver","Gold","Platinum"]
-const SHEET_SCROLLBAR_WIDTH: int = 8
 const SHEET_SCROLLBAR_GUTTER: int = 12
 
 func _ready() -> void:
@@ -244,22 +243,11 @@ func _open_sheet(title: String, kind: String) -> void:
 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content_frame.add_child(content)
 	_sheet_content_scroll = content
-	var bar: VScrollBar = content.get_v_scroll_bar()
-	bar.custom_minimum_size.x = SHEET_SCROLLBAR_WIDTH
-	bar.add_theme_stylebox_override("scroll",MenuStyle.box(Color("1b303d"),0))
-	for state: String in ["grabber","grabber_highlight","grabber_pressed"]:
-		var thumb: StyleBoxFlat = MenuStyle.box(Color("87a2af") if state != "grabber" else Color("607c8b"),0)
-		thumb.set_corner_radius_all(4)
-		thumb.content_margin_left = 4
-		thumb.content_margin_right = 4
-		thumb.content_margin_top = 12
-		thumb.content_margin_bottom = 12
-		bar.add_theme_stylebox_override(state,thumb)
 	# A stable inner gutter keeps copy clear of the bar whenever it is needed.
 	_sheet_content_padding = MarginContainer.new()
 	_sheet_content_padding.name = "AchievementDetailContentPadding"
 	_sheet_content_padding.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_sheet_content_padding.add_theme_constant_override("margin_right",SHEET_SCROLLBAR_WIDTH+SHEET_SCROLLBAR_GUTTER)
+	_sheet_content_padding.add_theme_constant_override("margin_right",SHEET_SCROLLBAR_GUTTER)
 	_sheet_content_padding.minimum_size_changed.connect(_layout_sheet.call_deferred)
 	content.add_child(_sheet_content_padding)
 	detail = VBoxContainer.new()

@@ -290,7 +290,13 @@ func ghost(slot: int, driver: String) -> Dictionary:
 
 func _download_ghost(slot: int, driver: String, cache_key: String, original: String, generation: int) -> Dictionary:
 	var run_id: String = cache_key.get_slice("/",cache_key.get_slice_count("/")-1)
-	var response: Dictionary = await client.request_api("/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
+	var path: String = "/rivalry/"+model.group_id+"/tracks/"+str(slot)+"/ghosts/"+driver.uri_encode()
+	var response: Dictionary
+	if client.has_method("fetch_recording"):
+		var recording: Dictionary = await client.fetch_recording(path,true,run_id)
+		response = {"ok":not recording.is_empty(),"data":{"run_id":run_id,"recording":recording}}
+	else:
+		response = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
 	if generation != _generation or original != scope() or cache_key != _ghost_key(slot,driver): return {}
 	if not response.ok:
 		_ghost_cache.erase(cache_key)

@@ -9,6 +9,8 @@ const PublicationPrompt = preload("res://ui/publication_dialog.gd")
 const RACE_LOAD_DEADLINE_SECONDS: float = 45.0
 const RACE_LOAD_DRAW_WAIT_MSEC: int = 2000
 var race_loading: RaceLoading
+var tutorial: Node
+var _tutorial_existing_save: bool = false
 var BUILTIN_IDS: Array[String] = BuiltinTracks.ids()
 var screen: String = "tracks"
 var menu_open_costs: Dictionary = {}
@@ -216,12 +218,15 @@ func _notification(what: int) -> void:
 		if is_instance_valid(canvas) and canvas.active_pointer != -99: canvas.cancel_gesture()
 		_flush_editor_writes()
 		_publishing_slots_foreground = false
-		if race_ad_breaks != null: race_ad_breaks.observe_time(false)
+		if race_ad_breaks != null:
+			race_ad_breaks.observe_time(false)
+			race_ad_breaks.flush_progress()
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
 		_publishing_slots_foreground = true
 		if race_ad_breaks != null: race_ad_breaks.observe_time(false)
 		_refresh_creation_slots(true)
 		if achievements != null: achievements.refresh()
+		if appearance_sync != null and not is_instance_valid(game): appearance_sync.refresh_if_stale()
 
 func _refresh_creation_slots(force: bool = false) -> void:
 	if not _publishing_slots_foreground or screen not in ["create","drafts"] or is_instance_valid(game): return
@@ -318,6 +323,7 @@ func _ready() -> void:
 		return
 	guest_records = records
 	guest_library = library
+	_tutorial_existing_save = FileAccess.file_exists(records.path) or FileAccess.file_exists(records.path+".bak")
 	profile_root = records.path.get_base_dir()
 	records.load_records()
 	GameSoundtrack.instance().apply_settings(records.settings)
@@ -330,6 +336,7 @@ func _ready() -> void:
 	add_child(online)
 	race_ad_breaks = preload("res://platform/race_ad_breaks.gd").new()
 	race_ad_breaks.client = online.client
+	race_ad_breaks.storage_path = profile_root.path_join("ad_cadence.json")
 	race_ad_breaks.blocking_changed.connect(_ad_blocking_changed)
 	add_child(race_ad_breaks)
 	cosmetic_economy = preload("res://backend/cosmetic_economy.gd").new()
@@ -338,6 +345,7 @@ func _ready() -> void:
 	add_child(cosmetic_economy)
 	appearance_sync = preload("res://backend/appearance_sync.gd").new()
 	appearance_sync.client = online.client
+	appearance_sync.clean_poll_allowed = func() -> bool: return not is_instance_valid(game)
 	add_child(appearance_sync)
 	appearance_sync.bind_records(records)
 	appearance_sync.changed.connect(_garage_appearance_changed)
@@ -474,6 +482,10 @@ func _ready() -> void:
 		await _prepare_garage_covered()
 		_show_screen("rivalry" if online.profile_ready() else "account")
 	startup_complete = true
+	tutorial = preload("res://tutorial/tutorial_controller.gd").new()
+	tutorial.app = self
+	add_child(tutorial)
+	if capture_path.is_empty() and online.profile_ready(): tutorial.offer()
 	_telemetry_observe("menu_ready",{},"ready")
 	_prefetch_discovery()
 	_prefetch_rivalry()
@@ -488,6 +500,7 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	if appearance_sync != null: appearance_sync.refresh_if_stale()
 	if game_configuration != null:
 		game_configuration.set_transport_allowed(not is_instance_valid(game) or (game.get("track_session") != null and bool(game.get("track_session").finished)))
 		game_configuration.enter_menu()
@@ -1251,6 +1264,7 @@ func _account_changed() -> void:
 		_rebuild_profile_menu("rivalry" if completed_sign_in else "account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
 	elif completed_sign_in:
 		_show_screen("rivalry")
+	if completed_sign_in and tutorial != null: tutorial.offer()
 	_prefetch_discovery()
 	_prefetch_rivalry()
 
@@ -1385,8 +1399,12 @@ func _account() -> void:
 	var panel := preload("res://ui/account_panel.gd").new()
 	panel.account = online
 	panel.custom_minimum_size.x = 520
-	panel.continue_requested.connect(_open_rivalry)
+	panel.continue_requested.connect(_continue_from_account)
 	column.add_child(panel)
+
+func _continue_from_account() -> void:
+	_open_rivalry()
+	if tutorial != null: tutorial.offer()
 
 func _heading(eyebrow: String, title: String, parent: VBoxContainer = null) -> void:
 	if parent == null: parent = content
@@ -1685,6 +1703,7 @@ func _clear_challenge_game() -> void:
 		game.queue_free()
 		game = null
 	challenge_racing = false
+	challenge_practice = false
 
 func _receive_challenge(value: String) -> void:
 	challenge_invitation = ChallengesClient.code_from(value)
@@ -1766,10 +1785,12 @@ func _share_challenge(invitation: Dictionary = {}) -> void:
 	_telemetry_observe("share_clicked",{"challenge_id":str(value.get("id","")),"reason":"share"})
 	var time: String = "%.3f s" % (float(value.target_ms)/1000.0) if value.get("target_ms") != null else "Join my group challenge"
 	var text: String = "%s · %s · 5 laps · %s\n%s\nCode: %s" % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
-	if value.get("mode") == "3x3":
+	if ChallengesClient.is_series(value):
 		var names: PackedStringArray = []
 		for stage: Dictionary in value.get("stages",[]): names.append(str(stage.entry.name))
-		text = "3×3 · 3 tracks · 3 tries each · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
+		var limit: Variant = value.stages[0].attempt_limit
+		var tries: String = "Unlimited tries" if limit == null else str(int(limit))+" tries each"
+		text = ("3×3" if value.get("mode") == "3x3" else "Custom challenge")+" · "+str(value.stages.size())+" tracks · "+tries+" · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
 	if challenge_links.share(text): return
 	var dialog := AcceptDialog.new()
 	dialog.title = "Challenge invitation copied"
@@ -1786,7 +1807,7 @@ func _cancel_challenge_dialog() -> void:
 	dialog.confirmed.connect(func() -> void: challenges.cancel())
 	dialog.popup_centered()
 
-func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800, finished: Dictionary = {}, attempt_limit: int = 0, configuration: Dictionary = {}) -> void:
+func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket_id: String = "", duration_seconds: int = 604800, finished: Dictionary = {}, attempt_limit: int = 0, configuration: Dictionary = {}, results_only: bool = false) -> void:
 	if game_configuration != null and not game_configuration.settings.get("features.challenge_creation",true):
 		_notice("New challenges are temporarily unavailable.")
 		return
@@ -1806,6 +1827,7 @@ func _create_challenge_dialog(version: String = "", vehicle: String = "", ticket
 	dialog.initial_duration = duration_seconds
 	dialog.initial_attempt_limit = attempt_limit
 	dialog.initial_configuration = configuration.duplicate(true)
+	dialog.results_only = results_only
 	if not ticket_id.is_empty():
 		if finished.is_empty() and is_instance_valid(game) and game.preparation_complete and game.get("track_session").finished:
 			finished = _challenge_finished_context(game.get("native_track"),game.get("track_session").race_time_seconds(),game.get("track_session").completed_laps,ticket_id,str(game.get("vehicle_id")))
@@ -1908,21 +1930,23 @@ func _race_for_challenge(metadata: Dictionary, vehicle: String, duration_seconds
 
 func _start_challenge_race() -> void:
 	if cloud_starting or challenges.busy or challenges.selected.is_empty(): return
-	if challenge_racing and is_instance_valid(game):
-		_retry_race()
-		return
 	var original: String = challenges.scope()
 	var navigation: int = _navigation_generation
 	var selected: Dictionary = challenges.selected.duplicate(true)
 	var stage_index: int = challenges.selected_stage
 	var stage: Dictionary = challenges.race_stage().duplicate(true)
 	var guest: bool = not online.client.signed_in()
+	# Joining is also part of this start; a second press must not reserve a try.
+	cloud_starting = true
 	if not guest and not selected.joined:
 		await challenges.join()
-		if not challenges.error.is_empty(): return
+		if not challenges.error.is_empty():
+			_abort_challenge_start()
+			return
 		_telemetry_observe("challenge_joined",{"challenge_id":str(selected.get("id","")),"reason":"join"})
-	if navigation != _navigation_generation or original != challenges.scope(): return
-	cloud_starting = true
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start()
+		return
 	_challenges()
 	var loading: RaceLoading = _open_race_loading()
 	var loading_id: int = loading.get_instance_id()
@@ -1932,17 +1956,28 @@ func _start_challenge_race() -> void:
 	loading.stage("Connecting race…")
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start(loading_id)
+		return
 	var issued: Dictionary = await challenges.ticket(stage_index) if not guest else {}
 	if not _race_loading_matches(loading_id): return
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start(loading_id)
+		return
 	var entry: Dictionary = cloud.entry_from_metadata(stage.entry)
 	var downloaded: bool = await cloud.download(entry) if guest or not issued.is_empty() else false
 	if not _race_loading_matches(loading_id): return
 	var track: NativeTrack = cloud.compile_entry(entry) if downloaded else null
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start(loading_id)
+		return
 	var recording: Dictionary = await challenges.ghost(stage_index) if track != null else {}
 	if not _race_loading_matches(loading_id): return
 	cloud_starting = false
 	_close_race_loading(loading_id)
-	if navigation != _navigation_generation or original != challenges.scope(): return
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start()
+		return
 	if track == null or (not guest and issued.is_empty()):
 		if challenges.error.is_empty(): challenges.error = cloud.last_error if not cloud.last_error.is_empty() else "Track could not be prepared. Try again."
 		_challenges()
@@ -1953,6 +1988,14 @@ func _start_challenge_race() -> void:
 	challenge_recording = recording
 	challenge_result_view = false
 	await _start_race(track,false,guest,issued)
+
+func _challenge_selection_current(owner_scope: String, navigation: int, code: String, stage_index: int) -> bool:
+	return navigation == _navigation_generation and owner_scope == challenges.scope() and str(challenges.selected.get("code","")) == code and challenges.selected_stage == stage_index
+
+func _abort_challenge_start(loading_id: int = 0) -> void:
+	cloud_starting = false
+	if loading_id != 0: _close_race_loading(loading_id)
+	if screen == "challenges" and is_instance_valid(content): _challenges()
 
 func _reset_rivalry_entry_view() -> void:
 	if rivalry_racing and rivalry_section in ["race_results","result"] and is_instance_valid(game):
@@ -2587,6 +2630,10 @@ func _settings() -> void:
 	page.customize_requested.connect(_customize_controls)
 	page.account_requested.connect(_open_account)
 	page.privacy_changed.connect(_apply_privacy_choice)
+	page.tutorial_requested.connect(func() -> void:
+		if tutorial != null: tutorial.replay())
+	page.help_requested.connect(func(topic: String) -> void:
+		if tutorial != null: tutorial.show_help(topic))
 	content.add_child(page)
 
 func _apply_privacy_choice(enabled: bool) -> void:
@@ -2629,11 +2676,6 @@ func _customize_controls() -> void:
 	root_ui.visible = false
 	add_child(editor)
 	editor.closed.connect(func() -> void: _show_screen("settings"))
-
-func _save_settings() -> void:
-	records.settings.touch_scale = ui_touch_scale
-	records.settings.left_handed = ui_left_handed
-	if records.save_records() != OK: _notice("Settings could not be saved. Check free storage space.")
 
 func _swipe_menu_page(direction: int) -> void:
 	var pages: Array[String] = ["tracks", "biome", "garage", "store"]
@@ -3486,9 +3528,6 @@ func _duplicate_object() -> void:
 	canvas.mode = "objects"
 	_commit_selection()
 
-func _creator_name() -> void:
-	_notice("Track creator: " + library.owner_name + ". This comes from your racing account.")
-
 func _remember() -> void:
 	editor_session.remember(document)
 
@@ -3920,13 +3959,14 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	if track == null:
 		_notice("Choose a track before starting a race.")
 		return
+	var tutorial_lesson: bool = tutorial != null and tutorial.authorizes(track)
 	if cloud != null and is_instance_valid(online.client.get("safety")) and not online.client.safety.allows(track.metadata.get("cloud_entry",track.metadata)):
 		_notice("This player is blocked. Manage blocked players in Settings > Privacy > Community safety.")
 		return
 	if track.metadata.get("metadata_only",false):
 		await _prepare_metadata_race(track,from_editor,offline_only,rivalry_issued)
 		return
-	if not from_editor and not track.metadata.has("cloud_version") and cloud != null:
+	if not from_editor and not track.metadata.has("cloud_version") and cloud != null and not tutorial_lesson:
 		_notice("Choose a published backend track from Race.")
 		return
 	var original_scope: String = lifecycle.scope()
@@ -4002,7 +4042,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		test_library_snapshot = library
 		test_scope_snapshot = lifecycle.scope() if lifecycle != null else ""
 		test_vehicle_snapshot = VehicleCatalog.selected
-	if not from_editor and records.settings.get("last_track","") != track.identity:
+	if not from_editor and not tutorial_lesson and records.settings.get("last_track","") != track.identity:
 		var previous_track: String = str(records.settings.get("last_track",""))
 		records.settings["last_track"] = track.identity
 		if records.save_records() != OK:
@@ -4024,12 +4064,15 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.preparation_current = _race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
 	game.set_meta("soundtrack_rivalry", rivalry_racing)
 	game.set_meta("race_offline_only", offline_only)
+	game.set_meta("tutorial_lesson", tutorial_lesson)
+	if challenge_racing:
+		game.set_meta("challenge_attempt",{"code":str(rivalry_issued.challenge_code),"stage":int(rivalry_issued.get("_challenge_stage",challenges.selected_stage)),"scope":challenges.scope()})
 	game.set("initial_track", track)
 	game.set("prepared_road_packet",prepared_roads)
 	game.set("production_mode", true)
-	game.set("resume_client",online.client)
+	game.set("resume_client",null if tutorial_lesson else online.client)
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
-	game.set("rating_records", null if track.metadata.has("cloud_version") else records)
+	game.set("rating_records", null if tutorial_lesson or track.metadata.has("cloud_version") else records)
 	game.set("preference_records", records)
 	game.set("editor_test", from_editor)
 	_prepare_race_rating(track)
@@ -4054,6 +4097,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		game.ghost_bests = {"race":challenge_recording} if not challenge_recording.is_empty() else {}
 	game.call("_prepare_personal_ghost")
 	var hud: PlaygroundHUD = game.get("hud")
+	if tutorial_lesson and hud.rewind_button != null: hud.rewind_button.hide()
 	hud.touch.control_scale = ui_touch_scale
 	hud.touch.left_handed = ui_left_handed
 	hud.touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
@@ -4140,7 +4184,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.preparation_current = Callable()
 	game.process_mode = Node.PROCESS_MODE_INHERIT
 	_telemetry_begin_attempt(track)
-	if race_ad_breaks != null and not returning_to_editor and not bool(game.get("attempt_practice")): race_ad_breaks.prepare()
+	if race_ad_breaks != null and not tutorial_lesson and not returning_to_editor and not bool(game.get("attempt_practice")): race_ad_breaks.prepare()
 	cloud_starting = false
 	_close_race_loading(loading_id)
 
@@ -4347,9 +4391,10 @@ func _results() -> void:
 	panel.clean = clean
 	panel.saved = saved
 	panel.editor = returning_to_editor
-	panel.challenge_available = online_queued and not returning_to_editor
+	panel.challenge_active = challenge_racing or challenge_practice or not challenge_seed.is_empty()
+	panel.challenge_available = online_queued and not returning_to_editor and not panel.challenge_active
 	panel.challenge_requested.connect(func() -> void:
-		_create_challenge_dialog(str(finished_challenge.entry.version_id),str(finished_challenge.vehicle_id),challenge_source_ticket,604800,finished_challenge))
+		_create_challenge_dialog(str(finished_challenge.entry.version_id),str(finished_challenge.vehicle_id),challenge_source_ticket,604800,finished_challenge,0,{},true))
 	panel.result = result_data
 	panel.set_meta("reward_facts",reward_facts)
 	panel.set_meta("reward_ticket",challenge_source_ticket)
@@ -4357,7 +4402,13 @@ func _results() -> void:
 	panel.continue_requested.connect(_results_continue.bind(panel,center))
 	panel.retry_requested.connect(_retry_race)
 	panel.return_requested.connect(_leave_race)
-	center.add_child(panel)
+	if bool(game.get_meta("tutorial_lesson",false)):
+		var lesson_scroll := ScrollContainer.new()
+		lesson_scroll.name = "TutorialResultScroll"
+		lesson_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		center.add_child(lesson_scroll)
+		lesson_scroll.add_child(panel)
+	else: center.add_child(panel)
 	if track.metadata.has("cloud_version"):
 		var online_status := Label.new()
 		online_status.name = "CloudRunStatus"
@@ -4381,6 +4432,7 @@ func _ad_play_active() -> bool:
 	return not is_instance_valid(game) or (not bool(game.get("paused")) and not bool(game.get("attempt_practice")))
 
 func _try_race_ad(finished_game: int, panel: Control) -> void:
+	if is_instance_valid(game) and bool(game.get_meta("tutorial_lesson",false)): return
 	if race_ad_breaks == null: return
 	if game_configuration != null:
 		game_configuration.set_transport_allowed(true)
@@ -4464,7 +4516,12 @@ func _results_continue(results: RaceResults, parent: Control) -> void:
 		_show_screen("challenges")
 		return
 	if challenge_racing:
+		if not cloud_ticket.is_empty():
+			_save_result_upload(game,cloud_ticket,game.get("online_frames"),"",game.get("online_rewinds"))
+			if not cloud_ticket.is_empty(): return
 		challenge_result_view = true
+		# Feedback can select another track or invitation. It owns no retryable Game.
+		_clear_challenge_game()
 		_show_screen("challenges")
 		challenges.poll_result()
 		return
@@ -4551,15 +4608,25 @@ func _retry_race(offline_only: bool = false) -> void:
 	var track: NativeTrack = game.get("native_track")
 	var replacement: Dictionary = {}
 	var retry_offline: bool = (offline_only or bool(game.get_meta("race_offline_only",false))) and not (rivalry_racing or challenge_racing)
+	var challenge_attempt: Dictionary = game.get_meta("challenge_attempt",{})
+	if challenge_racing and (not online.client.signed_in() or str(challenge_attempt.get("scope","")) != challenges.scope() or str(challenge_attempt.get("code","")) != str(challenges.selected.get("code",""))):
+		_notice("Open the challenge and select a track to race again.")
+		return
 	if not retry_offline and track.metadata.has("cloud_version") and online.client.signed_in():
 		cloud_starting = true
-		var issued: Dictionary = await challenges.ticket() if challenge_racing else await rivalry.ticket(rivalry_track) if rivalry_racing else {}
-		replacement = await cloud.ticket(track,false,str(game.get("vehicle_id")),game.get("handling"),issued) if not (rivalry_racing or challenge_racing) or not issued.is_empty() else {}
-		cloud_starting = false
-		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+		var issued: Dictionary = await challenges.ticket(int(challenge_attempt.get("stage",0))) if challenge_racing else await rivalry.ticket(rivalry_track) if rivalry_racing else {}
+		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin:
+			cloud_starting = false
+			return
+		replacement = await cloud.ticket(track,false,str(active_game.get("vehicle_id")),active_game.get("handling"),issued) if not (rivalry_racing or challenge_racing) or not issued.is_empty() else {}
+		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin:
+			cloud_starting = false
+			return
 		if replacement.is_empty():
+			cloud_starting = false
 			if rivalry_racing or challenge_racing:
-				_notice("Could not start verified retry: "+(challenges.error if challenge_racing else cloud.last_error))
+				var failure: String = challenges.error if challenge_racing and issued.is_empty() else cloud.last_error
+				_notice("Could not start verified retry: "+(failure if not failure.is_empty() else "Check your connection and try again."))
 			else:
 				var offline_dialog := ConfirmationDialog.new()
 				offline_dialog.title = "Online race unavailable"
@@ -4572,8 +4639,12 @@ func _retry_race(offline_only: bool = false) -> void:
 				offline_dialog.popup_centered()
 			return
 	if challenge_racing:
-		challenge_recording = await challenges.ghost()
-		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
+		# Keep the start lock through the optional download; repeated presses
+		# during this await must not spend another track's try.
+		challenge_recording = await challenges.ghost(int(challenge_attempt.get("stage",0)))
+		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin or str(challenge_attempt.get("code","")) != str(challenges.selected.get("code","")):
+			cloud_starting = false
+			return
 		challenge_result_view = false
 		challenges.result_ticket = ""
 		challenges.result_state = ""
@@ -4583,6 +4654,7 @@ func _retry_race(offline_only: bool = false) -> void:
 		cloud_starting = false
 		if game != active_game or not is_instance_valid(active_game) or str(online.client.player.get("id","")) != account_id or str(online.client.base_url()) != origin: return
 		rivalry_recording = refreshed_recording
+	cloud_starting = false
 	cloud_ticket = replacement
 	if rivalry_racing:
 		rivalry.result_ticket = str(replacement.get("ticket_id",""))
@@ -4595,7 +4667,7 @@ func _retry_race(offline_only: bool = false) -> void:
 	(game.get("hud") as PlaygroundHUD).show()
 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
 	game.set("preference_records",records) # A confirmed restart begins a new attempt.
-	game.set("rating_records",null if track.metadata.has("cloud_version") else records)
+	game.set("rating_records",null if bool(game.get_meta("tutorial_lesson",false)) or track.metadata.has("cloud_version") else records)
 	_prepare_race_rating(track)
 	game.set_meta("race_offline_only",retry_offline)
 	# Retry reuses the Game node but starts a new scored attempt. Keep duplicate
@@ -5561,10 +5633,6 @@ func _rename_track() -> void:
 	field.select_all()
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
 		DisplayServer.virtual_keyboard_show(field.text,field.get_viewport().get_screen_transform()*field.get_global_rect(),DisplayServer.KEYBOARD_TYPE_DEFAULT,40,0,field.text.length())
-
-static func _rename_dialog_position(view: Vector2, dialog_size: Vector2, keyboard_height: float) -> Vector2:
-	return Vector2(maxf(8,(view.x-dialog_size.x)*0.5),maxf(8,(view.y-keyboard_height-dialog_size.y)*0.5))
-
 
 func _telemetry_observe(name: String, properties: Dictionary = {}, once_key: String = "") -> void:
 	if name in ["race_attempt","race_started","race_finished","race_abandoned","race_retried"] and (returning_to_editor or (is_instance_valid(game) and bool(game.get("attempt_practice")))): return

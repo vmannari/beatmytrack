@@ -165,6 +165,7 @@ func run() -> void:
 	policy["ads.first_delay_seconds"] = 360
 	policy["ads.session_cap"] = 2
 	breaks.set_policy(policy)
+	breaks.record_finish()
 	breaks.races = 4
 	check(not breaks.due(),"AND policy requires time too")
 	breaks.active_msec = 360000

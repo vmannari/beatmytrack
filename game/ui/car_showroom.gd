@@ -8,6 +8,7 @@ var _wall_pointer: int = -2
 var condition: Dictionary = {}
 var weathering := VehicleWeathering.new()
 var wash_mode: bool = false
+var wash_tool: String = "mitt"
 var washing: bool = false
 var wash_pointer := Vector2.ZERO
 var wash_previous := Vector2.ZERO
@@ -443,6 +444,13 @@ func set_wash_mode(enabled: bool) -> void:
 	wash_mode = enabled
 	queue_redraw()
 
+func set_wash_tool(tool: String) -> void:
+	if tool not in ["mitt", "hose"] or tool == wash_tool: return
+	_clear_gesture()
+	wash_tool = tool
+	condition_changed.emit()
+	invalidate_render()
+
 func _wash_input(event: InputEvent) -> bool:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.device != InputEvent.DEVICE_ID_EMULATION:
 		washing = event.pressed and touches.is_empty()
@@ -617,8 +625,12 @@ func pick_body_surface(location: Vector2) -> Dictionary:
 func wash_at(location: Vector2, seconds: float) -> bool:
 	var surface: Dictionary = pick_body_surface(location)
 	if surface.is_empty(): return false
-	weathering.wash(surface.point, seconds)
-	if wash_effect != null: wash_effect.set_contact(surface)
+	var wash_normal: Vector3 = (weathering._body.global_transform.basis.transposed()*(surface.normal as Vector3)).normalized()
+	weathering.wash(surface.point, seconds, wash_tool, wash_normal)
+	if wash_tool == "hose":
+		surface.radius = VehicleWeathering.HOSE_RADIUS*HandlingConfig.BODY_SCALE
+		surface.car_bounds = weathering._body.global_transform*weathering.bounds
+	if wash_effect != null: wash_effect.set_contact(surface, wash_tool)
 	if not washing: invalidate_render()
 	return true
 

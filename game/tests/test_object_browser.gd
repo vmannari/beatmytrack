@@ -163,8 +163,16 @@ func run() -> void:
 	var rename_dialog: ConfirmationDialog=app.get("root_ui").find_child("RenameDialog",true,false)
 	var name_field: LineEdit=rename_dialog.find_child("CircuitName",true,false)
 	check(name_field.has_focus() and name_field.virtual_keyboard_enabled,"rename field accepts focused native keyboard input")
-	var keyboard_position: Vector2=app.call("_rename_dialog_position",Vector2(1280,720),Vector2(500,220),320.0)
-	check(keyboard_position.y+220<=400,"rename dialog stays above simulated onscreen keyboard")
+	var keyboard_layout = preload("res://ui/keyboard_dialog.gd")
+	if DisplayServer.get_name() == "headless":
+		# The headless display has no physical window height. Exercise the same
+		# pixel-to-viewport adapter with the fixture's explicit logical screen.
+		var usable: Rect2=keyboard_layout.available_rect(Rect2(0,0,1280,720),Transform2D.IDENTITY,720,320)
+		check(usable.end.y<=400 and usable.size.y>=rename_dialog.get_contents_minimum_size().y,"rename keyboard adapter reserves enough room above the simulated keyboard")
+	else:
+		keyboard_layout.layout(rename_dialog,root,320.0)
+		var usable: Rect2=keyboard_layout.available_rect(root.get_visible_rect(),root.get_screen_transform(),DisplayServer.window_get_size().y,320.0)
+		check(float(rename_dialog.position.y+rename_dialog.size.y)<=usable.end.y+1.0,"actual rename dialog stays above simulated onscreen keyboard")
 	if "--capture-objects" in OS.get_cmdline_user_args():
 		for tick: int in range(3): await RenderingServer.frame_post_draw
 		root.get_texture().get_image().save_png(ProjectSettings.globalize_path("res://../build/editor-rename-dialog.png"))

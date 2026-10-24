@@ -65,10 +65,116 @@ func layout(page: Control) -> void:
 		var button: Button = card.find_child("StoreBuy_"+id,true,false)
 		check(button.size.y >= 52 and card.get_global_rect().encloses(button.get_global_rect()),"checkout touch target stays inside "+id)
 
+func pointer_button(point: Vector2, pressed: bool, touch: bool) -> void:
+	if touch:
+		var event := InputEventScreenTouch.new()
+		event.position = point
+		event.pressed = pressed
+		root.push_input(event,true)
+	else:
+		var event := InputEventMouseButton.new()
+		event.position = point
+		event.button_index = MOUSE_BUTTON_LEFT
+		event.pressed = pressed
+		root.push_input(event,true)
+
+func drag(point: Vector2, distance: Vector2, touch: bool) -> void:
+	pointer_button(point,true,touch)
+	for step: int in range(1,5):
+		if touch:
+			var event := InputEventScreenDrag.new()
+			event.position = point+distance*step/4.0
+			event.relative = distance/4.0
+			root.push_input(event,true)
+		else:
+			var event := InputEventMouseMotion.new()
+			event.position = point+distance*step/4.0
+			event.relative = distance/4.0
+			event.button_mask = MOUSE_BUTTON_MASK_LEFT
+			root.push_input(event,true)
+		await process_frame
+	pointer_button(point+distance,false,touch)
+	await frames()
+
+func scrolling(page: Control, service: Service) -> void:
+	service.simulation = true
+	await page.refresh()
+	await ready_page(page)
+	# Extra rows use existing fixture offers; no new shipping products or SKUs.
+	for _row: int in range(4):
+		for product: Dictionary in service.catalog():
+			if str(product.id).begins_with("creator_"):
+				page.grid.add_child(page._product_card(product))
+	await frames()
+	var scroll: ScrollContainer = page.get_node("StoreScroll")
+	var footer: Rect2 = page._footer.get_global_rect()
+	var header: Rect2 = page.get_parent().get_global_rect()
+	for size: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
+		root.size = size
+		await frames()
+		scroll.scroll_vertical = 0
+		await frames()
+		var label: String = str(size)
+		check(scroll.get_v_scroll_bar().visible,"expanded catalogue exposes vertical scrollbar "+label)
+		check(scroll.get_h_scroll_bar().max_value <= scroll.size.x+1,"expanded catalogue has no horizontal overflow "+label)
+		var button: Button = page.find_child("StoreBuy_ad_free_forever",true,false)
+		check(scroll.get_global_rect().encloses(button.get_global_rect()),"gesture starts on a visible checkout "+label)
+		var point: Vector2 = button.get_global_rect().get_center()
+		var posts: int = service.posts
+		await capture("expanded-%dx%d-top" % [size.x,size.y])
+		await drag(point,Vector2(0,-150),true)
+		check(scroll.scroll_vertical >= 140,"touch swipe scrolls extra offers "+label)
+		check(service.posts == posts,"swiping over checkout does not purchase "+label)
+		scroll.scroll_vertical = 0
+		await frames()
+		await drag(point,Vector2(0,-150),false)
+		check(scroll.scroll_vertical >= 140,"mouse drag scrolls extra offers "+label)
+		check(service.posts == posts,"dragging over checkout does not purchase "+label)
+		scroll.scroll_vertical = 0
+		await frames()
+		var wheel := InputEventMouseButton.new()
+		wheel.position = point
+		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+		wheel.pressed = true
+		root.push_input(wheel,true)
+		await frames()
+		check(scroll.scroll_vertical > 0,"mouse wheel scrolls extra offers "+label)
+		var before_pan: int = scroll.scroll_vertical
+		var pan := InputEventPanGesture.new()
+		pan.position = scroll.get_global_rect().get_center()
+		pan.delta = Vector2(0,3)
+		root.push_input(pan,true)
+		await frames()
+		check(scroll.scroll_vertical > before_pan,"trackpad pan scrolls extra offers "+label)
+		var last: Button = page.grid.get_child(-1).find_child("StoreBuy_creator_slots_10",true,false)
+		last.grab_focus()
+		await frames()
+		check(scroll.get_global_rect().encloses(last.get_global_rect()),"keyboard focus reveals final checkout "+label)
+		last.release_focus()
+		await drag(scroll.get_global_rect().get_center(),Vector2(0,-10000),true)
+		check(is_equal_approx(scroll.scroll_vertical,scroll.get_v_scroll_bar().max_value-scroll.get_v_scroll_bar().page),"touch scroll clamps at final row "+label)
+		await capture("expanded-%dx%d-bottom" % [size.x,size.y])
+		await drag(scroll.get_global_rect().get_center(),Vector2(0,10000),true)
+		check(scroll.scroll_vertical == 0,"touch scroll clamps at first row "+label)
+	check(page._footer.get_global_rect().is_equal_approx(footer),"scrolling keeps recovery footer fixed")
+	check(page.get_parent().get_global_rect().is_equal_approx(header),"scrolling keeps menu layout fixed")
+	# A short tap still dispatches one fixture checkout after the drag guards.
+	var tap: Button = page.find_child("StoreBuy_ad_free_forever",true,false)
+	var before: int = service.posts
+	pointer_button(tap.get_global_rect().get_center(),true,true)
+	pointer_button(tap.get_global_rect().get_center(),false,true)
+	await ready_page(page)
+	check(service.posts == before+1,"ordinary touch tap still starts exactly one fixture checkout")
+	service.posts = 0
+	service.simulation = false
+	await page.refresh()
+	await ready_page(page)
+
 func run() -> void:
 	create_timer(100).timeout.connect(func() -> void: print("FAIL: Store reference deadline"); quit(1))
 	OS.set_environment("BMT_API_URL","")
 	output = ProjectSettings.globalize_path("res://../docs/evidence/store-reference-2026-10-24/"+RenderingServer.get_current_rendering_method())
+	if not OS.get_environment("BMT_STORE_EVIDENCE_DIR").is_empty(): output = OS.get_environment("BMT_STORE_EVIDENCE_DIR").path_join(RenderingServer.get_current_rendering_method())
 	if DisplayServer.get_name() == "headless": output = output.path_join("headless")
 	DirAccess.make_dir_recursive_absolute(output)
 	root.size = Vector2i(1280,720)
@@ -108,6 +214,7 @@ func run() -> void:
 	check(page.find_child("StoreBuy_ad_free_forever",true,false).disabled,"design never enables unconnected real billing")
 	await page._purchase("ad_free_forever")
 	check(service.posts == 0,"unavailable checkout makes no purchase request")
+	await scrolling(page,service)
 	# Narrow logical sizes exercise Store itself independently of the shared menu header.
 	page.reparent(root)
 	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)

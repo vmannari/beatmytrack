@@ -51,7 +51,7 @@ func _draw() -> void:
 	if _route_points.size() > 1:
 		draw_polyline(_route_points,Color("08131bcc"),5,true)
 		draw_polyline(_route_points,Color("f4eee0"),2,true)
-	var format: String = "TIME ATTACK" if item.mode == "beat" else "3×3 SERIES" if item.mode == "3x3" else "GROUP RACE"
+	var format: String = "3×3 SERIES" if item.mode == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(item) else "TIME ATTACK" if item.mode == "beat" else "GROUP RACE"
 	var badge_width: float = MenuStyle.DISPLAY.get_string_size(format,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+16
 	draw_style_box(MenuStyle.box(Color("08151eeb"),0),Rect2(10,10,badge_width,24))
 	draw_string(MenuStyle.DISPLAY,Vector2(18,28),format,HORIZONTAL_ALIGNMENT_LEFT,badge_width-12,14,MenuStyle.TEXT)
@@ -63,7 +63,7 @@ func _draw() -> void:
 	var target: String = MenuStyle.time_text(float(target_ms)/1000.0) if target_ms != null else "Set the first time"
 	draw_string(MenuStyle.DISPLAY,Vector2(14,177),target,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,29 if target_ms != null else 24,MenuStyle.ACCENT)
 	var car: String = VehicleCatalog.title(str(item.vehicle_id))
-	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+("3 tracks" if item.mode == "3x3" else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+(str(item.stages.size())+" tracks" if ChallengesClient.is_series(item) else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
 	draw_string(MenuStyle.BODY,Vector2(14,218),remaining,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,13,MenuStyle.MUTED)
 	var remaining_width: float = MenuStyle.BODY.get_string_size(remaining,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x
 	if size.x >= 250 and remaining_width+MenuStyle.BODY.get_string_size(reward,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x+36 <= size.x:

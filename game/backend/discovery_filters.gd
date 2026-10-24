@@ -18,5 +18,9 @@ static func payload(filters: Dictionary, favorites: Array = [], raced: Array = [
 	if body.sort not in ["recommended","name","creator","score","plays","new"]: body.sort = "recommended"
 	if body.section == "favorites": body.ids = ids(favorites)
 	if body.race_history != "any": body.raced_ids = ids(raced)
+	# The ordinary Free Race view is today's selection. Search, explicit sorts,
+	# filters and personal collections continue to query the full catalogue.
+	if body.feed == "recommended" and body.section == "all" and body.search.strip_edges().is_empty() and body.sort == "recommended" and body.theme == "all" and is_zero_approx(body.minimum_rating) and body.age_days == 0 and body.race_count == "any" and body.race_history == "any":
+		body.feed = "daily"
 	return body
 

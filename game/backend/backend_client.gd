@@ -42,6 +42,34 @@ var _pending_network_context: Dictionary = {}
 var safety: Node
 var news: Node
 var game_configuration: Node
+var recording_cache_directory: String = "user://network-recordings"
+var recording_cache_hits: int = 0
+var recording_downloads: int = 0
+var _read_flights: Dictionary = {}
+
+func fetch_recording(path: String, authorized: bool = true, expected_run_id: String = "") -> Dictionary:
+	return await preload("res://backend/recording_downloads.gd").fetch(self,path,authorized,expected_run_id)
+
+func _coalesced_read(path: String, authorized: bool) -> Dictionary:
+	var generation: int = _session_generation
+	var origin: String = _base_url
+	var actor: String = str(player.get("id",""))
+	var identity: String = origin+"/"+actor+"/"+str(generation)+"/"+str(authorized)+path
+	if _read_flights.has(identity):
+		var existing: Dictionary = _read_flights[identity]
+		while not existing.done:
+			await get_tree().process_frame
+			if generation != _session_generation or origin != _base_url or actor != str(player.get("id","")): return _failure("ACCOUNT_CHANGED")
+		if generation != _session_generation or origin != _base_url or actor != str(player.get("id","")): return _failure("ACCOUNT_CHANGED")
+		return _checked(existing.response.duplicate(true),path,HTTPClient.METHOD_GET)
+	if _read_flights.size() >= 64: return _failure("READ_BUSY",503)
+	var pending: Dictionary = {"done":false,"response":{}}
+	_read_flights[identity] = pending
+	pending.response = await _authenticated_read(path) if authorized else _checked(await _send(path,HTTPClient.METHOD_GET,{},false),path,HTTPClient.METHOD_GET)
+	pending.done = true
+	_read_flights.erase(identity)
+	if generation != _session_generation or origin != _base_url or actor != str(player.get("id","")): return _failure("ACCOUNT_CHANGED")
+	return pending.response
 
 func _vault_context() -> String:
 	return "bmt-session-v1/"+_base_url+"/"+ProjectSettings.globalize_path(session_path)
@@ -568,6 +596,28 @@ func remember_run(value: Dictionary) -> void:
 	_race_status_cache[str(value.ticket_id)] = {"data":value,"at":Time.get_ticks_msec()}
 	while _race_status_cache.size() > 32: _race_status_cache.erase(_race_status_cache.keys()[0])
 
+func run_read_path(path: String) -> String:
+	return path+("&" if path.contains("?") else "?")+"completion=true" if int(_capabilities.get("run_completion_version",0)) == 1 else path
+
+func recent_completion(ticket_id: String) -> Dictionary:
+	var recent: Dictionary = recent_run(ticket_id)
+	if recent.get("status") not in ["verified","rejected","failed"]: return {}
+	var value: Variant = recent.get("completion")
+	return value if value is Dictionary and value.get("version") == 1 else {}
+
+func invalidate_challenge_completions() -> void:
+	for entry: Dictionary in _race_status_cache.values():
+		var value: Variant = entry.get("data",{}).get("completion")
+		if value is Dictionary: value.erase("challenge_result")
+
+static func valid_completion_reward(value: Variant) -> bool:
+	if not value is Dictionary or value.get("status") not in ["credited","unavailable"] or not _whole(value.get("amount"),0,2147483647) or not value.get("rows") is Array or value.rows.size() > 32: return false
+	var total: int = 0
+	for row: Variant in value.rows:
+		if not row is Dictionary or not _text(row.get("title")) or not _text(row.get("icon")) or not _whole(row.get("amount"),0,2147483647) or not row.get("eligible") is bool or not _text(row.get("status")): return false
+		total += int(row.amount)
+	return total == int(value.amount) and (value.status == "credited" or (value.rows.is_empty() and total == 0))
+
 func recent_run(ticket_id: String) -> Dictionary:
 	var cached: Dictionary = _race_status_cache.get(ticket_id,{})
 	var duration: int = 250 if cached.get("data",{}).get("status","") in ["queued","verifying"] else 3000
@@ -600,7 +650,7 @@ func wait_for_run(run_id: String, ticket_id: String) -> Dictionary:
 	if not _run_waits.is_empty(): return _failure("WAIT_BUSY")
 	var pending: Dictionary = {"ticket":ticket_id,"done":false,"response":{}}
 	_run_waits[identity] = pending
-	var response: Dictionary = await request_api("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms),HTTPClient.METHOD_GET,{},"",true)
+	var response: Dictionary = await request_api(run_read_path("/runs/"+run_id.uri_encode()+"/wait?timeout_ms="+str(wait_ms)),HTTPClient.METHOD_GET,{},"",true)
 	if generation != _session_generation or origin != _base_url or owner != str(player.get("id","")):
 		response = _failure("ACCOUNT_CHANGED")
 	elif response.ok:
@@ -714,7 +764,8 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	_profile_request(path,"http",profile_start)
 	if metrics.collect:
 		metrics.http_ms = clampi((Time.get_ticks_usec()-profile_start)/1000,0,preload("res://backend/network_health.gd").MAX_MS)
-		metrics.response_body_bytes = (completed[3] as PackedByteArray).size()
+		# HTTPRequest's counter is before automatic gzip/deflate decompression.
+		metrics.response_body_bytes = request.get_downloaded_bytes()
 	metrics.request_id = preload("res://backend/network_health.gd").request_id(completed[2])
 	metrics.http_status = int(completed[1])
 	_public_reads.erase(request)
@@ -764,7 +815,10 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 	if authorized and generation == _session_generation and status >= 200 and status < 300:
 		if parsed.has("ticket_id") and parsed.has("status") and not run_wait: remember_run(parsed)
 		if path.begins_with("/runs/status"):
-			for item: Dictionary in parsed.get("items",[]): remember_run(item)
+			for item: Dictionary in parsed.get("items",[]):
+				if item.get("completion") is Dictionary and parsed.get("completion_wallet") is Dictionary:
+					item.completion.wallet = parsed.completion_wallet
+				remember_run(item)
 	if method == HTTPClient.METHOD_GET and status == 200 and not tag.is_empty() and bytes.size() <= 524288 and origin == _base_url and generation == _session_generation:
 		_read_cache.erase(cache_key)
 		_read_cache[cache_key] = {"tag":tag,"data":decoded.cache_data,"body":decoded.body,"bytes":bytes.size()}
@@ -897,10 +951,8 @@ func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET
 	if signed_in() and method == HTTPClient.METHOD_GET and (path == "/tracks" or path.begins_with("/tracks?") or path.begins_with("/track-versions/") or path.begins_with("/challenges/")): authenticated = true
 	if authenticated and not _delete_request_id.is_empty(): return _failure("DELETION_PENDING")
 	# Public reads need no session rotation and must not block racing or sign-in.
-	if not authenticated and method == HTTPClient.METHOD_GET:
-		return _checked(await _send(path,method,payload,false,idempotency_key),path,method)
-	if authenticated and method == HTTPClient.METHOD_GET:
-		return await _authenticated_read(path)
+	if method == HTTPClient.METHOD_GET:
+		return await _coalesced_read(path,authenticated)
 	# Fresh race authorization is independent of a prior durable score upload.
 	# Healthy tickets bypass the mutation queue; credential rotation stays serialized.
 	if authenticated and method == HTTPClient.METHOD_POST and _race_ticket_path(path):
@@ -1002,7 +1054,11 @@ static func _normalize_proof(proof: Dictionary, include_incidents: bool) -> Dict
 		result.incidents = {"schema":"bmt-race-incidents-v1","ticks":int(incidents.ticks),"collision_count":int(incidents.collision_count),"off_track":incidents.off_track}
 	return result
 
-static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false) -> Dictionary:
+func race_submission_options() -> Dictionary:
+	return {"path":1 if int(_capabilities.get("race_path_wire_version",0)) >= 1 else 0,
+		"incidents":int(_capabilities.get("race_incident_rewards_version",0)) == 1}
+
+static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false) -> Dictionary:
 	# Normalize the small movement record without encoding/scanning control frames.
 	if not _whole(count,1,216000): return {}
 	var normalized: Dictionary = _normalize_proof(proof,include_incidents)
@@ -1017,6 +1073,7 @@ static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghos
 	var path: Array = []
 	for row: Array in normalized.samples: path.append([row[0],row[1],row[2],row[6]])
 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
+	if packed_path: result.race_proof = preload("res://backend/path_wire.gd").encode(result.race_proof)
 	if normalized.has("incidents"): result.race_proof.incidents = normalized.incidents
 	if not ghost.is_empty(): result.ghost = ghost
 	return result

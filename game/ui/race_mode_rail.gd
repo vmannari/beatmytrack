@@ -23,6 +23,11 @@ func _ready() -> void:
 		var style := MenuStyle.box(MenuStyle.ACCENT if active else Color("10212c"),10)
 		style.border_color = Color("ffe792") if active else Color("2a4655")
 		style.set_border_width_all(1)
+		if active:
+			style.border_width_top = 2
+			style.shadow_color = Color("ffc83d33")
+			style.shadow_size = 4
+			style.shadow_offset = Vector2(0,2)
 		button.add_theme_stylebox_override("normal",style)
 		button.add_theme_stylebox_override("disabled",style)
 		button.name = "Mode_"+str(item[0])

@@ -210,7 +210,8 @@ func run() -> void:
 	await click(page.get_ok_button())
 	check(page._step == ChallengeCreate.TRACKS and page._chosen_entries.is_empty(),"3×3 opens track selection without filling slots")
 	check(page._browser is TrackBrowser and page._browser.selection_only,"challenge uses the actual Free Race browser")
-	for identity: String in ["RandomTrack","RaceFilters","RaceSearch","RefreshTracks"]: check(page._browser.find_child(identity,true,false) != null,"shared Free Race control "+identity)
+	for identity: String in ["RandomTrack","RaceFilters","RaceSearch"]: check(page._browser.find_child(identity,true,false) != null,"shared Free Race control "+identity)
+	check(page._browser.find_child("RefreshTracks",true,false) == null,"shared Free Race controls omit manual refresh")
 	check(not page._browser.race_button.is_visible_in_tree(),"track browser cannot launch a race before car selection")
 	await settle()
 	var card: Button = page._browser.list_grid.get_child(0) as Button

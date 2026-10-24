@@ -23,6 +23,7 @@ var has_more: bool = false
 var retry_at_msec: int = 0
 var failure_count: int = 0
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+var preview_dictionary = preload("res://backend/preview_dictionary.gd").new()
 const PAGE_SIZE: int = 20
 const MAX_PAGES: int = 13
 
@@ -37,6 +38,8 @@ func windowed() -> bool:
 
 func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
 	var body: Dictionary = payload(filters,favorites,raced)
+	if body.feed == "daily" and int(client.get("_capabilities").get("discovery_daily_version",0)) < 1:
+		body.feed = "recommended"
 	var key: String = JSON.stringify(body)
 	var same_query: bool = key == query_key and origin == scope()
 	if same_query and Time.get_ticks_msec() < retry_at_msec: return
@@ -90,6 +93,12 @@ func _fetch(page_number: int, _fresh: bool = false) -> void:
 	else:
 		body.query = query.duplicate(true)
 		if not locate_version.is_empty(): body.locate_version = locate_version
+	var preview_capability: Variant = client.get("_capabilities")
+	var reusable_previews: bool = preview_capability is Dictionary and int(preview_capability.get("discovery_preview_version",0)) == 1
+	if reusable_previews:
+		preview_dictionary.configure(cache_directory.path_join("previews") if not cache_directory.is_empty() else "",scope())
+		body.preview_cache = true
+		body.known_previews = preview_dictionary.known() if page_number == 0 or pages.has(page_number) else []
 	loading = true
 	var serial: int = generation
 	changed.emit()
@@ -101,6 +110,18 @@ func _fetch(page_number: int, _fresh: bool = false) -> void:
 		changed.emit()
 		return
 	var data: Dictionary = result.data
+	if reusable_previews and not preview_dictionary.restore(data):
+		# A corrupt/evicted presentation cache cannot make cards unreachable.
+		loading = true
+		body.known_previews = []
+		result = await client.request_discovery(body,get_instance_id())
+		if serial != generation or origin != scope(): return
+		loading = false
+		if not result.get("ok",false) or not result.get("data") is Dictionary or not preview_dictionary.restore(result.data):
+			_failed({"status":0})
+			changed.emit()
+			return
+		data = result.data
 	if not _valid_page(data):
 		_failed({"status":0})
 		error = "Could not load this track page. Refresh to retry."
@@ -220,7 +241,8 @@ func unavailable_slot(index: int) -> bool:
 	return index >= 0 and pages.has(index/PAGE_SIZE) and entry_at(index).is_empty()
 
 func status_text() -> String:
-	return "%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
+	var prefix: String = "Daily picks & more · " if query.get("feed","") == "daily" else ""
+	return prefix+"%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
 
 func random_entry(exclude: String) -> Dictionary:
 	if loading or Time.get_ticks_msec() < retry_at_msec: return {}

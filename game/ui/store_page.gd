@@ -65,9 +65,11 @@ func _ready() -> void:
 	controls.add_child(outcome)
 	controls.add_child(_label("SIMULATION · NO PAYMENT",18))
 	controls.hide()
-	var scroll := ScrollContainer.new()
+	var scroll: ScrollContainer = preload("res://ui/vertical_swipe_scroll.gd").new()
 	scroll.name = "StoreScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.follow_focus = true
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(scroll)
 	_body = VBoxContainer.new()

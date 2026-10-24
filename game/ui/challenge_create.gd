@@ -8,9 +8,10 @@ const FORMAT := 0
 const TRACKS := 1
 const CAR := 2
 const RULES := 3
+const RESULT := 4
 const FORMAT_TITLES: Dictionary = {"duel":"One-to-one","group":"Group race","three":"3×3","custom":"Custom challenge"}
 const FormatCard = preload("res://ui/challenge_format_card.gd")
-const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v3.png","group":"res://assets/menu/challenges/group-race-v3.png","three":"res://assets/menu/challenges/three-by-three-v4.png"}
+const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v3.png","group":"res://assets/menu/challenges/group-race-v3.png","three":"res://assets/menu/challenges/three-by-three-v6.png"}
 var adapter: ChallengesClient
 var entries: Array[Dictionary] = []
 var library: TrackLibrary
@@ -24,8 +25,10 @@ var initial_duration: int = 604800
 var initial_attempt_limit: int = 0
 var initial_configuration: Dictionary = {}
 var selected_format: String = "duel"
+var custom_track_count: int = 1
 var attempt_limit: int = 0
 var result_context: Dictionary = {}
+var results_only: bool = false
 var created_callback: Callable
 var start_after_create: bool = false
 var mode: int = 0
@@ -48,10 +51,11 @@ var _track_page: VBoxContainer
 var _car_page: VBoxContainer
 var _custom_page: VBoxContainer
 var _rules_fields: GridContainer
+var _result_rule_rows: Array[BoxContainer] = []
 var _formats: GridContainer
 var _format_buttons: Array[FormatCard] = []
 var _custom_button: Button
-var _slot_row: HBoxContainer
+var _slot_row: GridContainer
 var _browser: TrackBrowser
 var _car_stage: Control
 var _car_art: CarShowroom
@@ -75,7 +79,7 @@ var _action_layout: BoxContainer
 var _final_actions: BoxContainer
 
 func locked_result() -> bool: return not initial_ticket.is_empty() or not result_context.is_empty()
-func _required_tracks() -> int: return 3 if selected_format == "three" else 1
+func _required_tracks() -> int: return 1 if results_only else 3 if selected_format == "three" else custom_track_count if selected_format == "custom" else 1
 func _entry() -> Dictionary: return _chosen_entries[0] if not _chosen_entries.is_empty() else {}
 func _vehicle_id() -> String: return VehicleCatalog.valid_id(initial_vehicle) if locked_result() else _chosen_car
 
@@ -91,6 +95,7 @@ func _ready() -> void:
 	attempt_limit = initial_attempt_limit
 	mode = int(initial_configuration.get("mode",0))
 	selected_format = str(initial_configuration.get("format","duel" if mode == 0 and attempt_limit == 0 else "three" if mode == 1 and attempt_limit == 3 else "group" if mode == 1 and attempt_limit == 0 else "custom"))
+	custom_track_count = clampi(int(initial_configuration.get("track_count",1)),1,5)
 	_chosen_car = VehicleCatalog.valid_id(initial_vehicle)
 	if initial_configuration.get("tracks") is Array:
 		for entry: Dictionary in initial_configuration.tracks: _chosen_entries.append(entry.duplicate(true))
@@ -103,6 +108,10 @@ func _ready() -> void:
 			if _chosen_entries.is_empty(): _chosen_entries.append(opening.duplicate(true))
 			else: _chosen_entries[0] = opening.duplicate(true)
 	_step = CAR if int(initial_configuration.get("step",FORMAT)) == CAR and not _chosen_entries.is_empty() else FORMAT
+	if results_only:
+		_step = RESULT
+		selected_format = "duel" if mode == 0 else "group"
+		if _chosen_entries.size() > 1: _chosen_entries.resize(1)
 	var header := HBoxContainer.new()
 	header.name = "ChallengeCreateHeader"
 	add_child(header)
@@ -128,9 +137,10 @@ func _ready() -> void:
 	_car_page = _page(body,"ChallengeCarPage")
 	_custom_page = _page(body,"ChallengeCustomRulesPage")
 	_build_formats()
-	_slot_row = HBoxContainer.new()
+	_slot_row = GridContainer.new()
 	_slot_row.name = "ChallengeTrackSlots"
-	_slot_row.add_theme_constant_override("separation",12)
+	_slot_row.add_theme_constant_override("h_separation",12)
+	_slot_row.add_theme_constant_override("v_separation",8)
 	_track_page.add_child(_slot_row)
 	_build_cars()
 	_rules_fields = GridContainer.new()
@@ -141,6 +151,7 @@ func _ready() -> void:
 	_rules_fields.add_theme_constant_override("v_separation",16)
 	_custom_page.add_child(_rules_fields)
 	var note := MenuStyle.label("Best time wins. Each start uses a try, including restarts.",16,true)
+	note.visible = not results_only
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_custom_page.add_child(note)
 	_status = HBoxContainer.new()
@@ -152,6 +163,11 @@ func _ready() -> void:
 	_status.add_child(_notice)
 	_retry = _button(_status,"Retry",_check_source,"RetryChallengeSource")
 	_build_actions()
+	if results_only:
+		_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit}
+		_rule_choices("Who's racing?",[[0,"One-to-one"],[1,"Group race"]],"mode","ChallengeResultMode_")
+		_rule_choices("Challenge duration",[[86400,"24 hours"],[259200,"3 days"],[604800,"7 days"]],"duration","ChallengeDuration_")
+		_rule_choices("Tries per driver",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
 	confirmed.connect(_create)
 	resized.connect(_layout_cards)
 	_layout_cards.call_deferred()
@@ -202,6 +218,7 @@ func _build_formats() -> void:
 	_custom_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,6))
 
 func _ensure_browser() -> void:
+	if results_only: return
 	if _browser != null: return
 	var live: bool = library != null and records != null and adapter.client.has_method("request_discovery")
 	if library == null: library = TrackLibrary.new(adapter.cloud.cache_root().path_join("challenge-picker"))
@@ -234,9 +251,10 @@ func _refresh_tracks() -> void:
 	if _slot_row == null: return
 	for child: Node in _slot_row.get_children(): _slot_row.remove_child(child); child.queue_free()
 	_active_slot = mini(_active_slot,_required_tracks()-1)
-	_slot_row.visible = _required_tracks() == 3
-	if _required_tracks() == 3:
-		for index: int in range(3):
+	_slot_row.visible = _required_tracks() > 1
+	_slot_row.columns = _required_tracks() if size.x >= 720 else mini(2,_required_tracks())
+	if _required_tracks() > 1:
+		for index: int in range(_required_tracks()):
 			var title: String = str(_chosen_entries[index].name) if index < _chosen_entries.size() else "Choose track"
 			var slot := _button(_slot_row,str(index+1)+"  "+title,func() -> void: _active_slot = index; _refresh_tracks(),"ChallengeTrackSlot_"+str(index))
 			slot.tooltip_text = "Choose the track for slot "+str(index+1)
@@ -256,7 +274,7 @@ func _refresh_tracks() -> void:
 	_update()
 
 func _select_track(entry: Dictionary) -> void:
-	if _submitting: return
+	if _submitting or results_only: return
 	if locked_result() and _active_slot == 0: _show_notice("The opening track is fixed to your finished race."); return
 	for index: int in range(_chosen_entries.size()):
 		if index != _active_slot and str(_chosen_entries[index].get("track_id",_chosen_entries[index].version_id)) == str(entry.get("track_id",entry.version_id)):
@@ -357,13 +375,14 @@ func _select_car(id: String) -> void:
 	_check_source()
 
 func _open_rules() -> void:
-	if _submitting: return
+	if _submitting or results_only: return
 	_rules_return = _step
-	_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit,"visibility":adapter.creation_visibility}
+	_draft_rules = {"mode":mode,"duration":duration,"tries":attempt_limit,"visibility":adapter.creation_visibility,"tracks":custom_track_count}
 	for child: Node in _rules_fields.get_children(): _rules_fields.remove_child(child); child.queue_free()
 	_rule_choices("Who's racing?",[[0,"One-to-one"],[1,"Group race"]],"mode","ChallengeCustomMode_")
+	_rule_choices("Number of tracks",[[1,"1"],[2,"2"],[3,"3"],[4,"4"],[5,"5"]],"tracks","ChallengeTrackCount_")
 	_rule_choices("Challenge duration",[[86400,"24 hours"],[259200,"3 days"],[604800,"7 days"]],"duration","ChallengeDuration_")
-	_rule_choices("Tries per driver",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
+	_rule_choices("Tries per track",[[0,"Unlimited"],[1,"1"],[3,"3"],[5,"5"]],"tries","ChallengeTries_")
 	if adapter.discovery_supported(): _rule_choices("Who can join?",[["public","Public"],["private","Invitation only"]],"visibility","ChallengeCustomVisibility_")
 	_step = RULES
 	_update()
@@ -372,24 +391,37 @@ func _rule_choices(caption: String, values: Array, key: String, prefix: String) 
 	var panel := PanelContainer.new()
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	panel.add_theme_stylebox_override("panel",MenuStyle.card(20))
+	panel.add_theme_stylebox_override("panel",MenuStyle.card(8 if results_only else 20))
 	_rules_fields.add_child(panel)
-	var fields := VBoxContainer.new()
-	fields.add_theme_constant_override("separation",16)
+	var fields := BoxContainer.new()
+	fields.vertical = not results_only or size.x < 650
+	fields.add_theme_constant_override("separation",8 if results_only else 16)
 	fields.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	panel.add_child(fields)
-	fields.add_child(MenuStyle.label(caption,26))
+	var label := MenuStyle.label(caption,22 if results_only else 26)
+	fields.add_child(label)
+	if results_only:
+		_result_rule_rows.append(fields)
+		label.custom_minimum_size.x = 180 if size.x >= 650 else 0
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",8)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	fields.add_child(row)
 	for value: Array in values:
 		var button := _button(row,str(value[1]),func() -> void: pass,prefix+str(value[0]))
 		button.set_meta("rule_value",value[0])
-		button.custom_minimum_size.y = 56
+		button.custom_minimum_size.y = 52 if results_only else 56
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		button.pressed.connect(func() -> void:
+			if _submitting or adapter.scope() != _source_scope: return
 			_draft_rules[key] = value[0]
-			for peer: Node in row.get_children(): _selection(peer as Button,peer.get_meta("rule_value") == _draft_rules[key]))
+			for peer: Node in row.get_children(): _selection(peer as Button,peer.get_meta("rule_value") == _draft_rules[key])
+			if results_only:
+				mode = int(_draft_rules.mode)
+				duration = int(_draft_rules.duration)
+				attempt_limit = int(_draft_rules.tries)
+				selected_format = "duel" if mode == 0 else "group"
+				_update())
 		_selection(button,_draft_rules[key] == value[0])
 
 func _dismiss_rules() -> void:
@@ -405,10 +437,11 @@ func _commit_rules() -> void:
 	attempt_limit = int(_draft_rules.tries)
 	adapter.creation_visibility = str(_draft_rules.visibility)
 	selected_format = "custom"
-	if _chosen_entries.size() > 1: _chosen_entries.resize(1)
+	custom_track_count = int(_draft_rules.tracks)
+	if _chosen_entries.size() > custom_track_count: _chosen_entries.resize(custom_track_count)
 	_active_slot = 0
 	_draft_rules.clear()
-	_step = CAR if _rules_return == CAR else TRACKS
+	_step = CAR if _rules_return == CAR and _chosen_entries.size() == _required_tracks() else TRACKS
 	if _step == TRACKS: _ensure_browser()
 	_refresh_tracks()
 	if _step == CAR: _check_source()
@@ -462,9 +495,10 @@ func _build_actions() -> void:
 
 func _advance() -> void:
 	if _create_button.disabled: return
-	if _step == FORMAT:
+	if _step == RESULT: _create(false)
+	elif _step == FORMAT:
 		_step = TRACKS
-		if locked_result() and _required_tracks() == 3: _active_slot = 1
+		if locked_result() and _required_tracks() > 1: _active_slot = 1
 		_ensure_browser()
 		_refresh_tracks()
 	elif _step == TRACKS:
@@ -476,13 +510,14 @@ func _advance() -> void:
 
 func _back() -> void:
 	if _submitting: return
-	if _step == RULES: _dismiss_rules()
+	if results_only: close()
+	elif _step == RULES: _dismiss_rules()
 	elif _step == CAR: _step = TRACKS; _ensure_browser(); _update()
 	elif _step == TRACKS: _step = FORMAT; _update()
 	else: close()
 
 func _choose_format(key: String) -> void:
-	if _submitting or not FORMAT_TITLES.has(key): return
+	if _submitting or results_only or not FORMAT_TITLES.has(key): return
 	if key == "custom": _open_rules(); return
 	selected_format = key
 	mode = 0 if key == "duel" else 1
@@ -516,17 +551,20 @@ func _check_source() -> void:
 
 func _update() -> void:
 	if _create_button == null: return
+	if results_only:
+		_update_result()
+		return
 	_format_page.visible = _step == FORMAT
 	_track_page.visible = _step == TRACKS
 	_car_page.visible = _step == CAR
 	_custom_page.visible = _step == RULES
-	_heading.text = "CHOOSE YOUR CHALLENGE" if _step == FORMAT else "CUSTOM CHALLENGE" if _step == RULES else "CHOOSE YOUR CAR" if _step == CAR else "CHOOSE THREE TRACKS" if _required_tracks() == 3 else "CHOOSE YOUR TRACK"
+	_heading.text = "CHOOSE YOUR CHALLENGE" if _step == FORMAT else "CUSTOM CHALLENGE" if _step == RULES else "CHOOSE YOUR CAR" if _step == CAR else "CHOOSE THREE TRACKS" if selected_format == "three" else "CHOOSE YOUR TRACKS" if _required_tracks() > 1 else "CHOOSE YOUR TRACK"
 	var current: bool = adapter.scope() == _source_scope
 	var verified: bool = _source.get("status") == "verified"
 	var ready: bool = _chosen_entries.size() == _required_tracks()
 	_create_button.disabled = _submitting or not current or (_step in [TRACKS,CAR] and not ready)
 	if _step == CAR:
-		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or (selected_format == "three" and not adapter.series_supported())
+		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or ((_required_tracks() > 1) and not (adapter.series_supported() if selected_format == "three" else adapter.custom_tracks_supported()))
 	var personal_best: bool = _step == CAR and not locked_result() and selected_format != "three" and verified
 	_create_button.text = "Next" if _step != CAR else "Create & race" if mode == 1 else "Create & share" if locked_result() else "Use personal best"
 	_create_button.icon = MenuIcon.texture("arrow") if _step != CAR or mode == 1 else MenuIcon.texture("share")
@@ -565,7 +603,7 @@ func _update() -> void:
 		_rule_details.text = str(_chosen_entries.size())+" / "+str(_required_tracks())+" tracks selected"
 		if _required_tracks() == 1 and not _entry().is_empty(): _rule_details.text = str(_entry().name)
 	elif _step == CAR:
-		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else tries)+" · "+("Lowest total time wins" if selected_format == "three" else "Best time wins")
+		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else ("Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+" tries on each track") if _required_tracks() > 1 else tries)+" · "+("Lowest total time wins" if _required_tracks() > 1 else "Best time wins")
 		if adapter.discovery_supported(): _rule_details.text += " · "+("Public" if adapter.creation_visibility == "public" else "Invitation only")
 	elif _step == RULES: _rule_details.text = "Choose your rules, then your track and car."
 	_tries_note.visible = _step == CAR and attempt_limit > 0
@@ -577,8 +615,45 @@ func _update() -> void:
 		elif _source.get("status") in ["queued","verifying"]: _notice.text = "Verifying result…" if locked_result() else ""
 		elif _source.has("error"): _notice.text = str(_source.error)
 		elif locked_result() and not verified: _notice.text = "This result was not verified."
-		if selected_format == "three" and not adapter.series_supported(): _notice.text = "3×3 needs the updated online service."
+		if _required_tracks() > 1 and not (adapter.series_supported() if selected_format == "three" else adapter.custom_tracks_supported()): _notice.text = "Multi-track challenges need the updated online service."
 	_retry.visible = _step == CAR and _source.get("status") == "unavailable" and not _checking and not _submitting
+	_notice.visible = not _notice.text.is_empty()
+	_status.visible = _notice.visible or _retry.visible
+
+func _update_result() -> void:
+	_format_page.hide()
+	_track_page.hide()
+	_car_page.hide()
+	_custom_page.show()
+	_heading.text = "CREATE CHALLENGE"
+	var current: bool = adapter.scope() == _source_scope
+	var verified: bool = _source.get("status") == "verified"
+	_create_button.text = "Create & share"
+	_create_button.icon = MenuIcon.texture("share")
+	_create_button.disabled = _submitting or not current or _checking or not verified or _entry().is_empty()
+	_share.hide()
+	_race.hide()
+	_rules_button.hide()
+	_close_button.disabled = _submitting
+	for button: Node in _rules_fields.find_children("*","Button",true,false):
+		(button as Button).disabled = _submitting or not current
+	_rule_title.text = str(_entry().get("name",""))
+	_rule_details.text = VehicleCatalog.title(_vehicle_id())
+	var total: float = float(result_context.get("total",0.0))
+	if verified: total = float(_source.get("ms",0))/1000.0
+	_time.text = MenuStyle.time_text(total) if total > 0 else ""
+	_time.visible = not _time.text.is_empty()
+	_summary_time.text = "Your finished time"
+	_summary_time.visible = _time.visible
+	_summary_time.get_parent().show()
+	_tries_note.visible = attempt_limit > 0
+	_notice.text = ""
+	if not current: _notice.text = "Sign in again to create this challenge."
+	elif _submitting: _notice.text = "Creating…"
+	elif _checking or _source.get("status") in ["queued","verifying"]: _notice.text = "Verifying result…"
+	elif _source.has("error"): _notice.text = str(_source.error)
+	elif not verified: _notice.text = "This result was not verified."
+	_retry.visible = current and _source.get("status") == "unavailable" and not _checking and not _submitting
 	_notice.visible = not _notice.text.is_empty()
 	_status.visible = _notice.visible or _retry.visible
 
@@ -598,8 +673,12 @@ func _selection(button: Button, chosen: bool) -> void:
 func _layout_cards() -> void:
 	if _formats == null: return
 	_formats.columns = 3 if size.x >= 720 else 1
-	_rules_fields.columns = 2 if size.x >= 850 else 1
-	_action_layout.vertical = size.x < 850
+	_slot_row.columns = _required_tracks() if size.x >= 720 else mini(2,_required_tracks())
+	_rules_fields.columns = 1 if results_only else 2 if size.x >= 850 else 1
+	for row: BoxContainer in _result_rule_rows:
+		row.vertical = size.x < 650
+		(row.get_child(0) as Control).custom_minimum_size.x = 0 if row.vertical else 180
+	_action_layout.vertical = size.x < (650 if results_only else 850)
 	_final_actions.vertical = size.x < 560
 	for button: Button in [_race,_share,_create_button]: button.custom_minimum_size.x = 180 if size.x < 1100 else 210
 	_layout_car_cards()
@@ -623,8 +702,8 @@ func _layout_car_cards() -> void:
 	(strip.get_child(0) as Control).size = Vector2(total_width,140)
 
 func _create(and_race: bool = false) -> void:
-	if _step != CAR or _create_button.disabled or _submitting: return
-	start_after_create = and_race and mode == 1
+	if _step not in [CAR,RESULT] or _create_button.disabled or _submitting: return
+	start_after_create = and_race and mode == 1 and not results_only
 	_submitting = true
 	_update()
 	if adapter.discovery_supported() and adapter.creation_visibility == "public":
@@ -638,7 +717,7 @@ func _create(and_race: bool = false) -> void:
 			_update()
 			return
 	var payload: Dictionary = {"version_id":str(_entry().version_id),"vehicle_id":_vehicle_id(),"mode":"3x3" if selected_format == "three" else "group" if mode == 1 else "beat","duration_seconds":duration}
-	if selected_format == "three":
+	if _required_tracks() > 1:
 		payload.version_ids = []
 		for entry: Dictionary in _chosen_entries: payload.version_ids.append(str(entry.version_id))
 	if adapter.discovery_supported(): payload.visibility = adapter.creation_visibility
@@ -664,7 +743,7 @@ func _create(and_race: bool = false) -> void:
 func _race_to_set() -> void:
 	if _step != CAR or locked_result() or _entry().is_empty() or _submitting or adapter.scope() != _source_scope: return
 	hide()
-	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit,{"mode":mode,"format":selected_format,"tracks":_chosen_entries.duplicate(true),"step":CAR})
+	race_to_set_requested.emit(_entry(),_vehicle_id(),duration,attempt_limit,{"mode":mode,"format":selected_format,"tracks":_chosen_entries.duplicate(true),"track_count":custom_track_count,"step":CAR})
 
 func popup_centered(_size: Vector2i = Vector2i.ZERO) -> void: show(); set_process_input(true)
 func get_ok_button() -> Button: return _create_button

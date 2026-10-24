@@ -10,9 +10,11 @@ var dragging: bool = false
 var overscroll_offset: float = 0.0
 const EDGE_LIMIT: float = 64.0
 var target: BaseButton
+var input_exclusion: Callable
 
 func _input(event: InputEvent) -> void:
 	if not is_visible_in_tree(): return
+	if pointer == -2 and input_exclusion.is_valid() and input_exclusion.call(event): return
 	var location := Vector2.ZERO
 	var down: bool = false
 	var up: bool = false

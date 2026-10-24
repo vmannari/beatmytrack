@@ -68,7 +68,7 @@ func run() -> void:
 		check(own.get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player standing retains yellow highlight")
 		var row: HBoxContainer = own.get_child(0)
 		check((row.get_child(2) as Label).text == "01:39.250" and (row.get_child(3) as Label).text == "+1.000","standings give comparable times and signed gaps")
-		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
+		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeTab_sent","ChallengeSearch","ChallengeFind","ChallengeToggleFilters"]: bounds(page,name)
 		var views: TabContainer = page.find_child("ChallengeRaceViews",true,false)
 		views.current_tab = 1
 		await settle()
@@ -191,7 +191,7 @@ func run() -> void:
 		await settle()
 		await capture_state(scenario)
 		check(browse.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),scenario+" keeps racing separate from creation")
-		check(browse.find_child("ChallengeTab_sent",true,false) == null,scenario+" excludes Created")
+		check(browse.find_child("ChallengeTab_sent",true,false) != null,scenario+" keeps Created reachable")
 		if scenario == "filtered":
 			var intent: Array = []
 			browse.filters_requested.connect(func(query: String, mode: String, car: String, order: String) -> void: intent.assign([query,mode,car,order]))
@@ -212,6 +212,7 @@ func run() -> void:
 	MenuStyle.fill(manage)
 	await settle()
 	check(manage.find_child("ChallengeTab_sent",true,false) != null,"explicit creation management retains Created")
+	check(manage.find_child("ChallengeTab_discover",true,false) != null,"creation management retains a return to Discover")
 	check(manage.find_children("*","Button",true,false).any(func(button: Button) -> bool: return button.tooltip_text == "Cancel challenge"),"owner retains cancellation in creation management")
 	await capture_state("owner-management")
 	await remove_page(manage)

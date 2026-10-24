@@ -4,6 +4,8 @@ extends HBoxContainer
 signal customize_requested
 signal account_requested
 signal privacy_changed(enabled: bool)
+signal tutorial_requested
+signal help_requested(topic: String)
 
 var records: LocalRecords
 var signed_in: bool = false
@@ -34,6 +36,7 @@ var subtitle: Label
 var status: Label
 var categories: Dictionary = {}
 var reset_button: Button
+var apply_button: Button
 
 const TITLES: Dictionary = {
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
@@ -44,6 +47,7 @@ const TITLES: Dictionary = {
 	"haptics": ["Haptics", "Adjust steering and drifting vibration."],
 	"account": ["Account", "Manage the profile you race with."],
 	"privacy": ["Privacy", "Choose what optional information you share."],
+	"help": ["Help", "Learn to drive or revisit a game feature."],
 	"development": ["Development", "Test ads and simulate purchases without payment."],
 }
 
@@ -107,6 +111,7 @@ func _build_sidebar() -> void:
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
 		["account", "Account", "Profile and sign-in", "person"],
 		["privacy", "Privacy", "Data and account removal", "gear"],
+		["help", "Help", "Tutorial and game tips", "help"],
 		["development", "Development", "Ads and testing", "gear"],
 	]:
 		var id: String = item[0]
@@ -180,6 +185,7 @@ func _build_panel() -> void:
 	status.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	footer.add_child(status)
 	var apply: Button = MenuStyle.button("Apply settings", _apply, true)
+	apply_button = apply
 	apply.name = "ApplySettings"
 	apply.icon = MenuIcon.texture("check")
 	apply.add_theme_color_override("icon_normal_color", MenuStyle.INK)
@@ -191,6 +197,8 @@ func _show_section(id: String) -> void:
 	if id == "development" and not development_available: return
 	section = id
 	status.text = "Ad settings use Apply. Simulated purchases take effect immediately." if id == "development" else "Changes are saved when you apply them."
+	if id == "help": status.text = "Replay a lesson whenever you like."
+	apply_button.visible = id != "help"
 	heading.text = TITLES[id][0]
 	subtitle.text = TITLES[id][1]
 	for key: String in categories:
@@ -202,7 +210,7 @@ func _show_section(id: String) -> void:
 		(item.button as Button).add_theme_stylebox_override("normal", style)
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
-	reset_button.visible = id not in ["account","privacy"]
+	reset_button.visible = id not in ["account","privacy","help"]
 	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset haptics" if id == "haptics" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
@@ -216,8 +224,19 @@ func _show_section(id: String) -> void:
 		"haptics": _haptics()
 		"account": _account()
 		"privacy": _privacy()
+		"help": _help()
 		"development": _development()
 	_keep_category_visible(id)
+
+func _help() -> void:
+	var replay: Button = MenuStyle.button("Replay tutorial",func() -> void: tutorial_requested.emit(),true)
+	replay.name = "ReplayTutorial"
+	body.add_child(replay)
+	for item: Array in [["garage","Garage"],["rivalry","Weekly Rivalry"],["challenges","Challenges"],["creator","Building tracks"],["rewind","Rewind and resumes"]]:
+		var topic: String = item[0]
+		var button: Button = MenuStyle.button(item[1],func() -> void: help_requested.emit(topic))
+		button.name = "Help_"+topic
+		body.add_child(button)
 
 func _graphics() -> void:
 	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")

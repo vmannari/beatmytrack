@@ -171,8 +171,17 @@ func _send_purchase() -> bool:
 
 func reward_for(ticket: String) -> Dictionary:
 	if not authenticated() or ticket.is_empty(): return {"status":"unavailable","amount":0,"rows":[]}
+	sync_identity()
 	var expected: String = _current_scope()
 	var epoch: int = _epoch
+	var completion: Dictionary = client.recent_completion(ticket) if client.has_method("recent_completion") else {}
+	if preload("res://backend/backend_client.gd").valid_completion_reward(completion.get("reward")):
+		if _accept(completion.get("wallet")):
+			if not _persist(): status = "Coins are online. Local recovery could not be saved."
+			changed.emit()
+			if not pending.is_empty() and _storage_ok and not busy: _send_purchase.call_deferred()
+		elif completion.reward.status == "credited": refresh()
+		return completion.reward.duplicate(true)
 	var response: Dictionary = await client.request_api("/economy/rewards/"+ticket,HTTPClient.METHOD_GET,{},"",true)
 	if _current_scope() != expected or epoch != _epoch: return {"status":"unavailable","amount":0,"rows":[]}
 	if response.ok:

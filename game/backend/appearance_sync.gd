@@ -11,6 +11,8 @@ var _epoch: int = 0
 var _applying: bool = false
 var _debounce: Timer
 var _poll: Timer
+var clean_poll_allowed: Callable
+var _last_success_msec: int = -1
 
 func _ready() -> void:
 	_debounce = Timer.new()
@@ -20,7 +22,7 @@ func _ready() -> void:
 	add_child(_debounce)
 	_poll = Timer.new()
 	_poll.wait_time = 30.0
-	_poll.timeout.connect(refresh)
+	_poll.timeout.connect(_poll_refresh)
 	add_child(_poll)
 	_poll.start()
 
@@ -36,11 +38,27 @@ func bind_records(value: LocalRecords) -> void:
 	_epoch += 1
 	busy = false
 	status = ""
+	_last_success_msec = -1
 	if records != null: records.appearance_committed.connect(_committed)
 	if is_instance_valid(_debounce): _debounce.stop()
 
 func _committed() -> void:
 	if not _applying and not scope().is_empty() and _scope == scope(): _debounce.start()
+
+func _needs_recovery() -> bool:
+	if records == null: return false
+	if not status.is_empty() or not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
+	var base: Dictionary = State.baseline(records.settings)
+	for id: String in VehicleCatalog.IDS:
+		if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id): return true
+	return false
+
+func _poll_refresh() -> void:
+	if not _needs_recovery() and clean_poll_allowed.is_valid() and not bool(clean_poll_allowed.call()): return
+	refresh()
+
+func refresh_if_stale() -> void:
+	if _last_success_msec < 0 or Time.get_ticks_msec()-_last_success_msec >= 30000 or _needs_recovery(): refresh()
 
 func _current(epoch: int, owner: LocalRecords) -> bool:
 	return epoch == _epoch and records == owner and not _scope.is_empty() and _scope == scope()
@@ -120,6 +138,7 @@ func refresh() -> void:
 	if status.is_empty() and not records.settings.has(State.KEY): _save(base,{},pending)
 	busy = false
 	if status.is_empty():
+		_last_success_msec = Time.get_ticks_msec()
 		for id: String in VehicleCatalog.IDS:
 			if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id):
 				_debounce.start()

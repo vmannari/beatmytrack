@@ -18,6 +18,7 @@ var commit_direction: int = 0
 var intent_sign: float = 0.0
 var intent_origin: float = 0.0
 var intent_peak: float = 0.0
+var input_exclusion: Callable
 const CLAIM_DISTANCE: float = 6.0
 const PAGE_DISTANCE: float = 20.0
 const CANCEL_DISTANCE: float = 6.0
@@ -25,6 +26,7 @@ const REVERSE_DISTANCE: float = 20.0
 
 func _input(event: InputEvent) -> void:
 	if not is_instance_valid(menu) or not menu.is_visible_in_tree(): return
+	if pointer == -1 and input_exclusion.is_valid() and input_exclusion.call(event): return
 	if event is InputEventMouse and (event.device == InputEvent.DEVICE_ID_EMULATION or pointer != -1):
 		# Godot dispatches emulated mouse input before its touch; some platforms
 		# also deliver a parallel mouse stream. During our touch, neither stream
@@ -137,7 +139,7 @@ func _owns_gesture(node: Node, location: Vector2) -> bool:
 func _modal_open(node: Node) -> bool:
 	if node == null: return false
 	if node is Window and node.visible: return true
-	if node is CanvasLayer and node.layer > 20 and node.visible: return true
+	if node is CanvasLayer and node.layer > 20 and node.visible and not bool(node.get_meta("menu_input_passthrough",false)): return true
 	for child: Node in node.get_children():
 		if _modal_open(child): return true
 	return false

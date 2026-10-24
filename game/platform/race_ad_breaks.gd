@@ -5,6 +5,9 @@ const RACES_PER_AD: int = 3
 const INTERVAL_MSEC: int = 10 * 60 * 1000
 const ACCESS = preload("res://backend/store_access_cache.gd")
 const Policy = preload("res://backend/game_config_policy.gd")
+const Storage = preload("res://backend/atomic_json.gd")
+const SAVE_INTERVAL_MSEC: int = 15000
+const MAX_ACTIVE_MSEC: int = 7200000
 var client: Node
 var adapter: Node
 var enabled: bool = false
@@ -21,6 +24,60 @@ var permission: Callable
 var session_msec: int = 0
 var shown_count: int = 0
 var rewarded_elapsed_msec: int = -1
+var session_races: int = 0
+var storage_path: String = ""
+var storage_error: bool = false
+var _save_thread: Thread
+var _writing_progress: Dictionary = {}
+var _saved_progress: Dictionary = {}
+var _save_requested: bool = false
+var _next_save_at: int = 0
+
+func _progress() -> Dictionary:
+	return {"schema":1,"races":races,"active_msec":active_msec}
+
+static func _valid_progress(value: Dictionary) -> bool:
+	return value.size() == 3 and Policy.whole(value.get("schema"),1,1) and Policy.whole(value.get("races"),0,100) and Policy.whole(value.get("active_msec"),0,MAX_ACTIVE_MSEC)
+
+func _finish_save() -> void:
+	if _save_thread == null: return
+	storage_error = not bool(_save_thread.wait_to_finish())
+	if not storage_error: _saved_progress = _writing_progress
+	_save_thread = null
+	_writing_progress = {}
+
+func _poll_save() -> void:
+	if _save_thread != null:
+		if _save_thread.is_alive(): return
+		_finish_save()
+	if not _save_requested or storage_path.is_empty(): return
+	_save_requested = false
+	var progress: Dictionary = _progress()
+	if progress == _saved_progress: return
+	_writing_progress = progress
+	_save_thread = Thread.new()
+	if _save_thread.start(Storage.write.bind(storage_path,progress,256),Thread.PRIORITY_LOW) != OK:
+		_save_thread = null
+		_writing_progress = {}
+		storage_error = true
+
+func _request_save() -> void:
+	_save_requested = true
+	_poll_save()
+
+func flush_progress() -> bool:
+	# Suspend/shutdown joins the owned writer before saving the newest state.
+	# Ordinary play uses the low-priority writer, never per-frame disk IO.
+	_finish_save()
+	_save_requested = false
+	if storage_path.is_empty() or _progress() == _saved_progress: return not storage_error
+	storage_error = not Storage.write(storage_path,_progress(),256)
+	if not storage_error: _saved_progress = _progress()
+	return not storage_error
+
+func _exit_tree() -> void:
+	observe_time(false)
+	flush_progress()
 
 func set_policy(value: Dictionary) -> void:
 	if Policy.valid(value): policy = value.duplicate(true)
@@ -32,6 +89,7 @@ func rewarded_presented() -> void:
 	rewarded_elapsed_msec = 0
 
 func can_present() -> bool:
+	if session_races == 0: return false
 	if not _value("ads.permitted",true) or not _value("ads.interstitial_enabled",true): return false
 	if permission.is_valid() and not permission.call("ads.interstitial_enabled"): return false
 	if session_msec < int(_value("ads.first_delay_seconds",0))*1000: return false
@@ -42,6 +100,12 @@ func can_present() -> bool:
 	return true
 
 func _ready() -> void:
+	if not storage_path.is_empty():
+		var progress: Dictionary = Storage.read(storage_path,256)
+		if _valid_progress(progress):
+			races = int(progress.races)
+			active_msec = int(progress.active_msec)
+			_saved_progress = _progress()
 	if adapter == null:
 		adapter = preload("res://platform/admob_interstitial.gd").new()
 		add_child(adapter)
@@ -50,14 +114,21 @@ func observe_time(active: bool) -> void:
 	var now: int = clock_msec.call()
 	if _sampled_at >= 0 and _was_active:
 		var elapsed: int = maxi(0,now-_sampled_at)
-		active_msec = mini(7200000,active_msec+elapsed)
+		active_msec = mini(MAX_ACTIVE_MSEC,active_msec+elapsed)
 		session_msec = mini(86400000,session_msec+elapsed)
 		if rewarded_elapsed_msec >= 0: rewarded_elapsed_msec = mini(7200000,rewarded_elapsed_msec+elapsed)
+	var stopped: bool = _was_active and (not active or not enabled or blocking)
 	_sampled_at = now
 	_was_active = active and enabled and not blocking
+	_poll_save()
+	if stopped or now >= _next_save_at:
+		_next_save_at = now+SAVE_INTERVAL_MSEC
+		_request_save()
 
 func record_finish() -> void:
 	races = mini(100, races + 1)
+	session_races = mini(100, session_races + 1)
+	_request_save()
 
 func due() -> bool:
 	var race_due: bool = races >= int(_value("ads.races",RACES_PER_AD))
@@ -106,6 +177,7 @@ func show_if_due(at_break: Callable) -> Dictionary:
 		races = 0
 		active_msec = 0
 		shown_count = mini(100,shown_count+1)
+		_request_save()
 	blocking = false
 	blocking_changed.emit(false)
 	busy = false

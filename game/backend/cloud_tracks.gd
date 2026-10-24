@@ -5,6 +5,7 @@ signal changed
 signal race_verified
 const Client = preload("res://backend/backend_client.gd")
 const PREPARED_TRACKS = preload("res://backend/prepared_track_cache.gd")
+const INPUT_RECOVERY = preload("res://backend/pending_input_recovery.gd")
 var client: Node
 var entries: Array[Dictionary] = []
 var status: String = "Cloud tracks have not been refreshed."
@@ -63,8 +64,8 @@ func _save_pending_job(path: String, job: Dictionary) -> bool:
 	if not active and FileAccess.file_exists(_pending_marker(path)): DirAccess.remove_absolute(_pending_marker(path))
 	return true
 
-static func _discover_pending(directory: String) -> Array[String]:
-	var result: Array[String] = []
+static func _discover_pending(directory: String) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
 	if not DirAccess.dir_exists_absolute(directory): return result
 	var access: DirAccess = DirAccess.open(directory)
 	if access == null: return result
@@ -74,22 +75,51 @@ static func _discover_pending(directory: String) -> Array[String]:
 		if filename.ends_with(".job.json"):
 			var file := FileAccess.open(directory.path_join(filename),FileAccess.READ)
 			if file != null and file.get_length() <= 8388608:
-				var value: Variant = JSON.parse_string(file.get_as_text())
-				if not value is Dictionary or (not value.has("done") and (not value.has("failure") or (value.get("retryable",false) and value.get("failure","") == "verifier_unavailable"))): result.append(filename)
-			else: result.append(filename)
+				var source: String = file.get_as_text()
+				var value: Variant = JSON.parse_string(source)
+				file.close()
+				var repair: Dictionary = _input_failure_repair(directory,filename,value) if value is Dictionary else {}
+				if not repair.is_empty(): result.append({"filename":filename,"expected_hash":source.sha256_text(),"repair":repair})
+				elif not value is Dictionary or (not value.has("done") and (not value.has("failure") or (value.get("retryable",false) and value.get("failure","") == "verifier_unavailable"))): result.append({"filename":filename})
+			else: result.append({"filename":filename})
 		filename = access.get_next()
 	access.list_dir_end()
 	return result
 
+static func _input_failure_repair(directory: String, filename: String, job: Dictionary) -> Dictionary:
+	# Repair only the local encoder rejection introduced by the trajectory cutover.
+	# This scan already runs on an owned I/O worker; keep large JSON off the UI.
+	if job.get("failure") != "INVALID_REPLAY" or job.has("run_id") or job.has("done") or job.get("dismissed",false): return {}
+	if job.get("submission_schema") != "bmt-trajectory-v1" or not job.get("ticket") is String or not job.get("key") is String: return {}
+	var name: String = str(job.ticket).sha256_text()
+	if filename != name+".job.json" or job.get("replay") != name+".replay.json": return {}
+	var packet: Dictionary = INPUT_RECOVERY.replay(_load_replay(directory.path_join(str(job.replay)),str(job.get("replay_hash",""))))
+	if packet.is_empty(): return {}
+	var restored: Dictionary = job.duplicate(true)
+	for key: String in ["failure","rejection_status","retryable","retry_at","retry_server_at","retry_streak"]: restored.erase(key)
+	restored.retry_delay = 0
+	restored.submission_schema = packet.schema
+	return restored
+
 func _recover_pending(directory: String) -> bool:
 	if _recovered_outboxes.has(directory): return true
+	var origin: String = str(client.base_url())
+	var owner: String = str(client.player.get("id",""))
 	var thread := Thread.new()
 	if thread.start(_discover_pending.bind(directory)) != OK: return false
 	while thread.is_alive(): await get_tree().process_frame
-	var filenames: Array[String] = thread.wait_to_finish()
+	var plans: Array[Dictionary] = thread.wait_to_finish()
 	var count: int = 0
-	for filename: String in filenames:
-		if not _write(_pending_marker(directory.path_join(filename)),{"job":filename}): return false
+	for plan: Dictionary in plans:
+		if origin != client.base_url() or owner != str(client.player.get("id","")): return false
+		var filename: String = str(plan.filename)
+		var path: String = directory.path_join(filename)
+		if plan.has("repair"):
+			# Publish on the owning main thread only if no user action changed
+			# this journal while the worker validated its recorded inputs.
+			if FileAccess.get_sha256(path) != str(plan.expected_hash): continue
+			if not _save_pending_job(path,plan.repair): return false
+		elif not _write(_pending_marker(path),{"job":filename}): return false
 		count += 1
 		if count % MAX_FLUSH_JOBS == 0: await get_tree().process_frame
 	_recovered_outboxes[directory] = true
@@ -445,7 +475,8 @@ func migrate_record_identities(local: LocalRecords) -> Error:
 
 static func cached_document(entry: Dictionary) -> Dictionary:
 	var path: String = str(entry.get("cache_path",""))
-	if not FileAccess.file_exists(path): return {}
+	if not FileAccess.file_exists(path): path = preload("res://backend/bundled_tracks.gd").path(str(entry.get("content_hash","")))
+	if path.is_empty() or not FileAccess.file_exists(path): return {}
 	var file := FileAccess.open(path,FileAccess.READ)
 	if file == null or file.get_length() > TrackDocument.MAX_BYTES: return {}
 	var body: String = file.get_as_text()
@@ -598,8 +629,15 @@ static func _queue_run_io(ticket_data: Dictionary, frames: Array, _publish_versi
 		return _replay_integrity(directory.path_join(name+".replay.json"),replay_hash)
 	var saved: bool = _write_file(directory.path_join(name+".replay.json"),recording)
 	if saved:
-		saved = _save_pending_job_files(path,{"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at,"submission_schema":"bmt-trajectory-v1"})
+		var job: Dictionary = {"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at,"submission_schema":"bmt-trajectory-v1"}
+		if ticket_data.get("_wire_options") is Dictionary: job.wire_options = ticket_data._wire_options.duplicate(true)
+		saved = _save_pending_job_files(path,job)
 	return saved
+
+func _submission_ticket(ticket_data: Dictionary) -> Dictionary:
+	var pinned: Dictionary = ticket_data.duplicate(true)
+	if client.has_method("race_submission_options"): pinned._wire_options = client.race_submission_options()
+	return pinned
 
 func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
 	# Synchronous compatibility for small local diagnostics. The runtime uses
@@ -608,7 +646,7 @@ func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String =
 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
-	var saved: bool = _queue_run_io(ticket_data,frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
+	var saved: bool = _queue_run_io(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
 	if saved: changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved
@@ -618,7 +656,7 @@ func queue_run_async(ticket_data: Dictionary, frames: Array, publish_version: St
 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
-	var saved: Variant = await client._background(_queue_run_io.bind(ticket_data,frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0))
+	var saved: Variant = await client._background(_queue_run_io.bind(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0))
 	if saved == true: changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved == true
@@ -828,26 +866,67 @@ func _submit_saved(job: Dictionary, path: String) -> Dictionary:
 	var owner: String = str(client.player.get("id",""))
 	# A pre-update job may have been accepted with an older wire envelope.
 	# Recover its ticket first; changing its retry body would break idempotency.
-	if not job.has("submission_schema"):
-		if int(client._capabilities.get("submission_recovery_version",0)) < 1:
-			return {"ok":false,"status":0,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
-		var recovered: Dictionary = await client.request_api("/run-tickets/"+str(job.ticket).uri_encode()+"/submission",HTTPClient.METHOD_GET,{},"",true)
+	var looked_up: bool = not job.has("submission_schema") or str(job.submission_schema) in ["bmt-replay-v1","bmt-replay-v2"]
+	if looked_up:
+		var recovered: Dictionary = await _lookup_submission(str(job.ticket))
 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 		if not recovered.ok: return recovered
-		if not Client.valid_response("/run-tickets/"+str(job.ticket)+"/submission",HTTPClient.METHOD_GET,recovered.get("data")):
-			return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
 		if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
-		job.submission_schema = "bmt-trajectory-v1"
-		if not _save_pending_job(path,job): return {"ok":false,"status":0,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 	var preparation: int = Time.get_ticks_usec()
 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
 	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 	if not loaded is Dictionary or not loaded.get("frames") is Array:
 		return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+	var packet: Dictionary = {}
+	if loaded.has("race_proof") and job.has("wire_options"):
+		var options: Variant = job.wire_options
+		if not options is Dictionary or options.size() != 2 or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool:
+			return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+		if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+			await client.request_api("/bootstrap")
+			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+			if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+				return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+		var encoded: Variant = await client._background(Client._pack_trajectory.bind(loaded.frames.size(),loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1))
+		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+		packet = encoded
+	if not loaded.has("race_proof"):
+		if not looked_up:
+			var recovered: Dictionary = await _lookup_submission(str(job.ticket))
+			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+			if not recovered.ok: return recovered
+			if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
+		var encoded: Variant = await client._background(INPUT_RECOVERY.replay.bind(loaded))
+		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+		packet = encoded
+	job.submission_schema = packet.schema if not packet.is_empty() else "bmt-trajectory-v1"
+	if not _save_pending_job(path,job): return {"ok":false,"status":0,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 	var queued: Variant = job.get("queued_server_at",0)
 	if client.has_method("note_upload_age"): client.note_upload_age(str(job.key),int(queued) if Client._whole(queued,1000000000,9999999999) else 0)
 	if client.has_method("note_request_preparation"): client.note_request_preparation(str(job.key),Time.get_ticks_usec()-preparation)
-	return await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]),loaded.get("race_proof",{}),loaded.get("ghost",{}))
+	var response: Dictionary
+	if not packet.is_empty(): response = await client.request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":str(job.ticket),"replay":packet},str(job.key),true)
+	else: response = await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]),loaded.get("race_proof",{}),loaded.get("ghost",{}))
+	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+	# An original in-flight envelope can win after the first lookup. Its accepted
+	# ticket, rather than a replacement key/body, resolves that idempotency race.
+	if int(response.get("status",0)) == 409 and int(client._capabilities.get("submission_recovery_version",0)) >= 1:
+		var recovered: Dictionary = await _lookup_submission(str(job.ticket))
+		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if recovered.ok and recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
+	return response
+
+func _lookup_submission(ticket_id: String) -> Dictionary:
+	if int(client._capabilities.get("submission_recovery_version",0)) < 1:
+		return {"ok":false,"status":0,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+	var endpoint: String = "/run-tickets/"+ticket_id.uri_encode()+"/submission"
+	if client.has_method("run_read_path"): endpoint = client.run_read_path(endpoint)
+	var response: Dictionary = await client.request_api(endpoint,HTTPClient.METHOD_GET,{},"",true)
+	if response.ok and not Client.valid_response(endpoint,HTTPClient.METHOD_GET,response.get("data")):
+		return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
+	return response
 
 func flush_outbox() -> void:
 	if flushing or not client.signed_in(): return
@@ -883,7 +962,9 @@ func _flush_jobs() -> void:
 		else: ids.append("ids="+str(job.run_id).uri_encode())
 	var batch: Dictionary = {}
 	if not ids.is_empty() and bool(client._capabilities.get("batch_run_status",false)):
-		batch = await client.request_api("/runs/status?"+"&".join(ids),HTTPClient.METHOD_GET,{},"",true)
+		var batch_path: String = "/runs/status?"+"&".join(ids)
+		if client.has_method("run_read_path"): batch_path = client.run_read_path(batch_path)
+		batch = await client.request_api(batch_path,HTTPClient.METHOD_GET,{},"",true)
 		if str(client.player.get("id","")) != owner or client.base_url() != origin: return
 		if int(batch.get("status",0)) == 429:
 			_pause_flush(request_scope,batch)
@@ -942,7 +1023,10 @@ func _flush_jobs() -> void:
 				_wait_for_upload.call_deferred(str(job.run_id),str(job.ticket),owner,origin)
 		if polled.has(str(job.run_id)): response = {"ok":true,"status":200,"data":polled[str(job.run_id)]}
 		elif not batch.is_empty() and not batch.ok: response = batch
-		elif response.is_empty(): response = await client.request_api("/runs/"+str(job.run_id),HTTPClient.METHOD_GET,{},"",true)
+		elif response.is_empty():
+			var run_path: String = "/runs/"+str(job.run_id)
+			if client.has_method("run_read_path"): run_path = client.run_read_path(run_path)
+			response = await client.request_api(run_path,HTTPClient.METHOD_GET,{},"",true)
 		checked = true
 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
 		if not response.ok and int(response.get("status",0)) == 404:

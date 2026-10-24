@@ -117,6 +117,7 @@ func run() -> void:
 	policy.free()
 	for mode: String in ["monthly", "forever", "unavailable", "malformed", "changed", "left", "ordinary"]:
 		policy = fixture()
+		policy.record_finish()
 		policy.races = 3
 		policy.client.player = {"id":"owner"}
 		if mode == "monthly": policy.client.owned.ad_free = true
@@ -257,6 +258,39 @@ func app_flow() -> void:
 	finish(app)
 	for frame: int in range(4): await process_frame
 	check(ads.calls == 2 and not app.race_ad_breaks.due(), "ten-minute limit shows at next finish before the third race")
+	app.race_ad_breaks.record_finish()
+	app.race_ad_breaks.record_finish()
+	app.race_ad_breaks.active_msec = 90000
+	app._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
+	check(app.race_ad_breaks.storage_path == directory.path_join("ad_cadence.json"), "real App uses its install-level cadence state outside account profiles")
+	var saved_progress: Dictionary = preload("res://backend/atomic_json.gd").read(app.race_ad_breaks.storage_path,256)
+	check(saved_progress.get("races",0) == 2 and saved_progress.get("active_msec",0) == 90000, "actual background notification commits both cumulative counters")
+	root.remove_child(app)
+	app.free()
+	await process_frame
+	app = AppScene.instantiate()
+	app.records = LocalRecords.new(directory.path_join("records.json"))
+	app.library = TrackLibrary.new(directory.path_join("tracks"))
+	app.cloud_root_override = directory.path_join("cloud")
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	app.set_process(false)
+	check(app.race_ad_breaks.races == 2 and app.race_ad_breaks.active_msec == 90000, "real App relaunch restores both counters")
+	check(app.race_ad_breaks.session_races == 0 and not app.race_ad_breaks.can_present(), "real App relaunch starts behind the first-race guard")
+	ads = TestAds.new()
+	app.race_ad_breaks.adapter.free()
+	app.race_ad_breaks.add_child(ads)
+	app.race_ad_breaks.adapter = ads
+	app.race_ad_breaks.enabled = true
+	track.metadata.cloud_version = "isolated-ad-cadence-fixture"
+	app.selected_track = track
+	await app._start_race(track,false,true)
+	track.metadata.erase("cloud_version")
+	app.game.set_physics_process(false)
+	check(ads.calls == 0, "new session reaches its first race without an interstitial")
+	finish(app)
+	for frame: int in range(4): await process_frame
+	check(ads.calls == 1 and not app.race_ad_breaks.due(), "new session first finish completes saved N-race interval")
 	root.remove_child(app)
 	app.free()
 	await process_frame

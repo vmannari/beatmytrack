@@ -136,10 +136,10 @@ func run() -> void:
 		app._challenges()
 		await settle()
 		var page: ChallengesPage = app.root_ui.find_child("ChallengesPage",true,false)
-		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeSearch","ChallengeActions"]:
+		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeTab_sent","ChallengeSearch","ChallengeActions"]:
 			bounds(page.find_child(identity,true,false),identity)
 		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text != "Enter code"),"discovery has no code-entry action")
-		check(page.find_child("ChallengeTab_sent",true,false) == null,"racing navigation has no Created management tab")
+		check(page.find_child("ChallengeTab_sent",true,false) != null,"Find & play includes the Created management tab")
 		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),"Find & play excludes creation and management actions")
 		var filters_row: Control = page.find_child("ChallengeFilters",true,false)
 		check(not filters_row.visible,"filters leave room for racing until requested")

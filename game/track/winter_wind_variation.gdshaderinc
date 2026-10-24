@@ -1,3 +1,6 @@
+uniform bool snow_edge_sources = false;
+uniform sampler2D snow_road_sources : filter_nearest, repeat_disable;
+uniform vec4 snow_source_bounds;
 // A bounded Eulerian coordinate warp, in metres in the world wind basis.
 // Texture phase is p.x + offset.x - travel: its spatial derivative changes
 // transport speed, without travel*time multipliers stretching the field forever.
@@ -36,6 +39,15 @@ vec3 snow_local_event(vec2 p, float clock) {
 	// clear areas have no residual blanket. Each window has its own event clock.
 	vec2 cell_size = vec2(18.0,10.0);
 	vec2 cell = floor(p/cell_size);
+	vec2 edge_origin = vec2(0.0);
+	if (snow_edge_sources) {
+		vec2 uv = (p-snow_source_bounds.xy)/snow_source_bounds.zw;
+		if (any(lessThan(uv,vec2(0.0))) || any(greaterThanEqual(uv,vec2(1.0)))) return vec3(0.0);
+		vec4 source = texture(snow_road_sources,uv);
+		if (source.a < 0.5 || p.x < source.x) return vec3(0.0);
+		edge_origin = source.xy;
+		cell = floor(edge_origin/cell_size);
+	}
 	float seed = snow_patch_random(cell).z;
 	float period = mix(8.0,13.0,seed);
 	float event_clock = clock+seed*period;
@@ -47,6 +59,8 @@ vec3 snow_local_event(vec2 p, float clock) {
 	if (life <= 0.0) return vec3(0.0);
 	vec2 center = (cell+0.5)*cell_size+(random.xy-0.5)*vec2(2.0,1.4);
 	vec2 radius = mix(vec2(6.2,2.4),vec2(7.6,3.6),random.yz);
+	// Only relocate the existing window: its upwind tip stays on the road edge.
+	if (snow_edge_sources) center = edge_origin+vec2(radius.x,0.0);
 	// Support stays inside its cell, so changing an event during the clear
 	// interval cannot pop at a cell seam. Unequal sizes hide the allocation grid.
 	float patch = 1.0-smoothstep(0.45,1.0,length((p-center)/radius));

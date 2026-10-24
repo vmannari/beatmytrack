@@ -3,9 +3,13 @@ extends SceneTree
 var checks: int = 0
 var failures: int = 0
 const OUT: String = "res://../docs/evidence/desert-visibility-regression-2026-10-24/"
+var capture_out: String = OUT
 var app: Node
 
-func _initialize() -> void: run.call_deferred()
+func _initialize() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence="): capture_out = argument.trim_prefix("--evidence=").trim_suffix("/") + "/"
+	run.call_deferred()
 
 func check(ok: bool, message: String) -> void:
 	checks += 1
@@ -141,7 +145,7 @@ func draw(game: Node) -> void:
 	await RenderingServer.frame_post_draw
 
 func capture(game: Node, track: NativeTrack, pass_index: int) -> void:
-	var folder: String = OUT + RenderingServer.get_current_rendering_method() + "/"
+	var folder: String = capture_out + RenderingServer.get_current_rendering_method() + "/"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	root.size = Vector2i(1280, 720)
 	game.race_cues.hide()

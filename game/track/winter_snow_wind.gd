@@ -8,7 +8,7 @@ const BANK_SLOTS: int = 12
 const WISPS: int = 3
 const BUCKET: float = 6.0
 const REFRESH: float = 0.25
-const VERSION: String = "winter-wind-16"
+const VERSION: String = "winter-wind-17-road-edge-sources"
 const CALM_SPEED: float = 12.0
 const GUST_SPEED: float = 18.0
 const AIR_GRAINS: int = 48
@@ -39,6 +39,7 @@ var surface_child_count: int = -1
 var car_visual: Node3D
 var _fallback_active: bool = true
 var _contact_sources_prepared: bool = false
+var road_sources: RefCounted
 
 func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null) -> void:
 	_release_surfaces()
@@ -52,6 +53,7 @@ func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null
 	_contact_sources_prepared = false
 	bank_visual = visual
 	source_track = track
+	road_sources = null
 	if not enabled:
 		bank_visual = null
 		source_track = null
@@ -62,6 +64,9 @@ func configure(track: NativeTrack, visual: Node3D = null, vehicle: Node3D = null
 		airborne = _air_batch()
 		ground_material = ground.material_override
 		powder_material = powder.material_override
+	road_sources = preload("res://track/winter_road_snow_sources.gd").new()
+	road_sources.prepare(track)
+	for material: ShaderMaterial in [ground_material, powder_material, airborne.material_override]: road_sources.bind(material)
 	_bind_surfaces()
 	_fallback_active = surface_materials.is_empty()
 	if _fallback_active and not _prepare_visual_sources(track): _prepare_contact_sources(track)
@@ -228,6 +233,7 @@ func _bind_surface(mesh: MeshInstance3D, index: int, original: ShaderMaterial) -
 	else:
 		material = original.duplicate() as ShaderMaterial
 		material.set_shader_parameter("wind_surface_flow",preload("res://assets/textures/winter_wind_flow_v1.png"))
+		road_sources.bind(material)
 		surface_instances[key] = material
 		surface_materials.append(material)
 	var previous: Material = mesh.material_override if index < 0 else mesh.get_surface_override_material(index)

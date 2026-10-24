@@ -41,17 +41,17 @@ func run() -> void:
 	root.add_child(fx)
 	fx.configure(track)
 	for i: int in range(180): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
-	check(fx.plumes.multimesh.instance_count == 48 and fx.sources.size() > 0 and fx.sources.size() <= 6, "sparse patches within the bounded fine-powder pool")
+	check(fx.plumes.multimesh.instance_count == 96 and fx.sources.size() > 0 and fx.sources.size() <= 12, "more dune sites stay within the bounded 96-quad powder pool")
 	for source: Vector2 in fx.sources:
 		check(track.cell_at(source) in [1, 2] and not track.has_overhead_bridge(source, false), "source is loose sand with no bridge overhead")
 		for other: Vector2 in fx.sources:
 			if source == other: continue
-			check(source.distance_to(other) >= 8.0, "patches leave real empty ground between sources")
+			check(source.distance_to(other) >= 5.0, "additional edge sites retain five metres of clear separation")
 	var original_sites: PackedVector2Array = fx.sources.duplicate()
 	var next_focus := Vector2(14, -18)
 	fx.present(1.0 / 60.0, next_focus, 1.0, false, false)
 	for source: Vector2 in original_sites:
-		if source.distance_to(next_focus) < 20.0:
+		if source.distance_to(next_focus) < FX.ROOT_FADE_END:
 			check(fx.sources.has(source), "visible sites stay fixed when the collection cell changes")
 	fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
 	var before: Array = state(fx)
@@ -109,6 +109,7 @@ func run() -> void:
 	var simulation: Array = game.sim.state.snapshot().duplicate(true)
 	fx.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
 	for i: int in range(240): fx.present(1.0 / 60.0, Vector2(0, -18), 1.0, false, false)
+	print("DUNE_SOURCE_SUPPORT: input_triangles=", fx.source_surface.input_triangles, " cells=", fx.source_surface.cells.size(), " conservative=", fx.source_surface.conservative.size(), " sources=", fx.sources)
 	check(game.sim.state.snapshot() == simulation, "wind leaves actual driving snapshot exact")
 	if DisplayServer.get_name() != "headless": await capture(game, fx)
 	game.restart()
@@ -145,6 +146,9 @@ func capture(game: Node, fx: DesertSandWind) -> void:
 	check(baseline.save_png(out + "before.png") == OK, "before screenshot")
 	fx.show()
 	fx.reset()
+	# Flush the previous four-second material/MultiMesh state before sampling
+	# the first new births; deferred native uploads can outlive two draws.
+	for settle: int in range(4): await draw(game, fx)
 	var peak: int = -1
 	var quiet: int = 1000000
 	var peak_time: float = 0.0
@@ -152,7 +156,7 @@ func capture(game: Node, fx: DesertSandWind) -> void:
 	var timeline: Array[Dictionary] = []
 	for sample: int in range(24):
 		for step: int in range(30): fx.present(1.0 / 60.0, focus, 1.0, false, false)
-		for i: int in range(2): await draw(game, fx)
+		for i: int in range(4): await draw(game, fx)
 		var current: Image = root.get_texture().get_image()
 		var changed: int = pixel_changes(baseline, current)
 		timeline.append({"seconds": fx.elapsed, "changed_pixels": changed})

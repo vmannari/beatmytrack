@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-213-desert-prop-ranges"
+const VERSION: String = "track-kit-214-winter-road-edge-snow"
 var desert_relief: RefCounted
 const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
 const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
@@ -1306,10 +1306,6 @@ func _edge_miter(polygon: PackedVector2Array, index: int) -> Vector2:
 func _shoulder_width(point: Vector2) -> float:
 	# Preserve the original material-transition footprint independently of rise.
 	return ROAD_HEIGHT.width(point,theme_id)
-
-
-func _sand_bend_sample(points: PackedVector2Array, index: int) -> bool:
-	return ((points[index+1]-points[index]).normalized()-(points[index]-points[index-1]).normalized()).length_squared() >= 0.0001
 
 
 func _asphalt_fringe_quad(tool: SurfaceTool, inner_a: Vector2, inner_b: Vector2, outer_a: Vector2, outer_b: Vector2, points: PackedVector2Array, axis_cache: Dictionary = {}, collector: RefCounted = null) -> void:

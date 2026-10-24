@@ -14,6 +14,7 @@ const SAND_SWELL: float = 0.05
 const SAND_MAX: float = 0.065625
 const OPEN_FADE: float = 2.0
 const FINISH_FADE: float = 0.6
+const WIND_ENVELOPE = preload("res://track/desert_wind_envelope.gd")
 var rng := RandomNumberGenerator.new()
 var wind: AudioStreamPlayer
 var sand: AudioStreamPlayer
@@ -38,6 +39,9 @@ var gusts_started: int = 0
 var wind_loops: Array[AudioStream] = []
 var wind_bag: Array[int] = []
 var wind_variant: int = -1
+var wind_cursor: float = 0.0
+var sand_lift: float = 0.0
+var output_latency: float = 0.0
 
 
 func _init() -> void:
@@ -73,18 +77,22 @@ func reset() -> void:
 	sand_gain = 0.0
 	opening = 0.0
 	strength = 0.0
+	sand_lift = 0.0
 	gust_from = 0.0
 	gust_to = 0.0
 	gust_elapsed = 0.0
 	gust_duration = 0.0
 	next_high = true
 	if not enabled: return
+	# Driver latency can be expensive to query; refresh at lifecycle boundaries.
+	output_latency = AudioServer.get_output_latency()
 	_select_wind()
 	wind_offset = rng.randf_range(0.0, wind.stream.get_length() - 0.1)
+	wind_cursor = wind_offset
 	sand_offset = rng.randf_range(0.0, 28.9)
 	wind_scale = rng.randf_range(0.90, 1.10)
 	sand_scale = rng.randf_range(0.85, 1.05)
-	gust_wait = rng.randf_range(2.0, 6.0)
+	gust_wait = rng.randf_range(1.0, 3.0)
 
 
 func _select_wind() -> void:
@@ -109,6 +117,7 @@ func present(delta: float, paused: bool, finished: bool) -> void:
 	if paused or suspended or not is_finite(delta) or delta <= 0.0: return
 	var step: float = minf(delta, 0.25)
 	if finished:
+		sand_lift = move_toward(sand_lift, 0.0, step / FINISH_FADE)
 		wind_gain = move_toward(wind_gain, 0.0, WIND_MAX * step / FINISH_FADE)
 		sand_gain = move_toward(sand_gain, 0.0, SAND_MAX * step / FINISH_FADE)
 		wind.volume_linear = wind_gain
@@ -127,7 +136,7 @@ func present(delta: float, paused: bool, finished: bool) -> void:
 			gust_to = rng.randf_range(0.55, 1.0) if next_high else rng.randf_range(0.0, 0.20)
 			gust_duration = rng.randf_range(3.5, 7.0)
 			gust_elapsed = 0.0
-			gust_wait = rng.randf_range(2.0, 5.0) if next_high else rng.randf_range(3.0, 8.0)
+			gust_wait = rng.randf_range(1.0, 3.0) if next_high else rng.randf_range(1.5, 4.0)
 			next_high = not next_high
 			gusts_started += 1
 	var fade: float = smoothstep(0.0, OPEN_FADE, opening)
@@ -138,6 +147,13 @@ func present(delta: float, paused: bool, finished: bool) -> void:
 	if output_enabled:
 		if not wind.playing: wind.play(wind_offset)
 		if not sand.playing: sand.play(sand_offset)
+	# Follow the selected recording's audible cursor, including its random
+	# starting offset and loop wraps. Muting the bus still advances weather.
+	if output_enabled and wind.playing:
+		wind_cursor = fposmod(wind.get_playback_position() + AudioServer.get_time_since_last_mix() - output_latency, wind.stream.get_length())
+	else:
+		wind_cursor = fposmod(wind_cursor + step, wind.stream.get_length())
+	sand_lift = WIND_ENVELOPE.sample(wind_variant, wind_cursor) * lerpf(0.65, 1.0, strength) * fade
 
 
 func _notification(what: int) -> void:
@@ -146,4 +162,5 @@ func _notification(what: int) -> void:
 		for voice: AudioStreamPlayer in [wind, sand]:
 			if voice != null: voice.stream_paused = true
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]:
+		if suspended and enabled: output_latency = AudioServer.get_output_latency()
 		suspended = false

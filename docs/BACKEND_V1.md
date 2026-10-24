@@ -1,3 +1,41 @@
+# Current backend architecture and contract entry points
+
+Reviewed 2026-10-24 against [API composition/bootstrap](../backend/bmt_backend/app.py),
+[configuration](../backend/bmt_backend/config.py), [worker supervision](../backend/bmt_backend/service_worker.py)
+and [the client](../game/backend/backend_client.gd). The backend is connected to the
+game. It includes account sessions, immutable publication, canonical race/result
+verification, discovery v3, ratings, Rivalry/challenges, account appearance, economy
+and entitlements, achievements, News, privacy/moderation and Studio operations.
+The workspace also contains prospective World Ranking and game-configuration work.
+
+The core remains a Python/FastAPI modular monolith with PostgreSQL, immutable object
+storage and separate canonical Godot workers. Local filesystem and Google Cloud
+Storage backends exist. Discovery and product projection have owned background roles;
+World Ranking settlement has a separate bounded low-priority role. HTTP reads and
+client results do not authorize competitive scores or purchase grants.
+
+Use [backend setup](../backend/README.md) and [deployment operations](../backend/deploy/README.md)
+for current configuration, and `/docs` or `/openapi.json` from the **matching API
+artifact** for its exact endpoints. Creator imports use current v5 documents;
+canonical bundles pin the engine, physics, compiler and rules. Old protocol1/2
+discovery routes return an explicit client-update response.
+
+The [latest recorded release](LATEST_BACKEND_DEPLOY_2026_10_23.md) is schema0057 on
+the retained cloud and PC services. Later source migrations0058/0059/0060 are not
+proof of deployment. In particular, [3×3 challenges](CHALLENGES.md) and
+[World Ranking](WORLD_RANKING_IMPLEMENTATION_2026_10_23.md) require their matching
+rollout; ranking also needs its declared prospective launch. Broad Studio reporting
+requires the configured reporting standby. Production billing is disconnected.
+No live readiness, schema or provider state was queried for this review.
+
+## Historical first-server architecture and requirements — 2026-09-28
+
+The first-slice inventory, API map, diagram and tests below preserve that build.
+Unconnected-menu, future-GCS and absent-feature statements describe the original
+checkpoint, not the current implementation or latest recorded deployment.
+
+---
+
 # Backend v1: architecture, contract and acceptance
 
 **2026-09-29 client integration:** [CLOUD_TRACKS.md](CLOUD_TRACKS.md) connects Play,

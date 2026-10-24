@@ -1,3 +1,38 @@
+# Current discovery protocol and loaded-card browsing
+
+Reviewed 2026-10-24. The game uses **protocol 3**, negotiated through bootstrap
+`discovery_paging_version`. Reads use `POST /v1/discovery/v3/tracks` and Random uses
+`POST /v1/discovery/v3/random`. The retired protocol routes explicitly return HTTP
+426 `DISCOVERY_CLIENT_UPDATE_REQUIRED`; the old v2 fallback described below is no
+longer supported by the current server.
+
+[DiscoveryWindows](../game/backend/discovery_windows.gd) retains at most 13 cursor
+pages of 20 previews each. These are bounded local windows, not an exact global
+count or absolute-offset snapshot. [TrackBrowser](../game/ui/track_browser.gd)
+exposes the actual loaded cards only. It requests two visible viewports of reserve,
+bounded to 20–60 cards, with one owned read and completion-driven continuation.
+A slow/failed response stops scrolling at the loaded end; explicit retry respects
+backoff and Retry-After. Query/account changes fence stale completions. Cursor-cache
+eviction rebases fetch coordinates while retaining visible anchors and revision IDs.
+
+The backend uses indexed projections, opaque view/cursor ownership and current
+visibility checks. Shared work, network and retained-member budgets are documented
+in the [backend README](../backend/README.md). The latest recorded schema57 release
+includes those server guards; the subsequent client preloading change has separate
+[implementation and acceptance evidence](FREE_RACE_PRELOAD_2026_10_23.md).
+
+Source: [v3 routes](../backend/bmt_backend/discovery_v3.py),
+[retired routes](../backend/bmt_backend/discovery.py),
+[client negotiation](../game/backend/cloud_tracks.gd). No live service was queried
+for this documentation review.
+
+## Historical protocol 2 implementation and rollout — 2026-10-07–08
+
+The following exact counts, offsets, snapshot lifetimes, legacy behavior and image
+identify the old protocol/build. They are retained as evidence, not current setup.
+
+---
+
 # Community discovery implementation — October 7–8, 2026
 
 Requirements **B01–B07 / B19–B20 / B23 / R01 / V03–V05 / Q01**. The owner accepted the discovery/load/cost proposals and requested implementation. This slice replaces the partial, locally reordered community list with stable global queries while retaining the established menu art, carousel, publication return and canonical racer.

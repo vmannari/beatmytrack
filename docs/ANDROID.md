@@ -1,3 +1,80 @@
+# Current Android build and device workflow
+
+Reviewed 2026-10-24 against [the development wrapper](../scripts/dev.ps1),
+[export preset](../game/export_presets.cfg) and native plugin configuration.
+Use pinned Godot **4.7.2.stable.official.ed1daf0bf** and matching templates. The
+`Android Debug` preset uses **Gradle**, minimum API **24**, **ARM64 + x86_64**,
+package `org.circuit01.handlinglab` and `build/android/circuit01-debug.apk`.
+Internet, network-state and vibration permissions are enabled. Native Google
+sign-in, sharing and debug AdMob adapters are configured.
+
+## Setup and commands
+
+Configure JDK 17 and the Android SDK paths in the pinned editor's Export → Android
+settings. The wrapper reads those settings and checks prerequisites. Current builds
+need the matching `android_source.zip` in the Godot export-template directory or
+`.tools/admob/android_source.zip`; `Prepare-AndroidGradle` checks its SHA256 and
+build-version marker, installs into ignored `game/android/build` and applies the
+project's Gradle plugin hook. Preserve and resolve an existing mismatched/incomplete
+build directory before exporting. The pinned template uses compile SDK 36 and build
+tools 36.1.0; keep its actual Gradle configuration authoritative.
+
+```powershell
+# Doctor checks tooling and enumerates ADB devices:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Doctor
+# Focused gate and export, without installation:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action ExportAndroid -QuickValidation
+# Install/launch an already exported APK on an explicitly selected device:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action InstallAndroid -DeviceSerial YOUR_SERIAL
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action LaunchAndroid -DeviceSerial YOUR_SERIAL
+# Validate, export, install and launch:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action DeployAndroid -DeviceSerial YOUR_SERIAL -QuickValidation
+```
+
+Omit `-QuickValidation` to select the broader regression gate. The focused gate
+covers import/startup/driving/catalogue/menu checks, not every regression. A failed
+validation prevents that export/deploy sequence; a separate InstallAndroid action
+installs the existing APK, so verify its build identity first. `-GodotPath`/`GODOT_BIN`
+and `-AdbPath`/`ADB_BIN` override discovery. Without `-DeviceSerial`, installation
+requires exactly one authorized online device. `install -r` preserves app data;
+signing mismatches must be investigated without automatically uninstalling.
+
+`scripts/deploy-phone.ps1` and `DeployAndroidWithTracks` additionally copy saved PC
+track JSON and replace same-ID device files after backing them up. Use that path
+when track synchronization is intended; normal installation does not perform it.
+For a debug client configured to use the PC loopback API, the existing ADB reverse
+route must map tcp:18181 on the device to tcp:18181 on the PC. Cloud-configured clients
+use their configured HTTPS origin. See [account configuration](ACCOUNT_SIGN_IN.md).
+
+## Recorded deployments and remaining acceptance
+
+The latest recorded phone update is the **2026-10-23 slide-control build**:
+[receipt and APK/source hashes](evidence/phone-touch-slide-deployment-2026-10-23/report.json).
+The tablet's later-lap stutter update and its preceding sign-in build have separate
+[stutter deployment](evidence/tablet-lap-stutter-deployment-2026-10-23/report.json) and
+[sign-in deployment](evidence/tablet-sign-in-deployment-2026-10-23/report.json) receipts.
+These establish the named installed artifacts, not deployment of every current
+workspace change or physical-touch/sustained-performance acceptance.
+
+For each new build, check the installed version/hash, data preservation, APP_READY
+and startup errors. Owner driving, slide transfer, multi-touch, background/resume,
+readability, sign-in/cold restart and sustained later-lap/thermal checks remain
+build/device-specific. AdMob demo integration exists; production placements,
+consent and verified production reward fulfillment require their separate gate.
+See [AdMob development](ADMOB_DEVELOPMENT.md).
+
+This documentation review performed no device attachment check, physical-device
+test, APK export or installation. Attachment state and ignored tool/build availability
+were not re-probed.
+
+## Historical deployments and bootstrap notes
+
+Everything below records its dated build. The old missing-tool/no-APK, ARM64-only,
+non-Gradle and pre-AdMob statements are historical; use the current workflow above.
+Historical command output is retained without treating it as a new validation run.
+
+---
+
 # Android debug build and physical-phone gate
 
 ## OnePlus phone offline guest racing (2026-10-11)

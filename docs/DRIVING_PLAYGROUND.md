@@ -1,3 +1,42 @@
+# Driving controls and diagnostics
+
+Reviewed against the current source on 2026-10-24. Running the project normally
+opens the account/menu flow. For a direct diagnostic drive use:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Run -Track starter_circuit
+```
+
+W/Up accelerates, A/D or Left/Right steers, S/Down brakes and holds reverse at rest,
+**Space is the handbrake**, R restarts and Escape pauses. C cycles camera modes;
+Backspace opens rewind where available. In debug direct-drive mode, 1–6 select
+Stable, Balanced, Loose, Baseline, Original slide and Fun respectively; F2 opens
+tuning, F3 records, F6 reloads the selected preset, F4 toggles overview, F7 cycles
+track diagnostics, F5 cycles the current built-in catalogue and yard, and F9 toggles
+the AI driver. These tuning shortcuts are gated out of ordinary production-mode races.
+
+The current catalogue contains Starter Circuit, not seven playable Slicks tracks.
+Ordinary menu races use five laps; creator practice and Garage Test drive are
+untimed. Five cars, configurable camera modes and button/analog touch settings are
+implemented. Touch buttons accept slide entry and transfers between controls.
+See [menu guide](MENUS_AND_CREATOR.md), [camera options](CAMERA_OPTIONS.md) and
+[touch slide controls](TOUCH_SLIDE_ACTIVATION_2026_10_23.md).
+
+Source: [input map](../game/project.godot), [Game input dispatch](../game/core/game.gd),
+[handling selection](../game/ui/handling_selection.gd) and
+[vehicle simulation](../game/vehicle/vehicle_simulation.gd). The current canonical
+physics version is arcade-planar-0.66 at 120 Hz. The historical descriptions of a
+single circular collider, initial car dimensions and early capture limits below
+are not the current vehicle/verification contract.
+
+## Historical Phase 2 implementation and subsequent fixes
+
+The following records the original playground and its dated corrections. Its launch
+instructions, Space-as-brake mapping and handling-approval status are superseded by
+the current instructions above. Historical test counts remain tied to their build.
+
+---
+
 # Driving playground — Phase 2
 
 Requirements: G01 (active driving), R01 (simultaneous controls), R06 (restart), R02/V01 foundations (overhead presentation), A02 preparation (replay experiment). Q01 physical-device acceptance is open. No race, league, economy, backend or editor work is included.

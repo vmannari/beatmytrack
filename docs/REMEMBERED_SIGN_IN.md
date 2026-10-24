@@ -1,5 +1,49 @@
 # Startup and remembered sign-in
 
+2026-10-23 deployment follow-up: the sign-in update is installed and running on the OnePlus tablet, with app data retained. The installed APK hash/version match the frozen build and startup reaches APP_READY without matched errors. See [deployment receipts and actual tablet capture](evidence/tablet-sign-in-deployment-2026-10-23/report.json). Provider sign-in and a subsequent cold restart remain owner acceptance; the active race was left running.
+
+## Tablet persistence and direct menu entry, 2026-10-23
+
+ASI01-ASI03/B01/B19/R01/G01/Q01: Android's `JNISingleton` exposes plugin
+operations through `has_java_method`; checking only `Object.has_method` made
+the working Keystore adapter appear unavailable and prevented remembered
+sign-in. The vault now checks that Java registry on Android and retains the
+ordinary native method check on desktop. Encrypted storage, backend/profile
+binding, refresh rotation, explicit logout and account-change fences remain.
+See the [Godot JNI method documentation](https://docs.godotengine.org/en/4.6/classes/class_jnisingleton.html).
+
+Successful sign-in and first name/country saving now enter the Race menu
+directly. A restored account asks for a country only when its server profile
+has no valid country. A saved country bypasses both country setup and the
+former signed-in confirmation. Profile → Manage account remains available
+for country changes, sign-out and deletion, with the heading Your account.
+
+Actual validation: focused capability/profile checks 16/0; real HTTP account
+integration 75/0 headless and 88/0 native Compatibility, including restart
+before country selection, restart after saving, returning Google identity,
+name conflicts, cancellation and explicit account management; shared session
+rotation 17/0; full App 141/0. The captured original vault reproduces two
+Android-registry failures. The broader communication fixture retains four
+publication-cooldown failures, identical with the original vault; its secure
+storage assertions pass. The initial account harness timeout came from
+reading controls during the existing asynchronous profile rebuild; the final
+harness waits for that screen transition without changing assertions.
+
+[Missing-country startup](evidence/sign-in-startup-2026-10-23/native/missing-country-startup.png)
+and [returning-player menu](evidence/sign-in-startup-2026-10-23/native/returning-google-menu.png)
+were captured and inspected in the native game. The fixture's Rivalry service
+is deliberately unavailable; those screenshots demonstrate routing, not live
+Rivalry availability. Commands, source hashes, logs and the scoped checkpoint
+are in [the evidence report](evidence/sign-in-startup-2026-10-23/report.json).
+
+No successful tablet attachment check or device test was performed: ADB could
+not initialize its user directory in the sandbox, and no local ADB server was
+running. No APK, install, live backend/account mutation or deployment occurred.
+An updated tablet build and owner cold-restart acceptance remain. If the old
+build never saved a session, sign in once after updating. The historical
+plaintext/future-vault notes below describe the original implementation;
+current storage uses the existing platform-protected vault.
+
 2026-10-04 renewal repair: clients sharing the private session file coordinate refresh and the following authenticated retry. Saves add noncredential `login_id` and `player_id` metadata; old saves gain these on successful renewal. A different explicit login is preserved rather than silently adopted. See [PC rivalry logout repair](RIVALRY_SESSION_FIX.md).
 
 2026-09-28 owner request; requirements B01/B19 authentication, R01 isolation, Q01 verification.

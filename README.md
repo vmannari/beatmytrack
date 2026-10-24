@@ -1,75 +1,113 @@
-# CIRCUIT / 01 — local racing and track studio
+# Beat my track
 
-Working title from the blueprint. **Handling and collisions are owner-approved. The project opens the new Play menu.** Open `game/project.godot` in Godot 4.7.2 and run the project. Race seven native Slicks-derived layouts or open **Create** to shape, theme, preview, test-drive and share your own circuit. See [menus and creator guide](docs/MENUS_AND_CREATOR.md), [three additional circuits](docs/MORE_SLICKS.md) and [track themes](docs/TRACK_THEMES.md). Physical-phone acceptance remains pending.
+Beat my track is a Godot racing game and local track editor for Windows and Android.
+Ordinary races have five laps and five fictional cars: Compact, Pickup, Classic,
+Formula and Kart. The app includes Free Race discovery, local creation and untimed
+practice, verified online results, Weekly Rivalry, Challenges and a Garage with
+appearance customisation and a parking-hall test drive.
 
-Create starts with a complete circuit. Drag its large handles; use Add bend, Remove or Set start to change the route. Theme, road surface and width sit beside the map. Fit/+/- and pinch/pan change the planning view. Valid edits autosave; Undo recovers mistakes. **3D preview** shows the same track kit as driving. **Test drive** and **Back to editor** preserve your draft and view. Tracks lists local circuits for racing or editing; Share offers clipboard/file exchange, and Import creates a new local copy.
+The current World Ranking implementation is prospective: launch and matching
+client, API and worker rollout are separate from running this checkout. Backend
+and provider configuration determine which online services are available.
 
-Menu races have a standing countdown, three laps, local results/PBs and Retry. These times are unverified; no online ranking or hosted publication is implied. There is no local draft count quota or paid racing gate.
+## Run the project
 
-## Drive and tune (development tools)
+Open `game/project.godot`, or use the repository entry point:
 
-The table below describes the retained diagnostic mode: launch with `scripts/dev.ps1 Run -Track slicks_freeway_test`. Normal menu races hide these debug controls. F5 now cycles all seven imported circuits and the yard.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Run
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Editor
+```
 
-| Control | Action |
-|---|---|
-| W / Up | Accelerator; brakes first when reversing |
-| A/D / Left/Right | Steering |
-| S / Down / Space | Brake; keep held at rest for 0.35 s to reverse |
-| R / Restart button | Immediate reset |
-| Escape / Pause button | Pause/resume; focus loss also pauses and releases inputs |
-| 1 / 2 / 3 | Stable / Balanced / Loose handling presets |
-| F1 | Toggle telemetry |
-| F2 / Tune button | Six live handling controls; changing a value resets the car |
-| F3 / Record button | Start from a fresh reset, then save quantized inputs and state checkpoints |
-| F6 | Reload current preset Resource from disk and reset |
-| F5 / Track button | Cycle FREEWAY, 1WAY, 66, OFFROAD and the yard |
-| F4 / F7 | Top-down track overview / original-data diagnostic overlays |
-| F9 | Toggle conservative AI practice driver and restart |
+Use the exact engine in [godot-version.txt](godot-version.txt), currently
+`4.7.2.stable.official.ed1daf0bf`, and matching export templates. The development
+script verifies the version and generates the client build identity. Set
+`GODOT_BIN` or pass `-GodotPath` when the pinned console executable is elsewhere;
+the machine's older `godot` alias is unsuitable. Native extension descriptors
+under `game/platform/` select the Windows libraries used by this checkout.
 
-Touch controls support separate left/right/brake/throttle fingers; mobile hardware testing remains outstanding. Mouse clicks operate the top buttons and tuning panel; the lower driving zones are touch inputs, not mouse pedals. In-game tweaks are temporary. For saved tuning, open `game/resources/balanced.tres` (or another preset) in the Inspector, change its exported fields, save and press F6 in the game. All parameter units and tuning advice are in [the driving guide](docs/DRIVING_PLAYGROUND.md).
+The ordinary keyboard controls are W/Up for accelerator, A/D or Left/Right for
+steering, S/Down for brake, Space for handbrake, R for reset and Escape for pause.
+Touch supports independent fingers, slide activation and configurable buttons,
+analog slider or joystick steering. Camera, control and sound settings are in
+the app. Garage test driving is untimed and does not award race records.
 
-Try **Balanced** first: accelerate to roughly 60–80 km/h, turn toward a skid circle, then lift and countersteer. Judge whether the slide is predictable and catchable. Compare **Stable** and **Loose** on the same maneuver; report which you prefer and whether steering feels delayed, too twitchy or difficult to recover.
+## Local tracks and saves
 
-Open `game/project.godot` with **Godot 4.7.2 standard**, build `4.7.2.stable.official.ed1daf0bf`. The supplied machine has that executable under `C:\apps\Godot 4.7.2\`; its `godot` PATH alias points to an older version. `scripts/dev.ps1` checks the pin before running anything.
+The shipping built-in catalog contains the original Starter Circuit. Published
+online tracks are discovered from the configured backend; the historical Slicks
+collection is retained only as excluded regression fixtures.
 
-## Developer loop (PowerShell, from repository root)
+Creator import accepts `creator-track-v5`; prepared native tracks use
+`surface-grid-v2`. Older creator formats and the retired Coast alias are rejected.
+Existing owner files are preserved. Local PBs, paint, controls and other supported
+settings upgrade at the persistence boundary and commit through atomic saves.
+Pending result uploads and publication journals remain recoverable.
+
+See [creator workflow](docs/WIREFRAME_EDITOR.md),
+[current import policy](docs/EDITOR_T11_T15_2026_10_23.md),
+[Garage test drive](docs/PARKING_HALL_2026_10_23.md) and
+[slide controls](docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md).
+
+## Backend
+
+[Backend setup](backend/README.md) covers authentication, immutable publication,
+trajectory verification, deployment configuration and local development services.
+The current client requires discovery v3 and trajectory verification; it retains
+cached/local play when a matching online service is unavailable. Recovering
+pre-update upload replies additionally requires submission recovery version 1.
+
+Production Studio access uses configured named staff identities and verified MFA.
+Shared diagnostic keys are disabled by default and forbidden in production.
+Development authentication and artificial populations remain explicitly gated.
+Never commit credentials, provider keys or signing secrets.
+
+## Verification
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Validate
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Run
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Run -Track slicks_freeway_test
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Editor
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Capture
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestRecords
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestControlLayout
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_legacy_cleanup.gd
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 BackendTest
 ```
 
-ExecutionPolicy Bypass applies to this invocation only; no machine policy change is needed. `Run`/`Editor` remain attached until the window closes. Override discovery with `-GodotPath 'D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe'` or `GODOT_BIN`. Validation imports the project, parses every GDScript, checks main-scene startup and runs the driving and track regression suites, failing on engine script errors even when the process exits zero. Logs and `playground.png` capture go to ignored `build/`.
-
-Compatibility rendering is the initial baseline. The project uses landscape, a 1280×720 logical UI with expanded wider viewports, a fixed 120 Hz simulation and independent input actions. A stable-yaw high-oblique orthographic camera follows the car with bounded look-ahead and separate visual interpolation. Camera extent uses the requested baseline / 1.15 factor; exact reference matching and physical-phone safe-area approval remain future checks. Matte toon materials and simple original geometry are handling stand-ins, not final art.
+Use isolated test user data for app-level tests. Command logs go under `build/`.
+[Development status](DEVELOPMENT_STATUS.md), [agent instructions](AGENTS.md) and
+the dated evidence under `docs/evidence/` record actual test results and remaining
+owner/device acceptance. Desktop checks do not establish physical-device FPS or
+appearance acceptance.
 
 ## Android
 
+[Android setup](docs/ANDROID.md) covers SDK/JDK/templates and device commands.
+The Android preset uses Gradle, Android API 24 minimum, arm64 and x86_64, and
+network permission for online services. Builds have previously been installed
+on the owner's phone and tablet; that does not certify every current source change.
+Export, installation and physical-device testing are separate actions.
+
+The installed package remains `org.circuit01.handlinglab`; changing that identity
+would separate existing application data. Development commands generate APKs
+under `build/android/`. No device installation or production deployment is implied
+by editing this checkout.
+
+## Repository and native artifacts
+
+`game/` is the Godot resource root. Backend code, the original blueprint, archived
+references and task evidence stay outside it. Tests and offline verifier entry
+points are excluded from Android export. [Asset provenance](licenses/ASSETS.md)
+and native license notices must accompany their respective shipped assets.
+
+Native build scripts retain the descriptor-selected libraries and any generation
+loaded by a running Godot process. Other Windows DLLs can be archived, with hash
+verification, outside the resource root:
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Doctor
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 ExportAndroid
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 InstallAndroid
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 LaunchAndroid
-# Or validate, build, install and launch in sequence:
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 DeployAndroid -DeviceSerial YOUR_SERIAL
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/archive_native_libraries.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/archive_native_libraries.ps1 -Archive
 ```
 
-See [Android setup and device acceptance](docs/ANDROID.md). Preset: `Android Debug`, arm64, package `org.circuit01.handlinglab`, output `build/android/circuit01-debug.apk`. There is no backend, runtime external dependency or network permission. SDK, JDK and matching templates are currently missing from the configured locations, so no APK or physical-phone test is claimed.
-
-## Project contract
-
-Read [Phase 0 review and eight tasks](docs/PHASE_0_PLAN.md), [development status](DEVELOPMENT_STATUS.md) and [agent instructions](AGENTS.md). `game/` is the entire Godot resource root. The preserved specification, financial workbook and reference images are outside it and are never packaged as game assets. Asset provenance belongs in [licenses](licenses/ASSETS.md).
-
-The existing package's Python tests exercise documentation/schema examples, not this game:
-
-```powershell
-# Optional documentation-only tooling; not a game dependency.
-python -m venv .tools/review
-.tools/review/Scripts/python.exe -m pip install jsonschema==4.26.0
-.tools/review/Scripts/python.exe -X utf8 -m unittest discover -s Android_racing_game_blueprint_v2/technical/tests -v
-```
-
-Use `git` normally, or `& 'C:\Program Files\Git\cmd\git.exe'` on this machine where Git is installed but absent from this shell's PATH. No remote or publication is configured.
+The first command is a dry run. Incomplete process inspection prevents archiving;
+running game/editor processes are never stopped. Archives preserve rollback bytes.
+The superseded local-slice guide is preserved in
+[the documentation archive](archive/local-slice-readme-2026-10-24/README.md).

@@ -1,3 +1,49 @@
+# Menus and track creator
+
+Current workspace behavior, reviewed 2026-10-24. Launch through
+[scripts/dev.ps1](../scripts/dev.ps1) with `-Action Run` and the pinned engine.
+Startup restores a session; a profile-ready account goes directly to Race, otherwise
+sign-in and Guest play are offered. See [account setup](ACCOUNT_SIGN_IN.md).
+
+- **Race** contains Free Race, Weekly Rivalry and Challenges. Free Race browses
+  public/cached tracks with Search, Filters, Random and favorites. Both list and
+  carousel expose loaded cards; background preloading stops at a failed response.
+  The packaged built-in catalogue contains Starter Circuit, with additional local
+  creations and downloaded tracks. The old Slicks collection is diagnostic only.
+- **Ordinary races** have five laps and a standing countdown. Results show local
+  performance first; authenticated competitive results require canonical server
+  verification. Ordinary retries remain free. See [race rules](../game/race/race_rules.gd).
+- **Garage** selects among five real cars and provides cosmetic editing, washing,
+  trophies, News and an untimed Test drive. The parking hall is now 120 × 72 m,
+  without a roof; it does not write race records, rewards or saved car condition.
+  See [hall layout](PARKING_HALL_FLOOR_LAYOUT_2026_10_23.md).
+- **Create** selects Grass, Desert, Night, Winter or Storm. Author roads, surfaces,
+  bridges, objects and a start line in the full-screen editor. Route generation is
+  automatic from connected road pieces; manual waypoints are retired. Practice is
+  untimed and returns to the retained editor context. Work-in-progress recovery
+  and explicit saved tracks are separate. See [editor workflow](EDITOR_WIP_WORKFLOW.md)
+  and [current format and limits](CREATOR_FORMAT.md).
+- **Sharing and publication** are distinct. Local drafts/file exchange are free;
+  public hosting uses account publishing entitlements and verified publication.
+  Import accepts current creator-track-v5 documents, without older-format conversion.
+- **Store** shows service-driven ad-free offers and publishing packs. Production
+  billing is disconnected; the configured development purchase lab is separate.
+  See [Store behavior and acceptance](STORE_REFERENCE_2026_10_24.md).
+
+The source includes account-scoped appearance sync, 3×3 challenges and World Ranking.
+Their matching server rollout and launch gates are recorded in the
+[documentation index](README.md); a source implementation does not establish that a
+particular installed client or deployed backend has it. Cosmetic dirt/condition
+remains local; appearance sync does not upload it.
+
+## Historical first menu slice — 2026-09-12
+
+The original report below preserves that slice's tests and screenshots. Its Play
+name, three laps, seven Slicks layouts, Pine/Coast themes, starter-loop UI and
+unavailable Android/backend statements describe that earlier build.
+
+---
+
 # Menus and track studio — 2026-09-12
 
 The owner accepted handling and collisions and authorized the next local slice: menus, more Slicks circuits, a creator usable on a phone and coherent themed track graphics. This supersedes the earlier handling-only/editor restriction for this slice. The engine remains `4.7.2.stable.official.ed1daf0bf`; handling remains `handling-0.13` and canonical physics remains `arcade-planar-0.12`.

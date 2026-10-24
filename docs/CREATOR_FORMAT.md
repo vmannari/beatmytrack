@@ -1,4 +1,57 @@
-# Current object extension (2026-09-14)
+# Current creator format and admission limits
+
+Reviewed 2026-10-24. External creator documents must use **creator-track-v5**.
+The native loader accepts **surface-grid-v2**. Earlier creator/native versions and
+Coast imports are unsupported; older-format conversion is not offered. Existing
+player files are preserved rather than deleted when they cannot be imported.
+
+The executable contract is [TrackDocument](../game/editor/track_document.gd),
+[CreatorLimits](../game/editor/creator_limits.gd),
+[TrackCompiler](../game/editor/track_compiler.gd) and
+[TrackLibrary](../game/persistence/track_library.gd). The structural interchange
+schema is [creator-track-v5.schema.json](schemas/creator-track-v5.schema.json).
+Domain validation and compilation also enforce geometry, aggregate capacity and
+memory constraints that JSON Schema alone does not establish.
+
+| Constraint | Current bound |
+|---|---|
+| JSON document | 1,048,576 bytes (1 MiB) |
+| Placed objects | 4,096 |
+| Expanded tyre stacks | 4,096 independently; a tyre wall counts as six |
+| Conservative prop estimate | 128 MiB; provisional admission estimate, not measured process memory |
+| Road sections | 96, up to 4,000 m combined sampled length |
+| Route points | 4–96, coordinates within ±120 m |
+| Road/node width | 6–20 m |
+| Track name | 1–40 characters, no control characters |
+| Track ID | 1–48 lowercase ASCII letters/digits/underscores; reserved device names excluded |
+| Removed scenery keys | At most 256, each at most 40 characters |
+
+Themes are Grass (`pine`), Desert (`desert`), Night (`night_city`), Winter (`winter`)
+and Storm (`storm`). The v5 document supports road pieces, painted layout, authored
+objects/hazards, start-line pose and scenery settings, with strict allowlists.
+The route is derived from connected pieces for the current UI; manual waypoint
+editing is retired. Authoring and playable-route validation are distinct so that
+unfinished work can be recovered without claiming it is ready to race.
+
+Compiler identity is **creator-compiler-27**. Geometry is shared by editor preview,
+practice, racing and canonical verification. Desert compilation normalizes the road
+surface to the structural road cell and applies compacted-sand biome semantics.
+Local saved documents and editor WIP recovery are separate. File exchange and local
+drafts are free; hosted publishing uses the account's service entitlements.
+
+See [creator capacity and matching canonical bundle](CREATOR_CAPACITY_2026_10_23.md),
+[current import/editor policy](EDITOR_T11_T15_2026_10_23.md),
+[WIP workflow](EDITOR_WIP_WORKFLOW.md) and [menu guide](MENUS_AND_CREATOR.md).
+Physical-device capacity and sustained performance acceptance remain open.
+
+## Historical format/compiler checkpoints
+
+All v1–v3 declarations, byte limits, compiler identities and test results below
+refer to those earlier builds. They do not authorize accepting those formats now.
+
+---
+
+# Object extension checkpoint (2026-09-14)
 
 Creator-track-v5 now accepts optional object `scale` (0.5-3, default 1; tyre walls remain 1) and optional `hidden_scenery` (up to 256 coordinate keys, each at most 40 characters). New kinds: `boulder`, `slate`, `cliff`, `oil`, `puddle`, `jump`. Existing v5 documents remain valid. Compiler-7 includes deterministic solid woodland scenery; saved deletions suppress regeneration. See [CREATOR_HAZARDS.md](CREATOR_HAZARDS.md) and [current schema](schemas/creator-track-v5.schema.json). The sections below retain historical compiler evidence.
 
@@ -6,7 +59,7 @@ Creator-track-v5 now accepts optional object `scale` (0.5-3, default 1; tyre wal
 
 Superseded by **creator-track-v3**: separate map painting, optional road helper, lap route and native remixes. [Current contract and verification](FREE_FORM_EDITOR.md). V1/V2 descriptions below are historical; no backward compatibility is maintained.
 
-Current format: **creator-track-v2**, with per-node widths, sharp/smooth corners and built-in objects. See [EDITOR_V2.md](EDITOR_V2.md) and the [v2 schema](schemas/creator-track-v2.schema.json). The owner explicitly waives backward compatibility for user tracks; v1 is unsupported. The following records the historical first implementation.
+At the v2 checkpoint: **creator-track-v2**, with per-node widths, sharp/smooth corners and built-in objects. See [EDITOR_V2.md](EDITOR_V2.md) and the [v2 schema](schemas/creator-track-v2.schema.json). The owner explicitly waives backward compatibility for user tracks; v1 is unsupported. The following records the historical first implementation.
 
 2026-09-12 owner-authorized local creator slice. Requirements: T01 (bounded non-scriptable format), T02 (closed route and geometry validation), T03 foundations (version identity), T04 (unlimited local drafts and free file exchange), V05 (shared editor/driving geometry). Public publishing, hosted challenges, accounts and competition verification are outside this slice.
 

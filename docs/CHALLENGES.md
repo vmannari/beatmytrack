@@ -1,3 +1,40 @@
+# Current challenge contract
+
+Reviewed 2026-10-24 against the [client](../game/backend/challenges_client.gd),
+[creation UI](../game/ui/challenge_create.gd),
+[challenge API](../backend/bmt_backend/challenges.py) and
+[series service](../backend/bmt_backend/challenge_series.py).
+
+Creation is **format → tracks → car**. One-to-one and Group race pin one track;
+3×3 pins three distinct tracks and one car, with three starts per stage and best-only
+summed standings. Custom rules retain the supported duration/attempt/visibility
+choices. The separate Find & play browser discovers challenges. Car selection uses
+the actual five Garage models, saved cosmetics and the retained showroom transition.
+See [the current flow and artwork](CHALLENGE_PAGE.md).
+
+For ordinary one-track formats, Use personal best resolves the owned verified result
+for the selected track/car. A source drive is available when a target is needed.
+Group Create & race can start unseeded. Creation from race results instead pins that
+**exact completed ticket**, including a finish slower than the PB; pending/failed
+verification never substitutes a PB or requires a replacement race. In a 3×3
+invitation that exact finish is stage one. Canonical five-lap tickets, account/block
+fences, attempt reservations, normal results first and explicit sharing remain.
+
+The 3×3 capability requires migration **0058_challenge_series** plus matching API,
+worker and client. The latest recorded release is schema57, so the local series
+implementation is not a claim that the retained service supports it. Actual series
+checks and rollout limits are in the
+[format/series report](evidence/challenge-format-series-2026-10-23/report.json).
+The original 0020/0021 contracts below are historical prerequisites, not sufficient
+instructions for deploying the current artifact.
+
+## Historical first implementation — 2026-10-08 and follow-ups
+
+The sections below preserve earlier behavior and validation. In particular, the
+compact-sheet, invitation-only and local-only rollout statements are dated history.
+
+---
+
 # Race challenges — 2026-10-08
 
 Current discovery, presentation and Coin rules are in [Challenge Club (2026-10-16)](CHALLENGE_CLUB_2026_10_16.md). This supersedes the invitation-only menu entry; existing private invitation contracts remain.

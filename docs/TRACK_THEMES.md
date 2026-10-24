@@ -1,3 +1,36 @@
+# Current track themes
+
+Reviewed 2026-10-24 against [TrackTheme](../game/track/track_theme.gd),
+[the creator validator](../game/editor/track_document.gd) and
+[the compiler](../game/editor/track_compiler.gd).
+
+| Display name | Stored ID |
+|---|---|
+| Grass | `pine` |
+| Desert | `desert` |
+| Night | `night_city` |
+| Winter | `winter` |
+| Storm | `storm` |
+
+Coast is retired and rejected in current creator imports. Unknown presentation
+IDs fall back to Grass; that fallback does not make an imported document valid.
+Biome selection can affect driving surfaces: Desert roads use compacted sand and
+Winter roads use icy traction. Theme changes must therefore pass through current
+compilation/validation rather than be treated as cosmetic metadata alone.
+
+Solid scenery and authored hazards now participate in driving. The old statement
+that all vegetation/props are passable describes the first visual kit only. Current
+Desert scenery and sand fixes are documented in the
+[visibility regression correction](DESERT_VISIBILITY_REGRESSION_2026_10_24.md).
+See the [documentation index](README.md) for current editor/gameplay evidence.
+
+## Historical first theme kit — 2026-09-12
+
+The report below preserves its original appearance-only implementation, three-theme
+scope, source fixtures and measurements; it is not the current biome contract.
+
+---
+
 # Shared track themes — 2026-09-12
 
 Owner-authorized menu/creator slice after handling acceptance. Requirements: V02 (coherent matte art), V04 (bounded original asset kit), R03 (shared native track geometry), and the latest request for several phone-editor base themes. Camera calibration remains a separate acceptance check.

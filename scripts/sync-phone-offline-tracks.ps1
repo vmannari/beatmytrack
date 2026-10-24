@@ -25,7 +25,7 @@ foreach ($entry in $sourceEntries) {
     $identities[$entry.track_id] = $true
     $filename = $entry.content_hash + '.json'
     $source = Join-Path $cache $filename
-    if ((Get-Item -LiteralPath $source).Length -gt 524288) { throw "Track exceeds the document bound: $($entry.name)" }
+    if ((Get-Item -LiteralPath $source).Length -gt 1048576) { throw "Track exceeds the document bound: $($entry.name)" }
     $snapshot = Join-Path $bundle ('snapshot/' + $filename)
     Copy-Item -LiteralPath $source -Destination $snapshot
     if ((Get-FileHash -LiteralPath $snapshot -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.content_hash) { throw "Track hash mismatch: $($entry.name)" }

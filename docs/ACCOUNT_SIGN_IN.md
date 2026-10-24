@@ -1,3 +1,25 @@
+# Current sign-in and startup
+
+Reviewed 2026-10-24 against [App startup](../game/core/app.gd),
+[AccountController](../game/backend/account_controller.gd) and
+[SessionVault](../game/backend/session_vault.gd). Saved sessions restore before the
+menu opens. A profile-ready account enters Race directly; saved country skips profile
+setup and the old signed-in confirmation. Explicit account management remains.
+Android vault capability checks use the JNI method registry. Android Google sign-in
+uses the native picker; desktop uses the browser flow described below.
+
+The remembered-sign-in update has a recorded tablet deployment. Its installed
+artifact is distinct from later source changes and the latest touch-control phone
+build. See [current restoration behavior](REMEMBERED_SIGN_IN.md),
+[tablet sign-in receipt](evidence/tablet-sign-in-deployment-2026-10-23/report.json)
+and [Android build/deployment history](ANDROID.md). A successful startup receipt does
+not establish owner sign-in or sustained cold-restart acceptance for every device.
+
+The configuration instructions below remain useful; their dated provider/device
+observations apply to the stated checkpoint, not the present attachment state.
+
+---
+
 # Google and Development sign-in
 
 ## Native Android sign-in override (2026-10-09)

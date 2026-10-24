@@ -32,7 +32,6 @@ var standings_scroll_offset: int = -1
 var standings_scroll: ScrollContainer
 var standings_ready: bool = false
 var track_rows: Array[Button] = []
-var track_markers: Array[ColorRect] = []
 var detail_route: LapRouteView
 var finale_livery: Dictionary = {}
 var finale_customisation: Dictionary = {}
@@ -49,6 +48,7 @@ const WINTER_ART: Texture2D = preload("res://assets/menu/rivalry_winter_v1.png")
 const STANDINGS_GUTTER: int = 12
 const QUIET_BORDER := Color("2e495a88")
 const Badge = preload("res://ui/biome_badge.gd")
+const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
 
 func _ready() -> void:
 	name = "WeeklyRivalryPage"
@@ -89,7 +89,6 @@ func refresh_presentation() -> bool:
 		standings_scroll = null
 		standings_ready = false
 		track_rows.clear()
-		track_markers.clear()
 		_track_views.clear()
 		_driver_views.clear()
 		detail_route = null
@@ -134,10 +133,13 @@ func _update_scores() -> void:
 		view.points.text = str(int(driver.points))
 		view.gap.text = "--" if driver.get("rank")==null or int(driver.points)==leader_points else str(int(driver.points)-leader_points)
 		var medal: Color = _medal_color(int(driver.rank)-1) if driver.get("rank")!=null and int(driver.rank)<=3 else Color.TRANSPARENT
-		view.badge.add_theme_stylebox_override("panel",MenuStyle.box(Color(medal,0.48) if medal.a>0.0 else Color.TRANSPARENT,0))
+		view.badge.add_theme_stylebox_override("panel",_badge_style(medal))
 	for index: int in range(mini(3,standings.size())):
-		(find_child("RivalryPodiumPoints_"+str(index+1),true,false) as Label).text = str(int(standings[index].points))+" pts"
-		(find_child("RivalryPodiumRank_"+str(index+1),true,false) as Label).text = rank_text(standings[index])
+		var podium_points := find_child("RivalryPodiumPoints_"+str(index+1),true,false) as Label
+		var podium_rank := find_child("RivalryPodiumRank_"+str(index+1),true,false) as Label
+		if podium_points != null: podium_points.text = str(int(standings[index].points))
+		if podium_rank != null: podium_rank.text = rank_text(standings[index])
+	_update_position_summary()
 	var completed: int = 0
 	for index: int in range(_track_views.size()):
 		var gap: Dictionary = model.track_summary(index)
@@ -146,10 +148,9 @@ func _update_scores() -> void:
 		view.rank.text = rank_text(gap.own)
 		view.time.text = _track_time(gap)
 		view.delta.text = _track_delta(gap)
-		view.delta.add_theme_color_override("font_color",MenuStyle.POSITIVE if gap.own.get("rank")==1 else MenuStyle.MUTED)
+		view.delta.add_theme_color_override("font_color",_track_status_color(gap))
 		view.rank.add_theme_color_override("font_color",MenuStyle.ACCENT if gap.own.get("rank")==1 else MenuStyle.TEXT)
-	var progress: Label = find_child("RivalryTrackProgress",true,false) as Label
-	if progress != null: progress.text = "%d / 5 COMPLETED" % completed
+	_update_track_header()
 	var circuit: Label = find_child("WorldCircuitProgress",true,false) as Label
 	if circuit != null: circuit.text = "CIRCUIT %d/5 · 3 FREE RESUMES" % completed
 
@@ -176,6 +177,7 @@ func _update_status() -> void:
 			normal = "%d points ahead of %s." % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else "%d of five tracks completed." % summary.completed
 		message.text = error if not error.is_empty() else normal
 		message.tooltip_text = message.text
+	_update_track_header()
 	var result_error: Label = find_child("RivalryResultError",true,false) as Label
 	if result_error != null:
 		result_error.text = error
@@ -192,7 +194,9 @@ func _build_content() -> void:
 	rail.selected = "rivalry"
 	rail.mode_requested.connect(func(mode: String) -> void:
 		if mode == "free": free_race_requested.emit()
-		elif mode == "rivalry": section_requested.emit("overview")
+		elif mode == "rivalry":
+			if circuit_mode: car_rivalry_requested.emit()
+			else: section_requested.emit("overview")
 		elif mode == "challenges": challenges_requested.emit())
 	if section != "result": row.add_child(rail)
 	else: rail.free()
@@ -222,39 +226,59 @@ func _build_content() -> void:
 	identity.add_theme_constant_override("separation",4)
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(identity)
-	if signed_in and preload("res://backend/world_ranking_client.gd").supported(safety_client):
-		var world: Control = preload("res://ui/world_ranking_summary.gd").new()
-		world.client = safety_client
-		header.add_child(world)
-		var circuit: Button = MenuStyle.button("Car Rivalry" if circuit_mode else "Compact Circuit",func() -> void:
-			if circuit_mode: car_rivalry_requested.emit()
-			else: circuit_requested.emit())
-		circuit.name = "WorldCircuitEntry"
-		circuit.disabled = not circuit_mode and not preload("res://backend/world_ranking_client.gd").circuit_open(safety_client)
-		world.add_child(circuit)
 	var heading := MenuStyle.label("COMPACT CIRCUIT" if circuit_mode else "WEEKLY RIVALRY",30 if awards else 38)
 	heading.add_theme_color_override("font_shadow_color",Color("061320"))
 	heading.add_theme_constant_override("shadow_offset_y",2)
-	identity.add_child(heading)
-	var context := HBoxContainer.new()
+	if section == "overview" and not model.tracks.is_empty() and not model.completed:
+		var title_row := HBoxContainer.new()
+		title_row.add_theme_constant_override("separation",16)
+		identity.add_child(title_row)
+		title_row.add_child(heading)
+		var summary_frame := PanelContainer.new()
+		summary_frame.name = "RivalryPositionBadge"
+		summary_frame.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var summary_style: StyleBoxFlat = MenuStyle.box(Color("312910b8"),8)
+		summary_style.content_margin_top = 4
+		summary_style.content_margin_bottom = 4
+		summary_style.border_color = Color("b49a3c")
+		summary_style.set_border_width_all(1)
+		summary_frame.add_theme_stylebox_override("panel",summary_style)
+		title_row.add_child(summary_frame)
+		var summary := MenuStyle.label(_position_summary(),16)
+		summary.name = "RivalryPositionSummary"
+		summary.add_theme_font_override("font",MenuStyle.DISPLAY)
+		summary.add_theme_color_override("font_color",Color("ffe39b"))
+		summary_frame.add_child(summary)
+	else:
+		identity.add_child(heading)
+	var context := PanelContainer.new()
 	context.name = "RivalryWeekAndClock"
 	context.visible = model.sample or model.received_msec > 0
-	context.add_theme_constant_override("separation",12)
-	identity.add_child(context)
+	context.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var context_style: StyleBoxFlat = MenuStyle.card(10)
+	context_style.content_margin_top = 5
+	context_style.content_margin_bottom = 5
+	context_style.border_color = QUIET_BORDER
+	context_style.shadow_size = 3
+	context.add_theme_stylebox_override("panel",context_style)
+	header.add_child(context)
+	var context_row := HBoxContainer.new()
+	context_row.add_theme_constant_override("separation",10)
+	context.add_child(context_row)
 	var week_label := MenuStyle.label("WEEK %02d" % model.week,21)
 	week_label.add_theme_font_override("font",MenuStyle.DISPLAY)
 	week_label.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	context.add_child(week_label)
+	context_row.add_child(week_label)
 	var clock_icon := TextureRect.new()
 	clock_icon.texture = MenuIcon.texture("clock")
 	clock_icon.custom_minimum_size = Vector2(22,22)
 	clock_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	clock_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	clock_icon.modulate = MenuStyle.MUTED
-	context.add_child(clock_icon)
+	context_row.add_child(clock_icon)
 	clock_label = MenuStyle.label(model.countdown(),20)
 	clock_label.name = "RivalryCountdown"
-	context.add_child(clock_label)
+	context_row.add_child(clock_label)
 	if not model.world_circuit.is_empty():
 		var completed_tracks: int = int(model.self_row(model.standing()).get("completed",0))
 		var circuit_progress: Label = MenuStyle.label("CIRCUIT %d/5 · 3 FREE RESUMES" % completed_tracks,16,true)
@@ -279,6 +303,10 @@ func _build_content() -> void:
 	if standings_scroll == null: standings_ready = true
 
 func _draw() -> void:
+	# Weekly Rivalry shares the garage backdrop supplied by the menu shell.
+	if not circuit_mode:
+		draw_rect(Rect2(Vector2(-84,-100),size+Vector2(108,124)),Color(0.005,0.012,0.018,0.14))
+		return
 	var art: Texture2D = WINTER_ART
 	var source := Rect2(0,art.get_height()*0.16,art.get_width(),art.get_height()*0.84)
 	var factor: float = maxf(size.x/source.size.x,size.y/source.size.y)
@@ -391,7 +419,7 @@ func _loading(parent: Control) -> void:
 	podium.custom_minimum_size.y = 184
 	podium.add_theme_constant_override("separation",10)
 	field.add_child(podium)
-	for position: int in [1,0,2]: _loading_block(podium,184 if position == 0 else 172).size_flags_vertical = Control.SIZE_SHRINK_END
+	for position: int in [1,0,2]: _loading_block(podium,184).size_flags_vertical = Control.SIZE_SHRINK_END
 	var standings: VBoxContainer = _card(field,"",12)
 	_copy(standings,"STANDINGS",27)
 	_copy(standings,"Loading…",18,MenuStyle.MUTED)
@@ -401,9 +429,6 @@ func _loading(parent: Control) -> void:
 	right.size_flags_stretch_ratio = 1.13
 	right.add_theme_constant_override("separation",6)
 	parent.add_child(right)
-	var flourish_space := Control.new()
-	flourish_space.custom_minimum_size.y = 30
-	right.add_child(flourish_space)
 	var tracks: VBoxContainer = _card(right,"",12)
 	tracks.add_theme_constant_override("separation",6)
 	_copy(tracks,"THIS WEEK'S TRACKS",26)
@@ -450,38 +475,73 @@ func _championship(parent: Control, finale: bool) -> void:
 	right.size_flags_stretch_ratio = 1.13
 	right.add_theme_constant_override("separation",6)
 	parent.add_child(right)
-	var flourish := MenuStyle.label("Small Tracks. Big Thrills.",20,true)
-	flourish.name = "RivalryBrandFlourish"
-	flourish.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	flourish.custom_minimum_size.y = 30
-	var italic := FontVariation.new()
-	italic.base_font = MenuStyle.DISPLAY
-	italic.variation_transform = Transform2D(Vector2(1,0),Vector2(-0.18,1),Vector2.ZERO)
-	flourish.add_theme_font_override("font",italic)
-	right.add_child(flourish)
 	var tracks: VBoxContainer = _card(right,"",12)
 	tracks.get_parent().name = "RivalryTracksPanel"
 	tracks.add_theme_constant_override("separation",6)
 	var heading := HBoxContainer.new()
+	heading.add_theme_constant_override("separation",10)
 	tracks.add_child(heading)
 	_copy(heading,"TRACK RESULTS" if finale else "THIS WEEK'S TRACKS",26).size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var completed: int = 0
-	for index: int in range(model.tracks.size()):
-		if model.track_summary(index).own.get("ms") != null: completed += 1
-	_copy(heading,"%d / 5 COMPLETED" % completed,14,MenuStyle.MUTED).name = "RivalryTrackProgress"
+	var strip: Control = TrackAccent.new()
+	strip.name = "RivalryTrackLeadStrip"
+	strip.custom_minimum_size = Vector2(54,12)
+	strip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	heading.add_child(strip)
+	var totals := VBoxContainer.new()
+	totals.add_theme_constant_override("separation",0)
+	heading.add_child(totals)
+	var leading: Label = _copy(totals,"",18,MenuStyle.POSITIVE)
+	leading.name = "RivalryTracksLeading"
+	leading.autowrap_mode = TextServer.AUTOWRAP_OFF
+	leading.add_theme_font_override("font",MenuStyle.DISPLAY)
+	leading.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	var progress: Label = _copy(totals,"",12,MenuStyle.MUTED)
+	progress.name = "RivalryTrackProgress"
+	progress.autowrap_mode = TextServer.AUTOWRAP_OFF
+	progress.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	var subtitle: Label = _copy(tracks,error if not error.is_empty() else "Week complete. Your best results." if finale else "Choose a track and beat your best time.",15,MenuStyle.MUTED)
 	subtitle.name = "RivalryStatusMessage"
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_OFF
 	subtitle.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	subtitle.clip_text = true
 	subtitle.tooltip_text = subtitle.text
+	subtitle.visible = not error.is_empty()
+	var hint := RichTextLabel.new()
+	hint.name = "RivalryTracksHint"
+	hint.fit_content = true
+	hint.scroll_active = false
+	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hint.add_theme_font_override("normal_font",MenuStyle.BODY)
+	hint.add_theme_font_size_override("normal_font_size",15)
+	hint.add_theme_color_override("default_color",MenuStyle.MUTED)
+	tracks.add_child(hint)
+	var legend := HBoxContainer.new()
+	legend.add_theme_constant_override("separation",10)
+	var legend_margin := MarginContainer.new()
+	legend_margin.add_theme_constant_override("margin_left",6)
+	legend_margin.add_theme_constant_override("margin_right",6)
+	tracks.add_child(legend_margin)
+	legend_margin.add_child(legend)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	legend.add_child(spacer)
+	var place_heading: Label = _copy(legend,"PLACE",11,MenuStyle.MUTED)
+	place_heading.custom_minimum_size.x = 56
+	place_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var divider_space := Control.new()
+	divider_space.custom_minimum_size.x = 1
+	legend.add_child(divider_space)
+	var time_heading: Label = _copy(legend,"YOUR BEST",11,MenuStyle.MUTED)
+	time_heading.name = "RivalryTrackTimeHeading"
+	time_heading.custom_minimum_size.x = 116
+	time_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	track_rows.clear()
-	track_markers.clear()
 	for index: int in range(model.tracks.size()): _track_row(tracks,index)
 	if finale:
 		var next: Button = _action(tracks,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
 		next.custom_minimum_size.y = 64
 		next.disabled = busy
+	_update_track_header()
 	_select_track(selected)
 
 func _driver_table(parent: Control, title: String) -> void:
@@ -498,10 +558,13 @@ func _driver_table(parent: Control, title: String) -> void:
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
+	var bar: VScrollBar = scroll.get_v_scroll_bar()
 	var legend_margin := MarginContainer.new()
 	legend_margin.name = "RivalryStandingsColumnHeader"
 	legend_margin.add_theme_constant_override("margin_left",5)
 	legend_margin.add_theme_constant_override("margin_right",ceili(scroll.get_v_scroll_bar().get_combined_minimum_size().x)+STANDINGS_GUTTER+5)
+	bar.resized.connect(func() -> void:
+		legend_margin.add_theme_constant_override("margin_right",ceili(bar.size.x)+STANDINGS_GUTTER+5))
 	table.add_child(legend_margin)
 	var legend := HBoxContainer.new()
 	legend.add_theme_constant_override("separation",9)
@@ -541,7 +604,7 @@ func _driver_table(parent: Control, title: String) -> void:
 		var badge := PanelContainer.new()
 		badge.custom_minimum_size.x = 30
 		var podium_color: Color = _medal_color(int(driver.rank)-1) if driver.get("rank") != null and int(driver.rank) <= 3 else Color.TRANSPARENT
-		badge.add_theme_stylebox_override("panel",MenuStyle.box(Color(podium_color,0.48) if podium_color.a > 0.0 else Color.TRANSPARENT,0))
+		badge.add_theme_stylebox_override("panel",_badge_style(podium_color))
 		line.add_child(badge)
 		var place: Label = _copy(badge,str(int(driver.rank)) if driver.get("rank") != null else "--",19,color)
 		place.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -608,10 +671,42 @@ func _display_name(row: Dictionary) -> String:
 		if marker >= 0 and value.substr(marker+2).contains("-"): value = value.substr(0,marker)
 	return value
 
+func _position_summary() -> String:
+	var rows: Array[Dictionary] = model.standing()
+	var own: Dictionary = model.self_row(rows)
+	if own.get("rank") == null: return "UNRANKED OF %d" % rows.size()
+	var place: int = int(own.rank)
+	var suffix: String = "TH" if place % 100 in [11,12,13] else "ST" if place % 10 == 1 else "ND" if place % 10 == 2 else "RD" if place % 10 == 3 else "TH"
+	var position: String = "%d%s OF %d" % [place,suffix,rows.size()]
+	if rows.size() < 2: return position
+	var points: int = int(own.points)
+	var leader_points: int = int(rows[0].points)
+	if points < leader_points: return position+" · %d PTS TO LEAD" % (leader_points-points)
+	var nearest: Dictionary = rows[1] if rows[0].id == WeeklyRivalry.SELF else rows[0]
+	if points == int(nearest.points): return position+" · TIED FOR LEAD"
+	return position+" · %d PTS AHEAD" % (points-int(nearest.points))
+
+func _update_position_summary() -> void:
+	var summary := find_child("RivalryPositionSummary",true,false) as Label
+	if summary != null: summary.text = _position_summary()
+
+func _badge_style(color: Color) -> StyleBoxFlat:
+	var style: StyleBoxFlat = MenuStyle.box(Color(color,0.38) if color.a > 0.0 else Color.TRANSPARENT,0)
+	if color.a > 0.0:
+		style.border_color = Color(color,0.7)
+		style.set_border_width_all(1)
+		style.border_width_top = 2
+		style.shadow_color = Color(0,0,0,0.22)
+		style.shadow_size = 2
+	return style
+
 func _driver_style(row: Dictionary) -> StyleBoxFlat:
-	var style := MenuStyle.box(Color("ffd3480b") if row.id == WeeklyRivalry.SELF else Color("08172022"),5)
+	var style := MenuStyle.box(Color("423613a0") if row.id == WeeklyRivalry.SELF else Color("08172055"),5)
 	style.border_color = MenuStyle.ACCENT if row.id == WeeklyRivalry.SELF else Color("2c485755")
-	if row.id == WeeklyRivalry.SELF: style.set_border_width_all(2)
+	if row.id == WeeklyRivalry.SELF:
+		style.set_border_width_all(2)
+		style.shadow_color = Color("ffd34818")
+		style.shadow_size = 3
 	else: style.border_width_bottom = 1
 	return style
 
@@ -621,7 +716,7 @@ func _medal_color(position: int) -> Color:
 func _podium(parent: Control) -> void:
 	var podium := HBoxContainer.new()
 	podium.name = "RivalryPodium"
-	podium.custom_minimum_size.y = 184
+	podium.custom_minimum_size.y = 194
 	podium.add_theme_constant_override("separation",10)
 	parent.add_child(podium)
 	var leaders: Array[Dictionary] = []
@@ -638,30 +733,36 @@ func _podium(parent: Control) -> void:
 		if position >= leaders.size(): continue
 		var driver: Dictionary = leaders[position]
 		var color: Color = _medal_color(position)
-		var card: VBoxContainer = _card(podium,"",9)
+		var card: VBoxContainer = _card(podium,"",0)
 		var panel: PanelContainer = card.get_parent()
 		panel.name = "RivalryPodium_"+str(position+1)
-		panel.custom_minimum_size.y = 184 if position == 0 else 172
+		panel.custom_minimum_size.y = 194
 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
-		panel.size_flags_stretch_ratio = 1.08 if position == 0 else 1.0
-		var style: StyleBoxFlat = MenuStyle.card(9)
-		style.bg_color = Color("453b13e6") if position == 0 else Color("294252c9") if position == 1 else Color("492a20dd")
-		style.border_color = Color(color,0.82)
-		style.shadow_size = 4
+		panel.size_flags_stretch_ratio = 1.0
+		var style: StyleBoxFlat = MenuStyle.card(1)
+		style.bg_color = Color("27220df5") if position == 0 else Color("152b39f5") if position == 1 else Color("302019f5")
+		style.border_color = Color("f3c936") if position == 0 else Color("477c98") if position == 1 else Color("b66440")
+		style.shadow_color = Color(color,0.15)
+		style.shadow_size = 5 if position == 0 else 3
+		style.border_width_top = 2
 		panel.add_theme_stylebox_override("panel",style)
-		card.add_theme_constant_override("separation",1)
+		card.add_theme_constant_override("separation",0)
+		var rank_margin := MarginContainer.new()
+		rank_margin.add_theme_constant_override("margin_top",5)
+		card.add_child(rank_margin)
 		var rank := HBoxContainer.new()
+		rank.alignment = BoxContainer.ALIGNMENT_CENTER
 		rank.add_theme_constant_override("separation",8)
-		card.add_child(rank)
+		rank_margin.add_child(rank)
 		var icon := TextureRect.new()
 		icon.texture = MenuIcon.texture("trophy")
-		icon.custom_minimum_size = Vector2(26,28) if position == 0 else Vector2(24,26)
+		icon.custom_minimum_size = Vector2(24,26)
 		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.modulate = color
 		rank.add_child(icon)
-		_copy(rank,rank_text(driver),32 if position == 0 else 29,color).name = "RivalryPodiumRank_"+str(position+1)
-		# Keep the shared content rows on one baseline beneath the taller winner header.
+		_copy(rank,rank_text(driver),30,color).name = "RivalryPodiumRank_"+str(position+1)
+		# Keep all three car and identity rows on shared baselines.
 		var header_space := Control.new()
 		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		header_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -671,6 +772,7 @@ func _podium(parent: Control) -> void:
 		car.vehicle_id = model.vehicle_id
 		car.simple_model = true
 		car.podium_presentation = true
+		car.fit_to_frame = true
 		var appearance: Variant = driver.get("appearance",{})
 		if appearance is Dictionary and appearance.get("vehicle_id") == model.vehicle_id:
 			if VehicleLivery.valid(appearance.get("livery")): car.livery = VehicleLivery.normalize(appearance.livery,model.vehicle_id)
@@ -680,22 +782,51 @@ func _podium(parent: Control) -> void:
 		if driver.id == WeeklyRivalry.SELF:
 			if VehicleLivery.valid(finale_livery): car.livery = finale_livery.duplicate(true)
 			if VehicleCustomisation.valid(finale_customisation): car.customisation = finale_customisation.duplicate(true)
-		car.custom_minimum_size.y = 68
+		car.custom_minimum_size.y = 88
 		card.add_child(car)
+		var footer := PanelContainer.new()
+		footer.name = "RivalryPodiumFooter_"+str(position+1)
+		footer.custom_minimum_size.y = 56
+		var footer_style: StyleBoxFlat = MenuStyle.box(style.bg_color.darkened(0.06),12)
+		footer_style.corner_radius_top_left = 0
+		footer_style.corner_radius_top_right = 0
+		footer_style.corner_radius_bottom_left = 4
+		footer_style.corner_radius_bottom_right = 4
+		footer_style.content_margin_top = 7
+		footer_style.content_margin_bottom = 7
+		footer_style.border_width_top = 1
+		footer_style.border_color = Color(color,0.18)
+		footer.add_theme_stylebox_override("panel",footer_style)
+		card.add_child(footer)
+		preload("res://ui/rivalry_podium_backdrop.gd").add_to(panel,footer,position)
 		var identity := HBoxContainer.new()
 		identity.name = "RivalryPodiumIdentity_"+str(position+1)
 		identity.add_theme_constant_override("separation",6)
-		card.add_child(identity)
-		identity.add_child(PlayerCountry.flag(str(driver.get("country_code","")),24))
+		footer.add_child(identity)
+		identity.add_child(PlayerCountry.flag(str(driver.get("country_code","")),28))
 		var driver_name: Label = _copy(identity,_display_name(driver),20)
 		driver_name.name = "RivalryPodiumName_"+str(position+1)
 		_profile_name(driver_name,driver)
 		driver_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		driver_name.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		driver_name.add_theme_font_override("font",MenuStyle.DISPLAY)
+		driver_name.add_theme_color_override("font_color",MenuStyle.TEXT.lerp(color,0.12))
 		driver_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 		driver_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		var points: Label = _copy(card,str(int(driver.points))+" pts",20,color)
+		driver_name.clip_text = true
+		var score := VBoxContainer.new()
+		score.add_theme_constant_override("separation",-2)
+		score.custom_minimum_size.x = 30
+		score.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		identity.add_child(score)
+		var points: Label = _copy(score,str(int(driver.points)),22,color)
 		points.name = "RivalryPodiumPoints_"+str(position+1)
+		points.add_theme_font_override("font",MenuStyle.DISPLAY)
+		points.autowrap_mode = TextServer.AUTOWRAP_OFF
+		points.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		var unit: Label = _copy(score,"PTS",11,MenuStyle.MUTED)
+		unit.autowrap_mode = TextServer.AUTOWRAP_OFF
+		unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 
 func _track_time(gap: Dictionary) -> String:
 	if gap.get("pending_ms") != null: return MenuStyle.time_text(int(gap.pending_ms)/1000.0)
@@ -707,6 +838,66 @@ func _track_delta(gap: Dictionary) -> String:
 	if gap.own.get("rank") == 1: return "Leading"
 	if gap.own.get("ms") != null and not gap.leader.is_empty(): return WeeklyRivalry.gap_text(int(gap.own.ms)-int(gap.leader.ms))+" to lead"
 	return "Leader time" if not gap.leader.is_empty() else "Set a time"
+
+func _track_status_color(gap: Dictionary) -> Color:
+	if gap.get("pending_ms") != null: return MenuStyle.MUTED
+	if gap.own.get("rank") == 1: return MenuStyle.POSITIVE
+	if gap.own.get("ms") != null and not gap.leader.is_empty(): return MenuStyle.ACCENT
+	return MenuStyle.MUTED
+
+func _track_header_state() -> Dictionary:
+	var result: Dictionary = {"leading":0,"completed":0,"target":-1,"target_gap":0,"states":PackedInt32Array()}
+	var closest: int = 2147483647
+	for index: int in range(model.tracks.size()):
+		var gap: Dictionary = model.track_summary(index)
+		var completed: bool = gap.own.get("ms") != null
+		var leading: bool = completed and gap.own.get("rank") == 1
+		if completed: result.completed += 1
+		if leading: result.leading += 1
+		result.states.append(2 if leading else 1 if completed else 0)
+		if not bool(model.tracks[index].get("available",true)) or gap.get("pending_ms") != null: continue
+		if not completed or leading or gap.ahead.get("ms") == null: continue
+		var difference: int = int(gap.own.ms)-int(gap.ahead.ms)
+		if difference > 0 and difference < closest:
+			closest = difference
+			result.target = index
+			result.target_gap = difference
+	return result
+
+func _update_track_header() -> void:
+	var label := find_child("RivalryTracksLeading",true,false) as Label
+	if label == null: return
+	var state: Dictionary = _track_header_state()
+	var total: int = model.tracks.size()
+	label.text = "%d OF %d LEADING" % [state.leading,total]
+	(find_child("RivalryTrackProgress",true,false) as Label).text = "%d / %d COMPLETED" % [state.completed,total]
+	find_child("RivalryTrackLeadStrip",true,false).set("states",state.states)
+	var time_heading := find_child("RivalryTrackTimeHeading",true,false) as Label
+	time_heading.text = "YOUR BEST" if state.completed == total else "BEST / LEADER"
+	var message := find_child("RivalryStatusMessage",true,false) as Label
+	message.visible = not error.is_empty()
+	var hint := find_child("RivalryTracksHint",true,false) as RichTextLabel
+	hint.visible = error.is_empty()
+	hint.clear()
+	if state.leading == total:
+		hint.add_text("You lead every track. ")
+		hint.push_color(MenuStyle.POSITIVE)
+		hint.add_text("Keep your advantage.")
+	elif state.leading > 0:
+		hint.add_text("You lead on %d %s. " % [state.leading,"track" if state.leading == 1 else "tracks"])
+		hint.push_color(MenuStyle.ACCENT)
+		hint.add_text("One more to conquer." if total-int(state.leading) == 1 else "%d more to conquer." % (total-int(state.leading)))
+	else:
+		hint.add_text("Set your first time. " if state.completed == 0 else "Your best times are on the board. ")
+		hint.push_color(MenuStyle.ACCENT)
+		hint.add_text("Pick a track to begin." if state.completed == 0 else "Choose your next target.")
+	hint.pop()
+	for index: int in range(_track_views.size()):
+		_track_views[index].target.visible = index == int(state.target)
+		track_rows[index].tooltip_text = "View "+str(model.tracks[index].name)
+		if index == int(state.target):
+			_track_views[index].target.tooltip_text = "%s to the driver ahead." % WeeklyRivalry.gap_text(int(state.target_gap))
+			track_rows[index].tooltip_text += " · "+str(_track_views[index].target.tooltip_text)
 
 func _track_row(parent: Control, index: int) -> void:
 	var track: Dictionary = model.tracks[index]
@@ -724,16 +915,15 @@ func _track_row(parent: Control, index: int) -> void:
 	row.focus_entered.connect(func() -> void: _select_track(index))
 	line.add_child(row)
 	track_rows.append(row)
-	var mark := ColorRect.new()
-	mark.name = "RivalryTrackSelectionMark_"+str(index)
-	mark.color = MenuStyle.ACCENT
-	mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(mark)
-	mark.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
-	mark.offset_right = 3
-	mark.offset_top = 7
-	mark.offset_bottom = -7
-	track_markers.append(mark)
+	var neutral: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
+	neutral.set_corner_radius_all(0)
+	neutral.border_width_bottom = 1
+	neutral.border_color = Color("31566a99")
+	for state: String in ["normal","hover"]: row.add_theme_stylebox_override(state,neutral)
+	var pressed: StyleBoxFlat = neutral.duplicate()
+	pressed.bg_color = Color("1b3c4cdb")
+	row.add_theme_stylebox_override("pressed",pressed)
+	row.add_theme_stylebox_override("focus",StyleBoxEmpty.new())
 	var content_row := HBoxContainer.new()
 	content_row.add_theme_constant_override("separation",10)
 	row.add_child(content_row)
@@ -742,25 +932,50 @@ func _track_row(parent: Control, index: int) -> void:
 	content_row.offset_right = -6
 	content_row.offset_top = 4
 	content_row.offset_bottom = -4
+	var thumbnail := Control.new()
+	thumbnail.name = "RivalryTrackThumbnail_"+str(index)
+	thumbnail.custom_minimum_size.x = 110
+	thumbnail.clip_contents = true
+	content_row.add_child(thumbnail)
 	var art := TextureRect.new()
 	art.texture = TrackTile.scenery_texture(str(track.theme))
 	art.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	art.custom_minimum_size.x = 88
 	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	content_row.add_child(art)
+	thumbnail.add_child(art)
+	MenuStyle.fill(art)
+	var number := PanelContainer.new()
+	number.name = "RivalryTrackNumber_"+str(index)
+	var number_style: StyleBoxFlat = MenuStyle.box(Color("071b29ed"),1)
+	number_style.set_corner_radius_all(0)
+	number_style.set_border_width_all(1)
+	number_style.border_color = Color.TRANSPARENT
+	number.add_theme_stylebox_override("panel",number_style)
+	number.custom_minimum_size = Vector2(28,24)
+	number.size = number.custom_minimum_size
+	thumbnail.add_child(number)
+	var number_label: Label = _copy(number,"%02d" % (index+1),16,MenuStyle.MUTED)
+	number_label.add_theme_font_override("font",MenuStyle.DISPLAY)
+	number_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var focused_number: StyleBoxFlat = number_style.duplicate()
+	focused_number.border_color = MenuStyle.MUTED
+	row.focus_entered.connect(func() -> void: number.add_theme_stylebox_override("panel",focused_number))
+	row.focus_exited.connect(func() -> void: number.add_theme_stylebox_override("panel",number_style))
 	var copy := VBoxContainer.new()
 	copy.add_theme_constant_override("separation",1)
 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	content_row.add_child(copy)
-	var title: Label = _copy(copy,str(track.name).capitalize(),22)
+	var title: Label = _copy(copy,str(track.name).to_upper(),24)
+	title.name = "RivalryTrackTitle_"+str(index)
 	title.add_theme_font_override("font",MenuStyle.DISPLAY)
 	title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	title.clip_text = true
 	var gap: Dictionary = model.track_summary(index)
 	var biome := HBoxContainer.new()
 	biome.add_theme_constant_override("separation",5)
+	biome.custom_minimum_size.y = 20
 	copy.add_child(biome)
 	var glyph := TextureRect.new()
 	glyph.texture = MenuIcon.texture(Badge.icon(str(track.theme)))
@@ -770,31 +985,48 @@ func _track_row(parent: Control, index: int) -> void:
 	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	biome.add_child(glyph)
 	_copy(biome,"City" if track.theme == "night_city" else TrackTheme.title(str(track.theme)),14,MenuStyle.MUTED)
-	var position: Label = _copy(content_row,rank_text(gap.own),22,MenuStyle.ACCENT if gap.own.get("rank") == 1 else MenuStyle.TEXT)
-	position.custom_minimum_size.x = 30
-	position.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var target: Label = _copy(content_row,"NEXT TARGET",16,MenuStyle.INK)
+	target.name = "RivalryTrackTarget_"+str(index)
+	target.add_theme_font_override("font",MenuStyle.DISPLAY)
+	var target_style: StyleBoxFlat = MenuStyle.box(MenuStyle.ACCENT,6)
+	target_style.content_margin_top = 4
+	target_style.content_margin_bottom = 4
+	target.add_theme_stylebox_override("normal",target_style)
+	target.custom_minimum_size = Vector2(108,30)
+	target.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	target.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	target.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	target.visible = false
+	var rank: Control = TrackAccent.new()
+	rank.rank_plate = true
+	rank.custom_minimum_size = Vector2(56,44)
+	rank.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	content_row.add_child(rank)
+	var position: Label = _copy(rank,rank_text(gap.own),28,MenuStyle.ACCENT if gap.own.get("rank") == 1 else MenuStyle.TEXT)
+	position.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	position.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	MenuStyle.fill(position)
+	var separator := ColorRect.new()
+	separator.color = Color("2c4e6088")
+	separator.custom_minimum_size = Vector2(1,40)
+	separator.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	content_row.add_child(separator)
 	var times := VBoxContainer.new()
-	times.custom_minimum_size.x = 104
+	times.custom_minimum_size.x = 116
 	times.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	times.add_theme_constant_override("separation",1)
 	content_row.add_child(times)
-	var time: Label = _copy(times,_track_time(gap),23)
+	var time: Label = _copy(times,_track_time(gap),26)
 	time.add_theme_font_override("font",MenuStyle.DISPLAY)
 	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	var delta: Label = _copy(times,_track_delta(gap),13,MenuStyle.POSITIVE if gap.own.get("rank") == 1 else MenuStyle.MUTED)
+	var delta: Label = _copy(times,_track_delta(gap),13,_track_status_color(gap))
 	delta.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_track_views.append({"rank":position,"time":time,"delta":delta})
+	_track_views.append({"rank":position,"time":time,"delta":delta,"target":target})
 	_ignore_tree(content_row)
 
 func _select_track(index: int) -> void:
 	if selected != index: track_selected.emit(index)
 	selected = index
-	for slot: int in range(track_rows.size()):
-		var style: StyleBoxFlat = MenuStyle.box(Color("16313cd9") if slot == index else Color("0b1c2788"),0)
-		style.border_color = QUIET_BORDER
-		style.set_border_width_all(1)
-		track_rows[slot].add_theme_stylebox_override("normal",style)
-		track_markers[slot].visible = slot == index
 
 func _ignore_tree(node: Node) -> void:
 	if node is Control: node.mouse_filter = Control.MOUSE_FILTER_IGNORE

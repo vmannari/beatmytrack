@@ -1,34 +1,50 @@
 extends VBoxContainer
-## Official ceremony read: no rank projection and no periodic requests.
+## Completed-week facts only; navigation lives in the Garage newspaper.
+const Adapter = preload("res://backend/world_ranking_client.gd")
 var client: Node
 var week_start: int = 0
 var label: Label
+var _adapter: Node
+var _scope: String
+var _request: int = 0
 
 func _ready() -> void:
 	name = "WorldRankingWeekResult"
 	label = MenuStyle.label("World Ranking updating…",18,true)
+	label.name = "WorldRankingWeekChange"
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.custom_minimum_size.y = 64
 	add_child(label)
-	var button: Button = MenuStyle.button("World Ranking",func() -> void: preload("res://ui/world_ranking.gd").open(self,client))
-	add_child(button)
+	_adapter = Adapter.for_client(client)
+	_scope = _adapter.scope()
+	if client.has_signal("identity_changed"): client.identity_changed.connect(_invalidate)
+	if is_instance_valid(client.get("safety")): client.safety.changed.connect(_invalidate)
 	_load.call_deferred()
 
-func _load() -> void:
-	var adapter: Node = preload("res://backend/world_ranking_client.gd").for_client(client)
-	var scope: String = adapter.scope()
-	var response: Dictionary = await adapter.profile()
-	if not is_inside_tree() or is_queued_for_deletion() or scope != adapter.scope(): return
-	if not response.ok: return
-	var data: Dictionary = response.data
-	if int(data.get("week_start",0)) < week_start: return
-	label.text = "This week did not earn ranking points."
-	for result: Dictionary in data.results:
-		if int(result.week_start) == week_start:
-			label.text = "Circuit #%d · %d points earned · %s" % [int(result.weekly_place),int(result.points),"Counting" if result.counting else "Reserve"]
+func _invalidate() -> void:
+	_request += 1
+	label.text = "World Ranking unavailable."
+
+static func describe(data: Dictionary, week: int) -> String:
+	if int(data.get("week_start",0)) < week: return "World Ranking updating…"
+	var text: String = "This week did not earn ranking points."
+	for result: Dictionary in data.get("results",[]):
+		if int(result.week_start) == week:
+			text = "Circuit #%d · %d points earned · %s" % [int(result.weekly_place),int(result.points),"Counting" if result.counting else "Reserve"]
 			break
 	if data.get("world_rank") != null:
-		label.text += "\nCurrent World #%d · %d points" % [int(data.world_rank),int(data.points)]
-	if int(data.get("week_start",0)) == week_start:
-		label.text += " · %+d total" % int(data.get("net_change",0))
-		if data.get("movement") != null: label.text += " · %+d places" % int(data.movement)
+		text += "\nWorld #%d · %d points" % [int(data.world_rank),int(data.points)]
+	# Movement belongs to the latest publication, never a different ceremony.
+	if int(data.get("week_start",0)) == week:
+		text += " · %+d points" % int(data.get("net_change",0))
+		if data.get("movement") != null:
+			var movement: int = int(data.movement)
+			text += "\nUp %d places" % movement if movement > 0 else "\nDown %d places" % absi(movement) if movement < 0 else "\nPosition unchanged"
+		elif data.get("world_rank") != null: text += "\nNew World Ranking entry"
+	return text
+
+func _load() -> void:
+	_request += 1
+	var request: int = _request
+	var response: Dictionary = await _adapter.profile()
+	if not is_inside_tree() or is_queued_for_deletion() or request != _request or _scope != _adapter.scope(): return
+	label.text = describe(response.data,week_start) if response.ok else "World Ranking unavailable. Check the Garage newspaper."

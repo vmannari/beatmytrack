@@ -74,13 +74,16 @@ func _ready() -> void:
 	right.size_flags_stretch_ratio = 0.82
 	right.add_theme_constant_override("separation",8)
 	columns.add_child(right)
-	_build_standings(right)
-	_build_highlights(right)
 	if not model.world_circuit.is_empty() and is_instance_valid(ranking_client):
+		var ranking_box: VBoxContainer = _panel(right,"RivalryWorldRankingChange")
+		ranking_box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		_label(ranking_box,"WORLD RANKING",22)
 		var world: Control = preload("res://ui/world_ranking_week_summary.gd").new()
 		world.client = ranking_client
 		world.week_start = int(model.world_circuit.get("week_start",0))
-		right.add_child(world)
+		ranking_box.add_child(world)
+	_build_standings(right)
+	_build_highlights(right)
 	actions = HBoxContainer.new()
 	actions.name = "RivalryFinaleActions"
 	actions.add_theme_constant_override("separation",14)

@@ -136,8 +136,8 @@ func check_podium_alignment(page: Control) -> void:
 				check(is_equal_approx(bounds.position.y,reference[row].position.y) and is_equal_approx(bounds.size.y,reference[row].size.y),
 					"podium car, identity, flag, name and points rows align across all three cards")
 		if place != 1:
-			check(winner.size.y > panel.size.y and winner.get_global_rect().position.y < panel.get_global_rect().position.y,
-				"aligned podium rows retain the taller central winner card")
+			check(is_equal_approx(winner.size.y,panel.size.y) and is_equal_approx(winner.global_position.y,panel.global_position.y),
+				"all three podium cards have equal heights and aligned top edges")
 	print("PODIUM_ROW_BOUNDS: size=%s rows=%s" % [root.size,reference])
 
 func all_vehicle_views() -> void:

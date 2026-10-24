@@ -48,6 +48,7 @@ public final class BmtAdMob extends GodotPlugin {
     @NonNull @Override public Set<SignalInfo> getPluginSignals() {
         return new HashSet<>(Arrays.asList(
             new SignalInfo("rewarded_result", String.class, Boolean.class, String.class),
+            new SignalInfo("rewarded_presented", String.class),
             new SignalInfo("interstitial_result", String.class, Boolean.class, String.class)));
     }
 
@@ -102,6 +103,7 @@ public final class BmtAdMob extends GodotPlugin {
                 ad.setFullScreenContentCallback(new FullScreenContentCallback() {
                     @Override public void onAdShowedFullScreenContent() {
                         Log.i(TAG, "Rewarded demo ad shown");
+                        if (id.equals(request)) emitSignal("rewarded_presented", id);
                     }
                     @Override public void onAdFailedToShowFullScreenContent(@NonNull AdError error) {
                         Log.w(TAG, "Rewarded demo show failed: " + error.toString());

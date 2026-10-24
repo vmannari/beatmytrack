@@ -42,3 +42,6 @@ windows.x86_64 = { "res://platform/windows/$runtimeName": "" }
 "@
 [System.IO.File]::WriteAllText((Join-Path $outputRoot 'share.gdextension'),$descriptor,[System.Text.UTF8Encoding]::new($false))
 Get-FileHash -LiteralPath $destination,$runtimeOutput -Algorithm SHA256
+
+# Keep loaded generations; quarantine other rollback bytes outside the resource root.
+& (Join-Path $PSScriptRoot 'archive_native_libraries.ps1') -Archive

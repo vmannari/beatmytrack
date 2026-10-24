@@ -36,3 +36,6 @@ if ($Platform -in @('android','all')) {
     }
 }
 Get-ChildItem -LiteralPath $outputRoot -File | Where-Object { $_.Extension -in @('.dll','.so') } | Get-FileHash -Algorithm SHA256
+
+# Keep loaded generations; quarantine other rollback bytes outside the resource root.
+& (Join-Path $PSScriptRoot 'archive_native_libraries.ps1') -Archive

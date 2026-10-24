@@ -1,4 +1,4 @@
-// Original local CPU geometry and compiler accelerator. Simulation never calls it.
+// Original local geometry/compiler kernels and optional exact tyre contacts.
 #include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -18,7 +18,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <set>
 using namespace godot;
+#include "tyre_contacts.hpp"
 
 namespace {
 enum Stream { VERTEX = 0, NORMAL = 1, COLOR = 3, UV = 4, UV2 = 5, INDEX = 12 };
@@ -239,7 +241,10 @@ public:
 };
 
 static void initialize(ModuleInitializationLevel level) {
-    if (level==MODULE_INITIALIZATION_LEVEL_SCENE) ClassDB::register_class<BmtTrackGeometry>();
+    if (level==MODULE_INITIALIZATION_LEVEL_SCENE) {
+        ClassDB::register_class<BmtTrackGeometry>();
+        ClassDB::register_class<BmtTyreContacts>();
+    }
 }
 static void uninitialize(ModuleInitializationLevel) {}
 extern "C" GDExtensionBool GDE_EXPORT bmt_track_geometry_init(GDExtensionInterfaceGetProcAddress address,GDExtensionClassLibraryPtr library,GDExtensionInitialization *initialization) {

@@ -155,6 +155,8 @@ def main():
 
         page.locator('#jump').select_option('challenges')
         page.locator('[data-action="challenge-create"]').click()
+        expect(page.locator('.creation-page')).to_be_visible()
+        page.locator('[data-action="before"]').click()
         page.locator('#challenge-name').fill('Evening sprint')
         page.locator('#challenge-duration').select_option('3 days')
         page.locator('#challenge-tries').select_option('3')
@@ -162,7 +164,7 @@ def main():
         expect(page.get_by_role('dialog')).to_contain_text('Evening sprint')
         page.locator('[data-action="created-challenges"]').click()
         expect(page.locator('.challenge-detail')).to_contain_text('Evening sprint')
-        CHECKS.append('Challenge form retains chosen name, duration and tries in the created folder')
+        CHECKS.append('Retained previous challenge form comparison preserves name, duration and tries in the created folder')
 
         page.locator('#jump').select_option('create')
         page.locator('[data-action="biome"][data-value="winter"]').click()

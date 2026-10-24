@@ -36,6 +36,8 @@ def data_url(path, mime):
 def main():
     assets = {key: data_url(ROOT / path, 'image/png') for key, path in ASSET_PATHS.items()}
     css = (HERE / 'prototype.css').read_text(encoding='utf-8')
+    css += '\n' + (HERE / 'challenge-concepts.css').read_text(encoding='utf-8')
+    css += '\n' + (HERE / 'challenge-cards.css').read_text(encoding='utf-8')
     for token, path in [
         ('__FONT_BODY__', 'game/assets/fonts/Barlow-Regular.ttf'),
         ('__FONT_DISPLAY__', 'game/assets/fonts/BarlowCondensed-SemiBold.ttf'),
@@ -46,13 +48,24 @@ def main():
     html = html.replace('__FONT_LICENSE__', (ROOT / 'game/assets/fonts/OFL.txt').read_text(encoding='utf-8'))
     html = html.replace('__ASSETS__', json.dumps(assets, separators=(',', ':')))
     html = html.replace('__JS__', (HERE / 'prototype.js').read_text(encoding='utf-8'))
-    assert '__CSS__' not in html and '__ASSETS__' not in html and '__JS__' not in html
+    html = html.replace('__CHALLENGE_JS__', (HERE / 'challenge-concepts.js').read_text(encoding='utf-8'))
+    html = html.replace('__CHALLENGE_CARDS_JS__', (HERE / 'challenge-cards.js').read_text(encoding='utf-8'))
+    assert all(token not in html for token in ['__CSS__', '__ASSETS__', '__JS__', '__CHALLENGE_JS__', '__CHALLENGE_CARDS_JS__'])
     target = HERE / 'index.html'
     target.write_text(html, encoding='utf-8')
+    challenge_target = HERE / 'challenge-concepts.html'
+    challenge_target.write_text(html.replace('const CHALLENGE_ENTRY = false;', 'const CHALLENGE_ENTRY = true;'), encoding='utf-8')
+    cards_target = HERE / 'challenge-cards.html'
+    cards_target.write_text(html.replace('const CHALLENGE_ENTRY = false;', 'const CHALLENGE_ENTRY = true;').replace('const CHALLENGE_FOCUS = false;', 'const CHALLENGE_FOCUS = true;'), encoding='utf-8')
     manifest = {
-        'date': '2026-10-22',
+        'date': '2026-10-23',
         'artifact': 'index.html',
         'kind': 'Standalone, offline HTML interaction prototype',
+        'challenge_entry': 'challenge-concepts.html',
+        'challenge_variants': ['A / Invitation', 'B / Challenge cards (refined default; earlier version available)', 'C / Drive first'],
+        'challenge_cards_entry': 'challenge-cards.html',
+        'challenge_cards_refinement': ['Choose your challenge', 'Head to head / Group race / Three tries', 'Exact race first', 'Format changes preserve duration', 'Optional rules and title', 'Share invitation handoff'],
+        'challenge_requirements': ['CC01', 'CC02', 'CC03', 'CC04'],
         'size_bytes': target.stat().st_size,
         'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
         'requirements': ['UXR01', 'UXR02', 'UXR03', 'UXR04', 'UXR05', 'UXR06', 'UXR07', 'UXR08', 'UXR09', 'UXR10'],

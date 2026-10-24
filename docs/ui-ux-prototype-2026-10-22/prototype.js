@@ -118,6 +118,7 @@ function render(keepFocus=false){
  $('#jump').value=jumpMap[state.screen]||state.screen;$('#scenario').value=state.scenario;
  $('#finish-preview').hidden=state.screen!=='driving';$('#game').classList.toggle('reduce-motion',saved.reduceMotion);
  document.body.classList.toggle('large-text',saved.largeText);renderNotes();
+ if(window.challengeConceptReady)renderChallengeReview();
  if(focusId){const el=document.getElementById(focusId);if(el){el.focus({preventScroll:true});if(selection!==null&&el.type==='search')el.setSelectionRange(selection,selection);}}
 }
 function renderNotes(){let key=state.screen;if(key==='rivalry-detail')key='rivalry';if(key==='analysis'||key==='driving')key='results';const note=notes[key]||notes.race;const aside=$('#design-notes');aside.hidden=!state.notes;$('#notes-button').setAttribute('aria-pressed',String(state.notes));aside.innerHTML=`<span class="note-tag">PROPOSED CHANGE</span><p class="eyebrow">DESIGN INTENT</p><h3>${note[0]}</h3><p>${note[1]}</p><ul>${note[2].map(p=>`<li>${p}</li>`).join('')}</ul><p class="review-caption">This is a local interaction prototype. Game saves, accounts, racing rules and services are unchanged.</p>`;}
